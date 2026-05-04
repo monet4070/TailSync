@@ -16,10 +16,11 @@ from tailsync.utils.platform_utils import set_clipboard_file
 from tailsync.network.tailscale import get_tailscale_peers 
 
 class SyncManager(QObject):
-    remote_update_signal = pyqtSignal(int, object) 
-    history_updated = pyqtSignal()                 
-    progress_signal = pyqtSignal(int, str, str, bool) 
-    notification_signal = pyqtSignal(str, str)     
+    remote_update_signal = pyqtSignal(int, object)
+    history_updated = pyqtSignal()
+    progress_signal = pyqtSignal(int, str, str, bool)
+    notification_signal = pyqtSignal(str, str, str)
+    peers_updated = pyqtSignal()     
 
     def __init__(self, settings=None):
         super().__init__()
@@ -45,6 +46,11 @@ class SyncManager(QObject):
         self.timer.timeout.connect(self.process_and_broadcast)
         self.timer.start(800)
 
+        # 每 30 秒异步刷新 Tailscale 节点列表，不阻塞 UI
+        self.peer_timer = QTimer()
+        self.peer_timer.timeout.connect(self.refresh_peers)
+        self.peer_timer.start(30000)
+
     # ================= 1. 历史回溯功能 (修复闪退的关键) =================
 
     def restore_to_clipboard(self, entry):
@@ -62,15 +68,15 @@ class SyncManager(QObject):
                 if os.path.exists(data):
                     self.clipboard.setImage(QImage(data))
                 else:
-                    self.notification_signal.emit("TailSync", "❌ 缓存图片已丢失")
+                    self._notify("TailSync", "❌ 缓存图片已丢失")
             elif e_type == "file":
                 if os.path.exists(data):
                     # 使用验证有效的 QMimeData 注入逻辑
                     set_clipboard_file(data)
                 else:
-                    self.notification_signal.emit("TailSync", "❌ 原始文件已不存在")
-            
-            self.notification_signal.emit("TailSync", "✅ 已回溯至剪贴板")
+                    self._notify("TailSync", "❌ 原始文件已不存在")
+
+            self._notify("TailSync", "✅ 已回溯至剪贴板")
         except Exception as e:
             print(f"回溯执行失败: {e}")
         finally:
@@ -123,17 +129,16 @@ class SyncManager(QObject):
             elif dt == 2: # 收到文件
                 file_path = os.path.normpath(data)
                 fname = os.path.basename(file_path)
-                
-                # 激活拦截盾牌
+
                 self.blocked_filename = fname
                 self.file_recv_timestamp = now
                 self.last_file_f = (file_path, os.stat(file_path).st_size)
-                
+
                 if set_clipboard_file(file_path):
                     msg = f"收到文件: {fname}"
                     self.add_to_history("file", fname, file_path)
-            
-            self.notification_signal.emit("TailSync", msg)
+
+            self._notify("TailSync", msg, file_path if dt == 2 else "")
         except Exception as e:
             print(f"同步处理异常: {e}")
         finally:
@@ -217,21 +222,27 @@ class SyncManager(QObject):
                             if self.transfer_cancelled: return
                             s.sendall(chunk); sent += len(chunk)
                             if fsize > PROGRESS_THRESHOLD:
-                                self.progress_signal.emit(int(sent/fsize*100), "📤 发送中...", f"{ip}", False)
-                    if fsize > PROGRESS_THRESHOLD: self.progress_signal.emit(100, "✅ 完成", "", True)
+                                self._show_progress(int(sent/fsize*100), "📤 发送中...", f"{ip}", False)
+                    if fsize > PROGRESS_THRESHOLD: self._show_progress(100, "✅ 完成", "", True)
         except: pass
 
     def refresh_peers(self):
+        """在后台线程获取 Tailscale 节点列表，完成后自动通知 UI 刷新"""
+        threading.Thread(target=self._do_refresh_peers, daemon=True).start()
+
+    def _do_refresh_peers(self):
         try:
             _, peers_list = get_tailscale_peers()
             enabled_map = self.settings.get("enabled_remotes", {}) if self.settings else GLOBAL_SETTINGS["enabled_remotes"]
             for peer in peers_list:
                 ip = peer['ip']
-                if ip not in enabled_map: enabled_map[ip] = True 
+                if ip not in enabled_map: enabled_map[ip] = True
                 peer['active'] = enabled_map.get(ip, True)
             self.peers = peers_list
             if self.settings: self.settings.set("enabled_remotes", enabled_map)
-        except: self.peers = []
+        except:
+            self.peers = []
+        self.peers_updated.emit()
 
     def toggle_peer_status(self, ip, enabled):
         enabled_map = self.settings.get("enabled_remotes", {}) if self.settings else GLOBAL_SETTINGS["enabled_remotes"]
@@ -241,9 +252,20 @@ class SyncManager(QObject):
     def add_to_history(self, t_type, desc, data):
         t_str = datetime.datetime.now().strftime("%H:%M:%S")
         self.db.add(t_str, t_type, desc, data)
-        self.db.trim(GLOBAL_SETTINGS["history_limit"])
+        limit = self.settings.get("history_limit", 20) if self.settings else GLOBAL_SETTINGS.get("history_limit", 20)
+        self.db.trim(limit)
         self.history_updated.emit()
+
+    def _notify(self, title, msg, file_path=""):
+        enabled = self.settings.get("show_notifications", True) if self.settings else GLOBAL_SETTINGS.get("show_notifications", True)
+        if enabled:
+            self.notification_signal.emit(title, msg, file_path)
+
+    def _show_progress(self, pct, label, detail, done):
+        enabled = self.settings.get("show_progress", True) if self.settings else GLOBAL_SETTINGS.get("show_progress", True)
+        if enabled:
+            self.progress_signal.emit(pct, label, detail, done)
 
     def cancel_current_transfer(self):
         self.transfer_cancelled = True
-        self.notification_signal.emit("TailSync", "🚫 传输已停止")
+        self._notify("TailSync", "🚫 传输已停止")

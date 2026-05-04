@@ -1,9 +1,16 @@
 import os
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, QLineEdit
-from PyQt5.QtCore import Qt, QTimer, QSize
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, QLineEdit, QFileIconProvider
+from PyQt5.QtCore import Qt, QTimer, QSize, QFileInfo
 from PyQt5.QtGui import QImage, QIcon, QPixmap
 from tailsync.ui.styles import get_theme_qss
 from tailsync.constants import IMAGE_EXTS
+
+# 只对系统图标质量可靠的扩展名显示文件类型图标
+_SHOW_FILE_ICON = {
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.zip', '.rar', '.txt', '.mp3', '.mp4', '.mov', '.avi',
+    '.html', '.htm', '.csv',
+}
 
 class HistoryWindow(QWidget):
     def __init__(self, manager):
@@ -40,14 +47,17 @@ class HistoryWindow(QWidget):
             display_text = f"[{item['time']}] {item['type'].upper()}\n{item['desc']}"
             li = QListWidgetItem(display_text)
             
-            # 如果是图片，显示缩略图
             data_path = item['data']
             if item['type'] == 'image' and os.path.exists(data_path):
                 img = QImage(data_path)
                 if not img.isNull():
                     pixmap = QPixmap.fromImage(img).scaled(65, 65, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     li.setIcon(QIcon(pixmap))
-            
+            elif item['type'] == 'file' and os.path.exists(data_path):
+                ext = os.path.splitext(data_path)[1].lower()
+                if ext in _SHOW_FILE_ICON:
+                    li.setIcon(QFileIconProvider().icon(QFileInfo(data_path)))
+
             li.setData(Qt.UserRole, item)
             self.list_widget.addItem(li)
 

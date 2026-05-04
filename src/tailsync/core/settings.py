@@ -25,8 +25,9 @@ class Settings:
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                 loaded_data = json.load(f)
-                # 使用 update 确保即使 JSON 只有部分配置，剩下的也会用默认值补齐
                 self.data.update(loaded_data)
+                # 同步回模块级全局配置，确保其他模块直接引用 GLOBAL_SETTINGS 时也拿到最新值
+                GLOBAL_SETTINGS.update(self.data)
         except (json.JSONDecodeError, IOError) as e:
             print(f"⚠️ 配置文件读取失败，将使用默认设置: {e}")
             self.data = self.defaults.copy()

@@ -66,14 +66,14 @@ def start_network_server(manager):
                         f.write(chunk)
                         received += len(chunk)
                         if file_size > 5 * 1024 * 1024:
-                            manager.progress_signal.emit(int(received/file_size*100), "📥 接收中...", file_name, False)
-                
+                            manager._show_progress(int(received/file_size*100), "📥 接收中...", file_name, False)
+
                 if not manager.transfer_cancelled:
                     # 【核心修复】接收完成后直接设置屏蔽盾
                     manager.blocked_filename = file_name
-                    
+
                     if file_size > 5 * 1024 * 1024:
-                        manager.progress_signal.emit(100, "✅ 完成", file_name, True)
+                        manager._show_progress(100, "✅ 完成", file_name, True)
                     
                     manager.remote_update_signal.emit(2, save_path)
             
