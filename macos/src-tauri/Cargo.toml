@@ -1,0 +1,58 @@
+[package]
+name = "tailsync"
+version = "2.0.0"
+description = "Encrypted cross-platform clipboard sync over LAN or Tailscale"
+authors = ["monet"]
+edition = "2021"
+license = "MIT"
+
+[package.metadata.bundle]
+identifier = "com.tailsync.app"
+publisher = "TailSync"
+
+[lib]
+name = "tailsync_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+ring = "0.17"
+snow = "0.9"
+blake3 = "1"
+bincode = "1"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+chrono = { version = "0.4", features = ["serde"] }
+directories = "5"
+rand = "0.8"
+socket2 = "0.5"
+libc = "0.2"
+mdns-sd = "0.20.2"
+if-addrs = "0.15"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSPasteboard", "NSRunningApplication"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Registry", "Win32_Security_Cryptography", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

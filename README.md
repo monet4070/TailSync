@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/tailsync-icon.png" alt="TailSync" width="128" height="128">
+
 # TailSync
 
 ### 让剪贴板跨设备自然流动
@@ -38,7 +40,7 @@
 | Windows | ✅ 可用 | React / TypeScript / Tauri 桌面应用 |
 | Android | 🧪 尚未纳入 v2 | 不属于当前跨平台兼容范围 |
 
-macOS 和 Windows 使用相同的 Rust 网络、配对、加密、历史记录与传输实现，并通过跨项目检查避免协议漂移。
+macOS 和 Windows 使用同一套 v2 线协议和 Rust 核心设计。两端源码分别维护，并通过跨项目检查及时发现协议、模型和共享实现的漂移。
 
 ## 核心功能
 
@@ -72,7 +74,7 @@ flowchart LR
         R <--> T
     end
 
-    D --- C[共享 Rust 核心]
+    D --- C[v2 协议与 Rust 核心设计]
     T --- C
     C --> P[发现与健康监控]
     C --> N[Noise 安全会话]
@@ -141,6 +143,7 @@ macOS 本地 API 只应绑定 loopback，不要通过端口转发暴露到其他
 需要 Node.js、Rust、Swift 5.9+ 和 Xcode Command Line Tools。
 
 ```bash
+cd macos
 xcode-select --install
 npm ci
 ./dev.sh
@@ -155,11 +158,26 @@ open TailSync.app
 
 `build-mac.sh` 会构建 SwiftUI 外壳、Rust 守护进程和剪贴板辅助程序，并生成 ad-hoc 签名的 `TailSync.app`。公开分发仍需 Developer ID 签名和 Apple 公证。
 
+生成带 `Applications` 快捷方式、可作为 GitHub Release 附件的 DMG：
+
+```bash
+./build-dmg.sh
+```
+
+产物位于 `macos/release/`，并同时生成 SHA-256 校验文件。正式签名和公证：
+
+```bash
+TAILSYNC_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+TAILSYNC_NOTARY_PROFILE="tailsync-notary" \
+./build-dmg.sh
+```
+
 ### Windows
 
 需要 Node.js、Rust 和 Visual Studio Build Tools，并安装“使用 C++ 的桌面开发”工作负载。
 
 ```powershell
+cd windows
 npm ci
 npm run tauri:dev
 ```
@@ -197,6 +215,7 @@ Windows 使用系统应用数据目录保存同一套结构。重新安装或替
 ## 开发验证
 
 ```bash
+cd macos
 npm run lint
 npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
@@ -205,6 +224,24 @@ swift build --package-path swift-ui
 ```
 
 跨平台改动还应运行共享源码漂移检查和 Windows ↔ macOS 双向线协议测试。
+
+## 仓库结构
+
+```text
+TailSync/
+├── macos/                 # SwiftUI 外壳、Rust 后端和 macOS 打包脚本
+│   ├── swift-ui/
+│   ├── src-tauri/
+│   ├── build-mac.sh
+│   └── build-dmg.sh
+├── windows/               # React / Tauri Windows 客户端
+│   ├── src/
+│   └── src-tauri/
+├── assets/                # 项目展示资源
+└── README.md
+```
+
+两端目前保留独立工作树；校验脚本负责暴露协议与共享实现差异，平台 UI 可以按系统体验分别演进。跨端合并前应先通过漂移检查和双向线协议测试。
 
 ## 当前限制
 
@@ -215,7 +252,7 @@ swift build --package-path swift-ui
 
 ## 许可证
 
-TailSync 核心代码采用 [MIT License](https://opensource.org/licenses/MIT)。
+TailSync 核心代码采用 [MIT License](LICENSE)。
 
 ---
 

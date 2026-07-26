@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/main/crates/tauri-config-schema/capabilities/default.json",
+  "identifier": "default",
+  "description": "Default capabilities for TailSync",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "notification:default",
+    "clipboard-manager:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-skip-taskbar",
+    "core:window:allow-set-decorations",
+    "core:window:allow-center",
+    "core:window:allow-start-dragging",
+    "core:tray:allow-set-icon",
+    "core:tray:allow-set-menu",
+    "core:tray:allow-set-tooltip",
+    "core:tray:allow-new"
+  ]
+}

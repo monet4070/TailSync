@@ -1,0 +1,252 @@
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
+use std::time::{Duration as StdDuration, Instant as StdInstant};
+use tokio::net::UdpSocket;
+use tokio::time::{timeout, Duration, Instant};
+
+use super::tailscale::{LocalInfo, PeerInfo};
+use super::{ConnectionInterface, PeerCandidate, TCP_PORT};
+
+const DISCOVERY_PORT: u16 = 19889;
+const DISCOVERY_REQUEST: &[u8] = b"TAILSYNC_DISCOVER_V1";
+const DISCOVERY_WINDOW: Duration = Duration::from_millis(650);
+const UNICAST_DISCOVERY_WINDOW: StdDuration = StdDuration::from_millis(300);
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DiscoveryResponse {
+    app: String,
+    version: u8,
+    hostname: String,
+    tcp_port: u16,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ProbeResponse {
+    pub hostname: String,
+    pub latency_ms: u64,
+}
+
+/// Ask known overlay-network addresses which TailSync hostname they expose.
+///
+/// Tailscale's `HostName` is a Tailnet display name and may not match the OS
+/// hostname exchanged by TailSync during pairing.  A direct UDP probe reaches
+/// the existing TailSync discovery responder through Tailscale and lets us
+/// associate the overlay IP with the same stable hostname used by LAN pairing.
+pub(super) fn probe_hostnames(addresses: &[IpAddr]) -> HashMap<IpAddr, ProbeResponse> {
+    let targets = addresses
+        .iter()
+        .copied()
+        .filter(|address| address.is_ipv4())
+        .collect::<HashSet<_>>();
+    if targets.is_empty() {
+        return HashMap::new();
+    }
+
+    let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+        return HashMap::new();
+    };
+    let _ = socket.set_read_timeout(Some(StdDuration::from_millis(50)));
+    let started = StdInstant::now();
+    for address in &targets {
+        let _ = socket.send_to(DISCOVERY_REQUEST, SocketAddr::new(*address, DISCOVERY_PORT));
+    }
+
+    let deadline = StdInstant::now() + UNICAST_DISCOVERY_WINDOW;
+    let mut buffer = [0u8; 1024];
+    let mut resolved = HashMap::new();
+    while StdInstant::now() < deadline && resolved.len() < targets.len() {
+        let Ok((length, source)) = socket.recv_from(&mut buffer) else {
+            continue;
+        };
+        if !targets.contains(&source.ip()) {
+            continue;
+        }
+        let Ok(response) = serde_json::from_slice::<DiscoveryResponse>(&buffer[..length]) else {
+            continue;
+        };
+        if response.app == "tailsync"
+            && response.version == 1
+            && response.tcp_port == TCP_PORT
+            && !response.hostname.trim().is_empty()
+        {
+            resolved.insert(
+                source.ip(),
+                ProbeResponse {
+                    hostname: response.hostname,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                },
+            );
+        }
+    }
+    resolved
+}
+
+fn broadcast_targets() -> HashSet<SocketAddr> {
+    let mut targets = HashSet::from([SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT))]);
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for interface in interfaces {
+            let if_addrs::IfAddr::V4(address) = interface.addr else {
+                continue;
+            };
+            if address.ip.is_loopback() {
+                continue;
+            }
+            if let Some(broadcast) = address.broadcast {
+                targets.insert(SocketAddr::new(IpAddr::V4(broadcast), DISCOVERY_PORT));
+            }
+        }
+    }
+    targets
+}
+
+pub fn local_hostname() -> String {
+    if let Some(hostname) = ["COMPUTERNAME", "HOSTNAME"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+    {
+        return hostname;
+    }
+
+    #[cfg(unix)]
+    if let Ok(output) = std::process::Command::new("/bin/hostname").output() {
+        let hostname = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if output.status.success() && !hostname.is_empty() {
+            return hostname;
+        }
+    }
+
+    "TailSync device".to_string()
+}
+
+fn local_ip() -> String {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|socket| {
+            socket.connect("8.8.8.8:80")?;
+            socket.local_addr()
+        })
+        .map(|address| address.ip().to_string())
+        .unwrap_or_else(|_| "0.0.0.0".to_string())
+}
+
+pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|e| format!("Failed to open LAN discovery socket: {e}"))?;
+    socket
+        .set_broadcast(true)
+        .map_err(|e| format!("Failed to enable LAN broadcast: {e}"))?;
+    let started = Instant::now();
+    let mut sent = false;
+    for target in broadcast_targets() {
+        if socket.send_to(DISCOVERY_REQUEST, target).await.is_ok() {
+            sent = true;
+        }
+    }
+    if !sent {
+        return Err("Failed to broadcast LAN discovery on active interfaces".to_string());
+    }
+
+    let hostname = local_hostname();
+    let deadline = Instant::now() + DISCOVERY_WINDOW;
+    let mut buffer = [0u8; 1024];
+    let mut seen = HashSet::<(String, IpAddr)>::new();
+    let mut peers = Vec::new();
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let received = timeout(remaining, socket.recv_from(&mut buffer)).await;
+        let Ok(Ok((length, source))) = received else {
+            break;
+        };
+        let Ok(response) = serde_json::from_slice::<DiscoveryResponse>(&buffer[..length]) else {
+            continue;
+        };
+        if response.app != "tailsync" || response.version != 1 || response.hostname == hostname {
+            continue;
+        }
+        if !seen.insert((response.hostname.clone(), source.ip())) {
+            continue;
+        }
+        let mut candidate = PeerCandidate::new(ConnectionInterface::Lan, source.ip().to_string());
+        candidate.latency = Some(started.elapsed().as_millis() as u64);
+        peers.push(PeerInfo {
+            hostname: response.hostname,
+            tailscale_ip: source.ip().to_string(),
+            address: source.ip().to_string(),
+            online: true,
+            enabled: true,
+            connection_mode: "lan".to_string(),
+            trusted: false,
+            fingerprint: String::new(),
+            candidates: vec![candidate],
+            current_interface: None,
+        });
+    }
+
+    peers.sort_by(|a, b| a.hostname.cmp(&b.hostname));
+    let local_address = local_ip();
+    let candidates = local_address
+        .parse::<IpAddr>()
+        .ok()
+        .filter(|address| !address.is_unspecified())
+        .map(|_| PeerCandidate::new(ConnectionInterface::Lan, local_address.clone()))
+        .into_iter()
+        .collect();
+    Ok((
+        LocalInfo {
+            hostname,
+            tailscale_ip: local_address,
+            candidates,
+        },
+        peers,
+    ))
+}
+
+pub async fn start_responder() {
+    loop {
+        let socket = match UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)).await {
+            Ok(socket) => socket,
+            Err(error) => {
+                log::error!("LAN discovery responder failed to bind: {error}; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let response = DiscoveryResponse {
+            app: "tailsync".to_string(),
+            version: 1,
+            hostname: local_hostname(),
+            tcp_port: TCP_PORT,
+        };
+        let payload = match serde_json::to_vec(&response) {
+            Ok(payload) => payload,
+            Err(error) => {
+                log::error!("LAN discovery response encoding failed: {error}; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let mut buffer = [0u8; 128];
+        loop {
+            match socket.recv_from(&mut buffer).await {
+                Ok((length, source)) if &buffer[..length] == DISCOVERY_REQUEST => {
+                    if let Err(error) = socket.send_to(&payload, source).await {
+                        log::debug!("LAN discovery response to {source} failed: {error}");
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    log::warn!("LAN discovery receive failed: {error}; rebuilding responder");
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}

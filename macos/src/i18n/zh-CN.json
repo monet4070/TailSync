@@ -1,0 +1,28 @@
+{
+  "history.title": "剪贴板历史",
+  "history.searchPlaceholder": "搜索历史...",
+  "history.empty": "暂无记录",
+  "history.restored": "历史已回溯至剪切板",
+  "history.prev": "上一页",
+  "history.next": "下一页",
+
+  "settings.title": "设置",
+  "settings.loading": "加载中...",
+  "settings.saved": "设置已保存",
+  "settings.general": "通用",
+  "settings.notifications": "通知",
+  "settings.progressBar": "进度条",
+  "settings.history": "历史记录",
+  "settings.historyLimit": "历史上限",
+  "settings.appearance": "外观",
+  "settings.theme": "主题",
+  "settings.themeSystem": "跟随系统",
+  "settings.themeLight": "浅色",
+  "settings.themeDark": "深色",
+  "settings.language": "语言",
+
+  "tray.history": "历史记录",
+  "tray.settings": "设置",
+  "tray.quit": "退出",
+  "tray.tooltip": "TailSync"
+}

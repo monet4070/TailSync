@@ -1,0 +1,390 @@
+import SwiftUI
+import AppKit
+import UserNotifications
+import Carbon
+import Darwin
+
+@main
+struct TailSyncApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+
+    var body: some Scene {
+        Settings { EmptyView() }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem!
+    private var menu: NSMenu!
+    private var lastNotifiedId: Int64 = 0
+    private var notificationPollRunning = false
+    private var isFirstNotificationPoll = true
+    private var consecutiveWatchdogFailures = 0
+    private var watchdogCheckRunning = false
+    private var activeRouteSummary = ""
+    private static var historyWC: NSWindowController?
+    private static var settingsWC: NSWindowController?
+    private static var daemonProcess: Process?
+
+    /// Force the process to be UIElement (no Dock icon) at the Carbon/CGRemote level.
+    /// This is lower-level than NSApp.setActivationPolicy and works even when
+    /// LSUIElement in Info.plist is ignored on newer macOS versions.
+    private static func forceAccessory() {
+        var psn = ProcessSerialNumber(highLongOfPSN: 0, lowLongOfPSN: UInt32(kCurrentProcess))
+        TransformProcessType(&psn, ProcessApplicationTransformState(kProcessTransformToUIElementApplication))
+    }
+
+    override init() {
+        super.init()
+        Self.forceAccessory()
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.forceAccessory()
+        NSApp.setActivationPolicy(.accessory)
+
+        // Set app icon explicitly so notifications show the correct icon
+        if let icon = NSImage(contentsOf: Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/icon.icns")) {
+            NSApp.applicationIconImage = icon
+        }
+
+        setupStatusItem()
+        launchDaemon()
+        requestNotificationPermission()
+        startNotificationPoller()
+        startDaemonWatchdog()
+        registerSleepWakeNotifications()
+    }
+
+    /// Request notification permission for UNUserNotificationCenter (needed
+    /// for proper app icon in notifications instead of the generic osascript icon).
+    private func requestNotificationPermission() {
+        // UserNotifications aborts for an unbundled SwiftPM executable on
+        // newer macOS releases. The signed product bundle has a stable identity.
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            print("[TailSync] skipping notifications for unbundled development build")
+            return
+        }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error = error {
+                print("[TailSync] Notification permission error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Register for macOS sleep/wake notifications to reconnect after sleep.
+    private func registerSleepWakeNotifications() {
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+            print("[TailSync] system sleeping...")
+        }
+        nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            print("[TailSync] system woke up — reconnecting...")
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Give Tailscale time to re-establish its tunnel
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+                // Check daemon health and restart if needed
+                let status = await ApiClient.shared.getStatus()
+                if !status.alive || !status.tcpServerHealthy {
+                    print("[TailSync] daemon unhealthy after wake — restarting")
+                    Self.stopDaemon()
+                    self.launchDaemon()
+                } else {
+                    // Daemon alive, just trigger peer reconnection
+                    print("[TailSync] daemon healthy after wake — reconnecting peers")
+                    _ = await ApiClient.shared.reconnectPeers()
+                }
+            }
+        }
+    }
+
+    /// Background poller: checks for remote clipboard events and shows
+    /// notifications even before the History window is opened.
+    private func startNotificationPoller() {
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.notificationPollRunning else { return }
+                self.notificationPollRunning = true
+                defer { self.notificationPollRunning = false }
+
+                // Establish a baseline before notifying so existing history is
+                // not reported as newly received after every app launch.
+                if self.isFirstNotificationPoll {
+                    self.isFirstNotificationPoll = false
+                    if let latest = try? await ApiClient.shared.getHistory(limit: 1, offset: 0) {
+                        self.lastNotifiedId = latest.first?.id ?? 0
+                    }
+                    return
+                }
+                guard Loc.shared.notificationsEnabled else { return }
+                guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+                guard let latest = try? await ApiClient.shared.getHistory(limit: 1, offset: 0),
+                      let newest = latest.first,
+                      newest.id > self.lastNotifiedId,
+                      newest.source_peer != "self" else { return }
+                self.lastNotifiedId = newest.id
+                let body: String = switch newest.type {
+                    case "image": "📷 Image received"
+                    case "file":  "📎 \(newest.description)"
+                    default:      newest.description
+                }
+                // Use UNUserNotificationCenter so notifications show the app icon
+                let content = UNMutableNotificationContent()
+                content.title = "TailSync"
+                content.body = body
+                content.sound = nil
+                let request = UNNotificationRequest(
+                    identifier: "tailsync-\(newest.id)",
+                    content: content,
+                    trigger: nil
+                )
+                try? await UNUserNotificationCenter.current().add(request)
+                // Keep polling quiet briefly to prevent duplicate notifications.
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Remove status item FIRST — before anything that might block.
+        // This prevents ghost icons when quitting from the Dock.
+        if let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+        // Wait for the child to release its API and peer-listener ports before
+        // the UI process exits. The status item is already gone, so this does
+        // not leave a stale menu-bar icon while shutdown completes.
+        Self.stopDaemon()
+    }
+
+    // ── Status Item ─────────────────────────────────────────────
+
+    private func setupStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+        if let button = statusItem.button {
+            button.image = NSImage(
+                systemSymbolName: "doc.on.clipboard",
+                accessibilityDescription: "TailSync"
+            )
+            button.target = self
+            button.action = #selector(handleClick)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+
+        rebuildMenu()
+
+        // Observe language changes to rebuild the menu
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("TailSyncLocaleChanged"), object: nil, queue: .main) { _ in
+            self.rebuildMenu()
+        }
+    }
+
+    private func rebuildMenu() {
+        let isZh = Loc.shared.lang.hasPrefix("zh")
+        menu = NSMenu()
+        let hItem = NSMenuItem(title: isZh ? "历史记录" : "History",
+                                action: #selector(openHistory), keyEquivalent: "")
+        hItem.target = self; menu.addItem(hItem)
+        let sItem = NSMenuItem(title: isZh ? "设置" : "Settings",
+                                action: #selector(openSettings), keyEquivalent: "")
+        sItem.target = self; menu.addItem(sItem)
+        if !activeRouteSummary.isEmpty {
+            menu.addItem(.separator())
+            let routeItem = NSMenuItem(
+                title: (isZh ? "当前连接：" : "Current route: ") + activeRouteSummary,
+                action: nil,
+                keyEquivalent: ""
+            )
+            routeItem.isEnabled = false
+            menu.addItem(routeItem)
+        }
+        menu.addItem(.separator())
+        let qItem = NSMenuItem(title: isZh ? "退出 TailSync" : "Quit TailSync",
+                                action: #selector(quitApp), keyEquivalent: "q")
+        qItem.target = self; menu.addItem(qItem)
+    }
+
+    @objc private func handleClick() {
+        guard let event = NSApp.currentEvent else { return }
+        if event.type == .rightMouseUp {
+            // Right-click → show menu dynamically
+            statusItem.menu = menu
+            statusItem.button?.performClick(nil)
+            statusItem.menu = nil
+        } else {
+            // Left-click → open History
+            Self.showHistory()
+        }
+    }
+
+    @objc private func openHistory() { Self.showHistory() }
+    @objc private func openSettings() { Self.showSettings() }
+
+    @objc private func quitApp() {
+        Self.stopDaemon()
+        NSApp.terminate(nil)
+    }
+
+    // ── Daemon ──────────────────────────────────────────────────
+
+    private func launchDaemon() {
+        if let binPath = resolveDaemonPath() {
+            startDaemonProcess(binPath)
+        } else {
+            print("[TailSync] daemon binary not found, trying cargo build...")
+            let task = Process()
+            task.launchPath = "/usr/bin/env"
+            task.arguments = ["cargo", "build"]
+            // Try common locations for Cargo.toml
+            let cargoDirs = ["." + "/src-tauri", ".." + "/src-tauri"]
+            task.currentDirectoryPath = cargoDirs.first(where: {
+                FileManager.default.fileExists(atPath: $0 + "/Cargo.toml")
+            }) ?? FileManager.default.currentDirectoryPath
+            task.launch()
+            task.waitUntilExit()
+            if let found = resolveDaemonPath() {
+                startDaemonProcess(found)
+            } else {
+                print("[TailSync] could not find or build daemon")
+            }
+        }
+    }
+
+    private func startDaemonProcess(_ binPath: String) {
+        Self.stopDaemon()
+        let proc = Process()
+        proc.launchPath = URL(fileURLWithPath: binPath).absoluteURL.path
+        var environment = ProcessInfo.processInfo.environment
+        environment["TAILSYNC_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        proc.environment = environment
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        proc.launch()
+        Self.daemonProcess = proc
+        print("[TailSync] daemon started (pid=\(proc.processIdentifier))")
+    }
+
+    /// Safely stop the daemon: send SIGTERM, wait up to 3s, then SIGKILL
+    private static func stopDaemon() {
+        guard let proc = daemonProcess, proc.isRunning else { return }
+        proc.terminate() // SIGTERM
+        // Wait up to 3 seconds for clean exit
+        for _ in 0..<30 {
+            if !proc.isRunning { break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        if proc.isRunning {
+            print("[TailSync] daemon did not exit after SIGTERM — sending SIGKILL")
+            kill(pid_t(proc.processIdentifier), SIGKILL)
+            proc.waitUntilExit()
+        }
+        daemonProcess = nil
+    }
+
+    /// Resolve the daemon binary path (same logic as launchDaemon).
+    private func resolveDaemonPath() -> String? {
+        let bundledPath = Bundle.main.bundlePath + "/Contents/MacOS/tailsyncd"
+        var candidates = [bundledPath]
+        if let targetDirectory = ProcessInfo.processInfo.environment["CARGO_TARGET_DIR"] {
+            candidates.append(targetDirectory + "/debug/tailsync")
+        }
+        candidates.append(contentsOf: [
+            "../../src-tauri/target-macos/debug/tailsync",
+            "../src-tauri/target-macos/debug/tailsync",
+            "src-tauri/target-macos/debug/tailsync",
+            "../../src-tauri/target/debug/tailsync",
+            "../src-tauri/target/debug/tailsync",
+            "src-tauri/target/debug/tailsync",
+        ])
+        return candidates.first(where: { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    /// Watchdog: restart daemon if it dies or becomes unresponsive.
+    private func startDaemonWatchdog() {
+        Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, !self.watchdogCheckRunning else { return }
+                self.watchdogCheckRunning = true
+                defer { self.watchdogCheckRunning = false }
+                let status = await ApiClient.shared.getStatus()
+                let routeSummary = status.activeInterfaces
+                    .map { $0 == "lan" ? "LAN" : "Tailscale" }
+                    .sorted()
+                    .joined(separator: " / ")
+                if routeSummary != self.activeRouteSummary {
+                    self.activeRouteSummary = routeSummary
+                    self.rebuildMenu()
+                }
+                // Only count as healthy if both API and TCP server respond
+                if status.alive && status.tcpServerHealthy {
+                    self.consecutiveWatchdogFailures = 0
+                } else {
+                    let reason = status.alive ? "TCP server unhealthy" : "API unresponsive"
+                    self.consecutiveWatchdogFailures += 1
+                    // Restart after 2 consecutive failures (~6s of downtime)
+                    if self.consecutiveWatchdogFailures >= 2 {
+                        print("[TailSync] daemon \(reason) — restarting...")
+                        Self.stopDaemon()
+                        self.launchDaemon()
+                        self.consecutiveWatchdogFailures = 0
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Windows ─────────────────────────────────────────────────
+
+    static func showHistory() {
+        if let wc = historyWC {
+            wc.window?.makeKeyAndOrderFront(nil)
+        } else {
+            let wc = makeWindow(title: "History", content: HistoryView(),
+                                size: NSSize(width: 400, height: 600),
+                                minSize: NSSize(width: 300, height: 360))
+            historyWC = wc
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        Self.forceAccessory()
+    }
+
+    static func showSettings() {
+        if let wc = settingsWC {
+            wc.window?.makeKeyAndOrderFront(nil)
+        } else {
+            let wc = makeWindow(title: "Settings", content: SettingsView(),
+                                size: NSSize(width: 540, height: 500),
+                                minSize: NSSize(width: 380, height: 400))
+            settingsWC = wc
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        Self.forceAccessory()
+    }
+
+    private static func makeWindow<V: View>(title: String, content: V,
+                                             size: NSSize, minSize: NSSize) -> NSWindowController {
+        let hosting = NSHostingController(rootView: content)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = title
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.minSize = minSize
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.setFrameAutosaveName(title + "Window")
+        // Set content size AFTER autosave so it overrides any restored tiny frame
+        // from a stale UserDefaults entry.
+        window.setContentSize(size)
+        let wc = NSWindowController(window: window)
+        wc.showWindow(nil)
+        return wc
+    }
+}

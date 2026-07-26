@@ -1,0 +1,28 @@
+{
+  "history.title": "Clipboard History",
+  "history.searchPlaceholder": "Search history...",
+  "history.empty": "No entries found",
+  "history.restored": "History restored to clipboard",
+  "history.prev": "Previous",
+  "history.next": "Next",
+
+  "settings.title": "Settings",
+  "settings.loading": "Loading...",
+  "settings.saved": "Settings saved",
+  "settings.general": "General",
+  "settings.notifications": "Notifications",
+  "settings.progressBar": "Progress bar",
+  "settings.history": "History",
+  "settings.historyLimit": "History limit",
+  "settings.appearance": "Appearance",
+  "settings.theme": "Theme",
+  "settings.themeSystem": "Follow system",
+  "settings.themeLight": "Light",
+  "settings.themeDark": "Dark",
+  "settings.language": "Language",
+
+  "tray.history": "History",
+  "tray.settings": "Settings",
+  "tray.quit": "Quit",
+  "tray.tooltip": "TailSync"
+}
