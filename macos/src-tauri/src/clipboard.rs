@@ -1,6 +1,7 @@
 use log::{debug, error, info, warn};
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -14,6 +15,23 @@ use crate::db;
 use crate::network;
 use crate::protocol::{Command, FileChunkPayload, TransferId, FILE_CHUNK_SIZE};
 use crate::sync;
+
+static CLIPBOARD_RECOVERY_GENERATION: AtomicU64 = AtomicU64::new(0);
+static CLIPBOARD_MONITOR_LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
+const CLIPBOARD_MONITOR_STALE_AFTER_MS: u64 = 10_000;
+
+pub fn request_wake_recovery() {
+    CLIPBOARD_RECOVERY_GENERATION.fetch_add(1, Ordering::AcqRel);
+}
+
+pub fn monitor_is_healthy() -> bool {
+    let last_tick = CLIPBOARD_MONITOR_LAST_TICK_MS.load(Ordering::Acquire);
+    if last_tick == 0 {
+        return false;
+    }
+    let now = crate::protocol::unix_timestamp_ms().max(0) as u64;
+    now.saturating_sub(last_tick) <= CLIPBOARD_MONITOR_STALE_AFTER_MS
+}
 
 #[derive(Default)]
 struct FileShadowFilter {
@@ -88,9 +106,24 @@ async fn clipboard_loop(
     let mut last_image_hash = String::new();
     let mut last_file_list: Vec<std::path::PathBuf> = vec![];
     let mut tick: u64 = 0;
+    let mut recovery_generation = CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire);
 
     loop {
         sleep(Duration::from_millis(poll_interval)).await;
+        CLIPBOARD_MONITOR_LAST_TICK_MS.store(
+            crate::protocol::unix_timestamp_ms().max(0) as u64,
+            Ordering::Release,
+        );
+        let requested_generation = CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire);
+        if requested_generation != recovery_generation {
+            recovery_generation = requested_generation;
+            change_detector = ClipboardChangeDetector::new();
+            last_text_hash.clear();
+            last_image_hash.clear();
+            last_file_list.clear();
+            info!("Clipboard monitor reset after system wake");
+            continue;
+        }
         tick += 1;
 
         if tick.is_multiple_of(30_000 / poll_interval) {
@@ -128,6 +161,16 @@ async fn clipboard_loop(
         let clipboard = &*clipboard;
 
         // ── 1. Try files FIRST (macOS: text check also matches filenames) ──
+        #[cfg(target_os = "macos")]
+        let file_paths =
+            match tokio::task::spawn_blocking(clipboard_file::read_clipboard_files).await {
+                Ok(paths) => paths,
+                Err(error) => {
+                    error!("Clipboard file helper task failed: {error}");
+                    None
+                }
+            };
+        #[cfg(not(target_os = "macos"))]
         let file_paths = clipboard_file::read_clipboard_files();
 
         if let Some(ref paths) = file_paths {

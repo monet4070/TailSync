@@ -93,6 +93,7 @@ final class ApiClient: @unchecked Sendable {
     struct DaemonStatus {
         let alive: Bool
         let tcpServerHealthy: Bool
+        let clipboardMonitorHealthy: Bool
         let activeInterfaces: Set<String>
     }
 
@@ -100,13 +101,19 @@ final class ApiClient: @unchecked Sendable {
         guard let response = try? await request(["cmd": "get_status"]),
               response["ok"] as? Bool == true,
               let data = response["data"] as? [String: Any] else {
-            return DaemonStatus(alive: false, tcpServerHealthy: false, activeInterfaces: [])
+            return DaemonStatus(
+                alive: false,
+                tcpServerHealthy: false,
+                clipboardMonitorHealthy: false,
+                activeInterfaces: []
+            )
         }
         let routes = data["active_routes"] as? [String: [String: Any]] ?? [:]
         let interfaces = Set(routes.values.compactMap { $0["interface"] as? String })
         return DaemonStatus(
             alive: true,
             tcpServerHealthy: data["tcp_server_healthy"] as? Bool ?? false,
+            clipboardMonitorHealthy: data["clipboard_monitor_healthy"] as? Bool ?? false,
             activeInterfaces: interfaces
         )
     }

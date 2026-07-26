@@ -5,7 +5,14 @@
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
-use std::process::Command;
+use std::io::Read;
+#[cfg(target_os = "macos")]
+use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
+
+#[cfg(target_os = "macos")]
+const CLIPBOARD_HELPER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Returns file paths from the clipboard, or None if no files.
 pub fn read_clipboard_files() -> Option<Vec<PathBuf>> {
@@ -29,8 +36,22 @@ pub fn read_clipboard_files() -> Option<Vec<PathBuf>> {
 fn read_files_macos() -> Option<Vec<PathBuf>> {
     // Instant: compiled Swift binary, no compilation overhead
     let bin = resolve_clipboard_helper()?;
-    let output = Command::new(&bin).output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
+    let child = Command::new(&bin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let (status, output) = match wait_for_child(child, CLIPBOARD_HELPER_TIMEOUT) {
+        Ok(result) => result,
+        Err(error) => {
+            log::warn!("{error}");
+            return None;
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output);
     let paths: Vec<PathBuf> = text
         .lines()
         .map(|l| l.trim().to_string())
@@ -51,15 +72,48 @@ pub fn write_clipboard_files(paths: &[PathBuf]) -> Result<(), String> {
     }
     let bin = resolve_clipboard_helper()
         .ok_or_else(|| "Bundled clipboard helper was not found".to_string())?;
-    let status = Command::new(bin)
+    let child = Command::new(bin)
         .arg("--write-files")
         .args(paths)
-        .status()
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|error| format!("Could not run clipboard helper: {error}"))?;
+    let (status, _) = wait_for_child(child, CLIPBOARD_HELPER_TIMEOUT)?;
     if !status.success() {
         return Err(format!("Clipboard helper exited with status {status}"));
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_child(mut child: Child, timeout: Duration) -> Result<(ExitStatus, Vec<u8>), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut output = Vec::new();
+                if let Some(mut stdout) = child.stdout.take() {
+                    stdout.read_to_end(&mut output).map_err(|error| {
+                        format!("Could not read clipboard helper output: {error}")
+                    })?;
+                }
+                return Ok((status, output));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Clipboard helper timed out after {} ms",
+                    timeout.as_millis()
+                ));
+            }
+            Err(error) => return Err(format!("Could not wait for clipboard helper: {error}")),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -106,6 +160,23 @@ mod tests {
                 "resolved helper path was relative: {path:?}"
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stuck_clipboard_helper_is_killed_after_timeout() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 5"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+
+        let error = wait_for_child(child, Duration::from_millis(50)).unwrap_err();
+
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }
 

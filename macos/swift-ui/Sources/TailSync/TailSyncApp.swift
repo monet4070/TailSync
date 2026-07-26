@@ -87,16 +87,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Give Tailscale time to re-establish its tunnel
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
 
-                // Check daemon health and restart if needed
+                // Cancel stale connection workers and reset clipboard polling
+                // before evaluating post-wake health.
+                let reconnected = await ApiClient.shared.reconnectPeers()
+                try? await Task.sleep(nanoseconds: 300_000_000)
                 let status = await ApiClient.shared.getStatus()
-                if !status.alive || !status.tcpServerHealthy {
+                if !reconnected || !status.alive || !status.tcpServerHealthy || !status.clipboardMonitorHealthy {
                     print("[TailSync] daemon unhealthy after wake — restarting")
                     Self.stopDaemon()
                     self.launchDaemon()
                 } else {
-                    // Daemon alive, just trigger peer reconnection
-                    print("[TailSync] daemon healthy after wake — reconnecting peers")
-                    _ = await ApiClient.shared.reconnectPeers()
+                    print("[TailSync] daemon healthy after wake — peers and clipboard monitor reset")
                 }
             }
         }
@@ -322,11 +323,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.activeRouteSummary = routeSummary
                     self.rebuildMenu()
                 }
-                // Only count as healthy if both API and TCP server respond
-                if status.alive && status.tcpServerHealthy {
+                // Clipboard polling is part of daemon health; a live API and
+                // listener alone do not prove synchronization is working.
+                if status.alive && status.tcpServerHealthy && status.clipboardMonitorHealthy {
                     self.consecutiveWatchdogFailures = 0
                 } else {
-                    let reason = status.alive ? "TCP server unhealthy" : "API unresponsive"
+                    let reason: String
+                    if !status.alive {
+                        reason = "API unresponsive"
+                    } else if !status.tcpServerHealthy {
+                        reason = "TCP server unhealthy"
+                    } else {
+                        reason = "clipboard monitor stalled"
+                    }
                     self.consecutiveWatchdogFailures += 1
                     // Restart after 2 consecutive failures (~6s of downtime)
                     if self.consecutiveWatchdogFailures >= 2 {

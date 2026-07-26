@@ -341,6 +341,7 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             ok: true,
             data: Some(serde_json::json!({
                 "tcp_server_healthy": network::TCP_SERVER_HEALTHY.load(Ordering::Acquire),
+                "clipboard_monitor_healthy": crate::clipboard::monitor_is_healthy(),
                 "active_routes": network::active_routes_snapshot(),
             })),
             error: None,
@@ -812,6 +813,7 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         "reconnect_peers" => {
             state.pool.lock().await.disconnect_all();
+            crate::clipboard::request_wake_recovery();
             network::clear_peer_cache().await;
             Response {
                 ok: true,
