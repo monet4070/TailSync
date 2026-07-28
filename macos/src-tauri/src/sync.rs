@@ -114,20 +114,26 @@ impl SyncEngine {
     /// Handle incoming text from a remote peer.
     ///
     /// Shadow-filter → write system clipboard.
-    pub async fn handle_incoming_text(&mut self, text: &str, source: String) {
+    pub async fn handle_incoming_text(&mut self, text: &str, source: String) -> Result<(), String> {
         let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
 
         // Shadow BEFORE writing clipboard so the monitor won't re-broadcast
-        self.shadow_filter.push(hash);
+        self.shadow_filter.push(hash.clone());
 
-        self.with_clipboard(|cb| {
-            let _ = cb.write_text(text.to_string());
+        let result = self.with_clipboard(|cb| {
+            cb.write_text(text.to_string())
+                .map_err(|error| format!("write_text failed: {error}"))
         });
+        if let Err(error) = result {
+            self.shadow_filter.retain(|entry| entry != &hash);
+            return Err(error);
+        }
         info!(
             "Clipboard ← text from peer {} ({} chars)",
             source,
             text.len()
         );
+        Ok(())
     }
 
     // ── Images ───────────────────────────────────────────────────
@@ -136,32 +142,39 @@ impl SyncEngine {
     ///
     /// The packed format from clipboard.rs is [width:4 LE][height:4 LE][rgba].
     /// We reconstruct a `tauri::image::Image` and write it to the clipboard.
-    pub async fn handle_incoming_image(&mut self, image_data: &[u8], source: String) {
-        let hash = blake3::hash(image_data).to_hex().to_string();
-
-        // Shadow BEFORE writing clipboard
-        self.image_shadow_filter.push(hash);
-
+    pub async fn handle_incoming_image(
+        &mut self,
+        image_data: &[u8],
+        source: String,
+    ) -> Result<(), String> {
         // Reconstruct Image from packed format
         if image_data.len() < 8 {
-            warn!("Image data too short from {}", source);
-            return;
+            return Err(format!("Image data too short from {source}"));
         }
+        let hash = blake3::hash(image_data).to_hex().to_string();
+        // Shadow BEFORE writing clipboard
+        self.image_shadow_filter.push(hash.clone());
         let w = u32::from_le_bytes(image_data[0..4].try_into().unwrap());
         let h = u32::from_le_bytes(image_data[4..8].try_into().unwrap());
         let rgba = &image_data[8..];
 
         let img = tauri::image::Image::new(rgba, w, h);
-        self.with_clipboard(|cb| match cb.write_image(&img) {
-            Ok(()) => info!(
-                "Clipboard ← image from peer {} ({}×{} {} bytes)",
-                source,
-                w,
-                h,
-                image_data.len()
-            ),
-            Err(e) => error!("write_image failed for image from {}: {}", source, e),
+        let result = self.with_clipboard(|cb| {
+            cb.write_image(&img)
+                .map_err(|error| format!("write_image failed: {error}"))
         });
+        if let Err(error) = result {
+            self.image_shadow_filter.retain(|entry| entry != &hash);
+            return Err(error);
+        }
+        info!(
+            "Clipboard ← image from peer {} ({}×{} {} bytes)",
+            source,
+            w,
+            h,
+            image_data.len()
+        );
+        Ok(())
     }
 
     // ── Files ────────────────────────────────────────────────────
@@ -450,17 +463,18 @@ impl SyncEngine {
     // ── Internal ─────────────────────────────────────────────────
 
     /// Run a closure with the clipboard plugin state, if available.
-    fn with_clipboard(
+    fn with_clipboard<T>(
         &self,
-        f: impl FnOnce(&tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>),
-    ) {
-        if let Some(ref handle) = self.app_handle {
-            if let Some(state) =
-                handle.try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
-            {
-                f(&state);
-            }
-        }
+        f: impl FnOnce(&tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let handle = self
+            .app_handle
+            .as_ref()
+            .ok_or_else(|| "Clipboard app handle is unavailable".to_string())?;
+        let state = handle
+            .try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
+            .ok_or_else(|| "Clipboard plugin state is unavailable".to_string())?;
+        f(&state)
     }
 }
 

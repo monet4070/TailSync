@@ -1,6 +1,6 @@
 # TailSync v2 项目状态
 
-最后核对：2026-07-25
+最后核对：2026-07-27
 
 本文是当前项目进度的唯一状态说明。日期化测试报告、会话记忆、已完成的实施方案和 UI 样稿已移除，避免把历史快照误当成当前事实。
 
@@ -30,6 +30,8 @@
 - React 和 SwiftUI 的历史、设置、设备管理、配对、主题与中英文 UI
 - macOS 应用构建、ad-hoc 签名、Bonjour 权限检查和打包后启动验证脚本
 - Windows/macOS 共享源码漂移检查和双向线协议探针
+- macOS 休眠/唤醒恢复：刷新可靠事件时间戳、取消旧连接 worker、重置剪贴板监听并将监听活性纳入守护进程健康检查
+- macOS 文件剪贴板辅助进程超时保护，避免异常 pasteboard 请求永久阻塞本地监听
 
 ## 当前限制与发布前事项
 
@@ -40,19 +42,19 @@
 5. Android 客户端不在当前代码库和已实现范围内。
 6. 自动化检查通过后，仍应在真实 Mac/Windows 设备上完成双向剪贴板、路由切换、大文件中断续传和撤销配对验收。
 
-## 2026-07-25 验证结果
+## 2026-07-27 验证结果
 
 | 检查 | 结果 |
 |---|---|
-| `cargo test --manifest-path src-tauri/Cargo.toml --lib --target-dir /tmp/tailsync-file-loop-final-target` | 58 通过，0 失败 |
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 73 通过，0 失败，1 个真实 Tailscale 环境测试忽略 |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 通过 |
 | `npx tsc -b` | 通过 |
 | `npm run lint` | 通过 |
 | `npm run build` | 通过 |
 | `swift build --package-path swift-ui` | 通过 |
-| `node scripts/check_cross_platform_sync.mjs` | 通过；22 个 Swift API 命令及共享源码/模型/端口契约一致 |
+| `node scripts/check_cross_platform_sync.mjs` | 未运行；本机缺少预期的 `/Users/monet/tailsync-v2-win` 项目目录 |
 
-验证前重新执行了 `npm ci`，并清理了被 `.gitignore` 排除但会导致 Rust/Tauri/Oxlint UTF-8 错误的 `._*` AppleDouble 元数据文件。当前外置卷会在 Cargo 默认目标目录中重新生成这类文件，因此 Rust 全量测试使用了 `/tmp` 下的独立目标目录；这不是测试失败，但在该卷上运行构建脚本时需要同样规避。
+本次验证使用当前锁定依赖和仓库默认构建目录完成。跨平台源码漂移检查仍需在 Windows 项目目录可用后补跑。
 
 ## 文档维护规则
 
