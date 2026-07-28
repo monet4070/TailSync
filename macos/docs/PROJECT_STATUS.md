@@ -1,6 +1,6 @@
 # TailSync v2 项目状态
 
-最后核对：2026-07-27
+最后核对：2026-07-28
 
 本文是当前项目进度的唯一状态说明。日期化测试报告、会话记忆、已完成的实施方案和 UI 样稿已移除，避免把历史快照误当成当前事实。
 
@@ -25,7 +25,7 @@
 - 文本/图片事件 ACK、重试、时间戳检查和消息 ID 重放抑制
 - 1 MiB 文件块、Blake3 块校验、offset ACK 和连接中断续传
 - 文件名清理、1 GiB 接收上限和入站连接数限制
-- 文件历史内部哈希命名与剪贴板展示路径分离；接收文件保持原名，兼容旧版哈希前缀，并通过文件 shadow filter 阻止回环传输
+- 文件历史内部哈希命名与剪贴板展示路径分离；接收文件保持原名，兼容旧版哈希前缀，并永久阻止 `clipboard-files/` 托管路径被回传给原发送端
 - SQLite 历史元数据、加密文本、加密图片外部存储和文件外部存储
 - React 和 SwiftUI 的历史、设置、设备管理、配对、主题与中英文 UI
 - macOS 应用构建、ad-hoc 签名、Bonjour 权限检查和打包后启动验证脚本
@@ -46,7 +46,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 73 通过，0 失败，1 个真实 Tailscale 环境测试忽略 |
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | 76 通过，0 失败，1 个真实 Tailscale 环境测试忽略 |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 通过 |
 | `npx tsc -b` | 通过 |
 | `npm run lint` | 通过 |

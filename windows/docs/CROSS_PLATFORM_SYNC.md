@@ -24,6 +24,7 @@ The platform entry page and native-facing settings/history presentation may evol
 - Pairing: explicit 120-second window, six-digit verification, bilateral confirmation, five-failure lockout
 - Reliable text/image events: stable message ID, timestamp validation, ACK, retry, and replay suppression
 - Files: 1 MiB checked blocks, offset ACKs, and reconnect resume while the process remains running
+- File echo suppression: files materialized under the app-managed `clipboard-files/` directory are never published as local clipboard copies; user-owned paths remain eligible for synchronization
 
 Protocol v1 plaintext peers are rejected. There is no insecure fallback.
 

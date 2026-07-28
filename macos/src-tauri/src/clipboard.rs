@@ -1,8 +1,9 @@
 use log::{debug, error, info, warn};
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Mutex;
@@ -33,41 +34,22 @@ pub fn monitor_is_healthy() -> bool {
     now.saturating_sub(last_tick) <= CLIPBOARD_MONITOR_STALE_AFTER_MS
 }
 
-#[derive(Default)]
-struct FileShadowFilter {
-    entries: Vec<Vec<std::path::PathBuf>>,
-}
-
-impl FileShadowFilter {
-    fn add(&mut self, paths: &[std::path::PathBuf]) {
-        self.entries.push(paths.to_vec());
+fn is_managed_clipboard_file(path: &Path, managed_directory: &Path) -> bool {
+    if path.starts_with(managed_directory) {
+        return true;
     }
-
-    fn take_match(&mut self, paths: &[std::path::PathBuf]) -> bool {
-        let Some(index) = self.entries.iter().position(|entry| entry == paths) else {
-            return false;
-        };
-        self.entries.remove(index);
-        true
+    match (path.canonicalize(), managed_directory.canonicalize()) {
+        (Ok(path), Ok(managed_directory)) => path.starts_with(managed_directory),
+        _ => false,
     }
 }
 
-fn file_shadow_filter() -> &'static StdMutex<FileShadowFilter> {
-    static FILTER: OnceLock<StdMutex<FileShadowFilter>> = OnceLock::new();
-    FILTER.get_or_init(|| StdMutex::new(FileShadowFilter::default()))
-}
-
-pub fn add_file_shadow_filter(paths: &[std::path::PathBuf]) {
-    if let Ok(mut filter) = file_shadow_filter().lock() {
-        filter.add(paths);
-    }
-}
-
-fn file_shadow_check(paths: &[std::path::PathBuf]) -> bool {
-    file_shadow_filter()
-        .lock()
-        .map(|mut filter| filter.take_match(paths))
-        .unwrap_or(false)
+fn files_to_broadcast(paths: &[PathBuf], managed_directory: &Path) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|path| !is_managed_clipboard_file(path, managed_directory))
+        .cloned()
+        .collect()
 }
 
 /// Start clipboard monitor — polls system clipboard for text *and* image
@@ -174,23 +156,31 @@ async fn clipboard_loop(
         let file_paths = clipboard_file::read_clipboard_files();
 
         if let Some(ref paths) = file_paths {
-            if !paths.is_empty() && file_shadow_check(paths) {
+            let outbound_paths = files_to_broadcast(paths, &db::get_clipboard_files_dir());
+            let managed_count = paths.len().saturating_sub(outbound_paths.len());
+            if !paths.is_empty() && outbound_paths.is_empty() {
                 last_file_list.clone_from(paths);
                 last_text_hash.clear();
                 last_image_hash.clear();
-                info!("File shadow-filtered, skipping: {} file(s)", paths.len());
+                info!(
+                    "Managed clipboard file suppressed: {} file(s)",
+                    managed_count
+                );
                 continue;
             }
-            if !paths.is_empty()
+            if !outbound_paths.is_empty()
                 && should_process_clipboard_item(paths != &last_file_list, clipboard_changed)
             {
                 last_file_list.clone_from(paths);
                 last_text_hash.clear();
                 last_image_hash.clear();
-                info!("Clipboard files: {} file(s)", paths.len());
-                for path in paths {
+                if managed_count > 0 {
+                    info!("Ignored {managed_count} managed file(s) in a mixed clipboard event");
+                }
+                info!("Clipboard files: {} file(s)", outbound_paths.len());
+                for path in outbound_paths {
                     tokio::spawn(send_file_to_peers(
-                        path.clone(),
+                        path,
                         pool.clone(),
                         database.clone(),
                         sync_engine.clone(),
@@ -608,7 +598,7 @@ async fn configured_peers(
 
 #[cfg(test)]
 mod tests {
-    use super::{should_process_clipboard_item, FileShadowFilter};
+    use super::{files_to_broadcast, should_process_clipboard_item};
 
     #[test]
     fn native_copy_event_processes_identical_content_again() {
@@ -617,12 +607,53 @@ mod tests {
     }
 
     #[test]
-    fn restored_file_clipboard_event_is_consumed_once() {
-        let path = std::path::PathBuf::from("/tmp/tailsync/report.pdf");
-        let mut filter = FileShadowFilter::default();
-        filter.add(&[path.clone()]);
+    fn repeated_native_events_for_a_managed_file_never_broadcast() {
+        let managed_directory = std::path::PathBuf::from("tailsync-data/clipboard-files");
+        let path = managed_directory.join("transfer/report.pdf");
+        let paths = vec![path.clone()];
 
-        assert!(filter.take_match(&[path.clone()]));
-        assert!(!filter.take_match(&[path]));
+        assert!(files_to_broadcast(&paths, &managed_directory).is_empty());
+        assert!(files_to_broadcast(&paths, &managed_directory).is_empty());
+    }
+
+    #[test]
+    fn user_owned_file_is_still_broadcast() {
+        let managed_directory = std::path::PathBuf::from("tailsync-data/clipboard-files");
+        let path = std::path::PathBuf::from("documents/report.pdf");
+
+        assert_eq!(
+            files_to_broadcast(std::slice::from_ref(&path), &managed_directory),
+            vec![path]
+        );
+    }
+
+    #[test]
+    fn managed_directory_name_prefix_is_not_treated_as_managed() {
+        let managed_directory = std::path::PathBuf::from("tailsync-data/clipboard-files");
+        let path = std::path::PathBuf::from("tailsync-data/clipboard-files-export/report.pdf");
+
+        assert_eq!(
+            files_to_broadcast(std::slice::from_ref(&path), &managed_directory),
+            vec![path]
+        );
+    }
+
+    #[test]
+    fn canonical_alias_of_a_managed_file_is_not_broadcast() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-managed-path-test-{:016x}",
+            rand::random::<u64>()
+        ));
+        let actual_managed_directory = root.join("clipboard-files");
+        let managed_directory = root.join("alias/../clipboard-files");
+        std::fs::create_dir_all(root.join("alias")).unwrap();
+        let transfer_directory = actual_managed_directory.join("transfer");
+        std::fs::create_dir_all(&transfer_directory).unwrap();
+        let file = transfer_directory.join("report.pdf");
+        std::fs::write(&file, b"report").unwrap();
+
+        assert!(files_to_broadcast(&[file], &managed_directory).is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

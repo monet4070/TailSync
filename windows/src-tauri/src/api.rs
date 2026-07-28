@@ -72,7 +72,6 @@ pub fn restore_file_path_to_clipboard(file_path: &Path, file_name: &str) {
             return;
         }
     };
-    crate::clipboard::add_file_shadow_filter(std::slice::from_ref(&clipboard_path));
     write_file_path_to_clipboard(&clipboard_path);
 }
 
