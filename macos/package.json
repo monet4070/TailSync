@@ -11,7 +11,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:build:mac": "tauri build --target aarch64-apple-darwin",
+    "tauri:build:mac": "./build-mac.sh",
+    "tauri:build:mac:dmg": "./build-dmg.sh",
     "tauri:build:win": "tauri build --target x86_64-pc-windows-msvc"
   },
   "dependencies": {
