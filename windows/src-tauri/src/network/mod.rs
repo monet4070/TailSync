@@ -1006,6 +1006,7 @@ pub fn peer_socket_addr(peer: &tailscale::PeerInfo) -> Result<SocketAddr, String
 struct PoolSender {
     priority: mpsc::Sender<QueuedFrame>,
     bulk: mpsc::Sender<QueuedFrame>,
+    shutdown: watch::Sender<bool>,
 }
 
 struct QueuedFrame {
@@ -1101,6 +1102,10 @@ impl QueuedFrame {
 }
 
 impl PoolSender {
+    fn request_shutdown(&self) {
+        let _ = self.shutdown.send(true);
+    }
+
     #[cfg(test)]
     fn same_channel(&self, other: &Self) -> bool {
         self.priority.same_channel(&other.priority) && self.bulk.same_channel(&other.bulk)
@@ -1194,12 +1199,22 @@ impl ConnectionPool {
             return tx.clone();
         }
 
-        self.senders
-            .retain(|(_, peer_hostname), _| peer_hostname != &hostname);
+        self.senders.retain(|(_, peer_hostname), sender| {
+            let keep = peer_hostname != &hostname;
+            if !keep {
+                sender.request_shutdown();
+            }
+            keep
+        });
 
         let (priority, priority_rx) = mpsc::channel::<QueuedFrame>(POOL_CHANNEL_SIZE);
         let (bulk, bulk_rx) = mpsc::channel::<QueuedFrame>(POOL_CHANNEL_SIZE);
-        let tx = PoolSender { priority, bulk };
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let tx = PoolSender {
+            priority,
+            bulk,
+            shutdown,
+        };
         self.senders.insert(key, tx.clone());
         tokio::spawn(connection_task(
             candidates,
@@ -1208,6 +1223,7 @@ impl ConnectionPool {
             bulk_rx,
             self.identity.clone(),
             self.settings.clone(),
+            shutdown_rx,
         ));
         tx
     }
@@ -1247,11 +1263,19 @@ impl ConnectionPool {
 
     /// Remove a peer from the pool (e.g. when user disables it).
     pub fn disconnect_hostname(&mut self, hostname: &str) {
-        self.senders
-            .retain(|(_, peer_hostname), _| peer_hostname != hostname);
+        self.senders.retain(|(_, peer_hostname), sender| {
+            let keep = peer_hostname != hostname;
+            if !keep {
+                sender.request_shutdown();
+            }
+            keep
+        });
     }
 
     pub fn disconnect_all(&mut self) {
+        for sender in self.senders.values() {
+            sender.request_shutdown();
+        }
         self.senders.clear();
     }
 }
@@ -1402,6 +1426,7 @@ async fn connection_task(
     mut bulk_rx: mpsc::Receiver<QueuedFrame>,
     identity: Arc<DeviceIdentity>,
     settings: Arc<Mutex<crypto::Settings>>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     let preferred_addr = candidates
         .first()
@@ -1410,18 +1435,27 @@ async fn connection_task(
     let mut pending: Option<PendingFrame> = None;
     let mut next_sequence = 1u32;
     loop {
-        let (mut stream, route) =
-            match race_connect_and_handshake(&candidates, &hostname, &identity, &settings).await {
-                Ok(result) => result,
-                Err(e) => {
-                    warn!(
-                        "Pool connect to {} ({}) failed: {} — retrying in {:?}",
-                        preferred_addr, hostname, e, RECONNECT_DELAY
-                    );
-                    tokio::time::sleep(RECONNECT_DELAY).await;
-                    continue;
+        let connection = race_connect_and_handshake(&candidates, &hostname, &identity, &settings);
+        let connection_result = tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut shutdown) => return,
+            result = connection => result,
+        };
+        let (mut stream, route) = match connection_result {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(
+                    "Pool connect to {} ({}) failed: {} — retrying in {:?}",
+                    preferred_addr, hostname, e, RECONNECT_DELAY
+                );
+                tokio::select! {
+                    biased;
+                    _ = wait_for_shutdown(&mut shutdown) => return,
+                    _ = tokio::time::sleep(RECONNECT_DELAY) => {}
                 }
-            };
+                continue;
+            }
+        };
         let addr = route.socket_addr;
         let latency_ms = route.candidate.latency.unwrap_or_default();
         debug!(
@@ -1443,8 +1477,17 @@ async fn connection_task(
         // Keep that frame across reconnects so transient breaks do not lose
         // clipboard content silently.
         if let Some(frame) = pending.take() {
-            match deliver_pending_frame(&mut stream, &frame).await {
+            let delivery = tokio::select! {
+                biased;
+                _ = wait_for_shutdown(&mut shutdown) => return,
+                result = deliver_pending_frame(&mut stream, &frame) => result,
+            };
+            match delivery {
                 Ok(receipt) => frame.complete(Ok(receipt)),
+                Err(error) if is_permanent_delivery_error(&error) => {
+                    warn!("Dropping event rejected by {}: {error}", addr);
+                    frame.complete(Err(error));
+                }
                 Err(error) => {
                     debug!(
                         "Pool delivery to {} failed: {error} — reselecting path",
@@ -1461,15 +1504,18 @@ async fn connection_task(
             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
                 let hb = Frame::new(Command::Heartbeat, 0, next_sequence, vec![]);
                 next_sequence = next_sequence.wrapping_add(1).max(1);
-                if stream.write_frame(&hb).await.is_err()
-                    || !matches!(
-                        timeout(CONNECTION_TIMEOUT, stream.read_frame()).await,
-                        Ok(Ok(Frame {
-                            command: Command::HeartbeatAck,
-                            ..
-                        }))
-                    )
-                {
+                let heartbeat_ok = tokio::select! {
+                    biased;
+                    _ = wait_for_shutdown(&mut shutdown) => return,
+                    result = async {
+                        stream.write_frame(&hb).await.is_ok()
+                            && matches!(
+                                timeout(CONNECTION_TIMEOUT, stream.read_frame()).await,
+                                Ok(Ok(Frame { command: Command::HeartbeatAck, .. }))
+                            )
+                    } => result,
+                };
+                if !heartbeat_ok {
                     debug!("Pool heartbeat to {} failed — reconnecting", addr);
                     break;
                 }
@@ -1478,22 +1524,31 @@ async fn connection_task(
 
             // Wait for next frame or heartbeat deadline
             let deadline = HEARTBEAT_INTERVAL.saturating_sub(last_heartbeat.elapsed());
-            let next_frame = async {
-                tokio::select! {
-                    biased;
-                    frame = priority_rx.recv() => frame,
-                    frame = bulk_rx.recv() => frame,
-                }
+            let next_frame = tokio::select! {
+                biased;
+                _ = wait_for_shutdown(&mut shutdown) => return,
+                frame = priority_rx.recv() => Some(frame),
+                frame = bulk_rx.recv() => Some(frame),
+                _ = tokio::time::sleep(deadline) => None,
             };
-            match tokio::time::timeout(deadline, next_frame).await {
-                Ok(Some(queued)) => {
+            match next_frame {
+                Some(Some(queued)) => {
                     let frame = PendingFrame {
                         queued,
                         sequence: next_sequence,
                     };
                     next_sequence = next_sequence.wrapping_add(1).max(1);
-                    match deliver_pending_frame(&mut stream, &frame).await {
+                    let delivery = tokio::select! {
+                        biased;
+                        _ = wait_for_shutdown(&mut shutdown) => return,
+                        result = deliver_pending_frame(&mut stream, &frame) => result,
+                    };
+                    match delivery {
                         Ok(receipt) => frame.complete(Ok(receipt)),
+                        Err(error) if is_permanent_delivery_error(&error) => {
+                            warn!("Dropping event rejected by {}: {error}", addr);
+                            frame.complete(Err(error));
+                        }
                         Err(error) => {
                             pending = Some(frame);
                             debug!(
@@ -1504,12 +1559,12 @@ async fn connection_task(
                         }
                     }
                 }
-                Ok(None) => {
+                Some(None) => {
                     // All senders dropped — exit this connection for good
                     debug!("Pool channel for {} closed — shutting down", addr);
                     return;
                 }
-                Err(_) => {
+                None => {
                     // Timeout — loop back to send heartbeat
                 }
             }
@@ -1518,18 +1573,29 @@ async fn connection_task(
     }
 }
 
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
+        }
+    }
+}
+
 async fn deliver_pending_frame(
     stream: &mut secure::SecureConnection,
     pending: &PendingFrame,
 ) -> Result<DeliveryReceipt, String> {
-    let frame = Frame::new(
-        pending.queued.command,
-        0,
-        pending.sequence,
-        pending.queued.payload.clone(),
-    );
     match pending.queued.acknowledgement {
         AckExpectation::None => {
+            let frame = Frame::new(
+                pending.queued.command,
+                0,
+                pending.sequence,
+                pending.queued.payload.clone(),
+            );
             stream
                 .write_frame(&frame)
                 .await
@@ -1537,10 +1603,28 @@ async fn deliver_pending_frame(
             Ok(DeliveryReceipt::default())
         }
         AckExpectation::Event(message_id) => {
+            let mut envelope = EventEnvelope::decode(&pending.queued.payload)
+                .map_err(|error| error.to_string())?;
+            if envelope.message_id != message_id {
+                return Err("queued event ID does not match its acknowledgement".to_string());
+            }
+            envelope.timestamp_ms = unix_timestamp_ms();
+            let frame = Frame::new(
+                pending.queued.command,
+                0,
+                pending.sequence,
+                envelope.encode(),
+            );
             deliver_event_frame(stream, pending, &frame, message_id).await?;
             Ok(DeliveryReceipt::default())
         }
         AckExpectation::File(transfer_id) => {
+            let frame = Frame::new(
+                pending.queued.command,
+                0,
+                pending.sequence,
+                pending.queued.payload.clone(),
+            );
             return deliver_file_frame(stream, pending, &frame, transfer_id).await;
         }
     }
@@ -1566,6 +1650,12 @@ async fn deliver_event_frame(
                 }
                 return Ok(());
             }
+            Ok(Ok(frame)) if frame.command == Command::PeerError => {
+                return Err(format!(
+                    "peer rejected event: {}",
+                    String::from_utf8_lossy(&frame.payload)
+                ));
+            }
             Ok(Ok(frame)) => {
                 return Err(format!("expected EventAck, received {:?}", frame.command));
             }
@@ -1582,6 +1672,10 @@ async fn deliver_event_frame(
         }
     }
     unreachable!("event retry loop always returns")
+}
+
+fn is_permanent_delivery_error(error: &str) -> bool {
+    error.starts_with("peer rejected event:")
 }
 
 async fn deliver_file_frame(
@@ -2239,7 +2333,7 @@ async fn process_event_content(
                 .lock()
                 .await
                 .handle_incoming_text(&text, source.to_string())
-                .await;
+                .await?;
         }
         Command::ImagePayload => {
             validate_packed_image(content)?;
@@ -2259,7 +2353,7 @@ async fn process_event_content(
                 .lock()
                 .await
                 .handle_incoming_image(content, source.to_string())
-                .await;
+                .await?;
         }
         _ => return Err(format!("{:?} is not a reliable event command", command)),
     }
@@ -2406,24 +2500,27 @@ pub async fn test_connection(address: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_tcp_listener, cached_discover_peers, clear_peer_cache, deliver_pending_frame,
-        merge_discovery_results, merge_lan_discovery_results, merge_paired_peers, peer_socket_addr,
-        prewarm_connections, queue_pool_frame, race_connect_and_handshake, record_probe_miss,
-        record_probe_success, register_active_session, route_health, secure, source_matches_mode,
-        store_peer_cache, AckExpectation, ConnectionInterface, ConnectionLimiter, ConnectionPool,
-        PeerCandidate, PeerRouteKey, PeerStatus, PendingFrame, PoolSender, QueuedFrame,
-        ResolvedCandidate, POOL_CHANNEL_SIZE, TCP_PORT,
+        bind_tcp_listener, cached_discover_peers, clear_peer_cache, connection_task,
+        deliver_pending_frame, merge_discovery_results, merge_lan_discovery_results,
+        merge_paired_peers, peer_socket_addr, prewarm_connections, queue_pool_frame,
+        race_connect_and_handshake, record_probe_miss, record_probe_success,
+        register_active_session, route_health, secure, source_matches_mode, store_peer_cache,
+        AckExpectation, ConnectionInterface, ConnectionLimiter, ConnectionPool, PeerCandidate,
+        PeerRouteKey, PeerStatus, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate,
+        POOL_CHANNEL_SIZE, TCP_PORT,
     };
     use crate::crypto::{self, Settings};
     use crate::identity::DeviceIdentity;
     use crate::network::tailscale::{LocalInfo, PeerInfo};
-    use crate::protocol::{Command, EventEnvelope, Frame, MessageId};
+    use crate::protocol::{
+        unix_timestamp_ms, Command, EventEnvelope, Frame, MessageId, EVENT_TIMESTAMP_WINDOW_MS,
+    };
     use base64::{engine::general_purpose::STANDARD, Engine};
     use std::collections::HashMap;
     use std::net::IpAddr;
     use std::sync::Arc;
     use tokio::net::TcpListener;
-    use tokio::sync::{mpsc, Mutex};
+    use tokio::sync::{mpsc, watch, Mutex};
     use tokio::time::{timeout, Duration};
 
     #[tokio::test]
@@ -2919,6 +3016,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connection_worker_stops_when_the_pool_disconnects_it() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let settings = race_settings(&server_identity);
+        let unavailable = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = unavailable.local_addr().unwrap();
+        let (priority, priority_rx) = mpsc::channel(POOL_CHANNEL_SIZE);
+        let (bulk, bulk_rx) = mpsc::channel(POOL_CHANNEL_SIZE);
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let sender = PoolSender {
+            priority,
+            bulk,
+            shutdown,
+        };
+        let worker = tokio::spawn(connection_task(
+            vec![resolved_candidate(ConnectionInterface::Lan, address)],
+            "server".into(),
+            priority_rx,
+            bulk_rx,
+            client_identity.clone(),
+            settings.clone(),
+            shutdown_rx,
+        ));
+        let mut pool = ConnectionPool::new(client_identity, settings);
+        pool.senders.insert((address, "server".into()), sender);
+
+        tokio::task::yield_now().await;
+        pool.disconnect_all();
+
+        timeout(Duration::from_millis(500), worker)
+            .await
+            .expect("connection worker ignored the pool shutdown request")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_pending_event_does_not_block_a_new_event_after_reconnect() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let settings = race_settings(&server_identity);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (first_stream, _) = listener.accept().await.unwrap();
+            let first = secure::accept(
+                first_stream,
+                &server_identity,
+                secure::PeerIdentity {
+                    hostname: "server".into(),
+                    tailscale_ip: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut first_connection = first.connection;
+            secure::write_ready(&mut first_connection).await.unwrap();
+            let before_sleep = first_connection.read_frame().await.unwrap();
+            let first_envelope = EventEnvelope::decode(&before_sleep.payload).unwrap();
+            drop(first_connection);
+
+            let (second_stream, _) = listener.accept().await.unwrap();
+            let second = secure::accept(
+                second_stream,
+                &server_identity,
+                secure::PeerIdentity {
+                    hostname: "server".into(),
+                    tailscale_ip: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut second_connection = second.connection;
+            secure::write_ready(&mut second_connection).await.unwrap();
+            let retried = second_connection.read_frame().await.unwrap();
+            let retried_envelope = EventEnvelope::decode(&retried.payload).unwrap();
+            assert_eq!(retried_envelope.message_id, first_envelope.message_id);
+            retried_envelope
+                .validate_timestamp(unix_timestamp_ms())
+                .unwrap();
+            second_connection
+                .write_frame(&Frame::new(
+                    Command::PeerError,
+                    0,
+                    retried.sequence,
+                    b"event timestamp outside window".to_vec(),
+                ))
+                .await
+                .unwrap();
+
+            let after_wake = second_connection.read_frame().await.unwrap();
+            let after_wake_envelope = EventEnvelope::decode(&after_wake.payload).unwrap();
+            second_connection
+                .write_frame(&Frame::new(
+                    Command::EventAck,
+                    0,
+                    after_wake.sequence,
+                    after_wake_envelope.message_id.ack_payload(),
+                ))
+                .await
+                .unwrap();
+            (
+                first_envelope.content,
+                retried_envelope.content,
+                after_wake_envelope.content,
+            )
+        });
+
+        let (priority, priority_rx) = mpsc::channel(POOL_CHANNEL_SIZE);
+        let (_bulk, bulk_rx) = mpsc::channel(POOL_CHANNEL_SIZE);
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let worker = tokio::spawn(connection_task(
+            vec![resolved_candidate(ConnectionInterface::Lan, address)],
+            "server".into(),
+            priority_rx,
+            bulk_rx,
+            client_identity,
+            settings,
+            shutdown_rx,
+        ));
+
+        let mut before_sleep =
+            QueuedFrame::new(Command::TextPayload, b"before-sleep".to_vec()).unwrap();
+        let mut stale = EventEnvelope::decode(&before_sleep.payload).unwrap();
+        stale.timestamp_ms = unix_timestamp_ms() - EVENT_TIMESTAMP_WINDOW_MS - 1;
+        before_sleep.payload = stale.encode();
+        priority.send(before_sleep).await.unwrap();
+        priority
+            .send(QueuedFrame::new(Command::TextPayload, b"after-wake".to_vec()).unwrap())
+            .await
+            .unwrap();
+
+        let (first, retried, delivered) = timeout(Duration::from_secs(10), server)
+            .await
+            .expect("new event remained blocked behind the rejected pending event")
+            .unwrap();
+        assert_eq!(first, b"before-sleep");
+        assert_eq!(retried, b"before-sleep");
+        assert_eq!(delivered, b"after-wake");
+        let _ = shutdown.send(true);
+        timeout(Duration::from_secs(1), worker)
+            .await
+            .expect("connection worker did not stop after the regression test")
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn full_peer_queue_does_not_hold_connection_pool_lock() {
         let identity = Arc::new(DeviceIdentity::generate_for_test());
         let mut settings_value = crypto::Settings::default();
@@ -2930,12 +3173,17 @@ mod tests {
         let addr = "127.0.0.1:19890".parse().unwrap();
         let (priority, _priority_rx) = mpsc::channel(POOL_CHANNEL_SIZE);
         let (bulk, _bulk_rx) = mpsc::channel(POOL_CHANNEL_SIZE);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
         for _ in 0..POOL_CHANNEL_SIZE {
             priority
                 .try_send(QueuedFrame::new(Command::TextPayload, vec![1]).unwrap())
                 .unwrap();
         }
-        let tx = PoolSender { priority, bulk };
+        let tx = PoolSender {
+            priority,
+            bulk,
+            shutdown,
+        };
 
         let mut pool_value = ConnectionPool::new(identity, settings);
         pool_value.senders.insert((addr, "blocked-peer".into()), tx);
@@ -2964,7 +3212,12 @@ mod tests {
     async fn file_chunks_use_a_separate_queue_from_priority_messages() {
         let (priority, mut priority_rx) = mpsc::channel(1);
         let (bulk, mut bulk_rx) = mpsc::channel(1);
-        let sender = PoolSender { priority, bulk };
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let sender = PoolSender {
+            priority,
+            bulk,
+            shutdown,
+        };
 
         sender
             .channel_for(Command::FileChunk)
