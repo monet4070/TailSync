@@ -4,6 +4,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($env:OS -eq 'Windows_NT') {
+    $processPath = $env:Path
+    [Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('Path', $processPath, 'Process')
+}
 $currentRoot = (Resolve-Path -LiteralPath (Split-Path $PSScriptRoot -Parent)).Path
 $siblingRoot = Split-Path $currentRoot -Parent
 $currentIsMac = (Test-Path -LiteralPath (Join-Path $currentRoot 'swift-ui')) -and

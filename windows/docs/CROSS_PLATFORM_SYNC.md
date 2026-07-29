@@ -7,12 +7,12 @@ This document defines the shared contract between the Windows and macOS projects
 The following must remain byte-for-byte aligned unless the drift checker is deliberately updated:
 
 - shared React UI files under `src/`
-- Rust backend under `src-tauri/src/`
+- shared Rust core under `src-tauri/src/`, including history storage/classification, identity, pairing, protocol, and secure transport
 - frontend and Rust dependency locks
 - protocol interoperability probe and acceptance scripts
 - this contract
 
-The platform entry page and native-facing settings/history presentation may evolve independently in `App.tsx`, `index.css`, `pages/History.tsx`, and `pages/Settings.tsx`. The macOS SwiftUI shell and packaging scripts are validated against the same Rust API models and commands.
+The platform entry page and native-facing settings/history presentation may evolve independently in `index.html`, `App.tsx`, `main.tsx`, `landing.css`, `index.css`, `pages/History.tsx`, and `pages/Settings.tsx`. OS-specific Cargo dependencies and backend adapters for the API, clipboard, discovery, connection management, synchronization, and tray may also differ; their ports, commands, wire models, and shared core remain contract-checked. The macOS SwiftUI shell and packaging scripts are validated against the same Rust API models and commands.
 
 ## Network contract
 

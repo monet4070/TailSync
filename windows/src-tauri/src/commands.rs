@@ -9,12 +9,22 @@ use tauri::{command, AppHandle, Manager, State};
 pub async fn get_history(
     state: State<'_, AppState>,
     keyword: Option<String>,
+    category: Option<String>,
+    start_time: Option<String>,
+    end_time: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Vec<db::HistoryEntry>, String> {
     let db = state.db.lock().await;
-    db.get_all(keyword.as_deref(), limit.unwrap_or(50), offset.unwrap_or(0))
-        .map_err(|e| e.to_string())
+    db.get_all_filtered(
+        keyword.as_deref(),
+        category.as_deref(),
+        start_time.as_deref(),
+        end_time.as_deref(),
+        limit.unwrap_or(50),
+        offset.unwrap_or(0),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Search history by keyword (searches description field)
@@ -24,7 +34,7 @@ pub async fn search_history(
     keyword: String,
 ) -> Result<Vec<db::HistoryEntry>, String> {
     let db = state.db.lock().await;
-    db.get_all(Some(&keyword), 100, 0)
+    db.get_all(Some(&keyword), None, 100, 0)
         .map_err(|e| e.to_string())
 }
 

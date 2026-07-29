@@ -10,11 +10,12 @@ struct AppSettings: Codable, Equatable {
     var connection_mode: String = "auto"
     var trusted_peer_keys: [String: String] = [:]
     var trusted_peer_addresses: [String: [String: String]] = [:]
+    var paired_peer_endpoints: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
         case notifications_enabled, progress_bar_enabled, history_limit
         case enabled_peers, theme, language, connection_mode
-        case trusted_peer_keys, trusted_peer_addresses
+        case trusted_peer_keys, trusted_peer_addresses, paired_peer_endpoints
     }
 
     init() {}
@@ -35,5 +36,6 @@ struct AppSettings: Codable, Equatable {
         }
         trusted_peer_keys = try values.decodeIfPresent([String: String].self, forKey: .trusted_peer_keys) ?? [:]
         trusted_peer_addresses = try values.decodeIfPresent([String: [String: String]].self, forKey: .trusted_peer_addresses) ?? [:]
+        paired_peer_endpoints = try values.decodeIfPresent([String: String].self, forKey: .paired_peer_endpoints) ?? [:]
     }
 }

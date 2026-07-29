@@ -79,10 +79,35 @@ final class ApiClient: @unchecked Sendable {
         }
     }
 
-    func getVersion() async -> UInt64 {
+    func getVersion() async -> UInt64? {
         guard let response = try? await request(["cmd": "get_version"]),
-              response["ok"] as? Bool == true else { return 0 }
-        return (response["data"] as? NSNumber)?.uint64Value ?? 0
+              response["ok"] as? Bool == true,
+              let version = (response["data"] as? NSNumber)?.uint64Value else { return nil }
+        return version
+    }
+
+    struct HistoryCapabilities {
+        let classifierVersion: Int
+        let categories: [String]
+        let multipleLabels: Bool
+        let dateRangeFilter: Bool
+    }
+
+    func getHistoryCapabilities() async throws -> HistoryCapabilities? {
+        let response = try await request(["cmd": "get_history_capabilities"])
+        guard response["ok"] as? Bool == true,
+              let data = response["data"] as? [String: Any],
+              let classifierVersion = (data["classifier_version"] as? NSNumber)?.intValue,
+              classifierVersion > 0,
+              let categories = data["categories"] as? [String] else {
+            return nil
+        }
+        return HistoryCapabilities(
+            classifierVersion: classifierVersion,
+            categories: categories,
+            multipleLabels: data["multiple_labels"] as? Bool ?? false,
+            dateRangeFilter: data["date_range_filter"] as? Bool ?? false
+        )
     }
 
     func ping() async -> Bool {
@@ -146,9 +171,19 @@ final class ApiClient: @unchecked Sendable {
         return (name, sent, total, active)
     }
 
-    func getHistory(keyword: String? = nil, limit: Int = 30, offset: Int = 0) async throws -> [HistoryEntry] {
+    func getHistory(
+        keyword: String? = nil,
+        category: String? = nil,
+        startTime: String? = nil,
+        endTime: String? = nil,
+        limit: Int = 30,
+        offset: Int = 0
+    ) async throws -> [HistoryEntry] {
         var request: [String: Any] = ["cmd": "get_history", "limit": limit, "offset": offset]
         if let keyword { request["keyword"] = keyword }
+        if let category { request["category"] = category }
+        if let startTime { request["start_time"] = startTime }
+        if let endTime { request["end_time"] = endTime }
         let response = try await self.request(request)
         guard response["ok"] as? Bool == true,
               let data = response["data"] as? [[String: Any]] else {

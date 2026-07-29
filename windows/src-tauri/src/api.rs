@@ -200,6 +200,12 @@ struct Request {
     #[serde(default)]
     keyword: Option<String>,
     #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    start_time: Option<String>,
+    #[serde(default)]
+    end_time: Option<String>,
+    #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
     offset: Option<usize>,
@@ -387,6 +393,12 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             error: None,
         },
 
+        "get_history_capabilities" => Response {
+            ok: true,
+            data: Some(history_capabilities_data()),
+            error: None,
+        },
+
         "get_status" => Response {
             ok: true,
             data: Some(serde_json::json!({
@@ -466,8 +478,11 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             let db = state.db.lock().await;
             // Consume before await for Send safety
             let result = db
-                .get_all(
+                .get_all_filtered(
                     req.keyword.as_deref(),
+                    req.category.as_deref(),
+                    req.start_time.as_deref(),
+                    req.end_time.as_deref(),
                     req.limit.unwrap_or(30),
                     req.offset.unwrap_or(0),
                 )
@@ -990,6 +1005,15 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
     }
 }
 
+fn history_capabilities_data() -> Value {
+    serde_json::json!({
+        "classifier_version": crate::history_classifier::CLASSIFIER_VERSION,
+        "categories": crate::history_classifier::CATEGORIES,
+        "multiple_labels": true,
+        "date_range_filter": true,
+    })
+}
+
 async fn send_json(
     w: &mut (impl AsyncWriteExt + Unpin),
     ok: bool,
@@ -1009,12 +1033,54 @@ async fn send_json(
 
 #[cfg(test)]
 mod tests {
-    use super::peer_snapshot_data;
+    use super::{history_capabilities_data, peer_snapshot_data, Request};
     use crate::crypto::Settings;
     use crate::identity::DeviceIdentity;
     use crate::network::tailscale::{LocalInfo, PeerInfo};
     use crate::network::{register_active_session, ConnectionInterface, PeerCandidate};
     use std::collections::HashMap;
+
+    #[test]
+    fn history_capabilities_advertise_multi_label_and_date_contracts() {
+        let capabilities = history_capabilities_data();
+        assert_eq!(
+            capabilities["classifier_version"].as_i64(),
+            Some(crate::history_classifier::CLASSIFIER_VERSION)
+        );
+        assert_eq!(capabilities["multiple_labels"].as_bool(), Some(true));
+        assert_eq!(capabilities["date_range_filter"].as_bool(), Some(true));
+        assert_eq!(
+            capabilities["categories"].as_array().map(Vec::len),
+            Some(crate::history_classifier::CATEGORIES.len())
+        );
+    }
+
+    #[test]
+    fn history_request_accepts_new_filters_and_legacy_omissions() {
+        let filtered: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "get_history",
+            "keyword": "needle",
+            "category": "text",
+            "start_time": "2026-02-01T10:00:00Z",
+            "end_time": "2026-02-01T11:00:00Z",
+            "limit": 31,
+            "offset": 62
+        }))
+        .unwrap();
+        assert_eq!(filtered.keyword.as_deref(), Some("needle"));
+        assert_eq!(filtered.category.as_deref(), Some("text"));
+        assert_eq!(filtered.start_time.as_deref(), Some("2026-02-01T10:00:00Z"));
+        assert_eq!(filtered.end_time.as_deref(), Some("2026-02-01T11:00:00Z"));
+        assert_eq!(filtered.limit, Some(31));
+        assert_eq!(filtered.offset, Some(62));
+
+        let legacy: Request =
+            serde_json::from_value(serde_json::json!({ "cmd": "get_history" })).unwrap();
+        assert!(legacy.keyword.is_none());
+        assert!(legacy.category.is_none());
+        assert!(legacy.start_time.is_none());
+        assert!(legacy.end_time.is_none());
+    }
 
     #[test]
     fn peer_snapshot_keeps_local_identity_when_discovery_fails() {

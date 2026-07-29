@@ -75,21 +75,33 @@ function assertTreeMatch(relativeDirectory, allowedDrift = []) {
 assertTreeMatch('src', [
   'App.tsx',
   'index.css',
+  'landing.css',
+  'main.tsx',
   'pages/History.tsx',
   'pages/Settings.tsx',
 ]);
-assertTreeMatch('src-tauri/src');
+assertTreeMatch('src-tauri/src', [
+  'api.rs',
+  'clipboard.rs',
+  'clipboard_change.rs',
+  'clipboard_file.rs',
+  'commands.rs',
+  'crypto.rs',
+  'lib.rs',
+  'network/lan.rs',
+  'network/mdns.rs',
+  'network/mod.rs',
+  'network/tailscale.rs',
+  'sync.rs',
+  'tray.rs',
+]);
 for (const path of [
   '.oxlintrc.json',
-  'index.html',
-  'package.json',
   'package-lock.json',
   'tsconfig.json',
   'tsconfig.app.json',
   'tsconfig.node.json',
   'vite.config.ts',
-  'src-tauri/Cargo.toml',
-  'src-tauri/Cargo.lock',
   'src-tauri/build.rs',
   'src-tauri/examples/interop_probe.rs',
   'scripts/check_cross_platform_sync.mjs',
@@ -100,6 +112,34 @@ for (const path of [
 
 function read(root, path) {
   return readFileSync(join(root, path), 'utf8');
+}
+
+function normalizedJson(value) {
+  if (Array.isArray(value)) return value.map(normalizedJson);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort()
+      .map((key) => [key, normalizedJson(value[key])]));
+  }
+  return value;
+}
+
+function assertJsonMatch(description, expected, actual) {
+  if (JSON.stringify(normalizedJson(expected)) !== JSON.stringify(normalizedJson(actual))) {
+    fail(`${description} drift detected.`);
+  }
+}
+
+const winPackage = JSON.parse(read(winRoot, 'package.json'));
+const macPackage = JSON.parse(read(macRoot, 'package.json'));
+const { scripts: winScripts = {}, ...winPackageMetadata } = winPackage;
+const { scripts: macScripts = {}, ...macPackageMetadata } = macPackage;
+assertJsonMatch('Package metadata/dependencies', winPackageMetadata, macPackageMetadata);
+const sharedScripts = (scripts) => Object.fromEntries(Object.entries(scripts)
+  .filter(([name]) => !name.startsWith('tauri:build:mac')));
+assertJsonMatch('Shared package scripts', sharedScripts(winScripts), sharedScripts(macScripts));
+if (macScripts['tauri:build:mac'] !== './build-mac.sh' ||
+    macScripts['tauri:build:mac:dmg'] !== './build-dmg.sh') {
+  fail('macOS package scripts must use build-mac.sh and build-dmg.sh.');
 }
 
 function constant(source, pattern, description) {
@@ -171,8 +211,21 @@ function rustFields(source, name) {
 }
 
 function swiftFields(source, name) {
-  return new Set([...structBody(source, name, 'swift').matchAll(/\blet\s+([a-z][a-z0-9_]*)\s*:|\bvar\s+([a-z][a-z0-9_]*)\s*:\s*[^\n{]+(?:\n|$)/g)]
-    .map((match) => match[1] ?? match[2]));
+  const fields = new Set();
+  let depth = 0;
+  for (const line of structBody(source, name, 'swift').split(/\r?\n/)) {
+    if (depth === 0) {
+      const match = line.match(/^\s*(?:let|var)\s+([a-z][a-z0-9_]*)\s*:/);
+      if (match && !line.slice(match.index + match[0].length).includes('{')) {
+        fields.add(match[1]);
+      }
+    }
+    for (const character of line) {
+      if (character === '{') depth += 1;
+      if (character === '}') depth -= 1;
+    }
+  }
+  return fields;
 }
 
 function assertSameFields(description, expected, actual) {
@@ -205,12 +258,12 @@ function assertJsonFields(description, source, fields) {
 }
 assertJsonFields('Local device snapshot', macApiSource,
   ['hostname', 'tailscale_ip', 'connection_mode', 'public_key', 'fingerprint']);
-assertJsonFields('Daemon status', macApiSource, ['tcp_server_healthy', 'active_routes']);
+assertJsonFields('Daemon status', macApiSource,
+  ['tcp_server_healthy', 'clipboard_monitor_healthy', 'active_routes']);
 assertJsonFields('File progress', macApiSource, ['name', 'sent', 'total', 'active']);
 assertJsonFields('Image thumbnail', macApiSource, ['width', 'height', 'rgba_b64']);
 
 const peerInfoFields = rustFields(read(macRoot, 'src-tauri/src/network/tailscale.rs'), 'PeerInfo');
-peerInfoFields.delete('candidates');
 const swiftPeerFields = swiftFields(swiftSource, 'PeerSnapshot');
 swiftPeerFields.delete('id');
 assertSameFields('SwiftUI/Rust peer snapshot', peerInfoFields, swiftPeerFields);

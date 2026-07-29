@@ -5,6 +5,7 @@ mod clipboard_file;
 mod commands;
 mod crypto;
 mod db;
+mod history_classifier;
 mod identity;
 mod network;
 mod pairing;
@@ -57,14 +58,61 @@ pub fn run() {
     start_parent_monitor();
 
     // Pre-initialize the encryption key so Keychain access is requested at startup.
-    if let Err(e) = crypto::get_dek() {
-        log::error!("Failed to initialize encryption key: {}", e);
-    }
+    let history_key_ready = match crypto::get_dek() {
+        Ok(_) => true,
+        Err(error) => {
+            log::error!("Failed to initialize encryption key: {error}");
+            false
+        }
+    };
     sync::cleanup_expired_transfers();
 
     let db = Arc::new(Mutex::new(
         db::HistoryDB::new().expect("Failed to initialize database"),
     ));
+    if history_key_ready {
+        let db_for_classification = db.clone();
+        tauri::async_runtime::spawn(async move {
+            const MAX_BACKFILL_RETRIES: u8 = 3;
+            let mut total = 0_usize;
+            let mut consecutive_failures = 0_u8;
+            loop {
+                let result = {
+                    let mut db = db_for_classification.lock().await;
+                    db.backfill_classifications(50)
+                        .map_err(|error| error.to_string())
+                };
+                let processed = match result {
+                    Ok(processed) => {
+                        consecutive_failures = 0;
+                        processed
+                    }
+                    Err(error) if consecutive_failures < MAX_BACKFILL_RETRIES => {
+                        consecutive_failures += 1;
+                        let delay_ms = 250 * u64::from(consecutive_failures);
+                        log::warn!(
+                            "History classification backfill failed; retrying {consecutive_failures}/{MAX_BACKFILL_RETRIES} in {delay_ms} ms: {error}"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+                    Err(error) => {
+                        log::error!("History classification backfill failed: {error}");
+                        break;
+                    }
+                };
+                if processed == 0 {
+                    break;
+                }
+                total += processed;
+                tokio::task::yield_now().await;
+            }
+            if total > 0 {
+                api::bump_clipboard_version();
+                log::info!("Classified {total} existing history entries");
+            }
+        });
+    }
     let sync_engine = Arc::new(Mutex::new(sync::SyncEngine::new()));
     let settings = Arc::new(Mutex::new(crypto::Settings::load().unwrap_or_default()));
     let identity = Arc::new(

@@ -8,9 +8,49 @@ struct HistoryEntry: Codable, Identifiable {
     let data_hash: String
     let size_bytes: Int64
     let source_peer: String
+    let category: String
+    let categories: [String]
+    let category_confidence: Int64
+    let classifier_version: Int64
 
     enum CodingKeys: String, CodingKey {
         case id, timestamp, type, description, data_hash, size_bytes, source_peer
+        case category, categories, category_confidence, classifier_version
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(Int64.self, forKey: .id)
+        timestamp = try values.decode(String.self, forKey: .timestamp)
+        type = try values.decode(String.self, forKey: .type)
+        description = try values.decode(String.self, forKey: .description)
+        data_hash = try values.decode(String.self, forKey: .data_hash)
+        size_bytes = try values.decode(Int64.self, forKey: .size_bytes)
+        source_peer = try values.decode(String.self, forKey: .source_peer)
+        let decodedCategory = try values.decodeIfPresent(String.self, forKey: .category) ?? type
+        switch decodedCategory {
+        case "text", "website", "code", "command", "structured_data", "path", "image", "file":
+            category = decodedCategory
+        default:
+            category = type
+        }
+        let decodedCategories = try values.decodeIfPresent([String].self, forKey: .categories) ?? []
+        var resolvedCategories = [category]
+        for label in decodedCategories where Self.isKnownCategory(label) && !resolvedCategories.contains(label) {
+            resolvedCategories.append(label)
+        }
+        categories = resolvedCategories
+        category_confidence = try values.decodeIfPresent(Int64.self, forKey: .category_confidence) ?? 0
+        classifier_version = try values.decodeIfPresent(Int64.self, forKey: .classifier_version) ?? 0
+    }
+
+    private static func isKnownCategory(_ category: String) -> Bool {
+        switch category {
+        case "text", "website", "code", "command", "structured_data", "path", "image", "file":
+            return true
+        default:
+            return false
+        }
     }
 
     var formattedTime: String {
@@ -32,11 +72,24 @@ struct HistoryEntry: Codable, Identifiable {
     }
 
     var icon: String {
-        switch type {
-        case "text": return "doc.text"
+        switch category {
+        case "website": return "globe"
+        case "code": return "chevron.left.forwardslash.chevron.right"
+        case "command": return "terminal"
+        case "structured_data": return "curlybraces"
+        case "path": return "folder"
         case "image": return "photo"
         case "file": return "doc"
+        case "text": return "doc.text"
         default: return "doc.on.clipboard"
         }
+    }
+
+    var categoryLabel: String {
+        Loc.t("history.category.\(category)")
+    }
+
+    var categoryLabels: [String] {
+        categories.map { Loc.t("history.category.\($0)") }
     }
 }

@@ -5,10 +5,30 @@ import zhCN from "../i18n/zh-CN.json";
 const messages: Record<string, Record<string, string>> = { en, "zh-CN": zhCN };
 const STORAGE_KEY = "tailsync-lang";
 
+function readStoredLocale(): string | null {
+  try {
+    return typeof localStorage === "undefined"
+      ? null
+      : localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeLocale(locale: string) {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(STORAGE_KEY, locale);
+    }
+  } catch {
+    // Storage can be unavailable in hardened or private webviews.
+  }
+}
+
 export function useI18n() {
   const [locale, setLocaleState] = useState<string>(() => {
     return (
-      localStorage.getItem(STORAGE_KEY) ||
+      readStoredLocale() ||
       (navigator.language.startsWith("zh") ? "zh-CN" : "en")
     );
   });
@@ -22,7 +42,7 @@ export function useI18n() {
 
   const setLocale = useCallback((lang: string) => {
     setLocaleState(lang);
-    localStorage.setItem(STORAGE_KEY, lang);
+    storeLocale(lang);
   }, []);
 
   // Pick up language changes from other windows (e.g. Settings → History)

@@ -1,9 +1,44 @@
+import Foundation
 import SwiftUI
+
+private enum HistoryDateFilter: String, CaseIterable, Identifiable {
+    case all
+    case today
+    case yesterday
+    case last7
+    case last30
+    case thisMonth
+    case custom
+
+    var id: String { rawValue }
+
+    func label(language: String) -> String {
+        let chinese = language == "zh-CN"
+        switch self {
+        case .all: return chinese ? "\u{5168}\u{90E8}\u{65E5}\u{671F}" : "All dates"
+        case .today: return chinese ? "\u{4ECA}\u{5929}" : "Today"
+        case .yesterday: return chinese ? "\u{6628}\u{5929}" : "Yesterday"
+        case .last7: return chinese ? "\u{8FD1} 7 \u{5929}" : "Last 7 days"
+        case .last30: return chinese ? "\u{8FD1} 30 \u{5929}" : "Last 30 days"
+        case .thisMonth: return chinese ? "\u{672C}\u{6708}" : "This month"
+        case .custom: return chinese ? "\u{81EA}\u{5B9A}\u{4E49}" : "Custom"
+        }
+    }
+}
+
+private struct HistoryDateBounds {
+    let start: Date?
+    let end: Date?
+}
 
 struct HistoryView: View {
     @ObservedObject private var loc = Loc.shared
     @State private var entries: [HistoryEntry] = []
     @State private var keyword = ""
+    @State private var selectedCategory = "all"
+    @State private var selectedDateFilter = HistoryDateFilter.all
+    @State private var customStartDate = Calendar.autoupdatingCurrent.startOfDay(for: Date())
+    @State private var customEndDate = Calendar.autoupdatingCurrent.startOfDay(for: Date())
     @State private var page = 0
     @State private var hasNext = false
     @State private var isLoading = false
@@ -13,25 +48,107 @@ struct HistoryView: View {
     @State private var daemonOnline = false
     @State private var fileProgress: (name: String, sent: UInt64, total: UInt64, active: Bool)? = nil
     @State private var showingClearAlert = false
+    @State private var loadGeneration = 0
+    @State private var supportedCategories: Set<String> = []
+    @State private var multipleLabelsSupported = false
+    @State private var dateRangeFilteringSupported = false
+    @State private var historyCapabilitiesChecked = false
+    @State private var historyCapabilitiesLoading = false
 
     private let pageSize = 30
+    private let knownCategories = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]
+
+    private var categories: [String] {
+        ["all"] + knownCategories.filter { supportedCategories.contains($0) }
+    }
+
+    private var categoryFilteringSupported: Bool {
+        !supportedCategories.isEmpty
+    }
+
+    private var dateFilterTitle: String {
+        loc.lang == "zh-CN" ? "\u{6309}\u{65E5}\u{671F}\u{7B5B}\u{9009}" : "Filter by date"
+    }
+
+    private var customStartTitle: String {
+        loc.lang == "zh-CN" ? "\u{5F00}\u{59CB}" : "Start"
+    }
+
+    private var customEndTitle: String {
+        loc.lang == "zh-CN" ? "\u{7ED3}\u{675F}" : "End"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Search + status
-            HStack {
-                Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                TextField(Loc.t("history.search"), text: $keyword)
-                    .textFieldStyle(.plain)
-                    .onSubmit { page = 0; load() }
-                if !keyword.isEmpty {
-                    Button { keyword = ""; page = 0; load() } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
-                    }.buttonStyle(.plain)
+            VStack(spacing: 6) {
+                HStack {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    TextField(Loc.t("history.search"), text: $keyword)
+                        .textFieldStyle(.plain)
+                        .onSubmit { page = 0; load(targetPage: 0) }
+                    if !keyword.isEmpty {
+                        Button { keyword = ""; page = 0; load(targetPage: 0) } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+                        }.buttonStyle(.plain)
+                    }
+                    Circle()
+                        .fill(daemonOnline ? Color.green : Color.red)
+                        .frame(width: 7, height: 7)
                 }
-                Circle()
-                    .fill(daemonOnline ? Color.green : Color.red)
-                    .frame(width: 7, height: 7)
+
+                HStack(spacing: 8) {
+                    Picker(Loc.t("history.categoryFilter"), selection: $selectedCategory) {
+                        ForEach(categories, id: \.self) { category in
+                            Text(Loc.t("history.category.\(category)")).tag(category)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity)
+                    .disabled(!categoryFilteringSupported)
+                    .onChange(of: selectedCategory) { _ in page = 0; load(targetPage: 0) }
+
+                    Picker(dateFilterTitle, selection: $selectedDateFilter) {
+                        ForEach(HistoryDateFilter.allCases) { filter in
+                            Text(filter.label(language: loc.lang)).tag(filter)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity)
+                    .disabled(!dateRangeFilteringSupported)
+                    .onChange(of: selectedDateFilter) { _ in page = 0; load(targetPage: 0) }
+                }
+
+                if dateRangeFilteringSupported && selectedDateFilter == .custom {
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(customStartTitle).font(.caption2).foregroundColor(.secondary)
+                            DatePicker(
+                                customStartTitle,
+                                selection: $customStartDate,
+                                in: ...customEndDate,
+                                displayedComponents: .date
+                            )
+                            .labelsHidden()
+                            .onChange(of: customStartDate) { _ in page = 0; load(targetPage: 0) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(customEndTitle).font(.caption2).foregroundColor(.secondary)
+                            DatePicker(
+                                customEndTitle,
+                                selection: $customEndDate,
+                                in: customStartDate...,
+                                displayedComponents: .date
+                            )
+                            .labelsHidden()
+                            .onChange(of: customEndDate) { _ in page = 0; load(targetPage: 0) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
             .padding(8).background(Color.primary.opacity(0.05)).cornerRadius(8)
             .padding(.horizontal, 12).padding(.top, 8)
@@ -40,6 +157,15 @@ struct HistoryView: View {
             if isLoading && entries.isEmpty {
                 Spacer()
                 ProgressView().controlSize(.small)
+                Spacer()
+            } else if let errorMsg {
+                Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 28))
+                        .foregroundColor(.secondary)
+                    Text(errorMsg).font(.body).foregroundColor(.secondary)
+                }
                 Spacer()
             } else if entries.isEmpty {
                 Spacer()
@@ -51,7 +177,11 @@ struct HistoryView: View {
             } else {
                 List {
                     ForEach(entries) { entry in
-                        HistoryRow(entry: entry, isRestored: restoredId == entry.id)
+                        HistoryRow(
+                            entry: entry,
+                            isRestored: restoredId == entry.id,
+                            showsMultipleLabels: multipleLabelsSupported
+                        )
                             .contentShape(Rectangle())
                             .onTapGesture(count: 2) { restore(entry.id) }
                             .overlay(RightClickNSView { delete(entry.id) })
@@ -64,9 +194,17 @@ struct HistoryView: View {
 
             // Pagination + clear
             HStack(spacing: 12) {
-                Button { page -= 1; load() } label: { Image(systemName: "chevron.left") }.disabled(page == 0)
+                Button {
+                    let target = page - 1
+                    load(targetPage: target)
+                } label: { Image(systemName: "chevron.left") }
+                    .disabled(page == 0 || isLoading)
                 Text("\(page + 1)").font(.caption).foregroundColor(.secondary).monospacedDigit()
-                Button { page += 1; load() } label: { Image(systemName: "chevron.right") }.disabled(!hasNext)
+                Button {
+                    let target = page + 1
+                    load(targetPage: target)
+                } label: { Image(systemName: "chevron.right") }
+                    .disabled(!hasNext || isLoading)
                 Spacer()
                 if !entries.isEmpty {
                     Button(Loc.t("history.clearAll"), role: .destructive) { showingClearAlert = true }
@@ -80,14 +218,35 @@ struct HistoryView: View {
                 Button(Loc.t("history.clearAll"), role: .destructive) { clearAll() }
             }
         }
-        .onAppear { load() }
+        .onAppear {
+            load()
+            loadHistoryCapabilities()
+        }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
             Task {
-                let v = await ApiClient.shared.getVersion()
-                if v != lastVersion { lastVersion = v; page = 0; load() }
-                if v > 0 { daemonOnline = true }
+                if let version = await ApiClient.shared.getVersion() {
+                    let reconnected = !daemonOnline
+                    if reconnected || version != lastVersion {
+                        lastVersion = version
+                        load(targetPage: 0)
+                    }
+                    daemonOnline = true
+                    if reconnected {
+                        historyCapabilitiesChecked = false
+                        loadHistoryCapabilities()
+                    }
+                } else {
+                    daemonOnline = false
+                }
+                if !historyCapabilitiesChecked { loadHistoryCapabilities() }
                 fileProgress = await ApiClient.shared.getFileProgress()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            reloadActiveDateFilter()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+            reloadActiveDateFilter()
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
@@ -109,17 +268,115 @@ struct HistoryView: View {
         }
     }
 
-    private func load() {
+    private func load(targetPage: Int? = nil) {
+        loadGeneration += 1
+        let generation = loadGeneration
+        let requestedPage = targetPage ?? page
+        let requestedKeyword = keyword.isEmpty ? nil : keyword
+        let requestedCategory = categoryFilteringSupported && selectedCategory != "all"
+            ? selectedCategory
+            : nil
+        let requestedBounds = dateRangeFilteringSupported
+            ? dateBounds(for: selectedDateFilter)
+            : HistoryDateBounds(start: nil, end: nil)
+        let requestedStartTime = utcRFC3339(requestedBounds.start)
+        let requestedEndTime = utcRFC3339(requestedBounds.end)
+        isLoading = true
+        errorMsg = nil
+        entries = []
+        hasNext = false
         Task {
-            isLoading = true
             do {
                 let result = try await ApiClient.shared.getHistory(
-                    keyword: keyword.isEmpty ? nil : keyword, limit: pageSize, offset: page * pageSize)
-                entries = result
-                hasNext = result.count >= pageSize
-            } catch { errorMsg = error.localizedDescription }
-            isLoading = false
+                    keyword: requestedKeyword,
+                    category: requestedCategory,
+                    startTime: requestedStartTime,
+                    endTime: requestedEndTime,
+                    limit: pageSize + 1,
+                    offset: requestedPage * pageSize)
+                guard generation == loadGeneration else { return }
+                entries = Array(result.prefix(pageSize))
+                hasNext = result.count > pageSize
+                page = requestedPage
+            } catch {
+                guard generation == loadGeneration else { return }
+                errorMsg = Loc.t("history.loadError")
+            }
+            if generation == loadGeneration { isLoading = false }
         }
+    }
+
+    private func loadHistoryCapabilities() {
+        guard !historyCapabilitiesLoading else { return }
+        historyCapabilitiesLoading = true
+        Task {
+            do {
+                let capabilities = try await ApiClient.shared.getHistoryCapabilities()
+                supportedCategories = Set(
+                    capabilities?.categories.filter { knownCategories.contains($0) } ?? []
+                )
+                multipleLabelsSupported = capabilities?.multipleLabels ?? false
+                dateRangeFilteringSupported = capabilities?.dateRangeFilter ?? false
+                if selectedCategory != "all" && !supportedCategories.contains(selectedCategory) {
+                    selectedCategory = "all"
+                }
+                if !dateRangeFilteringSupported && selectedDateFilter != .all {
+                    selectedDateFilter = .all
+                }
+                historyCapabilitiesChecked = true
+            } catch {
+                // Keep the capability unchecked so a daemon that is still starting is retried.
+            }
+            historyCapabilitiesLoading = false
+        }
+    }
+
+    private func dateBounds(for filter: HistoryDateFilter) -> HistoryDateBounds {
+        let calendar = Calendar.autoupdatingCurrent
+        let today = calendar.startOfDay(for: Date())
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today)
+
+        switch filter {
+        case .all:
+            return HistoryDateBounds(start: nil, end: nil)
+        case .today:
+            return HistoryDateBounds(start: today, end: tomorrow)
+        case .yesterday:
+            return HistoryDateBounds(
+                start: calendar.date(byAdding: .day, value: -1, to: today),
+                end: today
+            )
+        case .last7, .last30:
+            let daysBeforeToday = filter == .last7 ? 6 : 29
+            return HistoryDateBounds(
+                start: calendar.date(byAdding: .day, value: -daysBeforeToday, to: today),
+                end: tomorrow
+            )
+        case .thisMonth:
+            let interval = calendar.dateInterval(of: .month, for: today)
+            return HistoryDateBounds(start: interval?.start, end: interval?.end)
+        case .custom:
+            let start = calendar.startOfDay(for: customStartDate)
+            let inclusiveEnd = calendar.startOfDay(for: customEndDate)
+            return HistoryDateBounds(
+                start: start,
+                end: calendar.date(byAdding: .day, value: 1, to: inclusiveEnd)
+            )
+        }
+    }
+
+    private func utcRFC3339(_ date: Date?) -> String? {
+        guard let date else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
+    private func reloadActiveDateFilter() {
+        guard dateRangeFilteringSupported && selectedDateFilter != .all else { return }
+        page = 0
+        load(targetPage: 0)
     }
 
     private func restore(_ id: Int64) {
@@ -146,8 +403,14 @@ struct HistoryView: View {
 // ── Row ──────────────────────────────────────────────────────────
 
 struct HistoryRow: View {
-    let entry: HistoryEntry; let isRestored: Bool
+    let entry: HistoryEntry
+    let isRestored: Bool
+    let showsMultipleLabels: Bool
     @State private var thumbnail: NSImage? = nil
+
+    private var visibleCategoryLabels: [String] {
+        showsMultipleLabels ? entry.categoryLabels : [entry.categoryLabel]
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -165,15 +428,20 @@ struct HistoryRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(entry.type.uppercased()).font(.caption2).fontWeight(.semibold)
+                    Text(visibleCategoryLabels.map { $0.uppercased() }.joined(separator: "  \u{00B7}  "))
+                        .font(.caption2).fontWeight(.semibold)
                         .foregroundColor(.accentColor).padding(.horizontal, 4).padding(.vertical, 1)
                         .background(Color.accentColor.opacity(0.12)).cornerRadius(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
                     Text(entry.formattedTime).font(.caption).foregroundColor(.secondary)
+                }
+                Text(entry.description).font(.body).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(entry.formattedSize).font(.caption2).foregroundColor(.secondary).monospacedDigit()
                     Spacer()
                     Text(entry.source_peer).font(.caption2).foregroundColor(.secondary).lineLimit(1)
                 }
-                Text(entry.description).font(.body).lineLimit(1)
-                Text(entry.formattedSize).font(.caption2).foregroundColor(.secondary).monospacedDigit()
             }
         }
         .padding(.vertical, 2).frame(maxWidth: .infinity, alignment: .leading)

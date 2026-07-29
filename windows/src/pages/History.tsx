@@ -8,9 +8,33 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
+import {
+  CalendarDays,
+  Check,
+  ChevronDown,
+  Code2,
+  Database,
+  File,
+  Filter,
+  Folder,
+  Globe2,
+  Image as ImageIcon,
+  Terminal,
+  Type,
+} from "lucide-react";
 import tailsyncIcon from "../../src-tauri/icons/32x32.png";
 
 /* ── Types ──────────────────────────────────────────────────────── */
+
+type HistoryCategory =
+  | "text"
+  | "website"
+  | "code"
+  | "command"
+  | "structured_data"
+  | "path"
+  | "image"
+  | "file";
 
 interface HistoryEntry {
   id: number;
@@ -20,6 +44,10 @@ interface HistoryEntry {
   data_hash: string;
   size_bytes: number;
   source_peer: string;
+  category?: HistoryCategory;
+  categories?: HistoryCategory[];
+  category_confidence?: number;
+  classifier_version?: number;
 }
 
 interface ThumbnailData {
@@ -41,14 +69,248 @@ const PAGE_SIZE = 30;
 const VERSION_POLL_MS = 800;
 const NEW_GLOW_DURATION_MS = 3000;
 const RESTORE_FEEDBACK_DURATION_MS = 1500;
+const HISTORY_CATEGORIES: HistoryCategory[] = [
+  "text",
+  "website",
+  "code",
+  "command",
+  "structured_data",
+  "path",
+  "image",
+  "file",
+];
+const CATEGORY_FILTERS: Array<"all" | HistoryCategory> = [
+  "all",
+  ...HISTORY_CATEGORIES,
+];
+
+const CATEGORY_ICONS = {
+  text: Type,
+  website: Globe2,
+  code: Code2,
+  command: Terminal,
+  structured_data: Database,
+  path: Folder,
+  image: ImageIcon,
+  file: File,
+} satisfies Record<HistoryCategory, typeof Type>;
+
+function resolvedCategory(entry: HistoryEntry): HistoryCategory {
+  return entry.category && HISTORY_CATEGORIES.includes(entry.category)
+    ? entry.category
+    : entry.type;
+}
+
+function resolvedCategories(entry: HistoryEntry): HistoryCategory[] {
+  const primary = resolvedCategory(entry);
+  const categories = (entry.categories ?? []).filter((category) =>
+    HISTORY_CATEGORIES.includes(category),
+  );
+  return [primary, ...categories.filter((category) => category !== primary)].filter(
+    (category, index, values) => values.indexOf(category) === index,
+  );
+}
+
+type DateFilter =
+  | "all"
+  | "today"
+  | "yesterday"
+  | "last7"
+  | "last30"
+  | "thisMonth"
+  | "custom";
+
+interface FilterOption {
+  value: string;
+  label: string;
+  icon?: typeof Type;
+  category?: HistoryCategory;
+}
+
+function FilterDropdown({
+  value,
+  options,
+  label,
+  testId,
+  onChange,
+}: {
+  value: string;
+  options: FilterOption[];
+  label: string;
+  testId: string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+  const SelectedIcon = selected?.icon;
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div className="filter-dropdown" ref={rootRef} data-testid={testId}>
+      <button
+        type="button"
+        className={`filter-trigger${open ? " is-open" : ""}`}
+        aria-label={label}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {SelectedIcon && (
+          <SelectedIcon
+            className={
+              selected.category
+                ? `filter-category-icon ${selected.category}`
+                : undefined
+            }
+            size={13}
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
+        )}
+        <span>{selected?.label}</span>
+        <ChevronDown size={13} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="filter-menu" role="listbox" aria-label={label}>
+          {options.map((option) => {
+            const OptionIcon = option.icon;
+            const selectedOption = option.value === value;
+            return (
+              <button
+                type="button"
+                className={`filter-option${selectedOption ? " is-selected" : ""}`}
+                role="option"
+                aria-selected={selectedOption}
+                key={option.value}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                {OptionIcon ? (
+                  <OptionIcon
+                    className={
+                      option.category
+                        ? `filter-category-icon ${option.category}`
+                        : undefined
+                    }
+                    size={13}
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <span className="filter-option-spacer" />
+                )}
+                <span>{option.label}</span>
+                {selectedOption && <Check size={13} strokeWidth={2} aria-hidden="true" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function localDateFromInput(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+
+  // setFullYear avoids JavaScript's special 1900 offset for years 0-99.
+  const date = new Date(0);
+  date.setHours(0, 0, 0, 0);
+  date.setFullYear(year, month - 1, day);
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function dateInputValue(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localCalendarContextKey(date: Date): string {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
+  return `${dateInputValue(date)}|${date.getTimezoneOffset()}|${timeZone}`;
+}
+
+function dateBounds(
+  filter: DateFilter,
+  customStart: string,
+  customEnd: string,
+  now: Date,
+): { start: number | null; end: number | null; valid: boolean } {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (filter === "all") return { start: null, end: null, valid: true };
+  if (filter === "today") return { start: today.getTime(), end: tomorrow.getTime(), valid: true };
+  if (filter === "yesterday") {
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return { start: yesterday.getTime(), end: today.getTime(), valid: true };
+  }
+  if (filter === "last7" || filter === "last30") {
+    const start = new Date(today);
+    start.setDate(start.getDate() - (filter === "last7" ? 6 : 29));
+    return { start: start.getTime(), end: tomorrow.getTime(), valid: true };
+  }
+  if (filter === "thisMonth") {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    return { start: start.getTime(), end: end.getTime(), valid: true };
+  }
+  const start = customStart ? localDateFromInput(customStart) : null;
+  const inclusiveEnd = customEnd ? localDateFromInput(customEnd) : null;
+  const end = inclusiveEnd ? new Date(inclusiveEnd) : null;
+  if (end) end.setDate(end.getDate() + 1);
+  const validInputs = (!customStart || start !== null) && (!customEnd || inclusiveEnd !== null);
+  const ordered = !start || !inclusiveEnd || start.getTime() <= inclusiveEnd.getTime();
+  return {
+    start: start?.getTime() ?? null,
+    end: end?.getTime() ?? null,
+    valid: Boolean((customStart || customEnd) && validInputs && ordered),
+  };
+}
 
 /* ── Date grouping ──────────────────────────────────────────────── */
 
 type DateGroup = "today" | "yesterday" | "thisWeek" | "thisMonth" | "older";
 
-function getDateGroup(dateStr: string): DateGroup {
+function getDateGroup(dateStr: string, now: Date): DateGroup {
   const d = new Date(dateStr);
-  const now = new Date();
+  if (Number.isNaN(d.getTime())) return "older";
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -56,23 +318,15 @@ function getDateGroup(dateStr: string): DateGroup {
 
   if (itemDate.getTime() === today.getTime()) return "today";
   if (itemDate.getTime() === yesterday.getTime()) return "yesterday";
-  const diffDays = Math.floor(
-    (today.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24),
-  );
+  // Compare local calendar dates through UTC ordinals so DST transitions do
+  // not turn a seven-day boundary into 6.96 or 7.04 elapsed days.
+  const dayOrdinal = (date: Date) =>
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) /
+    (1000 * 60 * 60 * 24);
+  const diffDays = dayOrdinal(today) - dayOrdinal(itemDate);
   if (diffDays <= 7) return "thisWeek";
   if (diffDays <= 30) return "thisMonth";
   return "older";
-}
-
-function getGroupLabel(group: DateGroup, locale: string): string {
-  const labels: Record<DateGroup, Record<string, string>> = {
-    today: { en: "Today", "zh-CN": "今天" },
-    yesterday: { en: "Yesterday", "zh-CN": "昨天" },
-    thisWeek: { en: "This Week", "zh-CN": "这周" },
-    thisMonth: { en: "This Month", "zh-CN": "本月" },
-    older: { en: "Older", "zh-CN": "更早" },
-  };
-  return labels[group][locale] || labels[group]["en"];
 }
 
 const GROUP_ORDER: DateGroup[] = [
@@ -83,18 +337,23 @@ const GROUP_ORDER: DateGroup[] = [
   "older",
 ];
 
+const GROUP_LABEL_KEYS: Record<DateGroup, string> = {
+  today: "history.group.today",
+  yesterday: "history.group.yesterday",
+  thisWeek: "history.group.thisWeek",
+  thisMonth: "history.group.thisMonth",
+  older: "history.group.older",
+};
+
 /* ── Helpers ────────────────────────────────────────────────────── */
 
 function formatTime(iso: string) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatSize(bytes: number) {
@@ -135,6 +394,12 @@ export function History() {
   const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
   const thumbnailIds = useRef<Set<number>>(new Set());
   const [keyword, setKeyword] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<"all" | HistoryCategory>("all");
+  const [selectedDateFilter, setSelectedDateFilter] = useState<DateFilter>("all");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [calendarNow, setCalendarNow] = useState(() => new Date());
+  const calendarContextKey = useRef(localCalendarContextKey(calendarNow));
   const [page, setPage] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -167,9 +432,67 @@ export function History() {
     () => () => window.clearTimeout(restoreFeedbackTimer.current),
     [],
   );
+  useEffect(() => {
+    const refreshCalendar = () => {
+      const nextNow = new Date();
+      const nextKey = localCalendarContextKey(nextNow);
+      if (nextKey === calendarContextKey.current) return;
+      calendarContextKey.current = nextKey;
+      setCalendarNow(nextNow);
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshCalendar();
+    };
+    const intervalId = window.setInterval(refreshCalendar, 60_000);
+    window.addEventListener("focus", refreshCalendar);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshCalendar);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, []);
 
   const { theme } = useTheme();
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
+
+  const categoryOptions = useMemo<FilterOption[]>(
+    () =>
+      CATEGORY_FILTERS.map((category) => ({
+        value: category,
+        label: t(`history.category.${category}`),
+        icon: category === "all" ? Filter : CATEGORY_ICONS[category],
+        category: category === "all" ? undefined : category,
+      })),
+    [t],
+  );
+  const dateOptions = useMemo<FilterOption[]>(
+    () =>
+      (["all", "today", "yesterday", "last7", "last30", "thisMonth", "custom"] as DateFilter[]).map(
+        (filter) => ({
+          value: filter,
+          label: t(`history.date.${filter}`),
+          icon: CalendarDays,
+        }),
+      ),
+    [t],
+  );
+  const activeDateBounds = useMemo(
+    () => dateBounds(selectedDateFilter, customStartDate, customEndDate, calendarNow),
+    [selectedDateFilter, customStartDate, customEndDate, calendarNow],
+  );
+  const hasActiveFilters =
+    Boolean(keyword) || selectedCategory !== "all" || selectedDateFilter !== "all";
+
+  const handleDateFilterChange = useCallback((value: string) => {
+    const filter = value as DateFilter;
+    setSelectedDateFilter(filter);
+    if (filter === "custom" && !customStartDate && !customEndDate) {
+      const today = dateInputValue(new Date());
+      setCustomStartDate(today);
+      setCustomEndDate(today);
+    }
+  }, [customStartDate, customEndDate]);
 
   /* ── Settings load ────────────────────────────────────────────── */
 
@@ -187,16 +510,35 @@ export function History() {
   /* ── Pagination ───────────────────────────────────────────────── */
 
   const filtered = useMemo(
-    () =>
-      keyword
-        ? allEntries.filter(
-            (e) =>
-              e.description.toLowerCase().includes(keyword.toLowerCase()) ||
-              e.type.toLowerCase().includes(keyword.toLowerCase()) ||
-              e.source_peer.toLowerCase().includes(keyword.toLowerCase()),
-          )
-        : allEntries,
-    [allEntries, keyword],
+    () => {
+      const normalizedKeyword = keyword.toLowerCase();
+      return allEntries.filter((entry) => {
+        const categories = resolvedCategories(entry);
+        const matchesCategory =
+          selectedCategory === "all" || categories.includes(selectedCategory);
+        const timestamp = new Date(entry.timestamp).getTime();
+        const hasDateConstraint =
+          activeDateBounds.start !== null || activeDateBounds.end !== null;
+        const matchesDate =
+          activeDateBounds.valid &&
+          (!hasDateConstraint ||
+            (!Number.isNaN(timestamp) &&
+              (activeDateBounds.start === null || timestamp >= activeDateBounds.start) &&
+              (activeDateBounds.end === null || timestamp < activeDateBounds.end)));
+        const matchesKeyword =
+          !normalizedKeyword ||
+          entry.description.toLowerCase().includes(normalizedKeyword) ||
+          entry.type.toLowerCase().includes(normalizedKeyword) ||
+          entry.source_peer.toLowerCase().includes(normalizedKeyword) ||
+          categories.some(
+            (label) =>
+              label.includes(normalizedKeyword) ||
+              t(`history.category.${label}`).toLowerCase().includes(normalizedKeyword),
+          );
+        return matchesCategory && matchesDate && matchesKeyword;
+      });
+    },
+    [activeDateBounds, allEntries, keyword, selectedCategory, t],
   );
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -235,7 +577,10 @@ export function History() {
     setLoading(true);
     try {
       const result = await invoke<HistoryEntry[]>("get_history", {
-        keyword: keyword || null,
+        keyword: null,
+        category: null,
+        startTime: null,
+        endTime: null,
         limit: 10000,
         offset: 0,
       });
@@ -285,7 +630,7 @@ export function History() {
     } finally {
       setLoading(false);
     }
-  }, [keyword, loadThumbnails]);
+  }, [loadThumbnails]);
 
   /* ── Polling ──────────────────────────────────────────────────── */
 
@@ -328,8 +673,11 @@ export function History() {
 
   useEffect(() => {
     setPage(0);
+  }, [keyword, selectedCategory, selectedDateFilter, customStartDate, customEndDate]);
+
+  useEffect(() => {
     loadHistory();
-  }, [keyword, loadHistory]);
+  }, [loadHistory]);
 
   /* ── Actions ──────────────────────────────────────────────────── */
 
@@ -401,21 +749,6 @@ export function History() {
     ? allEntries.find((e) => e.id === selectedId)
     : null;
 
-  /* ── Render helpers ───────────────────────────────────────────── */
-
-  const typeIcon = (type: string) => {
-    switch (type) {
-      case "text":
-        return "📝";
-      case "image":
-        return "🖼️";
-      case "file":
-        return "📎";
-      default:
-        return "📋";
-    }
-  };
-
   /* ── Render ───────────────────────────────────────────────────── */
 
   return (
@@ -432,7 +765,8 @@ export function History() {
         <button
           className="titlebar-close"
           onClick={() => getCurrentWindow().hide()}
-          title="Close"
+          title={t("history.close")}
+          aria-label={t("history.close")}
         >
           ✕
         </button>
@@ -465,8 +799,8 @@ export function History() {
           type="button"
           disabled={allEntries.length === 0}
           onClick={() => setShowClearConfirm(true)}
-          title={locale === "zh-CN" ? "清空全部历史记录" : "Clear all history"}
-          aria-label={locale === "zh-CN" ? "清空全部历史记录" : "Clear all history"}
+          title={t("history.clearAll")}
+          aria-label={t("history.clearAll")}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 10v6M14 10v6" />
@@ -474,11 +808,61 @@ export function History() {
         </button>
       </div>
 
-      {keyword && filtered.length > 0 && (
+      <div className="history-filter-bar">
+        <FilterDropdown
+          value={selectedCategory}
+          options={categoryOptions}
+          label={t("history.categoryFilter")}
+          testId="category-filter"
+          onChange={(value) =>
+            setSelectedCategory(value as "all" | HistoryCategory)
+          }
+        />
+        <FilterDropdown
+          value={selectedDateFilter}
+          options={dateOptions}
+          label={t("history.dateFilter")}
+          testId="date-filter"
+          onChange={handleDateFilterChange}
+        />
+      </div>
+
+      {selectedDateFilter === "custom" && (
+        <div className="custom-date-range" data-testid="custom-date-range">
+          <label>
+            <span>{t("history.date.start")}</span>
+            <input
+              type="date"
+              value={customStartDate}
+              max={customEndDate || undefined}
+              aria-invalid={!activeDateBounds.valid}
+              aria-describedby={!activeDateBounds.valid ? "custom-date-error" : undefined}
+              onChange={(event) => setCustomStartDate(event.target.value)}
+            />
+          </label>
+          <span className="date-range-separator" aria-hidden="true">–</span>
+          <label>
+            <span>{t("history.date.end")}</span>
+            <input
+              type="date"
+              value={customEndDate}
+              min={customStartDate || undefined}
+              aria-invalid={!activeDateBounds.valid}
+              aria-describedby={!activeDateBounds.valid ? "custom-date-error" : undefined}
+              onChange={(event) => setCustomEndDate(event.target.value)}
+            />
+          </label>
+          {!activeDateBounds.valid && (
+            <span className="date-range-error" id="custom-date-error" role="status">
+              {t("history.date.invalid")}
+            </span>
+          )}
+        </div>
+      )}
+
+      {hasActiveFilters && filtered.length > 0 && (
         <div className="search-results-count">
-          {locale === "zh-CN"
-            ? `找到 ${filtered.length} 条结果`
-            : `${filtered.length} result${filtered.length > 1 ? "s" : ""} found`}
+          {filtered.length} {t(filtered.length === 1 ? "history.result" : "history.results")}
         </div>
       )}
 
@@ -500,7 +884,7 @@ export function History() {
       ) : entries.length === 0 ? (
         /* Empty state */
         <div className="empty-state">
-          {keyword ? (
+          {hasActiveFilters ? (
             <>
               <div className="empty-state-illustration">
                 <svg
@@ -516,14 +900,10 @@ export function History() {
                 </svg>
               </div>
               <div className="empty-state-title">
-                {locale === "zh-CN"
-                  ? "没有找到匹配的内容"
-                  : "No matching entries"}
+                {t("history.noMatches")}
               </div>
               <div className="empty-state-desc">
-                {locale === "zh-CN"
-                  ? `未找到包含 "${keyword}" 的内容`
-                  : `No entries matching "${keyword}"`}
+                {t("history.noMatchesDescription")}
               </div>
             </>
           ) : (
@@ -542,14 +922,10 @@ export function History() {
                 </svg>
               </div>
               <div className="empty-state-title">
-                {locale === "zh-CN"
-                  ? "剪贴板历史为空"
-                  : "No clipboard history"}
+                {t("history.emptyTitle")}
               </div>
               <div className="empty-state-desc">
-                {locale === "zh-CN"
-                  ? "跨设备复制内容后会自动出现在这里"
-                  : "Copy content on any device — it will appear here"}
+                {t("history.emptyDescription")}
               </div>
             </>
           )}
@@ -561,7 +937,7 @@ export function History() {
             // Group entries by date
             const groups: Record<string, HistoryEntry[]> = {};
             entries.forEach((entry) => {
-              const g = getDateGroup(entry.timestamp);
+              const g = getDateGroup(entry.timestamp, calendarNow);
               if (!groups[g]) groups[g] = [];
               groups[g].push(entry);
             });
@@ -575,12 +951,15 @@ export function History() {
                 <div className="date-group" key={group}>
                   <div className="date-header">
                     <span className="date-dot" />
-                    {getGroupLabel(group, locale)}
+                    {t(GROUP_LABEL_KEYS[group])}
                   </div>
                   {groupEntries.map((entry) => {
                     const delay = itemIndex * 30;
                     itemIndex++;
                     const isNew = newIds.has(entry.id);
+                    const categories = resolvedCategories(entry);
+                    const category = categories[0];
+                    const CategoryIcon = CATEGORY_ICONS[category];
                     return (
                       <div
                         key={entry.id}
@@ -597,19 +976,19 @@ export function History() {
                         thumbnails.has(entry.id) ? (
                           <ThumbnailCanvas data={thumbnails.get(entry.id)!} />
                         ) : (
-                          <div className="item-icon">
-                            {typeIcon(entry.type)}
+                          <div className={`item-icon ${category}`}>
+                            <CategoryIcon size={15} strokeWidth={1.8} aria-hidden="true" />
                           </div>
                         )}
 
                         <div className="item-content">
                           <div className="item-meta">
-                            <span className={`item-type ${entry.type}`}>
-                              {entry.type === "text"
-                                ? "Text"
-                                : entry.type === "image"
-                                  ? "Image"
-                                  : "File"}
+                            <span className="item-categories">
+                              {categories.map((label) => (
+                                <span className={`item-type ${label}`} key={label}>
+                                  {t(`history.category.${label}`)}
+                                </span>
+                              ))}
                             </span>
                             <span className="item-time">
                               {formatTime(entry.timestamp)}
@@ -622,7 +1001,6 @@ export function History() {
                             className="item-desc"
                             title={entry.description}
                           >
-                            {entry.type === "file" ? "📁 " : ""}
                             {entry.description}
                           </div>
                           <div className="item-footer">
@@ -715,21 +1093,17 @@ export function History() {
               </svg>
             </div>
             <h2 id="clear-history-title">
-              {locale === "zh-CN" ? "清空全部历史记录？" : "Clear all history?"}
+              {t("history.clearConfirmTitle")}
             </h2>
             <p>
-              {locale === "zh-CN"
-                ? "此操作会永久删除此设备上的所有剪贴板历史，且无法撤销。"
-                : "This permanently deletes all clipboard history on this device and cannot be undone."}
+              {t("history.clearConfirmDescription")}
             </p>
             <div className="confirm-dialog-actions">
               <button type="button" onClick={() => setShowClearConfirm(false)} disabled={clearing}>
-                {locale === "zh-CN" ? "取消" : "Cancel"}
+                {t("history.cancel")}
               </button>
               <button type="button" className="danger" onClick={handleClearHistory} disabled={clearing}>
-                {clearing
-                  ? locale === "zh-CN" ? "正在清空..." : "Clearing..."
-                  : locale === "zh-CN" ? "全部清空" : "Clear all"}
+                {t(clearing ? "history.clearing" : "history.clearAll")}
               </button>
             </div>
           </div>

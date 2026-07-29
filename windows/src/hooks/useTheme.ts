@@ -4,10 +4,30 @@ type Theme = "light" | "dark" | "system";
 
 const STORAGE_KEY = "tailsync-theme";
 
+function readStoredTheme(): Theme | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored === "light" || stored === "dark" || stored === "system"
+      ? stored
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeTheme(theme: Theme) {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(STORAGE_KEY, theme);
+    }
+  } catch {
+    // Storage can be unavailable in hardened or private webviews.
+  }
+}
+
 export function useTheme() {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    return (localStorage.getItem(STORAGE_KEY) as Theme) || "system";
-  });
+  const [theme, setThemeState] = useState<Theme>(() => readStoredTheme() || "system");
 
   const getEffectiveTheme = useCallback((): "light" | "dark" => {
     if (theme === "system") {
@@ -50,7 +70,7 @@ export function useTheme() {
 
   const setTheme = (t: Theme) => {
     setThemeState(t);
-    localStorage.setItem(STORAGE_KEY, t);
+    storeTheme(t);
   };
 
   return { theme: effective, setTheme, themePreference: theme };
