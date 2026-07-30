@@ -1,7 +1,52 @@
 use log::info;
 #[cfg(target_os = "macos")]
 use std::process::{Child, Command};
-use tauri::AppHandle;
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    AppHandle, Runtime,
+};
+
+const TRAY_ID: &str = "tailsync-tray";
+
+#[derive(Debug, PartialEq, Eq)]
+struct TrayLabels {
+    history: &'static str,
+    settings: &'static str,
+    quit: &'static str,
+}
+
+fn tray_labels(language: &str) -> TrayLabels {
+    if language == "zh-CN" {
+        TrayLabels {
+            history: "历史记录",
+            settings: "设置",
+            quit: "退出 TailSync",
+        }
+    } else {
+        TrayLabels {
+            history: "History",
+            settings: "Settings",
+            quit: "Quit TailSync",
+        }
+    }
+}
+
+fn build_tray_menu<R: Runtime>(app: &AppHandle<R>, language: &str) -> tauri::Result<Menu<R>> {
+    let labels = tray_labels(language);
+    let show = MenuItem::with_id(app, "show", labels.history, true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", labels.settings, true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", labels.quit, true, None::<&str>)?;
+    Menu::with_items(app, &[&show, &settings, &separator, &quit])
+}
+
+pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>, language: &str) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Ok(());
+    };
+    let menu = build_tray_menu(app, language).map_err(|error| error.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Public entry point
@@ -10,6 +55,7 @@ use tauri::AppHandle;
 /// Start the tray system on non-macOS platforms using Tauri's built-in tray.
 /// macOS uses the SwiftUI menu bar instead, so this entry point is excluded there.
 #[cfg(not(target_os = "macos"))]
+#[cfg_attr(test, allow(dead_code))]
 pub fn start_tray(app_handle: AppHandle) {
     create_tauri_tray(&app_handle);
 }
@@ -91,15 +137,13 @@ fn resolve_helper_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error
 fn create_tauri_tray(app: &AppHandle) {
     use tauri::{
         image::Image,
-        menu::{Menu, MenuItem},
         tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     };
 
-    let show = MenuItem::with_id(app, "show", "History", true, None::<&str>).unwrap();
-    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>).unwrap();
-    let sep = tauri::menu::PredefinedMenuItem::separator(app).unwrap();
-    let quit = MenuItem::with_id(app, "quit", "Quit TailSync", true, None::<&str>).unwrap();
-    let menu = Menu::with_items(app, &[&show, &settings, &sep, &quit]).unwrap();
+    let language = crate::crypto::Settings::load()
+        .map(|settings| settings.language)
+        .unwrap_or_else(|_| "en".into());
+    let menu = build_tray_menu(app, &language).expect("failed to build tray menu");
 
     // The tray is rendered at roughly 16-24 physical pixels on Windows.
     // Feeding it the 512px application artwork makes the shell resample the
@@ -109,7 +153,7 @@ fn create_tauri_tray(app: &AppHandle) {
     let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
         .unwrap_or_else(|_| Image::new(&[0u8; 1024], 32, 32));
 
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -156,31 +200,17 @@ fn create_tauri_tray(app: &AppHandle) {
 fn create_tauri_tray(app: &AppHandle) {
     // On macOS this is only called as a fallback when the Swift helper
     // fails to start, so we do create a Tauri tray.
-    use tauri::{
-        image::Image,
-        menu::{Menu, MenuItem},
-        tray::TrayIconBuilder,
-    };
+    use tauri::{image::Image, tray::TrayIconBuilder};
 
-    let is_zh = crate::crypto::Settings::load()
-        .map(|s| s.language == "zh-CN")
-        .unwrap_or(false);
-    let (hl, sl, ql) = if is_zh {
-        ("历史记录", "设置", "退出")
-    } else {
-        ("History", "Settings", "Quit")
-    };
-
-    let show = MenuItem::with_id(app, "show", hl, true, None::<&str>).unwrap();
-    let settings = MenuItem::with_id(app, "settings", sl, true, None::<&str>).unwrap();
-    let sep = tauri::menu::PredefinedMenuItem::separator(app).unwrap();
-    let quit = MenuItem::with_id(app, "quit", ql, true, None::<&str>).unwrap();
-    let menu = Menu::with_items(app, &[&show, &settings, &sep, &quit]).unwrap();
+    let language = crate::crypto::Settings::load()
+        .map(|settings| settings.language)
+        .unwrap_or_else(|_| "en".into());
+    let menu = build_tray_menu(app, &language).expect("failed to build tray menu");
 
     let icon = Image::from_bytes(include_bytes!("../icons/icon.png"))
         .unwrap_or_else(|_| Image::new(&[0u8; 1024], 32, 32));
 
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .menu(&menu)
         .tooltip("TailSync")
@@ -204,4 +234,30 @@ fn create_tauri_tray(app: &AppHandle) {
         .unwrap();
 
     info!("Tauri tray created (fallback)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tray_labels, TrayLabels};
+
+    #[test]
+    fn tray_labels_follow_saved_language() {
+        assert_eq!(
+            tray_labels("zh-CN"),
+            TrayLabels {
+                history: "历史记录",
+                settings: "设置",
+                quit: "退出 TailSync",
+            }
+        );
+        assert_eq!(
+            tray_labels("en"),
+            TrayLabels {
+                history: "History",
+                settings: "Settings",
+                quit: "Quit TailSync",
+            }
+        );
+        assert_eq!(tray_labels("unsupported"), tray_labels("en"));
+    }
 }

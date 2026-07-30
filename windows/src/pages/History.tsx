@@ -4,9 +4,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
 import {
+  ArrowLeft,
+  ArrowLeftRight,
+  ArrowRight,
   CalendarDays,
   Check,
   ChevronDown,
+  Clipboard,
   Code2,
   Database,
   File,
@@ -14,8 +18,12 @@ import {
   Folder,
   Globe2,
   Image as ImageIcon,
+  Search,
+  SearchX,
   Terminal,
+  Trash2,
   Type,
+  X,
 } from "lucide-react";
 import tailsyncIcon from "../../src-tauri/icons/32x32.png";
 
@@ -457,7 +465,7 @@ export function History() {
     };
   }, []);
 
-  const { theme } = useTheme();
+  const { theme, colorTheme } = useTheme();
   const { t } = useI18n();
 
   const categoryOptions = useMemo<FilterOption[]>(
@@ -737,7 +745,7 @@ export function History() {
   /* ── Render ───────────────────────────────────────────────────── */
 
   return (
-    <div className={`app ${theme}`}>
+    <div className={`app ${theme} theme-${colorTheme}`}>
       {/* ── Title bar ── */}
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-brand">
@@ -753,24 +761,14 @@ export function History() {
           title={t("history.close")}
           aria-label={t("history.close")}
         >
-          ✕
+          <X size={15} strokeWidth={1.8} aria-hidden="true" />
         </button>
       </div>
 
       {/* ── Search ── */}
       <div className="search-bar">
         <span className="search-icon">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="11" cy="11" r="8" />
-            <path d="M21 21l-4.35-4.35" />
-          </svg>
+          <Search size={18} strokeWidth={1.7} aria-hidden="true" />
         </span>
         <input
           type="text"
@@ -787,9 +785,7 @@ export function History() {
           title={t("history.clearAll")}
           aria-label={t("history.clearAll")}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 10v6M14 10v6" />
-          </svg>
+          <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
         </button>
       </div>
 
@@ -874,17 +870,7 @@ export function History() {
           {hasActiveFilters ? (
             <>
               <div className="empty-state-illustration">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <circle cx="11" cy="11" r="8" />
-                  <path d="M21 21l-4.35-4.35" />
-                </svg>
+                <SearchX size={30} strokeWidth={1.35} aria-hidden="true" />
               </div>
               <div className="empty-state-title">
                 {t("history.noMatches")}
@@ -896,17 +882,7 @@ export function History() {
           ) : (
             <>
               <div className="empty-state-illustration">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <path d="M9 12h6M12 9v6" />
-                </svg>
+                <Clipboard size={30} strokeWidth={1.35} aria-hidden="true" />
               </div>
               <div className="empty-state-title">
                 {t("history.emptyTitle")}
@@ -981,6 +957,7 @@ export function History() {
                               {formatTime(entry.timestamp)}
                             </span>
                             <span className="item-peer">
+                              <ArrowLeftRight className="item-peer-icon" size={11} strokeWidth={1.8} aria-hidden="true" />
                               {entry.source_peer}
                             </span>
                           </div>
@@ -1019,7 +996,8 @@ export function History() {
                 ?.scrollTo({ top: 0, behavior: "smooth" });
             }}
           >
-            ← {t("history.prev")}
+            <ArrowLeft size={14} strokeWidth={1.8} aria-hidden="true" />
+            {t("history.prev")}
           </button>
           <span className="page-info">
             {page + 1} / {totalPages}
@@ -1034,7 +1012,8 @@ export function History() {
                 ?.scrollTo({ top: 0, behavior: "smooth" });
             }}
           >
-            {t("history.next")} →
+            {t("history.next")}
+            <ArrowRight size={14} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </div>
       )}
@@ -1075,9 +1054,7 @@ export function History() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="confirm-dialog-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
-              </svg>
+              <Trash2 size={22} strokeWidth={1.6} aria-hidden="true" />
             </div>
             <h2 id="clear-history-title">
               {t("history.clearConfirmTitle")}

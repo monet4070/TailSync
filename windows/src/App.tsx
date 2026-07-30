@@ -1319,17 +1319,6 @@ function App() {
             </div>
           </div>
 
-          <div className="hero-device hero-device-left" aria-hidden="true">
-            <Laptop size={20} />
-            <span>MACBOOK PRO</span>
-            <small>LOCAL / READY</small>
-          </div>
-          <div className="hero-device hero-device-right" aria-hidden="true">
-            <Monitor size={20} />
-            <span>WINDOWS STUDIO</span>
-            <small>SECURE / ONLINE</small>
-          </div>
-
           <div className="hero-index" aria-hidden="true">
             <span>01</span>
             <span>DIRECT CLIPBOARD PROTOCOL</span>

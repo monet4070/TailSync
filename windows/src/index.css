@@ -36,7 +36,31 @@
   --radius-lg: 12px;
   --radius-full: 9999px;
 
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", "PingFang SC",
+    "Helvetica Neue", sans-serif;
+  --font-display: var(--font-ui);
+  --font-content: var(--font-ui);
   --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+
+  --font-size-ui: 13px;
+  --font-size-title: 12px;
+  --font-size-content: 13px;
+  --font-size-setting: 13px;
+  --font-size-section: 11px;
+  --font-weight-body: 400;
+  --font-weight-content: 500;
+  --font-weight-strong: 600;
+  --line-height-ui: 1.5;
+  --titlebar-height: 38px;
+  --history-row-padding-y: 10px;
+  --history-row-gap: 10px;
+  --history-content-gap: 2px;
+  --history-item-min-height: 52px;
+  --setting-row-padding-y: 10px;
+  --control-border-width: 1px;
+  --item-hover-shift: 2px;
+  --window-radius: 6px;
 
   --green: #34C759;
   --green-soft: rgba(52, 199, 89, 0.12);
@@ -88,6 +112,285 @@
   --purple-soft: rgba(191, 90, 242, 0.14);
 }
 
+/* Built-in colour themes. Mode and palette stay independent so every palette
+   works with light, dark, and follow-system preferences. */
+.app.light.theme-ocean {
+  --brand: #087f8c;
+  --brand-soft: rgba(8, 127, 140, 0.12);
+  --brand-hover: #066873;
+  --brand-text: #ffffff;
+  --bg-window: #f1f7f7;
+  --bg-card: #fcfefe;
+  --bg-input: rgba(8, 91, 101, 0.06);
+  --bg-hover: rgba(8, 91, 101, 0.08);
+  --bg-active: rgba(8, 91, 101, 0.13);
+  --bg-raised: #ffffff;
+  --text-primary: rgba(5, 31, 33, 0.9);
+  --text-secondary: rgba(5, 31, 33, 0.6);
+  --text-tertiary: rgba(5, 31, 33, 0.4);
+  --border: rgba(8, 71, 78, 0.09);
+  --border-strong: rgba(8, 71, 78, 0.18);
+  --divider: rgba(8, 71, 78, 0.07);
+}
+
+.app.dark.theme-ocean {
+  --brand: #4cc9c0;
+  --brand-soft: rgba(76, 201, 192, 0.16);
+  --brand-hover: #68d7cf;
+  --brand-text: #071918;
+  --bg-window: #111e20;
+  --bg-card: #1a2a2d;
+  --bg-input: rgba(210, 255, 252, 0.07);
+  --bg-hover: rgba(210, 255, 252, 0.09);
+  --bg-active: rgba(210, 255, 252, 0.14);
+  --bg-raised: #203235;
+  --text-primary: rgba(242, 255, 254, 0.94);
+  --text-secondary: rgba(224, 248, 246, 0.62);
+  --text-tertiary: rgba(224, 248, 246, 0.4);
+  --border: rgba(192, 239, 235, 0.09);
+  --border-strong: rgba(192, 239, 235, 0.18);
+  --divider: rgba(192, 239, 235, 0.07);
+}
+
+.app.light.theme-forest {
+  --brand: #287a55;
+  --brand-soft: rgba(40, 122, 85, 0.12);
+  --brand-hover: #1f6545;
+  --brand-text: #ffffff;
+  --bg-window: #f3f7f3;
+  --bg-card: #fcfdfb;
+  --bg-input: rgba(39, 92, 62, 0.06);
+  --bg-hover: rgba(39, 92, 62, 0.08);
+  --bg-active: rgba(39, 92, 62, 0.13);
+  --bg-raised: #ffffff;
+  --text-primary: rgba(19, 38, 27, 0.9);
+  --text-secondary: rgba(19, 38, 27, 0.6);
+  --text-tertiary: rgba(19, 38, 27, 0.4);
+  --border: rgba(35, 82, 53, 0.09);
+  --border-strong: rgba(35, 82, 53, 0.18);
+  --divider: rgba(35, 82, 53, 0.07);
+}
+
+.app.dark.theme-forest {
+  --brand: #69ca91;
+  --brand-soft: rgba(105, 202, 145, 0.16);
+  --brand-hover: #82d7a4;
+  --brand-text: #0b1a11;
+  --bg-window: #151f18;
+  --bg-card: #202d24;
+  --bg-input: rgba(225, 255, 234, 0.07);
+  --bg-hover: rgba(225, 255, 234, 0.09);
+  --bg-active: rgba(225, 255, 234, 0.14);
+  --bg-raised: #26362a;
+  --text-primary: rgba(246, 255, 248, 0.94);
+  --text-secondary: rgba(229, 248, 234, 0.62);
+  --text-tertiary: rgba(229, 248, 234, 0.4);
+  --border: rgba(207, 239, 216, 0.09);
+  --border-strong: rgba(207, 239, 216, 0.18);
+  --divider: rgba(207, 239, 216, 0.07);
+}
+
+.app.light.theme-rose {
+  --brand: #b83e60;
+  --brand-soft: rgba(184, 62, 96, 0.12);
+  --brand-hover: #99324f;
+  --brand-text: #ffffff;
+  --bg-window: #faf4f6;
+  --bg-card: #fffdfd;
+  --bg-input: rgba(128, 42, 66, 0.055);
+  --bg-hover: rgba(128, 42, 66, 0.075);
+  --bg-active: rgba(128, 42, 66, 0.12);
+  --bg-raised: #ffffff;
+  --text-primary: rgba(48, 19, 27, 0.9);
+  --text-secondary: rgba(48, 19, 27, 0.6);
+  --text-tertiary: rgba(48, 19, 27, 0.4);
+  --border: rgba(113, 38, 59, 0.09);
+  --border-strong: rgba(113, 38, 59, 0.18);
+  --divider: rgba(113, 38, 59, 0.07);
+}
+
+.app.dark.theme-rose {
+  --brand: #ef86a2;
+  --brand-soft: rgba(239, 134, 162, 0.16);
+  --brand-hover: #f39ab1;
+  --brand-text: #251016;
+  --bg-window: #24191d;
+  --bg-card: #322329;
+  --bg-input: rgba(255, 226, 234, 0.07);
+  --bg-hover: rgba(255, 226, 234, 0.09);
+  --bg-active: rgba(255, 226, 234, 0.14);
+  --bg-raised: #3a2930;
+  --text-primary: rgba(255, 247, 249, 0.94);
+  --text-secondary: rgba(250, 229, 235, 0.62);
+  --text-tertiary: rgba(250, 229, 235, 0.4);
+  --border: rgba(245, 211, 220, 0.09);
+  --border-strong: rgba(245, 211, 220, 0.18);
+  --divider: rgba(245, 211, 220, 0.07);
+}
+
+.app.light.theme-high-contrast {
+  --brand: #005fcc;
+  --brand-soft: rgba(0, 95, 204, 0.15);
+  --brand-hover: #004b9f;
+  --brand-text: #ffffff;
+  --bg-window: #ffffff;
+  --bg-card: #ffffff;
+  --bg-input: #f0f0f0;
+  --bg-hover: #e8e8e8;
+  --bg-active: #d8d8d8;
+  --bg-raised: #ffffff;
+  --text-primary: #000000;
+  --text-secondary: #333333;
+  --text-tertiary: #5a5a5a;
+  --border: #8a8a8a;
+  --border-strong: #454545;
+  --divider: #b0b0b0;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --green: #087a32;
+  --orange: #9a4d00;
+  --purple: #6e35a5;
+}
+
+.app.dark.theme-high-contrast {
+  --brand: #ffd400;
+  --brand-soft: rgba(255, 212, 0, 0.2);
+  --brand-hover: #ffe25c;
+  --brand-text: #000000;
+  --bg-window: #000000;
+  --bg-card: #101010;
+  --bg-input: #1c1c1c;
+  --bg-hover: #282828;
+  --bg-active: #383838;
+  --bg-raised: #181818;
+  --text-primary: #ffffff;
+  --text-secondary: #e3e3e3;
+  --text-tertiary: #b8b8b8;
+  --border: #777777;
+  --border-strong: #c7c7c7;
+  --divider: #595959;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --green: #65ff8f;
+  --orange: #ffd166;
+  --purple: #d3a6ff;
+}
+
+/* Themes change typography, density, shape, and elevation in addition to
+   colour. Light/dark mode only changes the palette above. */
+.app.theme-tailsync {
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "Segoe UI Variable Display", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-content: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+}
+
+.app.theme-ocean {
+  --font-ui: "Bahnschrift", "Avenir Next", "DengXian", "Hiragino Sans GB",
+    "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: "Bahnschrift SemiBold", "Avenir Next Demi Bold", "Segoe UI",
+    "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-content: "Avenir Next", "DengXian", "Hiragino Sans GB", "Segoe UI",
+    "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-weight-content: 450;
+  --line-height-ui: 1.55;
+  --titlebar-height: 40px;
+  --history-row-padding-y: 11px;
+  --history-row-gap: 12px;
+  --history-content-gap: 3px;
+  --history-item-min-height: 56px;
+  --setting-row-padding-y: 11px;
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+  --item-hover-shift: 3px;
+  --window-radius: 3px;
+  --shadow-sm: 0 1px 2px rgba(5, 48, 54, 0.1);
+  --shadow-md: 0 5px 14px rgba(5, 48, 54, 0.12);
+  --shadow-lg: 0 12px 28px rgba(5, 48, 54, 0.16);
+}
+
+.app.theme-forest {
+  --font-ui: "Constantia", "Songti SC", "STSong", "SimSun", "Georgia", serif;
+  --font-display: "Constantia", "Songti SC", "STSong", "SimSun", "Georgia", serif;
+  --font-content: "Georgia", "Songti SC", "STSong", "SimSun", "Constantia", serif;
+  --font-weight-content: 400;
+  --font-size-title: 13px;
+  --font-size-content: 14px;
+  --font-size-section: 12px;
+  --line-height-ui: 1.62;
+  --titlebar-height: 42px;
+  --history-row-padding-y: 12px;
+  --history-row-gap: 12px;
+  --history-content-gap: 4px;
+  --history-item-min-height: 60px;
+  --setting-row-padding-y: 12px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --item-hover-shift: 0px;
+  --window-radius: 2px;
+  --shadow-sm: 0 1px 2px rgba(24, 52, 33, 0.08);
+  --shadow-md: 0 3px 10px rgba(24, 52, 33, 0.1);
+  --shadow-lg: 0 8px 20px rgba(24, 52, 33, 0.14);
+}
+
+.app.theme-rose {
+  --font-ui: "Candara", "Corbel", "YouYuan", "Hiragino Maru Gothic ProN",
+    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: "Candara", "YouYuan", "Hiragino Maru Gothic ProN",
+    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-content: "Corbel", "Candara", "YouYuan", "Hiragino Maru Gothic ProN",
+    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-size-title: 13px;
+  --font-size-content: 14px;
+  --line-height-ui: 1.58;
+  --titlebar-height: 42px;
+  --history-row-padding-y: 11px;
+  --history-row-gap: 12px;
+  --history-content-gap: 3px;
+  --history-item-min-height: 58px;
+  --setting-row-padding-y: 11px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --item-hover-shift: 0px;
+  --window-radius: 12px;
+  --shadow-sm: 0 2px 6px rgba(104, 35, 55, 0.08);
+  --shadow-md: 0 7px 20px rgba(104, 35, 55, 0.12);
+  --shadow-lg: 0 14px 34px rgba(104, 35, 55, 0.16);
+}
+
+.app.theme-high-contrast {
+  --font-ui: "Arial", "Helvetica", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: "Arial Black", "Arial", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-content: "Arial", "Helvetica", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-size-ui: 14px;
+  --font-size-title: 13px;
+  --font-size-content: 14px;
+  --font-size-setting: 14px;
+  --font-size-section: 12px;
+  --font-weight-body: 500;
+  --font-weight-content: 600;
+  --font-weight-strong: 700;
+  --line-height-ui: 1.55;
+  --titlebar-height: 42px;
+  --history-row-padding-y: 12px;
+  --history-row-gap: 12px;
+  --history-content-gap: 4px;
+  --history-item-min-height: 60px;
+  --setting-row-padding-y: 12px;
+  --control-border-width: 2px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-full: 0px;
+  --item-hover-shift: 0px;
+  --window-radius: 0px;
+}
+
 /* ── Reset & Base ─────────────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;
@@ -98,8 +401,7 @@
 html, body {
   height: 100%;
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+  font-family: var(--font-ui);
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-primary);
@@ -120,7 +422,11 @@ html, body {
   flex-direction: column;
   background: var(--bg-window);
   color: var(--text-primary);
-  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-body);
+  line-height: var(--line-height-ui);
+  border-radius: var(--window-radius);
   overflow: hidden;
   transition: background-color 0.35s ease;
 }
@@ -130,7 +436,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 38px;
+  height: var(--titlebar-height);
   padding: 0 10px 0 14px;
   background: transparent;
   flex-shrink: 0;
@@ -158,7 +464,7 @@ html, body {
 .titlebar-logo svg {
   width: 10px;
   height: 10px;
-  fill: white;
+  fill: var(--brand-text);
 }
 
 .titlebar-logo img {
@@ -169,10 +475,11 @@ html, body {
 }
 
 .titlebar-text {
-  font-size: 12px;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-strong);
   color: var(--text-primary);
-  letter-spacing: -0.2px;
+  letter-spacing: 0;
 }
 
 .titlebar-badge {
@@ -182,7 +489,7 @@ html, body {
   background: var(--brand-soft);
   padding: 1px 6px;
   border-radius: var(--radius-full);
-  letter-spacing: 0.2px;
+  letter-spacing: 0;
 }
 
 .titlebar-close {
@@ -570,12 +877,13 @@ html, body {
 }
 
 .date-header {
+  font-family: var(--font-display);
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 14px 8px 5px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0;
@@ -631,14 +939,14 @@ html, body {
 .history-item {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 10px;
+  gap: var(--history-row-gap);
+  padding: var(--history-row-padding-y) 10px;
   margin-bottom: 2px;
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: background 0.18s cubic-bezier(0.16, 1, 0.3, 1),
               transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
-  min-height: 52px;
+  min-height: var(--history-item-min-height);
   width: 100%;
   min-width: 0;
   position: relative;
@@ -647,7 +955,7 @@ html, body {
 
 .history-item:hover {
   background: var(--bg-hover);
-  transform: translateX(2px);
+  transform: translateX(var(--item-hover-shift));
 }
 
 .history-item:active {
@@ -729,7 +1037,7 @@ html, body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--history-content-gap);
   position: relative;
   z-index: 1;
 }
@@ -887,14 +1195,10 @@ html, body {
   flex-shrink: 0;
 }
 
-.item-peer::before {
-  content: "↔ ";
-  opacity: 0.5;
-}
-
 .item-desc {
-  font-size: 13px;
-  font-weight: 500;
+  font-family: var(--font-content);
+  font-size: var(--font-size-content);
+  font-weight: var(--font-weight-content);
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -983,7 +1287,7 @@ html, body {
   border-radius: var(--radius-full);
   font-size: 12px;
   font-weight: 500;
-  letter-spacing: -0.1px;
+  letter-spacing: 0;
   pointer-events: none;
   animation: toast-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   z-index: 1000;
@@ -1096,8 +1400,9 @@ html, body {
 }
 
 .empty-state-title {
+  font-family: var(--font-display);
   font-size: 14px;
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
   color: var(--text-primary);
 }
 
@@ -1114,7 +1419,7 @@ html, body {
   border: none;
   border-radius: var(--radius-full);
   background: var(--brand);
-  color: white;
+  color: var(--brand-text);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -1235,19 +1540,21 @@ html, body {
 }
 
 .setting-group-header h3 {
-  font-size: 11px;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: var(--font-size-section);
+  font-weight: var(--font-weight-strong);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
   color: var(--text-tertiary);
 }
 
 .setting-group-header p {
+  font-family: var(--font-content);
   font-size: 11px;
   color: var(--text-tertiary);
   font-weight: 400;
   text-transform: none;
-  letter-spacing: normal;
+  letter-spacing: 0;
 }
 
 .section-header-with-action {
@@ -1477,7 +1784,7 @@ html, body {
 }
 .pair-key-field input:focus { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand-soft); }
 .pair-dialog-error { margin-top: 8px; color: #d84a4a; font-size: 10px; line-height: 1.4; text-align: left; overflow-wrap: anywhere; }
-.confirm-dialog-actions button.pair-submit { border-color: var(--brand); background: var(--brand); color: #fff; }
+.confirm-dialog-actions button.pair-submit { border-color: var(--brand); background: var(--brand); color: var(--brand-text); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
@@ -1487,7 +1794,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 8px;
+  padding: var(--setting-row-padding-y) 8px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background 0.12s ease;
@@ -1504,13 +1811,15 @@ html, body {
 }
 
 .setting-row-info > span:first-child {
-  font-size: 13px;
+  font-family: var(--font-display);
+  font-size: var(--font-size-setting);
   color: var(--text-primary);
-  font-weight: 500;
+  font-weight: var(--font-weight-content);
 }
 
 .setting-row-info > small {
-  font-size: 11px;
+  font-family: var(--font-content);
+  font-size: var(--font-size-section);
   color: var(--text-tertiary);
   font-weight: 400;
 }
@@ -1609,7 +1918,7 @@ html, body {
 /* Select */
 .setting-row select {
   padding: 5px 28px 5px 10px;
-  border: 1px solid var(--border);
+  border: var(--control-border-width) solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   color: var(--text-primary);
@@ -1617,21 +1926,12 @@ html, body {
   font-weight: 500;
   outline: none;
   cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1.5 1.5l3.5 3 3.5-3' stroke='%236B6D73' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 8px center;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .setting-row select:focus {
   border-color: var(--brand);
   box-shadow: 0 0 0 2px var(--brand-soft);
-}
-
-.app.dark .setting-row select {
-  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1.5 1.5l3.5 3 3.5-3' stroke='%2398989D' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 .setting-row select option {
@@ -1648,8 +1948,9 @@ html, body {
 .theme-card {
   width: 54px;
   height: 36px;
+  padding: 0;
   border-radius: var(--radius-sm);
-  border: 2px solid var(--border);
+  border: var(--control-border-width) solid var(--border);
   background: var(--bg-card);
   cursor: pointer;
   position: relative;
@@ -1658,6 +1959,7 @@ html, body {
   justify-content: center;
   font-size: 9px;
   font-weight: 500;
+  font-family: inherit;
   color: var(--text-secondary);
   transition: all 0.15s ease;
   overflow: hidden;
@@ -1667,18 +1969,13 @@ html, body {
   border-color: var(--border-strong);
 }
 
-.theme-card.active {
-  border-color: var(--brand);
+.theme-card:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
 
-.theme-card.active::after {
-  content: "✓";
-  position: absolute;
-  top: 1px;
-  right: 3px;
-  font-size: 8px;
-  color: var(--brand);
-  font-weight: 700;
+.theme-card.active {
+  border-color: var(--brand);
 }
 
 .theme-card-preview {
@@ -1718,6 +2015,137 @@ html, body {
 
 .app.dark .theme-card > span {
   background: rgba(0,0,0,0.5);
+}
+
+.palette-setting-row {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 8px;
+  cursor: default;
+}
+
+.palette-cards {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  width: 100%;
+}
+
+.palette-card {
+  width: auto;
+  min-width: 0;
+  height: 54px;
+}
+
+.palette-card > span {
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-card-preview {
+  --preview-light: #f5f5f7;
+  --preview-dark: #1c1c1e;
+  --preview-accent: #5e6ad2;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    var(--preview-light) 0 50%,
+    var(--preview-dark) 50% 100%
+  );
+}
+
+.palette-font-sample {
+  position: absolute;
+  z-index: 1;
+  top: 4px;
+  left: 50%;
+  width: 28px;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 22px;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transform: translateX(-50%);
+}
+
+.palette-card-preview.tailsync .palette-font-sample {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+.palette-card-preview.ocean .palette-font-sample {
+  font-family: "Bahnschrift", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.palette-card-preview.forest .palette-font-sample {
+  font-family: "Constantia", "Songti SC", "STSong", "SimSun", serif;
+  font-weight: 600;
+}
+
+.palette-card-preview.rose .palette-font-sample {
+  font-family: "Candara", "Corbel", "YouYuan", "PingFang SC", sans-serif;
+}
+
+.palette-card-preview.high-contrast .palette-font-sample {
+  font-family: "Arial Black", "Arial", "Microsoft YaHei UI", sans-serif;
+  font-weight: 900;
+}
+
+.palette-card-preview::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.88);
+  border-radius: 50%;
+  background: var(--preview-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+  transform: translateX(-50%);
+}
+
+.palette-card-preview.ocean {
+  --preview-light: #f1f7f7;
+  --preview-dark: #111e20;
+  --preview-accent: #20a79f;
+}
+
+.palette-card-preview.forest {
+  --preview-light: #f3f7f3;
+  --preview-dark: #151f18;
+  --preview-accent: #3d9869;
+}
+
+.palette-card-preview.rose {
+  --preview-light: #faf4f6;
+  --preview-dark: #24191d;
+  --preview-accent: #ce5878;
+}
+
+.palette-card-preview.high-contrast {
+  --preview-light: #ffffff;
+  --preview-dark: #000000;
+  --preview-accent: #ffd400;
+}
+
+.app button,
+.app input,
+.app select,
+.app textarea {
+  font-family: inherit;
+}
+
+.app.theme-forest .date-header,
+.app.theme-forest .setting-group-header h3 {
+  text-transform: none;
+}
+
+.app.theme-high-contrast .history-item,
+.app.theme-high-contrast .setting-group-header {
+  border-bottom: 2px solid var(--divider);
 }
 
 /* ── Compact history layouts ─────────────────────────────────────── */

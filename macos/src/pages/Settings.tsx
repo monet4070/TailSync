@@ -2,8 +2,30 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useTheme } from "../hooks/useTheme";
+import {
+  COLOR_THEMES,
+  isColorTheme,
+  isThemePreference,
+  useTheme,
+  type ColorTheme,
+  type ThemePreference,
+} from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  Grid2X2,
+  Monitor,
+  Moon,
+  RefreshCw,
+  Settings2,
+  Sun,
+  Trash2,
+  Wifi,
+  X,
+} from "lucide-react";
+import tailsyncIcon from "../../src-tauri/icons/32x32.png";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -12,6 +34,7 @@ interface SettingsData {
   progress_bar_enabled: boolean;
   history_limit: number;
   theme: string;
+  color_theme: string;
   language: string;
   enabled_peers: Record<string, boolean>;
   trusted_peer_keys: Record<string, string>;
@@ -80,7 +103,13 @@ export function Settings() {
   const [pairingOpen, setPairingOpen] = useState(false);
   const [pairingError, setPairingError] = useState("");
   const [pairingBusy, setPairingBusy] = useState(false);
-  const { theme, setTheme, themePreference } = useTheme();
+  const {
+    theme,
+    setTheme,
+    themePreference,
+    colorTheme,
+    setColorTheme,
+  } = useTheme();
   const { t, locale, setLocale } = useI18n();
   const toastTimer = useRef<number>(0);
   const previousPairingPhase = useRef<PairingStatus["phase"] | null>(null);
@@ -89,10 +118,12 @@ export function Settings() {
     invoke<SettingsData>("get_settings")
       .then((s) => {
         setSettings(s);
+        if (isThemePreference(s.theme)) setTheme(s.theme);
+        if (isColorTheme(s.color_theme)) setColorTheme(s.color_theme);
         setLocale(s.language);
       })
       .catch(console.error);
-  }, [setLocale]);
+  }, [setColorTheme, setLocale, setTheme]);
 
   const connectionMode = settings?.connection_mode;
   useEffect(() => {
@@ -315,21 +346,30 @@ export function Settings() {
     }
   };
 
-  const handleThemeChange = (value: string) => {
-    update({ theme: value });
-    setTheme(value as "light" | "dark" | "system");
+  const handleThemeChange = async (value: ThemePreference) => {
+    if (value === themePreference) return;
+    const previous = themePreference;
+    setTheme(value);
+    if (!(await update({ theme: value }))) setTheme(previous);
   };
+
+  const handleColorThemeChange = async (value: ColorTheme) => {
+    if (value === colorTheme) return;
+    const previous = colorTheme;
+    setColorTheme(value);
+    if (!(await update({ color_theme: value }))) setColorTheme(previous);
+  };
+
+  const appClassName = `app ${theme} theme-${colorTheme}`;
 
   if (!settings) {
     return (
-      <div className={`app ${theme}`}>
+      <div className={appClassName}>
         {/* Title bar */}
         <div className="titlebar" data-tauri-drag-region>
           <div className="titlebar-brand">
             <div className="titlebar-logo">
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15l-4-4 1.41-1.41L11 14.17l6.59-6.59L19 9l-8 8z" />
-              </svg>
+              <img src={tailsyncIcon} alt="" />
             </div>
             <span className="titlebar-text">{t("settings.title")}</span>
             <span className="titlebar-badge">v2</span>
@@ -339,7 +379,7 @@ export function Settings() {
             onClick={() => getCurrentWindow().hide()}
             title="Close"
           >
-            ✕
+            <X size={15} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </div>
         <div className="loading-text">{t("settings.loading")}</div>
@@ -348,14 +388,12 @@ export function Settings() {
   }
 
   return (
-    <div className={`app ${theme}`}>
+    <div className={appClassName}>
       {/* ── Title bar ── */}
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-brand">
           <div className="titlebar-logo">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15l-4-4 1.41-1.41L11 14.17l6.59-6.59L19 9l-8 8z" />
-            </svg>
+            <img src={tailsyncIcon} alt="" />
           </div>
           <span className="titlebar-text">{t("settings.title")}</span>
           <span className="titlebar-badge">v2</span>
@@ -365,7 +403,7 @@ export function Settings() {
           onClick={() => getCurrentWindow().hide()}
           title="Close"
         >
-          ✕
+          <X size={15} strokeWidth={1.8} aria-hidden="true" />
         </button>
       </div>
 
@@ -390,9 +428,7 @@ export function Settings() {
               title={locale === "zh-CN" ? "刷新设备" : "Refresh devices"}
               aria-label={locale === "zh-CN" ? "刷新设备" : "Refresh devices"}
             >
-              <svg className={devicesLoading ? "spin" : ""} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7" />
-              </svg>
+              <RefreshCw className={devicesLoading ? "spin" : ""} size={16} strokeWidth={1.7} aria-hidden="true" />
             </button>
           </div>
 
@@ -413,9 +449,7 @@ export function Settings() {
               role="radio"
               aria-checked={settings.connection_mode === "lan_only"}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M5 12.55a11 11 0 0 1 14.08 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01" />
-              </svg>
+              <Wifi size={15} strokeWidth={1.7} aria-hidden="true" />
               {locale === "zh-CN" ? "局域网" : "Local network"}
             </button>
             <button
@@ -425,11 +459,7 @@ export function Settings() {
               role="radio"
               aria-checked={settings.connection_mode === "tailscale_only"}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <circle cx="7" cy="7" r="2" /><circle cx="17" cy="7" r="2" />
-                <circle cx="7" cy="17" r="2" /><circle cx="17" cy="17" r="2" />
-                <path d="M9 7h6M7 9v6M17 9v6M9 17h6" />
-              </svg>
+              <Grid2X2 size={15} strokeWidth={1.7} aria-hidden="true" />
               Tailscale
             </button>
           </div>
@@ -461,7 +491,7 @@ export function Settings() {
                 <div className="device-avatar self">{devices.self.hostname.slice(0, 1).toUpperCase()}</div>
                 <div className="device-info">
                   <div className="device-name">
-                    {devices.self.hostname}
+                    <span className="device-name-text">{devices.self.hostname}</span>
                     <span>{locale === "zh-CN" ? "本机" : "This device"}</span>
                   </div>
                   <div className="device-address">{devices.self.tailscale_ip}</div>
@@ -474,10 +504,7 @@ export function Settings() {
                   title={locale === "zh-CN" ? "复制本机公钥" : "Copy device public key"}
                   aria-label={locale === "zh-CN" ? "复制本机公钥" : "Copy device public key"}
                 >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                    <rect x="8" y="8" width="12" height="12" rx="2" />
-                    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
-                  </svg>
+                  <Copy size={16} strokeWidth={1.7} aria-hidden="true" />
                 </button>
                 <span className="device-status online">{locale === "zh-CN" ? "在线" : "Online"}</span>
               </div>
@@ -489,7 +516,7 @@ export function Settings() {
               <div className="device-row" key={`${peer.hostname}-${peer.address}`}>
                 <div className="device-avatar">{peer.hostname.slice(0, 1).toUpperCase()}</div>
                 <div className="device-info">
-                  <div className="device-name">{peer.hostname}</div>
+                  <div className="device-name"><span className="device-name-text">{peer.hostname}</span></div>
                   <div className="device-address">
                     {peer.address || peer.tailscale_ip || (locale === "zh-CN" ? "已配对 · 等待设备上线" : "Paired · waiting for device")}
                     {peer.current_interface && ` · ${peer.current_interface === "lan" ? "LAN" : "Tailscale"}`}
@@ -518,9 +545,7 @@ export function Settings() {
                       title={locale === "zh-CN" ? "撤销配对" : "Forget paired device"}
                       aria-label={locale === "zh-CN" ? "撤销配对" : "Forget paired device"}
                     >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                        <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
-                      </svg>
+                      <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
                     </button>
                   </>
                 ) : (
@@ -664,33 +689,66 @@ export function Settings() {
 
           <div className="setting-row">
             <div className="setting-row-info">
-              <span>{t("settings.theme")}</span>
+              <span>{t("settings.colorMode")}</span>
             </div>
-            <div className="theme-cards">
-              <div
+            <div className="theme-cards" role="group" aria-label={t("settings.colorMode")}>
+              <button
+                type="button"
                 className={`theme-card${themePreference === "system" ? " active" : ""}`}
-                onClick={() => handleThemeChange("system")}
+                onClick={() => void handleThemeChange("system")}
+                aria-pressed={themePreference === "system"}
               >
-                <div className="theme-card-preview system">
-                  <div className="half" />
-                  <div className="half" />
-                </div>
+                <Monitor className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
                 <span>{t("settings.themeSystem")}</span>
-              </div>
-              <div
+              </button>
+              <button
+                type="button"
                 className={`theme-card${themePreference === "light" ? " active" : ""}`}
-                onClick={() => handleThemeChange("light")}
+                onClick={() => void handleThemeChange("light")}
+                aria-pressed={themePreference === "light"}
               >
-                <div className="theme-card-preview light" />
+                <Sun className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
                 <span>{t("settings.themeLight")}</span>
-              </div>
-              <div
+              </button>
+              <button
+                type="button"
                 className={`theme-card${themePreference === "dark" ? " active" : ""}`}
-                onClick={() => handleThemeChange("dark")}
+                onClick={() => void handleThemeChange("dark")}
+                aria-pressed={themePreference === "dark"}
               >
-                <div className="theme-card-preview dark" />
+                <Moon className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
                 <span>{t("settings.themeDark")}</span>
-              </div>
+              </button>
+            </div>
+          </div>
+
+          <div className="setting-row palette-setting-row">
+            <div className="setting-row-info">
+              <span>{t("settings.colorTheme")}</span>
+              <small>{t("settings.colorThemeDescription")}</small>
+            </div>
+            <div className="theme-cards palette-cards" role="group" aria-label={t("settings.colorTheme")}>
+              {COLOR_THEMES.map((option) => (
+                <button
+                  type="button"
+                  key={option}
+                  className={`theme-card palette-card${colorTheme === option ? " active" : ""}`}
+                  onClick={() => void handleColorThemeChange(option)}
+                  aria-pressed={colorTheme === option}
+                  title={t(`settings.colorTheme.${option}`)}
+                >
+                  <div className={`palette-card-preview ${option}`} aria-hidden="true">
+                    <span className="palette-preview-rail" />
+                    <span className="palette-preview-title">TailSync</span>
+                    <span className="palette-preview-row row-one" />
+                    <span className="palette-preview-row row-two" />
+                  </div>
+                  <span className="palette-card-label">{t(`settings.colorTheme.${option}`)}</span>
+                  {colorTheme === option && (
+                    <Check className="palette-card-check" size={13} strokeWidth={2} aria-hidden="true" />
+                  )}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -698,16 +756,19 @@ export function Settings() {
             <div className="setting-row-info">
               <span>{t("settings.language")}</span>
             </div>
-            <select
-              value={settings.language}
-              onChange={(e) => {
-                update({ language: e.target.value });
-                setLocale(e.target.value);
-              }}
-            >
-              <option value="zh-CN">简体中文</option>
-              <option value="en">English</option>
-            </select>
+            <div className="select-shell">
+              <select
+                value={settings.language}
+                onChange={(e) => {
+                  update({ language: e.target.value });
+                  setLocale(e.target.value);
+                }}
+              >
+                <option value="zh-CN">简体中文</option>
+                <option value="en">English</option>
+              </select>
+              <ChevronDown size={14} strokeWidth={1.7} aria-hidden="true" />
+            </div>
           </div>
         </section>
       </div>
@@ -719,10 +780,7 @@ export function Settings() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="confirm-dialog-icon pair-dialog-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.42 1.42-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V20h-2v-.08a1.7 1.7 0 0 0-1.03-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-1.42-1.42.06-.06A1.7 1.7 0 0 0 9.4 15a1.7 1.7 0 0 0-1.56-1.03H7v-2h.84A1.7 1.7 0 0 0 9.4 11a1.7 1.7 0 0 0-.34-1.88L9 9.06l1.42-1.42.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 13.4 6.48V6h2v.48a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 1.42 1.42-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.03H21v2h-.48A1.7 1.7 0 0 0 19.4 15Z" />
-              </svg>
+              <Settings2 size={22} strokeWidth={1.6} aria-hidden="true" />
             </div>
             <h2>
               {locale === "zh-CN" ? "设备配对" : "Device pairing"}

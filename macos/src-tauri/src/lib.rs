@@ -11,7 +11,6 @@ mod network;
 mod pairing;
 mod protocol;
 mod sync;
-#[cfg(not(test))]
 mod tray;
 
 use log::info;

@@ -8,6 +8,20 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
+import {
+  ArrowLeft,
+  ArrowLeftRight,
+  ArrowRight,
+  Clipboard,
+  File,
+  Image as ImageIcon,
+  Search,
+  SearchX,
+  Trash2,
+  Type,
+  X,
+} from "lucide-react";
+import tailsyncIcon from "../../src-tauri/icons/32x32.png";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -167,7 +181,7 @@ export function History() {
     [],
   );
 
-  const { theme } = useTheme();
+  const { theme, colorTheme } = useTheme();
   const { t, locale } = useI18n();
 
   /* ── Settings load ────────────────────────────────────────────── */
@@ -385,9 +399,9 @@ export function History() {
       title: "TailSync",
       body:
         entry.type === "image"
-          ? "📷 Image received"
+          ? "Image received"
           : entry.type === "file"
-            ? `📎 ${entry.description}`
+            ? entry.description
             : entry.description,
     });
   };
@@ -400,32 +414,15 @@ export function History() {
     ? allEntries.find((e) => e.id === selectedId)
     : null;
 
-  /* ── Render helpers ───────────────────────────────────────────── */
-
-  const typeIcon = (type: string) => {
-    switch (type) {
-      case "text":
-        return "📝";
-      case "image":
-        return "🖼️";
-      case "file":
-        return "📎";
-      default:
-        return "📋";
-    }
-  };
-
   /* ── Render ───────────────────────────────────────────────────── */
 
   return (
-    <div className={`app ${theme}`}>
+    <div className={`app ${theme} theme-${colorTheme}`}>
       {/* ── Title bar ── */}
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-brand">
           <div className="titlebar-logo">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15l-4-4 1.41-1.41L11 14.17l6.59-6.59L19 9l-8 8z" />
-            </svg>
+            <img src={tailsyncIcon} alt="" />
           </div>
           <span className="titlebar-text">TailSync</span>
           <span className="titlebar-badge">v2</span>
@@ -435,24 +432,14 @@ export function History() {
           onClick={() => getCurrentWindow().hide()}
           title="Close"
         >
-          ✕
+          <X size={15} strokeWidth={1.8} aria-hidden="true" />
         </button>
       </div>
 
       {/* ── Search ── */}
       <div className="search-bar">
         <span className="search-icon">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="11" cy="11" r="8" />
-            <path d="M21 21l-4.35-4.35" />
-          </svg>
+          <Search size={18} strokeWidth={1.7} aria-hidden="true" />
         </span>
         <input
           type="text"
@@ -469,9 +456,7 @@ export function History() {
           title={locale === "zh-CN" ? "清空全部历史记录" : "Clear all history"}
           aria-label={locale === "zh-CN" ? "清空全部历史记录" : "Clear all history"}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 10v6M14 10v6" />
-          </svg>
+          <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
         </button>
       </div>
 
@@ -504,17 +489,7 @@ export function History() {
           {keyword ? (
             <>
               <div className="empty-state-illustration">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <circle cx="11" cy="11" r="8" />
-                  <path d="M21 21l-4.35-4.35" />
-                </svg>
+                <SearchX size={30} strokeWidth={1.35} aria-hidden="true" />
               </div>
               <div className="empty-state-title">
                 {locale === "zh-CN"
@@ -530,17 +505,7 @@ export function History() {
           ) : (
             <>
               <div className="empty-state-illustration">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <path d="M9 12h6M12 9v6" />
-                </svg>
+                <Clipboard size={30} strokeWidth={1.35} aria-hidden="true" />
               </div>
               <div className="empty-state-title">
                 {locale === "zh-CN"
@@ -599,7 +564,13 @@ export function History() {
                           <ThumbnailCanvas data={thumbnails.get(entry.id)!} />
                         ) : (
                           <div className="item-icon">
-                            {typeIcon(entry.type)}
+                            {entry.type === "image" ? (
+                              <ImageIcon size={16} strokeWidth={1.7} aria-hidden="true" />
+                            ) : entry.type === "file" ? (
+                              <File size={16} strokeWidth={1.7} aria-hidden="true" />
+                            ) : (
+                              <Type size={16} strokeWidth={1.7} aria-hidden="true" />
+                            )}
                           </div>
                         )}
 
@@ -616,6 +587,7 @@ export function History() {
                               {formatTime(entry.timestamp)}
                             </span>
                             <span className="item-peer">
+                              <ArrowLeftRight className="item-peer-icon" size={11} strokeWidth={1.8} aria-hidden="true" />
                               {entry.source_peer}
                             </span>
                           </div>
@@ -623,7 +595,6 @@ export function History() {
                             className="item-desc"
                             title={entry.description}
                           >
-                            {entry.type === "file" ? "📁 " : ""}
                             {entry.description}
                           </div>
                           <div className="item-footer">
@@ -655,7 +626,8 @@ export function History() {
                 ?.scrollTo({ top: 0, behavior: "smooth" });
             }}
           >
-            ← {t("history.prev")}
+            <ArrowLeft size={14} strokeWidth={1.8} aria-hidden="true" />
+            {t("history.prev")}
           </button>
           <span className="page-info">
             {page + 1} / {totalPages}
@@ -670,7 +642,8 @@ export function History() {
                 ?.scrollTo({ top: 0, behavior: "smooth" });
             }}
           >
-            {t("history.next")} →
+            {t("history.next")}
+            <ArrowRight size={14} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </div>
       )}
@@ -711,9 +684,7 @@ export function History() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="confirm-dialog-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
-              </svg>
+              <Trash2 size={22} strokeWidth={1.6} aria-hidden="true" />
             </div>
             <h2 id="clear-history-title">
               {locale === "zh-CN" ? "清空全部历史记录？" : "Clear all history?"}

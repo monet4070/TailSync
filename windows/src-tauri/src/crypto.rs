@@ -16,7 +16,9 @@ pub struct Settings {
     pub progress_bar_enabled: bool,
     pub history_limit: u32,
     pub enabled_peers: std::collections::HashMap<String, bool>,
-    pub theme: String,    // "light" | "dark" | "system"
+    pub theme: String, // "light" | "dark" | "system"
+    #[serde(default = "default_color_theme")]
+    pub color_theme: String,
     pub language: String, // "en" | "zh-CN"
     /// Transport policy used for peer discovery and delivery.
     #[serde(default = "default_connection_mode")]
@@ -37,6 +39,10 @@ pub struct Settings {
 
 fn default_connection_mode() -> String {
     "auto".to_string()
+}
+
+fn default_color_theme() -> String {
+    "tailsync".to_string()
 }
 
 fn normalize_connection_mode(mode: String) -> String {
@@ -60,6 +66,7 @@ impl Default for Settings {
             history_limit: 100,
             enabled_peers: std::collections::HashMap::new(),
             theme: "system".to_string(),
+            color_theme: default_color_theme(),
             language: "en".to_string(),
             connection_mode: default_connection_mode(),
             trusted_peer_keys: std::collections::HashMap::new(),
@@ -92,6 +99,18 @@ impl Settings {
     }
 
     pub fn validate_user_values(&self) -> Result<(), String> {
+        if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
+            return Err("theme must be 'system', 'light', or 'dark'".to_string());
+        }
+        if !matches!(
+            self.color_theme.as_str(),
+            "tailsync" | "ocean" | "forest" | "rose" | "high-contrast"
+        ) {
+            return Err(
+                "color_theme must be 'tailsync', 'ocean', 'forest', 'rose', or 'high-contrast'"
+                    .to_string(),
+            );
+        }
         if !matches!(
             self.connection_mode.as_str(),
             "auto" | "lan_only" | "tailscale_only"
@@ -453,6 +472,7 @@ mod tests {
         assert!(settings.trusted_peer_keys.is_empty());
         assert!(settings.trusted_peer_addresses.is_empty());
         assert!(settings.paired_peer_endpoints.is_empty());
+        assert_eq!(settings.color_theme, "tailsync");
     }
 
     #[test]
@@ -535,5 +555,20 @@ mod tests {
         .unwrap();
 
         assert_eq!(settings.connection_mode, "auto");
+        assert_eq!(settings.color_theme, "tailsync");
+    }
+
+    #[test]
+    fn appearance_values_are_validated() {
+        let mut settings = Settings::default();
+        settings.theme = "dark".into();
+        settings.color_theme = "forest".into();
+        assert!(settings.validate_user_values().is_ok());
+
+        settings.color_theme = "unknown".into();
+        assert!(settings.validate_user_values().is_err());
+        settings.color_theme = "tailsync".into();
+        settings.theme = "sepia".into();
+        assert!(settings.validate_user_values().is_err());
     }
 }
