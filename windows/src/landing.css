@@ -5917,7 +5917,7 @@ section[id] {
   }
 
   .product-stage {
-    min-height: 680px;
+    min-height: 820px;
   }
 
   .product-stage::before {
@@ -5972,7 +5972,7 @@ section[id] {
   }
 
   .transfer-float {
-    bottom: 8%;
+    bottom: 18px;
     left: 50%;
     width: calc(100% - 54px);
     min-width: 0;
@@ -6114,6 +6114,12 @@ section[id] {
 
   .history-date-options {
     grid-template-columns: repeat(7, minmax(82px, 1fr));
+    scrollbar-width: none;
+  }
+
+  .history-date-options::-webkit-scrollbar,
+  .recovery-timeline::-webkit-scrollbar {
+    display: none;
   }
 
   .history-category-rail {
@@ -6255,6 +6261,7 @@ section[id] {
   .recovery-timeline {
     display: flex;
     overflow-x: auto;
+    scrollbar-width: none;
   }
 
   .recovery-timeline button {
