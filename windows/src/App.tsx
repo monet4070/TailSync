@@ -175,7 +175,7 @@ const historySamples: Array<{
 }> = [
   {
     category: "website",
-    value: "https://github.com/monet4070/TailSync/releases/tag/v2.0.0",
+    value: "https://github.com/monet4070/TailSync/releases/tag/v2.0.1",
     source: "MacBook Pro / Safari",
     time: "刚刚",
     tags: ["网站", "文本"],
@@ -220,7 +220,7 @@ const historySamples: Array<{
   },
   {
     category: "text",
-    value: "设计评审改到 14:30，v2.0.0 唤醒恢复验证已经通过。",
+    value: "设计评审改到 14:30，main 分支唤醒恢复验证已经通过。",
     source: "MacBook Pro / Notes",
     time: "18 分钟前",
     tags: ["文本"],
@@ -238,7 +238,7 @@ const historySamples: Array<{
   },
   {
     category: "file",
-    value: "TailSync-v2.0.0-universal.dmg / 18.4 MB",
+    value: "TailSync-v2.0.1-universal.dmg / 18.4 MB",
     source: "Windows Studio / Downloads",
     time: "31 分钟前",
     tags: ["文件"],
@@ -875,7 +875,7 @@ function ProductWindow() {
     {
       icon: File,
       type: "FILE",
-      title: "TailSync-v2.0.0-universal.dmg",
+      title: "TailSync-v2.0.1-universal.dmg",
       meta: "Windows Studio · 8 分钟前",
       color: "paper",
       tags: ["文件"],
@@ -902,7 +902,7 @@ function ProductWindow() {
         <div className="product-title">
           <img src={tailsyncIcon} alt="" />
           <span>TailSync</span>
-          <small>v2.0.0</small>
+          <small>main</small>
         </div>
         <div className="product-live-state">
           <i /> CLASSIFIER V4 / {active.type}
@@ -1000,7 +1000,7 @@ function RecoverySequence() {
       <div className="recovery-copy" data-reveal>
         <div className="section-marker">
           <span>07</span>
-          <small>WAKE RECOVERY / V2.0.0</small>
+          <small>WAKE RECOVERY / MAIN</small>
         </div>
         <span className="recovery-eyebrow"><RefreshCw size={15} /> RESILIENT SESSION</span>
         <h2>睡一觉，醒来<br /><strong>同步仍在继续。</strong></h2>
@@ -1018,7 +1018,7 @@ function RecoverySequence() {
         <div className="recovery-console-head">
           <span><Waves size={15} /> SESSION RECOVERY MONITOR</span>
           <strong><i /> {current.label}</strong>
-          <small>BUILD / v2.0.0</small>
+          <small>MAIN / CLASSIFIER V4</small>
         </div>
 
         <div className="recovery-wave" aria-hidden="true">
@@ -1220,7 +1220,7 @@ function App() {
         <a className="brand" href="#top" onClick={closeMenu}>
           <img src={tailsyncIcon} alt="TailSync" />
           <span>TAILSYNC</span>
-          <small>2.0.0</small>
+          <small>MAIN</small>
         </a>
 
         <button
@@ -1295,7 +1295,7 @@ function App() {
           <div className="hero-copy">
             <div className="hero-kicker">
               <span className="live-dot" />
-              macOS + Windows / v2.0.0
+              LATEST MAIN / CLASSIFIER V4
             </div>
             <h1 id="hero-title">
               复制。
@@ -1625,7 +1625,7 @@ function App() {
             <div className="transfer-float">
               <File size={17} />
               <div className="transfer-float-copy">
-                <strong>TailSync-v2.0.0.dmg</strong>
+                <strong>TailSync-v2.0.1.dmg</strong>
                 <small>分块写入 / 来源已标记</small>
                 <span className="transfer-progress"><i /></span>
               </div>
@@ -1643,7 +1643,7 @@ function App() {
           <div className="architecture-diagram" data-reveal>
             <div><Laptop size={26} /><span>macOS</span><small>SwiftUI</small></div>
             <i />
-            <div className="core-node"><Code2 size={28} /><span>Core</span><small>Rust / v2.0.0</small></div>
+            <div className="core-node"><Code2 size={28} /><span>Core</span><small>Rust / main</small></div>
             <i />
             <div><Monitor size={26} /><span>Windows</span><small>Tauri</small></div>
           </div>
@@ -1655,7 +1655,7 @@ function App() {
           <div className="download-grid" aria-hidden="true" />
           <div className="download-copy" data-reveal>
             <img src={tailsyncIcon} alt="" />
-            <span>TAILSYNC 2.0.0</span>
+            <span>LATEST RELEASE / 2.0.1</span>
             <h2>你的剪贴板，<br />应该跟着你。</h2>
             <p>macOS 与 Windows。开源。MIT License。</p>
             <div className="download-actions">
