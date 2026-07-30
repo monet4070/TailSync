@@ -1,20 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   ArrowDown,
   ArrowRight,
   ArrowUpRight,
+  Braces,
+  CalendarDays,
   Check,
   ClipboardCopy,
   Clock3,
   CloudOff,
   Code2,
   Copy,
+  Database,
   Download,
   File,
   FileText,
   Fingerprint,
+  Folder,
   GitFork,
-  History,
+  Globe2,
   Image as ImageIcon,
   Laptop,
   LockKeyhole,
@@ -22,12 +27,19 @@ import {
   Monitor,
   Moon,
   Network,
+  Power,
   RadioTower,
+  RefreshCw,
   Route,
   ScanLine,
   Search,
   ShieldCheck,
   Sun,
+  Tags,
+  Terminal,
+  Type,
+  Waves,
+  WifiOff,
   X,
   Zap,
 } from "lucide-react";
@@ -37,6 +49,15 @@ type RouteMode = "auto" | "lan" | "tailscale";
 type ClipboardKind = "text" | "image" | "file";
 type TimeTheme = "light" | "dark";
 type ThemePreference = "auto" | TimeTheme;
+type HistoryCategory =
+  | "text"
+  | "website"
+  | "code"
+  | "command"
+  | "structured_data"
+  | "path"
+  | "image"
+  | "file";
 
 const GITHUB_URL = "https://github.com/monet4070/TailSync";
 const RELEASE_URL = `${GITHUB_URL}/releases`;
@@ -110,7 +131,7 @@ const flowData: Record<
     label: "文本",
     index: "01",
     title: "一段想法，瞬间接力。",
-    meta: "ACK · 去重 · 加密历史",
+    meta: "ACK · 去重 · 本地历史",
     description:
       "复制代码、链接或段落。另一台设备收到确认后写入剪贴板，并保留可搜索、可恢复的本地历史。",
   },
@@ -118,7 +139,7 @@ const flowData: Record<
     label: "图片",
     index: "02",
     title: "像素保持完整。",
-    meta: "加密落盘 · 本地缩略图",
+    meta: "原图同步 · 本地缩略图",
     description:
       "截图和图片以原始内容同步，历史预览在本地生成。无需先保存文件，也无需经过聊天窗口。",
   },
@@ -131,6 +152,110 @@ const flowData: Record<
       "文件按块传输、逐段确认。运行期间短暂断线后可以从已确认偏移继续，而不是重新开始。",
   },
 };
+
+const historyCategories = [
+  { id: "text" as HistoryCategory, label: "文本", code: "TEXT", icon: Type },
+  { id: "website" as HistoryCategory, label: "网站", code: "WEB", icon: Globe2 },
+  { id: "code" as HistoryCategory, label: "代码", code: "CODE", icon: Code2 },
+  { id: "command" as HistoryCategory, label: "命令", code: "CMD", icon: Terminal },
+  { id: "structured_data" as HistoryCategory, label: "结构化数据", code: "DATA", icon: Braces },
+  { id: "path" as HistoryCategory, label: "路径", code: "PATH", icon: Folder },
+  { id: "image" as HistoryCategory, label: "图片", code: "IMAGE", icon: ImageIcon },
+  { id: "file" as HistoryCategory, label: "文件", code: "FILE", icon: File },
+];
+
+const historySamples: Array<{
+  category: HistoryCategory;
+  value: string;
+  source: string;
+  time: string;
+  tags: string[];
+  confidence: number;
+  tone: "lime" | "cyan" | "coral" | "paper";
+}> = [
+  {
+    category: "website",
+    value: "https://github.com/monet4070/TailSync/releases/tag/v2.0.0",
+    source: "MacBook Pro / Safari",
+    time: "刚刚",
+    tags: ["网站", "文本"],
+    confidence: 98,
+    tone: "lime",
+  },
+  {
+    category: "code",
+    value: "const route = await probe({ lan: true, tailnet: true });",
+    source: "Windows Studio / VS Code",
+    time: "1 分钟前",
+    tags: ["代码", "文本"],
+    confidence: 96,
+    tone: "cyan",
+  },
+  {
+    category: "command",
+    value: "cargo test --manifest-path windows/src-tauri/Cargo.toml",
+    source: "MacBook Pro / Terminal",
+    time: "3 分钟前",
+    tags: ["命令", "代码"],
+    confidence: 97,
+    tone: "coral",
+  },
+  {
+    category: "structured_data",
+    value: '{"device":"MacBook Pro","trusted":true,"latency_ms":4}',
+    source: "Windows Studio / Console",
+    time: "8 分钟前",
+    tags: ["结构化数据", "代码"],
+    confidence: 94,
+    tone: "paper",
+  },
+  {
+    category: "path",
+    value: "C:\\Users\\monet\\Documents\\TailSync\\release-notes.md",
+    source: "Windows Studio / Explorer",
+    time: "12 分钟前",
+    tags: ["路径", "文本"],
+    confidence: 99,
+    tone: "lime",
+  },
+  {
+    category: "text",
+    value: "设计评审改到 14:30，v2.0.0 唤醒恢复验证已经通过。",
+    source: "MacBook Pro / Notes",
+    time: "18 分钟前",
+    tags: ["文本"],
+    confidence: 91,
+    tone: "cyan",
+  },
+  {
+    category: "image",
+    value: "history-classification-preview.png / 2880 x 1800",
+    source: "MacBook Pro / Screenshot",
+    time: "26 分钟前",
+    tags: ["图片", "文件"],
+    confidence: 100,
+    tone: "coral",
+  },
+  {
+    category: "file",
+    value: "TailSync-v2.0.0-universal.dmg / 18.4 MB",
+    source: "Windows Studio / Downloads",
+    time: "31 分钟前",
+    tags: ["文件"],
+    confidence: 100,
+    tone: "paper",
+  },
+];
+
+const historyDateFilters = [
+  { key: "all", label: "全部", count: 128 },
+  { key: "today", label: "今天", count: 16 },
+  { key: "yesterday", label: "昨天", count: 11 },
+  { key: "week", label: "最近 7 天", count: 63 },
+  { key: "month", label: "最近 30 天", count: 104 },
+  { key: "this-month", label: "本月", count: 89 },
+  { key: "custom", label: "自定义", count: 42 },
+];
 
 function SyncField({ theme }: { theme: TimeTheme }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -431,6 +556,199 @@ function ClipboardPreview({ active }: { active: ClipboardKind }) {
   );
 }
 
+function HistoryIntelligence() {
+  const [activeSample, setActiveSample] = useState(0);
+  const [activeDate, setActiveDate] = useState("today");
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const timer = window.setInterval(
+      () => setActiveSample((current) => (current + 1) % historySamples.length),
+      2_400,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const sample = historySamples[activeSample];
+  const category = historyCategories.find((item) => item.id === sample.category) ?? historyCategories[0];
+  const activeFilter = historyDateFilters.find((filter) => filter.key === activeDate) ?? historyDateFilters[1];
+  const CategoryIcon = category.icon;
+  const visibleResults = [0, 1, 2].map(
+    (offset) => historySamples[(activeSample + offset) % historySamples.length],
+  );
+
+  const selectCategory = (categoryId: HistoryCategory) => {
+    const nextIndex = historySamples.findIndex((item) => item.category === categoryId);
+    if (nextIndex >= 0) setActiveSample(nextIndex);
+  };
+
+  return (
+    <section className="history-intelligence" id="history">
+      <div className="history-kinetic-word" aria-hidden="true">CLASSIFY</div>
+      <div className="history-pulse-field" aria-hidden="true">
+        {Array.from({ length: 18 }, (_, index) => <i key={`history-pulse-${index}`} />)}
+      </div>
+
+      <div className="history-intro" data-reveal>
+        <div className="section-marker section-marker-light">
+          <span>04</span>
+          <small>SMART HISTORY / V4</small>
+        </div>
+        <div className="history-intro-copy">
+          <span className="history-eyebrow"><Tags size={15} /> LOCAL CLASSIFIER / MULTI-LABEL</span>
+          <h2>历史不再只是<br /><strong>按时间堆叠。</strong></h2>
+          <p>
+            TailSync 在本地识别八类剪贴板内容，为一条记录保留主标签、次标签与置信度；再用完整日期范围，把需要的那一条迅速找回来。
+          </p>
+        </div>
+        <div className="history-intro-stats" aria-label="智能历史能力摘要">
+          <div><strong>08</strong><span>内容分类</span></div>
+          <div><strong>V4</strong><span>分类器版本</span></div>
+          <div><strong>100%</strong><span>本地处理</span></div>
+        </div>
+      </div>
+
+      <div className="history-console" data-reveal>
+        <div className="history-console-head">
+          <span><Database size={15} /> HISTORY INTELLIGENCE</span>
+          <div className="history-console-live"><i /> INDEX ONLINE</div>
+          <small>DATABASE / LOCAL / INDEXED</small>
+        </div>
+
+        <div className="history-date-filter" role="group" aria-label="历史日期范围">
+          <span className="history-date-label"><CalendarDays size={15} /> RANGE</span>
+          <div className="history-date-options">
+            {historyDateFilters.map((filter) => (
+              <button
+                className={activeDate === filter.key ? "active" : ""}
+                type="button"
+                aria-pressed={activeDate === filter.key}
+                key={filter.key}
+                onClick={() => setActiveDate(filter.key)}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+          <strong>{String(activeFilter.count).padStart(3, "0")} RESULTS</strong>
+        </div>
+
+        <div className="history-console-grid">
+          <aside className="history-category-rail" aria-label="内容分类">
+            <div className="history-rail-title">CLASS / 08</div>
+            {historyCategories.map((item, index) => {
+              const Icon = item.icon;
+              const isActive = item.id === sample.category;
+              return (
+                <button
+                  className={isActive ? "active" : ""}
+                  type="button"
+                  aria-pressed={isActive}
+                  key={item.id}
+                  onClick={() => selectCategory(item.id)}
+                >
+                  <span>0{index + 1}</span>
+                  <Icon size={16} />
+                  <b>{item.label}</b>
+                  <small>{item.code}</small>
+                </button>
+              );
+            })}
+          </aside>
+
+          <div className={`history-analysis tone-${sample.tone}`}>
+            <div className="history-analysis-scan" aria-hidden="true" />
+            <div className="history-vector-field" aria-hidden="true">
+              {Array.from({ length: 24 }, (_, index) => <i key={`vector-${index}`} />)}
+            </div>
+            <div className="history-sample" key={sample.category}>
+              <div className="history-sample-head">
+                <span><CategoryIcon size={18} /> INPUT / {category.code}</span>
+                <small>{sample.time}</small>
+              </div>
+              <p>{sample.value}</p>
+              <div className="history-sample-source">{sample.source}</div>
+              <div className="history-labels">
+                <span>LABELS</span>
+                {sample.tags.map((tag, index) => (
+                  <b className={index === 0 ? "primary" : "secondary"} key={tag}>
+                    {index === 0 ? <Check size={11} /> : <Tags size={11} />}
+                    {tag}
+                  </b>
+                ))}
+              </div>
+              <div className="history-confidence">
+                <div>
+                  <span>CONFIDENCE</span>
+                  <strong>{sample.confidence}%</strong>
+                </div>
+                <span className="history-confidence-track">
+                  <i style={{ width: `${sample.confidence}%` }} />
+                </span>
+              </div>
+              <div className="history-feature-strip" aria-hidden="true">
+                <span>SCHEME</span><i />
+                <span>TOKEN</span><i />
+                <span>SHAPE</span><i />
+                <span>CONTEXT</span><i />
+              </div>
+            </div>
+            <div className="history-orbit-tags" aria-hidden="true">
+              <span>01</span><span>V4</span><span>LOCAL</span><span>ML</span>
+            </div>
+          </div>
+
+          <div className="history-results">
+            <div className="history-results-head">
+              <span><Search size={14} /> MATCHES</span>
+              <small>{activeFilter.label.toUpperCase()}</small>
+            </div>
+            {visibleResults.map((entry, index) => {
+              const itemCategory = historyCategories.find((item) => item.id === entry.category) ?? historyCategories[0];
+              const Icon = itemCategory.icon;
+              return (
+                <button
+                  className={index === 0 ? "active" : ""}
+                  type="button"
+                  key={`${entry.category}-${index}`}
+                  onClick={() => selectCategory(entry.category)}
+                >
+                  <span className={`history-result-icon tone-${entry.tone}`}><Icon size={16} /></span>
+                  <span className="history-result-copy">
+                    <b>{itemCategory.label}</b>
+                    <strong>{entry.value}</strong>
+                    <small>{entry.source} / {entry.time}</small>
+                  </span>
+                  <ArrowRight size={14} />
+                </button>
+              );
+            })}
+            <div className="history-query-state">
+              <Activity size={15} />
+              <span>QUERY LATENCY</span>
+              <strong>12 ms</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="history-console-foot">
+          <span><Check size={13} /> CLASSIFIED LOCALLY</span>
+          <span>MULTI-LABEL / CONFIDENCE STORED</span>
+          <span>FILTER / {activeFilter.label.toUpperCase()}</span>
+        </div>
+      </div>
+
+      <div className="history-category-marquee" aria-hidden="true">
+        <div>
+          {[...historyCategories, ...historyCategories].map((item, index) => (
+            <span key={`${item.id}-${index}`}>{item.code}<i /></span>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const handshakeSteps = [
   { label: "IDENTITY", icon: Fingerprint },
   { label: "VERIFY", icon: ScanLine },
@@ -528,25 +846,40 @@ function SecurityHandshake() {
 function ProductWindow() {
   const entries = [
     {
-      icon: FileText,
-      type: "TEXT",
-      title: "Design review moved to 14:30",
+      icon: Globe2,
+      type: "WEBSITE",
+      title: "github.com/monet4070/TailSync",
       meta: "MacBook Pro · 刚刚",
+      tags: ["网站", "文本"],
+      confidence: 98,
       color: "lime",
     },
     {
-      icon: ImageIcon,
-      type: "IMAGE",
-      title: "dashboard-final.png",
+      icon: Terminal,
+      type: "COMMAND",
+      title: "cargo test --workspace",
       meta: "Windows Studio · 1 分钟前",
       color: "coral",
+      tags: ["命令", "代码"],
+      confidence: 97,
+    },
+    {
+      icon: Braces,
+      type: "DATA",
+      title: '{"trusted":true,"latency":4}',
+      meta: "MacBook Pro · 4 分钟前",
+      color: "cyan",
+      tags: ["结构化数据", "代码"],
+      confidence: 94,
     },
     {
       icon: File,
       type: "FILE",
-      title: "TailSync-v2-spec.pdf",
-      meta: "MacBook Pro · 4 分钟前",
-      color: "cyan",
+      title: "TailSync-v2.0.0-universal.dmg",
+      meta: "Windows Studio · 8 分钟前",
+      color: "paper",
+      tags: ["文件"],
+      confidence: 100,
     },
   ];
   const [activeEntry, setActiveEntry] = useState(0);
@@ -569,10 +902,10 @@ function ProductWindow() {
         <div className="product-title">
           <img src={tailsyncIcon} alt="" />
           <span>TailSync</span>
-          <small>v2</small>
+          <small>v2.0.0</small>
         </div>
         <div className="product-live-state">
-          <i /> LIVE / {active.type}
+          <i /> CLASSIFIER V4 / {active.type}
         </div>
         <div className="window-controls" aria-hidden="true">
           <span />
@@ -585,13 +918,18 @@ function ProductWindow() {
           <Search size={14} />
           <span>搜索历史记录</span>
         </div>
-        <button type="button" aria-label="历史记录">
-          <History size={15} />
+        <button type="button" aria-label="选择日期范围">
+          <CalendarDays size={15} />
         </button>
+      </div>
+      <div className="product-filterbar">
+        <button className="active" type="button"><CalendarDays size={12} /> 今天</button>
+        <button type="button"><Tags size={12} /> 全部分类</button>
+        <span><Database size={12} /> 16 RESULTS</span>
       </div>
       <div className="product-date">
         <span>今天 / TODAY</span>
-        <small>SYNC EVENT 0{activeEntry + 1} / 03</small>
+        <small>SMART MATCH 0{activeEntry + 1} / 04</small>
       </div>
       <div className="product-list">
         {entries.map((entry, index) => {
@@ -613,6 +951,12 @@ function ProductWindow() {
                   <small>{entry.meta}</small>
                 </span>
                 <strong>{entry.title}</strong>
+                <span className="product-row-tags">
+                  {entry.tags.map((tag, tagIndex) => (
+                    <i className={tagIndex === 0 ? "primary" : ""} key={tag}>{tag}</i>
+                  ))}
+                  <em>{entry.confidence}%</em>
+                </span>
               </span>
               <span className="row-action">
                 {index === activeEntry ? <Check size={15} /> : index === 0 ? <Copy size={15} /> : <ArrowRight size={15} />}
@@ -622,10 +966,147 @@ function ProductWindow() {
         })}
       </div>
       <div className="product-statusbar">
-        <span><i /> {active.type} 已同步</span>
-        <span>LAN / {activeEntry + 1} OF 3 / ENCRYPTED</span>
+        <span><i /> {active.type} 已分类</span>
+        <span>LOCAL DB / {activeEntry + 1} OF 4 / INDEXED</span>
       </div>
     </div>
+  );
+}
+
+const recoverySteps = [
+  { label: "SLEEP", title: "系统休眠", detail: "SOCKET SUSPENDED", icon: WifiOff },
+  { label: "WAKE", title: "设备唤醒", detail: "POWER EVENT", icon: Power },
+  { label: "PROBE", title: "主动探测", detail: "PEER HEALTH", icon: Activity },
+  { label: "RECONNECT", title: "重建连接", detail: "NOISE SESSION", icon: RefreshCw },
+  { label: "RESUME", title: "恢复同步", detail: "CLIPBOARD LIVE", icon: Zap },
+];
+
+function RecoverySequence() {
+  const [phase, setPhase] = useState(0);
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const timer = window.setInterval(
+      () => setPhase((current) => (current + 1) % recoverySteps.length),
+      1_300,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const current = recoverySteps[phase];
+
+  return (
+    <section className={`recovery-section recovery-phase-${phase}`} id="recovery">
+      <div className="recovery-copy" data-reveal>
+        <div className="section-marker">
+          <span>07</span>
+          <small>WAKE RECOVERY / V2.0.0</small>
+        </div>
+        <span className="recovery-eyebrow"><RefreshCw size={15} /> RESILIENT SESSION</span>
+        <h2>睡一觉，醒来<br /><strong>同步仍在继续。</strong></h2>
+        <p>
+          Windows 或 macOS 从休眠中唤醒后，TailSync 主动探测对端、重建加密会话并恢复剪贴板监听。恢复的文件不会再回传给原发送端，链路重新上线，也不会形成回环。
+        </p>
+        <div className="recovery-facts">
+          <span><Activity size={16} /> 唤醒后主动健康检查</span>
+          <span><RefreshCw size={16} /> 自动重建安全会话</span>
+          <span><ShieldCheck size={16} /> 来源标记阻止文件回传</span>
+        </div>
+      </div>
+
+      <div className="recovery-console" data-reveal>
+        <div className="recovery-console-head">
+          <span><Waves size={15} /> SESSION RECOVERY MONITOR</span>
+          <strong><i /> {current.label}</strong>
+          <small>BUILD / v2.0.0</small>
+        </div>
+
+        <div className="recovery-wave" aria-hidden="true">
+          {Array.from({ length: 32 }, (_, index) => (
+            <i className={`wave-${(index % 6) + 1}`} key={`wave-${index}`} />
+          ))}
+          <span>CONNECTION SIGNAL</span>
+        </div>
+
+        <div className="recovery-timeline" role="group" aria-label="休眠唤醒恢复阶段">
+          {recoverySteps.map((step, index) => {
+            const Icon = step.icon;
+            const state = index < phase ? "complete" : index === phase ? "active" : "pending";
+            return (
+              <button
+                className={state}
+                type="button"
+                aria-pressed={index === phase}
+                key={step.label}
+                onClick={() => setPhase(index)}
+              >
+                <span><Icon size={18} /></span>
+                <small>0{index + 1}</small>
+                <strong>{step.label}</strong>
+                <em>{step.title}</em>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="recovery-network">
+          <div className="recovery-device recovery-device-source">
+            <Laptop size={23} />
+            <strong>MAC</strong>
+            <small>SOURCE / TRUSTED</small>
+          </div>
+          <div className="recovery-link" aria-hidden="true">
+            <span className="recovery-link-base" />
+            <span className="recovery-link-live" />
+            <i className="recovery-packet packet-a"><ClipboardCopy size={12} /></i>
+            <i className="recovery-packet packet-b"><LockKeyhole size={12} /></i>
+            <b>{current.detail}</b>
+          </div>
+          <div className="recovery-core">
+            <span aria-hidden="true" />
+            <RefreshCw size={23} />
+            <strong>SESSION</strong>
+            <small>{phase < 2 ? "PAUSED" : phase < 4 ? "REBUILD" : "HEALTHY"}</small>
+          </div>
+          <div className="recovery-link recovery-link-right" aria-hidden="true">
+            <span className="recovery-link-base" />
+            <span className="recovery-link-live" />
+            <i className="recovery-packet packet-a"><Check size={12} /></i>
+            <i className="recovery-packet packet-b"><Zap size={12} /></i>
+            <b>{phase === 4 ? "SYNC RESUMED" : "WAITING ACK"}</b>
+          </div>
+          <div className="recovery-device recovery-device-target">
+            <Monitor size={23} />
+            <strong>PC</strong>
+            <small>TARGET / {phase === 0 ? "ASLEEP" : "ONLINE"}</small>
+          </div>
+        </div>
+
+        <div className="recovery-log">
+          <div className="recovery-log-head">
+            <span>EVENT STREAM</span>
+            <small>AUTOMATIC / NO USER ACTION</small>
+          </div>
+          {recoverySteps.map((step, index) => {
+            const Icon = step.icon;
+            return (
+              <div className={index === phase ? "active" : index < phase ? "complete" : ""} key={`log-${step.label}`}>
+                <span>14:32:{String(index * 2 + 1).padStart(2, "0")}</span>
+                <Icon size={14} />
+                <strong>{step.detail}</strong>
+                <small>{index <= phase ? index === phase ? "RUNNING" : "OK" : "QUEUED"}</small>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="recovery-guard">
+          <ShieldCheck size={17} />
+          <span><strong>ORIGIN GUARD</strong> / RECEIVED FILE WILL NOT RETURN TO SENDER</span>
+          <b>NO LOOPBACK</b>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -643,14 +1124,16 @@ function App() {
   const year = useMemo(() => new Date().getFullYear(), []);
 
   useEffect(() => {
+    if (themePreference !== "auto") return;
     const updateAutomaticTheme = () => setAutomaticTheme(getAutomaticTheme());
+    updateAutomaticTheme();
     const timer = window.setInterval(updateAutomaticTheme, 60_000);
     document.addEventListener("visibilitychange", updateAutomaticTheme);
     return () => {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", updateAutomaticTheme);
     };
-  }, []);
+  }, [themePreference]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = timeTheme;
@@ -666,6 +1149,16 @@ function App() {
       // The selected theme still works for the current session without storage.
     }
   }, [themePreference, timeTheme]);
+
+  useEffect(() => {
+    const syncThemeAcrossTabs = (event: StorageEvent) => {
+      if (event.key === THEME_STORAGE_KEY && isThemePreference(event.newValue)) {
+        setThemePreference(event.newValue);
+      }
+    };
+    window.addEventListener("storage", syncThemeAcrossTabs);
+    return () => window.removeEventListener("storage", syncThemeAcrossTabs);
+  }, []);
 
   useEffect(() => {
     const updateProgress = () => {
@@ -699,6 +1192,21 @@ function App() {
   }, []);
 
   const closeMenu = () => setMenuOpen(false);
+  const selectTheme = (preference: ThemePreference) => {
+    setThemePreference(preference);
+
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, preference);
+    } catch {
+      // The in-memory preference remains available for this session.
+    }
+
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("theme")) {
+      url.searchParams.delete("theme");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+  };
 
   return (
     <div className={`landing-shell theme-${timeTheme}`} id="top">
@@ -712,7 +1220,7 @@ function App() {
         <a className="brand" href="#top" onClick={closeMenu}>
           <img src={tailsyncIcon} alt="TailSync" />
           <span>TAILSYNC</span>
-          <small>2.0</small>
+          <small>2.0.0</small>
         </a>
 
         <button
@@ -726,14 +1234,20 @@ function App() {
         </button>
 
         <nav className={menuOpen ? "site-nav is-open" : "site-nav"}>
-          <div className="theme-switcher" role="group" aria-label="显示模式">
+          <div
+            className={`theme-switcher preference-${themePreference}`}
+            role="radiogroup"
+            aria-label="显示模式"
+          >
+            <i className="theme-switch-indicator" aria-hidden="true" />
             <button
               className={themePreference === "auto" ? "active" : ""}
               type="button"
+              role="radio"
               aria-label={`自动模式，当前显示${timeTheme === "light" ? "浅色" : "深色"}`}
-              aria-pressed={themePreference === "auto"}
-              title="自动模式"
-              onClick={() => setThemePreference("auto")}
+              aria-checked={themePreference === "auto"}
+              title={`自动：07:00–19:00 浅色，当前${timeTheme === "light" ? "浅色" : "深色"}`}
+              onClick={() => selectTheme("auto")}
             >
               <Clock3 size={14} />
               <span>自动</span>
@@ -741,10 +1255,11 @@ function App() {
             <button
               className={themePreference === "light" ? "active" : ""}
               type="button"
+              role="radio"
               aria-label="浅色模式"
-              aria-pressed={themePreference === "light"}
+              aria-checked={themePreference === "light"}
               title="浅色模式"
-              onClick={() => setThemePreference("light")}
+              onClick={() => selectTheme("light")}
             >
               <Sun size={14} />
               <span>浅色</span>
@@ -752,17 +1267,18 @@ function App() {
             <button
               className={themePreference === "dark" ? "active" : ""}
               type="button"
+              role="radio"
               aria-label="深色模式"
-              aria-pressed={themePreference === "dark"}
+              aria-checked={themePreference === "dark"}
               title="深色模式"
-              onClick={() => setThemePreference("dark")}
+              onClick={() => selectTheme("dark")}
             >
               <Moon size={14} />
               <span>深色</span>
             </button>
           </div>
           <a href="#routing" onClick={closeMenu}>智能路由</a>
-          <a href="#flow" onClick={closeMenu}>内容流</a>
+          <a href="#history" onClick={closeMenu}>智能历史</a>
           <a href="#security" onClick={closeMenu}>安全</a>
           <a className="nav-source" href={GITHUB_URL} target="_blank" rel="noreferrer">
             <GitFork size={15} />
@@ -788,7 +1304,7 @@ function App() {
             </h1>
             <p>
               TailSync 让文本、图片和文件在 Mac 与 Windows 之间直接流动。
-              局域网优先，Tailscale 兜底，全程加密，不依赖云端剪贴板。
+              局域网优先，Tailscale 兜底；智能历史自动分类，休眠唤醒后自动恢复，全程加密且不依赖云端剪贴板。
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href={RELEASE_URL} target="_blank" rel="noreferrer">
@@ -831,10 +1347,14 @@ function App() {
               <span>NO CLOUD</span><i />
               <span>END TO END</span><i />
               <span>TEXT / IMAGE / FILE</span><i />
+              <span>SMART HISTORY</span><i />
+              <span>WAKE RECOVERY</span><i />
               <span>LOCAL FIRST</span><i />
               <span>NO CLOUD</span><i />
               <span>END TO END</span><i />
               <span>TEXT / IMAGE / FILE</span><i />
+              <span>SMART HISTORY</span><i />
+              <span>WAKE RECOVERY</span><i />
             </div>
           </div>
           <div className="manifesto-inner" data-reveal>
@@ -1030,12 +1550,14 @@ function App() {
           </div>
         </section>
 
+        <HistoryIntelligence />
+
         <section className="security-section" id="security">
           <div className="security-word" aria-hidden="true">PRIVATE</div>
           <div className="security-inner">
             <div className="security-copy" data-reveal>
               <div className="section-marker section-marker-light">
-                <span>04</span>
+                <span>05</span>
                 <small>TRUST, EXPLICITLY</small>
               </div>
               <h2>
@@ -1060,17 +1582,17 @@ function App() {
         <section className="product-section" id="product">
           <div className="product-copy" data-reveal>
             <div className="section-marker">
-              <span>05</span>
-              <small>QUIET BY DESIGN</small>
+              <span>06</span>
+              <small>INTELLIGENCE, IN CONTEXT</small>
             </div>
-            <h2>常驻托盘。<br />需要时才出现。</h2>
+            <h2>安静常驻。<br />需要时，历史已经整理好。</h2>
             <p>
-              TailSync 不抢占桌面。它在后台监听、同步与确认；需要找回内容、查看路径或管理设备时，再打开精确而克制的工具界面。
+              TailSync 在后台监听、同步、分类与确认。打开历史时，内容类型、多标签、置信度和日期范围都已经就位，找回记录不再依赖逐条翻看。
             </p>
             <div className="product-points">
-              <span><History size={17} /> 本地历史搜索与恢复</span>
+              <span><Tags size={17} /> 八类内容与多标签识别</span>
+              <span><CalendarDays size={17} /> 七种日期范围与自定义筛选</span>
               <span><RadioTower size={17} /> 真实在线状态与路径延迟</span>
-              <span><ClipboardCopy size={17} /> 文本、图片、文件双向同步</span>
             </div>
           </div>
 
@@ -1103,8 +1625,8 @@ function App() {
             <div className="transfer-float">
               <File size={17} />
               <div className="transfer-float-copy">
-                <strong>prototype-v2.fig</strong>
-                <small>分块写入 / 校验中</small>
+                <strong>TailSync-v2.0.0.dmg</strong>
+                <small>分块写入 / 来源已标记</small>
                 <span className="transfer-progress"><i /></span>
               </div>
               <Check size={15} />
@@ -1121,17 +1643,19 @@ function App() {
           <div className="architecture-diagram" data-reveal>
             <div><Laptop size={26} /><span>macOS</span><small>SwiftUI</small></div>
             <i />
-            <div className="core-node"><Code2 size={28} /><span>Core</span><small>Rust / v2</small></div>
+            <div className="core-node"><Code2 size={28} /><span>Core</span><small>Rust / v2.0.0</small></div>
             <i />
             <div><Monitor size={26} /><span>Windows</span><small>Tauri</small></div>
           </div>
         </section>
 
+        <RecoverySequence />
+
         <section className="download-section" id="download">
           <div className="download-grid" aria-hidden="true" />
           <div className="download-copy" data-reveal>
             <img src={tailsyncIcon} alt="" />
-            <span>TAILSYNC 2.0</span>
+            <span>TAILSYNC 2.0.0</span>
             <h2>你的剪贴板，<br />应该跟着你。</h2>
             <p>macOS 与 Windows。开源。MIT License。</p>
             <div className="download-actions">
@@ -1160,7 +1684,7 @@ function App() {
           <img src={tailsyncIcon} alt="" />
           <span>TAILSYNC</span>
         </div>
-        <p>DIRECT CLIPBOARD SYNC / BUILT FOR DEVICES YOU TRUST</p>
+        <p>SMART LOCAL HISTORY / RESILIENT DIRECT SYNC / BUILT FOR DEVICES YOU TRUST</p>
         <span>© {year} TAILSYNC · MIT</span>
       </footer>
     </div>
