@@ -4,6 +4,12 @@ use crate::AppState;
 use log::info;
 use tauri::{command, AppHandle, Manager, State};
 
+#[derive(serde::Serialize)]
+pub struct HistoryPage {
+    pub entries: Vec<db::HistoryEntry>,
+    pub total: usize,
+}
+
 /// Get clipboard history entries
 #[command]
 pub async fn get_history(
@@ -25,6 +31,43 @@ pub async fn get_history(
         offset.unwrap_or(0),
     )
     .map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn get_history_page(
+    state: State<'_, AppState>,
+    keyword: Option<String>,
+    category: Option<String>,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<HistoryPage, String> {
+    let db = state.db.lock().await;
+    let entries = db
+        .get_all_filtered(
+            keyword.as_deref(),
+            category.as_deref(),
+            start_time.as_deref(),
+            end_time.as_deref(),
+            limit.unwrap_or(50),
+            offset.unwrap_or(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let total = db
+        .count_all_filtered(
+            keyword.as_deref(),
+            category.as_deref(),
+            start_time.as_deref(),
+            end_time.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(HistoryPage { entries, total })
+}
+
+#[command]
+pub async fn get_history_capabilities() -> Result<serde_json::Value, String> {
+    Ok(crate::api::history_capabilities_data())
 }
 
 /// Search history by keyword (searches description field)
@@ -184,9 +227,9 @@ pub async fn get_peers(state: State<'_, AppState>) -> Result<serde_json::Value, 
 
 /// Ask the single background health monitor to run an early discovery round.
 #[command]
-pub async fn refresh_peers() -> Result<(), String> {
-    network::request_peer_refresh_and_wait().await;
-    Ok(())
+pub async fn refresh_peers(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    network::request_peer_refresh_and_wait().await?;
+    get_peers(state).await
 }
 
 /// Pin a peer's Noise static public key after out-of-band verification.

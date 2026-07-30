@@ -282,10 +282,26 @@ pub(crate) fn peer_snapshot_data(
                 })
                 .collect::<Vec<_>>();
             peer.online = route_health.iter().any(|(_, health)| health.online);
-            peer.current_interface = route_health
+            let current_route = route_health
                 .iter()
                 .find(|(_, health)| health.connected)
-                .map(|(candidate, _)| candidate.interface);
+                .map(|(candidate, _)| candidate.clone());
+            peer.current_interface = current_route.as_ref().map(|candidate| candidate.interface);
+            let peer_status = [
+                network::PeerStatus::Connected,
+                network::PeerStatus::Online,
+                network::PeerStatus::Confirming,
+                network::PeerStatus::Discovered,
+                network::PeerStatus::Offline,
+            ]
+            .into_iter()
+            .find(|status| {
+                route_health
+                    .iter()
+                    .any(|(_, health)| health.status == *status)
+            })
+            .unwrap_or(network::PeerStatus::Offline);
+            let paired_endpoint = settings.paired_peer_endpoints.get(&peer.hostname);
             let routes = route_health
                 .into_iter()
                 .map(|(candidate, health)| {
@@ -296,10 +312,15 @@ pub(crate) fn peer_snapshot_data(
                         "online": health.online,
                         "connected": health.connected,
                         "latency_ms": health.latency_ms,
+                        "pairing_endpoint": paired_endpoint == Some(&candidate.address),
                     })
                 })
                 .collect::<Vec<_>>();
             let mut value = serde_json::to_value(peer).expect("peer snapshot is serializable");
+            value["current_address"] = serde_json::json!(current_route
+                .as_ref()
+                .map(|candidate| candidate.address.as_str()));
+            value["status"] = serde_json::json!(peer_status);
             value["routes"] = Value::Array(routes);
             value
         })
@@ -315,6 +336,7 @@ pub(crate) fn peer_snapshot_data(
                 "online": true,
                 "connected": true,
                 "latency_ms": Value::Null,
+                "pairing_endpoint": false,
             })
         })
         .collect::<Vec<_>>();
@@ -329,6 +351,7 @@ pub(crate) fn peer_snapshot_data(
             "fingerprint": identity.fingerprint(),
         },
         "peers": peers,
+        "paired_peer_endpoints": settings.paired_peer_endpoints,
         "discovery_error": discovery_error,
     })
 }
@@ -666,6 +689,7 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     let mode_changed = settings.connection_mode != new_settings.connection_mode;
                     new_settings.trusted_peer_keys = settings.trusted_peer_keys.clone();
                     new_settings.trusted_peer_addresses = settings.trusted_peer_addresses.clone();
+                    new_settings.paired_peer_endpoints = settings.paired_peer_endpoints.clone();
                     let limit = new_settings.history_limit as i64;
                     *settings = new_settings;
                     if let Err(e) = settings.save() {
@@ -1005,7 +1029,7 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
     }
 }
 
-fn history_capabilities_data() -> Value {
+pub(crate) fn history_capabilities_data() -> Value {
     serde_json::json!({
         "classifier_version": crate::history_classifier::CLASSIFIER_VERSION,
         "categories": crate::history_classifier::CATEGORIES,
@@ -1123,6 +1147,9 @@ mod tests {
                 ("tailscale".into(), "100.111.236.101".into()),
             ]),
         );
+        settings
+            .paired_peer_endpoints
+            .insert("Mac".into(), "192.168.31.247".into());
         let data = peer_snapshot_data(
             &identity,
             &settings,
@@ -1162,10 +1189,16 @@ mod tests {
         assert_eq!(routes[0]["status"].as_str(), Some("discovered"));
         assert_eq!(routes[0]["online"].as_bool(), Some(false));
         assert_eq!(routes[0]["connected"].as_bool(), Some(false));
+        assert_eq!(routes[0]["pairing_endpoint"].as_bool(), Some(true));
         assert_eq!(routes[1]["interface"].as_str(), Some("tailscale"));
         assert_eq!(routes[1]["address"].as_str(), Some("100.111.236.101"));
         assert_eq!(routes[1]["online"].as_bool(), Some(false));
         assert_eq!(routes[1]["connected"].as_bool(), Some(false));
+        assert_eq!(routes[1]["pairing_endpoint"].as_bool(), Some(false));
+        assert_eq!(
+            data["paired_peer_endpoints"]["Mac"].as_str(),
+            Some("192.168.31.247")
+        );
     }
 
     #[test]

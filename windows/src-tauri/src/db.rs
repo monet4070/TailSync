@@ -651,6 +651,49 @@ impl HistoryDB {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<HistoryEntry>, Box<dyn std::error::Error>> {
+        let (filter_clause, mut values) =
+            Self::history_filter_clause(keyword, category, start_time, end_time)?;
+
+        let mut sql = String::from(
+            "SELECT id, timestamp, type, description, data_hash, size_bytes, source_peer,
+                    category, category_confidence, classifier_version, categories
+             FROM history",
+        );
+        sql.push_str(&filter_clause);
+        sql.push_str(" ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?");
+        values.push(Value::Integer(limit as i64));
+        values.push(Value::Integer(offset as i64));
+
+        let entries = self
+            .conn
+            .prepare(&sql)?
+            .query_map(params_from_iter(values.iter()), Self::row_to_entry)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(entries)
+    }
+
+    pub fn count_all_filtered(
+        &self,
+        keyword: Option<&str>,
+        category: Option<&str>,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        let (filter_clause, values) =
+            Self::history_filter_clause(keyword, category, start_time, end_time)?;
+        let sql = format!("SELECT COUNT(*) FROM history{filter_clause}");
+        let count: i64 = self
+            .conn
+            .query_row(&sql, params_from_iter(values.iter()), |row| row.get(0))?;
+        Ok(count.max(0) as usize)
+    }
+
+    fn history_filter_clause(
+        keyword: Option<&str>,
+        category: Option<&str>,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+    ) -> Result<(String, Vec<Value>), Box<dyn std::error::Error>> {
         let keyword = keyword.filter(|value| !value.trim().is_empty());
         let category = category.filter(|value| !value.is_empty() && *value != "all");
         if category.is_some_and(|value| !history_classifier::is_known_category(value)) {
@@ -704,26 +747,12 @@ impl HistoryDB {
             conditions.push("julianday(timestamp) < julianday(?)");
             values.push(Value::Text(end_time.to_rfc3339()));
         }
-
-        let mut sql = String::from(
-            "SELECT id, timestamp, type, description, data_hash, size_bytes, source_peer,
-                    category, category_confidence, classifier_version, categories
-             FROM history",
-        );
-        if !conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&conditions.join(" AND "));
-        }
-        sql.push_str(" ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?");
-        values.push(Value::Integer(limit as i64));
-        values.push(Value::Integer(offset as i64));
-
-        let entries = self
-            .conn
-            .prepare(&sql)?
-            .query_map(params_from_iter(values.iter()), Self::row_to_entry)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(entries)
+        let filter_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        Ok((filter_clause, values))
     }
 
     /// Get entry bytes. File entries backed by the history folder are read
@@ -1738,9 +1767,9 @@ mod tests {
     }
 
     #[test]
-    fn backfill_upgrades_v2_to_v3_and_persists_secondary_labels() {
+    fn backfill_upgrades_old_classifier_and_persists_secondary_labels() {
         let root = std::env::temp_dir().join(format!(
-            "tailsync-category-v3-backfill-{}-{}",
+            "tailsync-category-classifier-backfill-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
@@ -1824,6 +1853,16 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].data_hash, "start");
         assert_eq!(results[0].categories, vec!["website", "text"]);
+        assert_eq!(
+            db.count_all_filtered(
+                Some("needle"),
+                Some("text"),
+                Some("2026-02-01T10:00:00Z"),
+                Some("2026-02-01T11:00:00Z"),
+            )
+            .unwrap(),
+            1
+        );
 
         let invalid = db
             .get_all_filtered(None, None, Some("2026-02-30T10:00:00Z"), None, 10, 0)

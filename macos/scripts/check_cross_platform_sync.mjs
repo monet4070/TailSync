@@ -264,9 +264,19 @@ assertJsonFields('File progress', macApiSource, ['name', 'sent', 'total', 'activ
 assertJsonFields('Image thumbnail', macApiSource, ['width', 'height', 'rgba_b64']);
 
 const peerInfoFields = rustFields(read(macRoot, 'src-tauri/src/network/tailscale.rs'), 'PeerInfo');
+peerInfoFields.add('routes');
 const swiftPeerFields = swiftFields(swiftSource, 'PeerSnapshot');
 swiftPeerFields.delete('id');
 assertSameFields('SwiftUI/Rust peer snapshot', peerInfoFields, swiftPeerFields);
+const routeFields = ['interface', 'address', 'status', 'online', 'connected',
+  'latency_ms', 'pairing_endpoint'];
+assertJsonFields('Windows peer route snapshot', read(winRoot, 'src-tauri/src/api.rs'), routeFields);
+assertJsonFields('macOS peer route snapshot', macApiSource, routeFields);
+for (const marker of [
+  /struct Route: Decodable/,
+  /case latencyMs = "latency_ms"/,
+  /case pairingEndpoint = "pairing_endpoint"/,
+]) if (!marker.test(swiftSource)) fail('SwiftUI peer route DTO is missing normalized route fields.');
 
 const infoPlist = read(macRoot, 'src-tauri/Info.plist');
 if (!/<key>NSLocalNetworkUsageDescription<\/key>\s*<string>[^<]+<\/string>/s.test(infoPlist) ||

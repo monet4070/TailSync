@@ -234,6 +234,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_history,
+            commands::get_history_page,
+            commands::get_history_capabilities,
             commands::search_history,
             commands::delete_entry,
             commands::clear_history,

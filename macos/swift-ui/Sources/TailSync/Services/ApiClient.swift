@@ -257,6 +257,35 @@ final class ApiClient: @unchecked Sendable {
     }
 
     struct PeerSnapshot: Decodable, Identifiable {
+        struct Route: Decodable {
+            let interface: String
+            let address: String
+            let status: String
+            let online: Bool
+            let connected: Bool
+            let latencyMs: Int?
+            let pairingEndpoint: Bool
+
+            init(from decoder: Decoder) throws {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                interface = try values.decodeIfPresent(String.self, forKey: .interface) ?? "lan"
+                address = try values.decodeIfPresent(String.self, forKey: .address) ?? ""
+                status = try values.decodeIfPresent(String.self, forKey: .status) ?? "discovered"
+                online = try values.decodeIfPresent(Bool.self, forKey: .online) ?? false
+                connected = try values.decodeIfPresent(Bool.self, forKey: .connected) ?? false
+                latencyMs = try values.decodeIfPresent(Int.self, forKey: .latencyMs)
+                    ?? values.decodeIfPresent(Int.self, forKey: .legacyLatency)
+                pairingEndpoint = try values.decodeIfPresent(Bool.self, forKey: .pairingEndpoint) ?? false
+            }
+
+            private enum CodingKeys: String, CodingKey {
+                case interface, address, status, online, connected
+                case latencyMs = "latency_ms"
+                case legacyLatency = "latency"
+                case pairingEndpoint = "pairing_endpoint"
+            }
+        }
+
         struct Candidate: Decodable {
             let interface: String
             let address: String
@@ -290,6 +319,7 @@ final class ApiClient: @unchecked Sendable {
         let current_interface: String?
         let current_address: String?
         let candidates: [Candidate]
+        let routes: [Route]
         let status: String
         var id: String { hostname }
 
@@ -306,11 +336,12 @@ final class ApiClient: @unchecked Sendable {
             current_interface = try values.decodeIfPresent(String.self, forKey: .current_interface)
             current_address = try values.decodeIfPresent(String.self, forKey: .current_address)
             candidates = try values.decodeIfPresent([Candidate].self, forKey: .candidates) ?? []
+            routes = try values.decodeIfPresent([Route].self, forKey: .routes) ?? []
             status = try values.decodeIfPresent(String.self, forKey: .status)
                 ?? (current_address != nil ? "connected" : online ? "online" : "offline")
         }
 
-        private enum CodingKeys: String, CodingKey { case hostname, tailscale_ip, address, online, enabled, connection_mode, trusted, fingerprint, current_interface, current_address, candidates, status }
+        private enum CodingKeys: String, CodingKey { case hostname, tailscale_ip, address, online, enabled, connection_mode, trusted, fingerprint, current_interface, current_address, candidates, routes, status }
     }
 
     func getPeers() async -> (local: DeviceSnapshot?, peers: [PeerSnapshot], pairedEndpoints: [String: String], error: String?) {

@@ -29,6 +29,10 @@ pub struct Settings {
     #[serde(default)]
     pub trusted_peer_addresses:
         std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    /// Address used for the explicit pairing confirmation. Device identity is
+    /// still pinned by public key so trusted peers can safely change routes.
+    #[serde(default)]
+    pub paired_peer_endpoints: std::collections::HashMap<String, String>,
 }
 
 fn default_connection_mode() -> String {
@@ -60,6 +64,7 @@ impl Default for Settings {
             connection_mode: default_connection_mode(),
             trusted_peer_keys: std::collections::HashMap::new(),
             trusted_peer_addresses: std::collections::HashMap::new(),
+            paired_peer_endpoints: std::collections::HashMap::new(),
         }
     }
 }
@@ -134,6 +139,8 @@ impl Settings {
             .insert(hostname.to_string(), public_key.to_string());
         if let Some(address) = address {
             self.remember_peer_address_without_save(hostname, mode, address)?;
+            self.paired_peer_endpoints
+                .insert(hostname.to_string(), address.to_string());
         }
         self.enabled_peers.insert(hostname.to_string(), true);
         Ok(())
@@ -175,6 +182,7 @@ impl Settings {
         for duplicate in duplicate_hostnames {
             self.trusted_peer_keys.remove(&duplicate);
             self.trusted_peer_addresses.remove(&duplicate);
+            self.paired_peer_endpoints.remove(&duplicate);
             self.enabled_peers.remove(&duplicate);
         }
         if !matches!(mode, "lan" | "tailscale") {
@@ -195,6 +203,7 @@ impl Settings {
     pub fn forget_peer(&mut self, hostname: &str) -> Result<(), Box<dyn std::error::Error>> {
         self.trusted_peer_keys.remove(hostname);
         self.trusted_peer_addresses.remove(hostname);
+        self.paired_peer_endpoints.remove(hostname);
         self.enabled_peers.remove(hostname);
         self.save()
     }
@@ -443,6 +452,7 @@ mod tests {
         .unwrap();
         assert!(settings.trusted_peer_keys.is_empty());
         assert!(settings.trusted_peer_addresses.is_empty());
+        assert!(settings.paired_peer_endpoints.is_empty());
     }
 
     #[test]
@@ -473,6 +483,26 @@ mod tests {
         assert!(settings
             .remember_peer_address_without_save("windows", "lan", "not-an-ip")
             .is_err());
+    }
+
+    #[test]
+    fn pairing_endpoint_is_not_changed_by_later_route_discovery() {
+        let mut settings = Settings::default();
+        settings
+            .trust_peer_without_save("windows", "key", "lan", Some("192.168.1.20"))
+            .unwrap();
+
+        settings
+            .remember_peer_address_without_save("windows", "tailscale", "100.64.0.2")
+            .unwrap();
+
+        assert_eq!(
+            settings
+                .paired_peer_endpoints
+                .get("windows")
+                .map(String::as_str),
+            Some("192.168.1.20")
+        );
     }
 
     #[test]

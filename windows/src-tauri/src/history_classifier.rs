@@ -1,4 +1,4 @@
-pub const CLASSIFIER_VERSION: i64 = 3;
+pub const CLASSIFIER_VERSION: i64 = 4;
 pub const MAX_SAMPLE_BYTES: usize = 16 * 1024;
 
 pub const CATEGORIES: [&str; 8] = [
@@ -70,6 +70,9 @@ pub fn classify_text(text: &str) -> Classification {
         }
         if is_command(sample) {
             return Classification::ambiguous("command", 92);
+        }
+        if is_command_block(sample) {
+            return Classification::new("command", 96);
         }
         if is_path(sample) {
             return Classification::new("path", 96);
@@ -383,6 +386,17 @@ fn is_command(value: &str) -> bool {
     if is_powershell_cmdlet(first) {
         return token_count > 1 || prompted;
     }
+    if wrapped
+        && has_arguments
+        && executable_name
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
+        && executable_name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+    {
+        return true;
+    }
     if !is_known_command(executable_name) {
         return false;
     }
@@ -415,6 +429,56 @@ fn is_command(value: &str) -> bool {
             );
     }
     token_count > 1 || has_shell_syntax || matches!(executable_name, "ls" | "pwd" | "clear")
+}
+
+fn is_command_block(value: &str) -> bool {
+    if value.starts_with("#!") {
+        return false;
+    }
+    let physical_lines: Vec<&str> = value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if !(2..=64).contains(&physical_lines.len()) {
+        return false;
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut has_continuation = false;
+    for line in physical_lines {
+        let continued = line.ends_with(['\\', '`']);
+        let segment = if continued {
+            has_continuation = true;
+            line[..line.len() - 1].trim_end()
+        } else {
+            line
+        };
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(segment);
+        if !continued {
+            lines.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    let mut command_lines = 0_usize;
+    let mut shell_context_lines = 0_usize;
+    for line in lines {
+        if line.starts_with('#') || looks_like_environment_assignment(&line) {
+            shell_context_lines += 1;
+        } else if is_command(&line) {
+            command_lines += 1;
+        } else {
+            return false;
+        }
+    }
+    command_lines >= 2 || (command_lines == 1 && (shell_context_lines >= 1 || has_continuation))
 }
 
 fn split_shell_tokens(value: &str) -> Vec<&str> {
@@ -481,7 +545,7 @@ fn is_powershell_cmdlet(token: &str) -> bool {
 }
 
 fn is_known_command(token: &str) -> bool {
-    const COMMANDS: [&str; 55] = [
+    const COMMANDS: &[&str] = &[
         "apt",
         "apt-get",
         "awk",
@@ -489,8 +553,11 @@ fn is_known_command(token: &str) -> bool {
         "brew",
         "bun",
         "cargo",
+        "cat",
         "cd",
+        "certbot",
         "chmod",
+        "chown",
         "choco",
         "clear",
         "cmake",
@@ -500,18 +567,28 @@ fn is_known_command(token: &str) -> bool {
         "dnf",
         "docker",
         "dotnet",
+        "du",
+        "echo",
         "find",
         "git",
         "go",
         "gradle",
+        "grep",
+        "head",
         "java",
         "javac",
+        "journalctl",
+        "kill",
+        "killall",
         "kubectl",
+        "less",
+        "ln",
         "ls",
         "make",
         "mkdir",
         "mv",
         "node",
+        "nginx",
         "npm",
         "npx",
         "perl",
@@ -520,22 +597,36 @@ fn is_known_command(token: &str) -> bool {
         "pip3",
         "pnpm",
         "powershell",
+        "ps",
         "pwd",
         "pwsh",
         "python",
         "python3",
+        "reboot",
         "rg",
+        "rm",
+        "rmdir",
+        "rsync",
         "ruby",
         "rustc",
         "scp",
         "sed",
+        "service",
         "sh",
         "ssh",
         "swift",
+        "systemctl",
+        "tail",
         "tar",
+        "tee",
+        "touch",
+        "ufw",
+        "uname",
+        "unzip",
         "wget",
         "winget",
         "yarn",
+        "xargs",
         "zsh",
     ];
     COMMANDS
@@ -596,6 +687,9 @@ fn code_score(value: &str) -> u8 {
     let mut statement_lines = 0_u8;
     let mut comment_lines = 0_u8;
     let mut declaration_lines = 0_u8;
+    let mut assignment_lines = 0_u8;
+    let mut strong_assignment_lines = 0_u8;
+    let mut function_call_lines = 0_u8;
     for line in &lines {
         let line = line.trim();
         if line.is_empty() {
@@ -610,10 +704,23 @@ fn code_score(value: &str) -> u8 {
         if starts_code_declaration(line) {
             declaration_lines = declaration_lines.saturating_add(1);
         }
+        if let Some(right_hand_side) = code_assignment_value(line) {
+            assignment_lines = assignment_lines.saturating_add(1);
+            if has_code_value_signal(right_hand_side) {
+                strong_assignment_lines = strong_assignment_lines.saturating_add(1);
+            }
+        }
+        if looks_like_function_call(line) {
+            function_call_lines = function_call_lines.saturating_add(1);
+        }
+    }
+    if assignment_lines >= 2 && strong_assignment_lines >= 1 {
+        return 8;
     }
     score += statement_lines.min(2);
     score += comment_lines.min(1);
     score += declaration_lines.saturating_mul(4).min(6);
+    score += function_call_lines.saturating_mul(3).min(6);
 
     if trimmed.contains("=>") || trimmed.contains("::") {
         score += 2;
@@ -633,6 +740,38 @@ fn code_score(value: &str) -> u8 {
         score += 2;
     }
     score
+}
+
+fn code_assignment_value(line: &str) -> Option<&str> {
+    if ["==", "!=", "<=", ">=", "=>"]
+        .iter()
+        .any(|operator| line.contains(operator))
+    {
+        return None;
+    }
+    let (left, right) = line.split_once('=')?;
+    let left = ["const ", "let ", "var "]
+        .iter()
+        .find_map(|prefix| left.trim().strip_prefix(prefix))
+        .unwrap_or_else(|| left.trim());
+    if !is_identifier(left) {
+        return None;
+    }
+    let right = right.trim().trim_end_matches(';').trim();
+    (!right.is_empty()).then_some(right)
+}
+
+fn has_code_value_signal(value: &str) -> bool {
+    value.starts_with(['"', '\'', '[', '{', '('])
+        || value
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+        || matches!(value, "true" | "false" | "null" | "None" | "nil")
+        || [" + ", " - ", " * ", " / ", " % "]
+            .iter()
+            .any(|operator| value.contains(operator))
+        || value.contains(['(', '['])
 }
 
 fn is_strong_code_signature(value: &str) -> bool {
@@ -837,6 +976,24 @@ mod tests {
             "command"
         );
         assert_eq!(category("/usr/bin/git status --short"), "command");
+        let nginx_deploy =
+            "sudo tar -xzf /tmp/tailsync-site-theme-switch-20260728.tar.gz -C /var/www/tailsync\n\
+sudo chown -R www-data:www-data /var/www/tailsync\n\
+sudo nginx -t\n\
+sudo systemctl reload nginx";
+        let deployment_classification = classify_text(nginx_deploy);
+        assert_eq!(deployment_classification.category, "command");
+        assert_eq!(deployment_classification.confidence, 96);
+        assert_eq!(deployment_classification.categories(), vec!["command"]);
+        assert_eq!(category("git status --short\nnpm run build"), "command");
+        assert_eq!(
+            category("sudo customctl restart\nsudo customctl status"),
+            "command"
+        );
+        assert_eq!(
+            category("docker run --rm \\\n+  -v /tmp/source:/source \\\n+  alpine:latest"),
+            "command"
+        );
         assert_eq!(
             category("const ids = items.map((item) => item.id);"),
             "code"
@@ -857,6 +1014,8 @@ mod tests {
         assert_eq!(category("from pathlib import Path"), "code");
         assert_eq!(category("use std::collections::HashMap;"), "code");
         assert_eq!(category("#include <stdio.h>"), "code");
+        assert_eq!(category("x = 1\ny = x + 2\nprint(y)"), "code");
+        assert_eq!(category("prepare()\nexecute()\ncleanup()"), "code");
     }
 
     #[test]
@@ -873,6 +1032,7 @@ mod tests {
         assert_eq!(category("from here import this document"), "text");
         assert_eq!(category("go home now"), "text");
         assert_eq!(category("make this easier"), "text");
+        assert_eq!(category("Name = Alice\nCity = Beijing"), "text");
         assert_eq!(category("git"), "text");
         assert_eq!(category("true"), "text");
         assert_eq!(category("{this is ordinary text}"), "text");

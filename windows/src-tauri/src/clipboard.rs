@@ -20,6 +20,7 @@ use crate::sync;
 static CLIPBOARD_RECOVERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
 const CLIPBOARD_MONITOR_STALE_AFTER_MS: u64 = 10_000;
+const SYSTEM_RESUME_GAP_MS: u64 = 5_000;
 
 pub fn request_wake_recovery() {
     CLIPBOARD_RECOVERY_GENERATION.fetch_add(1, Ordering::AcqRel);
@@ -91,12 +92,18 @@ async fn clipboard_loop(
     let mut recovery_generation = CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire);
 
     loop {
+        let sleep_started_ms = crate::protocol::unix_timestamp_ms().max(0) as u64;
         sleep(Duration::from_millis(poll_interval)).await;
         tick += 1;
-        CLIPBOARD_MONITOR_LAST_TICK_MS.store(
-            crate::protocol::unix_timestamp_ms().max(0) as u64,
-            Ordering::Release,
-        );
+        let now_ms = crate::protocol::unix_timestamp_ms().max(0) as u64;
+        CLIPBOARD_MONITOR_LAST_TICK_MS.store(now_ms, Ordering::Release);
+
+        if now_ms.saturating_sub(sleep_started_ms) > SYSTEM_RESUME_GAP_MS {
+            request_wake_recovery();
+            pool.lock().await.disconnect_all();
+            network::clear_peer_cache().await;
+            info!("Detected system resume; resetting clipboard and peer connections");
+        }
 
         let requested_generation = CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire);
         if requested_generation != recovery_generation {

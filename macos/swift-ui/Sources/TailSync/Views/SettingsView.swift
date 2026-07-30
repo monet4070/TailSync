@@ -320,6 +320,21 @@ struct SettingsView: View {
             let pairedAddress = savedPairingAddress
                 .flatMap { availableAddresses.contains($0) ? $0 : nil }
                 ?? (peer.trusted ? peer.candidates.first?.address ?? peer.address : nil)
+            if !peer.routes.isEmpty {
+                return peer.routes.map {
+                    PeerRoute(
+                        peer: peer,
+                        address: $0.address,
+                        interface: $0.interface,
+                        online: $0.online,
+                        connected: $0.connected,
+                        status: $0.connected ? "connected" : $0.status,
+                        latencyMs: $0.latencyMs,
+                        isPairingEndpoint: peer.trusted
+                            && ($0.pairingEndpoint || $0.address == pairedAddress)
+                    )
+                }
+            }
             if settings.connection_mode == "auto", !peer.candidates.isEmpty {
                 return peer.candidates.map {
                     PeerRoute(

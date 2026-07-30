@@ -51,6 +51,67 @@ fn start_parent_monitor() {
 #[cfg(not(target_os = "macos"))]
 fn start_parent_monitor() {}
 
+#[cfg(target_os = "windows")]
+fn start_background_notifications(
+    app: tauri::AppHandle,
+    db: Arc<Mutex<db::HistoryDB>>,
+    settings: Arc<Mutex<crypto::Settings>>,
+) {
+    use tauri_plugin_notification::NotificationExt;
+
+    tauri::async_runtime::spawn(async move {
+        let mut last_seen_id = db
+            .lock()
+            .await
+            .get_all_filtered(None, None, None, None, 1, 0)
+            .ok()
+            .and_then(|entries| entries.first().map(|entry| entry.id))
+            .unwrap_or_default();
+        let mut last_version = api::get_clipboard_version();
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let version = api::get_clipboard_version();
+            if version == last_version {
+                continue;
+            }
+            last_version = version;
+
+            let latest = db
+                .lock()
+                .await
+                .get_all_filtered(None, None, None, None, 1, 0)
+                .ok()
+                .and_then(|entries| entries.into_iter().next());
+            let Some(entry) = latest else {
+                continue;
+            };
+            if entry.id <= last_seen_id {
+                continue;
+            }
+            last_seen_id = entry.id;
+            if entry.source_peer == "self" || !settings.lock().await.notifications_enabled {
+                continue;
+            }
+
+            let body = match entry.entry_type.as_str() {
+                "image" => format!("Image received from {}", entry.source_peer),
+                "file" => format!("{} received from {}", entry.description, entry.source_peer),
+                _ => entry.description,
+            };
+            if let Err(error) = app
+                .notification()
+                .builder()
+                .title("TailSync")
+                .body(body)
+                .show()
+            {
+                log::debug!("Could not show background notification: {error}");
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -126,6 +187,7 @@ pub fn run() {
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
     let settings_for_monitor = settings.clone();
+    let settings_for_notifications = settings.clone();
     let settings_for_server = settings.clone();
     let settings_for_discovery = settings.clone();
     let identity_for_server = identity.clone();
@@ -188,6 +250,12 @@ pub fn run() {
                 pool_for_setup,
                 settings_for_monitor,
             );
+            #[cfg(target_os = "windows")]
+            start_background_notifications(
+                handle.clone(),
+                db_for_setup.clone(),
+                settings_for_notifications,
+            );
 
             // Start P2P network server
             tauri::async_runtime::spawn(async move {
@@ -215,6 +283,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_history,
+            commands::get_history_page,
+            commands::get_history_capabilities,
             commands::search_history,
             commands::delete_entry,
             commands::clear_history,

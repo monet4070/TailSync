@@ -267,11 +267,52 @@ pub(crate) fn peer_snapshot_data(
 
     let mut peers = network::merge_paired_peers(settings, &mode, peers);
     network::apply_peer_health(&mut peers);
+    let peers = peers
+        .into_iter()
+        .map(|peer| {
+            let paired_endpoint = settings.paired_peer_endpoints.get(&peer.hostname);
+            let routes = peer
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    let connected = peer.current_address.as_deref() == Some(&candidate.address);
+                    serde_json::json!({
+                        "interface": candidate.interface,
+                        "address": candidate.address,
+                        "status": if connected { network::PeerStatus::Connected } else { candidate.status },
+                        "online": candidate.online,
+                        "connected": connected,
+                        "latency_ms": candidate.latency,
+                        "pairing_endpoint": paired_endpoint == Some(&candidate.address),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut value = serde_json::to_value(peer).expect("peer snapshot is serializable");
+            value["routes"] = Value::Array(routes);
+            value
+        })
+        .collect::<Vec<_>>();
+    let local_routes = network::mode_interface(&mode)
+        .or_else(|| network::infer_interface(&local.tailscale_ip).ok())
+        .filter(|_| !local.tailscale_ip.is_empty())
+        .map(|interface| {
+            vec![serde_json::json!({
+                "interface": interface,
+                "address": local.tailscale_ip.clone(),
+                "status": network::PeerStatus::Connected,
+                "online": true,
+                "connected": true,
+                "latency_ms": Value::Null,
+                "pairing_endpoint": false,
+            })]
+        })
+        .unwrap_or_default();
 
     serde_json::json!({
         "self": {
             "hostname": local.hostname,
             "tailscale_ip": local.tailscale_ip,
+            "routes": local_routes,
             "connection_mode": mode,
             "public_key": identity.public_key_base64(),
             "fingerprint": identity.fingerprint(),
@@ -657,14 +698,23 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "refresh_peers" => {
-            network::request_peer_refresh_and_wait().await;
-            Response {
-                ok: true,
-                data: None,
-                error: None,
+        "refresh_peers" => match network::request_peer_refresh_and_wait().await {
+            Ok(()) => {
+                let settings = state.settings.lock().await.clone();
+                let mode = settings.connection_mode.clone();
+                let discovery = network::cached_discover_peers(&mode).await;
+                Response {
+                    ok: true,
+                    data: Some(peer_snapshot_data(&state.identity, &settings, discovery)),
+                    error: None,
+                }
             }
-        }
+            Err(error) => Response {
+                ok: false,
+                data: None,
+                error: Some(error),
+            },
+        },
 
         "toggle_peer" => {
             let hostname = req.hostname.as_deref().unwrap_or_default().trim();
@@ -812,16 +862,22 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 };
             }
             match network::test_connection(hostname).await {
-                Ok(latency_ms) => Response {
-                    ok: true,
-                    data: Some(serde_json::json!({ "latency_ms": latency_ms })),
-                    error: None,
-                },
-                Err(error) => Response {
-                    ok: false,
-                    data: None,
-                    error: Some(error),
-                },
+                Ok(latency_ms) => {
+                    network::record_address_test_success(hostname, latency_ms);
+                    Response {
+                        ok: true,
+                        data: Some(serde_json::json!({ "latency_ms": latency_ms })),
+                        error: None,
+                    }
+                }
+                Err(error) => {
+                    network::record_address_test_failure(hostname);
+                    Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error),
+                    }
+                }
             }
         }
 
@@ -937,7 +993,7 @@ async fn handle_cmd(req: Request, state: &ApiState) -> Response {
     }
 }
 
-fn history_capabilities_data() -> Value {
+pub(crate) fn history_capabilities_data() -> Value {
     serde_json::json!({
         "classifier_version": crate::history_classifier::CLASSIFIER_VERSION,
         "categories": crate::history_classifier::CATEGORIES,
@@ -1046,10 +1102,13 @@ mod tests {
     #[test]
     fn peer_snapshot_does_not_infer_a_connection_from_selected_mode() {
         let identity = DeviceIdentity::generate_for_test();
-        let settings = Settings {
+        let mut settings = Settings {
             connection_mode: "tailscale_only".into(),
             ..Settings::default()
         };
+        settings
+            .paired_peer_endpoints
+            .insert("mode-only-peer".into(), "100.64.0.2".into());
         let peer = PeerInfo {
             hostname: "mode-only-peer".into(),
             tailscale_ip: "100.64.0.2".into(),
@@ -1082,5 +1141,11 @@ mod tests {
 
         assert!(data["peers"][0]["current_interface"].is_null());
         assert!(data["peers"][0]["current_address"].is_null());
+        let routes = data["peers"][0]["routes"].as_array().expect("peer routes");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["interface"].as_str(), Some("tailscale"));
+        assert_eq!(routes[0]["connected"].as_bool(), Some(false));
+        assert_eq!(routes[0]["pairing_endpoint"].as_bool(), Some(true));
+        assert_eq!(data["self"]["routes"].as_array().map(Vec::len), Some(1));
     }
 }

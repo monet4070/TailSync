@@ -17,6 +17,7 @@ interface SettingsData {
   enabled_peers: Record<string, boolean>;
   trusted_peer_keys: Record<string, string>;
   trusted_peer_addresses: Record<string, Record<string, string>>;
+  paired_peer_endpoints: Record<string, string>;
   connection_mode: "auto" | "lan_only" | "tailscale_only";
 }
 
@@ -30,6 +31,8 @@ interface PeerDevice {
   trusted: boolean;
   fingerprint: string;
   current_interface?: "lan" | "tailscale";
+  current_address?: string | null;
+  status?: "discovered" | "online" | "confirming" | "offline" | "connected";
   routes?: PeerRoute[];
 }
 
@@ -40,6 +43,7 @@ interface PeerRoute {
   online: boolean;
   connected: boolean;
   latency_ms?: number | null;
+  pairing_endpoint?: boolean;
 }
 
 interface ConnectionTestResult {
@@ -61,6 +65,7 @@ interface PeersResponse {
     routes?: PeerRoute[];
   };
   peers: PeerDevice[];
+  paired_peer_endpoints: Record<string, string>;
   discovery_error?: string | null;
 }
 

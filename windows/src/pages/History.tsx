@@ -1,11 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from "@tauri-apps/plugin-notification";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
 import {
@@ -61,6 +56,18 @@ interface ImageThumbnail {
   thumbnail_b64: string;
   thumbnail_width: number;
   thumbnail_height: number;
+}
+
+interface HistoryPageResult {
+  entries: HistoryEntry[];
+  total: number;
+}
+
+interface HistoryCapabilities {
+  classifier_version: number;
+  categories: HistoryCategory[];
+  multiple_labels: boolean;
+  date_range_filter: boolean;
 }
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -390,7 +397,9 @@ function ThumbnailCanvas({ data }: { data: ThumbnailData }) {
 /* ── Component ──────────────────────────────────────────────────── */
 
 export function History() {
-  const [allEntries, setAllEntries] = useState<HistoryEntry[]>([]);
+  const [entries, setEntries] = useState<HistoryEntry[]>([]);
+  const [totalEntries, setTotalEntries] = useState(0);
+  const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
   const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
   const thumbnailIds = useRef<Set<number>>(new Set());
   const [keyword, setKeyword] = useState("");
@@ -409,22 +418,17 @@ export function History() {
   const restoreFeedbackTimer = useRef<number>(0);
 
   const lastVersion = useRef<number>(0);
-  const lastNotifiedId = useRef<number>(0);
   const prevIds = useRef<Set<number>>(new Set());
-  const isInitialLoad = useRef(true);
+  const lastQueryKey = useRef("");
+  const historyRequestGeneration = useRef(0);
   const [fileProgress, setFileProgress] = useState<{
     name: string;
     sent: number;
     total: number;
     active: boolean;
   } | null>(null);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [progressBarEnabled, setProgressBarEnabled] = useState(true);
-  const notifEnabledRef = useRef(notificationsEnabled);
   const progressEnabledRef = useRef(progressBarEnabled);
-  useEffect(() => {
-    notifEnabledRef.current = notificationsEnabled;
-  }, [notificationsEnabled]);
   useEffect(() => {
     progressEnabledRef.current = progressBarEnabled;
   }, [progressBarEnabled]);
@@ -458,13 +462,15 @@ export function History() {
 
   const categoryOptions = useMemo<FilterOption[]>(
     () =>
-      CATEGORY_FILTERS.map((category) => ({
+      CATEGORY_FILTERS.filter(
+        (category) => category === "all" || !capabilities || capabilities.categories.includes(category),
+      ).map((category) => ({
         value: category,
         label: t(`history.category.${category}`),
         icon: category === "all" ? Filter : CATEGORY_ICONS[category],
         category: category === "all" ? undefined : category,
       })),
-    [t],
+    [capabilities, t],
   );
   const dateOptions = useMemo<FilterOption[]>(
     () =>
@@ -483,6 +489,9 @@ export function History() {
   );
   const hasActiveFilters =
     Boolean(keyword) || selectedCategory !== "all" || selectedDateFilter !== "all";
+  const totalPages = Math.max(1, Math.ceil(totalEntries / PAGE_SIZE));
+  const hasNext = page < totalPages - 1;
+  const hasPrev = page > 0;
 
   const handleDateFilterChange = useCallback((value: string) => {
     const filter = value as DateFilter;
@@ -499,53 +508,11 @@ export function History() {
   const loadSettings = useCallback(async () => {
     try {
       const s = await invoke<{
-        notifications_enabled: boolean;
         progress_bar_enabled: boolean;
       }>("get_settings");
-      setNotificationsEnabled(s.notifications_enabled);
       setProgressBarEnabled(s.progress_bar_enabled);
     } catch {}
   }, []);
-
-  /* ── Pagination ───────────────────────────────────────────────── */
-
-  const filtered = useMemo(
-    () => {
-      const normalizedKeyword = keyword.toLowerCase();
-      return allEntries.filter((entry) => {
-        const categories = resolvedCategories(entry);
-        const matchesCategory =
-          selectedCategory === "all" || categories.includes(selectedCategory);
-        const timestamp = new Date(entry.timestamp).getTime();
-        const hasDateConstraint =
-          activeDateBounds.start !== null || activeDateBounds.end !== null;
-        const matchesDate =
-          activeDateBounds.valid &&
-          (!hasDateConstraint ||
-            (!Number.isNaN(timestamp) &&
-              (activeDateBounds.start === null || timestamp >= activeDateBounds.start) &&
-              (activeDateBounds.end === null || timestamp < activeDateBounds.end)));
-        const matchesKeyword =
-          !normalizedKeyword ||
-          entry.description.toLowerCase().includes(normalizedKeyword) ||
-          entry.type.toLowerCase().includes(normalizedKeyword) ||
-          entry.source_peer.toLowerCase().includes(normalizedKeyword) ||
-          categories.some(
-            (label) =>
-              label.includes(normalizedKeyword) ||
-              t(`history.category.${label}`).toLowerCase().includes(normalizedKeyword),
-          );
-        return matchesCategory && matchesDate && matchesKeyword;
-      });
-    },
-    [activeDateBounds, allEntries, keyword, selectedCategory, t],
-  );
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const entries = useMemo(
-    () => filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
-    [filtered, page],
-  );
 
   /* ── History loading ──────────────────────────────────────────── */
 
@@ -573,66 +540,102 @@ export function History() {
     }
   }, []);
 
+  const loadCapabilities = useCallback(async () => {
+    try {
+      setCapabilities(
+        await invoke<HistoryCapabilities>("get_history_capabilities"),
+      );
+    } catch {
+      setCapabilities(null);
+    }
+  }, []);
+
   const loadHistory = useCallback(async () => {
+    const requestGeneration = ++historyRequestGeneration.current;
+    if (!activeDateBounds.valid) {
+      setEntries([]);
+      setTotalEntries(0);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const result = await invoke<HistoryEntry[]>("get_history", {
-        keyword: null,
-        category: null,
-        startTime: null,
-        endTime: null,
-        limit: 10000,
-        offset: 0,
-      });
-      setAllEntries(result);
+      const dateFilteringSupported = capabilities?.date_range_filter ?? true;
+      const startTime = dateFilteringSupported && activeDateBounds.start !== null
+        ? new Date(activeDateBounds.start).toISOString()
+        : null;
+      const endTime = dateFilteringSupported && activeDateBounds.end !== null
+        ? new Date(activeDateBounds.end).toISOString()
+        : null;
+      const query = {
+        keyword: keyword.trim() || null,
+        category: selectedCategory === "all" ? null : selectedCategory,
+        startTime,
+        endTime,
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
+      };
+      const queryKey = JSON.stringify(query);
+      const result = await invoke<HistoryPageResult>("get_history_page", query);
+      if (requestGeneration !== historyRequestGeneration.current) return;
 
-      // Detect newly added items (but not on initial load)
-      if (!isInitialLoad.current) {
-        const incomingIds = new Set(result.map((e) => e.id));
+      if (result.total > 0 && query.offset >= result.total) {
+        setPage(Math.max(0, Math.ceil(result.total / PAGE_SIZE) - 1));
+        return;
+      }
+
+      setEntries(result.entries);
+      setTotalEntries(result.total);
+
+      const queryChanged = lastQueryKey.current !== queryKey;
+      if (!queryChanged) {
+        const incomingIds = new Set(result.entries.map((entry) => entry.id));
         const freshIds = new Set(
           [...incomingIds].filter((id) => !prevIds.current.has(id)),
         );
         if (freshIds.size > 0) {
-          setNewIds((prev) => new Set([...prev, ...freshIds]));
-          setTimeout(() => {
-            setNewIds((prev) => {
-              const next = new Set(prev);
+          setNewIds((previous) => new Set([...previous, ...freshIds]));
+          window.setTimeout(() => {
+            setNewIds((previous) => {
+              const next = new Set(previous);
               freshIds.forEach((id) => next.delete(id));
               return next;
             });
           }, NEW_GLOW_DURATION_MS);
         }
       }
-      prevIds.current = new Set(result.map((e) => e.id));
-      isInitialLoad.current = false;
+      lastQueryKey.current = queryKey;
+      prevIds.current = new Set(result.entries.map((entry) => entry.id));
 
-      // Notification for latest entry
-      if (result.length > 0) {
-        const latest = result[0];
-        if (
-          latest.id > lastNotifiedId.current &&
-          latest.source_peer !== "self"
-        ) {
-          lastNotifiedId.current = latest.id;
-          showRemoteNotification(latest);
-        }
-      }
-
-      // Load thumbnails for visible image entries
-      const imageIds = result
-        .filter((e) => e.type === "image")
-        .map((e) => e.id);
+      const imageIds = result.entries
+        .filter((entry) => entry.type === "image")
+        .map((entry) => entry.id);
       if (imageIds.length > 0) {
         loadThumbnails(imageIds);
       }
     } catch (e) {
-      console.error("Failed to load history:", e);
+      if (requestGeneration === historyRequestGeneration.current) {
+        console.error("Failed to load history:", e);
+      }
     } finally {
-      setLoading(false);
+      if (requestGeneration === historyRequestGeneration.current) {
+        setLoading(false);
+      }
     }
-  }, [loadThumbnails]);
+  }, [
+    activeDateBounds,
+    capabilities,
+    keyword,
+    loadThumbnails,
+    page,
+    selectedCategory,
+  ]);
 
   /* ── Polling ──────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    void loadCapabilities();
+  }, [loadCapabilities]);
 
   useEffect(() => {
     loadSettings();
@@ -698,7 +701,8 @@ export function History() {
   const handleDelete = async (id: number) => {
     try {
       await invoke("delete_entry", { id });
-      setAllEntries((prev) => prev.filter((e) => e.id !== id));
+      lastQueryKey.current = "";
+      await loadHistory();
     } catch (e) {
       console.error("Delete failed:", e);
     }
@@ -708,13 +712,15 @@ export function History() {
     setClearing(true);
     try {
       await invoke("clear_history");
-      setAllEntries([]);
+      setEntries([]);
+      setTotalEntries(0);
       setThumbnails(new Map());
       thumbnailIds.current.clear();
       setPage(0);
       setSelectedId(null);
       setShowClearConfirm(false);
       prevIds.current = new Set();
+      lastQueryKey.current = "";
     } catch (e) {
       console.error("Clear history failed:", e);
     } finally {
@@ -722,31 +728,10 @@ export function History() {
     }
   };
 
-  const showRemoteNotification = async (entry: HistoryEntry) => {
-    if (!notifEnabledRef.current) return;
-    let perm = await isPermissionGranted();
-    if (!perm) {
-      const req = await requestPermission();
-      perm = req === "granted";
-    }
-    if (!perm) return;
-    sendNotification({
-      title: "TailSync",
-      body:
-        entry.type === "image"
-          ? "📷 Image received"
-          : entry.type === "file"
-            ? `📎 ${entry.description}`
-            : entry.description,
-    });
-  };
-
   /* ── Derived state ────────────────────────────────────────────── */
 
-  const hasNext = page < totalPages - 1;
-  const hasPrev = page > 0;
   const restoredEntry = selectedId
-    ? allEntries.find((e) => e.id === selectedId)
+    ? entries.find((entry) => entry.id === selectedId)
     : null;
 
   /* ── Render ───────────────────────────────────────────────────── */
@@ -797,7 +782,7 @@ export function History() {
         <button
           className="clear-history-btn"
           type="button"
-          disabled={allEntries.length === 0}
+          disabled={totalEntries === 0}
           onClick={() => setShowClearConfirm(true)}
           title={t("history.clearAll")}
           aria-label={t("history.clearAll")}
@@ -818,16 +803,18 @@ export function History() {
             setSelectedCategory(value as "all" | HistoryCategory)
           }
         />
-        <FilterDropdown
-          value={selectedDateFilter}
-          options={dateOptions}
-          label={t("history.dateFilter")}
-          testId="date-filter"
-          onChange={handleDateFilterChange}
-        />
+        {(capabilities?.date_range_filter ?? true) && (
+          <FilterDropdown
+            value={selectedDateFilter}
+            options={dateOptions}
+            label={t("history.dateFilter")}
+            testId="date-filter"
+            onChange={handleDateFilterChange}
+          />
+        )}
       </div>
 
-      {selectedDateFilter === "custom" && (
+      {(capabilities?.date_range_filter ?? true) && selectedDateFilter === "custom" && (
         <div className="custom-date-range" data-testid="custom-date-range">
           <label>
             <span>{t("history.date.start")}</span>
@@ -860,14 +847,14 @@ export function History() {
         </div>
       )}
 
-      {hasActiveFilters && filtered.length > 0 && (
+      {hasActiveFilters && totalEntries > 0 && (
         <div className="search-results-count">
-          {filtered.length} {t(filtered.length === 1 ? "history.result" : "history.results")}
+          {totalEntries} {t(totalEntries === 1 ? "history.result" : "history.results")}
         </div>
       )}
 
       {/* ── Main content area ── */}
-      {loading && allEntries.length === 0 ? (
+      {loading && entries.length === 0 ? (
         /* Skeleton on initial load */
         <div className="skeleton-list">
           {[0, 1, 2, 4].map((i) => (
@@ -1020,7 +1007,7 @@ export function History() {
       )}
 
       {/* ── Pagination ── */}
-      {allEntries.length > 0 && entries.length > 0 && (
+      {totalEntries > 0 && entries.length > 0 && (
         <div className="pagination">
           <button
             className="page-btn"

@@ -4,6 +4,12 @@ use crate::AppState;
 use log::info;
 use tauri::{command, AppHandle, Manager, State};
 
+#[derive(serde::Serialize)]
+pub struct HistoryPage {
+    pub entries: Vec<db::HistoryEntry>,
+    pub total: usize,
+}
+
 /// Get clipboard history entries
 #[command]
 pub async fn get_history(
@@ -25,6 +31,43 @@ pub async fn get_history(
         offset.unwrap_or(0),
     )
     .map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn get_history_page(
+    state: State<'_, AppState>,
+    keyword: Option<String>,
+    category: Option<String>,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<HistoryPage, String> {
+    let db = state.db.lock().await;
+    let entries = db
+        .get_all_filtered(
+            keyword.as_deref(),
+            category.as_deref(),
+            start_time.as_deref(),
+            end_time.as_deref(),
+            limit.unwrap_or(50),
+            offset.unwrap_or(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let total = db
+        .count_all_filtered(
+            keyword.as_deref(),
+            category.as_deref(),
+            start_time.as_deref(),
+            end_time.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(HistoryPage { entries, total })
+}
+
+#[command]
+pub async fn get_history_capabilities() -> Result<serde_json::Value, String> {
+    Ok(crate::api::history_capabilities_data())
 }
 
 /// Search history by keyword (searches description field)
@@ -344,6 +387,7 @@ pub async fn update_settings(
     let mode_changed = settings.connection_mode != new_settings.connection_mode;
     new_settings.trusted_peer_keys = settings.trusted_peer_keys.clone();
     new_settings.trusted_peer_addresses = settings.trusted_peer_addresses.clone();
+    new_settings.paired_peer_endpoints = settings.paired_peer_endpoints.clone();
     *settings = new_settings;
     settings.save().map_err(|e| e.to_string())?;
     drop(settings);

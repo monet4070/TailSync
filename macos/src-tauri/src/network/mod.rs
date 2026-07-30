@@ -184,6 +184,31 @@ fn peer_health() -> &'static StdMutex<PeerHealthTracker> {
     PEER_HEALTH.get_or_init(|| StdMutex::new(PeerHealthTracker::default()))
 }
 
+pub fn record_address_test_success(address: &str, latency_ms: u64) {
+    let now = tokio::time::Instant::now();
+    let mut tracker = peer_health()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (route, health) in &mut tracker.routes {
+        if route.address == address {
+            health.last_seen = Some(now);
+            health.consecutive_misses = 0;
+            health.latency_ms = Some(latency_ms);
+        }
+    }
+}
+
+pub fn record_address_test_failure(address: &str) {
+    let mut tracker = peer_health()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (route, health) in &mut tracker.routes {
+        if route.address == address {
+            health.consecutive_misses = health.consecutive_misses.saturating_add(1);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ActiveRoute {
     pub interface: ConnectionInterface,
@@ -771,10 +796,22 @@ pub fn request_peer_refresh() {
     PEER_REFRESH_NOTIFY.get_or_init(Notify::new).notify_one();
 }
 
-pub async fn request_peer_refresh_and_wait() {
+pub async fn request_peer_refresh_and_wait() -> Result<(), String> {
     let mut completion = peer_refresh_generation().subscribe();
+    let generation = *completion.borrow();
     request_peer_refresh();
-    let _ = timeout(Duration::from_secs(3), completion.changed()).await;
+    timeout(Duration::from_secs(3), async {
+        while *completion.borrow() == generation {
+            completion
+                .changed()
+                .await
+                .map_err(|_| "Peer health monitor stopped".to_string())?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|_| "Peer refresh timed out".to_string())??;
+    Ok(())
 }
 
 pub async fn peer_cache_refresh_loop(
