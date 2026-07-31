@@ -9,5 +9,10 @@ let package = Package(
             name: "TailSync",
             path: "Sources/TailSync"
         ),
+        .testTarget(
+            name: "TailSyncTests",
+            dependencies: ["TailSync"],
+            path: "Tests/TailSyncTests"
+        ),
     ]
 )

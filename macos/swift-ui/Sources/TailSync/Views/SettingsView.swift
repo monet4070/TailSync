@@ -15,6 +15,7 @@ struct SettingsView: View {
     }
 
     @ObservedObject private var loc = Loc.shared
+    @Environment(\.colorScheme) private var colorScheme
     @State private var settings = AppSettings()
     @State private var localDevice: ApiClient.DeviceSnapshot?
     @State private var peers: [ApiClient.PeerSnapshot] = []
@@ -35,15 +36,24 @@ struct SettingsView: View {
     @State private var peerLoadGeneration = 0
     @State private var peerRequestInFlight = false
 
+    private var activeTheme: TailSyncColorTheme {
+        TailSyncColorTheme(storedValue: loc.colorTheme)
+    }
+
+    private var palette: TailSyncThemePalette {
+        activeTheme.palette(for: colorScheme)
+    }
+
     var body: some View {
         Group {
             if let errorMessage {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 28))
-                        .foregroundColor(.orange)
-                    Text(Loc.t("settings.error")).font(.headline)
-                    Text(errorMessage).font(.caption).foregroundColor(.secondary)
+                        .foregroundColor(palette.warningColor)
+                    Text(Loc.t("settings.error"))
+                        .font(activeTheme.displayFont(size: 17, weight: .semibold))
+                    Text(errorMessage).font(.caption).foregroundColor(palette.secondaryColor)
                     Button(Loc.t("settings.retry")) { load() }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -64,10 +74,11 @@ struct SettingsView: View {
                     if saved {
                         Text(Loc.t("settings.saved"))
                             .font(.caption)
+                            .foregroundColor(palette.toastTextColor)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(.ultraThinMaterial)
-                            .cornerRadius(18)
+                            .background(palette.toastColor)
+                            .clipShape(Capsule())
                             .padding(.bottom, 8)
                     }
                 }
@@ -91,6 +102,7 @@ struct SettingsView: View {
         .sheet(isPresented: $showPairingSheet) {
             pairingSheet
         }
+        .tailSyncThemed()
     }
 
     private var generalSection: some View {
@@ -107,7 +119,7 @@ struct SettingsView: View {
                         save()
                     }
             }
-            Divider().padding(.leading, 16)
+            themedDivider.padding(.leading, 16)
             settingRow {
                 Text(Loc.t("settings.progressBar"))
                 Spacer()
@@ -141,19 +153,19 @@ struct SettingsView: View {
                     Text(Loc.t("settings.modeTailscale")).tag("tailscale_only")
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 280)
+                .frame(width: 240)
                 .onChange(of: settings.connection_mode) { _ in
                     changeConnectionMode()
                 }
             }
 
-            Divider().padding(.leading, 16)
+            themedDivider.padding(.leading, 16)
             localIdentityRow
 
-            Divider().padding(.leading, 16)
+            themedDivider.padding(.leading, 16)
             pairingPanel
 
-            Divider().padding(.leading, 16)
+            themedDivider.padding(.leading, 16)
             peerList
         }
     }
@@ -161,14 +173,14 @@ struct SettingsView: View {
     private var localIdentityRow: some View {
         settingRow {
             Image(systemName: "laptopcomputer")
-                .foregroundColor(.accentColor)
+                .foregroundColor(palette.accentColor)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(localDevice?.hostname ?? Loc.t("settings.localDevice"))
                     .font(.body.weight(.medium))
                 Text(localDevice?.fingerprint ?? Loc.t("settings.identityLoading"))
                     .font(.caption2.monospaced())
-                    .foregroundColor(.secondary)
+                    .foregroundColor(palette.tertiaryColor)
                     .textSelection(.enabled)
             }
             Spacer()
@@ -178,14 +190,14 @@ struct SettingsView: View {
     private var pairingPanel: some View {
         settingRow {
             Image(systemName: "link.badge.plus")
-                .foregroundColor(.accentColor)
+                .foregroundColor(palette.accentColor)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(Loc.t("settings.pairDevice"))
                     .font(.body.weight(.medium))
                 Text(pairingWindowSummary)
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(palette.tertiaryColor)
             }
             Spacer()
             Button(pairingStatus?.pairing_enabled == true
@@ -215,9 +227,9 @@ struct SettingsView: View {
         VStack(spacing: 14) {
             Image(systemName: "lock.shield")
                 .font(.system(size: 28))
-                .foregroundColor(.accentColor)
+                .foregroundColor(palette.accentColor)
             Text(pairingStatus?.peer?.hostname ?? Loc.t("settings.pairDevice"))
-                .font(.headline)
+                .font(activeTheme.displayFont(size: 17, weight: .semibold))
 
             if let peer = pairingStatus?.peer {
                 Text(peer.verification_code)
@@ -225,16 +237,16 @@ struct SettingsView: View {
                     .textSelection(.enabled)
                 Text(Loc.t("settings.compareCode"))
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(palette.secondaryColor)
                     .multilineTextAlignment(.center)
                 Text(peer.fingerprint)
                     .font(.caption2.monospaced())
-                    .foregroundColor(.secondary)
+                    .foregroundColor(palette.tertiaryColor)
                     .textSelection(.enabled)
                 if peer.local_confirmed {
                     Text(Loc.t("settings.waitingPeerConfirm"))
                         .font(.caption)
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(palette.accentColor)
                 }
             } else if pairingInProgress || pairingStatus?.phase == "handshaking" {
                 ProgressView(Loc.t("settings.secureHandshake"))
@@ -270,6 +282,7 @@ struct SettingsView: View {
         .padding(24)
         .frame(width: 340)
         .frame(minHeight: 300)
+        .background(palette.windowColor)
         .interactiveDismissDisabled(pairingStatus?.pairing_enabled == true)
     }
 
@@ -280,14 +293,14 @@ struct SettingsView: View {
                 ProgressView().controlSize(.small)
                 Text(Loc.t("settings.loadingDevices"))
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(palette.secondaryColor)
                 Spacer()
             }
         } else if peers.isEmpty {
             settingRow {
                 Text(peerError ?? Loc.t("settings.noDevices"))
                     .font(.caption)
-                    .foregroundColor(peerError == nil ? .secondary : .orange)
+                    .foregroundColor(peerError == nil ? palette.secondaryColor : palette.warningColor)
                 Spacer()
                 Button { refreshPeers() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain)
@@ -297,7 +310,7 @@ struct SettingsView: View {
             HStack {
                 Text("\(peerRoutes.count) \(Loc.t("settings.devices"))")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(palette.tertiaryColor)
                 Spacer()
                 Button { refreshPeers() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain)
@@ -307,7 +320,7 @@ struct SettingsView: View {
             .padding(.vertical, 6)
 
             ForEach(Array(peerRoutes.enumerated()), id: \.element.id) { index, route in
-                if index > 0 { Divider().padding(.leading, 48) }
+                if index > 0 { themedDivider.padding(.leading, 48) }
                 peerRow(route)
             }
         }
@@ -383,19 +396,19 @@ struct SettingsView: View {
                     Text(peer.hostname).font(.body.weight(.medium))
                     Image(systemName: peer.trusted ? "checkmark.shield.fill" : "exclamationmark.shield")
                         .font(.caption2)
-                        .foregroundColor(peer.trusted ? .green : .orange)
+                        .foregroundColor(peer.trusted ? palette.positiveColor : palette.warningColor)
                     Text(peer.trusted ? Loc.t("settings.paired") : Loc.t("settings.notPaired"))
                         .font(.caption2)
-                        .foregroundColor(peer.trusted ? .green : .orange)
+                        .foregroundColor(peer.trusted ? palette.positiveColor : palette.warningColor)
                 }
                 HStack(spacing: 7) {
                     Text(route.address.isEmpty ? Loc.t("settings.pairedOffline") : route.address)
                         .font(.caption.monospaced())
-                        .foregroundColor(.secondary)
+                        .foregroundColor(palette.secondaryColor)
                     if let interface = route.interface {
                         Text("· \(interface == "lan" ? "LAN" : "Tailscale")")
                             .font(.caption2.weight(.medium))
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(palette.accentColor)
                     }
                     Text(statusText(route.status))
                         .font(.caption2.weight(route.connected ? .semibold : .regular))
@@ -404,12 +417,12 @@ struct SettingsView: View {
                        ["online", "connected", "confirming"].contains(route.status) {
                         Text("\(latencyMs) ms")
                             .font(.caption2.monospaced())
-                            .foregroundColor(.secondary)
+                            .foregroundColor(palette.tertiaryColor)
                     }
                     if peer.trusted, !peer.fingerprint.isEmpty {
                         Text(peer.fingerprint)
                             .font(.caption2.monospaced())
-                            .foregroundColor(.secondary)
+                            .foregroundColor(palette.tertiaryColor)
                     }
                     if let result = testResults[route.id] {
                         Text(result.error.isEmpty ? "\(result.latencyMs) ms" : result.error)
@@ -488,7 +501,9 @@ struct SettingsView: View {
                     save()
                 }
             }
-            Divider().padding(.leading, 16)
+            themedDivider.padding(.leading, 16)
+            colorThemePicker
+            themedDivider.padding(.leading, 16)
             settingRow {
                 Text(Loc.t("settings.language"))
                 Spacer()
@@ -514,6 +529,7 @@ struct SettingsView: View {
                 settings = try await ApiClient.shared.getSettings()
                 loc.lang = settings.language
                 loc.theme = settings.theme
+                loc.colorTheme = TailSyncColorTheme(storedValue: settings.color_theme).rawValue
                 loc.notificationsEnabled = settings.notifications_enabled
                 loc.applyTheme()
                 isLoading = false
@@ -577,9 +593,9 @@ struct SettingsView: View {
 
     private func statusColor(_ status: String) -> Color {
         switch status {
-        case "connected", "online": return .green
-        case "confirming", "discovered": return .orange
-        default: return Color.gray.opacity(0.65)
+        case "connected", "online": return palette.positiveColor
+        case "confirming", "discovered": return palette.warningColor
+        default: return palette.tertiaryColor
         }
     }
 
@@ -624,6 +640,13 @@ struct SettingsView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func selectColorTheme(_ theme: TailSyncColorTheme) {
+        guard settings.color_theme != theme.rawValue else { return }
+        settings.color_theme = theme.rawValue
+        loc.colorTheme = theme.rawValue
+        save()
     }
 
     private func togglePairingWindow() {
@@ -750,20 +773,20 @@ struct SettingsView: View {
 
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.primary.opacity(0.12))
+                        .fill(palette.borderColor.opacity(0.65))
                         .frame(height: 5)
                         .padding(.horizontal, thumbSize / 2)
 
                     Capsule()
-                        .fill(Color.accentColor)
+                        .fill(palette.accentColor)
                         .frame(width: max(1, travelWidth * progress), height: 5)
                         .offset(x: thumbSize / 2)
 
                     Circle()
-                        .fill(Color.white)
+                        .fill(palette.raisedColor)
                         .overlay {
                             Circle()
-                                .stroke(Color.accentColor.opacity(0.65), lineWidth: 1)
+                                .stroke(palette.accentColor.opacity(0.75), lineWidth: 1)
                         }
                         .shadow(color: .black.opacity(0.18), radius: 2.5, y: 1)
                         .frame(width: thumbSize, height: thumbSize)
@@ -795,10 +818,10 @@ struct SettingsView: View {
 
             Text("\(settings.history_limit)")
                 .font(.system(.caption, design: .monospaced).weight(.medium))
-                .foregroundColor(.accentColor)
+                .foregroundColor(palette.accentColor)
                 .frame(width: 46, height: 26)
-                .background(Color.accentColor.opacity(0.10))
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(palette.accentColor.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
         }
     }
 
@@ -810,22 +833,132 @@ struct SettingsView: View {
     private func settingsCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .textCase(.uppercase)
-                .foregroundColor(.secondary)
+                .font(activeTheme.displayFont(
+                    size: activeTheme.typography.sectionTitleSize,
+                    weight: activeTheme == .tailsync ? .regular : .semibold
+                ))
+                .textCase(activeTheme.typography.uppercasesSectionTitles ? .uppercase : nil)
+                .foregroundColor(palette.secondaryColor)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 6)
             VStack(spacing: 0) { content() }
-                .background(Color.primary.opacity(0.04))
-                .cornerRadius(8)
+                .background(palette.surfaceColor)
+                .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous)
+                        .stroke(palette.borderColor, lineWidth: activeTheme == .highContrast ? 2 : 1)
+                }
+                .shadow(
+                    color: palette.primaryColor.opacity(activeTheme.metrics.shadowRadius == 0 ? 0 : 0.08),
+                    radius: activeTheme.metrics.shadowRadius,
+                    y: activeTheme.metrics.shadowRadius > 0 ? 3 : 0
+                )
                 .padding(.horizontal, 12)
         }
     }
 
     private func settingRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 8) { content() }
+            .font(activeTheme.readingFont(size: 13))
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.vertical, activeTheme.metrics.rowPadding)
             .frame(minHeight: 36)
+    }
+
+    private var themedDivider: some View {
+        Rectangle()
+            .fill(palette.dividerColor)
+            .frame(height: activeTheme == .highContrast ? 2 : 1)
+    }
+
+    private var colorThemePicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Loc.t("settings.colorTheme"))
+                    .font(activeTheme.readingFont(size: 13, weight: .medium))
+                Text(Loc.t("settings.colorThemeDescription"))
+                    .font(activeTheme.readingFont(size: 10))
+                    .foregroundColor(palette.tertiaryColor)
+            }
+
+            Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+                GridRow {
+                    colorThemeButton(.tailsync)
+                    colorThemeButton(.ocean)
+                }
+                GridRow {
+                    colorThemeButton(.forest)
+                    colorThemeButton(.rose)
+                }
+                GridRow {
+                    colorThemeButton(.highContrast)
+                        .gridCellColumns(2)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func colorThemeButton(_ theme: TailSyncColorTheme) -> some View {
+        let optionPalette = theme.palette(for: colorScheme)
+        let selected = settings.color_theme == theme.rawValue
+        let radius = theme.metrics.cardRadius
+
+        return Button {
+            selectColorTheme(theme)
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(optionPalette.accentColor)
+                        .frame(width: 6)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("TailSync")
+                            .font(theme.displayFont(size: 12, weight: .semibold))
+                            .foregroundColor(optionPalette.primaryColor)
+                        Capsule()
+                            .fill(optionPalette.textTertiary == optionPalette.textPrimary
+                                  ? optionPalette.primaryColor
+                                  : optionPalette.tertiaryColor)
+                            .frame(maxWidth: 68, minHeight: 3, maxHeight: 3)
+                        Capsule()
+                            .fill(optionPalette.dividerColor)
+                            .frame(maxWidth: 96, minHeight: 3, maxHeight: 3)
+                    }
+                    .padding(9)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+                .background(optionPalette.windowColor)
+
+                HStack(spacing: 6) {
+                    Image(systemName: theme.symbolName)
+                        .font(.system(size: 11, weight: .medium))
+                    Text(Loc.t(theme.localizationKey))
+                        .font(theme.readingFont(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                }
+                .foregroundColor(selected ? palette.accentColor : palette.secondaryColor)
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .background(palette.raisedColor)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .stroke(selected ? palette.accentColor : palette.borderColor,
+                            lineWidth: selected || activeTheme == .highContrast ? 2 : 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Loc.t(theme.localizationKey))
+        .accessibilityValue(selected ? Loc.t("settings.selected") : "")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

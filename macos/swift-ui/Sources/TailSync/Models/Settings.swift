@@ -6,6 +6,7 @@ struct AppSettings: Codable, Equatable {
     var history_limit: Int = 100
     var enabled_peers: [String: Bool] = [:]
     var theme: String = "system"
+    var color_theme: String = TailSyncColorTheme.tailsync.rawValue
     var language: String = "en"
     var connection_mode: String = "auto"
     var trusted_peer_keys: [String: String] = [:]
@@ -14,7 +15,7 @@ struct AppSettings: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case notifications_enabled, progress_bar_enabled, history_limit
-        case enabled_peers, theme, language, connection_mode
+        case enabled_peers, theme, color_theme, language, connection_mode
         case trusted_peer_keys, trusted_peer_addresses, paired_peer_endpoints
     }
 
@@ -27,6 +28,8 @@ struct AppSettings: Codable, Equatable {
         history_limit = try values.decodeIfPresent(Int.self, forKey: .history_limit) ?? 100
         enabled_peers = try values.decodeIfPresent([String: Bool].self, forKey: .enabled_peers) ?? [:]
         theme = try values.decodeIfPresent(String.self, forKey: .theme) ?? "system"
+        let storedColorTheme = try values.decodeIfPresent(String.self, forKey: .color_theme) ?? "tailsync"
+        color_theme = TailSyncColorTheme(storedValue: storedColorTheme).rawValue
         language = try values.decodeIfPresent(String.self, forKey: .language) ?? "en"
         let mode = try values.decodeIfPresent(String.self, forKey: .connection_mode) ?? "auto"
         switch mode {

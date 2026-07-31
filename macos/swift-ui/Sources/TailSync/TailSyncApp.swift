@@ -4,6 +4,12 @@ import UserNotifications
 import Carbon
 import Darwin
 
+enum TailSyncWindowPolicy {
+    static func configure(_ window: NSWindow) {
+        window.isMovableByWindowBackground = false
+    }
+}
+
 @main
 struct TailSyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -182,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Observe language changes to rebuild the menu
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("TailSyncLocaleChanged"), object: nil, queue: .main) { _ in
+            forName: .tailSyncLocaleChanged, object: nil, queue: .main) { _ in
             self.rebuildMenu()
         }
     }
@@ -384,7 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = title
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
+        TailSyncWindowPolicy.configure(window)
         window.minSize = minSize
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]

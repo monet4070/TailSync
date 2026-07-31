@@ -33,6 +33,7 @@ private struct HistoryDateBounds {
 
 struct HistoryView: View {
     @ObservedObject private var loc = Loc.shared
+    @Environment(\.colorScheme) private var colorScheme
     @State private var entries: [HistoryEntry] = []
     @State private var keyword = ""
     @State private var selectedCategory = "all"
@@ -58,6 +59,14 @@ struct HistoryView: View {
     private let pageSize = 30
     private let knownCategories = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]
 
+    private var activeTheme: TailSyncColorTheme {
+        TailSyncColorTheme(storedValue: loc.colorTheme)
+    }
+
+    private var palette: TailSyncThemePalette {
+        activeTheme.palette(for: colorScheme)
+    }
+
     private var categories: [String] {
         ["all"] + knownCategories.filter { supportedCategories.contains($0) }
     }
@@ -82,17 +91,20 @@ struct HistoryView: View {
         VStack(spacing: 0) {
             VStack(spacing: 6) {
                 HStack {
-                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    Image(systemName: "magnifyingglass").foregroundColor(palette.tertiaryColor)
                     TextField(Loc.t("history.search"), text: $keyword)
                         .textFieldStyle(.plain)
+                        .font(activeTheme.typography.searchUsesDisplayFont
+                              ? activeTheme.displayFont(size: activeTheme.typography.searchSize)
+                              : activeTheme.readingFont(size: activeTheme.typography.searchSize))
                         .onSubmit { page = 0; load(targetPage: 0) }
                     if !keyword.isEmpty {
                         Button { keyword = ""; page = 0; load(targetPage: 0) } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+                            Image(systemName: "xmark.circle.fill").foregroundColor(palette.tertiaryColor)
                         }.buttonStyle(.plain)
                     }
                     Circle()
-                        .fill(daemonOnline ? Color.green : Color.red)
+                        .fill(daemonOnline ? palette.positiveColor : palette.warningColor)
                         .frame(width: 7, height: 7)
                 }
 
@@ -123,7 +135,7 @@ struct HistoryView: View {
                 if dateRangeFilteringSupported && selectedDateFilter == .custom {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(customStartTitle).font(.caption2).foregroundColor(.secondary)
+                            Text(customStartTitle).font(.caption2).foregroundColor(palette.tertiaryColor)
                             DatePicker(
                                 customStartTitle,
                                 selection: $customStartDate,
@@ -136,7 +148,7 @@ struct HistoryView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(customEndTitle).font(.caption2).foregroundColor(.secondary)
+                            Text(customEndTitle).font(.caption2).foregroundColor(palette.tertiaryColor)
                             DatePicker(
                                 customEndTitle,
                                 selection: $customEndDate,
@@ -150,7 +162,13 @@ struct HistoryView: View {
                     }
                 }
             }
-            .padding(8).background(Color.primary.opacity(0.05)).cornerRadius(8)
+            .padding(8)
+            .background(palette.softSurfaceColor)
+            .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous)
+                    .stroke(palette.borderColor, lineWidth: activeTheme == .highContrast ? 2 : 1)
+            }
             .padding(.horizontal, 12).padding(.top, 8)
 
             // List
@@ -163,15 +181,21 @@ struct HistoryView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 28))
-                        .foregroundColor(.secondary)
-                    Text(errorMsg).font(.body).foregroundColor(.secondary)
+                        .foregroundColor(palette.warningColor)
+                    Text(errorMsg)
+                        .font(activeTheme.readingFont(size: 13))
+                        .foregroundColor(palette.secondaryColor)
                 }
                 Spacer()
             } else if entries.isEmpty {
                 Spacer()
                 VStack(spacing: 8) {
-                    Image(systemName: "doc.on.clipboard").font(.system(size: 32)).foregroundColor(.secondary).opacity(0.4)
-                    Text(Loc.t("history.empty")).font(.body).foregroundColor(.secondary)
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 32))
+                        .foregroundColor(palette.tertiaryColor)
+                    Text(Loc.t("history.empty"))
+                        .font(activeTheme.displayFont(size: 15))
+                        .foregroundColor(palette.secondaryColor)
                 }
                 Spacer()
             } else {
@@ -185,10 +209,14 @@ struct HistoryView: View {
                             .contentShape(Rectangle())
                             .onTapGesture(count: 2) { restore(entry.id) }
                             .overlay(RightClickNSView { delete(entry.id) })
+                            .listRowBackground(palette.surfaceColor)
+                            .listRowSeparatorTint(palette.dividerColor)
                             .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     }
                 }
                 .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(palette.windowColor)
                 .animation(.spring(response: 0.35, dampingFraction: 0.9), value: entries.count)
             }
 
@@ -199,7 +227,7 @@ struct HistoryView: View {
                     load(targetPage: target)
                 } label: { Image(systemName: "chevron.left") }
                     .disabled(page == 0 || isLoading)
-                Text("\(page + 1)").font(.caption).foregroundColor(.secondary).monospacedDigit()
+                Text("\(page + 1)").font(.caption).foregroundColor(palette.tertiaryColor).monospacedDigit()
                 Button {
                     let target = page + 1
                     load(targetPage: target)
@@ -213,6 +241,10 @@ struct HistoryView: View {
             }
             .padding(.vertical, 8)
             .padding(.horizontal, 12)
+            .background(palette.surfaceColor)
+            .overlay(alignment: .top) {
+                Rectangle().fill(palette.dividerColor).frame(height: activeTheme == .highContrast ? 2 : 1)
+            }
             .alert(Loc.t("history.confirmClear"), isPresented: $showingClearAlert) {
                 Button("Cancel", role: .cancel) {}
                 Button(Loc.t("history.clearAll"), role: .destructive) { clearAll() }
@@ -253,19 +285,28 @@ struct HistoryView: View {
                 if let p = fileProgress, p.active {
                     VStack(spacing: 3) {
                         ProgressView(value: Double(p.sent), total: Double(p.total)).progressViewStyle(.linear)
-                        Text("Sending \(p.name) — \(p.sent)/\(p.total)").font(.caption2).foregroundColor(.secondary)
+                        Text("Sending \(p.name) — \(p.sent)/\(p.total)")
+                            .font(.caption2)
+                            .foregroundColor(palette.secondaryColor)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(.ultraThinMaterial).cornerRadius(10)
+                    .background(palette.raisedColor)
+                    .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous))
                     .padding(.horizontal, 8)
                 }
                 if restoredId != nil {
                     Text(Loc.t("history.restored"))
-                        .font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(.ultraThinMaterial).cornerRadius(20).padding(.bottom, 8)
+                        .font(.caption)
+                        .foregroundColor(palette.toastTextColor)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(palette.toastColor)
+                        .clipShape(Capsule())
+                        .padding(.bottom, 8)
                 }
             }
         }
+        .background(palette.windowColor)
+        .tailSyncThemed()
     }
 
     private func load(targetPage: Int? = nil) {
@@ -407,6 +448,8 @@ struct HistoryRow: View {
     let isRestored: Bool
     let showsMultipleLabels: Bool
     @State private var thumbnail: NSImage? = nil
+    @Environment(\.tailSyncTheme) private var theme
+    @Environment(\.tailSyncPalette) private var palette
 
     private var visibleCategoryLabels: [String] {
         showsMultipleLabels ? entry.categoryLabels : [entry.categoryLabel]
@@ -417,10 +460,13 @@ struct HistoryRow: View {
             Group {
                 if entry.type == "image", let thumb = thumbnail {
                     Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: 32, height: 32).cornerRadius(5)
+                        .frame(width: 32, height: 32)
+                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
                 } else {
                     Image(systemName: entry.icon).frame(width: 24, height: 24)
-                        .foregroundColor(.accentColor).background(Color.accentColor.opacity(0.1)).cornerRadius(5)
+                        .foregroundColor(palette.accentColor)
+                        .background(palette.accentColor.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
                 }
             }
             .frame(width: 32, height: 32)
@@ -429,24 +475,34 @@ struct HistoryRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(visibleCategoryLabels.map { $0.uppercased() }.joined(separator: "  \u{00B7}  "))
-                        .font(.caption2).fontWeight(.semibold)
-                        .foregroundColor(.accentColor).padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(Color.accentColor.opacity(0.12)).cornerRadius(3)
+                        .font(theme.readingFont(size: 10, weight: .semibold))
+                        .foregroundColor(palette.accentColor).padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(palette.accentColor.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
                         .fixedSize(horizontal: false, vertical: true)
                         .layoutPriority(1)
-                    Text(entry.formattedTime).font(.caption).foregroundColor(.secondary)
+                    Text(entry.formattedTime).font(.caption).foregroundColor(palette.tertiaryColor)
                 }
-                Text(entry.description).font(.body).lineLimit(1)
+                Text(entry.description)
+                    .font(theme == .tailsync
+                          ? theme.displayFont(size: theme.typography.historyContentSize)
+                          : theme == .forest
+                              ? theme.displayFont(size: theme.typography.historyContentSize, weight: .medium)
+                              : theme.readingFont(size: theme.typography.historyContentSize, weight: .medium))
+                    .foregroundColor(palette.primaryColor)
+                    .lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(entry.formattedSize).font(.caption2).foregroundColor(.secondary).monospacedDigit()
+                    Text(entry.formattedSize).font(.caption2).foregroundColor(palette.tertiaryColor).monospacedDigit()
                     Spacer()
-                    Text(entry.source_peer).font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                    Text(entry.source_peer).font(.caption2).foregroundColor(palette.tertiaryColor).lineLimit(1)
                 }
             }
         }
-        .padding(.vertical, 2).frame(maxWidth: .infinity, alignment: .leading)
-        .background(isRestored ? Color.accentColor.opacity(0.12) : .clear)
-        .cornerRadius(6).contentShape(Rectangle())
+        .padding(.vertical, max(2, (theme.metrics.rowPadding - 6) / 2))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isRestored ? palette.accentColor.opacity(0.12) : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+        .contentShape(Rectangle())
         .animation(.easeOut(duration: 0.4), value: isRestored)
     }
 }

@@ -2,13 +2,23 @@ import Foundation
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    static let tailSyncLocaleChanged = Notification.Name("TailSyncLocaleChanged")
+}
+
 /// Observable localization service.  Reads/watches the language and theme
 /// settings saved by the Rust backend.
 final class Loc: ObservableObject {
     static let shared = Loc()
 
-    @Published var lang: String = "en"
+    @Published var lang: String = "en" {
+        didSet {
+            guard lang != oldValue else { return }
+            NotificationCenter.default.post(name: .tailSyncLocaleChanged, object: nil)
+        }
+    }
     @Published var theme: String = "system"
+    @Published var colorTheme: String = TailSyncColorTheme.tailsync.rawValue
     @Published var notificationsEnabled: Bool = true
 
     private static let configURL: URL = {
@@ -22,17 +32,17 @@ final class Loc: ObservableObject {
     }
 
     func reload() {
-        let oldLang = lang
         if let data = try? Data(contentsOf: Self.configURL),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             lang = obj["language"] as? String ?? fallbackLang()
             theme = obj["theme"] as? String ?? "system"
+            colorTheme = TailSyncColorTheme(
+                storedValue: obj["color_theme"] as? String ?? "tailsync"
+            ).rawValue
         } else {
             lang = fallbackLang()
             theme = "system"
-        }
-        if lang != oldLang {
-            NotificationCenter.default.post(name: NSNotification.Name("TailSyncLocaleChanged"), object: nil)
+            colorTheme = TailSyncColorTheme.tailsync.rawValue
         }
         applyTheme()
     }
@@ -75,6 +85,14 @@ final class Loc: ObservableObject {
             "settings.themeSystem": "System",
             "settings.themeLight": "Light",
             "settings.themeDark": "Dark",
+            "settings.colorTheme": "Visual theme",
+            "settings.colorThemeDescription": "Type, material, colour, and density",
+            "settings.colorTheme.tailsync": "Canvas",
+            "settings.colorTheme.ocean": "Flux",
+            "settings.colorTheme.forest": "Ledger",
+            "settings.colorTheme.rose": "Aura",
+            "settings.colorTheme.high-contrast": "Mono",
+            "settings.selected": "Selected",
             "settings.language": "Language",
             "settings.saved": "Settings saved",
             "settings.loading": "Connecting to backend...",
@@ -153,6 +171,14 @@ final class Loc: ObservableObject {
             "settings.themeSystem": "跟随系统",
             "settings.themeLight": "浅色",
             "settings.themeDark": "深色",
+            "settings.colorTheme": "视觉主题",
+            "settings.colorThemeDescription": "排版、材质、色彩与界面密度",
+            "settings.colorTheme.tailsync": "画布 Canvas",
+            "settings.colorTheme.ocean": "流光 Flux",
+            "settings.colorTheme.forest": "书页 Ledger",
+            "settings.colorTheme.rose": "柔光 Aura",
+            "settings.colorTheme.high-contrast": "单色 Mono",
+            "settings.selected": "已选择",
             "settings.language": "语言",
             "settings.saved": "设置已保存",
             "settings.loading": "连接后端中...",
