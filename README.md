@@ -14,6 +14,7 @@
 [![Windows](https://img.shields.io/badge/Windows-Tauri-0078D4?logo=windows11&logoColor=white)](#平台支持)
 [![Rust](https://img.shields.io/badge/Core-Rust-DEA584?logo=rust&logoColor=black)](#技术架构)
 [![Protocol](https://img.shields.io/badge/Protocol-v2-2F81F7)](#安全模型)
+[![Version](https://img.shields.io/badge/Version-v2.0.2-D5684B)](https://github.com/monet4070/TailSync/tree/v2.0.2)
 [![License](https://img.shields.io/badge/License-MIT-22C55E)](#许可证)
 
 </div>
@@ -42,6 +43,22 @@
 
 macOS 和 Windows 使用同一套 v2 线协议和 Rust 核心设计。两端源码分别维护，并通过跨项目检查及时发现协议、模型和共享实现的漂移。
 
+## 界面与主题
+
+Windows 使用 React / Tauri 界面，macOS 使用原生 SwiftUI 界面。两端提供一致的五套视觉主题，并支持跟随系统、浅色和深色三种显示模式。
+
+| 主题 | 视觉方向 |
+|---|---|
+| 画布 Canvas | 温暖、克制的编辑排版 |
+| 流光 Flux | 清晰、利落的青绿色几何界面 |
+| 书页 Ledger | 具有书卷感的衬线排版 |
+| 柔光 Aura | 柔和、圆润的玫瑰色界面 |
+| 单色 Mono | 强边界、高可读性的单色界面 |
+
+![TailSync Windows 与 macOS 五主题浅色模式对比](assets/tailsync-theme-comparison.png)
+
+> 对比图展示浅色模式。Windows 与 macOS 保留各自的平台交互和窗口结构，同时共享主题命名与核心色彩方向。
+
 ## 核心功能
 
 - 文本、图片、文件双向同步
@@ -54,7 +71,7 @@ macOS 和 Windows 使用同一套 v2 线协议和 Rust 核心设计。两端源�
 - 120 秒配对窗口、六位验证码、双向确认和失败锁闭
 - 文本与图片事件 ACK、重试、时间戳检查和消息 ID 去重
 - 1 MiB 文件分块、Blake3 校验、offset ACK 和运行期断线续传
-- 中英文界面、浅色 / 深色主题、通知、设备启停与路由选择
+- 中英文界面、五套视觉主题、系统 / 浅色 / 深色模式、通知、设备启停与路由选择
 
 ## 技术架构
 
@@ -237,7 +254,7 @@ TailSync/
 ├── windows/               # React / Tauri Windows 客户端
 │   ├── src/
 │   └── src-tauri/
-├── assets/                # 项目展示资源
+├── assets/                # 项目图标与 README 展示资源
 └── README.md
 ```
 
