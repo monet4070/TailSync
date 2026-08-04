@@ -203,7 +203,21 @@ final class ApiClient: @unchecked Sendable {
         return ImageData(width: width, height: height, rgba: rgba)
     }
 
-    func getFileProgress() async -> (name: String, sent: UInt64, total: UInt64, active: Bool)? {
+    struct FileProgress: Equatable {
+        let batchId: String
+        let name: String
+        let sent: UInt64
+        let total: UInt64
+        let active: Bool
+        let direction: String
+        let device: String
+        let completedFiles: Int
+        let totalFiles: Int
+        let speedBytesPerSecond: UInt64
+        let canStop: Bool
+    }
+
+    func getFileProgress() async -> FileProgress? {
         guard let response = try? await request(["cmd": "get_file_progress"]),
               response["ok"] as? Bool == true,
               let data = response["data"] as? [String: Any],
@@ -211,7 +225,84 @@ final class ApiClient: @unchecked Sendable {
               let sent = (data["sent"] as? NSNumber)?.uint64Value,
               let total = (data["total"] as? NSNumber)?.uint64Value,
               let active = data["active"] as? Bool else { return nil }
-        return (name, sent, total, active)
+        return FileProgress(
+            batchId: data["batch_id"] as? String ?? "",
+            name: name,
+            sent: sent,
+            total: total,
+            active: active,
+            direction: data["direction"] as? String ?? "receiving",
+            device: data["device"] as? String ?? "",
+            completedFiles: (data["completed_files"] as? NSNumber)?.intValue ?? 0,
+            totalFiles: (data["total_files"] as? NSNumber)?.intValue ?? 1,
+            speedBytesPerSecond: (data["speed_bytes_per_second"] as? NSNumber)?.uint64Value ?? 0,
+            canStop: data["can_stop"] as? Bool ?? false
+        )
+    }
+
+    func cancelFileBatch(_ batchId: String) async {
+        _ = try? await request(["cmd": "cancel_file_batch", "batch_id": batchId])
+    }
+
+    func restoreFileBatch(_ batchId: String) async throws {
+        let response = try await request(["cmd": "restore_file_batch", "batch_id": batchId])
+        guard response["ok"] as? Bool == true else {
+            throw ApiError.serverError(response["error"] as? String ?? "unknown")
+        }
+    }
+
+    func setHistoryPinned(id: Int64, pinned: Bool) async throws {
+        let response = try await request(["cmd": "set_history_pinned", "id": id, "pinned": pinned])
+        guard response["ok"] as? Bool == true else {
+            throw ApiError.serverError(response["error"] as? String ?? "unknown")
+        }
+    }
+
+    struct StorageStatus {
+        let root: String
+        let usedBytes: UInt64
+        let quotaBytes: UInt64
+        let available: Bool
+        let error: String?
+    }
+
+    struct StorageMigrationResult {
+        let newRoot: String
+        let oldRoot: String
+        let oldSizeBytes: UInt64
+    }
+
+    func getStorageStatus() async -> StorageStatus? {
+        guard let response = try? await request(["cmd": "get_storage_status"]),
+              response["ok"] as? Bool == true,
+              let data = response["data"] as? [String: Any] else { return nil }
+        return StorageStatus(
+            root: data["root"] as? String ?? "",
+            usedBytes: (data["used_bytes"] as? NSNumber)?.uint64Value ?? 0,
+            quotaBytes: (data["quota_bytes"] as? NSNumber)?.uint64Value ?? 0,
+            available: data["available"] as? Bool ?? false,
+            error: data["error"] as? String
+        )
+    }
+
+    func changeStorageLocation(parent: String) async throws -> StorageMigrationResult {
+        let response = try await request(["cmd": "change_storage_location", "parent": parent])
+        guard response["ok"] as? Bool == true,
+              let data = response["data"] as? [String: Any] else {
+            throw ApiError.serverError(response["error"] as? String ?? "unknown")
+        }
+        return StorageMigrationResult(
+            newRoot: data["new_root"] as? String ?? "",
+            oldRoot: data["old_root"] as? String ?? "",
+            oldSizeBytes: (data["old_size_bytes"] as? NSNumber)?.uint64Value ?? 0
+        )
+    }
+
+    func deleteOldStorage(path: String) async throws {
+        let response = try await request(["cmd": "delete_old_storage", "path": path])
+        guard response["ok"] as? Bool == true else {
+            throw ApiError.serverError(response["error"] as? String ?? "unknown")
+        }
     }
 
     func getHistory(

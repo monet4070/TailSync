@@ -2,6 +2,7 @@
 param(
     [string]$Target = 'x86_64-pc-windows-msvc',
     [string]$OutputDirectory = 'release',
+    [string]$BuildDirectory = 'target-package',
     [switch]$InstallDependencies,
     [switch]$SkipChecks,
     [switch]$SkipSmokeTest
@@ -63,7 +64,7 @@ $configPath = Join-Path $tauriRoot 'tauri.conf.json'
 $lockPath = Join-Path $tauriRoot 'Cargo.lock'
 $sharedManifest = Join-Path $repositoryRoot 'shared\rust-core\Cargo.toml'
 $tauriCli = Join-Path $windowsRoot 'node_modules\.bin\tauri.cmd'
-$targetDirectory = Join-Path $tauriRoot 'target-package'
+$targetDirectory = Resolve-OutputPath -BasePath $tauriRoot -RequestedPath $BuildDirectory
 $releaseDirectory = Resolve-OutputPath -BasePath $windowsRoot -RequestedPath $OutputDirectory
 
 $requiredFiles = @(

@@ -34,7 +34,8 @@ impl HistoryDB {
     pub(super) fn trim(&mut self, entry_type: &str) -> Result<(), Box<dyn std::error::Error>> {
         let max = match entry_type {
             "text" => self.max_history,
-            "image" | "file" => (self.max_history / 10).max(10),
+            "image" => (self.max_history / 10).max(10),
+            "file" => (self.max_history / 10).max(crate::sync::MAX_FILE_BATCH_COUNT as i64),
             _ => 100,
         };
 
@@ -46,7 +47,7 @@ impl HistoryDB {
 
         if count > max {
             let excess = count - max;
-            let ids = self.oldest_entry_ids(Some(entry_type), excess)?;
+            let ids = self.expand_batch_groups(self.oldest_entry_ids(Some(entry_type), excess)?)?;
             self.delete_entries(&ids)?;
             info!("Trimmed {} {} entries", excess, entry_type);
         }
@@ -56,17 +57,18 @@ impl HistoryDB {
             .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))?;
         if total > self.max_history {
             let excess = total - self.max_history;
-            let ids = self.oldest_entry_ids(None, excess)?;
+            let ids = self.expand_batch_groups(self.oldest_entry_ids(None, excess)?)?;
             self.delete_entries(&ids)?;
             info!("Trimmed {} entries (total cap)", excess);
         }
 
         if entry_type == "file" {
-            let ids = self.file_ids_over_byte_limit(FILE_HISTORY_BYTE_LIMIT)?;
+            let quota = i64::try_from(self.storage_quota_bytes).unwrap_or(i64::MAX);
+            let ids = self.expand_batch_groups(self.file_ids_over_byte_limit(quota)?)?;
             if !ids.is_empty() {
                 let count = ids.len();
                 self.delete_entries(&ids)?;
-                info!("Trimmed {count} file entries (5 GiB byte cap)");
+                info!("Trimmed {count} unpinned file entries (storage quota)");
             }
         }
 
@@ -79,16 +81,21 @@ impl HistoryDB {
     ) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
         let mut total = 0_i64;
         let mut statement = self.conn.prepare(
-            "SELECT id, MAX(size_bytes, 0) FROM history
-             WHERE type = 'file' ORDER BY timestamp DESC, id DESC",
+            "SELECT id, MAX(size_bytes, 0), pinned FROM history
+             WHERE type IN ('file', 'image') ORDER BY timestamp DESC, id DESC",
         )?;
-        let rows =
-            statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)? != 0,
+            ))
+        })?;
         let mut remove = Vec::new();
         for row in rows {
-            let (id, size) = row?;
+            let (id, size, pinned) = row?;
             total = total.saturating_add(size);
-            if total > limit {
+            if total > limit && !pinned {
                 remove.push(id);
             }
         }
@@ -102,15 +109,45 @@ impl HistoryDB {
     ) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
         let ids = if let Some(entry_type) = entry_type {
             self.conn
-                .prepare("SELECT id FROM history WHERE type = ?1 ORDER BY timestamp ASC LIMIT ?2")?
+                .prepare("SELECT id FROM history WHERE type = ?1 AND pinned = 0 ORDER BY timestamp ASC LIMIT ?2")?
                 .query_map(params![entry_type, limit], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             self.conn
-                .prepare("SELECT id FROM history ORDER BY timestamp ASC LIMIT ?1")?
+                .prepare("SELECT id FROM history WHERE pinned = 0 ORDER BY timestamp ASC LIMIT ?1")?
                 .query_map(params![limit], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?
         };
+        Ok(ids)
+    }
+
+    pub(super) fn expand_batch_groups(
+        &self,
+        mut ids: Vec<i64>,
+    ) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+        if ids.is_empty() {
+            return Ok(ids);
+        }
+        let mut batch_ids = Vec::new();
+        for id in &ids {
+            if let Some(batch_id) = self.conn.query_row(
+                "SELECT batch_id FROM history WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )? {
+                batch_ids.push(batch_id);
+            }
+        }
+        for batch_id in batch_ids {
+            let group_ids = self
+                .conn
+                .prepare("SELECT id FROM history WHERE batch_id = ?1 AND pinned = 0")?
+                .query_map(params![batch_id], |row| row.get::<_, i64>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids.extend(group_ids);
+        }
+        ids.sort_unstable();
+        ids.dedup();
         Ok(ids)
     }
 
@@ -139,13 +176,23 @@ impl HistoryDB {
             return Ok(());
         }
         let mut references = Vec::new();
+        let mut affected_batches = Vec::new();
         for id in ids {
             let stored = self.conn.query_row(
-                "SELECT type, data FROM history WHERE id = ?1",
+                "SELECT type, data, batch_id FROM history WHERE id = ?1",
                 params![id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             );
-            if let Ok((entry_type, stored)) = stored {
+            if let Ok((entry_type, stored, batch_id)) = stored {
+                if let Some(batch_id) = batch_id {
+                    affected_batches.push(batch_id);
+                }
                 let decoded = match entry_type.as_str() {
                     "file" => decode_file_reference(&stored)
                         .map(|reference| (self.file_history_dir.clone(), reference)),
@@ -162,6 +209,16 @@ impl HistoryDB {
         let tx = self.conn.transaction()?;
         for id in ids {
             tx.execute("DELETE FROM history WHERE id = ?1", params![id])?;
+        }
+        affected_batches.sort();
+        affected_batches.dedup();
+        for batch_id in affected_batches {
+            tx.execute(
+                "UPDATE history SET batch_status = 'incomplete'
+                 WHERE batch_id = ?1
+                   AND (SELECT COUNT(*) FROM history WHERE batch_id = ?1) < batch_total",
+                params![batch_id],
+            )?;
         }
         tx.commit()?;
 

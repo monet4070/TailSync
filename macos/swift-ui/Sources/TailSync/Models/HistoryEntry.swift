@@ -12,10 +12,16 @@ struct HistoryEntry: Codable, Identifiable {
     let categories: [String]
     let category_confidence: Int64
     let classifier_version: Int64
+    let pinned: Bool
+    let batch_id: String?
+    let batch_index: Int?
+    let batch_total: Int?
+    let batch_status: String
 
     enum CodingKeys: String, CodingKey {
         case id, timestamp, type, description, data_hash, size_bytes, source_peer
         case category, categories, category_confidence, classifier_version
+        case pinned, batch_id, batch_index, batch_total, batch_status
     }
 
     init(from decoder: Decoder) throws {
@@ -42,6 +48,11 @@ struct HistoryEntry: Codable, Identifiable {
         categories = resolvedCategories
         category_confidence = try values.decodeIfPresent(Int64.self, forKey: .category_confidence) ?? 0
         classifier_version = try values.decodeIfPresent(Int64.self, forKey: .classifier_version) ?? 0
+        pinned = try values.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        batch_id = try values.decodeIfPresent(String.self, forKey: .batch_id)
+        batch_index = try values.decodeIfPresent(Int.self, forKey: .batch_index)
+        batch_total = try values.decodeIfPresent(Int.self, forKey: .batch_total)
+        batch_status = try values.decodeIfPresent(String.self, forKey: .batch_status) ?? "complete"
     }
 
     private static func isKnownCategory(_ category: String) -> Bool {

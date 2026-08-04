@@ -397,6 +397,7 @@ pub async fn update_settings(
         serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
     new_settings.validate_user_values()?;
     let history_limit = new_settings.history_limit as i64;
+    let storage_quota_bytes = new_settings.storage_quota_bytes;
     let mut settings = state.settings.lock().await;
     let mode_changed = settings.connection_mode != new_settings.connection_mode;
     let language_changed = settings.language != new_settings.language;
@@ -404,6 +405,7 @@ pub async fn update_settings(
     new_settings.trusted_peer_keys = settings.trusted_peer_keys.clone();
     new_settings.trusted_peer_addresses = settings.trusted_peer_addresses.clone();
     new_settings.paired_peer_endpoints = settings.paired_peer_endpoints.clone();
+    new_settings.storage_root = settings.storage_root.clone();
     *settings = new_settings;
     settings.save().map_err(|e| e.to_string())?;
     drop(settings);
@@ -413,6 +415,7 @@ pub async fn update_settings(
         }
     }
     state.db.lock().await.set_max_history(history_limit);
+    state.db.lock().await.set_storage_quota(storage_quota_bytes);
     if mode_changed {
         state.pool.lock().await.disconnect_all();
         network::clear_peer_cache().await;
@@ -501,13 +504,157 @@ pub async fn get_image_data(
 /// Get current file transfer progress (for progress bar)
 #[command]
 pub async fn get_file_progress() -> Result<serde_json::Value, String> {
-    let info = crate::api::FILE_PROGRESS
+    let info = crate::api::get_file_progress();
+    info.map_or_else(
+        || Ok(serde_json::json!({"active": false})),
+        |progress| serde_json::to_value(progress).map_err(|error| error.to_string()),
+    )
+}
+
+#[command]
+pub async fn cancel_file_batch(state: State<'_, AppState>, batch_id: String) -> Result<(), String> {
+    let id = crate::protocol::TransferId::from_hex(&batch_id)?;
+    cancel_file_batch_impl(&state.sync_engine, &state.pool, &state.settings, id).await;
+    Ok(())
+}
+
+pub(crate) async fn cancel_file_batch_impl(
+    sync_engine: &std::sync::Arc<tokio::sync::Mutex<crate::sync::SyncEngine>>,
+    pool: &std::sync::Arc<tokio::sync::Mutex<network::ConnectionPool>>,
+    settings: &std::sync::Arc<tokio::sync::Mutex<crate::crypto::Settings>>,
+    batch_id: crate::protocol::TransferId,
+) {
+    let batch_id_hex = batch_id.as_hex();
+    let source = sync_engine
         .lock()
-        .ok()
-        .and_then(|progress| progress.clone());
-    Ok(info.map_or(serde_json::json!({"active": false}), |p| {
-        serde_json::json!({"name": p.name, "sent": p.sent, "total": p.total, "active": p.active})
-    }))
+        .await
+        .cancel_file_batch_local(batch_id)
+        .await;
+    crate::api::clear_file_progress_scope(Some(&batch_id_hex), None);
+    if let Some(source) = source {
+        if let Err(error) = network::send_file_batch_cancel(pool, settings, &source, batch_id).await
+        {
+            log::warn!("Could not notify {source} that file batch was cancelled: {error}");
+        }
+    } else {
+        crate::api::request_file_batch_cancel(&batch_id_hex);
+    }
+}
+
+#[command]
+pub async fn get_storage_status(state: State<'_, AppState>) -> Result<db::StorageStatus, String> {
+    Ok(state.db.lock().await.storage_status())
+}
+
+#[command]
+pub async fn change_storage_location(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    parent: String,
+) -> Result<db::StorageMigrationResult, String> {
+    use tauri_plugin_notification::NotificationExt;
+    let parent = std::path::PathBuf::from(parent);
+    loop {
+        let active = crate::api::has_active_file_progress();
+        if !active {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    let _ = app
+        .notification()
+        .builder()
+        .title("TailSync")
+        .body("File transfers finished. Moving TailSync data now.")
+        .show();
+    let previous_storage_root = state.settings.lock().await.storage_root.clone();
+    let database = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        database
+            .blocking_lock()
+            .migrate_storage_parent(&parent)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let mut settings = state.settings.lock().await;
+    settings.storage_root = Some(result.new_root.clone());
+    if let Err(error) = settings.save().map_err(|error| error.to_string()) {
+        settings.storage_root = previous_storage_root;
+        drop(settings);
+        let old_root = std::path::PathBuf::from(&result.old_root);
+        let database = state.db.clone();
+        let rollback = tokio::task::spawn_blocking(move || {
+            database
+                .blocking_lock()
+                .reopen_storage_at(&old_root)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|join_error| join_error.to_string())?;
+        return match rollback {
+            Ok(()) => {
+                let _ = db::delete_old_storage(std::path::Path::new(&result.new_root));
+                Err(format!(
+                    "Could not save the new storage location; TailSync returned to the old location: {error}"
+                ))
+            }
+            Err(rollback_error) => Err(format!(
+                "Could not save the new storage location ({error}); rollback also failed: {rollback_error}"
+            )),
+        };
+    }
+    Ok(result)
+}
+
+#[command]
+pub async fn set_history_pinned(
+    state: State<'_, AppState>,
+    id: i64,
+    pinned: bool,
+) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .await
+        .set_pinned(id, pinned)
+        .map_err(|error| error.to_string())?;
+    crate::api::bump_clipboard_version();
+    Ok(())
+}
+
+#[command]
+pub async fn delete_old_storage(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        db::delete_old_storage(std::path::Path::new(&path)).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[command]
+pub async fn restore_file_batch(
+    state: State<'_, AppState>,
+    batch_id: String,
+) -> Result<(), String> {
+    let paths = materialize_file_batch_paths(state.db.clone(), batch_id).await?;
+    crate::clipboard_file::write_clipboard_files(&paths)?;
+    crate::api::bump_clipboard_version();
+    Ok(())
+}
+
+pub(crate) async fn materialize_file_batch_paths(
+    database: std::sync::Arc<tokio::sync::Mutex<db::HistoryDB>>,
+    batch_id: String,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    tokio::task::spawn_blocking(move || {
+        database
+            .blocking_lock()
+            .materialize_file_batch(&batch_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Get current clipboard version (for polling-based refresh)

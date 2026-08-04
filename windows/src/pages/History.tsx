@@ -24,8 +24,10 @@ import {
   Folder,
   Globe2,
   Image as ImageIcon,
+  Pin,
   Search,
   SearchX,
+  Square,
   Terminal,
   TriangleAlert,
   Trash2,
@@ -58,6 +60,11 @@ interface HistoryEntry {
   categories?: HistoryCategory[];
   category_confidence?: number;
   classifier_version?: number;
+  pinned?: boolean;
+  batch_id?: string | null;
+  batch_index?: number | null;
+  batch_total?: number | null;
+  batch_status?: "complete" | "incomplete";
 }
 
 interface ThumbnailData {
@@ -498,10 +505,18 @@ export function History() {
   const lastQueryKey = useRef("");
   const historyRequests = useRef(new LatestRequest());
   const [fileProgress, setFileProgress] = useState<{
+    batch_id: string;
     name: string;
     sent: number;
     total: number;
     active: boolean;
+    direction: "sending" | "receiving";
+    device: string;
+    completed_files: number;
+    total_files: number;
+    speed_bytes_per_second: number;
+    status: string;
+    can_stop: boolean;
   } | null>(null);
   const [progressBarEnabled, setProgressBarEnabled] = useState(true);
   const progressEnabledRef = useRef(progressBarEnabled);
@@ -733,10 +748,18 @@ export function History() {
         }
         try {
           const fp = await invoke<{
+            batch_id: string;
             name: string;
             sent: number;
             total: number;
             active: boolean;
+            direction: "sending" | "receiving";
+            device: string;
+            completed_files: number;
+            total_files: number;
+            speed_bytes_per_second: number;
+            status: string;
+            can_stop: boolean;
           }>("get_file_progress");
           setFileProgress(fp.active ? fp : null);
         } catch {
@@ -998,16 +1021,38 @@ export function History() {
                     <span className="date-dot" />
                     {t(GROUP_LABEL_KEYS[group])}
                   </div>
-                  {groupEntries.map((entry) => {
+                  {groupEntries.map((entry, groupIndex) => {
                     const delay = itemIndex * 30;
                     itemIndex++;
                     const isNew = newIds.has(entry.id);
                     const categories = resolvedCategories(entry);
                     const category = categories[0];
                     const CategoryIcon = CATEGORY_ICONS[category];
+                    const isBatchStart = Boolean(
+                      entry.batch_id && groupEntries[groupIndex - 1]?.batch_id !== entry.batch_id,
+                    );
                     return (
-                      <article
+                      <div
+                        className={entry.batch_id ? "history-batch-item" : undefined}
                         key={entry.id}
+                      >
+                      {isBatchStart && (
+                        <div className="history-batch-header">
+                          <span><Folder size={13} strokeWidth={1.8} aria-hidden="true" /> {entry.batch_total ?? 1} {t("history.files")}</span>
+                          {entry.batch_status === "complete" ? (
+                            <button
+                              type="button"
+                              onClick={() => void invoke("restore_file_batch", { batchId: entry.batch_id })}
+                            >
+                              <Clipboard size={12} strokeWidth={1.8} aria-hidden="true" />
+                              {t("history.copyAll")}
+                            </button>
+                          ) : (
+                            <span className="batch-incomplete">{t("history.incomplete")}</span>
+                          )}
+                        </div>
+                      )}
+                      <article
                         className={`history-item${isNew ? " is-new" : ""}${selectedId === entry.id ? " restored" : ""}`}
                          style={{ animationDelay: `${delay}ms` }}
                          data-id={entry.id}
@@ -1063,9 +1108,21 @@ export function History() {
                             <span className="item-size">
                               {formatSize(entry.size_bytes)}
                             </span>
+                            <button
+                              className={`pin-entry${entry.pinned ? " active" : ""}`}
+                              type="button"
+                              title={entry.pinned ? t("history.unpin") : t("history.pin")}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void invoke("set_history_pinned", { id: entry.id, pinned: !entry.pinned });
+                              }}
+                            >
+                              <Pin size={11} fill={entry.pinned ? "currentColor" : "none"} aria-hidden="true" />
+                            </button>
                           </div>
                         </div>
                       </article>
+                      </div>
                     );
                   })}
                 </div>
@@ -1117,15 +1174,28 @@ export function History() {
             <div
               className="progress-fill"
               style={{
-                width: `${Math.round((fileProgress.sent / fileProgress.total) * 100)}%`,
+                width: `${Math.round((fileProgress.sent / Math.max(fileProgress.total, 1)) * 100)}%`,
               }}
             />
           </div>
           <span className="progress-text">
-            {fileProgress.name} —{" "}
-            {Math.round(fileProgress.sent / 1024)} /{" "}
-            {Math.round(fileProgress.total / 1024)} KB
+            <strong>{Math.min(fileProgress.completed_files + 1, fileProgress.total_files)}/{fileProgress.total_files}</strong>
+            <span title={fileProgress.name}>{fileProgress.name}</span>
+            {fileProgress.device && <span>{fileProgress.device}</span>}
+            <span>{formatSize(fileProgress.sent)} / {formatSize(fileProgress.total)}</span>
+            <span>{formatSize(fileProgress.speed_bytes_per_second)}/s</span>
           </span>
+          {fileProgress.can_stop && fileProgress.batch_id && (
+            <button
+              className="progress-stop"
+              type="button"
+              title={t("history.stopTransfer")}
+              onClick={() => void invoke("cancel_file_batch", { batchId: fileProgress.batch_id })}
+            >
+              <Square size={12} fill="currentColor" aria-hidden="true" />
+              <span>{t("history.stopTransfer")}</span>
+            </button>
+          )}
         </div>
       )}
 

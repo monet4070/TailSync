@@ -32,6 +32,7 @@
 **/TailSync.app/
 **/TailSync.app.staging/
 **/release/
+windows/release-*/
 **/*.dmg
 **/*.dmg.sha256
 **/public/*.zip

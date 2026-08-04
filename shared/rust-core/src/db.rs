@@ -13,25 +13,33 @@ mod migrations;
 mod paths;
 mod queries;
 mod schema;
+mod storage;
 mod types;
 
+pub use file_storage::{
+    cleanup_clipboard_files, materialize_clipboard_bytes, materialize_clipboard_file,
+};
 use file_storage::{
     decode_file_reference, decode_image_reference, encode_file_reference_version,
     encode_image_reference, materialize_clipboard_file_at, persist_history_file_at,
     persist_history_file_from_path_at, persist_image_at, resolve_file_reference_at,
-    validate_history_file_size, FILE_HISTORY_BYTE_LIMIT,
+    validate_history_file_size,
 };
-pub use file_storage::{materialize_clipboard_bytes, materialize_clipboard_file};
 #[cfg(test)]
-use file_storage::{materialize_clipboard_bytes_at, StoredFileReference};
+use file_storage::{materialize_clipboard_bytes_at, StoredFileReference, FILE_HISTORY_BYTE_LIMIT};
 pub use paths::{
-    get_clipboard_files_dir, get_data_dir, get_file_history_dir, get_image_history_dir,
-    get_incoming_dir,
+    configure_storage_dir, configure_storage_parent, get_clipboard_files_dir, get_data_dir,
+    get_file_history_dir, get_history_db_path, get_image_history_dir, get_incoming_dir,
+    get_storage_dir, validate_storage_dir, STORAGE_DIRECTORY_NAME,
 };
-pub use types::{FileEncryptionMigrationBatch, HistoryEntry, MigrationDiagnostics, MigrationIssue};
+pub use storage::delete_old_storage;
+pub use types::{
+    FileEncryptionMigrationBatch, HistoryEntry, HistoryFileInput, MigrationDiagnostics,
+    MigrationIssue, StorageMigrationResult, StorageStatus,
+};
 
 /// Database schema version
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 fn escape_like_literal(value: &str) -> String {
     value
@@ -43,18 +51,39 @@ fn escape_like_literal(value: &str) -> String {
 pub struct HistoryDB {
     conn: Connection,
     max_history: i64,
+    storage_quota_bytes: u64,
+    storage_available: bool,
     file_history_dir: PathBuf,
     image_history_dir: PathBuf,
 }
 
 impl HistoryDB {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let db_path = get_data_dir().join("history-v2.db");
+        Self::open_at(&get_storage_dir())
+    }
+
+    pub fn new_unavailable() -> Result<Self, Box<dyn std::error::Error>> {
+        let conn = Connection::open_in_memory()?;
+        schema::initialize(&conn)?;
+        Self::migrate(&conn, &get_file_history_dir(), &get_image_history_dir())?;
+        Ok(Self {
+            conn,
+            max_history: 1000,
+            storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
+            storage_available: false,
+            file_history_dir: get_file_history_dir(),
+            image_history_dir: get_image_history_dir(),
+        })
+    }
+
+    fn open_at(storage_dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        std::fs::create_dir_all(storage_dir)?;
+        let db_path = storage_dir.join("history-v2.db");
         info!("Opening database at {}", db_path.display());
 
         let conn = Connection::open(&db_path)?;
-        let file_history_dir = get_file_history_dir();
-        let image_history_dir = get_image_history_dir();
+        let file_history_dir = storage_dir.join("file-history");
+        let image_history_dir = storage_dir.join("image-history");
 
         // Enable WAL mode for concurrent read/write
         conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -65,21 +94,11 @@ impl HistoryDB {
         // Run migrations
         Self::migrate(&conn, &file_history_dir, &image_history_dir)?;
 
-        // Transfers cannot survive a process restart, so stale incoming files
-        // are safe to remove before the network server starts.
-        let incoming = get_incoming_dir();
-        if let Err(error) = std::fs::remove_dir_all(&incoming) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                warn!("Could not clean incoming transfer folder: {error}");
-            }
-        }
+        // Resumable transfers and clipboard materializations deliberately
+        // survive restarts. Expired unreferenced files are cleaned separately.
+        let incoming = storage_dir.join("incoming");
         std::fs::create_dir_all(&incoming)?;
-        let clipboard_files = get_clipboard_files_dir();
-        if let Err(error) = std::fs::remove_dir_all(&clipboard_files) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                warn!("Could not clean clipboard files folder: {error}");
-            }
-        }
+        let clipboard_files = storage_dir.join("clipboard-files");
         std::fs::create_dir_all(&clipboard_files)?;
         std::fs::create_dir_all(&file_history_dir)?;
         std::fs::create_dir_all(&image_history_dir)?;
@@ -87,6 +106,8 @@ impl HistoryDB {
         let mut database = HistoryDB {
             conn,
             max_history: i64::MAX / 2,
+            storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
+            storage_available: true,
             file_history_dir,
             image_history_dir,
         };
@@ -100,6 +121,22 @@ impl HistoryDB {
     /// Update history limit from settings.
     pub fn set_max_history(&mut self, limit: i64) {
         self.max_history = limit;
+    }
+
+    pub fn set_storage_quota(&mut self, quota_bytes: u64) {
+        self.storage_quota_bytes = quota_bytes;
+    }
+
+    pub fn reopen_configured_storage(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut replacement = Self::open_at(&get_storage_dir())?;
+        replacement.max_history = self.max_history;
+        replacement.storage_quota_bytes = self.storage_quota_bytes;
+        *self = replacement;
+        Ok(())
+    }
+
+    pub fn mark_storage_unavailable(&mut self) {
+        self.storage_available = false;
     }
 
     /// Add a text entry to history. Duplicate: delete old, insert new at top.
@@ -426,6 +463,43 @@ impl HistoryDB {
         Ok(t)
     }
 
+    pub fn materialize_file_batch(
+        &self,
+        batch_id: &str,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        let rows = self
+            .conn
+            .prepare(
+                "SELECT id, description, batch_total, batch_status
+                 FROM history WHERE batch_id = ?1 AND type = 'file'
+                 ORDER BY batch_index ASC, id ASC",
+            )?
+            .query_map(params![batch_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected = rows.first().map(|row| row.2).unwrap_or(0);
+        if expected <= 0
+            || rows.len() != expected as usize
+            || rows.iter().any(|row| row.3 != "complete")
+        {
+            return Err("Only a complete file batch can be copied as a group".into());
+        }
+        rows.into_iter()
+            .map(|(id, name, _, _)| {
+                let source = self
+                    .get_file_path(id)?
+                    .ok_or("File batch entry is not backed by a history file")?;
+                materialize_clipboard_file_at(&get_clipboard_files_dir(), &source, &name)
+            })
+            .collect()
+    }
+
     /// Add a file entry to history
     pub fn add_file(
         &mut self,
@@ -519,6 +593,86 @@ impl HistoryDB {
         )?;
         self.trim("file")?;
         Ok(file_path)
+    }
+
+    /// Persist a batch as one history group. Entries are visible as incomplete
+    /// while files are being adopted, so a partial failure remains recoverable
+    /// without exposing a misleading "Copy all" action.
+    pub fn add_file_batch(
+        &mut self,
+        batch_id: &str,
+        files: &[HistoryFileInput],
+        source_peer: &str,
+        move_sources: bool,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        self.add_file_batch_with_status(
+            batch_id,
+            files,
+            files.len(),
+            source_peer,
+            move_sources,
+            true,
+        )
+    }
+
+    pub fn add_file_batch_with_status(
+        &mut self,
+        batch_id: &str,
+        files: &[HistoryFileInput],
+        expected_total: usize,
+        source_peer: &str,
+        move_sources: bool,
+        complete: bool,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        if files.is_empty() {
+            return Err("A file batch cannot be empty".into());
+        }
+        if expected_total < files.len() {
+            return Err("File batch total cannot be smaller than the completed file count".into());
+        }
+        let total = i64::try_from(expected_total).map_err(|_| "File batch is too large")?;
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let mut stored_paths = Vec::with_capacity(files.len());
+        for (index, file) in files.iter().enumerate() {
+            validate_history_file_size(file.size)?;
+            let (reference, stored_path) = persist_history_file_from_path_at(
+                &self.file_history_dir,
+                &file.data_hash,
+                &file.name,
+                &file.path,
+                file.size,
+                move_sources,
+            )?;
+            self.conn.execute(
+                "INSERT INTO history
+                    (timestamp, type, description, data, size_bytes, source_peer, data_hash,
+                     category, categories, category_confidence, classifier_version,
+                     batch_id, batch_index, batch_total, batch_status)
+                 VALUES (?1, 'file', ?2, ?3, ?4, ?5, ?6, 'file', '[\"file\"]', 100, ?7,
+                         ?8, ?9, ?10, 'incomplete')",
+                params![
+                    timestamp,
+                    file.name,
+                    reference,
+                    file.size as i64,
+                    source_peer,
+                    file.data_hash,
+                    history_classifier::CLASSIFIER_VERSION,
+                    batch_id,
+                    index as i64,
+                    total,
+                ],
+            )?;
+            stored_paths.push(stored_path);
+        }
+        if complete {
+            self.conn.execute(
+                "UPDATE history SET batch_status = 'complete' WHERE batch_id = ?1",
+                params![batch_id],
+            )?;
+        }
+        self.trim("file")?;
+        Ok(stored_paths)
     }
 
     // ── Migration inserts (pre-set timestamp + description) ──────
@@ -691,13 +845,20 @@ mod tests {
                 category TEXT NOT NULL DEFAULT 'text',
                 categories TEXT NOT NULL DEFAULT '[]',
                 category_confidence INTEGER NOT NULL DEFAULT 0,
-                classifier_version INTEGER NOT NULL DEFAULT 0
+                classifier_version INTEGER NOT NULL DEFAULT 0,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                batch_id TEXT,
+                batch_index INTEGER,
+                batch_total INTEGER,
+                batch_status TEXT NOT NULL DEFAULT 'complete'
             );",
         )
         .unwrap();
         HistoryDB {
             conn,
             max_history: 100,
+            storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
+            storage_available: true,
             file_history_dir: root.join("file-history"),
             image_history_dir: root.join("image-history"),
         }
@@ -788,6 +949,96 @@ mod tests {
             )
             .unwrap();
         assert_eq!(db.file_ids_over_byte_limit(10).unwrap(), vec![2, 1]);
+    }
+
+    #[test]
+    fn pinned_entries_are_never_selected_for_quota_cleanup() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-pinned-quota-{:016x}",
+            rand::random::<u64>()
+        ));
+        let db = test_database(&root);
+        db.conn
+            .execute_batch(
+                "INSERT INTO history
+                    (timestamp, type, description, data, size_bytes, data_hash, pinned)
+                 VALUES
+                   ('2026-01-01T00:00:00Z', 'file', 'pinned', X'00', 8, 'pinned', 1),
+                   ('2026-01-02T00:00:00Z', 'file', 'middle', X'00', 6, 'middle', 0),
+                   ('2026-01-03T00:00:00Z', 'file', 'new', X'00', 6, 'new', 0);",
+            )
+            .unwrap();
+        assert_eq!(db.file_ids_over_byte_limit(10).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn deleting_part_of_a_batch_marks_pinned_survivors_incomplete() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-partial-pinned-batch-{:016x}",
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+        db.conn
+            .execute_batch(
+                "INSERT INTO history
+                    (id, timestamp, type, description, data, size_bytes, data_hash, pinned,
+                     batch_id, batch_index, batch_total, batch_status)
+                 VALUES
+                   (1, '2026-01-01T00:00:00Z', 'file', 'keep.bin', X'00', 8, 'keep', 1,
+                    'batch-pinned', 0, 2, 'complete'),
+                   (2, '2026-01-01T00:00:00Z', 'file', 'remove.bin', X'00', 8, 'remove', 0,
+                    'batch-pinned', 1, 2, 'complete');",
+            )
+            .unwrap();
+
+        db.delete(2).unwrap();
+        let status: String = db
+            .conn
+            .query_row("SELECT batch_status FROM history WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "incomplete");
+    }
+
+    #[test]
+    fn incomplete_batch_is_retained_but_cannot_be_copied_as_a_group() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-incomplete-batch-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("received.txt");
+        std::fs::write(&source, b"received").unwrap();
+        let hash = blake3::hash(b"received").to_hex().to_string();
+        let mut db = test_database(&root);
+        db.add_file_batch_with_status(
+            "batch-incomplete",
+            &[HistoryFileInput {
+                name: "received.txt".into(),
+                path: source,
+                data_hash: hash,
+                size: 8,
+            }],
+            2,
+            "peer",
+            false,
+            false,
+        )
+        .unwrap();
+
+        let (count, status, total): (i64, String, i64) = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*), MIN(batch_status), MIN(batch_total)
+                 FROM history WHERE batch_id = 'batch-incomplete'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((count, status.as_str(), total), (1, "incomplete", 2));
+        assert!(db.materialize_file_batch("batch-incomplete").is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1090,6 +1341,8 @@ mod tests {
         let db = HistoryDB {
             conn,
             max_history: 100,
+            storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
+            storage_available: true,
             file_history_dir: file_dir,
             image_history_dir: image_dir,
         };
@@ -1225,6 +1478,78 @@ mod tests {
             )
         );
         assert_eq!(index_count, 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opening_v7_database_adds_batch_columns_before_creating_batch_index() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-batch-v8-migration-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db_path = root.join("history-v2.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (7);
+             CREATE TABLE history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                type TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                data BLOB NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                source_peer TEXT NOT NULL DEFAULT '',
+                data_hash TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT 'text',
+                categories TEXT NOT NULL DEFAULT '[]',
+                category_confidence INTEGER NOT NULL DEFAULT 0,
+                classifier_version INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = HistoryDB::open_at(&root).unwrap();
+        let columns = db
+            .conn
+            .prepare("PRAGMA table_info(history)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let batch_index_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_history_batch'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let version: i64 = db
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        for column in [
+            "pinned",
+            "batch_id",
+            "batch_index",
+            "batch_total",
+            "batch_status",
+        ] {
+            assert!(columns.iter().any(|existing| existing == column));
+        }
+        assert_eq!(batch_index_count, 1);
+        assert_eq!(version, SCHEMA_VERSION);
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 

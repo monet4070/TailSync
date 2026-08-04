@@ -13,6 +13,35 @@ pub struct HistoryEntry {
     pub categories: Vec<String>,
     pub category_confidence: i64,
     pub classifier_version: i64,
+    pub pinned: bool,
+    pub batch_id: Option<String>,
+    pub batch_index: Option<i64>,
+    pub batch_total: Option<i64>,
+    pub batch_status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryFileInput {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub data_hash: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StorageStatus {
+    pub root: String,
+    pub used_bytes: u64,
+    pub quota_bytes: u64,
+    pub available: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StorageMigrationResult {
+    pub new_root: String,
+    pub old_root: String,
+    pub old_size_bytes: u64,
 }
 
 #[derive(Debug, serde::Serialize)]

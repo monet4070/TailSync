@@ -17,6 +17,13 @@ pub struct Settings {
     pub progress_bar_enabled: bool,
     #[schemars(range(min = 10, max = 500))]
     pub history_limit: u32,
+    /// Bulk history and transfer storage. None keeps bulk data in the system
+    /// application-data directory.
+    #[serde(default)]
+    pub storage_root: Option<String>,
+    #[serde(default = "default_storage_quota_bytes")]
+    #[schemars(range(min = 1073741824_u64, max = 17592186044416_u64))]
+    pub storage_quota_bytes: u64,
     pub enabled_peers: std::collections::HashMap<String, bool>,
     #[schemars(with = "ThemeContract")]
     pub theme: String, // "light" | "dark" | "system"
@@ -89,6 +96,14 @@ fn default_color_theme() -> String {
     "tailsync".to_string()
 }
 
+pub const DEFAULT_STORAGE_QUOTA_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+pub const MIN_STORAGE_QUOTA_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_STORAGE_QUOTA_BYTES: u64 = 16 * 1024 * 1024 * 1024 * 1024;
+
+fn default_storage_quota_bytes() -> u64 {
+    DEFAULT_STORAGE_QUOTA_BYTES
+}
+
 fn normalize_connection_mode(mode: String) -> String {
     match mode.as_str() {
         // Older builds called the direct local-network mode "manual".
@@ -108,6 +123,8 @@ impl Default for Settings {
             notifications_enabled: true,
             progress_bar_enabled: true,
             history_limit: 100,
+            storage_root: None,
+            storage_quota_bytes: default_storage_quota_bytes(),
             enabled_peers: std::collections::HashMap::new(),
             theme: "system".to_string(),
             color_theme: default_color_theme(),
@@ -152,6 +169,17 @@ impl Settings {
     pub fn validate_user_values(&self) -> Result<(), String> {
         if !(10..=500).contains(&self.history_limit) {
             return Err("history_limit must be between 10 and 500".to_string());
+        }
+        if !(MIN_STORAGE_QUOTA_BYTES..=MAX_STORAGE_QUOTA_BYTES).contains(&self.storage_quota_bytes)
+        {
+            return Err("storage_quota_bytes must be between 1 GiB and 16 TiB".to_string());
+        }
+        if self
+            .storage_root
+            .as_deref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            return Err("storage_root cannot be empty".to_string());
         }
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             return Err("theme must be 'system', 'light', or 'dark'".to_string());

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   COLOR_THEMES,
   isColorTheme,
@@ -18,6 +19,8 @@ import {
   Check,
   ChevronDown,
   Grid2X2,
+  FolderOpen,
+  HardDrive,
   Monitor,
   Moon,
   RefreshCw,
@@ -100,11 +103,34 @@ interface PairingStatus {
   error?: string | null;
 }
 
+interface StorageStatus {
+  root: string;
+  used_bytes: number;
+  quota_bytes: number;
+  available: boolean;
+  error?: string | null;
+}
+
+interface StorageMigrationResult {
+  new_root: string;
+  old_root: string;
+  old_size_bytes: number;
+}
+
+const GIB = 1024 * 1024 * 1024;
+
+function formatStorageSize(bytes: number) {
+  return `${(bytes / GIB).toFixed(bytes >= GIB ? 1 : 2)} GiB`;
+}
+
 /* ── Component ──────────────────────────────────────────────────── */
 
 export function Settings() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [historyLimitDraft, setHistoryLimitDraft] = useState(100);
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [oldStorage, setOldStorage] = useState<StorageMigrationResult | null>(null);
   const [saved, setSaved] = useState(false);
   const [devices, setDevices] = useState<PeersResponse | null>(null);
   const [devicesLoading, setDevicesLoading] = useState(false);
@@ -143,6 +169,7 @@ export function Settings() {
         setLocale(s.language);
       })
       .catch(console.error);
+    invoke<StorageStatus>("get_storage_status").then(setStorageStatus).catch(console.error);
   }, [setColorTheme, setLocale, setTheme]);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
@@ -224,6 +251,37 @@ export function Settings() {
   const commitHistoryLimit = async () => {
     if (historyLimitDraft === settingsRef.current?.history_limit) return;
     await update({ history_limit: historyLimitDraft });
+  };
+
+  const changeStorage = async () => {
+    const parent = await open({
+      directory: true,
+      multiple: false,
+      title: t("settings.storageChoose"),
+    });
+    if (typeof parent !== "string") return;
+    setStorageBusy(true);
+    try {
+      const result = await invoke<StorageMigrationResult>("change_storage_location", { parent });
+      setOldStorage(result);
+      const [canonical, status] = await Promise.all([
+        invoke<SettingsData>("get_settings"),
+        invoke<StorageStatus>("get_storage_status"),
+      ]);
+      settingsRef.current = canonical;
+      setSettings(canonical);
+      setStorageStatus(status);
+    } catch (error) {
+      console.error("Storage migration failed:", error);
+    } finally {
+      setStorageBusy(false);
+    }
+  };
+
+  const deleteOldStorage = async () => {
+    if (!oldStorage) return;
+    await invoke("delete_old_storage", { path: oldStorage.old_root });
+    setOldStorage(null);
   };
 
   useEffect(() => {
@@ -846,6 +904,56 @@ export function Settings() {
             />
             <span className="range-value">{historyLimitDraft}</span>
           </div>
+        </section>
+
+        {/* Appearance */}
+        <section className="setting-group">
+          <div className="setting-group-header">
+            <h3>{t("settings.storage")}</h3>
+            <p>{t("settings.storageDescription")}</p>
+          </div>
+          <div className="setting-row storage-row">
+            <HardDrive size={17} strokeWidth={1.7} aria-hidden="true" />
+            <div className="setting-row-info storage-location">
+              <span title={storageStatus?.root}>{storageStatus?.root ?? settings.storage_root ?? ""}</span>
+              <small>
+                {storageStatus?.available === false
+                  ? storageStatus.error
+                  : `${formatStorageSize(storageStatus?.used_bytes ?? 0)} / ${formatStorageSize(settings.storage_quota_bytes)}`}
+              </small>
+            </div>
+            <button className="storage-change" type="button" onClick={() => void changeStorage()} disabled={storageBusy}>
+              <FolderOpen size={15} strokeWidth={1.8} aria-hidden="true" />
+              <span>{storageBusy ? t("settings.storageMoving") : t("settings.storageChange")}</span>
+            </button>
+          </div>
+          <div className="setting-row storage-quota-row">
+            <div className="setting-row-info">
+              <span>{t("settings.storageQuota")}</span>
+            </div>
+            <input
+              className="storage-quota-input"
+              type="number"
+              min={1}
+              max={16384}
+              value={Math.round(settings.storage_quota_bytes / GIB)}
+              onChange={(event) => {
+                const gib = Math.min(16384, Math.max(1, Number(event.target.value) || 1));
+                void update({ storage_quota_bytes: gib * GIB });
+              }}
+              aria-label={t("settings.storageQuota")}
+            />
+            <span className="storage-quota-unit">GiB</span>
+          </div>
+          {oldStorage && oldStorage.old_root !== oldStorage.new_root && (
+            <div className="old-storage-row">
+              <span>{t("settings.storageOldData")} ({formatStorageSize(oldStorage.old_size_bytes)})</span>
+              <div>
+                <button type="button" onClick={() => void deleteOldStorage()}>{t("settings.storageDeleteOld")}</button>
+                <button type="button" onClick={() => setOldStorage(null)}>{t("settings.storageKeepOld")}</button>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Appearance */}

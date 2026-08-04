@@ -570,6 +570,61 @@ html, body {
   transform: scale(0.99);
 }
 
+.history-batch-item {
+  margin-left: 6px;
+  border-left: 2px solid var(--brand-soft);
+}
+
+.history-batch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.history-batch-header > span:first-child,
+.history-batch-header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.history-batch-header button {
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-window);
+  color: var(--text-primary);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.batch-incomplete {
+  color: var(--orange);
+}
+
+.pin-entry {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.pin-entry.active {
+  color: var(--brand);
+}
+
 .item-preview {
   width: 40px;
   min-height: 40px;
@@ -1130,12 +1185,17 @@ html, body {
 
 /* ── File Transfer Progress ─────────────────────────────────────── */
 .file-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
   padding: 8px 14px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .progress-bar {
+  grid-column: 1 / -1;
   height: 3px;
   background: var(--bg-input);
   border-radius: 2px;
@@ -1151,7 +1211,39 @@ html, body {
 }
 
 .progress-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   font-size: 11px;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
+}
+
+.progress-text > span {
+  white-space: nowrap;
+}
+
+.progress-text > span[title] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.progress-stop:hover {
+  border-color: var(--red, #d84a4a);
+  color: var(--red, #d84a4a);
 }

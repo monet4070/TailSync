@@ -57,6 +57,21 @@ impl Drop for ConnectionPermit {
     }
 }
 
+struct ReceiveSuspendGuard {
+    sync_engine: Arc<Mutex<sync::SyncEngine>>,
+    source: String,
+}
+
+impl Drop for ReceiveSuspendGuard {
+    fn drop(&mut self) {
+        let sync_engine = self.sync_engine.clone();
+        let source = self.source.clone();
+        tokio::spawn(async move {
+            sync_engine.lock().await.suspend_receive(&source);
+        });
+    }
+}
+
 /// Start the async TCP server.  Runs until the app shuts down.
 pub async fn start_server(
     sync_engine: Arc<Mutex<sync::SyncEngine>>,
@@ -263,6 +278,10 @@ async fn handle_connection(
         },
         0,
     );
+    let _receive_guard = ReceiveSuspendGuard {
+        sync_engine: sync_engine.clone(),
+        source: peer_info.hostname.clone(),
+    };
 
     // ── Receive loop ─────────────────────────────────────────────
     let mut last_activity = tokio::time::Instant::now();
@@ -356,8 +375,109 @@ async fn handle_connection(
                     secure::write_error(&mut stream, &error).await?;
                 }
             }
+            Command::FileBatchStart => {
+                let manifest: sync::FileBatchManifest = serde_json::from_slice(&frame.payload)?;
+                let already_active = sync_engine
+                    .lock()
+                    .await
+                    .has_file_batch(&peer_info.hostname, manifest.batch_id);
+                let preflight = if !already_active {
+                    database
+                        .lock()
+                        .await
+                        .reserve_for_file_batch(manifest.total_bytes)
+                        .map_err(|error| error.to_string())
+                } else {
+                    Ok(())
+                };
+                let result = match preflight {
+                    Ok(()) => sync_engine.lock().await.begin_file_batch(
+                        manifest.clone(),
+                        peer_info.hostname.clone(),
+                        &db::get_incoming_dir(),
+                    ),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = &result {
+                    sync_engine
+                        .lock()
+                        .await
+                        .notify_file_batch_failed(Some(manifest.batch_id), error);
+                }
+                let response = match result {
+                    Ok(()) => Frame::try_new(
+                        Command::FileBatchAccept,
+                        0,
+                        frame.sequence,
+                        manifest.batch_id.0.to_vec(),
+                    )?,
+                    Err(error) => Frame::try_new(
+                        Command::FileBatchReject,
+                        0,
+                        frame.sequence,
+                        error.into_bytes(),
+                    )?,
+                };
+                stream.write_frame(&response).await?;
+            }
+            Command::FileBatchComplete => {
+                let bytes: [u8; 16] = frame
+                    .payload
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid file batch completion ID")?;
+                let batch_id = TransferId(bytes);
+                let result = sync_engine
+                    .lock()
+                    .await
+                    .finish_file_batch(&peer_info.hostname, batch_id);
+                if let Err(error) = &result {
+                    sync_engine
+                        .lock()
+                        .await
+                        .notify_file_batch_failed(Some(batch_id), error);
+                }
+                let response = match result {
+                    Ok(()) => Frame::try_new(
+                        Command::FileBatchAccept,
+                        0,
+                        frame.sequence,
+                        batch_id.0.to_vec(),
+                    )?,
+                    Err(error) => Frame::try_new(
+                        Command::FileBatchReject,
+                        0,
+                        frame.sequence,
+                        error.into_bytes(),
+                    )?,
+                };
+                stream.write_frame(&response).await?;
+            }
+            Command::FileBatchCancel => {
+                let bytes: [u8; 16] = frame
+                    .payload
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid file batch cancellation ID")?;
+                let batch_id = TransferId(bytes);
+                let mut sync = sync_engine.lock().await;
+                let was_receiving = sync.has_file_batch(&peer_info.hostname, batch_id);
+                sync.cancel_file_batch(&peer_info.hostname, batch_id).await;
+                drop(sync);
+                if !was_receiving {
+                    crate::api::request_file_batch_cancel(&batch_id.as_hex());
+                }
+            }
             Command::FileMeta => {
                 let mut meta: sync::FileMeta = serde_json::from_slice(&frame.payload)?;
+                if meta.batch.is_none() {
+                    secure::write_error(
+                        &mut stream,
+                        "This TailSync version requires the file_batch_v1 protocol",
+                    )
+                    .await?;
+                    continue;
+                }
                 if meta.size > MAX_FILE_SIZE {
                     secure::write_error(&mut stream, "File exceeds the 1 GiB receive limit")
                         .await?;
@@ -388,6 +508,7 @@ async fn handle_connection(
                 std::fs::create_dir_all(&incoming_dir)?;
                 let file_path =
                     incoming_dir.join(format!("{:016x}-{}", rand::random::<u64>(), meta.name));
+                let meta_batch_id = meta.batch.map(|batch| batch.batch_id);
                 let result = sync_engine
                     .lock()
                     .await
@@ -408,7 +529,13 @@ async fn handle_connection(
                         stream.write_frame(&response).await?;
                     }
                     Ok(_) => {}
-                    Err(error) => secure::write_error(&mut stream, &error).await?,
+                    Err(error) => {
+                        sync_engine
+                            .lock()
+                            .await
+                            .notify_file_batch_failed(meta_batch_id, &error);
+                        secure::write_error(&mut stream, &error).await?;
+                    }
                 }
             }
             Command::FileChunk => {
@@ -440,7 +567,17 @@ async fn handle_connection(
                                     )?;
                                     stream.write_frame(&response).await?;
                                 }
-                                Err(error) => secure::write_error(&mut stream, &error).await?,
+                                Err(error) => {
+                                    let mut sync = sync_engine.lock().await;
+                                    let batch_id = sync
+                                        .batch_for_transfer(&peer_info.hostname, chunk.transfer_id);
+                                    sync.notify_file_batch_failed(batch_id, &error);
+                                    if let Some(batch_id) = batch_id {
+                                        sync.cancel_file_batch(&peer_info.hostname, batch_id).await;
+                                    }
+                                    drop(sync);
+                                    secure::write_error(&mut stream, &error).await?;
+                                }
                             }
                         }
                         Err(error) => {

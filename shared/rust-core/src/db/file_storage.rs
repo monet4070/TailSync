@@ -204,6 +204,36 @@ pub fn materialize_clipboard_file(
     materialize_clipboard_file_at(&get_clipboard_files_dir(), source, original_name)
 }
 
+pub fn cleanup_clipboard_files(referenced: &[PathBuf], minimum_age: std::time::Duration) {
+    let directory = get_clipboard_files_dir();
+    let referenced = referenced
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect::<Vec<_>>();
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if referenced.iter().any(|item| item.starts_with(&canonical)) {
+            continue;
+        }
+        let old_enough = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= minimum_age);
+        if old_enough {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
 pub(super) fn materialize_clipboard_bytes_at(
     directory: &Path,
     data: &[u8],

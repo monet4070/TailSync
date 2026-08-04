@@ -11,7 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 pub const MAGIC: [u8; 4] = *b"TSYN";
-pub const VERSION: u8 = 0x02;
+/// Protocol v3 introduces atomic file batches. Older peers are intentionally
+/// rejected at framing time; their pinned identity remains valid after upgrade.
+pub const VERSION: u8 = 0x03;
 pub const HEADER_SIZE: usize = 16;
 pub const CHECKSUM_SIZE: usize = 32;
 pub const MAX_HANDSHAKE_PAYLOAD_SIZE: usize = 4 * 1024;
@@ -60,6 +62,14 @@ impl TransferId {
 
     pub fn as_hex(self) -> String {
         self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    pub fn from_hex(value: &str) -> Result<Self, String> {
+        let bytes = hex::decode(value).map_err(|_| "Invalid transfer ID".to_string())?;
+        let bytes: [u8; 16] = bytes
+            .try_into()
+            .map_err(|_| "Invalid transfer ID".to_string())?;
+        Ok(Self(bytes))
     }
 }
 
@@ -236,6 +246,11 @@ pub enum Command {
     FileAck = 0x0105,
     FileResume = 0x0106,
     FileComplete = 0x0107,
+    FileBatchStart = 0x0108,
+    FileBatchAccept = 0x0109,
+    FileBatchReject = 0x010a,
+    FileBatchComplete = 0x010b,
+    FileBatchCancel = 0x010c,
     // Control
     CancelTransfer = 0x0005,
     PeerError = 0x0006,
@@ -264,6 +279,11 @@ impl Command {
             0x0105 => Some(Self::FileAck),
             0x0106 => Some(Self::FileResume),
             0x0107 => Some(Self::FileComplete),
+            0x0108 => Some(Self::FileBatchStart),
+            0x0109 => Some(Self::FileBatchAccept),
+            0x010a => Some(Self::FileBatchReject),
+            0x010b => Some(Self::FileBatchComplete),
+            0x010c => Some(Self::FileBatchCancel),
             0x0005 => Some(Self::CancelTransfer),
             0x0006 => Some(Self::PeerError),
             0x0007 => Some(Self::PeerInfo),
@@ -281,7 +301,7 @@ impl Command {
             | Self::PairingHandshakeFinish => MAX_HANDSHAKE_PAYLOAD_SIZE,
             Self::TextPayload => MAX_TEXT_PAYLOAD_SIZE,
             Self::ImagePayload => MAX_IMAGE_PAYLOAD_SIZE,
-            Self::FileMeta | Self::FileResume => MAX_FILE_META_PAYLOAD_SIZE,
+            Self::FileMeta | Self::FileResume | Self::FileBatchStart => MAX_FILE_META_PAYLOAD_SIZE,
             Self::FileChunk => MAX_FILE_CHUNK_PAYLOAD_SIZE,
             Self::Heartbeat
             | Self::HeartbeatAck
@@ -291,6 +311,10 @@ impl Command {
             | Self::EventAck
             | Self::FileAck
             | Self::FileComplete
+            | Self::FileBatchAccept
+            | Self::FileBatchReject
+            | Self::FileBatchComplete
+            | Self::FileBatchCancel
             | Self::CancelTransfer
             | Self::PeerError
             | Self::PeerInfo => MAX_CONTROL_PAYLOAD_SIZE,
@@ -542,6 +566,17 @@ mod tests {
     fn test_invalid_magic() {
         let result = Frame::decode(b"XXXX");
         assert!(matches!(result, Err(ProtocolError::IncompleteFrame { .. })));
+    }
+
+    #[test]
+    fn protocol_v2_frames_are_intentionally_rejected() {
+        let frame = Frame::try_new(Command::TextPayload, 0, 1, b"legacy".to_vec()).unwrap();
+        let mut encoded = frame.encode();
+        encoded[4] = 0x02;
+        assert!(matches!(
+            Frame::decode(&encoded),
+            Err(ProtocolError::UnsupportedVersion(0x02))
+        ));
     }
 
     #[test]

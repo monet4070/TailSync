@@ -47,28 +47,135 @@ pub fn get_clipboard_version() -> u64 {
 }
 
 // File transfer progress
-use std::sync::Mutex as StdMutex;
-pub static FILE_PROGRESS: StdMutex<Option<FileProgress>> = StdMutex::new(None);
+use std::collections::{HashSet, VecDeque};
+use std::sync::{LazyLock, Mutex as StdMutex};
+static FILE_PROGRESS: LazyLock<StdMutex<HashMap<String, TrackedFileProgress>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+static CANCELLED_FILE_BATCHES: LazyLock<StdMutex<HashSet<String>>> =
+    LazyLock::new(|| StdMutex::new(HashSet::new()));
 #[derive(Clone, Serialize)]
 pub struct FileProgress {
+    pub batch_id: String,
     pub name: String,
     pub sent: u64,
     pub total: u64,
     pub active: bool,
+    pub direction: String,
+    pub device: String,
+    pub completed_files: usize,
+    pub total_files: usize,
+    pub speed_bytes_per_second: u64,
+    pub status: String,
+    pub can_stop: bool,
 }
+
+struct TrackedFileProgress {
+    progress: FileProgress,
+    samples: VecDeque<(Instant, u64)>,
+    updated_at: Instant,
+}
+
+fn progress_key(progress: &FileProgress) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        progress.batch_id, progress.direction, progress.device
+    )
+}
+
+pub fn get_file_progress() -> Option<FileProgress> {
+    FILE_PROGRESS.lock().ok().and_then(|progress| {
+        progress
+            .values()
+            .filter(|tracked| tracked.progress.active)
+            .max_by_key(|tracked| tracked.updated_at)
+            .map(|tracked| tracked.progress.clone())
+    })
+}
+
+pub fn has_active_file_progress() -> bool {
+    FILE_PROGRESS
+        .lock()
+        .is_ok_and(|progress| progress.values().any(|tracked| tracked.progress.active))
+}
+
 pub fn set_file_progress(name: &str, sent: u64, total: u64) {
-    if let Ok(mut p) = FILE_PROGRESS.lock() {
-        *p = Some(FileProgress {
-            name: name.into(),
-            sent,
-            total,
-            active: sent < total,
+    set_file_batch_progress(FileProgress {
+        batch_id: String::new(),
+        name: name.into(),
+        sent,
+        total,
+        active: sent < total,
+        direction: "receiving".into(),
+        device: String::new(),
+        completed_files: usize::from(sent == total),
+        total_files: 1,
+        speed_bytes_per_second: 0,
+        status: "transferring".into(),
+        can_stop: true,
+    });
+}
+pub fn set_file_batch_progress(mut progress: FileProgress) {
+    let now = Instant::now();
+    if let Ok(mut state) = FILE_PROGRESS.lock() {
+        let key = progress_key(&progress);
+        let tracked = state.entry(key).or_insert_with(|| TrackedFileProgress {
+            progress: progress.clone(),
+            samples: VecDeque::new(),
+            updated_at: now,
         });
+        tracked.samples.push_back((now, progress.sent));
+        while tracked
+            .samples
+            .front()
+            .is_some_and(|(at, _)| now.duration_since(*at).as_secs_f64() > 5.0)
+        {
+            tracked.samples.pop_front();
+        }
+        if let (Some((first_at, first_bytes)), Some((last_at, last_bytes))) =
+            (tracked.samples.front(), tracked.samples.back())
+        {
+            let seconds = last_at.duration_since(*first_at).as_secs_f64();
+            if seconds > 0.05 {
+                progress.speed_bytes_per_second =
+                    (last_bytes.saturating_sub(*first_bytes) as f64 / seconds) as u64;
+            }
+        }
+        tracked.progress = progress;
+        tracked.updated_at = now;
     }
 }
 pub fn clear_file_progress() {
-    if let Ok(mut p) = FILE_PROGRESS.lock() {
-        *p = None;
+    if let Ok(mut progress) = FILE_PROGRESS.lock() {
+        progress.clear();
+    }
+}
+
+pub fn clear_file_progress_scope(batch_id: Option<&str>, device: Option<&str>) {
+    if let Ok(mut progress) = FILE_PROGRESS.lock() {
+        progress.retain(|_, tracked| {
+            let batch_matches =
+                batch_id.is_none_or(|batch_id| tracked.progress.batch_id == batch_id);
+            let device_matches = device.is_none_or(|device| tracked.progress.device == device);
+            !(batch_matches && device_matches)
+        });
+    }
+}
+
+pub fn request_file_batch_cancel(batch_id: &str) {
+    if let Ok(mut cancelled) = CANCELLED_FILE_BATCHES.lock() {
+        cancelled.insert(batch_id.to_string());
+    }
+}
+
+pub fn is_file_batch_cancelled(batch_id: &str) -> bool {
+    CANCELLED_FILE_BATCHES
+        .lock()
+        .is_ok_and(|cancelled| cancelled.contains(batch_id))
+}
+
+pub fn clear_file_batch_cancel(batch_id: &str) {
+    if let Ok(mut cancelled) = CANCELLED_FILE_BATCHES.lock() {
+        cancelled.remove(batch_id);
     }
 }
 
@@ -334,6 +441,14 @@ struct Request {
     public_key: Option<String>,
     #[serde(default)]
     address: Option<String>,
+    #[serde(default)]
+    batch_id: Option<String>,
+    #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    pinned: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -348,14 +463,44 @@ struct Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_api_listener, history_capabilities_data, peer_snapshot_data, read_request_with_limits,
-        ApiToken, Request,
+        bind_api_listener, clear_file_progress, clear_file_progress_scope, get_file_progress,
+        history_capabilities_data, peer_snapshot_data, read_request_with_limits,
+        set_file_batch_progress, ApiToken, FileProgress, Request,
     };
     use crate::crypto::Settings;
     use crate::identity::DeviceIdentity;
     use crate::network::tailscale::{LocalInfo, PeerInfo};
     use crate::network::{ConnectionInterface, PeerCandidate};
     use std::time::Duration;
+
+    fn progress(batch_id: &str, device: &str, sent: u64) -> FileProgress {
+        FileProgress {
+            batch_id: batch_id.into(),
+            name: "file.bin".into(),
+            sent,
+            total: 100,
+            active: true,
+            direction: "receiving".into(),
+            device: device.into(),
+            completed_files: 0,
+            total_files: 1,
+            speed_bytes_per_second: 0,
+            status: "transferring".into(),
+            can_stop: true,
+        }
+    }
+
+    #[test]
+    fn progress_scope_keeps_other_concurrent_devices_visible() {
+        clear_file_progress();
+        set_file_batch_progress(progress("batch-a", "peer-a", 25));
+        set_file_batch_progress(progress("batch-b", "peer-b", 50));
+        clear_file_progress_scope(Some("batch-b"), Some("peer-b"));
+        let remaining = get_file_progress().unwrap();
+        assert_eq!(remaining.batch_id, "batch-a");
+        assert_eq!(remaining.device, "peer-a");
+        clear_file_progress();
+    }
 
     #[tokio::test]
     async fn api_listener_recovers_after_the_address_is_released() {

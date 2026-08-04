@@ -137,6 +137,77 @@ fn read_files_windows() -> Option<Vec<PathBuf>> {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub fn write_clipboard_files(paths: &[PathBuf]) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
+
+    if paths.is_empty() {
+        return Err("No file paths were provided for the clipboard".to_string());
+    }
+    let mut wide_paths = Vec::<u16>::new();
+    for path in paths {
+        wide_paths.extend(path.as_os_str().encode_wide());
+        wide_paths.push(0);
+    }
+    wide_paths.push(0);
+    let header_size = std::mem::size_of::<DropFilesHeader>();
+    let total_size = header_size + wide_paths.len() * std::mem::size_of::<u16>();
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("Could not open the Windows clipboard".to_string());
+        }
+        if EmptyClipboard() == 0 {
+            CloseClipboard();
+            return Err("Could not clear the Windows clipboard".to_string());
+        }
+        let handle = GlobalAlloc(GHND, total_size);
+        if handle.is_null() {
+            CloseClipboard();
+            return Err("Could not allocate Windows clipboard memory".to_string());
+        }
+        let pointer = GlobalLock(handle) as *mut u8;
+        if pointer.is_null() {
+            GlobalFree(handle);
+            CloseClipboard();
+            return Err("Could not lock Windows clipboard memory".to_string());
+        }
+        let header = DropFilesHeader {
+            p_files: header_size as u32,
+            pt: [0, 0],
+            f_nc: 0,
+            f_wide: 1,
+        };
+        std::ptr::copy_nonoverlapping(&header as *const _ as *const u8, pointer, header_size);
+        std::ptr::copy_nonoverlapping(
+            wide_paths.as_ptr(),
+            pointer.add(header_size) as *mut u16,
+            wide_paths.len(),
+        );
+        GlobalUnlock(handle);
+        if SetClipboardData(15, handle).is_null() {
+            GlobalFree(handle);
+            CloseClipboard();
+            return Err("Could not publish files to the Windows clipboard".to_string());
+        }
+        CloseClipboard();
+    }
+    Ok(())
+}
+
+#[repr(C)]
+#[cfg(target_os = "windows")]
+struct DropFilesHeader {
+    p_files: u32,
+    pt: [i32; 2],
+    f_nc: i32,
+    f_wide: i32,
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

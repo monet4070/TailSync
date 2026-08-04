@@ -32,6 +32,7 @@ pub(super) enum AckExpectation {
     None,
     Event(MessageId),
     File(TransferId),
+    Batch(TransferId),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -97,6 +98,29 @@ impl QueuedFrame {
             completion: Some(completion),
         })
     }
+
+    fn confirmed_batch(
+        command: Command,
+        payload: Vec<u8>,
+        batch_id: TransferId,
+        completion: oneshot::Sender<Result<DeliveryReceipt, String>>,
+    ) -> Result<Self, String> {
+        if !matches!(
+            command,
+            Command::FileBatchStart | Command::FileBatchComplete
+        ) {
+            return Err(format!("{:?} is not a confirmable batch command", command));
+        }
+        if payload.len() > command.payload_limit() {
+            return Err(format!("{:?} payload exceeds the limit", command));
+        }
+        Ok(Self {
+            command,
+            payload,
+            acknowledgement: AckExpectation::Batch(batch_id),
+            completion: Some(completion),
+        })
+    }
 }
 
 impl PoolSender {
@@ -120,6 +144,7 @@ impl PoolSender {
 
 pub struct ConnectionPool {
     pub(super) senders: HashMap<(SocketAddr, String), PoolSender>,
+    batch_serializers: HashMap<String, Arc<Mutex<()>>>,
     identity: Arc<DeviceIdentity>,
     settings: Arc<Mutex<crypto::Settings>>,
 }
@@ -163,6 +188,7 @@ impl ConnectionPool {
     pub fn new(identity: Arc<DeviceIdentity>, settings: Arc<Mutex<crypto::Settings>>) -> Self {
         ConnectionPool {
             senders: HashMap::new(),
+            batch_serializers: HashMap::new(),
             identity,
             settings,
         }
@@ -282,6 +308,20 @@ impl ConnectionPool {
     }
 }
 
+pub async fn acquire_peer_file_batch(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    hostname: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let serializer = {
+        let mut pool = pool.lock().await;
+        pool.batch_serializers
+            .entry(hostname.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    serializer.lock_owned().await
+}
+
 #[allow(dead_code)]
 pub(crate) async fn queue_pool_frame(
     pool: &Arc<Mutex<ConnectionPool>>,
@@ -370,6 +410,37 @@ pub async fn queue_peer_file_frame(
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
     let (completion_tx, completion_rx) = oneshot::channel();
     let queued = QueuedFrame::confirmed_file(command, payload, transfer_id, completion_tx)?;
+    enqueue_queued_frame(tx, preferred, queued).await?;
+    timeout(FILE_CONFIRM_TIMEOUT, completion_rx)
+        .await
+        .map_err(|_| format!("Timed out waiting for {:?} confirmation", command))?
+        .map_err(|_| format!("Connection task for {} closed", peer.hostname))?
+}
+
+pub async fn queue_peer_batch_frame(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &tailscale::PeerInfo,
+    command: Command,
+    payload: Vec<u8>,
+    batch_id: TransferId,
+) -> Result<DeliveryReceipt, String> {
+    let settings = { pool.lock().await.settings.clone() };
+    let trusted_key = settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .get(&peer.hostname)
+        .cloned()
+        .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
+    secure::decode_trusted_key(&trusted_key)
+        .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
+    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let preferred = resolve_candidates(peer)?
+        .first()
+        .map(|candidate| candidate.socket_addr)
+        .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    let (completion_tx, completion_rx) = oneshot::channel();
+    let queued = QueuedFrame::confirmed_batch(command, payload, batch_id, completion_tx)?;
     enqueue_queued_frame(tx, preferred, queued).await?;
     timeout(FILE_CONFIRM_TIMEOUT, completion_rx)
         .await
@@ -637,6 +708,16 @@ pub(super) async fn deliver_pending_frame(
             .map_err(|error| error.to_string())?;
             return deliver_file_frame(stream, pending, &frame, transfer_id).await;
         }
+        AckExpectation::Batch(batch_id) => {
+            let frame = Frame::try_new(
+                pending.queued.command,
+                0,
+                pending.sequence,
+                pending.queued.payload.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+            return deliver_batch_frame(stream, pending, &frame, batch_id).await;
+        }
     }
 }
 
@@ -686,6 +767,8 @@ async fn deliver_event_frame(
 
 fn is_permanent_delivery_error(error: &str) -> bool {
     error.starts_with("peer rejected event:")
+        || error.starts_with("peer rejected file:")
+        || error.starts_with("peer rejected batch:")
 }
 
 async fn deliver_file_frame(
@@ -710,6 +793,12 @@ async fn deliver_file_frame(
                 });
             }
             Ok(Ok(frame)) => {
+                if frame.command == Command::PeerError {
+                    return Err(format!(
+                        "peer rejected file: {}",
+                        String::from_utf8_lossy(&frame.payload)
+                    ));
+                }
                 return Err(format!(
                     "expected file acknowledgement, received {:?}",
                     frame.command
@@ -728,6 +817,53 @@ async fn deliver_file_frame(
         }
     }
     unreachable!("file retry loop always returns")
+}
+
+async fn deliver_batch_frame(
+    stream: &mut secure::SecureConnection,
+    pending: &PendingFrame,
+    frame: &Frame,
+    batch_id: TransferId,
+) -> Result<DeliveryReceipt, String> {
+    for attempt in 0..EVENT_MAX_ATTEMPTS {
+        stream
+            .write_frame(frame)
+            .await
+            .map_err(|error| error.to_string())?;
+        match timeout(FILE_ACK_TIMEOUT, stream.read_frame()).await {
+            Ok(Ok(ack)) if ack.command == Command::FileBatchAccept => {
+                if ack.sequence != pending.sequence || ack.payload.as_slice() != batch_id.0 {
+                    return Err("received an acknowledgement for another file batch".to_string());
+                }
+                return Ok(DeliveryReceipt::default());
+            }
+            Ok(Ok(reject)) if reject.command == Command::FileBatchReject => {
+                return Err(format!(
+                    "peer rejected batch: {}",
+                    String::from_utf8_lossy(&reject.payload)
+                ));
+            }
+            Ok(Ok(error)) if error.command == Command::PeerError => {
+                return Err(format!(
+                    "peer rejected batch: {}",
+                    String::from_utf8_lossy(&error.payload)
+                ));
+            }
+            Ok(Ok(other)) => {
+                return Err(format!(
+                    "expected batch acknowledgement, received {:?}",
+                    other.command
+                ));
+            }
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(_) if attempt + 1 < EVENT_MAX_ATTEMPTS => {
+                let multiplier = 1u32 << attempt;
+                tokio::time::sleep(EVENT_RETRY_BASE_DELAY * multiplier).await;
+            }
+            Err(_) => return Err("file batch acknowledgement timed out".to_string()),
+        }
+    }
+    unreachable!("batch retry loop always returns")
 }
 
 pub(super) async fn race_connect_and_handshake(

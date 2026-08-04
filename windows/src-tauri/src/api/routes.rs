@@ -130,20 +130,63 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
         },
 
         "get_file_progress" => {
-            let info = FILE_PROGRESS
-                .lock()
-                .ok()
-                .and_then(|progress| progress.clone());
+            let info = get_file_progress();
             Response {
                 ok: true,
-                data: info.map(|p| {
-                    serde_json::json!({
-                        "name": p.name, "sent": p.sent, "total": p.total, "active": p.active
-                    })
-                }),
+                data: info.and_then(|progress| serde_json::to_value(progress).ok()),
                 error: None,
             }
         }
+
+        "cancel_file_batch" => {
+            let result = match req.batch_id.as_deref() {
+                Some(value) => match crate::protocol::TransferId::from_hex(value) {
+                    Ok(id) => {
+                        crate::commands::cancel_file_batch_impl(
+                            &state.sync_engine,
+                            &state.pool,
+                            &state.settings,
+                            id,
+                        )
+                        .await;
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
+                None => Err("missing batch_id".to_string()),
+            };
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
+        "restore_file_batch" => {
+            let result = match req.batch_id.as_deref() {
+                Some(batch_id) => crate::commands::materialize_file_batch_paths(
+                    state.db.clone(),
+                    batch_id.to_string(),
+                )
+                .await
+                .and_then(|paths| crate::clipboard_file::write_clipboard_files(&paths)),
+                None => Err("missing batch_id".to_string()),
+            };
+            if result.is_ok() {
+                bump_clipboard_version();
+            }
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
+        "get_storage_status" => Response {
+            ok: true,
+            data: serde_json::to_value(state.db.lock().await.storage_status()).ok(),
+            error: None,
+        },
 
         "get_version" => Response {
             ok: true,
@@ -435,7 +478,9 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     new_settings.trusted_peer_keys = settings.trusted_peer_keys.clone();
                     new_settings.trusted_peer_addresses = settings.trusted_peer_addresses.clone();
                     new_settings.paired_peer_endpoints = settings.paired_peer_endpoints.clone();
+                    new_settings.storage_root = settings.storage_root.clone();
                     let limit = new_settings.history_limit as i64;
+                    let quota = new_settings.storage_quota_bytes;
                     *settings = new_settings;
                     if let Err(e) = settings.save() {
                         return Response {
@@ -451,6 +496,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     }
                     let mut db = state.db.lock().await;
                     db.set_max_history(limit);
+                    db.set_storage_quota(quota);
                     Response {
                         ok: true,
                         data: None,
@@ -462,6 +508,116 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     data: None,
                     error: Some(e.to_string()),
                 },
+            }
+        }
+
+        "change_storage_location" => {
+            let Some(parent) = req.parent else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing parent".into()),
+                };
+            };
+            while has_active_file_progress() {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let previous_storage_root = state.settings.lock().await.storage_root.clone();
+            let database = state.db.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                database
+                    .blocking_lock()
+                    .migrate_storage_parent(std::path::Path::new(&parent))
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
+            match result {
+                Ok(result) => {
+                    let mut settings = state.settings.lock().await;
+                    settings.storage_root = Some(result.new_root.clone());
+                    match settings.save().map_err(|error| error.to_string()) {
+                        Ok(()) => Response {
+                            ok: true,
+                            data: serde_json::to_value(result).ok(),
+                            error: None,
+                        },
+                        Err(error) => {
+                            settings.storage_root = previous_storage_root;
+                            drop(settings);
+                            let old_root = std::path::PathBuf::from(&result.old_root);
+                            let database = state.db.clone();
+                            let rollback = tokio::task::spawn_blocking(move || {
+                                database
+                                    .blocking_lock()
+                                    .reopen_storage_at(&old_root)
+                                    .map_err(|error| error.to_string())
+                            })
+                            .await
+                            .map_err(|join_error| join_error.to_string())
+                            .and_then(|result| result);
+                            Response {
+                                ok: false,
+                                data: None,
+                                error: Some(match rollback {
+                                    Ok(()) => {
+                                        let _ = db::delete_old_storage(std::path::Path::new(
+                                            &result.new_root,
+                                        ));
+                                        format!(
+                                            "Could not save the new storage location; TailSync returned to the old location: {error}"
+                                        )
+                                    }
+                                    Err(rollback_error) => format!(
+                                        "Could not save the new storage location ({error}); rollback also failed: {rollback_error}"
+                                    ),
+                                }),
+                            }
+                        }
+                    }
+                }
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error),
+                },
+            }
+        }
+
+        "delete_old_storage" => {
+            let result = req
+                .path
+                .as_deref()
+                .ok_or_else(|| "missing path".to_string())
+                .and_then(|path| {
+                    db::delete_old_storage(std::path::Path::new(path))
+                        .map_err(|error| error.to_string())
+                });
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
+        "set_history_pinned" => {
+            let result = match req.id {
+                Some(id) => state
+                    .db
+                    .lock()
+                    .await
+                    .set_pinned(id, req.pinned.unwrap_or(true))
+                    .map_err(|error| error.to_string()),
+                None => Err("missing id".to_string()),
+            };
+            if result.is_ok() {
+                bump_clipboard_version();
+            }
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
             }
         }
 

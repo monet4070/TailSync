@@ -194,6 +194,13 @@ async fn clipboard_loop(
         // ── 1. Try files FIRST (macOS: text check also matches filenames) ──
         let file_paths = clipboard_file::read_clipboard_files();
 
+        if tick.is_multiple_of(600) {
+            db::cleanup_clipboard_files(
+                file_paths.as_deref().unwrap_or_default(),
+                Duration::from_secs(10 * 60),
+            );
+        }
+
         if let Some(ref paths) = file_paths {
             let outbound_paths = files_to_broadcast(paths, &db::get_clipboard_files_dir());
             let managed_count = paths.len().saturating_sub(outbound_paths.len());
@@ -217,15 +224,16 @@ async fn clipboard_loop(
                     info!("Ignored {managed_count} managed file(s) in a mixed clipboard event");
                 }
                 info!("Clipboard files: {} file(s)", outbound_paths.len());
-                for path in outbound_paths {
-                    tokio::spawn(send_file_to_peers(
-                        path,
-                        pool.clone(),
-                        database.clone(),
-                        sync_engine.clone(),
-                        settings.clone(),
-                    ));
-                }
+                let generation = sync_engine.lock().await.supersede_file_clipboard();
+                crate::api::bump_clipboard_version();
+                tokio::spawn(send_file_batch_to_peers(
+                    outbound_paths,
+                    generation,
+                    handle.clone(),
+                    pool.clone(),
+                    database.clone(),
+                    settings.clone(),
+                ));
                 // Only skip text/image when files actually changed this round
                 continue;
             }
@@ -245,6 +253,9 @@ async fn clipboard_loop(
                         info!("Text shadow-filtered, skipping: {} chars", t.len());
                         continue;
                     }
+
+                    sync_engine.lock().await.supersede_file_clipboard();
+                    crate::api::bump_clipboard_version();
 
                     let payload = t.into_bytes();
                     let broadcast_pool = pool.clone();
@@ -287,6 +298,9 @@ async fn clipboard_loop(
                     continue;
                 }
 
+                sync_engine.lock().await.supersede_file_clipboard();
+                crate::api::bump_clipboard_version();
+
                 info!(
                     "Clipboard image changed: {}×{} {} bytes",
                     w,
@@ -327,7 +341,274 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
 
 // ── Pack / unpack helpers ────────────────────────────────────────────
 
-/// Send one file to all enabled peers.
+async fn send_file_batch_to_peers(
+    paths: Vec<PathBuf>,
+    generation: u64,
+    app: AppHandle,
+    pool: Arc<Mutex<network::ConnectionPool>>,
+    database: Arc<Mutex<db::HistoryDB>>,
+    settings: Arc<Mutex<crypto::Settings>>,
+) {
+    let prepared = match tokio::task::spawn_blocking(move || {
+        sync::prepare_file_batch(paths, generation)
+    })
+    .await
+    {
+        Ok(Ok(batch)) => Arc::new(batch),
+        Ok(Err(error)) => {
+            warn!("File batch rejected: {error}");
+            notify_file_batch_error(&app, &error);
+            return;
+        }
+        Err(error) => {
+            error!("File batch preparation task failed: {error}");
+            notify_file_batch_error(&app, &error.to_string());
+            return;
+        }
+    };
+    let storage_status = database.lock().await.storage_status();
+    if !storage_status.available {
+        let message = storage_status
+            .error
+            .unwrap_or_else(|| "Configured storage is unavailable; file transfer is paused".into());
+        notify_file_batch_error(&app, &message);
+        return;
+    }
+    let batch_id = prepared.manifest.batch_id;
+    let batch_id_hex = batch_id.as_hex();
+    let peers = configured_peers(&settings)
+        .await
+        .into_iter()
+        .filter(|peer| peer.enabled)
+        .collect::<Vec<_>>();
+    crate::api::set_file_batch_progress(crate::api::FileProgress {
+        batch_id: batch_id_hex.clone(),
+        name: prepared.files[0].entry.name.clone(),
+        sent: 0,
+        total: prepared.manifest.total_bytes,
+        active: true,
+        direction: "sending".into(),
+        device: String::new(),
+        completed_files: 0,
+        total_files: prepared.files.len(),
+        speed_bytes_per_second: 0,
+        status: "preparing".into(),
+        can_stop: true,
+    });
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for peer in peers {
+        let peer_batch = prepared.clone();
+        let peer_pool = pool.clone();
+        tasks.spawn(async move {
+            let recovery_peer = peer.clone();
+            let recovery_pool = peer_pool.clone();
+            let result = send_batch_to_peer(peer_batch, peer, peer_pool).await;
+            if matches!(&result, Err(error) if error != "cancelled") {
+                recovery_pool
+                    .lock()
+                    .await
+                    .disconnect_hostname(&recovery_peer.hostname);
+                let _ = network::queue_peer_frame(
+                    &recovery_pool,
+                    &recovery_peer,
+                    Command::FileBatchCancel,
+                    batch_id.0.to_vec(),
+                )
+                .await;
+            }
+            result
+        });
+    }
+    let mut delivered = 0_usize;
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(Ok(())) => delivered += 1,
+            Ok(Err(error)) if error == "cancelled" => {}
+            Ok(Err(error)) => {
+                warn!("File batch delivery failed: {error}");
+                notify_file_batch_error(&app, &error);
+            }
+            Err(error) => error!("File batch peer task failed: {error}"),
+        }
+    }
+
+    let history_files = prepared
+        .files
+        .iter()
+        .map(|file| db::HistoryFileInput {
+            name: file.entry.name.clone(),
+            path: file.path.clone(),
+            data_hash: file.entry.hash.clone(),
+            size: file.entry.size,
+        })
+        .collect::<Vec<_>>();
+    let history_batch_id = batch_id_hex.clone();
+    let history_result = tokio::task::spawn_blocking(move || {
+        database
+            .blocking_lock()
+            .add_file_batch(&history_batch_id, &history_files, "self", false)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    if let Ok(Err(error)) = history_result {
+        error!("Could not save local file batch history: {error}");
+    }
+    crate::api::bump_clipboard_version();
+    crate::api::clear_file_progress_scope(Some(&batch_id_hex), None);
+    crate::api::clear_file_batch_cancel(&batch_id_hex);
+    info!("File batch {batch_id_hex} delivered to {delivered} peer(s)");
+}
+
+fn notify_file_batch_error(app: &AppHandle, message: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title("TailSync")
+        .body(message)
+        .show()
+    {
+        log::warn!("Could not show file transfer notification: {error}");
+    }
+}
+
+async fn send_batch_to_peer(
+    prepared: Arc<sync::PreparedFileBatch>,
+    peer: network::tailscale::PeerInfo,
+    pool: Arc<Mutex<network::ConnectionPool>>,
+) -> Result<(), String> {
+    let _peer_batch_guard = network::acquire_peer_file_batch(&pool, &peer.hostname).await;
+    let batch_id = prepared.manifest.batch_id;
+    let batch_id_hex = batch_id.as_hex();
+    if crate::api::is_file_batch_cancelled(&batch_id_hex) {
+        return Err("cancelled".to_string());
+    }
+    let manifest = serde_json::to_vec(&prepared.manifest).map_err(|error| error.to_string())?;
+    network::queue_peer_batch_frame(&pool, &peer, Command::FileBatchStart, manifest, batch_id)
+        .await?;
+
+    let mut completed_bytes = 0_u64;
+    for (file_index, prepared_file) in prepared.files.iter().enumerate() {
+        if crate::api::is_file_batch_cancelled(&batch_id_hex) {
+            let _ = network::queue_peer_frame(
+                &pool,
+                &peer,
+                Command::FileBatchCancel,
+                batch_id.0.to_vec(),
+            )
+            .await;
+            return Err("cancelled".to_string());
+        }
+        let validation_file = prepared_file.clone();
+        tokio::task::spawn_blocking(move || sync::revalidate_prepared_file(&validation_file))
+            .await
+            .map_err(|error| error.to_string())??;
+        let transfer_id = prepared_file.entry.transfer_id;
+        let meta = sync::FileMeta {
+            transfer_id: Some(transfer_id),
+            name: prepared_file.entry.name.clone(),
+            size: prepared_file.entry.size,
+            hash: prepared_file.entry.hash.clone(),
+            chunk_size: prepared_file.entry.chunk_size,
+            batch: Some(sync::FileBatchRef {
+                batch_id,
+                index: prepared_file.entry.index,
+            }),
+        };
+        let mut confirmed = network::queue_peer_file_frame(
+            &pool,
+            &peer,
+            Command::FileMeta,
+            serde_json::to_vec(&meta).map_err(|error| error.to_string())?,
+            transfer_id,
+        )
+        .await?
+        .next_offset
+        .unwrap_or(0);
+        if confirmed > meta.size {
+            return Err(format!(
+                "{} returned an invalid resume offset",
+                peer.hostname
+            ));
+        }
+        let mut file = tokio::fs::File::open(&prepared_file.path)
+            .await
+            .map_err(|error| error.to_string())?;
+        file.seek(std::io::SeekFrom::Start(confirmed))
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut buffer = vec![0_u8; FILE_CHUNK_SIZE];
+        while confirmed < meta.size {
+            if crate::api::is_file_batch_cancelled(&batch_id_hex) {
+                let _ = network::queue_peer_frame(
+                    &pool,
+                    &peer,
+                    Command::FileBatchCancel,
+                    batch_id.0.to_vec(),
+                )
+                .await;
+                return Err("cancelled".to_string());
+            }
+            let remaining = usize::try_from((meta.size - confirmed).min(FILE_CHUNK_SIZE as u64))
+                .unwrap_or(FILE_CHUNK_SIZE);
+            let count = file
+                .read(&mut buffer[..remaining])
+                .await
+                .map_err(|error| error.to_string())?;
+            if count == 0 {
+                return Err(format!("{} ended before its declared size", meta.name));
+            }
+            let payload = FileChunkPayload {
+                transfer_id,
+                offset: confirmed,
+                data: buffer[..count].to_vec(),
+            }
+            .encode()
+            .map_err(|error| error.to_string())?;
+            confirmed = network::queue_peer_file_frame(
+                &pool,
+                &peer,
+                Command::FileChunk,
+                payload,
+                transfer_id,
+            )
+            .await?
+            .next_offset
+            .unwrap_or(confirmed);
+            file.seek(std::io::SeekFrom::Start(confirmed))
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::api::set_file_batch_progress(crate::api::FileProgress {
+                batch_id: batch_id_hex.clone(),
+                name: meta.name.clone(),
+                sent: completed_bytes.saturating_add(confirmed),
+                total: prepared.manifest.total_bytes,
+                active: true,
+                direction: "sending".into(),
+                device: peer.hostname.clone(),
+                completed_files: file_index,
+                total_files: prepared.files.len(),
+                speed_bytes_per_second: 0,
+                status: "transferring".into(),
+                can_stop: true,
+            });
+        }
+        completed_bytes = completed_bytes.saturating_add(meta.size);
+    }
+    network::queue_peer_batch_frame(
+        &pool,
+        &peer,
+        Command::FileBatchComplete,
+        batch_id.0.to_vec(),
+        batch_id,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Legacy single-file sender retained only for source-level regression tests.
+#[allow(dead_code)]
 async fn send_file_to_peers(
     path: std::path::PathBuf,
     pool: Arc<Mutex<network::ConnectionPool>>,
@@ -368,6 +649,7 @@ async fn send_file_to_peers(
         size: total,
         hash: hash.clone(),
         chunk_size: FILE_CHUNK_SIZE as u32,
+        batch: None,
     };
     let meta_json = serde_json::to_vec(&meta).unwrap_or_default();
     crate::api::set_file_progress(&fname, 0, total);

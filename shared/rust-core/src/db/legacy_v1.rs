@@ -216,13 +216,20 @@ mod tests {
                     category TEXT NOT NULL DEFAULT 'text',
                     categories TEXT NOT NULL DEFAULT '[]',
                     category_confidence INTEGER NOT NULL DEFAULT 0,
-                    classifier_version INTEGER NOT NULL DEFAULT 0
+                    classifier_version INTEGER NOT NULL DEFAULT 0,
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    batch_id TEXT,
+                    batch_index INTEGER,
+                    batch_total INTEGER,
+                    batch_status TEXT NOT NULL DEFAULT 'complete'
                 );",
             )
             .unwrap();
         HistoryDB {
             conn: connection,
             max_history: 100,
+            storage_quota_bytes: crate::crypto::DEFAULT_STORAGE_QUOTA_BYTES,
+            storage_available: true,
             file_history_dir: root.join("file-history"),
             image_history_dir: root.join("image-history"),
         }

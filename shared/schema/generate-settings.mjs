@@ -41,10 +41,17 @@ function resolvedDefinition(definition) {
 
 function typescriptType(definition) {
   definition = resolvedDefinition(definition)
+  if (Array.isArray(definition.type)) {
+    return definition.type.map((type) => typescriptType({ type })).join(' | ')
+  }
+  if (definition.anyOf) {
+    return definition.anyOf.map((option) => typescriptType(option)).join(' | ')
+  }
   if (definition.enum) return definition.enum.map((value) => JSON.stringify(value)).join(' | ')
   if (definition.type === 'boolean') return 'boolean'
   if (definition.type === 'integer' || definition.type === 'number') return 'number'
   if (definition.type === 'string') return 'string'
+  if (definition.type === 'null') return 'null'
   if (definition.type === 'object' && definition.additionalProperties) {
     return `Record<string, ${typescriptType(definition.additionalProperties)}>`
   }

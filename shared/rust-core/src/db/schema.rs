@@ -19,6 +19,11 @@ pub(super) fn initialize(connection: &Connection) -> Result<(), rusqlite::Error>
             categories  TEXT NOT NULL DEFAULT '[]',
             category_confidence INTEGER NOT NULL DEFAULT 0,
             classifier_version INTEGER NOT NULL DEFAULT 0,
+            pinned      INTEGER NOT NULL DEFAULT 0,
+            batch_id    TEXT,
+            batch_index INTEGER,
+            batch_total INTEGER,
+            batch_status TEXT NOT NULL DEFAULT 'complete',
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
 

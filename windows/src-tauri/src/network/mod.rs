@@ -60,12 +60,15 @@ use server::ConnectionLimiter;
 use server::{local_peer_identity, source_matches_mode};
 mod pool;
 use pool::wait_for_shutdown;
+pub use pool::{
+    acquire_peer_file_batch, prewarm_connections, queue_peer_batch_frame, queue_peer_file_frame,
+    queue_peer_frame, ConnectionPool,
+};
 #[cfg(test)]
 use pool::{
     connection_task, deliver_pending_frame, queue_pool_frame, race_connect_and_handshake,
     AckExpectation, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate,
 };
-pub use pool::{prewarm_connections, queue_peer_file_frame, queue_peer_frame, ConnectionPool};
 mod rate_limit;
 use rate_limit::check_peer_event_budget;
 mod peer_cache;
@@ -108,6 +111,25 @@ pub async fn discover_peers(
         }
         other => Err(format!("Unsupported connection mode: {other}")),
     }
+}
+
+pub async fn send_file_batch_cancel(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    settings: &Arc<Mutex<crypto::Settings>>,
+    hostname: &str,
+    batch_id: TransferId,
+) -> Result<(), String> {
+    let snapshot = settings.lock().await.clone();
+    let mode = snapshot.connection_mode.clone();
+    let discovered = cached_discover_peers(&mode)
+        .await
+        .map(|(_, peers)| peers)
+        .unwrap_or_default();
+    let peer = merge_paired_peers(&snapshot, &mode, discovered)
+        .into_iter()
+        .find(|peer| peer.hostname == hostname)
+        .ok_or_else(|| format!("Cannot find a route to cancel file batch on {hostname}"))?;
+    queue_peer_frame(pool, &peer, Command::FileBatchCancel, batch_id.0.to_vec()).await
 }
 
 async fn discover_lan_hybrid() -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
@@ -627,10 +649,10 @@ pub async fn test_connection(address: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_tcp_listener, cached_discover_peers, clear_peer_cache, connection_task,
-        deliver_pending_frame, merge_discovery_results, merge_lan_discovery_results,
-        merge_paired_peers, peer_socket_addr, prewarm_connections, queue_pool_frame,
-        race_connect_and_handshake, record_probe_miss, record_probe_success,
+        acquire_peer_file_batch, bind_tcp_listener, cached_discover_peers, clear_peer_cache,
+        connection_task, deliver_pending_frame, merge_discovery_results,
+        merge_lan_discovery_results, merge_paired_peers, peer_socket_addr, prewarm_connections,
+        queue_pool_frame, race_connect_and_handshake, record_probe_miss, record_probe_success,
         register_active_session, route_health, secure, source_matches_mode, store_peer_cache,
         AckExpectation, ConnectionInterface, ConnectionLimiter, ConnectionPool, PeerCandidate,
         PeerRouteKey, PeerStatus, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate,
@@ -864,6 +886,34 @@ mod tests {
 
         assert_eq!(pool.senders.len(), 1);
         assert!(first.same_channel(&second));
+    }
+
+    #[tokio::test]
+    async fn file_batches_are_serial_per_peer_and_parallel_between_peers() {
+        let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let settings = Arc::new(Mutex::new(crypto::Settings::default()));
+        let pool = Arc::new(Mutex::new(ConnectionPool::new(identity, settings)));
+
+        let first = acquire_peer_file_batch(&pool, "peer-a").await;
+        assert!(timeout(
+            Duration::from_millis(20),
+            acquire_peer_file_batch(&pool, "peer-a")
+        )
+        .await
+        .is_err());
+        assert!(timeout(
+            Duration::from_millis(20),
+            acquire_peer_file_batch(&pool, "peer-b")
+        )
+        .await
+        .is_ok());
+        drop(first);
+        assert!(timeout(
+            Duration::from_millis(20),
+            acquire_peer_file_batch(&pool, "peer-a")
+        )
+        .await
+        .is_ok());
     }
 
     #[tokio::test]

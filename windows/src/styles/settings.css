@@ -394,6 +394,79 @@
   font-family: var(--font-mono);
 }
 
+.storage-row {
+  gap: 10px;
+  cursor: default;
+}
+
+.storage-location {
+  min-width: 0;
+  flex: 1;
+}
+
+.storage-location > span,
+.storage-location > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-change,
+.old-storage-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.storage-change:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.storage-quota-row {
+  cursor: default;
+}
+
+.storage-quota-input {
+  width: 72px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.storage-quota-unit {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.old-storage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.old-storage-row > div {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 /* Select */
 .setting-row select {
   padding: 5px 28px 5px 10px;

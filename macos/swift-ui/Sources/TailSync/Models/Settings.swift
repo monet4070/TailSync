@@ -4,6 +4,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var notifications_enabled: Bool = true
     var progress_bar_enabled: Bool = true
     var history_limit: Int = 100
+    var storage_root: String? = nil
+    var storage_quota_bytes: UInt64 = 10 * 1024 * 1024 * 1024
     var enabled_peers: [String: Bool] = [:]
     var theme: String = "system"
     var color_theme: String = TailSyncColorTheme.tailsync.rawValue
@@ -15,6 +17,7 @@ struct AppSettings: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case notifications_enabled, progress_bar_enabled, history_limit
+        case storage_root, storage_quota_bytes
         case enabled_peers, theme, color_theme, language, connection_mode
         case trusted_peer_keys, trusted_peer_addresses, paired_peer_endpoints
     }
@@ -26,6 +29,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         notifications_enabled = try values.decodeIfPresent(Bool.self, forKey: .notifications_enabled) ?? true
         progress_bar_enabled = try values.decodeIfPresent(Bool.self, forKey: .progress_bar_enabled) ?? true
         history_limit = try values.decodeIfPresent(Int.self, forKey: .history_limit) ?? 100
+        storage_root = try values.decodeIfPresent(String.self, forKey: .storage_root)
+        storage_quota_bytes = try values.decodeIfPresent(UInt64.self, forKey: .storage_quota_bytes) ?? 10 * 1024 * 1024 * 1024
         enabled_peers = try values.decodeIfPresent([String: Bool].self, forKey: .enabled_peers) ?? [:]
         theme = try values.decodeIfPresent(String.self, forKey: .theme) ?? "system"
         let storedColorTheme = try values.decodeIfPresent(String.self, forKey: .color_theme) ?? "tailsync"

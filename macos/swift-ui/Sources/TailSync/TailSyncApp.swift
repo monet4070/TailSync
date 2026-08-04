@@ -28,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var consecutiveWatchdogFailures = 0
     private var watchdogCheckRunning = false
     private var activeRouteSummary = ""
+    private var activeTransfer: ApiClient.FileProgress?
+    private var storageUnavailable = false
     private static var historyWC: NSWindowController?
     private static var settingsWC: NSWindowController?
     private static var daemonProcess: Process?
@@ -196,6 +198,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildMenu() {
         let isZh = Loc.shared.lang.hasPrefix("zh")
         menu = NSMenu()
+        if storageUnavailable {
+            let warning = NSMenuItem(
+                title: isZh ? "存储不可用，文件传输已暂停" : "Storage unavailable - file transfer paused",
+                action: nil,
+                keyEquivalent: ""
+            )
+            warning.isEnabled = false
+            menu.addItem(warning)
+            menu.addItem(.separator())
+        }
+        if let transfer = activeTransfer, transfer.active {
+            let percent = transfer.sent * 100 / max(transfer.total, 1)
+            let summary = NSMenuItem(
+                title: "\(transfer.completedFiles)/\(transfer.totalFiles) · \(percent)%",
+                action: nil,
+                keyEquivalent: ""
+            )
+            summary.isEnabled = false
+            menu.addItem(summary)
+            let current = NSMenuItem(title: "\(transfer.device)  \(transfer.name)", action: nil, keyEquivalent: "")
+            current.isEnabled = false
+            menu.addItem(current)
+            let stop = NSMenuItem(
+                title: isZh ? "停止传输" : "Stop transfer",
+                action: #selector(stopTransfer),
+                keyEquivalent: ""
+            )
+            stop.target = self
+            stop.isEnabled = transfer.canStop
+            menu.addItem(stop)
+            menu.addItem(.separator())
+        }
         let hItem = NSMenuItem(title: isZh ? "历史记录" : "History",
                                 action: #selector(openHistory), keyEquivalent: "")
         hItem.target = self; menu.addItem(hItem)
@@ -233,6 +267,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openHistory() { Self.showHistory() }
     @objc private func openSettings() { Self.showSettings() }
+    @objc private func stopTransfer() {
+        guard let transfer = activeTransfer else { return }
+        Task { await ApiClient.shared.cancelFileBatch(transfer.batchId) }
+    }
 
     @objc private func quitApp() {
         Self.stopDaemon()
@@ -350,6 +388,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.watchdogCheckRunning = true
                 defer { self.watchdogCheckRunning = false }
                 let status = await ApiClient.shared.getStatus()
+                let transfer = await ApiClient.shared.getFileProgress()
+                if transfer != self.activeTransfer {
+                    self.activeTransfer = transfer
+                    self.rebuildMenu()
+                }
+                let unavailable = await ApiClient.shared.getStorageStatus()?.available == false
+                if unavailable != self.storageUnavailable {
+                    self.storageUnavailable = unavailable
+                    self.rebuildMenu()
+                }
                 let routeSummary = status.activeInterfaces
                     .map { $0 == "lan" ? "LAN" : "Tailscale" }
                     .sorted()

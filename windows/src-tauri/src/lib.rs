@@ -239,7 +239,10 @@ fn start_background_notifications(
                 continue;
             }
             last_seen_id = entry.id;
-            if entry.source_peer == "self" || !settings.lock().await.notifications_enabled {
+            if entry.source_peer == "self"
+                || entry.batch_id.is_some()
+                || !settings.lock().await.notifications_enabled
+            {
                 continue;
             }
 
@@ -254,6 +257,54 @@ fn start_background_notifications(
             }
             if let Err(error) = notification.show() {
                 log::debug!("Could not show background notification: {error}");
+            }
+        }
+    })
+}
+
+fn start_storage_monitor(
+    database: Arc<Mutex<db::HistoryDB>>,
+    app: tauri::AppHandle,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> tauri::async_runtime::JoinHandle<()> {
+    use tauri_plugin_notification::NotificationExt;
+    tauri::async_runtime::spawn(async move {
+        let mut warned = false;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { return; }
+                    continue;
+                }
+            }
+            let mut history = database.lock().await;
+            if history.storage_status().available {
+                warned = false;
+                continue;
+            }
+            history.mark_storage_unavailable();
+            match history.reopen_configured_storage() {
+                Ok(()) => {
+                    warned = false;
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("TailSync")
+                        .body("TailSync storage is available again. File transfer resumed.")
+                        .show();
+                }
+                Err(error) if !warned => {
+                    warned = true;
+                    log::warn!("TailSync storage unavailable: {error}");
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("TailSync")
+                        .body("TailSync storage is unavailable. File transfer is paused.")
+                        .show();
+                }
+                Err(_) => {}
             }
         }
     })
@@ -276,9 +327,26 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     // undecryptable.
     crypto::initialize()?;
     let loaded_settings = crypto::Settings::load()?;
+    let storage_available = db::configure_storage_dir(
+        loaded_settings
+            .storage_root
+            .as_deref()
+            .map(std::path::Path::new),
+    )
+    .map(|_| true)
+    .unwrap_or_else(|error| {
+        log::error!("Configured storage is unavailable: {error}");
+        false
+    });
     sync::cleanup_expired_transfers();
 
-    let db = Arc::new(Mutex::new(db::HistoryDB::new()?));
+    let mut history_db = if storage_available {
+        db::HistoryDB::new()?
+    } else {
+        db::HistoryDB::new_unavailable()?
+    };
+    history_db.set_storage_quota(loaded_settings.storage_quota_bytes);
+    let db = Arc::new(Mutex::new(history_db));
     let db_for_classification = db.clone();
     let classification_task = tauri::async_runtime::spawn(async move {
         const MAX_BACKFILL_RETRIES: u8 = 3;
@@ -376,6 +444,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -391,6 +460,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 sync.set_platform(Arc::new(sync_adapter::TauriSyncPlatform::new(
                     handle.clone(),
                     db_for_setup.clone(),
+                    settings.clone(),
                 )));
             }
 
@@ -431,6 +501,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             track_task(&tasks_for_setup, notification_task);
 
             // Start P2P network server
+            let db_for_storage_monitor = db_for_setup.clone();
             let server_shutdown = shutdown_for_setup.clone();
             let server_task = tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::start_server(
@@ -459,6 +530,14 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 shutdown_for_setup.clone(),
             ));
             track_task(&tasks_for_setup, health_task);
+            track_task(
+                &tasks_for_setup,
+                start_storage_monitor(
+                    db_for_storage_monitor,
+                    handle.clone(),
+                    shutdown_for_setup.clone(),
+                ),
+            );
 
             tauri::async_runtime::spawn(coordinate_shutdown(
                 handle.clone(),
@@ -496,6 +575,12 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::open_settings_window,
             commands::get_image_data,
             commands::get_file_progress,
+            commands::cancel_file_batch,
+            commands::get_storage_status,
+            commands::change_storage_location,
+            commands::set_history_pinned,
+            commands::delete_old_storage,
+            commands::restore_file_batch,
             commands::get_version,
         ])
         .run(tauri::generate_context!())?;

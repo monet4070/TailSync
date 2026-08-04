@@ -236,11 +236,13 @@ function contractJsonType(type, language) {
     if (type === 'bool') return 'boolean';
     if (/^[ui]\d+$/.test(type)) return 'integer';
     if (type === 'String') return 'string';
+    if (type === 'Option<String>') return ['string', 'null'];
     if (type.includes('HashMap<')) return 'object';
   } else {
     if (type === 'Bool') return 'boolean';
-    if (type === 'Int') return 'integer';
+    if (type === 'Int' || type === 'UInt64') return 'integer';
     if (type === 'String') return 'string';
+    if (type === 'String?') return ['string', 'null'];
     if (type.startsWith('[String:')) return 'object';
   }
   fail(`Unsupported ${language} Settings type: ${type}`);
@@ -255,7 +257,9 @@ function assertSchemaTypes(description, schema, actual, language) {
     const schemaType = resolved.$ref?.startsWith(referencePrefix)
       ? schema.definitions?.[resolved.$ref.slice(referencePrefix.length)]?.type
       : resolved.type;
-    if (contractJsonType(type, language) !== schemaType) {
+    const contractType = contractJsonType(type, language);
+    const normalize = (value) => (Array.isArray(value) ? [...value].sort() : [value]).join('|');
+    if (normalize(contractType) !== normalize(schemaType)) {
       fail(`${description} type drift for ${field}: ${type} vs schema ${schemaType}`);
     }
   }
@@ -342,7 +346,18 @@ assertJsonFields('Local device snapshot', macApiContractSource,
   ['hostname', 'tailscale_ip', 'connection_mode', 'public_key', 'fingerprint']);
 assertJsonFields('Daemon status', macApiContractSource,
   ['tcp_server_healthy', 'clipboard_monitor_healthy', 'active_routes']);
-assertJsonFields('File progress', macApiContractSource, ['name', 'sent', 'total', 'active']);
+const requiredProgressFields = ['name', 'sent', 'total', 'active', 'batch_id', 'device',
+  'completed_files', 'total_files', 'speed_bytes_per_second', 'can_stop'];
+const rustProgressFields = rustFields(macApiSource, 'FileProgress');
+const missingProgressFields = requiredProgressFields.filter((field) => !rustProgressFields.has(field));
+if (missingProgressFields.length) {
+  fail(`File progress is missing fields used by SwiftUI: ${missingProgressFields.join(', ')}`);
+}
+const missingSwiftProgressFields = requiredProgressFields.filter((field) =>
+  !new RegExp(`data\\["${field}"\\]`).test(swiftSource));
+if (missingSwiftProgressFields.length) {
+  fail(`SwiftUI file progress decoder is missing fields: ${missingSwiftProgressFields.join(', ')}`);
+}
 assertJsonFields('Image thumbnail', macApiContractSource, ['width', 'height', 'rgba_b64']);
 
 const peerInfoFields = rustFields(read(macRoot, 'src-tauri/src/network/tailscale.rs'), 'PeerInfo');

@@ -46,7 +46,7 @@ struct HistoryView: View {
     @State private var errorMsg: String? = nil
     @State private var lastVersion: UInt64 = 0
     @State private var daemonOnline = false
-    @State private var fileProgress: (name: String, sent: UInt64, total: UInt64, active: Bool)? = nil
+    @State private var fileProgress: ApiClient.FileProgress? = nil
     @State private var showingClearAlert = false
     @State private var loadGeneration = 0
     @State private var supportedCategories: Set<String> = []
@@ -225,6 +225,28 @@ struct HistoryView: View {
             } else {
                 List {
                     ForEach(entries) { entry in
+                        VStack(spacing: 4) {
+                        if isBatchStart(entry), let batchId = entry.batch_id {
+                            HStack(spacing: 6) {
+                                Image(systemName: "folder")
+                                Text("\(entry.batch_total ?? 1) \(Loc.t("history.files"))")
+                                Spacer()
+                                if entry.batch_status == "complete" {
+                                    Button {
+                                        restoreBatch(batchId)
+                                    } label: {
+                                        Label(Loc.t("history.copyAll"), systemImage: "doc.on.doc")
+                                    }
+                                    .buttonStyle(.borderless)
+                                } else {
+                                    Text(Loc.t("history.incomplete"))
+                                        .foregroundColor(palette.warningColor)
+                                }
+                            }
+                            .font(.caption)
+                            .foregroundColor(palette.secondaryColor)
+                            .padding(.horizontal, 6)
+                        }
                         HStack(spacing: 6) {
                             HistoryRow(
                                 entry: entry,
@@ -241,12 +263,19 @@ struct HistoryView: View {
                             .help(Loc.t("history.restore"))
                             .accessibilityLabel("\(Loc.t("history.restore")): \(entry.description)")
 
+                            Button { setPinned(entry) } label: {
+                                Image(systemName: entry.pinned ? "pin.fill" : "pin")
+                            }
+                            .buttonStyle(.borderless)
+                            .help(Loc.t(entry.pinned ? "history.unpin" : "history.pin"))
+
                             Button(role: .destructive) { delete(entry.id) } label: {
                                 Image(systemName: "trash")
                             }
                             .buttonStyle(.borderless)
                             .help(Loc.t("history.delete"))
                             .accessibilityLabel("\(Loc.t("history.delete")): \(entry.description)")
+                        }
                         }
                         .contextMenu {
                             Button(Loc.t("history.restore")) { restore(entry.id) }
@@ -331,11 +360,26 @@ struct HistoryView: View {
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
                 if let p = fileProgress, p.active {
-                    VStack(spacing: 3) {
-                        ProgressView(value: Double(p.sent), total: Double(p.total)).progressViewStyle(.linear)
-                        Text("\(Loc.t("history.sending")) \(p.name) - \(p.sent)/\(p.total)")
-                            .font(.caption2)
-                            .foregroundColor(palette.secondaryColor)
+                    VStack(spacing: 5) {
+                        ProgressView(value: Double(p.sent), total: Double(max(p.total, 1))).progressViewStyle(.linear)
+                        HStack(spacing: 8) {
+                            Text("\(min(p.completedFiles + 1, p.totalFiles))/\(p.totalFiles)")
+                            Text(p.name).lineLimit(1).truncationMode(.middle)
+                            if !p.device.isEmpty { Text(p.device) }
+                            Spacer(minLength: 4)
+                            Text("\(ByteCountFormatter.string(fromByteCount: Int64(p.speedBytesPerSecond), countStyle: .file))/s")
+                            if p.canStop && !p.batchId.isEmpty {
+                                Button {
+                                    Task { await ApiClient.shared.cancelFileBatch(p.batchId) }
+                                } label: {
+                                    Label(Loc.t("history.stopTransfer"), systemImage: "stop.fill")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundColor(palette.secondaryColor)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .background(palette.raisedColor)
@@ -417,6 +461,33 @@ struct HistoryView: View {
                 // Keep the capability unchecked so a daemon that is still starting is retried.
             }
             historyCapabilitiesLoading = false
+        }
+    }
+
+    private func isBatchStart(_ entry: HistoryEntry) -> Bool {
+        guard let batchId = entry.batch_id,
+              let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
+        return index == 0 || entries[index - 1].batch_id != batchId
+    }
+
+    private func restoreBatch(_ batchId: String) {
+        Task { @MainActor in
+            do {
+                try await ApiClient.shared.restoreFileBatch(batchId)
+            } catch {
+                errorMsg = error.localizedDescription
+            }
+        }
+    }
+
+    private func setPinned(_ entry: HistoryEntry) {
+        Task { @MainActor in
+            do {
+                try await ApiClient.shared.setHistoryPinned(id: entry.id, pinned: !entry.pinned)
+                load(targetPage: page)
+            } catch {
+                errorMsg = error.localizedDescription
+            }
         }
     }
 

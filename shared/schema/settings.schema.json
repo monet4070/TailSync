@@ -90,6 +90,21 @@
       "default": true,
       "type": "boolean"
     },
+    "storage_quota_bytes": {
+      "default": 10737418240,
+      "format": "uint64",
+      "maximum": 17592186044416.0,
+      "minimum": 1073741824.0,
+      "type": "integer"
+    },
+    "storage_root": {
+      "default": null,
+      "description": "Bulk history and transfer storage. None keeps bulk data in the system application-data directory.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "theme": {
       "$ref": "#/definitions/ThemeContract",
       "default": "system"
@@ -123,6 +138,8 @@
     "notifications_enabled",
     "paired_peer_endpoints",
     "progress_bar_enabled",
+    "storage_quota_bytes",
+    "storage_root",
     "theme",
     "trusted_peer_addresses",
     "trusted_peer_keys"

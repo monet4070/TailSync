@@ -9,6 +9,8 @@ export interface SettingsData {
   notifications_enabled: boolean;
   paired_peer_endpoints: Record<string, string>;
   progress_bar_enabled: boolean;
+  storage_quota_bytes: number;
+  storage_root: string | null;
   theme: "system" | "light" | "dark";
   trusted_peer_addresses: Record<string, Record<string, string>>;
   trusted_peer_keys: Record<string, string>;

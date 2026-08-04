@@ -201,6 +201,45 @@ impl HistoryDB {
             info!("Running database migration v7 (enabling encrypted file history)...");
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",
+                params![7_i64],
+            )?;
+        }
+
+        if version < 8 {
+            info!("Running database migration v8 (file batches and pinned history)...");
+        }
+        Self::add_column_if_missing(
+            conn,
+            "pinned",
+            "ALTER TABLE history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "batch_id",
+            "ALTER TABLE history ADD COLUMN batch_id TEXT",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "batch_index",
+            "ALTER TABLE history ADD COLUMN batch_index INTEGER",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "batch_total",
+            "ALTER TABLE history ADD COLUMN batch_total INTEGER",
+        )?;
+        Self::add_column_if_missing(
+            conn,
+            "batch_status",
+            "ALTER TABLE history ADD COLUMN batch_status TEXT NOT NULL DEFAULT 'complete'",
+        )?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_history_batch
+             ON history(batch_id, batch_index);",
+        )?;
+        if version < 8 {
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
                 params![SCHEMA_VERSION],
             )?;
         }
@@ -468,7 +507,7 @@ impl HistoryDB {
         if limit == 0 {
             return Err("file-encryption migration batch size must be positive".into());
         }
-        let db_path = get_data_dir().join("history-v2.db");
+        let db_path = get_history_db_path();
         let conn = Connection::open(db_path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;

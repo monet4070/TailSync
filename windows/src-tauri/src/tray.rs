@@ -46,7 +46,106 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>, language: &str) -> tauri::Res
     let settings = MenuItem::with_id(app, "settings", labels.settings, true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", labels.quit, true, None::<&str>)?;
-    Menu::with_items(app, &[&show, &settings, &separator, &quit])
+    let progress = crate::api::get_file_progress().filter(|progress| progress.active);
+    let storage_unavailable = app
+        .try_state::<crate::AppState>()
+        .and_then(|state| {
+            state
+                .db
+                .try_lock()
+                .ok()
+                .map(|db| !db.storage_status().available)
+        })
+        .unwrap_or(false);
+    let storage_warning = MenuItem::with_id(
+        app,
+        "storage_warning",
+        if language == "zh-CN" {
+            "存储不可用，文件传输已暂停"
+        } else {
+            "Storage unavailable - file transfer paused"
+        },
+        false,
+        None::<&str>,
+    )?;
+    let warning_separator = PredefinedMenuItem::separator(app)?;
+    if let Some(progress) = progress {
+        let progress_separator = PredefinedMenuItem::separator(app)?;
+        let percent = progress.sent.saturating_mul(100) / progress.total.max(1);
+        let summary = MenuItem::with_id(
+            app,
+            "transfer_progress",
+            format!(
+                "{} / {} files - {}%",
+                progress.completed_files, progress.total_files, percent
+            ),
+            false,
+            None::<&str>,
+        )?;
+        let current = MenuItem::with_id(
+            app,
+            "transfer_file",
+            format!("{}  {}", progress.device, progress.name),
+            false,
+            None::<&str>,
+        )?;
+        let stop = MenuItem::with_id(
+            app,
+            "stop_transfer",
+            if language == "zh-CN" {
+                "停止传输"
+            } else {
+                "Stop transfer"
+            },
+            progress.can_stop,
+            None::<&str>,
+        )?;
+        if storage_unavailable {
+            Menu::with_items(
+                app,
+                &[
+                    &storage_warning,
+                    &warning_separator,
+                    &summary,
+                    &current,
+                    &stop,
+                    &progress_separator,
+                    &show,
+                    &settings,
+                    &separator,
+                    &quit,
+                ],
+            )
+        } else {
+            Menu::with_items(
+                app,
+                &[
+                    &summary,
+                    &current,
+                    &stop,
+                    &progress_separator,
+                    &show,
+                    &settings,
+                    &separator,
+                    &quit,
+                ],
+            )
+        }
+    } else if storage_unavailable {
+        Menu::with_items(
+            app,
+            &[
+                &storage_warning,
+                &warning_separator,
+                &show,
+                &settings,
+                &separator,
+                &quit,
+            ],
+        )
+    } else {
+        Menu::with_items(app, &[&show, &settings, &separator, &quit])
+    }
 }
 
 pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>, language: &str) -> Result<(), String> {
@@ -69,6 +168,25 @@ pub fn start_tray(app_handle: AppHandle) {
     if let Err(error) = create_tauri_tray(&app_handle) {
         log::error!("Could not create tray icon: {error}");
     }
+    let updater = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let settings = updater
+                .try_state::<crate::AppState>()
+                .map(|state| state.settings.clone());
+            let language = match settings {
+                Some(settings) => settings.lock().await.language.clone(),
+                None => "en".into(),
+            };
+            if updater.tray_by_id(TRAY_ID).is_none() {
+                break;
+            }
+            if let Err(error) = update_tray_menu(&updater, &language) {
+                log::debug!("Could not refresh tray transfer state: {error}");
+            }
+        }
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -183,6 +301,22 @@ fn create_tauri_tray(app: &AppHandle) -> Result<(), String> {
                 tauri::async_runtime::spawn(async move {
                     let _ = crate::commands::open_settings_window(h).await;
                 });
+            }
+            "stop_transfer" => {
+                let Some(progress) = crate::api::get_file_progress() else {
+                    return;
+                };
+                if let Ok(id) = crate::protocol::TransferId::from_hex(&progress.batch_id) {
+                    if let Some(state) = app.try_state::<crate::AppState>() {
+                        let sync = state.sync_engine.clone();
+                        let pool = state.pool.clone();
+                        let settings = state.settings.clone();
+                        tauri::async_runtime::spawn(async move {
+                            crate::commands::cancel_file_batch_impl(&sync, &pool, &settings, id)
+                                .await;
+                        });
+                    }
+                }
             }
             "quit" => {
                 request_shutdown(app);

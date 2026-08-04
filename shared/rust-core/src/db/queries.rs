@@ -27,7 +27,8 @@ impl HistoryDB {
 
         let mut sql = String::from(
             "SELECT id, timestamp, type, description, data_hash, size_bytes, source_peer,
-                    category, category_confidence, classifier_version, categories
+                    category, category_confidence, classifier_version, categories,
+                    pinned, batch_id, batch_index, batch_total, batch_status
              FROM history",
         );
         sql.push_str(&filter_clause);
@@ -150,6 +151,11 @@ impl HistoryDB {
             categories,
             category_confidence: row.get(8)?,
             classifier_version: row.get(9)?,
+            pinned: row.get::<_, i64>(11)? != 0,
+            batch_id: row.get(12)?,
+            batch_index: row.get(13)?,
+            batch_total: row.get(14)?,
+            batch_status: row.get(15)?,
         })
     }
 }
