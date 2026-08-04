@@ -20,8 +20,13 @@
 # Rust, Swift and Tauri
 **/src-tauri/target/
 **/src-tauri/target-*/
+/shared/rust-core/target/
 **/swift-ui/.build/
 **/src-tauri/tray-helper/.build/
+
+# Generated language caches
+**/__pycache__/
+**/*.py[cod]
 
 # Application and release artifacts
 **/TailSync.app/
@@ -36,6 +41,7 @@ windows/*-API.json
 windows/*.sub2api.*.json
 windows/tailsync-site-*.zip
 windows/tailsync-site-*.tar.gz
+/tailsync-site-*.tar.gz
 
 # Runtime logs
 **/logs/

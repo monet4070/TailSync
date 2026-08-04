@@ -2,7 +2,7 @@
 
 TailSync 是一款面向 macOS 和 Windows 的跨设备剪贴板同步应用。它支持文本、图片和文件，在局域网或 Tailscale 网络中发现已配对设备，并保留本地剪贴板历史。
 
-当前后端版本为 `2.0.0`，线协议为 v2。项目进度、已知限制和最近验证结果见 [项目状态](docs/PROJECT_STATUS.md)。
+当前后端版本为 `2.1.0`，线协议为 v2。项目进度、已知限制和最近验证结果见 [项目状态](docs/PROJECT_STATUS.md)。
 
 ## 当前功能
 
@@ -20,20 +20,19 @@ TailSync 是一款面向 macOS 和 Windows 的跨设备剪贴板同步应用。�
 
 ## 架构
 
-核心逻辑位于共享 Rust 后端 `src-tauri/src/`，负责剪贴板、网络、配对、数据库和加密。
+协议、加密、身份、配对、数据库和同步状态机位于仓库级共享 crate `../shared/rust-core/`。`src-tauri/src/` 只保留 macOS/Tauri 接入层，包括剪贴板、网络发现、连接管理和本地 API。
 
 - macOS：SwiftUI 菜单栏外壳启动 Rust 守护进程，通过 `127.0.0.1:19889` 的 JSON-lines API 通信。
-- Windows：React/Tauri UI 直接使用同一套 Rust 后端。
+- Windows：React/Tauri UI 通过自己的平台接入层使用同一个 `tailsync-core` crate。
 - 设备同步和配对使用 TCP `19890`。
 - 局域网发现同时使用 `_tailsync._tcp.local.` 和 UDP 发现。
 
-共享源代码和协议约束见 [跨平台同步契约](docs/CROSS_PLATFORM_SYNC.md)。
+共享 crate 和协议边界见 [跨平台同步契约](docs/CROSS_PLATFORM_SYNC.md)。
 
 ## 开发环境
 
 通用依赖：
 
-- Node.js 和 npm
 - Rust 工具链（包含 Cargo）
 - Tauri v2 所需的系统开发依赖
 
@@ -41,20 +40,19 @@ macOS 还需要 Swift 5.9 或更高版本和 Xcode Command Line Tools：
 
 ```bash
 xcode-select --install
-npm ci
 ./dev.sh
 ```
 
-`./dev.sh` 会构建并启动 SwiftUI 外壳、Rust 守护进程和剪贴板辅助程序。`npm run dev` 只启动 React 前端预览，不提供系统托盘、原生剪贴板、数据库或同步服务。
+`./dev.sh` 会构建并启动 SwiftUI 外壳、Rust 守护进程和剪贴板辅助程序。macOS 不再包含 React/Vite 前端，History 和 Settings 均由 SwiftUI 提供。
 
-Windows 需要 Visual Studio Build Tools，并启用“使用 C++ 的桌面开发”工作负载。在 Windows 项目目录中执行：
+Windows 需要 Node.js、npm 和 Visual Studio Build Tools，并启用“使用 C++ 的桌面开发”工作负载。在 `../windows` 目录中执行：
 
 ```powershell
 npm ci
 npm run tauri:dev
 ```
 
-如果目录曾在不同操作系统间直接复制，请重新运行 `npm ci`，以安装当前平台对应的原生依赖。
+如果 Windows 目录曾在不同操作系统间直接复制，请重新运行 `npm ci`，以安装当前平台对应的原生依赖。
 
 ## 配对设备
 
@@ -78,12 +76,14 @@ npm run tauri:dev
 
 - `history-v2.db`：历史元数据、加密文本和内容引用
 - `image-history/`：加密的图片历史文件
-- `file-history/`：文件历史副本；文件内容当前按原始字节存储
+- `file-history/`：使用 1 MiB 分块 AES-256-GCM 容器加密的文件历史副本
 - `incoming/`：进行中的临时文件和续传状态
 - `config-v2.json`：设置、信任公钥和已知地址
 - `identity-v1.bin`：固定设备身份
 
 进行中的文件可在网络断开后继续传输；应用重启会清理未完成的 `incoming/` 状态，因此当前不支持跨进程重启续传。
+
+启动时会自动检测并导入旧版 TailSync v1 历史。导入失败的条目会记录到 `v1-migration-report.json` 并在旧数据库变化后重试；原 `history.db` 和 `.fernet_key` 始终保留。
 
 ## 构建
 
@@ -119,15 +119,15 @@ npm run tauri:build:win
 ## 验证
 
 ```bash
-npm ci
-npm run lint
-npm run build
+cargo fmt --manifest-path ../shared/rust-core/Cargo.toml --all -- --check
+cargo test --locked --manifest-path ../shared/rust-core/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo test --manifest-path src-tauri/Cargo.toml --lib
-swift build --package-path swift-ui
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+swift test --package-path swift-ui
 node scripts/check_cross_platform_sync.mjs \
-  --win-root /path/to/tailsync-v2-win \
-  --mac-root /path/to/tailsync-v2-mac-1
+  --win-root ../windows \
+  --mac-root . \
+  --core-root ../shared/rust-core
 ```
 
 如果项目位于会自动生成 `._*` AppleDouble 文件的非 APFS 卷上，Cargo/Tauri 可能把这些元数据误当成 UTF-8 配置。此时将构建目录放到本地临时卷：
@@ -143,7 +143,7 @@ macOS 完整发布验证：
 bash scripts/verify_macos_release.sh /path/to/tailsync-v2-win
 ```
 
-完整发布验证会安装锁定依赖、运行前端/Rust/Swift 检查、核对跨平台源码、构建并签名应用、启动打包产物、检查 `19889`/`19890` 监听以及本地 API 和文件剪贴板辅助程序。
+完整发布验证会运行共享 Rust core、macOS 接入层和 SwiftUI 检查，核对跨平台契约，构建并签名应用，启动打包产物，并检查 `19889`/`19890` 监听、本地 API 和文件剪贴板辅助程序。
 
 ## 文档
 

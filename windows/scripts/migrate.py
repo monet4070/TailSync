@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Migrate old TailSync v1 history.db → TailSync v2 history-v2.db.
+"""Manually retry or recover a TailSync v1 history import.
+
+TailSync v2 normally detects and imports this database during startup. The
+automatic importer is idempotent, preserves the old database and key, and
+writes a migration report. Use this script only for an explicit recovery run
+against a running daemon, for example when importing from a custom backup.
 
 Old format:
   - SQLite with Fernet-encrypted `data` column
@@ -10,19 +15,18 @@ New format:
   - SQLite with AES-256-GCM encryption (Rust `crypto::encrypt`)
   - Schema: id, timestamp, type, description, data, size_bytes, source_peer, data_hash
 
-We decrypt with Fernet, re-encrypt with the Rust backend's encrypt(), and insert.
+The script decrypts Fernet rows and sends bounded chunks to the authenticated
+Rust API, which validates and stores each entry in the current format.
 """
 
 import os
 import sqlite3
 import sys
-import subprocess
 import json
 from pathlib import Path
 
 OLD_DB = Path.home() / "TailSync_History" / "history.db"
 KEY_FILE = Path.home() / "TailSync_History" / ".fernet_key"
-NEW_DB = Path.home() / "Library" / "Application Support" / "com.tailsync.TailSync" / "history-v2.db"
 
 def main():
     if not OLD_DB.exists():
@@ -31,21 +35,12 @@ def main():
     if not KEY_FILE.exists():
         print(f"Key file not found: {KEY_FILE}")
         sys.exit(1)
-    if not NEW_DB.exists():
-        print(f"New DB not found: {NEW_DB}")
-        sys.exit(1)
-
     # Read Fernet key
     fernet_key = KEY_FILE.read_text().strip()
     print(f"Fernet key loaded ({len(fernet_key)} chars)")
 
-    # Connect to both DBs
+    # The destination is owned exclusively by the running Rust daemon.
     old = sqlite3.connect(str(OLD_DB))
-    new = sqlite3.connect(str(NEW_DB))
-
-    # Count existing entries in new DB to avoid duplicates
-    existing = new.execute("SELECT COUNT(*) FROM history").fetchone()[0]
-    print(f"New DB has {existing} entries")
 
     rows = old.execute("SELECT id, time, type, desc, data FROM history ORDER BY id").fetchall()
     print(f"Old DB has {len(rows)} entries")
@@ -53,6 +48,10 @@ def main():
     # Use the Rust daemon's API to encrypt and insert
     # We send decrypted data to the API which handles encryption + insertion
     port = 19889
+    api_token = os.environ.get("TAILSYNC_API_TOKEN", "")
+    if len(api_token) != 64 or any(c not in "0123456789abcdefABCDEF" for c in api_token):
+        print("TAILSYNC_API_TOKEN must contain the daemon's 64-character hexadecimal API token")
+        sys.exit(1)
 
     def api_request(cmd_payload: bytes) -> dict:
         import socket
@@ -71,21 +70,7 @@ def main():
         sock.close()
         return json.loads(buf.decode())
 
-    # But the API doesn't have an "add_entry" endpoint — it only reads.
-    # So we need to insert directly via the Rust crypto functions.
-    # Alternative: write a temporary Rust migration binary.
-    #
-    # Actually, simpler approach: since these are mostly file entries
-    # and the data is already in the old DB, we can do the migration
-    # directly in Rust by adding a migration command to the API.
-
-    print("\nMigration needs a Rust-side endpoint. Options:")
-    print("1. Add 'migrate_entry' API endpoint that takes decrypted data + metadata")
-    print("2. Write standalone Rust migration binary")
-    print("3. Use Python cryptography to re-encrypt with AES-256-GCM (need key)")
-
-    # Let's use Fernet to decrypt, then call the Rust API with the data.
-    # We need a new API endpoint: migrate_insert
+    print("Manual recovery import started; automatic startup migration remains preferred.")
     from cryptography.fernet import Fernet
     f = Fernet(fernet_key.encode())
 
@@ -104,17 +89,38 @@ def main():
             skipped += 1
             continue
 
-        # Call Rust API: migrate_entry { time, type, desc, data_b64 }
+        # Stream bounded chunks so large files stay below the 1 MiB request cap.
         import base64
-        payload = json.dumps({
-            "cmd": "migrate_entry",
+        begin_payload = json.dumps({
+            "cmd": "begin_import",
+            "token": api_token,
             "time": time,
             "type": etype,
             "desc": (desc or "")[:100],
-            "data_b64": base64.b64encode(plain).decode(),
+            "total_size": len(plain),
         })
         try:
-            resp = api_request(payload.encode())
+            resp = api_request(begin_payload.encode())
+            if not resp.get("ok"):
+                raise RuntimeError(resp.get("error") or "begin_import failed")
+            import_id = resp["data"]["import_id"]
+            chunk_size = 512 * 1024
+            for offset in range(0, len(plain), chunk_size):
+                chunk_payload = json.dumps({
+                    "cmd": "import_chunk",
+                    "token": api_token,
+                    "import_id": import_id,
+                    "import_offset": offset,
+                    "chunk_b64": base64.b64encode(plain[offset:offset + chunk_size]).decode(),
+                })
+                chunk_response = api_request(chunk_payload.encode())
+                if not chunk_response.get("ok"):
+                    raise RuntimeError(chunk_response.get("error") or "import_chunk failed")
+            resp = api_request(json.dumps({
+                "cmd": "finish_import",
+                "token": api_token,
+                "import_id": import_id,
+            }).encode())
             if resp.get("ok"):
                 migrated += 1
                 if migrated % 5 == 0:

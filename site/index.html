@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/tailsync-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#11120f" />
+    <script>
+      (() => {
+        const storageKey = "tailsync-theme-preference";
+        const override = new URLSearchParams(window.location.search).get("theme");
+        let stored = null;
+        try {
+          stored = window.localStorage.getItem(storageKey);
+        } catch {
+          stored = null;
+        }
+        const valid = (value) => value === "auto" || value === "light" || value === "dark";
+        const preference = valid(override) ? override : valid(stored) ? stored : "auto";
+        const hour = new Date().getHours();
+        const theme = preference === "auto"
+          ? hour >= 7 && hour < 19 ? "light" : "dark"
+          : preference;
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.themePreference = preference;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute(
+          "content",
+          theme === "light" ? "#f1efe7" : "#11120f",
+        );
+      })();
+    </script>
+    <meta
+      name="description"
+      content="TailSync 在 macOS 与 Windows 之间安全同步文本、图片和文件，提供本地智能历史分类、日期筛选、休眠唤醒恢复与端到端加密。"
+    />
+    <meta name="application-name" content="TailSync" />
+    <meta property="og:title" content="TailSync - 穿过设备边界的剪贴板" />
+    <meta
+      property="og:description"
+      content="本地优先的跨设备剪贴板，具备智能历史分类、日期筛选与休眠唤醒自动恢复。"
+    />
+    <title>TailSync - 穿过设备边界的剪贴板</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

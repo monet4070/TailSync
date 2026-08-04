@@ -1,12 +1,36 @@
 import Foundation
 import Darwin
+import Security
 
 final class ApiClient: @unchecked Sendable {
     static let shared = ApiClient()
     private let port: UInt16 = 19889
+    let capabilityToken: String
+
+    private init() {
+        if let configured = ProcessInfo.processInfo.environment["TAILSYNC_API_TOKEN"],
+           Self.isValidCapabilityToken(configured) {
+            capabilityToken = configured.lowercased()
+            return
+        }
+
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            fatalError("TailSync could not generate its local API capability token")
+        }
+        capabilityToken = bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func isValidCapabilityToken(_ value: String) -> Bool {
+        value.count == 64 && value.unicodeScalars.allSatisfy {
+            (48...57).contains($0.value) || (65...70).contains($0.value) || (97...102).contains($0.value)
+        }
+    }
 
     private func request(_ json: [String: Any]) async throws -> [String: Any] {
-        var data = try JSONSerialization.data(withJSONObject: json)
+        var authenticated = json
+        authenticated["token"] = capabilityToken
+        var data = try JSONSerialization.data(withJSONObject: authenticated)
         data.append(0x0A)
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -93,6 +117,10 @@ final class ApiClient: @unchecked Sendable {
         let dateRangeFilter: Bool
     }
 
+    struct MigrationDiagnostics {
+        let unresolvedCount: Int
+    }
+
     func getHistoryCapabilities() async throws -> HistoryCapabilities? {
         let response = try await request(["cmd": "get_history_capabilities"])
         guard response["ok"] as? Bool == true,
@@ -110,8 +138,23 @@ final class ApiClient: @unchecked Sendable {
         )
     }
 
+    func getMigrationDiagnostics() async throws -> MigrationDiagnostics {
+        let response = try await request(["cmd": "get_migration_diagnostics"])
+        guard response["ok"] as? Bool == true,
+              let data = response["data"] as? [String: Any],
+              let unresolvedCount = (data["unresolved_count"] as? NSNumber)?.intValue else {
+            throw ApiError.serverError(response["error"] as? String ?? "unknown")
+        }
+        return MigrationDiagnostics(unresolvedCount: max(0, unresolvedCount))
+    }
+
     func ping() async -> Bool {
         guard let response = try? await request(["cmd": "ping"]) else { return false }
+        return response["ok"] as? Bool == true
+    }
+
+    func requestShutdown() async -> Bool {
+        guard let response = try? await request(["cmd": "quit"]) else { return false }
         return response["ok"] as? Bool == true
     }
 
@@ -344,12 +387,16 @@ final class ApiClient: @unchecked Sendable {
         private enum CodingKeys: String, CodingKey { case hostname, tailscale_ip, address, online, enabled, connection_mode, trusted, fingerprint, current_interface, current_address, candidates, routes, status }
     }
 
-    func getPeers() async -> (local: DeviceSnapshot?, peers: [PeerSnapshot], pairedEndpoints: [String: String], error: String?) {
-        guard let response = try? await request(["cmd": "get_peers"]),
-              response["ok"] as? Bool == true,
-              let data = response["data"] as? [String: Any] else {
-            return (nil, [], [:], responseError())
-        }
+    typealias PeersResult = (
+        local: DeviceSnapshot?,
+        peers: [PeerSnapshot],
+        pairedEndpoints: [String: String],
+        error: String?
+    )
+
+    private func decodePeersResponse(_ response: [String: Any]) -> PeersResult? {
+        guard response["ok"] as? Bool == true,
+              let data = response["data"] as? [String: Any] else { return nil }
         let local: DeviceSnapshot?
         if let value = data["self"], let json = try? JSONSerialization.data(withJSONObject: value) {
             local = try? JSONDecoder().decode(DeviceSnapshot.self, from: json)
@@ -362,13 +409,28 @@ final class ApiClient: @unchecked Sendable {
         } else {
             peers = []
         }
-        let pairedEndpoints = data["paired_peer_endpoints"] as? [String: String] ?? [:]
-        return (local, peers, pairedEndpoints, data["discovery_error"] as? String)
+        return (
+            local,
+            peers,
+            data["paired_peer_endpoints"] as? [String: String] ?? [:],
+            data["discovery_error"] as? String
+        )
     }
 
-    func refreshPeers() async -> Bool {
-        guard let response = try? await request(["cmd": "refresh_peers"]) else { return false }
-        return response["ok"] as? Bool == true
+    func getPeers() async -> PeersResult {
+        guard let response = try? await request(["cmd": "get_peers"]),
+              let result = decodePeersResponse(response) else {
+            return (nil, [], [:], responseError())
+        }
+        return result
+    }
+
+    func refreshPeers() async -> PeersResult {
+        guard let response = try? await request(["cmd": "refresh_peers"]),
+              let result = decodePeersResponse(response) else {
+            return (nil, [], [:], responseError())
+        }
+        return result
     }
 
     func togglePeer(hostname: String, enabled: Bool) async -> Bool {

@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  frontend:
+    name: Frontend (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [windows, site]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - name: Install dependencies
+        working-directory: ${{ matrix.project }}
+        run: npm ci
+      - name: Lint
+        working-directory: ${{ matrix.project }}
+        run: npm run lint
+      - name: Test
+        if: matrix.project == 'windows'
+        working-directory: windows
+        run: npm test
+      - name: Build
+        working-directory: ${{ matrix.project }}
+        run: npm run build
+
+  rust-windows:
+    name: Rust and interop (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            shared/rust-core
+            windows/src-tauri
+            macos/src-tauri
+      - name: Check generated Settings contracts
+        run: node shared/schema/generate-settings.mjs --check
+      - name: Check cross-platform contracts
+        shell: pwsh
+        run: ./windows/scripts/check_cross_platform_sync.ps1 -WinRoot ./windows -MacRoot ./macos
+      - name: Check formatting
+        run: cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check
+      - name: Check Windows application formatting
+        run: cargo fmt --manifest-path windows/src-tauri/Cargo.toml --all -- --check
+      - name: Run shared core Clippy
+        run: cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings
+      - name: Run Windows application Clippy
+        run: cargo clippy --locked --manifest-path windows/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Run shared core unit tests
+        run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
+      - name: Run Windows application unit tests
+        run: cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib
+      - name: Build application
+        run: cargo build --locked --manifest-path windows/src-tauri/Cargo.toml
+      - name: Run bidirectional interoperability probe
+        shell: pwsh
+        run: ./windows/scripts/test_cross_project_interop.ps1 -WinRoot ./windows -MacRoot ./macos
+
+  rust-macos:
+    name: Rust and Swift (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            shared/rust-core
+            macos/src-tauri
+      - name: Check shared core formatting
+        run: cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check
+      - name: Check macOS application formatting
+        run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
+      - name: Run shared core Clippy
+        run: cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings
+      - name: Run macOS application Clippy
+        run: cargo clippy --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Run shared core unit tests
+        run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
+      - name: Run macOS application unit tests
+        run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
+      - name: Build Rust daemon
+        run: cargo build --locked --manifest-path macos/src-tauri/Cargo.toml
+      - name: Run Swift tests
+        run: swift test --package-path macos/swift-ui
+      - name: Build release SwiftUI executable
+        run: swift build -c release --package-path macos/swift-ui
+
+  scripts:
+    name: Migration script syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m py_compile windows/scripts/migrate.py macos/scripts/migrate.py

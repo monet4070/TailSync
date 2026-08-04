@@ -1,6 +1,6 @@
 [package]
 name = "tailsync"
-version = "2.0.0"
+version = "2.1.0"
 description = "Encrypted cross-platform clipboard sync over LAN or Tailscale"
 authors = ["monet"]
 edition = "2021"
@@ -18,6 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+tailsync-core = { path = "../../shared/rust-core" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-shell = "2"
 tauri-plugin-notification = "2"
@@ -46,11 +47,15 @@ libc = "0.2"
 mdns-sd = "0.20.2"
 if-addrs = "0.13"
 
+[dev-dependencies]
+tailsync-core = { path = "../../shared/rust-core", features = ["test-support"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Registry", "Win32_Security_Cryptography", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+tauri-winrt-notification = "0.7.3"
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Registry", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 default = ["custom-protocol"]

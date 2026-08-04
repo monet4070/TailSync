@@ -1,0 +1,188 @@
+use super::*;
+
+impl HistoryDB {
+    /// Delete a history entry and its unreferenced external payload.
+    pub fn delete(&mut self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
+        self.delete_entries(&[id])
+    }
+
+    /// Remove every history entry in one transaction.
+    pub fn clear_all(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM history", [])?;
+        tx.commit()?;
+        if let Err(error) = std::fs::remove_dir_all(&self.file_history_dir) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                warn!("Could not remove file history folder: {error}");
+            }
+        }
+        std::fs::create_dir_all(&self.file_history_dir)?;
+        if let Err(error) = std::fs::remove_dir_all(&self.image_history_dir) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                warn!("Could not remove image history folder: {error}");
+            }
+        }
+        std::fs::create_dir_all(&self.image_history_dir)?;
+        // Reclaim pages after an explicit user-initiated clear operation.
+        let _ = self
+            .conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+        Ok(())
+    }
+
+    /// Trim entries of a given type beyond the configured count and byte limits.
+    pub(super) fn trim(&mut self, entry_type: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let max = match entry_type {
+            "text" => self.max_history,
+            "image" | "file" => (self.max_history / 10).max(10),
+            _ => 100,
+        };
+
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM history WHERE type = ?1",
+            params![entry_type],
+            |row| row.get(0),
+        )?;
+
+        if count > max {
+            let excess = count - max;
+            let ids = self.oldest_entry_ids(Some(entry_type), excess)?;
+            self.delete_entries(&ids)?;
+            info!("Trimmed {} {} entries", excess, entry_type);
+        }
+
+        let total: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))?;
+        if total > self.max_history {
+            let excess = total - self.max_history;
+            let ids = self.oldest_entry_ids(None, excess)?;
+            self.delete_entries(&ids)?;
+            info!("Trimmed {} entries (total cap)", excess);
+        }
+
+        if entry_type == "file" {
+            let ids = self.file_ids_over_byte_limit(FILE_HISTORY_BYTE_LIMIT)?;
+            if !ids.is_empty() {
+                let count = ids.len();
+                self.delete_entries(&ids)?;
+                info!("Trimmed {count} file entries (5 GiB byte cap)");
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn file_ids_over_byte_limit(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+        let mut total = 0_i64;
+        let mut statement = self.conn.prepare(
+            "SELECT id, MAX(size_bytes, 0) FROM history
+             WHERE type = 'file' ORDER BY timestamp DESC, id DESC",
+        )?;
+        let rows =
+            statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+        let mut remove = Vec::new();
+        for row in rows {
+            let (id, size) = row?;
+            total = total.saturating_add(size);
+            if total > limit {
+                remove.push(id);
+            }
+        }
+        Ok(remove)
+    }
+
+    fn oldest_entry_ids(
+        &self,
+        entry_type: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+        let ids = if let Some(entry_type) = entry_type {
+            self.conn
+                .prepare("SELECT id FROM history WHERE type = ?1 ORDER BY timestamp ASC LIMIT ?2")?
+                .query_map(params![entry_type, limit], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            self.conn
+                .prepare("SELECT id FROM history ORDER BY timestamp ASC LIMIT ?1")?
+                .query_map(params![limit], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(ids)
+    }
+
+    pub(super) fn entry_ids_by_hash(
+        &self,
+        data_hash: &str,
+    ) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+        let ids = self
+            .conn
+            .prepare("SELECT id FROM history WHERE data_hash = ?1")?
+            .query_map(params![data_hash], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    pub(super) fn delete_entries(&mut self, ids: &[i64]) -> Result<(), Box<dyn std::error::Error>> {
+        self.delete_entries_except(ids, None)
+    }
+
+    pub(super) fn delete_entries_except(
+        &mut self,
+        ids: &[i64],
+        preserve_path: Option<&Path>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut references = Vec::new();
+        for id in ids {
+            let stored = self.conn.query_row(
+                "SELECT type, data FROM history WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            );
+            if let Ok((entry_type, stored)) = stored {
+                let decoded = match entry_type.as_str() {
+                    "file" => decode_file_reference(&stored)
+                        .map(|reference| (self.file_history_dir.clone(), reference)),
+                    "image" | "text" => decode_image_reference(&stored)
+                        .map(|reference| (self.image_history_dir.clone(), reference)),
+                    _ => None,
+                };
+                if let Some((directory, reference)) = decoded {
+                    references.push((stored, directory, reference));
+                }
+            }
+        }
+
+        let tx = self.conn.transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM history WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
+
+        for (stored, directory, reference) in references {
+            let remaining: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM history WHERE data = ?1",
+                params![stored],
+                |row| row.get(0),
+            )?;
+            if remaining == 0 {
+                let path = resolve_file_reference_at(&directory, &reference)?;
+                if preserve_path == Some(path.as_path()) {
+                    continue;
+                }
+                if let Err(error) = std::fs::remove_file(&path) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        warn!("Could not remove history file {}: {error}", path.display());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}

@@ -2,38 +2,8 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::io::Write as _;
+use tailsync_core::{identity, protocol, secure};
 use tokio::net::{TcpListener, TcpStream};
-
-// Compile the production wire modules directly so this probe detects drift
-// between the two independently built project directories.
-#[path = "../src/identity.rs"]
-mod identity;
-#[path = "../src/protocol.rs"]
-mod protocol;
-#[path = "../src/network/secure.rs"]
-mod secure;
-
-mod db {
-    pub fn get_data_dir() -> std::path::PathBuf {
-        let path = std::env::var_os("TAILSYNC_PROBE_DATA_DIR")
-            .map(std::path::PathBuf::from)
-            .expect("TAILSYNC_PROBE_DATA_DIR must be set");
-        std::fs::create_dir_all(&path).expect("create probe data directory");
-        path
-    }
-}
-
-// Probe identities are short-lived, so persistence does not need OS keychain
-// encryption. The peer transport itself still uses the production Noise code.
-mod crypto {
-    pub fn encrypt(data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        Ok(data.to_vec())
-    }
-
-    pub fn decrypt(data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        Ok(data.to_vec())
-    }
-}
 
 use identity::DeviceIdentity;
 use protocol::{
@@ -86,25 +56,30 @@ async fn run_server(bind_address: &str) -> ProbeResult {
     let inbound = connection.read_frame().await?;
     let envelope = expect_event(&inbound, b"win-to-mac")?;
     connection
-        .write_frame(&Frame::new(
+        .write_frame(&Frame::try_new(
             Command::EventAck,
             0,
             inbound.sequence,
             envelope.message_id.ack_payload(),
-        ))
+        )?)
         .await?;
 
     let outbound = EventEnvelope::new(b"mac-to-win".to_vec());
     let outbound_id = outbound.message_id;
     connection
-        .write_frame(&Frame::new(Command::TextPayload, 0, 22, outbound.encode()))
+        .write_frame(&Frame::try_new(
+            Command::TextPayload,
+            0,
+            22,
+            outbound.encode(),
+        )?)
         .await?;
     expect_ack(&connection.read_frame().await?, 22, outbound_id)?;
 
     let inbound_file = connection.read_frame().await?;
     let inbound_chunk = expect_file_chunk(&inbound_file, TransferId([3; 16]), b"win-file-block")?;
     connection
-        .write_frame(&Frame::new(
+        .write_frame(&Frame::try_new(
             Command::FileAck,
             0,
             inbound_file.sequence,
@@ -113,7 +88,7 @@ async fn run_server(bind_address: &str) -> ProbeResult {
                 next_offset: inbound_chunk.offset + inbound_chunk.data.len() as u64,
             }
             .encode(),
-        ))
+        )?)
         .await?;
 
     let outbound_chunk = FileChunkPayload {
@@ -122,12 +97,12 @@ async fn run_server(bind_address: &str) -> ProbeResult {
         data: b"mac-file-block".to_vec(),
     };
     connection
-        .write_frame(&Frame::new(
+        .write_frame(&Frame::try_new(
             Command::FileChunk,
             0,
             44,
             outbound_chunk.encode()?,
-        ))
+        )?)
         .await?;
     expect_file_ack(
         &connection.read_frame().await?,
@@ -163,7 +138,7 @@ async fn run_server(bind_address: &str) -> ProbeResult {
         return Err("missing client pairing confirmation".into());
     }
     pairing_connection
-        .write_frame(&Frame::new(Command::PairingConfirm, 0, 0, Vec::new()))
+        .write_frame(&Frame::try_new(Command::PairingConfirm, 0, 0, Vec::new())?)
         .await?;
     println!("SERVER_PAIRING_OK");
     Ok(())
@@ -188,19 +163,24 @@ async fn run_client(address: &str, server_key: &str) -> ProbeResult {
     let outbound = EventEnvelope::new(b"win-to-mac".to_vec());
     let outbound_id = outbound.message_id;
     connection
-        .write_frame(&Frame::new(Command::TextPayload, 0, 11, outbound.encode()))
+        .write_frame(&Frame::try_new(
+            Command::TextPayload,
+            0,
+            11,
+            outbound.encode(),
+        )?)
         .await?;
     expect_ack(&connection.read_frame().await?, 11, outbound_id)?;
 
     let inbound = connection.read_frame().await?;
     let envelope = expect_event(&inbound, b"mac-to-win")?;
     connection
-        .write_frame(&Frame::new(
+        .write_frame(&Frame::try_new(
             Command::EventAck,
             0,
             inbound.sequence,
             envelope.message_id.ack_payload(),
-        ))
+        )?)
         .await?;
 
     let outbound_chunk = FileChunkPayload {
@@ -209,12 +189,12 @@ async fn run_client(address: &str, server_key: &str) -> ProbeResult {
         data: b"win-file-block".to_vec(),
     };
     connection
-        .write_frame(&Frame::new(
+        .write_frame(&Frame::try_new(
             Command::FileChunk,
             0,
             33,
             outbound_chunk.encode()?,
-        ))
+        )?)
         .await?;
     expect_file_ack(
         &connection.read_frame().await?,
@@ -226,7 +206,7 @@ async fn run_client(address: &str, server_key: &str) -> ProbeResult {
     let inbound_file = connection.read_frame().await?;
     let inbound_chunk = expect_file_chunk(&inbound_file, TransferId([4; 16]), b"mac-file-block")?;
     connection
-        .write_frame(&Frame::new(
+        .write_frame(&Frame::try_new(
             Command::FileAck,
             0,
             inbound_file.sequence,
@@ -235,7 +215,7 @@ async fn run_client(address: &str, server_key: &str) -> ProbeResult {
                 next_offset: inbound_chunk.offset + inbound_chunk.data.len() as u64,
             }
             .encode(),
-        ))
+        )?)
         .await?;
     drop(connection);
     println!("CLIENT_SYNC_OK");
@@ -259,7 +239,7 @@ async fn run_client(address: &str, server_key: &str) -> ProbeResult {
     }
     pairing
         .connection
-        .write_frame(&Frame::new(Command::PairingConfirm, 0, 0, Vec::new()))
+        .write_frame(&Frame::try_new(Command::PairingConfirm, 0, 0, Vec::new())?)
         .await?;
     let confirmation = pairing.connection.read_frame().await?;
     if confirmation.command != Command::PairingConfirm {

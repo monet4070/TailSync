@@ -41,7 +41,7 @@
 | Windows | ✅ 可用 | React / TypeScript / Tauri 桌面应用 |
 | Android | 🧪 尚未纳入 v2 | 不属于当前跨平台兼容范围 |
 
-macOS 和 Windows 使用同一套 v2 线协议和 Rust 核心设计。两端源码分别维护，并通过跨项目检查及时发现协议、模型和共享实现的漂移。
+macOS 和 Windows 使用同一个 `shared/rust-core` crate 作为 v2 线协议、加密、身份、配对、历史存储和同步状态机的单一实现。两端只分别维护平台接入层，并通过契约与互操作测试验证边界一致性。
 
 ## 界面与主题
 
@@ -91,7 +91,7 @@ flowchart LR
         R <--> T
     end
 
-    D --- C[v2 协议与 Rust 核心设计]
+    D --- C[shared/rust-core]
     T --- C
     C --> P[发现与健康监控]
     C --> N[Noise 安全会话]
@@ -100,13 +100,14 @@ flowchart LR
     P <-->|UDP 19889 / mDNS / Tailscale| Peer
 ```
 
-共享 Rust 核心负责：
+`shared/rust-core` 负责：
 
-- 剪贴板监听与回环过滤
-- 设备发现、路由选择和在线状态
-- 配对、身份认证与加密传输
-- 历史数据库及文件生命周期
-- 文本、图片和大文件可靠同步
+- v2 帧协议、输入校验和 Noise 加密通道
+- DEK、设置、固定设备身份和配对状态
+- 历史数据库、图片/文件生命周期和存储配额
+- 文本、图片和大文件同步状态机及可靠投递
+
+两端的剪贴板、设备发现、连接池、Tauri/SwiftUI 桥接和系统托盘保留在各自应用 crate 中，通过 `SyncPlatform` 适配器接入共享同步引擎。
 
 ## 快速开始
 
@@ -138,10 +139,12 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 - 配对使用限时窗口、六位验证码和双方确认。
 - 后续连接通过 Noise XX 完成握手，并校验已配对公钥。
 - 认证失败时不会降级到旧版明文协议。
-- 文本历史加密存储；图片历史加密后保存在独立目录。
-- 文件历史目前保存原始文件字节，请结合系统磁盘加密保护本地数据。
+- 文本、图片和文件历史均使用系统保护的数据密钥加密存储。
+- 文件历史使用 1 MiB 分块 AES-256-GCM 容器；恢复时只在受控剪贴板目录生成临时明文。
 
 旧版协议 v1 与 v2 不兼容。升级后，需要在所有设备上重新完成配对。
+
+旧版 TailSync v1 历史数据库会在首次启动时自动导入。迁移按内容哈希保持幂等，损坏条目会写入诊断报告但不会阻止启动；原 `history.db` 和 `.fernet_key` 会保留，不会被自动删除。
 
 ## 网络端口
 
@@ -157,12 +160,11 @@ macOS 本地 API 只应绑定 loopback，不要通过端口转发暴露到其他
 
 ### macOS
 
-需要 Node.js、Rust、Swift 5.9+ 和 Xcode Command Line Tools。
+需要 Rust、Swift 5.9+ 和 Xcode Command Line Tools。
 
 ```bash
 cd macos
 xcode-select --install
-npm ci
 ./dev.sh
 ```
 
@@ -220,10 +222,10 @@ macOS 默认数据目录：
 | 路径 | 内容 |
 |---|---|
 | `history-v2.db` | 历史元数据、加密文本和内容引用 |
-| `file-history/` | 文件历史副本 |
+| `file-history/` | 分块 AEAD 加密的文件历史容器 |
 | `image-history/` | 加密图片历史文件 |
 | `incoming/` | 正在接收的临时文件与运行期续传状态 |
-| `clipboard-files/` | 恢复到系统剪贴板的文件 |
+| `clipboard-files/` | 恢复到系统剪贴板的临时明文文件；启动时清理 |
 | `config-v2.json` | 设置、信任公钥和已知设备地址 |
 | `identity-v1.bin` | 本机固定设备身份 |
 
@@ -232,21 +234,24 @@ Windows 使用系统应用数据目录保存同一套结构。重新安装或替
 ## 开发验证
 
 ```bash
-cd macos
-npm run lint
-npm run build
-cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo test --manifest-path src-tauri/Cargo.toml --lib
-swift build --package-path swift-ui
+cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check
+cargo test --locked --manifest-path shared/rust-core/Cargo.toml
+cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
+cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
+swift test --package-path macos/swift-ui
 ```
 
-跨平台改动还应运行共享源码漂移检查和 Windows ↔ macOS 双向线协议测试。
+跨平台改动还应运行契约检查和 Windows ↔ macOS 双向线协议测试。
 
 ## 仓库结构
 
 ```text
 TailSync/
-├── macos/                 # SwiftUI 外壳、Rust 后端和 macOS 打包脚本
+├── shared/
+│   ├── rust-core/         # 协议、加密、身份、配对、历史和同步核心
+│   ├── schema/            # Settings JSON Schema 与 TypeScript 生成器
+│   └── art-direction.css  # Windows 工具窗口共享视觉变量
+├── macos/                 # SwiftUI 外壳、平台适配层和 macOS 打包脚本
 │   ├── swift-ui/
 │   ├── src-tauri/
 │   ├── build-mac.sh
@@ -254,11 +259,13 @@ TailSync/
 ├── windows/               # React / Tauri Windows 客户端
 │   ├── src/
 │   └── src-tauri/
+├── site/                  # 独立营销站点，不进入桌面安装包
 ├── assets/                # 项目图标与 README 展示资源
+├── .github/workflows/     # CI 检查
 └── README.md
 ```
 
-两端目前保留独立工作树；校验脚本负责暴露协议与共享实现差异，平台 UI 可以按系统体验分别演进。跨端合并前应先通过漂移检查和双向线协议测试。
+平台 UI 和系统接入层可以按各自体验演进；共享业务规则只能在 `shared/rust-core` 修改。跨端改动合并前应通过契约检查、共享 core 测试和双向线协议测试。
 
 ## 当前限制
 

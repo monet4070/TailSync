@@ -21,18 +21,29 @@ const winRoot = resolve(option('--win-root') ??
   (currentIsMac ? join(parentRoot, 'tailsync-v2-win') : currentRoot));
 const macRoot = resolve(option('--mac-root') ??
   (currentIsMac ? currentRoot : join(parentRoot, 'tailsync-v2-mac-1')));
+const sharedCoreRoot = resolve(option('--core-root') ?? join(dirname(winRoot), 'shared/rust-core'));
 
 if (winRoot.toLowerCase() === macRoot.toLowerCase()) {
   fail('Windows and macOS roots must be different directories.');
 }
-for (const root of [winRoot, macRoot]) {
-  for (const marker of ['package.json', 'src-tauri/Cargo.toml']) {
+for (const [root, markers] of [
+  [winRoot, ['package.json', 'src-tauri/Cargo.toml']],
+  [macRoot, ['src-tauri/Cargo.toml']],
+]) {
+  for (const marker of markers) {
     if (!existsSync(join(root, marker))) fail(`Not a TailSync project root: ${root} (missing ${marker})`);
   }
 }
 for (const marker of ['swift-ui', 'build-mac.sh', 'src-tauri/Info.plist']) {
   if (!existsSync(join(macRoot, marker))) fail(`Not the TailSync macOS project root: ${macRoot} (missing ${marker})`);
 }
+for (const marker of ['Cargo.toml', 'src/lib.rs']) {
+  if (!existsSync(join(sharedCoreRoot, marker))) {
+    fail(`Not the TailSync shared core root: ${sharedCoreRoot} (missing ${marker})`);
+  }
+}
+const settingsSchemaPath = join(dirname(sharedCoreRoot), 'schema/settings.schema.json');
+if (!existsSync(settingsSchemaPath)) fail(`Missing shared Settings schema: ${settingsSchemaPath}`);
 
 function hash(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -65,6 +76,10 @@ function assertTreeMatch(relativeDirectory, allowedDrift = []) {
   const allowed = new Set(allowedDrift);
   const winFiles = treeFiles(winRoot, relativeDirectory);
   const macFiles = treeFiles(macRoot, relativeDirectory);
+  const staleAllowed = [...allowed].filter((name) => !winFiles.has(name) && !macFiles.has(name));
+  if (staleAllowed.length) {
+    fail(`Stale allowed-drift entries in ${relativeDirectory}: ${staleAllowed.join(', ')}`);
+  }
   const allFiles = [...new Set([...winFiles.keys(), ...macFiles.keys()])].sort();
   const drift = allFiles.filter((name) => !allowed.has(name) &&
     (!winFiles.has(name) || !macFiles.has(name) ||
@@ -72,36 +87,29 @@ function assertTreeMatch(relativeDirectory, allowedDrift = []) {
   if (drift.length) fail(`Shared tree drift detected in ${relativeDirectory}: ${drift.join(', ')}`);
 }
 
-assertTreeMatch('src', [
-  'App.tsx',
-  'index.css',
-  'landing.css',
-  'main.tsx',
-  'pages/History.tsx',
-  'pages/Settings.tsx',
-]);
+// The production UIs intentionally differ: Windows uses React/Tauri while
+// macOS ships SwiftUI. Cross-platform checks below cover their shared runtime
+// and serialized contracts instead of requiring frontend source parity.
 assertTreeMatch('src-tauri/src', [
   'api.rs',
+  'api/routes.rs',
   'clipboard.rs',
   'clipboard_change.rs',
   'clipboard_file.rs',
   'commands.rs',
-  'crypto.rs',
   'lib.rs',
   'network/lan.rs',
   'network/mdns.rs',
   'network/mod.rs',
+  'network/health.rs',
+  'network/peer_cache.rs',
+  'network/pool.rs',
+  'network/server.rs',
   'network/tailscale.rs',
-  'sync.rs',
+  'network/types.rs',
   'tray.rs',
 ]);
 for (const path of [
-  '.oxlintrc.json',
-  'package-lock.json',
-  'tsconfig.json',
-  'tsconfig.app.json',
-  'tsconfig.node.json',
-  'vite.config.ts',
   'src-tauri/build.rs',
   'src-tauri/examples/interop_probe.rs',
   'scripts/check_cross_platform_sync.mjs',
@@ -114,32 +122,17 @@ function read(root, path) {
   return readFileSync(join(root, path), 'utf8');
 }
 
-function normalizedJson(value) {
-  if (Array.isArray(value)) return value.map(normalizedJson);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort()
-      .map((key) => [key, normalizedJson(value[key])]));
-  }
-  return value;
-}
-
-function assertJsonMatch(description, expected, actual) {
-  if (JSON.stringify(normalizedJson(expected)) !== JSON.stringify(normalizedJson(actual))) {
-    fail(`${description} drift detected.`);
-  }
+function readCore(path) {
+  return readFileSync(join(sharedCoreRoot, path), 'utf8');
 }
 
 const winPackage = JSON.parse(read(winRoot, 'package.json'));
-const macPackage = JSON.parse(read(macRoot, 'package.json'));
-const { scripts: winScripts = {}, ...winPackageMetadata } = winPackage;
-const { scripts: macScripts = {}, ...macPackageMetadata } = macPackage;
-assertJsonMatch('Package metadata/dependencies', winPackageMetadata, macPackageMetadata);
-const sharedScripts = (scripts) => Object.fromEntries(Object.entries(scripts)
-  .filter(([name]) => !name.startsWith('tauri:build:mac')));
-assertJsonMatch('Shared package scripts', sharedScripts(winScripts), sharedScripts(macScripts));
-if (macScripts['tauri:build:mac'] !== './build-mac.sh' ||
-    macScripts['tauri:build:mac:dmg'] !== './build-dmg.sh') {
-  fail('macOS package scripts must use build-mac.sh and build-dmg.sh.');
+const winScripts = winPackage.scripts ?? {};
+for (const required of ['build', 'lint', 'test']) {
+  if (!winScripts[required]) fail(`Windows package is missing the ${required} script.`);
+}
+for (const path of ['swift-ui/Package.swift', 'build-mac.sh', 'build-dmg.sh']) {
+  if (!existsSync(join(macRoot, path))) fail(`macOS native build input is missing: ${path}`);
 }
 
 function constant(source, pattern, description) {
@@ -155,9 +148,19 @@ const macPeerPort = constant(read(macRoot, 'src-tauri/src/network/mod.rs'),
 const winApiPort = constant(read(winRoot, 'src-tauri/src/api.rs'),
   /pub const API_PORT: u16 = (\d+);/, 'Windows daemon API port');
 const macApiSource = read(macRoot, 'src-tauri/src/api.rs');
+const macApiRoutesSource = read(macRoot, 'src-tauri/src/api/routes.rs');
+const macApiContractSource = `${macApiSource}\n${macApiRoutesSource}`;
+const winApiContractSource = `${read(winRoot, 'src-tauri/src/api.rs')}\n${read(winRoot, 'src-tauri/src/api/routes.rs')}`;
 const macApiPort = constant(macApiSource,
   /pub const API_PORT: u16 = (\d+);/, 'macOS daemon API port');
 const swiftSource = read(macRoot, 'swift-ui/Sources/TailSync/Services/ApiClient.swift');
+const swiftAppSource = read(macRoot, 'swift-ui/Sources/TailSync/TailSyncApp.swift');
+if (/environment\["TAILSYNC_API_TOKEN"\]\s*=/.test(swiftAppSource) ||
+    !/TAILSYNC_API_TOKEN_STDIN/.test(swiftAppSource) ||
+    !/standardInput\s*=\s*tokenPipe/.test(swiftAppSource) ||
+    !/TAILSYNC_API_TOKEN_STDIN/.test(macApiSource)) {
+  fail('macOS must pass the local API token through the daemon stdin pipe, not its environment.');
+}
 const swiftApiPort = constant(swiftSource,
   /private let port: UInt16 = (\d+)/, 'SwiftUI API port');
 if (winPeerPort !== 19890 || macPeerPort !== 19890) {
@@ -168,7 +171,7 @@ if (winApiPort !== 19889 || macApiPort !== 19889 || swiftApiPort !== 19889) {
 }
 
 const rustCommands = new Set();
-for (const line of macApiSource.split(/\r?\n/)) {
+for (const line of macApiRoutesSource.split(/\r?\n/)) {
   if (/^        "[a-z][a-z0-9_]*"( \| "[a-z][a-z0-9_]*")* =>/.test(line)) {
     for (const match of line.matchAll(/"([a-z][a-z0-9_]*)"/g)) rustCommands.add(match[1]);
   }
@@ -180,7 +183,9 @@ const missingCommands = [...swiftCommands].filter((command) => !rustCommands.has
 if (missingCommands.length) fail(`SwiftUI calls commands missing from the Rust API: ${missingCommands.join(', ')}`);
 
 function structBody(source, name, language) {
-  const marker = language === 'rust' ? `pub struct ${name}` : `struct ${name}`;
+  const marker = language === 'rust'
+    ? `pub struct ${name}`
+    : language === 'typescript' ? `interface ${name}` : `struct ${name}`;
   const start = source.indexOf(marker);
   if (start < 0) fail(`Could not find ${language} struct ${name}.`);
   const open = source.indexOf('{', start);
@@ -190,6 +195,71 @@ function structBody(source, name, language) {
     if (source[index] === '}' && --depth === 0) return source.slice(open + 1, index);
   }
   fail(`Could not parse ${language} struct ${name}.`);
+}
+
+function rustFieldTypes(source, name) {
+  const body = structBody(source, name, 'rust');
+  const fields = new Map();
+  const pattern = /\bpub\s+([a-z][a-z0-9_]*)\s*:/g;
+  for (let match; (match = pattern.exec(body));) {
+    let angleDepth = 0;
+    let end = pattern.lastIndex;
+    for (; end < body.length; end += 1) {
+      if (body[end] === '<') angleDepth += 1;
+      if (body[end] === '>') angleDepth -= 1;
+      if (body[end] === ',' && angleDepth === 0) break;
+    }
+    fields.set(match[1], body.slice(pattern.lastIndex, end).replace(/\s+/g, ' ').trim());
+  }
+  return fields;
+}
+
+function swiftFieldTypes(source, name) {
+  const fields = new Map();
+  for (const line of structBody(source, name, 'swift').split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:let|var)\s+([a-z][a-z0-9_]*)\s*:\s*([^={]+?)(?:\s*=|$)/);
+    if (match) fields.set(match[1], match[2].trim());
+  }
+  return fields;
+}
+
+function typescriptFields(source, name) {
+  const fields = new Set();
+  for (const line of structBody(source, name, 'typescript').split(/\r?\n/)) {
+    const match = line.match(/^\s*([a-z][a-z0-9_]*)\??\s*:/);
+    if (match) fields.add(match[1]);
+  }
+  return fields;
+}
+
+function contractJsonType(type, language) {
+  if (language === 'rust') {
+    if (type === 'bool') return 'boolean';
+    if (/^[ui]\d+$/.test(type)) return 'integer';
+    if (type === 'String') return 'string';
+    if (type.includes('HashMap<')) return 'object';
+  } else {
+    if (type === 'Bool') return 'boolean';
+    if (type === 'Int') return 'integer';
+    if (type === 'String') return 'string';
+    if (type.startsWith('[String:')) return 'object';
+  }
+  fail(`Unsupported ${language} Settings type: ${type}`);
+}
+
+function assertSchemaTypes(description, schema, actual, language) {
+  for (const [field, definition] of Object.entries(schema.properties)) {
+    const type = actual.get(field);
+    if (!type) fail(`${description} is missing Settings field ${field}`);
+    const resolved = definition.allOf?.length === 1 ? definition.allOf[0] : definition;
+    const referencePrefix = '#/definitions/';
+    const schemaType = resolved.$ref?.startsWith(referencePrefix)
+      ? schema.definitions?.[resolved.$ref.slice(referencePrefix.length)]?.type
+      : resolved.type;
+    if (contractJsonType(type, language) !== schemaType) {
+      fail(`${description} type drift for ${field}: ${type} vs schema ${schemaType}`);
+    }
+  }
 }
 
 function rustFields(source, name) {
@@ -236,18 +306,31 @@ function assertSameFields(description, expected, actual) {
   }
 }
 
-const rustSettingsSource = read(macRoot, 'src-tauri/src/crypto.rs');
+const rustSettingsSource = readCore('src/crypto.rs');
 const swiftSettingsSource = read(macRoot, 'swift-ui/Sources/TailSync/Models/Settings.swift');
-assertSameFields('SwiftUI/Rust settings', rustFields(rustSettingsSource, 'Settings'),
+const settingsSchema = JSON.parse(readFileSync(settingsSchemaPath, 'utf8'));
+const schemaSettingsFields = new Set(Object.keys(settingsSchema.properties));
+assertSameFields('Settings schema required list', schemaSettingsFields,
+  new Set(settingsSchema.required));
+assertSameFields('Rust/Settings schema', schemaSettingsFields,
+  rustFields(rustSettingsSource, 'Settings'));
+assertSameFields('SwiftUI/Settings schema', schemaSettingsFields,
   swiftFields(swiftSettingsSource, 'AppSettings'));
+const typescriptSettingsSource = read(winRoot, 'src/types/settings.generated.ts');
+assertSameFields('TypeScript/Settings schema', schemaSettingsFields,
+  typescriptFields(typescriptSettingsSource, 'SettingsData'));
+assertSchemaTypes('Rust Settings', settingsSchema,
+  rustFieldTypes(rustSettingsSource, 'Settings'), 'rust');
+assertSchemaTypes('Swift Settings', settingsSchema,
+  swiftFieldTypes(swiftSettingsSource, 'AppSettings'), 'swift');
 
-const pairingSource = read(macRoot, 'src-tauri/src/pairing.rs');
+const pairingSource = readCore('src/pairing.rs');
 assertSameFields('SwiftUI/Rust pairing status', rustFields(pairingSource, 'PairingStatus'),
   swiftFields(swiftSource, 'PairingStatus'));
 assertSameFields('SwiftUI/Rust pairing peer', rustFields(pairingSource, 'PairingPeerStatus'),
   swiftFields(swiftSource, 'PairingPeerStatus'));
 
-const rustHistoryFields = rustFields(read(macRoot, 'src-tauri/src/db.rs'), 'HistoryEntry');
+const rustHistoryFields = rustFields(readCore('src/db/types.rs'), 'HistoryEntry');
 const swiftHistoryFields = swiftFields(
   read(macRoot, 'swift-ui/Sources/TailSync/Models/HistoryEntry.swift'), 'HistoryEntry');
 assertSameFields('SwiftUI/Rust history entry', rustHistoryFields, swiftHistoryFields);
@@ -256,12 +339,12 @@ function assertJsonFields(description, source, fields) {
   const missing = fields.filter((field) => !new RegExp(`"${field}"\\s*:`).test(source));
   if (missing.length) fail(`${description} is missing fields used by SwiftUI: ${missing.join(', ')}`);
 }
-assertJsonFields('Local device snapshot', macApiSource,
+assertJsonFields('Local device snapshot', macApiContractSource,
   ['hostname', 'tailscale_ip', 'connection_mode', 'public_key', 'fingerprint']);
-assertJsonFields('Daemon status', macApiSource,
+assertJsonFields('Daemon status', macApiContractSource,
   ['tcp_server_healthy', 'clipboard_monitor_healthy', 'active_routes']);
-assertJsonFields('File progress', macApiSource, ['name', 'sent', 'total', 'active']);
-assertJsonFields('Image thumbnail', macApiSource, ['width', 'height', 'rgba_b64']);
+assertJsonFields('File progress', macApiContractSource, ['name', 'sent', 'total', 'active']);
+assertJsonFields('Image thumbnail', macApiContractSource, ['width', 'height', 'rgba_b64']);
 
 const peerInfoFields = rustFields(read(macRoot, 'src-tauri/src/network/tailscale.rs'), 'PeerInfo');
 peerInfoFields.add('routes');
@@ -270,8 +353,8 @@ swiftPeerFields.delete('id');
 assertSameFields('SwiftUI/Rust peer snapshot', peerInfoFields, swiftPeerFields);
 const routeFields = ['interface', 'address', 'status', 'online', 'connected',
   'latency_ms', 'pairing_endpoint'];
-assertJsonFields('Windows peer route snapshot', read(winRoot, 'src-tauri/src/api.rs'), routeFields);
-assertJsonFields('macOS peer route snapshot', macApiSource, routeFields);
+assertJsonFields('Windows peer route snapshot', winApiContractSource, routeFields);
+assertJsonFields('macOS peer route snapshot', macApiContractSource, routeFields);
 for (const marker of [
   /struct Route: Decodable/,
   /case latencyMs = "latency_ms"/,
@@ -304,7 +387,6 @@ const macVerifierPath = join(macRoot, 'scripts/verify_macos_release.sh');
 if (!existsSync(macVerifierPath)) fail('Missing macOS release verification script: scripts/verify_macos_release.sh');
 const macVerifier = readFileSync(macVerifierPath, 'utf8');
 for (const pattern of [
-  /npm ci/,
   /cargo test .*--lib/,
   /cargo clippy .*--lib.*-D warnings/,
   /swift build .*--package-path swift-ui/,
@@ -315,4 +397,4 @@ for (const pattern of [
   /get_version/,
 ]) if (!pattern.test(macVerifier)) fail(`macOS release verifier is missing required check: ${pattern}`);
 
-console.log(`Cross-platform contract passed: shared UI/backend/dependencies, ${swiftCommands.size} Swift API commands, Swift JSON models, TCP 19890, API 19889, and macOS release requirements.`);
+console.log(`Cross-platform contract passed: shared Rust core, ${swiftCommands.size} Swift API commands, Swift JSON models, TCP 19890, API 19889, and macOS release requirements.`);

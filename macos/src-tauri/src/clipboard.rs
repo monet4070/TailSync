@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio::time::{sleep, Duration};
 
 use crate::clipboard_change::ClipboardChangeDetector;
@@ -19,6 +19,7 @@ use crate::sync;
 
 static CLIPBOARD_RECOVERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
+static CLIPBOARD_MONITOR_FAILURES: AtomicU64 = AtomicU64::new(0);
 const CLIPBOARD_MONITOR_STALE_AFTER_MS: u64 = 10_000;
 
 pub fn request_wake_recovery() {
@@ -32,6 +33,10 @@ pub fn monitor_is_healthy() -> bool {
     }
     let now = crate::protocol::unix_timestamp_ms().max(0) as u64;
     now.saturating_sub(last_tick) <= CLIPBOARD_MONITOR_STALE_AFTER_MS
+}
+
+pub fn monitor_failure_count() -> u64 {
+    CLIPBOARD_MONITOR_FAILURES.load(Ordering::Acquire)
 }
 
 fn is_managed_clipboard_file(path: &Path, managed_directory: &Path) -> bool {
@@ -61,7 +66,8 @@ pub fn start_monitor(
     sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pool: Arc<Mutex<network::ConnectionPool>>,
     settings: Arc<Mutex<crypto::Settings>>,
-) {
+    mut shutdown: watch::Receiver<bool>,
+) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let warm_pool = pool.clone();
         let warm_settings = settings.clone();
@@ -69,8 +75,48 @@ pub fn start_monitor(
             let peers = configured_peers(&warm_settings).await;
             network::prewarm_connections(warm_pool, peers).await;
         });
-        clipboard_loop(handle, database, sync_engine, pool, settings).await;
-    });
+        let mut consecutive_failures = 0_u32;
+        loop {
+            let worker_started = tokio::time::Instant::now();
+            let mut worker = tokio::spawn(clipboard_loop(
+                handle.clone(),
+                database.clone(),
+                sync_engine.clone(),
+                pool.clone(),
+                settings.clone(),
+                shutdown.clone(),
+            ));
+            let result = tokio::select! {
+                result = &mut worker => Some(result),
+                _ = wait_for_shutdown(&mut shutdown) => {
+                    worker.abort();
+                    let _ = worker.await;
+                    None
+                }
+            };
+            let Some(result) = result else {
+                info!("Clipboard monitor stopped for application shutdown");
+                return;
+            };
+            match result {
+                Ok(()) => warn!("Clipboard monitor stopped unexpectedly"),
+                Err(error) if error.is_panic() => error!("Clipboard monitor panicked"),
+                Err(error) => error!("Clipboard monitor task failed: {error}"),
+            }
+            CLIPBOARD_MONITOR_LAST_TICK_MS.store(0, Ordering::Release);
+            CLIPBOARD_MONITOR_FAILURES.fetch_add(1, Ordering::AcqRel);
+            if worker_started.elapsed() >= Duration::from_secs(60) {
+                consecutive_failures = 0;
+            }
+            consecutive_failures = consecutive_failures.saturating_add(1);
+            let backoff_seconds = (1_u64 << consecutive_failures.saturating_sub(1).min(5)).min(30);
+            warn!("Restarting clipboard monitor in {backoff_seconds} seconds");
+            tokio::select! {
+                _ = sleep(Duration::from_secs(backoff_seconds)) => {}
+                _ = wait_for_shutdown(&mut shutdown) => return,
+            }
+        }
+    })
 }
 
 async fn clipboard_loop(
@@ -79,6 +125,7 @@ async fn clipboard_loop(
     sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pool: Arc<Mutex<network::ConnectionPool>>,
     settings: Arc<Mutex<crypto::Settings>>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     let mut change_detector = ClipboardChangeDetector::new();
     let poll_interval = change_detector.poll_interval_ms();
@@ -91,7 +138,10 @@ async fn clipboard_loop(
     let mut recovery_generation = CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire);
 
     loop {
-        sleep(Duration::from_millis(poll_interval)).await;
+        tokio::select! {
+            _ = sleep(Duration::from_millis(poll_interval)) => {}
+            _ = wait_for_shutdown(&mut shutdown) => return,
+        }
         CLIPBOARD_MONITOR_LAST_TICK_MS.store(
             crate::protocol::unix_timestamp_ms().max(0) as u64,
             Ordering::Release,
@@ -120,15 +170,6 @@ async fn clipboard_loop(
         // Keep this event separate from content hashes so repeated copies are
         // still delivered.
         let clipboard_changed = true;
-
-        // Panic guard — catch any crash so the loop stays alive
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // Just return the clipboard state; we handle it outside
-        }));
-        if result.is_err() {
-            error!("Clipboard monitor panic caught, continuing");
-            continue;
-        }
 
         let clipboard =
             match handle.try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>() {
@@ -275,6 +316,17 @@ async fn clipboard_loop(
     }
 }
 
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
+        }
+    }
+}
+
 // ── Pack / unpack helpers ────────────────────────────────────────────
 
 /// Send one file to all enabled peers.
@@ -305,7 +357,12 @@ async fn send_file_to_peers(
     info!("Sending file: {} ({} bytes)", fname, total);
 
     // Send to peers
-    let peers = configured_peers(&settings).await;
+    let peers = if total > network::MAX_FILE_SIZE {
+        warn!("File {fname} exceeds the 1 GiB transfer limit; keeping only local history");
+        Vec::new()
+    } else {
+        configured_peers(&settings).await
+    };
     let transfer_id = TransferId::random();
     let meta = sync::FileMeta {
         transfer_id: Some(transfer_id),
@@ -325,11 +382,13 @@ async fn send_file_to_peers(
         let addr: std::net::SocketAddr = match network::peer_socket_addr(peer) {
             Ok(a) => a,
             Err(e) => {
-                warn!("Bad peer address for {}: {}", peer.hostname, e);
+                warn!("Bad address configured for peer {}", peer.hostname);
+                debug!("Peer address parse error: {e}");
                 continue;
             }
         };
-        info!("Sending file to peer {} at {}", peer.hostname, addr);
+        info!("Sending file to peer {}", peer.hostname);
+        debug!("Selected peer route: {addr}");
         let mut confirmed = match network::queue_peer_file_frame(
             &pool,
             peer,
@@ -341,7 +400,7 @@ async fn send_file_to_peers(
         {
             Ok(receipt) => receipt.next_offset.unwrap_or(0),
             Err(error) => {
-                warn!("FileMeta to {} failed: {}", addr, error);
+                warn!("File metadata to {} failed: {}", peer.hostname, error);
                 continue;
             }
         };
@@ -407,7 +466,10 @@ async fn send_file_to_peers(
             {
                 Ok(receipt) => receipt.next_offset.unwrap_or(confirmed),
                 Err(error) => {
-                    warn!("File chunk at {} to {} failed: {}", confirmed, addr, error);
+                    warn!(
+                        "File chunk at {} to {} failed: {}",
+                        confirmed, peer.hostname, error
+                    );
                     chunk_ok = false;
                     break;
                 }
@@ -496,10 +558,8 @@ fn should_process_clipboard_item(content_changed: bool, clipboard_changed: bool)
 
 async fn shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) -> bool {
     let mut sync = sync_engine.lock().await;
-    let key = hash.to_string();
-    if sync.shadow_filter.contains(&key) {
+    if sync.consume_shadow_filter(hash) {
         debug!("Text shadow-filter hit: {}", &hash[..8]);
-        sync.shadow_filter.retain(|h| h != &key);
         true
     } else {
         false
@@ -508,10 +568,8 @@ async fn shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) ->
 
 async fn image_shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) -> bool {
     let mut sync = sync_engine.lock().await;
-    let key = hash.to_string();
-    if sync.image_shadow_filter.contains(&key) {
+    if sync.consume_image_shadow_filter(hash) {
         debug!("Image shadow-filter hit: {}", &hash[..8]);
-        sync.image_shadow_filter.retain(|h| h != &key);
         true
     } else {
         false

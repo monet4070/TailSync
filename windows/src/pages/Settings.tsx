@@ -11,6 +11,8 @@ import {
   type ThemePreference,
 } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
+import { LatestRequest, SerialTaskQueue } from "../utils/asyncControl";
+import type { SettingsData } from "../types/settings.generated";
 import {
   Activity,
   Check,
@@ -28,20 +30,6 @@ import {
 import tailsyncIcon from "../../src-tauri/icons/32x32.png";
 
 /* ── Types ──────────────────────────────────────────────────────── */
-
-interface SettingsData {
-  notifications_enabled: boolean;
-  progress_bar_enabled: boolean;
-  history_limit: number;
-  theme: string;
-  color_theme: string;
-  language: string;
-  enabled_peers: Record<string, boolean>;
-  trusted_peer_keys: Record<string, string>;
-  trusted_peer_addresses: Record<string, Record<string, string>>;
-  paired_peer_endpoints: Record<string, string>;
-  connection_mode: "auto" | "lan_only" | "tailscale_only";
-}
 
 interface PeerDevice {
   hostname: string;
@@ -116,6 +104,7 @@ interface PairingStatus {
 
 export function Settings() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [historyLimitDraft, setHistoryLimitDraft] = useState(100);
   const [saved, setSaved] = useState(false);
   const [devices, setDevices] = useState<PeersResponse | null>(null);
   const [devicesLoading, setDevicesLoading] = useState(false);
@@ -133,20 +122,33 @@ export function Settings() {
     colorTheme,
     setColorTheme,
   } = useTheme();
-  const { t, locale, setLocale } = useI18n();
+  const { t, setLocale } = useI18n();
   const toastTimer = useRef<number>(0);
   const previousPairingPhase = useRef<PairingStatus["phase"] | null>(null);
+  const pairingBusyRef = useRef(pairingBusy);
+  const settingsRef = useRef<SettingsData | null>(null);
+  const saveQueue = useRef(new SerialTaskQueue());
+  const settingsUpdates = useRef(new LatestRequest());
+  const pairDialogRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     invoke<SettingsData>("get_settings")
       .then((s) => {
+        settingsRef.current = s;
         setSettings(s);
+        setHistoryLimitDraft(s.history_limit);
         if (isThemePreference(s.theme)) setTheme(s.theme);
         if (isColorTheme(s.color_theme)) setColorTheme(s.color_theme);
         setLocale(s.language);
       })
       .catch(console.error);
   }, [setColorTheme, setLocale, setTheme]);
+
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  useEffect(() => {
+    pairingBusyRef.current = pairingBusy;
+  }, [pairingBusy]);
 
   const connectionMode = settings?.connection_mode;
   useEffect(() => {
@@ -184,24 +186,95 @@ export function Settings() {
   }, [connectionMode]);
 
   const update = async (patch: Partial<SettingsData>) => {
-    if (!settings) return false;
-    const previous = settings;
-    const next = { ...settings, ...patch };
+    const previous = settingsRef.current;
+    if (!previous) return false;
+    const next = { ...previous, ...patch };
+    settingsRef.current = next;
     setSettings(next);
+    const generation = settingsUpdates.current.begin();
+    const save = saveQueue.current.enqueue(() =>
+      invoke("update_settings", { settingsJson: JSON.stringify(next) }),
+    );
     try {
-      await invoke("update_settings", {
-        settingsJson: JSON.stringify(next),
-      });
-      setSaved(true);
-      clearTimeout(toastTimer.current);
-      toastTimer.current = setTimeout(() => setSaved(false), 1500);
+      await save;
+      if (settingsUpdates.current.isCurrent(generation)) {
+        setSaved(true);
+        window.clearTimeout(toastTimer.current);
+        toastTimer.current = window.setTimeout(() => setSaved(false), 1500);
+      }
       return true;
     } catch (e) {
-      setSettings(previous);
+      if (settingsUpdates.current.isCurrent(generation)) {
+        try {
+          const canonical = await invoke<SettingsData>("get_settings");
+          settingsRef.current = canonical;
+          setSettings(canonical);
+          setHistoryLimitDraft(canonical.history_limit);
+        } catch {
+          settingsRef.current = previous;
+          setSettings(previous);
+          setHistoryLimitDraft(previous.history_limit);
+        }
+      }
       console.error("Save settings failed:", e);
       return false;
     }
   };
+
+  const commitHistoryLimit = async () => {
+    if (historyLimitDraft === settingsRef.current?.history_limit) return;
+    await update({ history_limit: historyLimitDraft });
+  };
+
+  useEffect(() => {
+    if (!pairingOpen) return;
+    const dialog = pairDialogRef.current;
+    if (!dialog) return;
+    previousFocus.current = document.activeElement as HTMLElement | null;
+    const focusableSelector = [
+      "button:not([disabled])",
+      "[href]",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+    const focusFirst = () => {
+      const focusable = dialog.querySelectorAll<HTMLElement>(focusableSelector);
+      (focusable[0] ?? dialog).focus();
+    };
+    const frame = window.requestAnimationFrame(focusFirst);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void closePairing();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(focusableSelector)];
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus.current?.focus();
+      previousFocus.current = null;
+    };
+  }, [pairingOpen]);
 
   const refreshDevices = async () => {
     setDevicesLoading(true);
@@ -313,7 +386,8 @@ export function Settings() {
   };
 
   const closePairing = async () => {
-    if (pairingBusy) return;
+    if (pairingBusyRef.current) return;
+    pairingBusyRef.current = true;
     setPairingBusy(true);
     try {
       setPairingStatus(await invoke<PairingStatus>("cancel_pairing"));
@@ -322,6 +396,7 @@ export function Settings() {
     } catch (error) {
       setPairingError(String(error));
     } finally {
+      pairingBusyRef.current = false;
       setPairingBusy(false);
     }
   };
@@ -410,7 +485,8 @@ export function Settings() {
           <button
             className="titlebar-close"
             onClick={() => getCurrentWindow().hide()}
-            title="Close"
+            title={t("settings.closePairing")}
+            aria-label={t("settings.closePairing")}
           >
             <X size={15} strokeWidth={1.8} aria-hidden="true" />
           </button>
@@ -434,7 +510,8 @@ export function Settings() {
         <button
           className="titlebar-close"
           onClick={() => getCurrentWindow().hide()}
-          title="Close"
+          title={t("settings.closePairing")}
+          aria-label={t("settings.closePairing")}
         >
           <X size={15} strokeWidth={1.8} aria-hidden="true" />
         </button>
@@ -446,26 +523,22 @@ export function Settings() {
         <section className="setting-group connection-group">
           <div className="setting-group-header section-header-with-action">
             <div>
-              <h3>{locale === "zh-CN" ? "连接与设备" : "Connections & devices"}</h3>
-              <p>
-                {locale === "zh-CN"
-                  ? "选择发现方式并管理参与同步的设备"
-                  : "Choose discovery and manage devices in sync"}
-              </p>
+              <h3>{t("settings.connectionsTitle")}</h3>
+              <p>{t("settings.connectionsDescription")}</p>
             </div>
             <button
               type="button"
               className="icon-button"
               onClick={refreshDevices}
               disabled={devicesLoading}
-              title={locale === "zh-CN" ? "刷新设备" : "Refresh devices"}
-              aria-label={locale === "zh-CN" ? "刷新设备" : "Refresh devices"}
+              title={t("settings.refreshDevices")}
+              aria-label={t("settings.refreshDevices")}
             >
               <RefreshCw className={devicesLoading ? "spin" : ""} size={16} strokeWidth={1.7} aria-hidden="true" />
             </button>
           </div>
 
-          <div className="connection-mode" role="radiogroup" aria-label={locale === "zh-CN" ? "连接方式" : "Connection mode"}>
+          <div className="connection-mode" role="radiogroup" aria-label={t("settings.connectionMode")}>
             <button
               type="button"
               className={settings.connection_mode === "auto" ? "active" : ""}
@@ -473,7 +546,7 @@ export function Settings() {
               role="radio"
               aria-checked={settings.connection_mode === "auto"}
             >
-              {locale === "zh-CN" ? "自动" : "Automatic"}
+              {t("settings.modeAuto")}
             </button>
             <button
               type="button"
@@ -483,7 +556,7 @@ export function Settings() {
               aria-checked={settings.connection_mode === "lan_only"}
             >
               <Wifi size={15} strokeWidth={1.7} aria-hidden="true" />
-              {locale === "zh-CN" ? "局域网" : "Local network"}
+              {t("settings.modeLan")}
             </button>
             <button
               type="button"
@@ -499,11 +572,11 @@ export function Settings() {
 
           <div className="pairing-window-row">
             <div>
-              <strong>{locale === "zh-CN" ? "设备配对" : "Device pairing"}</strong>
+              <strong>{t("settings.devicePairing")}</strong>
               <span>
                 {pairingStatus?.pairing_enabled
-                  ? `${locale === "zh-CN" ? "等待连接" : "Waiting"} · ${pairingStatus.remaining_seconds}s · ${pairingStatus.failed_attempts}/${pairingStatus.max_failures}`
-                  : locale === "zh-CN" ? "当前关闭" : "Currently closed"}
+                  ? `${t("settings.waiting")} · ${pairingStatus.remaining_seconds}s · ${pairingStatus.failed_attempts}/${pairingStatus.max_failures}`
+                  : t("settings.pairingClosed")}
               </span>
             </div>
             <button
@@ -512,9 +585,9 @@ export function Settings() {
               disabled={pairingBusy}
               onClick={() => pairingStatus?.pairing_enabled ? void closePairing() : void enablePairing()}
             >
-              {pairingStatus?.pairing_enabled
-                ? locale === "zh-CN" ? "关闭" : "Close"
-                : locale === "zh-CN" ? "允许配对" : "Allow pairing"}
+              {t(pairingStatus?.pairing_enabled
+                ? "settings.closePairing"
+                : "settings.allowPairing")}
             </button>
           </div>
 
@@ -525,7 +598,7 @@ export function Settings() {
                 <div className="device-info">
                   <div className="device-name">
                     <span className="device-name-text">{devices.self.hostname}</span>
-                    <span>{locale === "zh-CN" ? "本机" : "This device"}</span>
+                    <span>{t("settings.thisDevice")}</span>
                   </div>
                   <div className="device-fingerprint">{devices.self.fingerprint}</div>
                   <div className="peer-route-list local-route-list">
@@ -547,7 +620,7 @@ export function Settings() {
                               {route.interface === "lan" ? "LAN" : "Tailscale"}
                             </span>
                             <span className="peer-route-status positive">
-                              {locale === "zh-CN" ? "在线" : "Online"}
+                              {t("settings.online")}
                             </span>
                           </div>
                         ))}
@@ -576,13 +649,11 @@ export function Settings() {
                     <div className="device-name">
                       <span className="device-name-text">{peer.hostname}</span>
                       <span className={peer.trusted ? "peer-badge paired" : "peer-badge unpaired"}>
-                        {peer.trusted
-                          ? locale === "zh-CN" ? "已配对" : "Paired"
-                          : locale === "zh-CN" ? "未配对" : "Not paired"}
+                        {t(peer.trusted ? "settings.paired" : "settings.notPaired")}
                       </span>
                     </div>
                     <div className="device-fingerprint">
-                      {peer.trusted ? peer.fingerprint : (locale === "zh-CN" ? "等待安全配对" : "Waiting for secure pairing")}
+                      {peer.trusted ? peer.fingerprint : t("settings.waitingSecurePairing")}
                     </div>
                     {routes.length > 0 ? (
                       <div className="peer-route-list">
@@ -598,25 +669,23 @@ export function Settings() {
                               </span>
                               <span className={`peer-route-status health-${reachabilityStatus}`}>
                                 {reachabilityStatus === "online"
-                                  ? `${locale === "zh-CN" ? "在线" : "Online"}${route.latency_ms != null ? ` · ${route.latency_ms} ms` : ""}`
+                                  ? `${t("settings.online")}${route.latency_ms != null ? ` · ${route.latency_ms} ms` : ""}`
                                   : reachabilityStatus === "confirming"
-                                    ? locale === "zh-CN" ? "正在确认…" : "Confirming…"
+                                    ? t("settings.confirming")
                                     : reachabilityStatus === "discovered"
-                                      ? locale === "zh-CN" ? "已发现" : "Discovered"
-                                      : locale === "zh-CN" ? "离线" : "Offline"}
+                                      ? t("settings.discovered")
+                                      : t("settings.offline")}
                               </span>
                               <span className={`peer-route-connection ${route.connected ? "connected" : "idle"}`}>
-                                {route.connected
-                                  ? locale === "zh-CN" ? "已连接" : "Connected"
-                                  : locale === "zh-CN" ? "未连接" : "Not connected"}
+                                {t(route.connected ? "settings.connected" : "settings.notConnected")}
                               </span>
                               <button
                                 type="button"
                                 className="connection-test-button"
                                 disabled={test?.status === "testing"}
                                 onClick={() => void testConnection(peer, route)}
-                                title={locale === "zh-CN" ? "测试 TailSync TCP 端口" : "Test TailSync TCP port"}
-                                aria-label={locale === "zh-CN" ? `测试 ${route.address} 连通性` : `Test ${route.address} connectivity`}
+                                title={t("settings.testTcpPort")}
+                                aria-label={`${t("settings.testAddress")}: ${route.address}`}
                               >
                                 {test?.status === "testing"
                                   ? <RefreshCw className="spin" size={16} strokeWidth={1.7} aria-hidden="true" />
@@ -627,7 +696,7 @@ export function Settings() {
                               )}
                               {test?.status === "error" && (
                                 <span className="connection-test-result error">
-                                  {locale === "zh-CN" ? "失败" : "Failed"}
+                                  {t("settings.failed")}
                                 </span>
                               )}
                             </div>
@@ -636,14 +705,14 @@ export function Settings() {
                       </div>
                     ) : (
                       <div className="device-address">
-                        {locale === "zh-CN" ? "已配对 · 等待设备上线" : "Paired · waiting for device"}
+                        {t("settings.pairedWaiting")}
                       </div>
                     )}
                   </div>
                   <div className="device-actions">
                     {peer.trusted ? (
                       <>
-                        <label className="toggle" title={peer.enabled ? (locale === "zh-CN" ? "停止同步" : "Disable sync") : (locale === "zh-CN" ? "启用同步" : "Enable sync")}>
+                        <label className="toggle" title={t(peer.enabled ? "settings.disableSync" : "settings.enableSync")}>
                           <input
                             type="checkbox"
                             checked={peer.enabled}
@@ -655,15 +724,15 @@ export function Settings() {
                           type="button"
                           className="icon-button"
                           onClick={() => handleForget(peer)}
-                          title={locale === "zh-CN" ? "撤销配对" : "Forget paired device"}
-                          aria-label={locale === "zh-CN" ? "撤销配对" : "Forget paired device"}
+                          title={t("settings.forgetPairing")}
+                          aria-label={t("settings.forgetPairing")}
                         >
                           <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
                         </button>
                       </>
                     ) : (
                       <button type="button" className="pair-device-action" onClick={() => void openPairing(peer)}>
-                        {locale === "zh-CN" ? "配对" : "Pair"}
+                        {t("settings.pair")}
                       </button>
                     )}
                   </div>
@@ -672,18 +741,18 @@ export function Settings() {
             })}
 
             {devicesLoading && !devices && (
-              <div className="device-list-state">{locale === "zh-CN" ? "正在发现设备..." : "Discovering devices..."}</div>
+              <div className="device-list-state">{t("settings.discoveringDevices")}</div>
             )}
             {!devicesLoading && devices && devices.peers.length === 0 && (
               <div className="device-list-state">
-                {locale === "zh-CN" ? "暂未发现其他在线设备" : "No other online devices found"}
+                {t("settings.noDevices")}
               </div>
             )}
             {!devicesLoading && devicesError && (
               <div className="device-list-state error">
-                {settings.connection_mode === "tailscale_only"
-                  ? locale === "zh-CN" ? "无法读取 Tailscale，请确认其已安装并登录" : "Tailscale is unavailable. Check that it is installed and signed in."
-                  : locale === "zh-CN" ? "局域网发现失败，请检查防火墙和网络权限" : "LAN discovery failed. Check firewall and network access."}
+                {t(settings.connection_mode === "tailscale_only"
+                  ? "settings.tailscaleUnavailable"
+                  : "settings.lanUnavailable")}
               </div>
             )}
           </div>
@@ -693,11 +762,7 @@ export function Settings() {
         <section className="setting-group">
           <div className="setting-group-header">
             <h3>{t("settings.general")}</h3>
-            <p>
-              {locale === "zh-CN"
-                ? "控制 TailSync 的行为和通知方式"
-                : "Control TailSync behaviour and notifications"}
-            </p>
+            <p>{t("settings.generalDescription")}</p>
           </div>
 
           <div
@@ -710,11 +775,7 @@ export function Settings() {
           >
             <div className="setting-row-info">
               <span>{t("settings.notifications")}</span>
-              <small>
-                {locale === "zh-CN"
-                  ? "收到新内容时弹出系统通知"
-                  : "Show system notifications for new content"}
-              </small>
+              <small>{t("settings.notificationsDescription")}</small>
             </div>
             <label className="toggle" onClick={(e) => e.stopPropagation()}>
               <input
@@ -738,11 +799,7 @@ export function Settings() {
           >
             <div className="setting-row-info">
               <span>{t("settings.progressBar")}</span>
-              <small>
-                {locale === "zh-CN"
-                  ? "在底部显示文件传输进度"
-                  : "Show file transfer progress at the bottom"}
-              </small>
+              <small>{t("settings.progressDescription")}</small>
             </div>
             <label className="toggle" onClick={(e) => e.stopPropagation()}>
               <input
@@ -761,32 +818,33 @@ export function Settings() {
         <section className="setting-group">
           <div className="setting-group-header">
             <h3>{t("settings.history")}</h3>
-            <p>
-              {locale === "zh-CN"
-                ? "管理剪贴板历史存储"
-                : "Manage clipboard history storage"}
-            </p>
+            <p>{t("settings.historyDescription")}</p>
           </div>
 
           <div className="setting-row">
             <div className="setting-row-info">
               <span>{t("settings.historyLimit")}</span>
               <small>
-                {locale === "zh-CN"
-                  ? `最多保留 ${settings.history_limit} 条记录`
-                  : `Keep up to ${settings.history_limit} entries`}
+                {t("settings.historyLimitDescriptionPrefix")} {historyLimitDraft}{" "}
+                {t("settings.historyLimitDescriptionSuffix")}
               </small>
             </div>
             <input
               type="range"
               min={10}
               max={500}
-              value={settings.history_limit}
-              onChange={(e) =>
-                update({ history_limit: parseInt(e.target.value) })
-              }
+              value={historyLimitDraft}
+              aria-label={t("settings.historyLimit")}
+              onChange={(e) => setHistoryLimitDraft(Number(e.target.value))}
+              onPointerUp={() => void commitHistoryLimit()}
+              onBlur={() => void commitHistoryLimit()}
+              onKeyUp={(event) => {
+                if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+                  void commitHistoryLimit();
+                }
+              }}
             />
-            <span className="range-value">{settings.history_limit}</span>
+            <span className="range-value">{historyLimitDraft}</span>
           </div>
         </section>
 
@@ -794,11 +852,7 @@ export function Settings() {
         <section className="setting-group">
           <div className="setting-group-header">
             <h3>{t("settings.appearance")}</h3>
-            <p>
-              {locale === "zh-CN"
-                ? "自定义界面主题和语言"
-                : "Customise the look and language"}
-            </p>
+            <p>{t("settings.appearanceDescription")}</p>
           </div>
 
           <div className="setting-row">
@@ -874,8 +928,13 @@ export function Settings() {
               <select
                 value={settings.language}
                 onChange={(e) => {
-                  update({ language: e.target.value });
-                  setLocale(e.target.value);
+                  const language = e.target.value as SettingsData["language"];
+                  setLocale(language);
+                  void update({ language }).then((savedLanguage) => {
+                    if (!savedLanguage) {
+                      setLocale(settingsRef.current?.language ?? settings.language);
+                    }
+                  });
                 }}
               >
                 <option value="zh-CN">简体中文</option>
@@ -891,26 +950,32 @@ export function Settings() {
         <div className="dialog-backdrop" onMouseDown={() => void closePairing()}>
           <div
             className="pair-dialog"
+            ref={pairDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pair-dialog-title"
+            aria-describedby="pair-dialog-status"
+            tabIndex={-1}
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="confirm-dialog-icon pair-dialog-icon">
               <Settings2 size={22} strokeWidth={1.6} aria-hidden="true" />
             </div>
-            <h2>
-              {locale === "zh-CN" ? "设备配对" : "Device pairing"}
+            <h2 id="pair-dialog-title">
+              {t("settings.devicePairing")}
               {(pairingStatus?.peer?.hostname || pairingTarget?.hostname) && ` · ${pairingStatus?.peer?.hostname || pairingTarget?.hostname}`}
             </h2>
             {pairingStatus?.peer ? (
               <>
-                <div className="pairing-code" aria-label={locale === "zh-CN" ? "配对验证码" : "Pairing verification code"}>
+                <div className="pairing-code" aria-label={t("settings.pairingCode")}>
                   {pairingStatus.peer.verification_code}
                 </div>
-                <p className="pairing-check-copy">
-                  {locale === "zh-CN" ? "请确认另一台设备显示相同验证码" : "Confirm that the other device shows the same code"}
+                <p className="pairing-check-copy" id="pair-dialog-status">
+                  {t("settings.compareCode")}
                 </p>
                 <div className="pairing-peer-fingerprint">{pairingStatus.peer.fingerprint}</div>
                 {pairingStatus.phase === "waiting_for_peer" && (
-                  <p className="pairing-progress">{locale === "zh-CN" ? "已确认，等待对端确认..." : "Confirmed, waiting for the other device..."}</p>
+                  <p className="pairing-progress">{t("settings.waitingPeerConfirm")}</p>
                 )}
               </>
             ) : (
@@ -918,29 +983,26 @@ export function Settings() {
                 {pairingBusy || pairingStatus?.phase === "handshaking" ? (
                   <>
                     <span className="pairing-spinner" />
-                    <p>{locale === "zh-CN" ? "正在建立安全连接..." : "Establishing a secure connection..."}</p>
+                    <p id="pair-dialog-status">{t("settings.secureHandshake")}</p>
                   </>
                 ) : (
                   <div className="pairing-instruction">
-                    <span>{locale === "zh-CN" ? "配对已开启" : "Pairing is ready"}</span>
-                    <strong>
-                      {locale === "zh-CN"
-                        ? "请在另一端设备列表点击配对按钮"
-                        : "On the other device, click Pair in the device list"}
-                    </strong>
+                    <span>{t("settings.pairingReady")}</span>
+                    <strong id="pair-dialog-status">{t("settings.pairingInstruction")}</strong>
                     <small>
-                      {locale === "zh-CN"
-                        ? `窗口将在 ${pairingStatus?.remaining_seconds ?? 0} 秒后关闭`
-                        : `This window closes in ${pairingStatus?.remaining_seconds ?? 0} seconds`}
+                      {t("settings.pairingExpiresPrefix")} {pairingStatus?.remaining_seconds ?? 0}{" "}
+                      {t("settings.pairingExpiresSuffix")}
                     </small>
                   </div>
                 )}
               </div>
             )}
-            {(pairingError || pairingStatus?.error) && <p className="pair-dialog-error">{pairingError || pairingStatus?.error}</p>}
+            {(pairingError || pairingStatus?.error) && (
+              <p className="pair-dialog-error" role="alert">{pairingError || pairingStatus?.error}</p>
+            )}
             <div className="confirm-dialog-actions">
               <button type="button" onClick={() => void closePairing()} disabled={pairingBusy}>
-                {locale === "zh-CN" ? "取消" : "Cancel"}
+                {t("settings.cancel")}
               </button>
               <button
                 type="button"
@@ -948,9 +1010,9 @@ export function Settings() {
                 onClick={() => void handlePair()}
                 disabled={pairingBusy || !pairingStatus?.peer || pairingStatus.peer.local_confirmed}
               >
-                {pairingStatus?.peer?.local_confirmed
-                  ? locale === "zh-CN" ? "已确认" : "Confirmed"
-                  : locale === "zh-CN" ? "验证码一致" : "Codes match"}
+                {t(pairingStatus?.peer?.local_confirmed
+                  ? "settings.confirmed"
+                  : "settings.codesMatch")}
               </button>
             </div>
           </div>
@@ -958,7 +1020,7 @@ export function Settings() {
       )}
 
       {/* ── Toast ── */}
-      {saved && <div className="toast">{t("settings.saved")}</div>}
+      {saved && <div className="toast" role="status">{t("settings.saved")}</div>}
     </div>
   );
 }

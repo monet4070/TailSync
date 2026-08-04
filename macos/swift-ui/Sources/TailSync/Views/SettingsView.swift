@@ -1,5 +1,32 @@
 import SwiftUI
 
+private actor SettingsSaveCoordinator {
+    private enum SaveResult: Sendable {
+        case success
+        case failure(String)
+    }
+
+    private var tail: Task<SaveResult, Never>?
+
+    func save(_ settings: AppSettings) async -> String? {
+        let predecessor = tail
+        let job = Task<SaveResult, Never> {
+            _ = await predecessor?.value
+            do {
+                try await ApiClient.shared.updateSettings(settings)
+                return .success
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+        }
+        tail = job
+        switch await job.value {
+        case .success: return nil
+        case .failure(let message): return message
+        }
+    }
+}
+
 struct SettingsView: View {
     private struct PeerRoute: Identifiable {
         let peer: ApiClient.PeerSnapshot
@@ -35,6 +62,8 @@ struct SettingsView: View {
     @State private var testResults: [String: (latencyMs: Int, error: String)] = [:]
     @State private var peerLoadGeneration = 0
     @State private var peerRequestInFlight = false
+    @State private var saveGeneration = 0
+    @State private var saveCoordinator = SettingsSaveCoordinator()
 
     private var activeTheme: TailSyncColorTheme {
         TailSyncColorTheme(storedValue: loc.colorTheme)
@@ -558,26 +587,35 @@ struct SettingsView: View {
             let result = await ApiClient.shared.getPeers()
             guard generation == peerLoadGeneration,
                   requestedMode == settings.connection_mode else { return }
-            localDevice = result.local
-            peers = result.peers.filter { peer in
-                peer.online || peer.trusted || peer.status == "discovered"
-            }
-            pairedPeerEndpoints = result.pairedEndpoints
-            peerError = result.error
-            peerRequestInFlight = false
-            if showLoading {
-                peersLoading = false
-            }
+            applyPeerResult(result, showLoading: showLoading)
+        }
+    }
+
+    private func applyPeerResult(_ result: ApiClient.PeersResult, showLoading: Bool) {
+        localDevice = result.local
+        peers = result.peers.filter { peer in
+            peer.online || peer.trusted || peer.status == "discovered"
+        }
+        pairedPeerEndpoints = result.pairedEndpoints
+        peerError = result.error
+        peerRequestInFlight = false
+        if showLoading {
+            peersLoading = false
         }
     }
 
     private func refreshPeers() {
         guard !peerRequestInFlight else { return }
+        peerLoadGeneration += 1
+        let generation = peerLoadGeneration
+        let requestedMode = settings.connection_mode
         peerRequestInFlight = true
         peersLoading = true
         Task { @MainActor in
-            _ = await ApiClient.shared.refreshPeers()
-            loadPeers()
+            let result = await ApiClient.shared.refreshPeers()
+            guard generation == peerLoadGeneration,
+                  requestedMode == settings.connection_mode else { return }
+            applyPeerResult(result, showLoading: true)
         }
     }
 
@@ -611,7 +649,9 @@ struct SettingsView: View {
 
         Task { @MainActor in
             do {
-                try await ApiClient.shared.updateSettings(value)
+                if let message = await saveCoordinator.save(value) {
+                    throw ApiError.serverError(message)
+                }
                 guard generation == peerLoadGeneration,
                       requestedMode == settings.connection_mode else { return }
                 saved = true
@@ -630,15 +670,22 @@ struct SettingsView: View {
     private func save() {
         guard !isLoading else { return }
         let value = settings
+        saveGeneration += 1
+        let generation = saveGeneration
         Task { @MainActor in
-            do {
-                try await ApiClient.shared.updateSettings(value)
-                saved = true
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                saved = false
-            } catch {
-                errorMessage = error.localizedDescription
+            let error = await saveCoordinator.save(value)
+            guard generation == saveGeneration else { return }
+            if let error {
+                errorMessage = error
+                return
             }
+            saved = true
+            do {
+                try await Task.sleep(nanoseconds: 1_200_000_000)
+            } catch {
+                return
+            }
+            if generation == saveGeneration { saved = false }
         }
     }
 
@@ -759,7 +806,7 @@ struct SettingsView: View {
         testingPeers.insert(route.id)
         Task { @MainActor in
             testResults[route.id] = await ApiClient.shared.testConnection(address: route.address)
-                ?? (0, "Connection failed")
+                ?? (0, Loc.t("settings.connectionFailed"))
             testingPeers.remove(route.id)
         }
     }

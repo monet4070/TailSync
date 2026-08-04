@@ -196,7 +196,9 @@ fn parse_status(bytes: &[u8]) -> Result<(LocalInfo, Vec<PeerInfo>), String> {
 /// Get local machine info only (no peer scan)
 #[cfg(test)]
 mod tests {
-    use super::{get_peers_from_binary, parse_status, tailscale_binary};
+    #[cfg(target_os = "macos")]
+    use super::tailscale_binary;
+    use super::{get_peers_from_binary, parse_status};
 
     #[test]
     fn status_parser_returns_only_online_valid_peers() {

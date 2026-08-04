@@ -3,6 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
+import { LatestRequest } from "../utils/asyncControl";
+import {
+  HISTORY_PAGE_SIZE,
+  historyPageCount,
+  normalizeHistoryPage,
+} from "../utils/historyPagination";
 import {
   ArrowLeft,
   ArrowLeftRight,
@@ -21,6 +27,7 @@ import {
   Search,
   SearchX,
   Terminal,
+  TriangleAlert,
   Trash2,
   Type,
   X,
@@ -78,9 +85,13 @@ interface HistoryCapabilities {
   date_range_filter: boolean;
 }
 
+interface MigrationDiagnostics {
+  unresolved_count: number;
+}
+
 /* ── Constants ──────────────────────────────────────────────────── */
 
-const PAGE_SIZE = 30;
+const PAGE_SIZE = HISTORY_PAGE_SIZE;
 const VERSION_POLL_MS = 800;
 const NEW_GLOW_DURATION_MS = 3000;
 const RESTORE_FEEDBACK_DURATION_MS = 1500;
@@ -385,21 +396,76 @@ function ThumbnailCanvas({ data }: { data: ThumbnailData }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const expectedLength = data.width * data.height * 4;
+    if (
+      data.width <= 0 ||
+      data.height <= 0 ||
+      !Number.isSafeInteger(expectedLength)
+    ) return;
     canvas.width = data.width;
     canvas.height = data.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-
-    const binaryStr = atob(data.b64);
-    const bytes = new Uint8ClampedArray(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) {
+    let binaryStr: string;
+    try {
+      binaryStr = atob(data.b64);
+    } catch {
+      return;
+    }
+    if (binaryStr.length !== expectedLength) return;
+    const bytes = new Uint8ClampedArray(expectedLength);
+    for (let i = 0; i < expectedLength; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
     }
-    const imageData = new ImageData(bytes, data.width, data.height);
-    ctx.putImageData(imageData, 0, 0);
+    try {
+      const imageData = new ImageData(bytes, data.width, data.height);
+      ctx.putImageData(imageData, 0, 0);
+    } catch {
+      // Keep the placeholder when the WebView rejects malformed image data.
+    }
   }, [data]);
 
   return <canvas ref={canvasRef} className="item-thumb" />;
+}
+
+function LazyThumbnail({
+  id,
+  data,
+  onVisible,
+  fallback,
+}: {
+  id: number;
+  data?: ThumbnailData;
+  onVisible: (id: number) => void;
+  fallback: React.ReactNode;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (data) return;
+    const element = rootRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      onVisible(id);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (records) => {
+        if (records.some((record) => record.isIntersecting)) {
+          onVisible(id);
+          observer.disconnect();
+        }
+      },
+      { root: element.closest(".history-list"), rootMargin: "96px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [data, id, onVisible]);
+
+  return (
+    <div className="item-preview" ref={rootRef}>
+      {data ? <ThumbnailCanvas data={data} /> : fallback}
+    </div>
+  );
 }
 
 /* ── Component ──────────────────────────────────────────────────── */
@@ -408,6 +474,7 @@ export function History() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [totalEntries, setTotalEntries] = useState(0);
   const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
+  const [migrationDiagnostics, setMigrationDiagnostics] = useState<MigrationDiagnostics | null>(null);
   const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
   const thumbnailIds = useRef<Set<number>>(new Set());
   const [keyword, setKeyword] = useState("");
@@ -424,11 +491,12 @@ export function History() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
   const restoreFeedbackTimer = useRef<number>(0);
+  const newGlowTimers = useRef<Set<number>>(new Set());
 
   const lastVersion = useRef<number>(0);
   const prevIds = useRef<Set<number>>(new Set());
   const lastQueryKey = useRef("");
-  const historyRequestGeneration = useRef(0);
+  const historyRequests = useRef(new LatestRequest());
   const [fileProgress, setFileProgress] = useState<{
     name: string;
     sent: number;
@@ -440,10 +508,11 @@ export function History() {
   useEffect(() => {
     progressEnabledRef.current = progressBarEnabled;
   }, [progressBarEnabled]);
-  useEffect(
-    () => () => window.clearTimeout(restoreFeedbackTimer.current),
-    [],
-  );
+  useEffect(() => () => {
+    window.clearTimeout(restoreFeedbackTimer.current);
+    newGlowTimers.current.forEach(window.clearTimeout);
+    newGlowTimers.current.clear();
+  }, []);
   useEffect(() => {
     const refreshCalendar = () => {
       const nextNow = new Date();
@@ -497,7 +566,7 @@ export function History() {
   );
   const hasActiveFilters =
     Boolean(keyword) || selectedCategory !== "all" || selectedDateFilter !== "all";
-  const totalPages = Math.max(1, Math.ceil(totalEntries / PAGE_SIZE));
+  const totalPages = historyPageCount(totalEntries);
   const hasNext = page < totalPages - 1;
   const hasPrev = page > 0;
 
@@ -524,27 +593,31 @@ export function History() {
 
   /* ── History loading ──────────────────────────────────────────── */
 
-  const loadThumbnails = useCallback(async (ids: number[]) => {
-    const loaded = new Map<number, ThumbnailData>();
-    for (const id of ids) {
-      if (thumbnailIds.current.has(id)) continue;
-      thumbnailIds.current.add(id);
-      try {
-        const resp = await invoke<ImageThumbnail>("get_image_data", { id });
-        if (resp.thumbnail_b64) {
-          loaded.set(id, {
-            b64: resp.thumbnail_b64,
-            width: resp.thumbnail_width,
-            height: resp.thumbnail_height,
-          });
-        }
-      } catch (e) {
-        thumbnailIds.current.delete(id);
-        console.error(`Thumbnail load failed for ${id}:`, e);
+  const loadThumbnail = useCallback(async (id: number) => {
+    if (thumbnailIds.current.has(id)) return;
+    thumbnailIds.current.add(id);
+    try {
+      const resp = await invoke<ImageThumbnail>("get_image_data", { id });
+      if (resp.thumbnail_b64) {
+        setThumbnails((current) => new Map(current).set(id, {
+          b64: resp.thumbnail_b64,
+          width: resp.thumbnail_width,
+          height: resp.thumbnail_height,
+        }));
       }
+    } catch (e) {
+      thumbnailIds.current.delete(id);
+      console.error(`Thumbnail load failed for ${id}:`, e);
     }
-    if (loaded.size > 0) {
-      setThumbnails((current) => new Map([...current, ...loaded]));
+  }, []);
+
+  const loadMigrationDiagnostics = useCallback(async () => {
+    try {
+      setMigrationDiagnostics(
+        await invoke<MigrationDiagnostics>("get_migration_diagnostics"),
+      );
+    } catch (error) {
+      console.error("Failed to load migration diagnostics:", error);
     }
   }, []);
 
@@ -559,7 +632,7 @@ export function History() {
   }, []);
 
   const loadHistory = useCallback(async () => {
-    const requestGeneration = ++historyRequestGeneration.current;
+    const requestGeneration = historyRequests.current.begin();
     if (!activeDateBounds.valid) {
       setEntries([]);
       setTotalEntries(0);
@@ -585,10 +658,11 @@ export function History() {
       };
       const queryKey = JSON.stringify(query);
       const result = await invoke<HistoryPageResult>("get_history_page", query);
-      if (requestGeneration !== historyRequestGeneration.current) return;
+      if (!historyRequests.current.isCurrent(requestGeneration)) return;
 
-      if (result.total > 0 && query.offset >= result.total) {
-        setPage(Math.max(0, Math.ceil(result.total / PAGE_SIZE) - 1));
+      const normalizedPage = normalizeHistoryPage(page, result.total);
+      if (normalizedPage !== page) {
+        setPage(normalizedPage);
         return;
       }
 
@@ -603,30 +677,26 @@ export function History() {
         );
         if (freshIds.size > 0) {
           setNewIds((previous) => new Set([...previous, ...freshIds]));
-          window.setTimeout(() => {
+          const timer = window.setTimeout(() => {
+            newGlowTimers.current.delete(timer);
             setNewIds((previous) => {
               const next = new Set(previous);
               freshIds.forEach((id) => next.delete(id));
               return next;
             });
           }, NEW_GLOW_DURATION_MS);
+          newGlowTimers.current.add(timer);
         }
       }
       lastQueryKey.current = queryKey;
       prevIds.current = new Set(result.entries.map((entry) => entry.id));
 
-      const imageIds = result.entries
-        .filter((entry) => entry.type === "image")
-        .map((entry) => entry.id);
-      if (imageIds.length > 0) {
-        loadThumbnails(imageIds);
-      }
     } catch (e) {
-      if (requestGeneration === historyRequestGeneration.current) {
+      if (historyRequests.current.isCurrent(requestGeneration)) {
         console.error("Failed to load history:", e);
       }
     } finally {
-      if (requestGeneration === historyRequestGeneration.current) {
+      if (historyRequests.current.isCurrent(requestGeneration)) {
         setLoading(false);
       }
     }
@@ -634,7 +704,6 @@ export function History() {
     activeDateBounds,
     capabilities,
     keyword,
-    loadThumbnails,
     page,
     selectedCategory,
   ]);
@@ -643,13 +712,15 @@ export function History() {
 
   useEffect(() => {
     void loadCapabilities();
-  }, [loadCapabilities]);
+    void loadMigrationDiagnostics();
+  }, [loadCapabilities, loadMigrationDiagnostics]);
 
   useEffect(() => {
     loadSettings();
     let running = true;
+    let pollTimer = 0;
     const poll = async () => {
-      while (running) {
+      if (!running) return;
         loadSettings();
         try {
           const resp = await invoke<{ version: number }>("get_version");
@@ -671,12 +742,12 @@ export function History() {
         } catch {
           /* ignore */
         }
-        await new Promise((r) => setTimeout(r, VERSION_POLL_MS));
-      }
+      if (running) pollTimer = window.setTimeout(() => void poll(), VERSION_POLL_MS);
     };
-    poll();
+    void poll();
     return () => {
       running = false;
+      window.clearTimeout(pollTimer);
     };
   }, [loadHistory, loadSettings]);
 
@@ -710,7 +781,7 @@ export function History() {
     try {
       await invoke("delete_entry", { id });
       lastQueryKey.current = "";
-      await loadHistory();
+      await Promise.all([loadHistory(), loadMigrationDiagnostics()]);
     } catch (e) {
       console.error("Delete failed:", e);
     }
@@ -729,6 +800,7 @@ export function History() {
       setShowClearConfirm(false);
       prevIds.current = new Set();
       lastQueryKey.current = "";
+      await loadMigrationDiagnostics();
     } catch (e) {
       console.error("Clear history failed:", e);
     } finally {
@@ -849,6 +921,16 @@ export function History() {
         </div>
       )}
 
+      {migrationDiagnostics && migrationDiagnostics.unresolved_count > 0 && (
+        <div className="migration-warning" role="status">
+          <TriangleAlert size={15} strokeWidth={1.8} aria-hidden="true" />
+          <span>
+            {t("history.migrationWarningPrefix")} {migrationDiagnostics.unresolved_count}{" "}
+            {t("history.migrationWarningSuffix")}
+          </span>
+        </div>
+      )}
+
       {/* ── Main content area ── */}
       {loading && entries.length === 0 ? (
         /* Skeleton on initial load */
@@ -924,23 +1006,33 @@ export function History() {
                     const category = categories[0];
                     const CategoryIcon = CATEGORY_ICONS[category];
                     return (
-                      <div
+                      <article
                         key={entry.id}
                         className={`history-item${isNew ? " is-new" : ""}${selectedId === entry.id ? " restored" : ""}`}
-                        style={{ animationDelay: `${delay}ms` }}
-                        data-id={entry.id}
-                        onDoubleClick={() => handleRestore(entry.id)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          handleDelete(entry.id);
-                        }}
-                      >
-                        {entry.type === "image" &&
-                        thumbnails.has(entry.id) ? (
-                          <ThumbnailCanvas data={thumbnails.get(entry.id)!} />
+                         style={{ animationDelay: `${delay}ms` }}
+                         data-id={entry.id}
+                         onDoubleClick={() => handleRestore(entry.id)}
+                         onContextMenu={(event) => {
+                           event.preventDefault();
+                           void handleDelete(entry.id);
+                         }}
+                       >
+                        {entry.type === "image" ? (
+                          <LazyThumbnail
+                            id={entry.id}
+                            data={thumbnails.get(entry.id)}
+                            onVisible={loadThumbnail}
+                            fallback={(
+                              <div className={`item-icon ${category}`}>
+                                <CategoryIcon size={15} strokeWidth={1.8} aria-hidden="true" />
+                              </div>
+                            )}
+                          />
                         ) : (
-                          <div className={`item-icon ${category}`}>
-                            <CategoryIcon size={15} strokeWidth={1.8} aria-hidden="true" />
+                          <div className="item-preview">
+                            <div className={`item-icon ${category}`}>
+                              <CategoryIcon size={15} strokeWidth={1.8} aria-hidden="true" />
+                            </div>
                           </div>
                         )}
 
@@ -973,7 +1065,7 @@ export function History() {
                             </span>
                           </div>
                         </div>
-                      </div>
+                      </article>
                     );
                   })}
                 </div>

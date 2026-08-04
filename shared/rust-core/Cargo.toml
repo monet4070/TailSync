@@ -1,0 +1,31 @@
+[package]
+name = "tailsync-core"
+version = "2.1.0"
+description = "Shared storage, identity, crypto, and wire protocol for TailSync"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
+bincode = "1"
+blake3 = "1"
+chrono = { version = "0.4", features = ["serde"] }
+directories = "5"
+fernet = { version = "0.2", default-features = false, features = ["rustcrypto"] }
+hex = "0.4"
+log = "0.4"
+rand = "0.8"
+ring = "0.17"
+rusqlite = { version = "0.31", features = ["bundled"] }
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+snow = "0.9"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography"] }
+
+[features]
+test-support = []

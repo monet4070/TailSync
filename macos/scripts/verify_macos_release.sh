@@ -7,11 +7,16 @@ APP_ID="com.tailsync.app"
 API_PORT=19889
 PEER_PORT=19890
 APP_STARTED=0
+APP_PROCESS_PID=''
+API_TOKEN=''
 WIN_ROOT="${1:-$(cd .. && pwd)/tailsync-v2-win}"
 
 cleanup() {
     if [ "$APP_STARTED" -eq 1 ]; then
         /usr/bin/osascript -e "tell application id \"$APP_ID\" to quit" >/dev/null 2>&1 || true
+        if [[ -n "$APP_PROCESS_PID" ]] && kill -0 "$APP_PROCESS_PID" >/dev/null 2>&1; then
+            kill "$APP_PROCESS_PID" >/dev/null 2>&1 || true
+        fi
         for _ in {1..50}; do
             if ! /usr/sbin/lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
                 break
@@ -29,25 +34,21 @@ for port in "$API_PORT" "$PEER_PORT"; do
     fi
 done
 
-echo '[1/8] Installing locked frontend dependencies...'
-npm ci
-
-echo '[2/8] Checking the shared frontend...'
-npm run lint
-npm run build
-
-echo '[3/8] Checking the Rust daemon...'
+echo '[1/6] Checking the Rust daemon...'
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml --lib
+cargo fmt --manifest-path ../shared/rust-core/Cargo.toml --all -- --check
+cargo clippy --locked --manifest-path ../shared/rust-core/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path ../shared/rust-core/Cargo.toml
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 
-echo '[4/8] Checking the SwiftUI frontend...'
+echo '[2/6] Checking the SwiftUI frontend...'
 swift build -c release --package-path swift-ui
 
-echo '[5/8] Checking the cross-project contract...'
+echo '[3/6] Checking the cross-project contract...'
 node scripts/check_cross_platform_sync.mjs --win-root "$WIN_ROOT" --mac-root "$PWD"
 
-echo '[6/8] Building and inspecting TailSync.app...'
+echo '[4/6] Building and inspecting TailSync.app...'
 bash ./build-mac.sh
 test -d "$APP_PATH"
 test -x "$APP_PATH/Contents/MacOS/TailSync"
@@ -67,8 +68,10 @@ if ! printf '%s\n' "$helper_output" | grep -Fxq "$helper_probe"; then
 fi
 rm -f "$helper_probe"
 
-echo '[7/8] Launching the packaged application...'
-open -n "$APP_PATH"
+echo '[5/6] Launching the packaged application...'
+API_TOKEN="$(/usr/bin/openssl rand -hex 32)"
+TAILSYNC_API_TOKEN="$API_TOKEN" "$APP_PATH/Contents/MacOS/TailSync" >/dev/null 2>&1 &
+APP_PROCESS_PID=$!
 APP_STARTED=1
 api_ready=0
 for _ in {1..100}; do
@@ -84,8 +87,8 @@ if [ "$api_ready" -ne 1 ]; then
     exit 1
 fi
 
-echo '[8/8] Verifying the JSON-lines API...'
-response="$(printf '{\"cmd\":\"get_version\"}\n' | /usr/bin/nc -w 3 127.0.0.1 "$API_PORT")"
+echo '[6/6] Verifying the JSON-lines API...'
+response="$(printf '{\"cmd\":\"get_version\",\"token\":\"%s\"}\n' "$API_TOKEN" | /usr/bin/nc -w 3 127.0.0.1 "$API_PORT")"
 if ! printf '%s\n' "$response" | grep -Eq '^\{"data":[0-9]+,"ok":true\}$'; then
     echo "Unexpected API response: $response" >&2
     exit 1

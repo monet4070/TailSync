@@ -15,6 +15,7 @@ import Foundation
 // ── Configuration ─────────────────────────────────────────────────
 let CMD_PORT: UInt16 = 19889
 let ICON_SIZE = NSSize(width: 18, height: 18)
+let API_TOKEN = ProcessInfo.processInfo.environment["TAILSYNC_API_TOKEN"] ?? ""
 
 /// Parse `--lang zh-CN` from command-line args.
 func parseLanguage() -> String {
@@ -89,7 +90,7 @@ func sendCommand(_ cmd: String, id: Int64? = nil) {
         guard connected == 0 else { return }
 
         // Build JSON payload
-        var payload = "{\"cmd\":\"\(cmd)\""
+        var payload = "{\"cmd\":\"\(cmd)\",\"token\":\"\(API_TOKEN)\""
         if let id = id { payload += ",\"id\":\(id)" }
         payload += "}\n"
         _ = payload.withCString { send(sock, $0, strlen($0), 0) }

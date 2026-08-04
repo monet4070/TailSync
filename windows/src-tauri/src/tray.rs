@@ -3,10 +3,19 @@ use log::info;
 use std::process::{Child, Command};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    AppHandle, Runtime,
+    AppHandle, Manager, Runtime,
 };
 
 const TRAY_ID: &str = "tailsync-tray";
+static TRANSPARENT_TRAY_RGBA: [u8; 32 * 32 * 4] = [0; 32 * 32 * 4];
+
+fn request_shutdown<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        let _ = state.shutdown.send(true);
+    } else {
+        app.exit(0);
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct TrayLabels {
@@ -57,7 +66,9 @@ pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>, language: &str) -> Resul
 #[cfg(not(target_os = "macos"))]
 #[cfg_attr(test, allow(dead_code))]
 pub fn start_tray(app_handle: AppHandle) {
-    create_tauri_tray(&app_handle);
+    if let Err(error) = create_tauri_tray(&app_handle) {
+        log::error!("Could not create tray icon: {error}");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -134,7 +145,7 @@ fn resolve_helper_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error
 
 #[cfg(not(target_os = "macos"))]
 #[allow(dead_code)]
-fn create_tauri_tray(app: &AppHandle) {
+fn create_tauri_tray(app: &AppHandle) -> Result<(), String> {
     use tauri::{
         image::Image,
         tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -143,15 +154,17 @@ fn create_tauri_tray(app: &AppHandle) {
     let language = crate::crypto::Settings::load()
         .map(|settings| settings.language)
         .unwrap_or_else(|_| "en".into());
-    let menu = build_tray_menu(app, &language).expect("failed to build tray menu");
+    let menu = build_tray_menu(app, &language).map_err(|error| error.to_string())?;
 
     // The tray is rendered at roughly 16-24 physical pixels on Windows.
     // Feeding it the 512px application artwork makes the shell resample the
     // fine document outlines too aggressively and produces a visibly soft
     // icon.  Use the dedicated small asset so the shell starts from already
     // pixel-aligned edges.
-    let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
-        .unwrap_or_else(|_| Image::new(&[0u8; 1024], 32, 32));
+    let icon = Image::from_bytes(include_bytes!("../icons/32x32.png")).unwrap_or_else(|error| {
+        log::error!("Bundled tray icon is invalid: {error}");
+        Image::new(&TRANSPARENT_TRAY_RGBA, 32, 32)
+    });
 
     let _tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
@@ -172,7 +185,7 @@ fn create_tauri_tray(app: &AppHandle) {
                 });
             }
             "quit" => {
-                app.exit(0);
+                request_shutdown(app);
             }
             _ => {}
         })
@@ -190,14 +203,15 @@ fn create_tauri_tray(app: &AppHandle) {
             }
         })
         .build(app)
-        .unwrap();
+        .map_err(|error| error.to_string())?;
 
     info!("Tauri tray created (non-macOS)");
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
-fn create_tauri_tray(app: &AppHandle) {
+fn create_tauri_tray(app: &AppHandle) -> Result<(), String> {
     // On macOS this is only called as a fallback when the Swift helper
     // fails to start, so we do create a Tauri tray.
     use tauri::{image::Image, tray::TrayIconBuilder};
@@ -205,10 +219,12 @@ fn create_tauri_tray(app: &AppHandle) {
     let language = crate::crypto::Settings::load()
         .map(|settings| settings.language)
         .unwrap_or_else(|_| "en".into());
-    let menu = build_tray_menu(app, &language).expect("failed to build tray menu");
+    let menu = build_tray_menu(app, &language).map_err(|error| error.to_string())?;
 
-    let icon = Image::from_bytes(include_bytes!("../icons/icon.png"))
-        .unwrap_or_else(|_| Image::new(&[0u8; 1024], 32, 32));
+    let icon = Image::from_bytes(include_bytes!("../icons/icon.png")).unwrap_or_else(|error| {
+        log::error!("Bundled tray icon is invalid: {error}");
+        Image::new(&TRANSPARENT_TRAY_RGBA, 32, 32)
+    });
 
     let _tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
@@ -227,18 +243,28 @@ fn create_tauri_tray(app: &AppHandle) {
                     let _ = crate::commands::open_settings_window(h).await;
                 });
             }
-            "quit" => app.exit(0),
+            "quit" => request_shutdown(app),
             _ => {}
         })
         .build(app)
-        .unwrap();
+        .map_err(|error| error.to_string())?;
 
     info!("Tauri tray created (fallback)");
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{tray_labels, TrayLabels};
+    use tauri::image::Image;
+
+    #[test]
+    fn bundled_tray_icons_decode() {
+        Image::from_bytes(include_bytes!("../icons/32x32.png"))
+            .expect("decode bundled 32px tray icon");
+        Image::from_bytes(include_bytes!("../icons/icon.png"))
+            .expect("decode bundled application icon");
+    }
 
     #[test]
     fn tray_labels_follow_saved_language() {

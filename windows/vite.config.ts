@@ -21,7 +21,6 @@ export default defineConfig({
     sourcemap: !!process.env.TAURI_DEBUG,
     rollupOptions: {
       input: {
-        main: 'index.html',
         history: 'history.html',
         settings: 'settings.html',
       },

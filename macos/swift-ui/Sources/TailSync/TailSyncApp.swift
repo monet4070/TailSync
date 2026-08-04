@@ -270,22 +270,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         proc.launchPath = URL(fileURLWithPath: binPath).absoluteURL.path
         var environment = ProcessInfo.processInfo.environment
         environment["TAILSYNC_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        environment.removeValue(forKey: "TAILSYNC_API_TOKEN")
+        environment["TAILSYNC_API_TOKEN_STDIN"] = "1"
         proc.environment = environment
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
-        proc.launch()
+        let tokenPipe = Pipe()
+        proc.standardInput = tokenPipe
+        do {
+            try proc.run()
+            let token = Data("\(ApiClient.shared.capabilityToken)\n".utf8)
+            tokenPipe.fileHandleForWriting.write(token)
+            tokenPipe.fileHandleForWriting.closeFile()
+        } catch {
+            tokenPipe.fileHandleForWriting.closeFile()
+            print("[TailSync] daemon launch failed: \(error)")
+            return
+        }
         Self.daemonProcess = proc
         print("[TailSync] daemon started (pid=\(proc.processIdentifier))")
     }
 
-    /// Safely stop the daemon: send SIGTERM, wait up to 3s, then SIGKILL
+    /// Ask the daemon to drain its background tasks, then use bounded signal fallbacks.
     private static func stopDaemon() {
         guard let proc = daemonProcess, proc.isRunning else { return }
-        proc.terminate() // SIGTERM
-        // Wait up to 3 seconds for clean exit
-        for _ in 0..<30 {
+
+        let requestFinished = DispatchSemaphore(value: 0)
+        Task.detached {
+            _ = await ApiClient.shared.requestShutdown()
+            requestFinished.signal()
+        }
+        _ = requestFinished.wait(timeout: .now() + 1.0)
+
+        // Rust allows up to two seconds for peer disconnect and three seconds
+        // for background task drain, with a small allowance for API delivery.
+        for _ in 0..<60 {
             if !proc.isRunning { break }
             Thread.sleep(forTimeInterval: 0.1)
+        }
+        if proc.isRunning {
+            print("[TailSync] daemon did not finish coordinated shutdown — sending SIGTERM")
+            proc.terminate()
+            for _ in 0..<10 {
+                if !proc.isRunning { break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
         }
         if proc.isRunning {
             print("[TailSync] daemon did not exit after SIGTERM — sending SIGKILL")

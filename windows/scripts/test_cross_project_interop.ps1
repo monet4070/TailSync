@@ -50,7 +50,7 @@ function Invoke-ProbeDirection(
     $server = $null
 
     try {
-        $env:TAILSYNC_PROBE_DATA_DIR = $serverData
+        $env:TAILSYNC_DATA_DIR = $serverData
         $serverOptions = @{
             FilePath = $ResponderProbe
             ArgumentList = @('server', '127.0.0.1:0')
@@ -78,7 +78,7 @@ function Invoke-ProbeDirection(
 
         $address = $ready.Matches[0].Groups[1].Value
         $serverKey = $ready.Matches[0].Groups[2].Value
-        $env:TAILSYNC_PROBE_DATA_DIR = $clientData
+        $env:TAILSYNC_DATA_DIR = $clientData
         $clientOutput = & $InitiatorProbe client $address $serverKey 2>&1
         if (!$? -or $clientOutput -notcontains 'CLIENT_SYNC_OK' -or
             $clientOutput -notcontains 'CLIENT_PAIRING_OK') {
@@ -105,9 +105,9 @@ function Invoke-ProbeDirection(
 }
 
 try {
-    cargo build --quiet --manifest-path (Join-Path $macRoot 'src-tauri\Cargo.toml') --example interop_probe
+    cargo build --locked --quiet --manifest-path (Join-Path $macRoot 'src-tauri\Cargo.toml') --example interop_probe
     if (!$?) { throw 'macOS-project probe build failed' }
-    cargo build --quiet --manifest-path (Join-Path $winRoot 'src-tauri\Cargo.toml') --example interop_probe
+    cargo build --locked --quiet --manifest-path (Join-Path $winRoot 'src-tauri\Cargo.toml') --example interop_probe
     if (!$?) { throw 'Windows-project probe build failed' }
 
     $probeName = if ($env:OS -eq 'Windows_NT') { 'interop_probe.exe' } else { 'interop_probe' }
@@ -119,6 +119,6 @@ try {
     Write-Output 'Bidirectional cross-project Noise, pairing, reliable events, and resumable file blocks passed.'
 }
 finally {
-    Remove-Item Env:TAILSYNC_PROBE_DATA_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:TAILSYNC_DATA_DIR -ErrorAction SilentlyContinue
     if (Test-Path $runRoot) { Remove-Item -LiteralPath $runRoot -Recurse -Force }
 }

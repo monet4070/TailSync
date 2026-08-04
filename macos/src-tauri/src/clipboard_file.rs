@@ -142,19 +142,18 @@ fn resolve_clipboard_helper() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::*;
-
     #[test]
     fn unsupported_test_platform_has_no_file_clipboard_contents() {
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        assert!(read_clipboard_files().is_none());
+        assert!(super::read_clipboard_files().is_none());
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn resolved_clipboard_helper_path_is_absolute_when_present() {
-        if let Some(path) = resolve_clipboard_helper() {
+        if let Some(path) = super::resolve_clipboard_helper() {
             assert!(
                 path.is_absolute(),
                 "resolved helper path was relative: {path:?}"
@@ -165,18 +164,18 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn stuck_clipboard_helper_is_killed_after_timeout() {
-        let child = Command::new("/bin/sh")
+        let child = std::process::Command::new("/bin/sh")
             .args(["-c", "sleep 5"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let started = Instant::now();
+        let started = std::time::Instant::now();
 
-        let error = wait_for_child(child, Duration::from_millis(50)).unwrap_err();
+        let error = super::wait_for_child(child, std::time::Duration::from_millis(50)).unwrap_err();
 
         assert!(error.contains("timed out"));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }
 

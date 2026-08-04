@@ -1,6 +1,6 @@
 import Foundation
 
-struct AppSettings: Codable, Equatable {
+struct AppSettings: Codable, Equatable, Sendable {
     var notifications_enabled: Bool = true
     var progress_bar_enabled: Bool = true
     var history_limit: Int = 100

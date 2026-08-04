@@ -1,0 +1,392 @@
+/* ═══════════════════════════════════════════════════════════════════
+   TailSync — "Precision Instrument" Design System
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Design tokens ────────────────────────────────────────────────── */
+:root,
+.app.light {
+  --brand: #5E6AD2;
+  --brand-soft: rgba(94, 106, 210, 0.10);
+  --brand-hover: #4C56B5;
+  --brand-text: #FFFFFF;
+
+  --bg-window: #f5f5f7;
+  --bg-card: #ffffff;
+  --bg-input: rgba(0, 0, 0, 0.04);
+  --bg-hover: rgba(0, 0, 0, 0.06);
+  --bg-active: rgba(0, 0, 0, 0.10);
+  --bg-raised: #ffffff;
+  --bg-toast: rgba(0, 0, 0, 0.88);
+
+  --text-primary: rgba(0, 0, 0, 0.88);
+  --text-secondary: rgba(0, 0, 0, 0.55);
+  --text-tertiary: rgba(0, 0, 0, 0.35);
+  --text-toast: #ffffff;
+
+  --border: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.12);
+  --divider: rgba(0, 0, 0, 0.04);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.10);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", "PingFang SC",
+    "Helvetica Neue", sans-serif;
+  --font-display: var(--font-ui);
+  --font-content: var(--font-ui);
+  --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+
+  --font-size-ui: 13px;
+  --font-size-title: 12px;
+  --font-size-content: 13px;
+  --font-size-setting: 13px;
+  --font-size-section: 11px;
+  --font-weight-body: 400;
+  --font-weight-content: 500;
+  --font-weight-strong: 600;
+  --line-height-ui: 1.5;
+  --titlebar-height: 38px;
+  --history-row-padding-y: 10px;
+  --history-row-gap: 10px;
+  --history-content-gap: 2px;
+  --history-item-min-height: 52px;
+  --setting-row-padding-y: 10px;
+  --control-border-width: 1px;
+  --item-hover-shift: 2px;
+  --window-radius: 6px;
+
+  --green: #34C759;
+  --green-soft: rgba(52, 199, 89, 0.12);
+  --orange: #FF9500;
+  --orange-soft: rgba(255, 149, 0, 0.12);
+  --purple: #AF52DE;
+  --purple-soft: rgba(175, 82, 222, 0.12);
+}
+
+.app.dark {
+  --brand: #7B83EB;
+  --brand-soft: rgba(123, 131, 235, 0.14);
+  --brand-hover: #9198F0;
+  --brand-text: #FFFFFF;
+
+  --bg-window: #1c1c1e;
+  --bg-card: #2c2c2e;
+  --bg-input: rgba(255, 255, 255, 0.06);
+  --bg-hover: rgba(255, 255, 255, 0.08);
+  --bg-active: rgba(255, 255, 255, 0.12);
+  --bg-raised: #2c2c2e;
+  --bg-toast: rgba(255, 255, 255, 0.92);
+
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-tertiary: rgba(255, 255, 255, 0.32);
+  --text-toast: #000000;
+
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --divider: rgba(255, 255, 255, 0.04);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.16);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.24);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.32);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+
+  --green: #30D158;
+  --green-soft: rgba(48, 209, 88, 0.14);
+  --orange: #FF9F0A;
+  --orange-soft: rgba(255, 159, 10, 0.14);
+  --purple: #BF5AF2;
+  --purple-soft: rgba(191, 90, 242, 0.14);
+}
+
+/* Built-in colour themes. Mode and palette stay independent so every palette
+   works with light, dark, and follow-system preferences. */
+.app.light.theme-ocean {
+  --brand: #087f8c;
+  --brand-soft: rgba(8, 127, 140, 0.12);
+  --brand-hover: #066873;
+  --brand-text: #ffffff;
+  --bg-window: #f1f7f7;
+  --bg-card: #fcfefe;
+  --bg-input: rgba(8, 91, 101, 0.06);
+  --bg-hover: rgba(8, 91, 101, 0.08);
+  --bg-active: rgba(8, 91, 101, 0.13);
+  --bg-raised: #ffffff;
+  --text-primary: rgba(5, 31, 33, 0.9);
+  --text-secondary: rgba(5, 31, 33, 0.6);
+  --text-tertiary: rgba(5, 31, 33, 0.4);
+  --border: rgba(8, 71, 78, 0.09);
+  --border-strong: rgba(8, 71, 78, 0.18);
+  --divider: rgba(8, 71, 78, 0.07);
+}
+
+.app.dark.theme-ocean {
+  --brand: #4cc9c0;
+  --brand-soft: rgba(76, 201, 192, 0.16);
+  --brand-hover: #68d7cf;
+  --brand-text: #071918;
+  --bg-window: #111e20;
+  --bg-card: #1a2a2d;
+  --bg-input: rgba(210, 255, 252, 0.07);
+  --bg-hover: rgba(210, 255, 252, 0.09);
+  --bg-active: rgba(210, 255, 252, 0.14);
+  --bg-raised: #203235;
+  --text-primary: rgba(242, 255, 254, 0.94);
+  --text-secondary: rgba(224, 248, 246, 0.62);
+  --text-tertiary: rgba(224, 248, 246, 0.4);
+  --border: rgba(192, 239, 235, 0.09);
+  --border-strong: rgba(192, 239, 235, 0.18);
+  --divider: rgba(192, 239, 235, 0.07);
+}
+
+.app.light.theme-forest {
+  --brand: #287a55;
+  --brand-soft: rgba(40, 122, 85, 0.12);
+  --brand-hover: #1f6545;
+  --brand-text: #ffffff;
+  --bg-window: #f3f7f3;
+  --bg-card: #fcfdfb;
+  --bg-input: rgba(39, 92, 62, 0.06);
+  --bg-hover: rgba(39, 92, 62, 0.08);
+  --bg-active: rgba(39, 92, 62, 0.13);
+  --bg-raised: #ffffff;
+  --text-primary: rgba(19, 38, 27, 0.9);
+  --text-secondary: rgba(19, 38, 27, 0.6);
+  --text-tertiary: rgba(19, 38, 27, 0.4);
+  --border: rgba(35, 82, 53, 0.09);
+  --border-strong: rgba(35, 82, 53, 0.18);
+  --divider: rgba(35, 82, 53, 0.07);
+}
+
+.app.dark.theme-forest {
+  --brand: #69ca91;
+  --brand-soft: rgba(105, 202, 145, 0.16);
+  --brand-hover: #82d7a4;
+  --brand-text: #0b1a11;
+  --bg-window: #151f18;
+  --bg-card: #202d24;
+  --bg-input: rgba(225, 255, 234, 0.07);
+  --bg-hover: rgba(225, 255, 234, 0.09);
+  --bg-active: rgba(225, 255, 234, 0.14);
+  --bg-raised: #26362a;
+  --text-primary: rgba(246, 255, 248, 0.94);
+  --text-secondary: rgba(229, 248, 234, 0.62);
+  --text-tertiary: rgba(229, 248, 234, 0.4);
+  --border: rgba(207, 239, 216, 0.09);
+  --border-strong: rgba(207, 239, 216, 0.18);
+  --divider: rgba(207, 239, 216, 0.07);
+}
+
+.app.light.theme-rose {
+  --brand: #b83e60;
+  --brand-soft: rgba(184, 62, 96, 0.12);
+  --brand-hover: #99324f;
+  --brand-text: #ffffff;
+  --bg-window: #faf4f6;
+  --bg-card: #fffdfd;
+  --bg-input: rgba(128, 42, 66, 0.055);
+  --bg-hover: rgba(128, 42, 66, 0.075);
+  --bg-active: rgba(128, 42, 66, 0.12);
+  --bg-raised: #ffffff;
+  --text-primary: rgba(48, 19, 27, 0.9);
+  --text-secondary: rgba(48, 19, 27, 0.6);
+  --text-tertiary: rgba(48, 19, 27, 0.4);
+  --border: rgba(113, 38, 59, 0.09);
+  --border-strong: rgba(113, 38, 59, 0.18);
+  --divider: rgba(113, 38, 59, 0.07);
+}
+
+.app.dark.theme-rose {
+  --brand: #ef86a2;
+  --brand-soft: rgba(239, 134, 162, 0.16);
+  --brand-hover: #f39ab1;
+  --brand-text: #251016;
+  --bg-window: #24191d;
+  --bg-card: #322329;
+  --bg-input: rgba(255, 226, 234, 0.07);
+  --bg-hover: rgba(255, 226, 234, 0.09);
+  --bg-active: rgba(255, 226, 234, 0.14);
+  --bg-raised: #3a2930;
+  --text-primary: rgba(255, 247, 249, 0.94);
+  --text-secondary: rgba(250, 229, 235, 0.62);
+  --text-tertiary: rgba(250, 229, 235, 0.4);
+  --border: rgba(245, 211, 220, 0.09);
+  --border-strong: rgba(245, 211, 220, 0.18);
+  --divider: rgba(245, 211, 220, 0.07);
+}
+
+.app.light.theme-high-contrast {
+  --brand: #005fcc;
+  --brand-soft: rgba(0, 95, 204, 0.15);
+  --brand-hover: #004b9f;
+  --brand-text: #ffffff;
+  --bg-window: #ffffff;
+  --bg-card: #ffffff;
+  --bg-input: #f0f0f0;
+  --bg-hover: #e8e8e8;
+  --bg-active: #d8d8d8;
+  --bg-raised: #ffffff;
+  --text-primary: #000000;
+  --text-secondary: #333333;
+  --text-tertiary: #5a5a5a;
+  --border: #8a8a8a;
+  --border-strong: #454545;
+  --divider: #b0b0b0;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --green: #087a32;
+  --orange: #9a4d00;
+  --purple: #6e35a5;
+}
+
+.app.dark.theme-high-contrast {
+  --brand: #ffd400;
+  --brand-soft: rgba(255, 212, 0, 0.2);
+  --brand-hover: #ffe25c;
+  --brand-text: #000000;
+  --bg-window: #000000;
+  --bg-card: #101010;
+  --bg-input: #1c1c1c;
+  --bg-hover: #282828;
+  --bg-active: #383838;
+  --bg-raised: #181818;
+  --text-primary: #ffffff;
+  --text-secondary: #e3e3e3;
+  --text-tertiary: #b8b8b8;
+  --border: #777777;
+  --border-strong: #c7c7c7;
+  --divider: #595959;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --green: #65ff8f;
+  --orange: #ffd166;
+  --purple: #d3a6ff;
+}
+
+/* Themes change typography, density, shape, and elevation in addition to
+   colour. Light/dark mode only changes the palette above. */
+.app.theme-tailsync {
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "Segoe UI Variable Display", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-content: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+}
+
+.app.theme-ocean {
+  --font-ui: "Bahnschrift", "Avenir Next", "DengXian", "Hiragino Sans GB",
+    "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: "Bahnschrift SemiBold", "Avenir Next Demi Bold", "Segoe UI",
+    "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-content: "Avenir Next", "DengXian", "Hiragino Sans GB", "Segoe UI",
+    "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-weight-content: 450;
+  --line-height-ui: 1.55;
+  --titlebar-height: 40px;
+  --history-row-padding-y: 11px;
+  --history-row-gap: 12px;
+  --history-content-gap: 3px;
+  --history-item-min-height: 56px;
+  --setting-row-padding-y: 11px;
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+  --item-hover-shift: 3px;
+  --window-radius: 3px;
+  --shadow-sm: 0 1px 2px rgba(5, 48, 54, 0.1);
+  --shadow-md: 0 5px 14px rgba(5, 48, 54, 0.12);
+  --shadow-lg: 0 12px 28px rgba(5, 48, 54, 0.16);
+}
+
+.app.theme-forest {
+  --font-ui: "Constantia", "Songti SC", "STSong", "SimSun", "Georgia", serif;
+  --font-display: "Constantia", "Songti SC", "STSong", "SimSun", "Georgia", serif;
+  --font-content: "Georgia", "Songti SC", "STSong", "SimSun", "Constantia", serif;
+  --font-weight-content: 400;
+  --font-size-title: 13px;
+  --font-size-content: 14px;
+  --font-size-section: 12px;
+  --line-height-ui: 1.62;
+  --titlebar-height: 42px;
+  --history-row-padding-y: 12px;
+  --history-row-gap: 12px;
+  --history-content-gap: 4px;
+  --history-item-min-height: 60px;
+  --setting-row-padding-y: 12px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --item-hover-shift: 0px;
+  --window-radius: 2px;
+  --shadow-sm: 0 1px 2px rgba(24, 52, 33, 0.08);
+  --shadow-md: 0 3px 10px rgba(24, 52, 33, 0.1);
+  --shadow-lg: 0 8px 20px rgba(24, 52, 33, 0.14);
+}
+
+.app.theme-rose {
+  --font-ui: "Candara", "Corbel", "YouYuan", "Hiragino Maru Gothic ProN",
+    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-display: "Candara", "YouYuan", "Hiragino Maru Gothic ProN",
+    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-content: "Corbel", "Candara", "YouYuan", "Hiragino Maru Gothic ProN",
+    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-size-title: 13px;
+  --font-size-content: 14px;
+  --line-height-ui: 1.58;
+  --titlebar-height: 42px;
+  --history-row-padding-y: 11px;
+  --history-row-gap: 12px;
+  --history-content-gap: 3px;
+  --history-item-min-height: 58px;
+  --setting-row-padding-y: 11px;
+  --radius-sm: 9px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --item-hover-shift: 0px;
+  --window-radius: 12px;
+  --shadow-sm: 0 2px 6px rgba(104, 35, 55, 0.08);
+  --shadow-md: 0 7px 20px rgba(104, 35, 55, 0.12);
+  --shadow-lg: 0 14px 34px rgba(104, 35, 55, 0.16);
+}
+
+.app.theme-high-contrast {
+  --font-ui: "Arial", "Helvetica", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-display: "Arial Black", "Arial", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-content: "Arial", "Helvetica", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-size-ui: 14px;
+  --font-size-title: 13px;
+  --font-size-content: 14px;
+  --font-size-setting: 14px;
+  --font-size-section: 12px;
+  --font-weight-body: 500;
+  --font-weight-content: 600;
+  --font-weight-strong: 700;
+  --line-height-ui: 1.55;
+  --titlebar-height: 42px;
+  --history-row-padding-y: 12px;
+  --history-row-gap: 12px;
+  --history-content-gap: 4px;
+  --history-item-min-height: 60px;
+  --setting-row-padding-y: 12px;
+  --control-border-width: 2px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-full: 0px;
+  --item-hover-shift: 0px;
+  --window-radius: 0px;
+}

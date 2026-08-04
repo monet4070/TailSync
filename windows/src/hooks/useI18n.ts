@@ -56,5 +56,9 @@ export function useI18n() {
     return () => window.removeEventListener("storage", handler);
   }, []);
 
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
   return { t, locale, setLocale };
 }

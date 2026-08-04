@@ -1,18 +1,17 @@
 # Windows/macOS synchronization contract
 
-This document defines the shared contract between the Windows and macOS projects. The source drift check treats this file as shared content, so changes must be copied to both repositories.
+This document defines the contract between the Windows and macOS applications in the TailSync monorepo. The contract checker requires both copies of this document to remain identical.
 
 ## Shared implementation
 
-The following must remain byte-for-byte aligned unless the drift checker is deliberately updated:
+Shared protocol, crypto, identity, pairing, history, and synchronization behavior has one canonical implementation in `shared/rust-core/`. The platform crates consume it through a path dependency and must not carry private copies of those modules.
 
-- shared React UI files under `src/`
-- shared Rust core under `src-tauri/src/`, including history storage/classification, identity, pairing, protocol, and secure transport
-- frontend and Rust dependency locks
+The following platform files remain byte-for-byte aligned unless the contract checker is deliberately updated:
+
 - protocol interoperability probe and acceptance scripts
 - this contract
 
-The platform entry page and native-facing settings/history presentation may evolve independently in `index.html`, `App.tsx`, `main.tsx`, `landing.css`, `index.css`, `pages/History.tsx`, and `pages/Settings.tsx`. OS-specific Cargo dependencies and backend adapters for the API, clipboard, discovery, connection management, synchronization, and tray may also differ; their ports, commands, wire models, and shared core remain contract-checked. The macOS SwiftUI shell and packaging scripts are validated against the same Rust API models and commands.
+Windows uses React/Tauri; macOS uses SwiftUI and contains no parallel React product UI. OS-specific adapters for the API, clipboard, discovery, connection management, and tray may differ. Their ports, serialized models, Swift API commands, shared-core dependency, and on-wire behavior remain contract-checked.
 
 ## Network contract
 
@@ -28,36 +27,37 @@ The platform entry page and native-facing settings/history presentation may evol
 
 Protocol v1 plaintext peers are rejected. There is no insecure fallback.
 
-The local JSON-lines API is an internal macOS shell bridge. It currently relies on loopback binding rather than a capability token; do not expose or proxy port `19889` outside the host.
+The local JSON-lines API is an internal macOS shell bridge. It binds to loopback and requires a per-process 256-bit capability token on every request. The SwiftUI parent writes the token once through the daemon's anonymous stdin pipe, then closes the pipe; the token is not placed in the daemon environment. Port `19889` must still not be exposed or proxied outside the host.
 
 ## Drift gate
 
-From either project root, provide both roots explicitly when the default sibling layout is not in use:
+From the repository root:
 
 ```bash
-node scripts/check_cross_platform_sync.mjs \
-  --win-root /path/to/tailsync-v2-win \
-  --mac-root /path/to/tailsync-v2-mac-1
+node windows/scripts/check_cross_platform_sync.mjs \
+  --win-root windows \
+  --mac-root macos \
+  --core-root shared/rust-core
 ```
 
 PowerShell wrapper:
 
 ```powershell
-.\scripts\check_cross_platform_sync.ps1 `
-  -WinRoot C:\path\to\tailsync-v2-win `
-  -MacRoot C:\path\to\tailsync-v2-mac-1
+.\windows\scripts\check_cross_platform_sync.ps1 `
+  -WinRoot windows `
+  -MacRoot macos
 ```
 
-The check fails on shared source drift, dependency drift, port changes, missing SwiftUI API commands/model fields, missing Bonjour declarations, or incomplete macOS release checks.
+The check fails on duplicated platform file drift, shared-core wiring errors, port changes, missing SwiftUI API commands/model fields, missing Bonjour declarations, or incomplete macOS release checks.
 
 ## Cross-project wire probe
 
 Run in PowerShell with both projects available on the same machine:
 
 ```powershell
-.\scripts\test_cross_project_interop.ps1 `
-  -WinRoot C:\path\to\tailsync-v2-win `
-  -MacRoot C:\path\to\tailsync-v2-mac-1
+.\windows\scripts\test_cross_project_interop.ps1 `
+  -WinRoot windows `
+  -MacRoot macos
 ```
 
 The probe builds each project's Rust example separately and tests both role assignments. It covers fixed-identity Noise XX, first-time bilateral pairing, reliable-event ACKs, and resumable file-block offset ACKs.
@@ -67,14 +67,13 @@ The probe builds each project's Rust example separately and tests both role assi
 Windows:
 
 ```powershell
-cargo test --manifest-path src-tauri\Cargo.toml --lib
-cargo fmt --manifest-path src-tauri\Cargo.toml --all -- --check
+cargo test --locked --manifest-path shared\rust-core\Cargo.toml
+cargo test --locked --manifest-path windows\src-tauri\Cargo.toml --lib
+cd windows
 npm ci
+npm test
 npm run lint
 npm run build
-.\scripts\check_cross_platform_sync.ps1
-.\scripts\test_cross_project_interop.ps1
-npx tauri build --target x86_64-pc-windows-msvc --bundles nsis
 ```
 
 macOS:
@@ -83,7 +82,7 @@ macOS:
 bash scripts/verify_macos_release.sh /path/to/tailsync-v2-win
 ```
 
-The macOS verifier runs the frontend, Rust, SwiftUI, cross-project and bundle checks; launches `TailSync.app`; verifies listeners on `19889` and `19890`; calls the local API; and round-trips a file URL through the packaged clipboard helper. It refuses to run if either port is already occupied.
+The macOS verifier runs the shared core, platform Rust, SwiftUI, cross-project and bundle checks; launches `TailSync.app`; verifies listeners on `19889` and `19890`; calls the authenticated local API; and round-trips a file URL through the packaged clipboard helper. It refuses to run if either port is already occupied.
 
 ## Two-device acceptance
 

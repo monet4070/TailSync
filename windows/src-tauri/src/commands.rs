@@ -70,6 +70,18 @@ pub async fn get_history_capabilities() -> Result<serde_json::Value, String> {
     Ok(crate::api::history_capabilities_data())
 }
 
+#[command]
+pub async fn get_migration_diagnostics(
+    state: State<'_, AppState>,
+) -> Result<db::MigrationDiagnostics, String> {
+    state
+        .db
+        .lock()
+        .await
+        .migration_diagnostics(50)
+        .map_err(|error| error.to_string())
+}
+
 /// Search history by keyword (searches description field)
 #[command]
 pub async fn search_history(
@@ -128,12 +140,13 @@ pub async fn restore_entry(
         .try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
         .ok_or("Clipboard not available")?;
 
-    if entry_type == "image" && data.as_ref().is_some_and(|data| data.len() >= 8) {
-        let data = data.as_ref().expect("image data checked above");
-        // Reconstruct image from packed format [w:4 LE][h:4 LE][rgba...]
-        let w = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let h = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let rgba = &data[8..];
+    if entry_type == "image" {
+        let data = data.as_ref().ok_or("Image history data is unavailable")?;
+        let image = crate::protocol::PackedImage::try_from(data.as_slice())
+            .map_err(|error| error.to_string())?;
+        let w = image.width;
+        let h = image.height;
+        let rgba = image.rgba;
 
         // Shadow filter to prevent re-broadcast
         {
@@ -472,13 +485,9 @@ pub async fn get_image_data(
 ) -> Result<serde_json::Value, String> {
     let db = state.db.lock().await;
     let data = db.get_data(id).map_err(|e| e.to_string())?;
-    if data.len() < 8 {
-        return Err("Not an image".into());
-    }
-    let w = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    let h = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-    let rgba = &data[8..];
-    let (tw, th, thumb) = crate::api::thumbnail_rgba(w, h, rgba, 64);
+    let image = crate::protocol::PackedImage::try_from(data.as_slice())
+        .map_err(|error| error.to_string())?;
+    let (tw, th, thumb) = crate::api::thumbnail_rgba(image, 64);
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&thumb);
     Ok(serde_json::json!({
@@ -492,7 +501,10 @@ pub async fn get_image_data(
 /// Get current file transfer progress (for progress bar)
 #[command]
 pub async fn get_file_progress() -> Result<serde_json::Value, String> {
-    let info = crate::api::FILE_PROGRESS.lock().unwrap().clone();
+    let info = crate::api::FILE_PROGRESS
+        .lock()
+        .ok()
+        .and_then(|progress| progress.clone());
     Ok(info.map_or(serde_json::json!({"active": false}), |p| {
         serde_json::json!({"name": p.name, "sent": p.sent, "total": p.total, "active": p.active})
     }))

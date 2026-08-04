@@ -12,16 +12,15 @@ private enum HistoryDateFilter: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    func label(language: String) -> String {
-        let chinese = language == "zh-CN"
+    var label: String {
         switch self {
-        case .all: return chinese ? "\u{5168}\u{90E8}\u{65E5}\u{671F}" : "All dates"
-        case .today: return chinese ? "\u{4ECA}\u{5929}" : "Today"
-        case .yesterday: return chinese ? "\u{6628}\u{5929}" : "Yesterday"
-        case .last7: return chinese ? "\u{8FD1} 7 \u{5929}" : "Last 7 days"
-        case .last30: return chinese ? "\u{8FD1} 30 \u{5929}" : "Last 30 days"
-        case .thisMonth: return chinese ? "\u{672C}\u{6708}" : "This month"
-        case .custom: return chinese ? "\u{81EA}\u{5B9A}\u{4E49}" : "Custom"
+        case .all: return Loc.t("history.date.all")
+        case .today: return Loc.t("history.date.today")
+        case .yesterday: return Loc.t("history.date.yesterday")
+        case .last7: return Loc.t("history.date.last7")
+        case .last30: return Loc.t("history.date.last30")
+        case .thisMonth: return Loc.t("history.date.thisMonth")
+        case .custom: return Loc.t("history.date.custom")
         }
     }
 }
@@ -55,6 +54,8 @@ struct HistoryView: View {
     @State private var dateRangeFilteringSupported = false
     @State private var historyCapabilitiesChecked = false
     @State private var historyCapabilitiesLoading = false
+    @State private var unresolvedMigrationCount = 0
+    @State private var restoreFeedbackTask: Task<Void, Never>? = nil
 
     private let pageSize = 30
     private let knownCategories = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]
@@ -76,15 +77,15 @@ struct HistoryView: View {
     }
 
     private var dateFilterTitle: String {
-        loc.lang == "zh-CN" ? "\u{6309}\u{65E5}\u{671F}\u{7B5B}\u{9009}" : "Filter by date"
+        Loc.t("history.dateFilter")
     }
 
     private var customStartTitle: String {
-        loc.lang == "zh-CN" ? "\u{5F00}\u{59CB}" : "Start"
+        Loc.t("history.date.start")
     }
 
     private var customEndTitle: String {
-        loc.lang == "zh-CN" ? "\u{7ED3}\u{675F}" : "End"
+        Loc.t("history.date.end")
     }
 
     var body: some View {
@@ -122,7 +123,7 @@ struct HistoryView: View {
 
                     Picker(dateFilterTitle, selection: $selectedDateFilter) {
                         ForEach(HistoryDateFilter.allCases) { filter in
-                            Text(filter.label(language: loc.lang)).tag(filter)
+                            Text(filter.label).tag(filter)
                         }
                     }
                     .labelsHidden()
@@ -171,6 +172,29 @@ struct HistoryView: View {
             }
             .padding(.horizontal, 12).padding(.top, 8)
 
+            if unresolvedMigrationCount > 0 {
+                HStack(spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundColor(palette.warningColor)
+                    Text("\(Loc.t("history.migrationWarningPrefix")) \(unresolvedMigrationCount) \(Loc.t("history.migrationWarningSuffix"))")
+                        .font(activeTheme.readingFont(size: 10))
+                        .foregroundColor(palette.secondaryColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(palette.warningColor.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous)
+                        .stroke(palette.warningColor.opacity(0.3), lineWidth: 1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .accessibilityElement(children: .combine)
+            }
+
             // List
             if isLoading && entries.isEmpty {
                 Spacer()
@@ -201,17 +225,36 @@ struct HistoryView: View {
             } else {
                 List {
                     ForEach(entries) { entry in
-                        HistoryRow(
-                            entry: entry,
-                            isRestored: restoredId == entry.id,
-                            showsMultipleLabels: multipleLabelsSupported
-                        )
+                        HStack(spacing: 6) {
+                            HistoryRow(
+                                entry: entry,
+                                isRestored: restoredId == entry.id,
+                                showsMultipleLabels: multipleLabelsSupported
+                            )
                             .contentShape(Rectangle())
                             .onTapGesture(count: 2) { restore(entry.id) }
-                            .overlay(RightClickNSView { delete(entry.id) })
-                            .listRowBackground(palette.surfaceColor)
-                            .listRowSeparatorTint(palette.dividerColor)
-                            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+
+                            Button { restore(entry.id) } label: {
+                                Image(systemName: "arrow.uturn.backward")
+                            }
+                            .buttonStyle(.borderless)
+                            .help(Loc.t("history.restore"))
+                            .accessibilityLabel("\(Loc.t("history.restore")): \(entry.description)")
+
+                            Button(role: .destructive) { delete(entry.id) } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .help(Loc.t("history.delete"))
+                            .accessibilityLabel("\(Loc.t("history.delete")): \(entry.description)")
+                        }
+                        .contextMenu {
+                            Button(Loc.t("history.restore")) { restore(entry.id) }
+                            Button(Loc.t("history.delete"), role: .destructive) { delete(entry.id) }
+                        }
+                        .listRowBackground(palette.surfaceColor)
+                        .listRowSeparatorTint(palette.dividerColor)
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     }
                 }
                 .listStyle(.plain)
@@ -246,13 +289,14 @@ struct HistoryView: View {
                 Rectangle().fill(palette.dividerColor).frame(height: activeTheme == .highContrast ? 2 : 1)
             }
             .alert(Loc.t("history.confirmClear"), isPresented: $showingClearAlert) {
-                Button("Cancel", role: .cancel) {}
+                Button(Loc.t("common.cancel"), role: .cancel) {}
                 Button(Loc.t("history.clearAll"), role: .destructive) { clearAll() }
             }
         }
         .onAppear {
             load()
             loadHistoryCapabilities()
+            loadMigrationDiagnostics()
         }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
             Task {
@@ -280,12 +324,16 @@ struct HistoryView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
             reloadActiveDateFilter()
         }
+        .onDisappear {
+            restoreFeedbackTask?.cancel()
+            restoreFeedbackTask = nil
+        }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
                 if let p = fileProgress, p.active {
                     VStack(spacing: 3) {
                         ProgressView(value: Double(p.sent), total: Double(p.total)).progressViewStyle(.linear)
-                        Text("Sending \(p.name) — \(p.sent)/\(p.total)")
+                        Text("\(Loc.t("history.sending")) \(p.name) - \(p.sent)/\(p.total)")
                             .font(.caption2)
                             .foregroundColor(palette.secondaryColor)
                     }
@@ -372,6 +420,17 @@ struct HistoryView: View {
         }
     }
 
+    private func loadMigrationDiagnostics() {
+        Task {
+            do {
+                unresolvedMigrationCount = (try await ApiClient.shared
+                    .getMigrationDiagnostics()).unresolvedCount
+            } catch {
+                // Diagnostics are supplementary; normal history remains usable.
+            }
+        }
+    }
+
     private func dateBounds(for filter: HistoryDateFilter) -> HistoryDateBounds {
         let calendar = Calendar.autoupdatingCurrent
         let today = calendar.startOfDay(for: Date())
@@ -421,22 +480,46 @@ struct HistoryView: View {
     }
 
     private func restore(_ id: Int64) {
-        Task {
-            try? await ApiClient.shared.restoreEntry(id: id)
+        restoreFeedbackTask?.cancel()
+        restoreFeedbackTask = Task {
+            do {
+                try await ApiClient.shared.restoreEntry(id: id)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.4)) { restoredId = id }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.4)) { restoredId = nil }
         }
     }
 
     private func delete(_ id: Int64) {
-        Task { try? await ApiClient.shared.deleteEntry(id: id); entries.removeAll { $0.id == id } }
+        Task {
+            do {
+                try await ApiClient.shared.deleteEntry(id: id)
+                entries.removeAll { $0.id == id }
+                loadMigrationDiagnostics()
+            } catch {
+                errorMsg = Loc.t("history.deleteError")
+            }
+        }
     }
 
     private func clearAll() {
         Task {
             let ok = await ApiClient.shared.clearAllHistory()
-            if ok { entries = []; page = 0; hasNext = false }
+            if ok {
+                entries = []
+                page = 0
+                hasNext = false
+                loadMigrationDiagnostics()
+            }
         }
     }
 }
@@ -511,54 +594,16 @@ struct HistoryRow: View {
 
 private func rgbaToImage(_ data: ApiClient.ImageData) -> NSImage? {
     let w = data.width, h = data.height
-    guard w > 0, h > 0, data.rgba.count >= w * h * 4 else { return nil }
+    let (pixelCount, pixelOverflow) = w.multipliedReportingOverflow(by: h)
+    let (byteCount, byteOverflow) = pixelCount.multipliedReportingOverflow(by: 4)
+    guard w > 0, h > 0, !pixelOverflow, !byteOverflow, data.rgba.count == byteCount else {
+        return nil
+    }
     guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
                                       bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                       colorSpaceName: .deviceRGB, bytesPerRow: w * 4, bitsPerPixel: 32) else { return nil }
-    data.rgba.copyBytes(to: rep.bitmapData!, count: data.rgba.count)
+    data.rgba.copyBytes(to: rep.bitmapData!, count: byteCount)
     let img = NSImage(size: NSSize(width: w, height: h))
     img.addRepresentation(rep)
     return img
-}
-
-// ── Right-click capture ─────────────────────────────────────────
-
-/// Overlays each row to intercept right-clicks directly via `rightMouseDown`.
-/// Much safer than `NSEvent.addLocalMonitorForEvents` which is global and
-/// crashes when the monitored view is deallocated during event propagation.
-struct RightClickNSView: NSViewRepresentable {
-    let action: () -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = RightClickView(frame: .zero)
-        view.action = action
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        if let v = nsView as? RightClickView {
-            v.action = action
-        }
-    }
-
-    class RightClickView: NSView {
-        var action: (() -> Void)?
-
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            // Only claim right-clicks; pass everything else through
-            // to the SwiftUI gesture recognizers (double-tap, etc.).
-            guard let event = NSApp.currentEvent else { return nil }
-            if event.type == .rightMouseDown || event.type == .rightMouseUp {
-                return self
-            }
-            return nil
-        }
-
-        override func rightMouseDown(with event: NSEvent) {
-            // Defer to next run-loop so the view is still alive when the
-            // action removes the row from the List.
-            let act = action
-            DispatchQueue.main.async { act?() }
-        }
-    }
 }

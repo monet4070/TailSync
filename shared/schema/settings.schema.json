@@ -1,0 +1,132 @@
+{
+  "$id": "https://tailsync.dev/schema/settings-v2.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ColorThemeContract": {
+      "enum": [
+        "tailsync",
+        "ocean",
+        "forest",
+        "rose",
+        "high-contrast"
+      ],
+      "type": "string"
+    },
+    "ConnectionModeContract": {
+      "enum": [
+        "auto",
+        "lan_only",
+        "tailscale_only"
+      ],
+      "type": "string"
+    },
+    "LanguageContract": {
+      "enum": [
+        "en",
+        "zh-CN"
+      ],
+      "type": "string"
+    },
+    "ThemeContract": {
+      "enum": [
+        "system",
+        "light",
+        "dark"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "Encrypted settings stored alongside the app",
+  "properties": {
+    "color_theme": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ColorThemeContract"
+        }
+      ],
+      "default": "tailsync"
+    },
+    "connection_mode": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ConnectionModeContract"
+        }
+      ],
+      "default": "auto",
+      "description": "Transport policy used for peer discovery and delivery."
+    },
+    "enabled_peers": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "history_limit": {
+      "default": 100,
+      "format": "uint32",
+      "maximum": 500.0,
+      "minimum": 10.0,
+      "type": "integer"
+    },
+    "language": {
+      "$ref": "#/definitions/LanguageContract",
+      "default": "en"
+    },
+    "notifications_enabled": {
+      "default": true,
+      "type": "boolean"
+    },
+    "paired_peer_endpoints": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Address used for the explicit pairing confirmation. Device identity is still pinned by public key so trusted peers can safely change routes.",
+      "type": "object"
+    },
+    "progress_bar_enabled": {
+      "default": true,
+      "type": "boolean"
+    },
+    "theme": {
+      "$ref": "#/definitions/ThemeContract",
+      "default": "system"
+    },
+    "trusted_peer_addresses": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "default": {},
+      "description": "Last known hostname -> IP mapping, used to reconnect paired devices when LAN broadcast discovery is unavailable during startup or sending.",
+      "type": "object"
+    },
+    "trusted_peer_keys": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Explicit hostname -> pinned Noise static public key mapping.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "color_theme",
+    "connection_mode",
+    "enabled_peers",
+    "history_limit",
+    "language",
+    "notifications_enabled",
+    "paired_peer_endpoints",
+    "progress_bar_enabled",
+    "theme",
+    "trusted_peer_addresses",
+    "trusted_peer_keys"
+  ],
+  "title": "TailSync Settings",
+  "type": "object"
+}

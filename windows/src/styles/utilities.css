@@ -1,0 +1,91 @@
+/* ── Compact history layouts ─────────────────────────────────────── */
+@media (max-width: 360px) {
+  .search-bar {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .search-icon {
+    left: 20px;
+  }
+
+  .clear-history-btn {
+    right: 11px;
+  }
+
+  .history-filter-bar,
+  .custom-date-range {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .filter-trigger {
+    gap: 4px;
+    padding: 0 6px;
+  }
+
+  .item-peer {
+    max-width: 72px;
+  }
+}
+
+@media (max-width: 310px) {
+  .history-filter-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .filter-dropdown:last-child .filter-menu {
+    right: auto;
+    left: 0;
+  }
+
+  .custom-date-range {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .date-range-separator {
+    display: none;
+  }
+
+  .history-item {
+    gap: 7px;
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+
+  .item-peer {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    text-align: left;
+  }
+}
+
+@media (max-height: 500px) {
+  .date-header {
+    padding-top: 8px;
+  }
+
+  .history-item {
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+}
+
+/* ── Scrollbar (global) ───────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}

@@ -11,7 +11,7 @@ npm install
 npm run tauri:dev
 ```
 
-应用启动后会常驻系统托盘。通过 TailSync 托盘菜单打开“历史记录”或“设置”窗口。`npm run dev` 只会启动前端预览，无法提供剪贴板监听、系统托盘或数据库访问能力。
+应用启动后会常驻系统托盘。通过 TailSync 托盘菜单打开“历史记录”或“设置”窗口。`npm run dev` 只启动 History/Settings 的 Vite 资源服务，无法提供剪贴板监听、系统托盘或数据库访问能力。营销页已拆分到仓库级 `../site/` 工程。
 
 运行前请确保已安装：
 
@@ -39,17 +39,23 @@ TailSync 支持两种连接方式，可在“设置 → 连接与设备”中选
 
 ## 历史文件存储
 
-剪贴板历史文件存储在应用数据目录下的 `file-history` 文件夹中，而不是 SQLite 数据库内。数据库只保存历史元数据和带版本的内容哈希引用。
+剪贴板历史文件存储在应用数据目录下的 `file-history` 文件夹中，而不是 SQLite 数据库内。文件使用 1 MiB 分块 AES-256-GCM 容器加密，数据库只保存历史元数据和带版本的内容哈希引用；恢复时只在受控的 `clipboard-files` 目录生成临时明文。
 
-首次启动新版本时，旧版数据库中的加密文件 BLOB 会迁移到该文件夹。正在传输的文件会写入独立的 `incoming` 文件夹，应用启动时会清理其中过期的临时文件。
+首次启动新版本时，旧版数据库中的加密文件 BLOB 会迁移到该文件夹，旧版 TailSync v1 历史也会自动导入。损坏条目会记录诊断并在源数据库变化后重试，原 `history.db` 和 `.fernet_key` 不会删除。正在传输的文件会写入独立的 `incoming` 文件夹，应用启动时会清理其中过期的临时文件。
 
 ## 构建 Windows 安装包
 
 ```powershell
-npm run tauri:build:win
+npm run package:win
 ```
 
-构建产物会根据 Tauri 配置输出到 `src-tauri/target/release/bundle/`。
+脚本使用项目内安装的 Tauri CLI 和独立的 `src-tauri/target-package/` 构建目录，先执行契约检查、前端 lint/测试和 Rust 测试，再生成：
+
+- `release/TailSync-<version>-Windows-x64-portable.exe`：免安装验收版本；
+- `release/TailSync-<version>-Windows-x64-setup.exe`：当前用户模式 NSIS 安装包；
+- 同名 `.sha256` 校验文件和 `-build.json` 构建清单。
+
+本地依赖不存在时使用 `scripts/package-windows.ps1 -InstallDependencies`；仅需要快速重复打包时可传入 `-SkipChecks`。
 
 ## 前端技术说明
 
