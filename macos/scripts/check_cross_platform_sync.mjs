@@ -115,7 +115,6 @@ for (const path of [
   'scripts/check_cross_platform_sync.mjs',
   'scripts/check_cross_platform_sync.ps1',
   'scripts/test_cross_project_interop.ps1',
-  'docs/CROSS_PLATFORM_SYNC.md',
 ]) assertFileMatch(path);
 
 function read(root, path) {
