@@ -386,8 +386,14 @@ struct SettingsView: View {
                 ProgressView(Loc.t("settings.secureHandshake"))
                     .controlSize(.small)
             } else {
-                ProgressView(Loc.t("settings.waitingPairing"))
-                    .controlSize(.small)
+                VStack(spacing: 7) {
+                    Text(Loc.t("settings.waitingPairing"))
+                        .font(.caption.weight(.medium))
+                    Text(Loc.t("settings.pairingInstruction"))
+                        .font(.caption2)
+                        .foregroundColor(palette.secondaryColor)
+                        .multilineTextAlignment(.center)
+                }
             }
 
             if let message = pairingMessage ?? pairingStatus?.error {
@@ -814,7 +820,7 @@ struct SettingsView: View {
             do {
                 pairingStatus = try await ApiClient.shared.enablePairing()
             } catch {
-                pairingMessage = error.localizedDescription
+                pairingMessage = pairingErrorDescription(error)
             }
             pairingInProgress = false
         }
@@ -832,7 +838,7 @@ struct SettingsView: View {
                 }
                 pairingStatus = try await ApiClient.shared.startPairing(address: route.address)
             } catch {
-                pairingMessage = error.localizedDescription
+                pairingMessage = pairingErrorDescription(error)
                 pairingStatus = try? await ApiClient.shared.getPairingStatus()
             }
             pairingInProgress = false
@@ -846,7 +852,7 @@ struct SettingsView: View {
             do {
                 pairingStatus = try await ApiClient.shared.confirmPairing()
             } catch {
-                pairingMessage = error.localizedDescription
+                pairingMessage = pairingErrorDescription(error)
             }
             pairingInProgress = false
         }
@@ -859,10 +865,14 @@ struct SettingsView: View {
                 pairingStatus = try await ApiClient.shared.cancelPairing()
                 showPairingSheet = false
             } catch {
-                pairingMessage = error.localizedDescription
+                pairingMessage = pairingErrorDescription(error)
             }
             pairingInProgress = false
         }
+    }
+
+    private func pairingErrorDescription(_ error: Error) -> String {
+        (error as? ApiError)?.pairingErrorDescription ?? error.localizedDescription
     }
 
     @MainActor

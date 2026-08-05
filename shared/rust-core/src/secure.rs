@@ -205,6 +205,9 @@ pub async fn connect_pairing(
     write_plain_frame(&mut stream, Command::PairingHandshakeReq, &output[..length]).await?;
 
     let ack = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE).await?;
+    if ack.command == Command::PeerError {
+        return Err(String::from_utf8_lossy(&ack.payload).to_string().into());
+    }
     if ack.command != Command::PairingHandshakeAck {
         return Err("Pairing handshake rejected".into());
     }
@@ -284,7 +287,9 @@ async fn accept_inner(
             .as_ref()
             .is_some_and(|enabled| !*enabled.borrow())
     {
-        return Err("Pairing window is closed".into());
+        let message = "Pairing window is closed";
+        write_plain_frame(&mut stream, Command::PeerError, message.as_bytes()).await?;
+        return Err(message.into());
     }
     handshake.read_message(&request.payload, &mut output)?;
 
@@ -600,6 +605,50 @@ mod tests {
             derive_verification_code(&accepted.handshake_hash, &client_public, &changed_key)
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn closed_pairing_window_returns_a_clear_rejection() {
+        let server_identity = DeviceIdentity::generate_for_test();
+        let client_identity = DeviceIdentity::generate_for_test();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_, pairing_window) = watch::channel(false);
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            match accept_with_pairing_window(
+                stream,
+                &server_identity,
+                PeerIdentity {
+                    hostname: "server".into(),
+                    tailscale_ip: "127.0.0.1".into(),
+                },
+                pairing_window,
+            )
+            .await
+            {
+                Ok(_) => panic!("closed pairing window accepted a connection"),
+                Err(error) => error.to_string(),
+            }
+        });
+
+        let error = match connect_pairing(
+            TcpStream::connect(address).await.unwrap(),
+            &client_identity,
+            PeerIdentity {
+                hostname: "client".into(),
+                tailscale_ip: "127.0.0.1".into(),
+            },
+        )
+        .await
+        {
+            Ok(_) => panic!("closed pairing window accepted a connection"),
+            Err(error) => error.to_string(),
+        };
+
+        assert_eq!(error, "Pairing window is closed");
+        assert_eq!(server.await.unwrap(), "Pairing window is closed");
     }
 
     #[tokio::test]

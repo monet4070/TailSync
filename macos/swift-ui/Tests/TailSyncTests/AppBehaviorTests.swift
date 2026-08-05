@@ -30,6 +30,36 @@ final class AppBehaviorTests: XCTestCase {
         loc.lang = originalLanguage
     }
 
+    func testApiServerErrorsPreserveTheirDiagnosticMessage() {
+        let error = ApiError.serverError("Remote diagnostic details")
+
+        XCTAssertEqual(error.localizedDescription, "Remote diagnostic details")
+    }
+
+    func testPairingRejectionsExplainHowToOpenTheOtherDevice() {
+        let loc = Loc.shared
+        let originalLanguage = loc.lang
+        defer { loc.lang = originalLanguage }
+
+        loc.lang = "en"
+        XCTAssertTrue(
+            ApiError.serverError("Pairing window is closed")
+                .pairingErrorDescription.contains("Allow pairing")
+        )
+        XCTAssertTrue(Loc.t("settings.pairingInstruction").contains("Allow pairing"))
+
+        loc.lang = "zh-CN"
+        XCTAssertTrue(
+            ApiError.serverError("IO error: Connection reset by peer")
+                .pairingErrorDescription.contains("允许配对")
+        )
+        XCTAssertTrue(
+            ApiError.serverError("Pairing handshake timed out")
+                .pairingErrorDescription.contains("允许配对")
+        )
+        XCTAssertTrue(Loc.t("settings.pairingInstruction").contains("允许配对"))
+    }
+
     func testCanvasUsesTheWindowsSemanticColorTokens() throws {
         let light = TailSyncColorTheme.tailsync.palette(for: .light)
         let dark = TailSyncColorTheme.tailsync.palette(for: .dark)

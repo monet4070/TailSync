@@ -615,10 +615,41 @@ final class ApiClient: @unchecked Sendable {
     }
 }
 
-enum ApiError: Error {
+enum ApiError: LocalizedError {
     case connectionFailed
     case sendFailed
     case noResponse
     case invalidJson
     case serverError(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .connectionFailed:
+            return Loc.t("error.localServiceUnavailable")
+        case .sendFailed:
+            return Loc.t("error.localServiceSendFailed")
+        case .noResponse:
+            return Loc.t("error.localServiceNoResponse")
+        case .invalidJson:
+            return Loc.t("error.localServiceInvalidResponse")
+        case .serverError(let message):
+            return message
+        }
+    }
+
+    var pairingErrorDescription: String {
+        guard case .serverError(let message) = self else {
+            return localizedDescription
+        }
+        if message.contains("Pairing window is closed") {
+            return Loc.t("error.pairingWindowClosed")
+        }
+        if message.contains("Pairing handshake timed out") {
+            return Loc.t("error.pairingHandshakeTimedOut")
+        }
+        if message.contains("Connection reset by peer") || message.contains("early eof") {
+            return Loc.t("error.pairingConnectionClosed")
+        }
+        return message
+    }
 }
