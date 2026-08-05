@@ -16,6 +16,7 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  ChevronUp,
   Clipboard,
   Code2,
   Database,
@@ -64,6 +65,7 @@ interface HistoryEntry {
   batch_id?: string | null;
   batch_index?: number | null;
   batch_total?: number | null;
+  batch_count?: number | null;
   batch_status?: "complete" | "incomplete";
 }
 
@@ -102,6 +104,7 @@ const PAGE_SIZE = HISTORY_PAGE_SIZE;
 const VERSION_POLL_MS = 800;
 const NEW_GLOW_DURATION_MS = 3000;
 const RESTORE_FEEDBACK_DURATION_MS = 1500;
+const COLLAPSED_BATCH_FILE_LIMIT = 2;
 const HISTORY_CATEGORIES: HistoryCategory[] = [
   "text",
   "website",
@@ -495,6 +498,7 @@ export function History() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [newIds, setNewIds] = useState<Set<number>>(new Set());
+  const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
   const restoreFeedbackTimer = useRef<number>(0);
@@ -820,6 +824,7 @@ export function History() {
       thumbnailIds.current.clear();
       setPage(0);
       setSelectedId(null);
+      setExpandedBatches(new Set());
       setShowClearConfirm(false);
       prevIds.current = new Set();
       lastQueryKey.current = "";
@@ -1011,6 +1016,7 @@ export function History() {
             });
 
             let itemIndex = 0;
+            const batchPositions = new Map<string, number>();
             return GROUP_ORDER.map((group) => {
               const groupEntries = groups[group];
               if (!groupEntries) return null;
@@ -1022,6 +1028,20 @@ export function History() {
                     {t(GROUP_LABEL_KEYS[group])}
                   </div>
                   {groupEntries.map((entry, groupIndex) => {
+                    const batchId = entry.batch_id ?? null;
+                    const batchPosition = batchId ? (batchPositions.get(batchId) ?? 0) : 0;
+                    if (batchId) batchPositions.set(batchId, batchPosition + 1);
+                    const batchTotal = entry.batch_total ?? 1;
+                    const batchCount = entry.batch_count ?? batchTotal;
+                    const batchExpanded = Boolean(batchId && expandedBatches.has(batchId));
+                    if (
+                      batchId
+                      && batchCount > COLLAPSED_BATCH_FILE_LIMIT
+                      && !batchExpanded
+                      && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT
+                    ) {
+                      return null;
+                    }
                     const delay = itemIndex * 30;
                     itemIndex++;
                     const isNew = newIds.has(entry.id);
@@ -1038,18 +1058,48 @@ export function History() {
                       >
                       {isBatchStart && (
                         <div className="history-batch-header">
-                          <span><Folder size={13} strokeWidth={1.8} aria-hidden="true" /> {entry.batch_total ?? 1} {t("history.files")}</span>
-                          {entry.batch_status === "complete" ? (
-                            <button
-                              type="button"
-                              onClick={() => void invoke("restore_file_batch", { batchId: entry.batch_id })}
-                            >
-                              <Clipboard size={12} strokeWidth={1.8} aria-hidden="true" />
-                              {t("history.copyAll")}
-                            </button>
-                          ) : (
-                            <span className="batch-incomplete">{t("history.incomplete")}</span>
-                          )}
+                          <span>
+                            <Folder size={13} strokeWidth={1.8} aria-hidden="true" />{" "}
+                            {entry.batch_status === "incomplete" && batchCount !== batchTotal
+                              ? `${batchCount}/${batchTotal}`
+                              : batchCount}{" "}
+                            {t("history.files")}
+                          </span>
+                          <div className="history-batch-actions">
+                            {entry.batch_status === "complete" ? (
+                              <button
+                                type="button"
+                                onClick={() => void invoke("restore_file_batch", { batchId: entry.batch_id })}
+                              >
+                                <Clipboard size={12} strokeWidth={1.8} aria-hidden="true" />
+                                {t("history.copyAll")}
+                              </button>
+                            ) : (
+                              <span className="batch-incomplete">{t("history.incomplete")}</span>
+                            )}
+                            {batchId && batchCount > COLLAPSED_BATCH_FILE_LIMIT && (
+                              <button
+                                className="batch-toggle"
+                                type="button"
+                                aria-expanded={batchExpanded}
+                                onClick={() => setExpandedBatches((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(batchId)) next.delete(batchId);
+                                  else next.add(batchId);
+                                  return next;
+                                })}
+                              >
+                                {batchExpanded ? (
+                                  <ChevronUp size={12} strokeWidth={1.8} aria-hidden="true" />
+                                ) : (
+                                  <ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" />
+                                )}
+                                {batchExpanded
+                                  ? t("history.showLess")
+                                  : `${t("history.showMore")} (${batchCount - COLLAPSED_BATCH_FILE_LIMIT})`}
+                              </button>
+                            )}
+                          </div>
                         </div>
                       )}
                       <article

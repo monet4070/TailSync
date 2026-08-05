@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -56,8 +57,10 @@ struct HistoryView: View {
     @State private var historyCapabilitiesLoading = false
     @State private var unresolvedMigrationCount = 0
     @State private var restoreFeedbackTask: Task<Void, Never>? = nil
+    @State private var expandedBatchIds: Set<String> = []
 
     private let pageSize = 30
+    private let collapsedBatchFileLimit = 2
     private let knownCategories = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]
 
     private var activeTheme: TailSyncColorTheme {
@@ -80,12 +83,37 @@ struct HistoryView: View {
         Loc.t("history.dateFilter")
     }
 
+    private var displayedEntries: [HistoryEntry] {
+        var batchPositions: [String: Int] = [:]
+        return entries.filter { entry in
+            guard let batchId = entry.batch_id,
+                  batchCount(entry) > collapsedBatchFileLimit,
+                  !expandedBatchIds.contains(batchId) else { return true }
+            let position = batchPositions[batchId, default: 0]
+            batchPositions[batchId] = position + 1
+            return position < collapsedBatchFileLimit
+        }
+    }
+
     private var customStartTitle: String {
         Loc.t("history.date.start")
     }
 
     private var customEndTitle: String {
         Loc.t("history.date.end")
+    }
+
+    private func batchCount(_ entry: HistoryEntry) -> Int {
+        entry.batch_count ?? entry.batch_total ?? 1
+    }
+
+    private func batchTitle(_ entry: HistoryEntry) -> String {
+        let count = batchCount(entry)
+        let total = entry.batch_total ?? count
+        let value = entry.batch_status == "incomplete" && count != total
+            ? "\(count)/\(total)"
+            : "\(count)"
+        return "\(value) \(Loc.t("history.files"))"
     }
 
     var body: some View {
@@ -224,12 +252,12 @@ struct HistoryView: View {
                 Spacer()
             } else {
                 List {
-                    ForEach(entries) { entry in
+                    ForEach(displayedEntries) { entry in
                         VStack(spacing: 4) {
                         if isBatchStart(entry), let batchId = entry.batch_id {
                             HStack(spacing: 6) {
                                 Image(systemName: "folder")
-                                Text("\(entry.batch_total ?? 1) \(Loc.t("history.files"))")
+                                Text(batchTitle(entry))
                                 Spacer()
                                 if entry.batch_status == "complete" {
                                     Button {
@@ -242,44 +270,38 @@ struct HistoryView: View {
                                     Text(Loc.t("history.incomplete"))
                                         .foregroundColor(palette.warningColor)
                                 }
+                                if batchCount(entry) > collapsedBatchFileLimit {
+                                    Button {
+                                        if expandedBatchIds.contains(batchId) {
+                                            expandedBatchIds.remove(batchId)
+                                        } else {
+                                            expandedBatchIds.insert(batchId)
+                                        }
+                                    } label: {
+                                        Label(
+                                            expandedBatchIds.contains(batchId)
+                                                ? Loc.t("history.showLess")
+                                                : "\(Loc.t("history.showMore")) (\(batchCount(entry) - collapsedBatchFileLimit))",
+                                            systemImage: expandedBatchIds.contains(batchId)
+                                                ? "chevron.up"
+                                                : "chevron.down"
+                                        )
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
                             }
                             .font(.caption)
                             .foregroundColor(palette.secondaryColor)
                             .padding(.horizontal, 6)
                         }
-                        HStack(spacing: 6) {
-                            HistoryRow(
-                                entry: entry,
-                                isRestored: restoredId == entry.id,
-                                showsMultipleLabels: multipleLabelsSupported
-                            )
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) { restore(entry.id) }
-
-                            Button { restore(entry.id) } label: {
-                                Image(systemName: "arrow.uturn.backward")
-                            }
-                            .buttonStyle(.borderless)
-                            .help(Loc.t("history.restore"))
-                            .accessibilityLabel("\(Loc.t("history.restore")): \(entry.description)")
-
-                            Button { setPinned(entry) } label: {
-                                Image(systemName: entry.pinned ? "pin.fill" : "pin")
-                            }
-                            .buttonStyle(.borderless)
-                            .help(Loc.t(entry.pinned ? "history.unpin" : "history.pin"))
-
-                            Button(role: .destructive) { delete(entry.id) } label: {
-                                Image(systemName: "trash")
-                            }
-                            .buttonStyle(.borderless)
-                            .help(Loc.t("history.delete"))
-                            .accessibilityLabel("\(Loc.t("history.delete")): \(entry.description)")
-                        }
-                        }
-                        .contextMenu {
-                            Button(Loc.t("history.restore")) { restore(entry.id) }
-                            Button(Loc.t("history.delete"), role: .destructive) { delete(entry.id) }
+                        HistoryRow(
+                            entry: entry,
+                            isRestored: restoredId == entry.id,
+                            showsMultipleLabels: multipleLabelsSupported
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { restore(entry.id) }
+                        .onDirectRightClick { delete(entry.id) }
                         }
                         .listRowBackground(palette.surfaceColor)
                         .listRowSeparatorTint(palette.dividerColor)
@@ -480,17 +502,6 @@ struct HistoryView: View {
         }
     }
 
-    private func setPinned(_ entry: HistoryEntry) {
-        Task { @MainActor in
-            do {
-                try await ApiClient.shared.setHistoryPinned(id: entry.id, pinned: !entry.pinned)
-                load(targetPage: page)
-            } catch {
-                errorMsg = error.localizedDescription
-            }
-        }
-    }
-
     private func loadMigrationDiagnostics() {
         Task {
             do {
@@ -592,6 +603,40 @@ struct HistoryView: View {
                 loadMigrationDiagnostics()
             }
         }
+    }
+}
+
+private extension View {
+    func onDirectRightClick(perform action: @escaping () -> Void) -> some View {
+        overlay(DirectRightClickView(action: action))
+    }
+}
+
+private struct DirectRightClickView: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> DirectRightClickNSView {
+        let view = DirectRightClickNSView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ nsView: DirectRightClickNSView, context: Context) {
+        nsView.action = action
+    }
+}
+
+private final class DirectRightClickNSView: NSView {
+    var action: (() -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let event = NSApp.currentEvent,
+              event.type == .rightMouseDown || event.type == .rightMouseUp else { return nil }
+        return self
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        action?()
     }
 }
 

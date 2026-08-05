@@ -137,6 +137,8 @@
   "history.stopTransfer": "Stop",
   "history.files": "files",
   "history.copyAll": "Copy all",
+  "history.showMore": "Show more",
+  "history.showLess": "Show less",
   "history.incomplete": "Incomplete",
   "history.pin": "Pin",
   "history.unpin": "Unpin",

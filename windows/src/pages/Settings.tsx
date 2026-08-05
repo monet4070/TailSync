@@ -128,6 +128,7 @@ function formatStorageSize(bytes: number) {
 export function Settings() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [historyLimitDraft, setHistoryLimitDraft] = useState(100);
+  const [storageQuotaDraft, setStorageQuotaDraft] = useState("10");
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [storageBusy, setStorageBusy] = useState(false);
   const [oldStorage, setOldStorage] = useState<StorageMigrationResult | null>(null);
@@ -164,6 +165,7 @@ export function Settings() {
         settingsRef.current = s;
         setSettings(s);
         setHistoryLimitDraft(s.history_limit);
+        setStorageQuotaDraft(String(Math.round(s.storage_quota_bytes / GIB)));
         if (isThemePreference(s.theme)) setTheme(s.theme);
         if (isColorTheme(s.color_theme)) setColorTheme(s.color_theme);
         setLocale(s.language);
@@ -253,6 +255,21 @@ export function Settings() {
     await update({ history_limit: historyLimitDraft });
   };
 
+  const commitStorageQuota = async () => {
+    const current = settingsRef.current;
+    if (!current) return;
+    const currentGib = Math.round(current.storage_quota_bytes / GIB);
+    const parsed = Number.parseInt(storageQuotaDraft, 10);
+    const gib = Math.min(16384, Math.max(1, Number.isFinite(parsed) ? parsed : currentGib));
+    setStorageQuotaDraft(String(gib));
+    if (gib === currentGib) return;
+    if (!(await update({ storage_quota_bytes: gib * GIB }))) {
+      setStorageQuotaDraft(
+        String(Math.round((settingsRef.current?.storage_quota_bytes ?? current.storage_quota_bytes) / GIB)),
+      );
+    }
+  };
+
   const changeStorage = async () => {
     const parent = await open({
       directory: true,
@@ -270,6 +287,7 @@ export function Settings() {
       ]);
       settingsRef.current = canonical;
       setSettings(canonical);
+      setStorageQuotaDraft(String(Math.round(canonical.storage_quota_bytes / GIB)));
       setStorageStatus(status);
     } catch (error) {
       console.error("Storage migration failed:", error);
@@ -933,13 +951,19 @@ export function Settings() {
             </div>
             <input
               className="storage-quota-input"
-              type="number"
-              min={1}
-              max={16384}
-              value={Math.round(settings.storage_quota_bytes / GIB)}
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={storageQuotaDraft}
               onChange={(event) => {
-                const gib = Math.min(16384, Math.max(1, Number(event.target.value) || 1));
-                void update({ storage_quota_bytes: gib * GIB });
+                setStorageQuotaDraft(event.target.value.replace(/\D/g, "").slice(0, 5));
+              }}
+              onBlur={() => void commitStorageQuota()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.currentTarget.blur();
+                }
               }}
               aria-label={t("settings.storageQuota")}
             />

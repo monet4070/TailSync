@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::{watch, Mutex};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::clipboard_change::ClipboardChangeDetector;
 use crate::clipboard_file;
@@ -21,6 +21,35 @@ static CLIPBOARD_RECOVERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_FAILURES: AtomicU64 = AtomicU64::new(0);
 const CLIPBOARD_MONITOR_STALE_AFTER_MS: u64 = 10_000;
+const IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS: u64 = 750;
+
+#[derive(Default)]
+struct ClipboardEventGate {
+    last_processed_at: Option<Instant>,
+}
+
+impl ClipboardEventGate {
+    fn should_process(
+        &mut self,
+        content_changed: bool,
+        clipboard_changed: bool,
+        now: Instant,
+    ) -> bool {
+        if !content_changed && !clipboard_changed {
+            return false;
+        }
+        if !content_changed
+            && self.last_processed_at.is_some_and(|last| {
+                now.duration_since(last)
+                    < Duration::from_millis(IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS)
+            })
+        {
+            return false;
+        }
+        self.last_processed_at = Some(now);
+        true
+    }
+}
 
 pub fn request_wake_recovery() {
     CLIPBOARD_RECOVERY_GENERATION.fetch_add(1, Ordering::AcqRel);
@@ -134,6 +163,9 @@ async fn clipboard_loop(
     let mut last_text_hash = String::new();
     let mut last_image_hash = String::new();
     let mut last_file_list: Vec<std::path::PathBuf> = vec![];
+    let mut text_event_gate = ClipboardEventGate::default();
+    let mut image_event_gate = ClipboardEventGate::default();
+    let mut file_event_gate = ClipboardEventGate::default();
     let mut tick: u64 = 0;
     let mut recovery_generation = CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire);
 
@@ -153,6 +185,9 @@ async fn clipboard_loop(
             last_text_hash.clear();
             last_image_hash.clear();
             last_file_list.clear();
+            text_event_gate = ClipboardEventGate::default();
+            image_event_gate = ClipboardEventGate::default();
+            file_event_gate = ClipboardEventGate::default();
             info!("Clipboard monitor reset after system wake");
             continue;
         }
@@ -170,6 +205,7 @@ async fn clipboard_loop(
         // Keep this event separate from content hashes so repeated copies are
         // still delivered.
         let clipboard_changed = true;
+        let clipboard_event_at = Instant::now();
 
         let clipboard =
             match handle.try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>() {
@@ -216,38 +252,43 @@ async fn clipboard_loop(
                 );
                 continue;
             }
-            if !outbound_paths.is_empty()
-                && should_process_clipboard_item(paths != &last_file_list, clipboard_changed)
-            {
-                last_file_list.clone_from(paths);
-                last_text_hash.clear();
-                last_image_hash.clear();
-                if managed_count > 0 {
-                    info!("Ignored {managed_count} managed file(s) in a mixed clipboard event");
+            if !outbound_paths.is_empty() {
+                if file_event_gate.should_process(
+                    paths != &last_file_list,
+                    clipboard_changed,
+                    clipboard_event_at,
+                ) {
+                    last_file_list.clone_from(paths);
+                    last_text_hash.clear();
+                    last_image_hash.clear();
+                    if managed_count > 0 {
+                        info!("Ignored {managed_count} managed file(s) in a mixed clipboard event");
+                    }
+                    info!("Clipboard files: {} file(s)", outbound_paths.len());
+                    let generation = sync_engine.lock().await.supersede_file_clipboard();
+                    crate::api::bump_clipboard_version();
+                    tokio::spawn(send_file_batch_to_peers(
+                        outbound_paths,
+                        generation,
+                        handle.clone(),
+                        pool.clone(),
+                        database.clone(),
+                        settings.clone(),
+                    ));
                 }
-                info!("Clipboard files: {} file(s)", outbound_paths.len());
-                let generation = sync_engine.lock().await.supersede_file_clipboard();
-                crate::api::bump_clipboard_version();
-                tokio::spawn(send_file_batch_to_peers(
-                    outbound_paths,
-                    generation,
-                    handle.clone(),
-                    pool.clone(),
-                    database.clone(),
-                    settings.clone(),
-                ));
-                // Only skip text/image when files actually changed this round
                 continue;
             }
-            // Files on clipboard but unchanged — fall through to check
-            // text/image in case user copied text over the file selection
         }
 
         // ── 2. Try text ────────────────────────────────────────────
         match clipboard.read_text() {
             Ok(t) if !t.is_empty() => {
                 let hash = blake3::hash(t.as_bytes()).to_hex().to_string();
-                if should_process_clipboard_item(hash != last_text_hash, clipboard_changed) {
+                if text_event_gate.should_process(
+                    hash != last_text_hash,
+                    clipboard_changed,
+                    clipboard_event_at,
+                ) {
                     last_text_hash = hash.clone();
 
                     let is_echo = shadow_check(&sync_engine, &hash).await;
@@ -290,7 +331,11 @@ async fn clipboard_loop(
                 let h = image.height();
                 let packed = pack_image_data(w, h, rgba);
                 let hash = blake3::hash(&packed).to_hex().to_string();
-                if !should_process_clipboard_item(hash != last_image_hash, clipboard_changed) {
+                if !image_event_gate.should_process(
+                    hash != last_image_hash,
+                    clipboard_changed,
+                    clipboard_event_at,
+                ) {
                     continue;
                 }
                 last_image_hash = hash.clone();
@@ -359,12 +404,12 @@ async fn send_file_batch_to_peers(
         Ok(Ok(batch)) => Arc::new(batch),
         Ok(Err(error)) => {
             warn!("File batch rejected: {error}");
-            notify_file_batch_error(&app, &error);
+            notify_file_batch_error(&app, &settings, &error).await;
             return;
         }
         Err(error) => {
             error!("File batch preparation task failed: {error}");
-            notify_file_batch_error(&app, &error.to_string());
+            notify_file_batch_error(&app, &settings, &error.to_string()).await;
             return;
         }
     };
@@ -373,7 +418,7 @@ async fn send_file_batch_to_peers(
         let message = storage_status
             .error
             .unwrap_or_else(|| "Configured storage is unavailable; file transfer is paused".into());
-        notify_file_batch_error(&app, &message);
+        notify_file_batch_error(&app, &settings, &message).await;
         return;
     }
     let batch_id = prepared.manifest.batch_id;
@@ -381,7 +426,7 @@ async fn send_file_batch_to_peers(
     let peers = configured_peers(&settings)
         .await
         .into_iter()
-        .filter(|peer| peer.enabled)
+        .filter(peer_is_transfer_eligible)
         .collect::<Vec<_>>();
     crate::api::set_file_batch_progress(crate::api::FileProgress {
         batch_id: batch_id_hex.clone(),
@@ -400,6 +445,7 @@ async fn send_file_batch_to_peers(
 
     let mut tasks = tokio::task::JoinSet::new();
     for peer in peers {
+        let hostname = peer.hostname.clone();
         let peer_batch = prepared.clone();
         let peer_pool = pool.clone();
         tasks.spawn(async move {
@@ -419,20 +465,28 @@ async fn send_file_batch_to_peers(
                 )
                 .await;
             }
-            result
+            (hostname, result)
         });
     }
     let mut delivered = 0_usize;
+    let mut failures = Vec::new();
     while let Some(result) = tasks.join_next().await {
         match result {
-            Ok(Ok(())) => delivered += 1,
-            Ok(Err(error)) if error == "cancelled" => {}
-            Ok(Err(error)) => {
-                warn!("File batch delivery failed: {error}");
-                notify_file_batch_error(&app, &error);
+            Ok((_, Ok(()))) => delivered += 1,
+            Ok((_, Err(error))) if error == "cancelled" => {}
+            Ok((hostname, Err(error))) => {
+                warn!("File batch delivery to {hostname} failed: {error}");
+                failures.push((hostname, error));
             }
-            Err(error) => error!("File batch peer task failed: {error}"),
+            Err(error) => {
+                error!("File batch peer task failed: {error}");
+                failures.push(("TailSync".to_string(), error.to_string()));
+            }
         }
+    }
+    if !failures.is_empty() {
+        let message = summarize_file_batch_failures(&failures);
+        notify_file_batch_error(&app, &settings, &message).await;
     }
 
     let history_files = prepared
@@ -462,7 +516,14 @@ async fn send_file_batch_to_peers(
     info!("File batch {batch_id_hex} delivered to {delivered} peer(s)");
 }
 
-fn notify_file_batch_error(app: &AppHandle, message: &str) {
+async fn notify_file_batch_error(
+    app: &AppHandle,
+    settings: &Arc<Mutex<crypto::Settings>>,
+    message: &str,
+) {
+    if !settings.lock().await.notifications_enabled {
+        return;
+    }
     use tauri_plugin_notification::NotificationExt;
     if let Err(error) = app
         .notification()
@@ -473,6 +534,25 @@ fn notify_file_batch_error(app: &AppHandle, message: &str) {
     {
         log::warn!("Could not show file transfer notification: {error}");
     }
+}
+
+fn peer_is_transfer_eligible(peer: &network::tailscale::PeerInfo) -> bool {
+    peer.enabled && peer.trusted && peer.online
+}
+
+fn summarize_file_batch_failures(failures: &[(String, String)]) -> String {
+    if let [(hostname, error)] = failures {
+        return format!("File transfer to {hostname} failed: {error}");
+    }
+    let devices = failures
+        .iter()
+        .map(|(hostname, _)| hostname.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "File transfer failed on {} devices: {devices}",
+        failures.len()
+    )
 }
 
 async fn send_batch_to_peer(
@@ -642,7 +722,11 @@ async fn send_file_to_peers(
         warn!("File {fname} exceeds the 1 GiB transfer limit; keeping only local history");
         Vec::new()
     } else {
-        configured_peers(&settings).await
+        configured_peers(&settings)
+            .await
+            .into_iter()
+            .filter(peer_is_transfer_eligible)
+            .collect()
     };
     let transfer_id = TransferId::random();
     let meta = sync::FileMeta {
@@ -658,9 +742,6 @@ async fn send_file_to_peers(
 
     let mut sent_to: usize = 0;
     for peer in &peers {
-        if !peer.enabled {
-            continue;
-        }
         let addr: std::net::SocketAddr = match network::peer_socket_addr(peer) {
             Ok(a) => a,
             Err(e) => {
@@ -832,10 +913,6 @@ fn pack_image_data(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     out
 }
 
-fn should_process_clipboard_item(content_changed: bool, clipboard_changed: bool) -> bool {
-    content_changed || clipboard_changed
-}
-
 // ── Shadow-filter helpers ────────────────────────────────────────────
 
 async fn shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) -> bool {
@@ -905,7 +982,7 @@ async fn broadcast_to_peers(
     let peers = configured_peers(settings).await;
 
     for peer in &peers {
-        if !peer.enabled {
+        if !peer_is_transfer_eligible(peer) {
             continue;
         }
         if let Ok(addr) = network::peer_socket_addr(peer) {
@@ -938,12 +1015,84 @@ async fn configured_peers(
 
 #[cfg(test)]
 mod tests {
-    use super::{files_to_broadcast, should_process_clipboard_item};
+    use super::{
+        files_to_broadcast, peer_is_transfer_eligible, summarize_file_batch_failures,
+        ClipboardEventGate, IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS,
+    };
+    use tokio::time::{Duration, Instant};
+
+    fn transfer_peer(
+        enabled: bool,
+        trusted: bool,
+        online: bool,
+    ) -> crate::network::tailscale::PeerInfo {
+        crate::network::tailscale::PeerInfo {
+            hostname: "peer".to_string(),
+            tailscale_ip: "100.64.0.2".to_string(),
+            online,
+            enabled,
+            address: "100.64.0.2:53317".to_string(),
+            connection_mode: "auto".to_string(),
+            trusted,
+            fingerprint: String::new(),
+            candidates: Vec::new(),
+            current_interface: None,
+            current_address: None,
+            status: Default::default(),
+        }
+    }
 
     #[test]
-    fn native_copy_event_processes_identical_content_again() {
-        assert!(should_process_clipboard_item(false, true));
-        assert!(!should_process_clipboard_item(false, false));
+    fn consecutive_native_events_for_identical_content_are_debounced() {
+        let mut gate = ClipboardEventGate::default();
+        let first = Instant::now();
+
+        assert!(gate.should_process(true, true, first));
+        assert!(!gate.should_process(false, true, first + Duration::from_millis(100)));
+        assert!(gate.should_process(
+            false,
+            true,
+            first + Duration::from_millis(IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS)
+        ));
+        assert!(!gate.should_process(false, false, first + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn changed_content_bypasses_the_native_event_debounce() {
+        let mut gate = ClipboardEventGate::default();
+        let first = Instant::now();
+
+        assert!(gate.should_process(true, true, first));
+        assert!(gate.should_process(true, true, first + Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn immediate_transfers_require_enabled_trusted_online_peers() {
+        assert!(peer_is_transfer_eligible(&transfer_peer(true, true, true)));
+        assert!(!peer_is_transfer_eligible(&transfer_peer(
+            false, true, true
+        )));
+        assert!(!peer_is_transfer_eligible(&transfer_peer(
+            true, false, true
+        )));
+        assert!(!peer_is_transfer_eligible(&transfer_peer(
+            true, true, false
+        )));
+    }
+
+    #[test]
+    fn file_batch_failures_are_summarized_once() {
+        assert_eq!(
+            summarize_file_batch_failures(&[("Mac".into(), "connection lost".into())]),
+            "File transfer to Mac failed: connection lost"
+        );
+        assert_eq!(
+            summarize_file_batch_failures(&[
+                ("Mac".into(), "connection lost".into()),
+                ("Laptop".into(), "timed out".into()),
+            ]),
+            "File transfer failed on 2 devices: Mac, Laptop"
+        );
     }
 
     #[test]

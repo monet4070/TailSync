@@ -594,6 +594,14 @@ html, body {
   gap: 5px;
 }
 
+.history-batch-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
 .history-batch-header button {
   min-height: 24px;
   padding: 2px 7px;
@@ -603,6 +611,10 @@ html, body {
   color: var(--text-primary);
   font-size: 10px;
   cursor: pointer;
+}
+
+.history-batch-header .batch-toggle {
+  color: var(--text-secondary);
 }
 
 .batch-incomplete {

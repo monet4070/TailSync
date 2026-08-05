@@ -437,12 +437,22 @@
 
 .storage-quota-input {
   width: 72px;
-  padding: 5px 7px;
+  height: 30px;
+  padding: 5px 8px;
+  box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   color: var(--text-primary);
-  text-align: right;
+  text-align: center;
+  font: 12px var(--font-mono);
+  line-height: 18px;
+  outline: none;
+}
+
+.storage-quota-input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px var(--brand-soft);
 }
 
 .storage-quota-unit {

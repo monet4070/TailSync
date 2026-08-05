@@ -17,6 +17,7 @@ pub struct HistoryEntry {
     pub batch_id: Option<String>,
     pub batch_index: Option<i64>,
     pub batch_total: Option<i64>,
+    pub batch_count: Option<i64>,
     pub batch_status: String,
 }
 

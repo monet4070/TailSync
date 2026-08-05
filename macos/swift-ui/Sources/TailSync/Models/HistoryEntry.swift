@@ -16,12 +16,13 @@ struct HistoryEntry: Codable, Identifiable {
     let batch_id: String?
     let batch_index: Int?
     let batch_total: Int?
+    let batch_count: Int?
     let batch_status: String
 
     enum CodingKeys: String, CodingKey {
         case id, timestamp, type, description, data_hash, size_bytes, source_peer
         case category, categories, category_confidence, classifier_version
-        case pinned, batch_id, batch_index, batch_total, batch_status
+        case pinned, batch_id, batch_index, batch_total, batch_count, batch_status
     }
 
     init(from decoder: Decoder) throws {
@@ -52,6 +53,7 @@ struct HistoryEntry: Codable, Identifiable {
         batch_id = try values.decodeIfPresent(String.self, forKey: .batch_id)
         batch_index = try values.decodeIfPresent(Int.self, forKey: .batch_index)
         batch_total = try values.decodeIfPresent(Int.self, forKey: .batch_total)
+        batch_count = try values.decodeIfPresent(Int.self, forKey: .batch_count)
         batch_status = try values.decodeIfPresent(String.self, forKey: .batch_status) ?? "complete"
     }
 

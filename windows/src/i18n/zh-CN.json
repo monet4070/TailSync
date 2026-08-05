@@ -137,6 +137,8 @@
   "history.stopTransfer": "停止",
   "history.files": "个文件",
   "history.copyAll": "全部复制",
+  "history.showMore": "展开剩余",
+  "history.showLess": "收起",
   "history.incomplete": "未完成",
   "history.pin": "置顶",
   "history.unpin": "取消置顶",

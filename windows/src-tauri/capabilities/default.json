@@ -8,6 +8,7 @@
     "shell:allow-open",
     "notification:default",
     "clipboard-manager:default",
+    "dialog:allow-open",
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-close",

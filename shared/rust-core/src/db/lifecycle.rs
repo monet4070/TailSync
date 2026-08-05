@@ -3,7 +3,7 @@ use super::*;
 impl HistoryDB {
     /// Delete a history entry and its unreferenced external payload.
     pub fn delete(&mut self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
-        self.delete_entries(&[id])
+        self.delete_entries_with_batch_policy(&[id], None, true)
     }
 
     /// Remove every history entry in one transaction.
@@ -172,26 +172,40 @@ impl HistoryDB {
         ids: &[i64],
         preserve_path: Option<&Path>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.delete_entries_with_batch_policy(ids, preserve_path, false)
+    }
+
+    fn delete_entries_with_batch_policy(
+        &mut self,
+        ids: &[i64],
+        preserve_path: Option<&Path>,
+        rebase_complete_batches: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if ids.is_empty() {
             return Ok(());
         }
         let mut references = Vec::new();
-        let mut affected_batches = Vec::new();
+        let mut affected_batches = std::collections::BTreeMap::<String, bool>::new();
         for id in ids {
             let stored = self.conn.query_row(
-                "SELECT type, data, batch_id FROM history WHERE id = ?1",
+                "SELECT type, data, batch_id, batch_status FROM history WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, Vec<u8>>(1)?,
                         row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 },
             );
-            if let Ok((entry_type, stored, batch_id)) = stored {
+            if let Ok((entry_type, stored, batch_id, batch_status)) = stored {
                 if let Some(batch_id) = batch_id {
-                    affected_batches.push(batch_id);
+                    let was_complete = batch_status == "complete";
+                    affected_batches
+                        .entry(batch_id)
+                        .and_modify(|complete| *complete &= was_complete)
+                        .or_insert(was_complete);
                 }
                 let decoded = match entry_type.as_str() {
                     "file" => decode_file_reference(&stored)
@@ -210,15 +224,35 @@ impl HistoryDB {
         for id in ids {
             tx.execute("DELETE FROM history WHERE id = ?1", params![id])?;
         }
-        affected_batches.sort();
-        affected_batches.dedup();
-        for batch_id in affected_batches {
-            tx.execute(
-                "UPDATE history SET batch_status = 'incomplete'
-                 WHERE batch_id = ?1
-                   AND (SELECT COUNT(*) FROM history WHERE batch_id = ?1) < batch_total",
-                params![batch_id],
-            )?;
+        for (batch_id, was_complete) in affected_batches {
+            if rebase_complete_batches && was_complete {
+                let remaining_ids = {
+                    let mut statement = tx.prepare(
+                        "SELECT id FROM history WHERE batch_id = ?1
+                         ORDER BY batch_index ASC, id ASC",
+                    )?;
+                    let ids = statement
+                        .query_map(params![batch_id], |row| row.get::<_, i64>(0))?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    ids
+                };
+                let remaining_total = i64::try_from(remaining_ids.len())?;
+                for (index, remaining_id) in remaining_ids.into_iter().enumerate() {
+                    tx.execute(
+                        "UPDATE history
+                         SET batch_index = ?1, batch_total = ?2, batch_status = 'complete'
+                         WHERE id = ?3",
+                        params![i64::try_from(index)?, remaining_total, remaining_id],
+                    )?;
+                }
+            } else {
+                tx.execute(
+                    "UPDATE history SET batch_status = 'incomplete'
+                     WHERE batch_id = ?1
+                       AND (SELECT COUNT(*) FROM history WHERE batch_id = ?1) < batch_total",
+                    params![batch_id],
+                )?;
+            }
         }
         tx.commit()?;
 

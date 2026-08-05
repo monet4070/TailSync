@@ -92,6 +92,7 @@ describe("History item actions", () => {
         batch_id: "batch-1",
         batch_index: 0,
         batch_total: 2,
+        batch_count: 2,
         batch_status: "complete",
       },
       {
@@ -105,6 +106,7 @@ describe("History item actions", () => {
         batch_id: "batch-1",
         batch_index: 1,
         batch_total: 2,
+        batch_count: 2,
         batch_status: "complete",
       },
     ];
@@ -148,5 +150,102 @@ describe("History item actions", () => {
         pinned: true,
       });
     });
+  });
+
+  it("collapses file batches to two rows and expands them on demand", async () => {
+    const batchEntries = Array.from({ length: 6 }, (_, index) => ({
+      ...entry,
+      id: 20 + index,
+      type: "file",
+      description: `batch-file-${index + 1}`,
+      category: "file",
+      categories: ["file"],
+      pinned: false,
+      batch_id: "batch-large",
+      batch_index: index,
+      batch_total: 6,
+      batch_count: 6,
+      batch_status: "complete",
+    }));
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_settings":
+          return Promise.resolve({ progress_bar_enabled: true });
+        case "get_history_page":
+          return Promise.resolve({ entries: batchEntries, total: batchEntries.length });
+        case "get_history_capabilities":
+          return Promise.resolve({
+            classifier_version: 1,
+            categories: ["text", "image", "file"],
+            multiple_labels: true,
+            date_range_filter: true,
+          });
+        case "get_migration_diagnostics":
+          return Promise.resolve({ unresolved_count: 0 });
+        case "get_version":
+          return Promise.resolve({ version: 0 });
+        case "get_file_progress":
+          return Promise.resolve({ active: false });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+
+    render(<History />);
+    const showMore = await screen.findByRole("button", { name: "history.showMore (4)" });
+    expect(screen.getByText("batch-file-2")).toBeInTheDocument();
+    expect(screen.queryByText("batch-file-3")).toBeNull();
+
+    fireEvent.click(showMore);
+    expect(await screen.findByText("batch-file-6")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "history.showLess" }));
+    expect(screen.queryByText("batch-file-3")).toBeNull();
+  });
+
+  it("shows the received and expected counts for an incomplete batch", async () => {
+    const batchEntries = Array.from({ length: 3 }, (_, index) => ({
+      ...entry,
+      id: 40 + index,
+      type: "file",
+      description: `partial-file-${index + 1}`,
+      category: "file",
+      categories: ["file"],
+      pinned: false,
+      batch_id: "batch-partial",
+      batch_index: index,
+      batch_total: 4,
+      batch_count: 3,
+      batch_status: "incomplete",
+    }));
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_settings":
+          return Promise.resolve({ progress_bar_enabled: true });
+        case "get_history_page":
+          return Promise.resolve({ entries: batchEntries, total: batchEntries.length });
+        case "get_history_capabilities":
+          return Promise.resolve({
+            classifier_version: 1,
+            categories: ["text", "image", "file"],
+            multiple_labels: true,
+            date_range_filter: true,
+          });
+        case "get_migration_diagnostics":
+          return Promise.resolve({ unresolved_count: 0 });
+        case "get_version":
+          return Promise.resolve({ version: 0 });
+        case "get_file_progress":
+          return Promise.resolve({ active: false });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+
+    render(<History />);
+    expect(await screen.findByText("3/4 history.files")).toBeInTheDocument();
+    expect(screen.getByText("history.incomplete")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "history.copyAll" })).toBeNull();
+    expect(screen.getByRole("button", { name: "history.showMore (1)" })).toBeInTheDocument();
   });
 });

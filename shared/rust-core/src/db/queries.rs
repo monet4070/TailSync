@@ -28,7 +28,11 @@ impl HistoryDB {
         let mut sql = String::from(
             "SELECT id, timestamp, type, description, data_hash, size_bytes, source_peer,
                     category, category_confidence, classifier_version, categories,
-                    pinned, batch_id, batch_index, batch_total, batch_status
+                    pinned, batch_id, batch_index, batch_total, batch_status,
+                    CASE WHEN batch_id IS NULL THEN NULL ELSE
+                        (SELECT COUNT(*) FROM history AS batch_entries
+                         WHERE batch_entries.batch_id = history.batch_id)
+                    END AS batch_count
              FROM history",
         );
         sql.push_str(&filter_clause);
@@ -156,6 +160,7 @@ impl HistoryDB {
             batch_index: row.get(13)?,
             batch_total: row.get(14)?,
             batch_status: row.get(15)?,
+            batch_count: row.get(16)?,
         })
     }
 }

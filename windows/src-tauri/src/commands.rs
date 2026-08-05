@@ -389,7 +389,6 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<crate::crypto::S
 /// Update settings
 #[command]
 pub async fn update_settings(
-    app: tauri::AppHandle,
     state: State<'_, AppState>,
     settings_json: String,
 ) -> Result<(), String> {
@@ -400,8 +399,6 @@ pub async fn update_settings(
     let storage_quota_bytes = new_settings.storage_quota_bytes;
     let mut settings = state.settings.lock().await;
     let mode_changed = settings.connection_mode != new_settings.connection_mode;
-    let language_changed = settings.language != new_settings.language;
-    let language = new_settings.language.clone();
     new_settings.trusted_peer_keys = settings.trusted_peer_keys.clone();
     new_settings.trusted_peer_addresses = settings.trusted_peer_addresses.clone();
     new_settings.paired_peer_endpoints = settings.paired_peer_endpoints.clone();
@@ -409,11 +406,6 @@ pub async fn update_settings(
     *settings = new_settings;
     settings.save().map_err(|e| e.to_string())?;
     drop(settings);
-    if language_changed {
-        if let Err(error) = crate::tray::update_tray_menu(&app, &language) {
-            log::warn!("Failed to update tray menu language: {error}");
-        }
-    }
     state.db.lock().await.set_max_history(history_limit);
     state.db.lock().await.set_storage_quota(storage_quota_bytes);
     if mode_changed {

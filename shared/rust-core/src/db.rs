@@ -48,6 +48,26 @@ fn escape_like_literal(value: &str) -> String {
         .replace('_', "\\_")
 }
 
+fn remove_unreferenced_persisted_files(conn: &Connection, persisted: &[(Vec<u8>, PathBuf)]) {
+    for (reference, path) in persisted {
+        let remaining = conn.query_row(
+            "SELECT COUNT(*) FROM history WHERE data = ?1",
+            params![reference],
+            |row| row.get::<_, i64>(0),
+        );
+        if matches!(remaining, Ok(0)) {
+            if let Err(error) = std::fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    warn!(
+                        "Could not remove unreferenced batch file {}: {error}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub struct HistoryDB {
     conn: Connection,
     max_history: i64,
@@ -632,47 +652,80 @@ impl HistoryDB {
         }
         let total = i64::try_from(expected_total).map_err(|_| "File batch is too large")?;
         let timestamp = chrono::Utc::now().to_rfc3339();
-        let mut stored_paths = Vec::with_capacity(files.len());
-        for (index, file) in files.iter().enumerate() {
+        let mut persisted = Vec::with_capacity(files.len());
+        for file in files {
             validate_history_file_size(file.size)?;
-            let (reference, stored_path) = persist_history_file_from_path_at(
+            let persisted_file = persist_history_file_from_path_at(
                 &self.file_history_dir,
                 &file.data_hash,
                 &file.name,
                 &file.path,
                 file.size,
-                move_sources,
-            )?;
-            self.conn.execute(
-                "INSERT INTO history
-                    (timestamp, type, description, data, size_bytes, source_peer, data_hash,
-                     category, categories, category_confidence, classifier_version,
-                     batch_id, batch_index, batch_total, batch_status)
-                 VALUES (?1, 'file', ?2, ?3, ?4, ?5, ?6, 'file', '[\"file\"]', 100, ?7,
-                         ?8, ?9, ?10, 'incomplete')",
-                params![
-                    timestamp,
-                    file.name,
-                    reference,
-                    file.size as i64,
-                    source_peer,
-                    file.data_hash,
-                    history_classifier::CLASSIFIER_VERSION,
-                    batch_id,
-                    index as i64,
-                    total,
-                ],
-            )?;
-            stored_paths.push(stored_path);
+                false,
+            );
+            match persisted_file {
+                Ok(value) => persisted.push(value),
+                Err(error) => {
+                    remove_unreferenced_persisted_files(&self.conn, &persisted);
+                    return Err(error);
+                }
+            }
         }
-        if complete {
-            self.conn.execute(
-                "UPDATE history SET batch_status = 'complete' WHERE batch_id = ?1",
-                params![batch_id],
-            )?;
+
+        let write_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let tx = self.conn.transaction()?;
+            for (index, (file, (reference, _))) in files.iter().zip(&persisted).enumerate() {
+                tx.execute(
+                    "INSERT INTO history
+                        (timestamp, type, description, data, size_bytes, source_peer, data_hash,
+                         category, categories, category_confidence, classifier_version,
+                         batch_id, batch_index, batch_total, batch_status)
+                     VALUES (?1, 'file', ?2, ?3, ?4, ?5, ?6, 'file', '[\"file\"]', 100, ?7,
+                             ?8, ?9, ?10, 'incomplete')",
+                    params![
+                        timestamp,
+                        file.name,
+                        reference,
+                        file.size as i64,
+                        source_peer,
+                        file.data_hash,
+                        history_classifier::CLASSIFIER_VERSION,
+                        batch_id,
+                        index as i64,
+                        total,
+                    ],
+                )?;
+            }
+            if complete {
+                tx.execute(
+                    "UPDATE history SET batch_status = 'complete' WHERE batch_id = ?1",
+                    params![batch_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            remove_unreferenced_persisted_files(&self.conn, &persisted);
+            return Err(error);
+        }
+
+        if move_sources {
+            for (file, (_, stored_path)) in files.iter().zip(&persisted) {
+                if file.path != *stored_path {
+                    if let Err(error) = std::fs::remove_file(&file.path) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            warn!(
+                                "Could not remove adopted batch source {}: {error}",
+                                file.path.display()
+                            );
+                        }
+                    }
+                }
+            }
         }
         self.trim("file")?;
-        Ok(stored_paths)
+        Ok(persisted.into_iter().map(|(_, path)| path).collect())
     }
 
     // ── Migration inserts (pre-set timestamp + description) ──────
@@ -972,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_part_of_a_batch_marks_pinned_survivors_incomplete() {
+    fn manually_deleting_from_a_complete_batch_rebases_survivors() {
         let root = std::env::temp_dir().join(format!(
             "tailsync-partial-pinned-batch-{:016x}",
             rand::random::<u64>()
@@ -992,13 +1045,47 @@ mod tests {
             .unwrap();
 
         db.delete(2).unwrap();
-        let status: String = db
+        let survivor: (i64, i64, String) = db
             .conn
-            .query_row("SELECT batch_status FROM history WHERE id = 1", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT batch_index, batch_total, batch_status FROM history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
             .unwrap();
-        assert_eq!(status, "incomplete");
+        assert_eq!(survivor, (0, 1, "complete".to_string()));
+    }
+
+    #[test]
+    fn automatic_cleanup_keeps_partial_pinned_batches_incomplete() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-partial-cleanup-batch-{:016x}",
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+        db.conn
+            .execute_batch(
+                "INSERT INTO history
+                    (id, timestamp, type, description, data, size_bytes, data_hash, pinned,
+                     batch_id, batch_index, batch_total, batch_status)
+                 VALUES
+                   (1, '2026-01-01T00:00:00Z', 'file', 'keep.bin', X'00', 8, 'keep', 1,
+                    'batch-cleanup', 0, 2, 'complete'),
+                   (2, '2026-01-01T00:00:00Z', 'file', 'remove.bin', X'00', 8, 'remove', 0,
+                    'batch-cleanup', 1, 2, 'complete');",
+            )
+            .unwrap();
+
+        db.delete_entries(&[2]).unwrap();
+        let survivor: (i64, String) = db
+            .conn
+            .query_row(
+                "SELECT batch_total, batch_status FROM history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(survivor, (2, "incomplete".to_string()));
     }
 
     #[test]
@@ -1037,7 +1124,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!((count, status.as_str(), total), (1, "incomplete", 2));
+        let entries = db.get_all(None, None, 10, 0).unwrap();
+        assert_eq!(entries[0].batch_count, Some(1));
         assert!(db.materialize_file_batch("batch-incomplete").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_batch_persistence_does_not_leave_partial_database_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-atomic-batch-{:016x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.bin");
+        std::fs::write(&first, b"first").unwrap();
+        let missing = root.join("missing.bin");
+        let mut db = test_database(&root);
+        let result = db.add_file_batch(
+            "batch-atomic",
+            &[
+                HistoryFileInput {
+                    name: "first.bin".into(),
+                    path: first,
+                    data_hash: blake3::hash(b"first").to_hex().to_string(),
+                    size: 5,
+                },
+                HistoryFileInput {
+                    name: "missing.bin".into(),
+                    path: missing,
+                    data_hash: blake3::hash(b"missing").to_hex().to_string(),
+                    size: 7,
+                },
+            ],
+            "self",
+            false,
+        );
+
+        assert!(result.is_err());
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM history WHERE batch_id = 'batch-atomic'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(std::fs::read_dir(&db.file_history_dir).unwrap().count(), 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 
