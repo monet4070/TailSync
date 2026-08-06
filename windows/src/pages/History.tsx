@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
+import { useVisiblePolling } from "../hooks/useVisiblePolling";
 import { LatestRequest } from "../utils/asyncControl";
 import {
   HISTORY_PAGE_SIZE,
@@ -102,6 +103,9 @@ interface MigrationDiagnostics {
 
 const PAGE_SIZE = HISTORY_PAGE_SIZE;
 const VERSION_POLL_MS = 800;
+const SETTINGS_POLL_MS = 5000;
+const SEARCH_DEBOUNCE_MS = 250;
+const MAX_CACHED_THUMBNAILS = PAGE_SIZE * 4;
 const NEW_GLOW_DURATION_MS = 3000;
 const RESTORE_FEEDBACK_DURATION_MS = 1500;
 const COLLAPSED_BATCH_FILE_LIMIT = 2;
@@ -393,8 +397,8 @@ function formatTime(iso: string) {
 }
 
 function formatSize(bytes: number) {
-  if (bytes > 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  if (bytes > 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
 }
 
@@ -487,6 +491,7 @@ export function History() {
   const [migrationDiagnostics, setMigrationDiagnostics] = useState<MigrationDiagnostics | null>(null);
   const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
   const thumbnailIds = useRef<Set<number>>(new Set());
+  const [keywordDraft, setKeywordDraft] = useState("");
   const [keyword, setKeyword] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<"all" | HistoryCategory>("all");
   const [selectedDateFilter, setSelectedDateFilter] = useState<DateFilter>("all");
@@ -501,7 +506,9 @@ export function History() {
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [actionError, setActionError] = useState("");
   const restoreFeedbackTimer = useRef<number>(0);
+  const actionErrorTimer = useRef<number>(0);
   const newGlowTimers = useRef<Set<number>>(new Set());
 
   const lastVersion = useRef<number>(0);
@@ -523,12 +530,9 @@ export function History() {
     can_stop: boolean;
   } | null>(null);
   const [progressBarEnabled, setProgressBarEnabled] = useState(true);
-  const progressEnabledRef = useRef(progressBarEnabled);
-  useEffect(() => {
-    progressEnabledRef.current = progressBarEnabled;
-  }, [progressBarEnabled]);
   useEffect(() => () => {
     window.clearTimeout(restoreFeedbackTimer.current);
+    window.clearTimeout(actionErrorTimer.current);
     newGlowTimers.current.forEach(window.clearTimeout);
     newGlowTimers.current.clear();
   }, []);
@@ -584,7 +588,7 @@ export function History() {
     [selectedDateFilter, customStartDate, customEndDate, calendarNow],
   );
   const hasActiveFilters =
-    Boolean(keyword) || selectedCategory !== "all" || selectedDateFilter !== "all";
+    Boolean(keywordDraft) || selectedCategory !== "all" || selectedDateFilter !== "all";
   const totalPages = historyPageCount(totalEntries);
   const hasNext = page < totalPages - 1;
   const hasPrev = page > 0;
@@ -618,11 +622,22 @@ export function History() {
     try {
       const resp = await invoke<ImageThumbnail>("get_image_data", { id });
       if (resp.thumbnail_b64) {
-        setThumbnails((current) => new Map(current).set(id, {
-          b64: resp.thumbnail_b64,
-          width: resp.thumbnail_width,
-          height: resp.thumbnail_height,
-        }));
+        setThumbnails((current) => {
+          const next = new Map(current);
+          next.delete(id);
+          next.set(id, {
+            b64: resp.thumbnail_b64,
+            width: resp.thumbnail_width,
+            height: resp.thumbnail_height,
+          });
+          while (next.size > MAX_CACHED_THUMBNAILS) {
+            const oldestId = next.keys().next().value;
+            if (oldestId === undefined) break;
+            next.delete(oldestId);
+            thumbnailIds.current.delete(oldestId);
+          }
+          return next;
+        });
       }
     } catch (e) {
       thumbnailIds.current.delete(id);
@@ -734,51 +749,38 @@ export function History() {
     void loadMigrationDiagnostics();
   }, [loadCapabilities, loadMigrationDiagnostics]);
 
-  useEffect(() => {
-    loadSettings();
-    let running = true;
-    let pollTimer = 0;
-    const poll = async () => {
-      if (!running) return;
-        loadSettings();
-        try {
-          const resp = await invoke<{ version: number }>("get_version");
-          if (resp.version !== lastVersion.current) {
-            lastVersion.current = resp.version;
-            loadHistory();
-          }
-        } catch {
-          /* ignore */
-        }
-        try {
-          const fp = await invoke<{
-            batch_id: string;
-            name: string;
-            sent: number;
-            total: number;
-            active: boolean;
-            direction: "sending" | "receiving";
-            device: string;
-            completed_files: number;
-            total_files: number;
-            speed_bytes_per_second: number;
-            status: string;
-            can_stop: boolean;
-          }>("get_file_progress");
-          setFileProgress(fp.active ? fp : null);
-        } catch {
-          /* ignore */
-        }
-      if (running) pollTimer = window.setTimeout(() => void poll(), VERSION_POLL_MS);
-    };
-    void poll();
-    return () => {
-      running = false;
-      window.clearTimeout(pollTimer);
-    };
-  }, [loadHistory, loadSettings]);
+  useVisiblePolling(loadSettings, SETTINGS_POLL_MS);
+  useVisiblePolling(async () => {
+    try {
+      const resp = await invoke<{ version: number }>("get_version");
+      if (resp.version !== lastVersion.current) {
+        lastVersion.current = resp.version;
+        await loadHistory();
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!progressBarEnabled) {
+      setFileProgress(null);
+      return;
+    }
+    try {
+      const fp = await invoke<NonNullable<typeof fileProgress>>("get_file_progress");
+      setFileProgress(fp.active ? fp : null);
+    } catch {
+      /* ignore */
+    }
+  }, VERSION_POLL_MS);
 
   /* ── Search reset ─────────────────────────────────────────────── */
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setKeyword(keywordDraft),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [keywordDraft]);
 
   useEffect(() => {
     setPage(0);
@@ -789,6 +791,15 @@ export function History() {
   }, [loadHistory]);
 
   /* ── Actions ──────────────────────────────────────────────────── */
+
+  const showActionError = useCallback(() => {
+    setActionError(t("history.actionFailed"));
+    window.clearTimeout(actionErrorTimer.current);
+    actionErrorTimer.current = window.setTimeout(
+      () => setActionError(""),
+      RESTORE_FEEDBACK_DURATION_MS,
+    );
+  }, [t]);
 
   const handleRestore = async (id: number) => {
     try {
@@ -801,6 +812,7 @@ export function History() {
       );
     } catch (e) {
       console.error("Restore failed:", e);
+      showActionError();
     }
   };
 
@@ -811,6 +823,7 @@ export function History() {
       await Promise.all([loadHistory(), loadMigrationDiagnostics()]);
     } catch (e) {
       console.error("Delete failed:", e);
+      showActionError();
     }
   };
 
@@ -831,8 +844,40 @@ export function History() {
       await loadMigrationDiagnostics();
     } catch (e) {
       console.error("Clear history failed:", e);
+      showActionError();
     } finally {
       setClearing(false);
+    }
+  };
+
+  const handleRestoreBatch = async (batchId: string) => {
+    try {
+      await invoke("restore_file_batch", { batchId });
+    } catch (error) {
+      console.error("Batch restore failed:", error);
+      showActionError();
+    }
+  };
+
+  const handlePinnedChange = async (entry: HistoryEntry) => {
+    const pinned = !entry.pinned;
+    try {
+      await invoke("set_history_pinned", { id: entry.id, pinned });
+      setEntries((current) => current.map((item) =>
+        item.id === entry.id ? { ...item, pinned } : item
+      ));
+    } catch (error) {
+      console.error("Pin update failed:", error);
+      showActionError();
+    }
+  };
+
+  const handleCancelFileBatch = async (batchId: string) => {
+    try {
+      await invoke("cancel_file_batch", { batchId });
+    } catch (error) {
+      console.error("Cancel file batch failed:", error);
+      showActionError();
     }
   };
 
@@ -873,8 +918,8 @@ export function History() {
         <input
           type="text"
           placeholder={t("history.searchPlaceholder")}
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
+          value={keywordDraft}
+          onChange={(e) => setKeywordDraft(e.target.value)}
           autoFocus
         />
         <button
@@ -1069,7 +1114,7 @@ export function History() {
                             {entry.batch_status === "complete" ? (
                               <button
                                 type="button"
-                                onClick={() => void invoke("restore_file_batch", { batchId: entry.batch_id })}
+                                onClick={() => void handleRestoreBatch(entry.batch_id!)}
                               >
                                 <Clipboard size={12} strokeWidth={1.8} aria-hidden="true" />
                                 {t("history.copyAll")}
@@ -1164,7 +1209,7 @@ export function History() {
                               title={entry.pinned ? t("history.unpin") : t("history.pin")}
                               onClick={(event) => {
                                 event.stopPropagation();
-                                void invoke("set_history_pinned", { id: entry.id, pinned: !entry.pinned });
+                                void handlePinnedChange(entry);
                               }}
                             >
                               <Pin size={11} fill={entry.pinned ? "currentColor" : "none"} aria-hidden="true" />
@@ -1240,7 +1285,7 @@ export function History() {
               className="progress-stop"
               type="button"
               title={t("history.stopTransfer")}
-              onClick={() => void invoke("cancel_file_batch", { batchId: fileProgress.batch_id })}
+              onClick={() => void handleCancelFileBatch(fileProgress.batch_id)}
             >
               <Square size={12} fill="currentColor" aria-hidden="true" />
               <span>{t("history.stopTransfer")}</span>
@@ -1250,7 +1295,9 @@ export function History() {
       )}
 
       {/* ── Toast ── */}
-      {restoredEntry && (
+      {actionError ? (
+        <div className="toast" role="alert">{actionError}</div>
+      ) : restoredEntry && (
         <div className="toast" key={restoredEntry.id}>
           {t("history.restored")}
         </div>

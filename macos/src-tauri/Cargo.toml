@@ -52,6 +52,7 @@ if-addrs = "0.15"
 tailsync-core = { path = "../../shared/rust-core", features = ["test-support"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSPasteboard", "NSRunningApplication"] }
 

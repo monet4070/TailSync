@@ -6,16 +6,29 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 const SEEN_MESSAGE_RETENTION_SECONDS: i64 = 10 * 60;
 pub const INCOMPLETE_TRANSFER_RETENTION_SECONDS: u64 = 24 * 60 * 60;
 pub const MAX_FILE_BATCH_COUNT: usize = 20;
 pub const MAX_FILE_BATCH_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_ACTIVE_BATCHES_PER_PEER: usize = 2;
+const MAX_ACTIVE_BATCHES_GLOBAL: usize = 8;
 const MAX_ACTIVE_RECEIVES_PER_PEER: usize = 2;
 const MAX_ACTIVE_RECEIVES_GLOBAL: usize = 8;
 const SHADOW_FILTER_TTL: Duration = Duration::from_secs(30);
 const SHADOW_FILTER_MAX_ENTRIES: usize = 1024;
+
+static FILE_BATCH_ADMISSION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Serializes the quota preflight and core batch admission across network
+/// connections. Without this seam, two peers could both pass the active-batch
+/// check before either one inserts its batch state.
+pub fn file_batch_admission_lock() -> &'static tokio::sync::Mutex<()> {
+    &FILE_BATCH_ADMISSION_LOCK
+}
 
 struct ShadowEntry {
     remaining: u16,
@@ -568,6 +581,8 @@ impl SyncEngine {
         source: String,
         incoming_dir: &Path,
     ) -> Result<(), String> {
+        // Validate before touching disk. The server also validates before its
+        // quota preflight, but this remains the authoritative core check.
         manifest.validate()?;
         let key = (source.clone(), manifest.batch_id);
         if self.cancelled_batches.contains(&key) {
@@ -579,6 +594,21 @@ impl SyncEngine {
             } else {
                 Err("Batch ID was reused with a different manifest".to_string())
             };
+        }
+        let active_for_peer = self
+            .incoming_batches
+            .keys()
+            .filter(|(peer, _)| peer == &source)
+            .count();
+        if active_for_peer >= MAX_ACTIVE_BATCHES_PER_PEER {
+            return Err(format!(
+                "peer {source} already has {MAX_ACTIVE_BATCHES_PER_PEER} active file batches"
+            ));
+        }
+        if self.incoming_batches.len() >= MAX_ACTIVE_BATCHES_GLOBAL {
+            return Err(format!(
+                "global active file batch limit ({MAX_ACTIVE_BATCHES_GLOBAL}) reached"
+            ));
         }
         fs::create_dir_all(incoming_dir).map_err(|error| error.to_string())?;
         let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
@@ -631,6 +661,32 @@ impl SyncEngine {
     pub fn has_file_batch(&self, source: &str, batch_id: TransferId) -> bool {
         self.incoming_batches
             .contains_key(&(source.to_string(), batch_id))
+    }
+
+    /// Bytes promised by accepted file batches that have not reached disk yet.
+    /// Existing `.part` and completed files are already included in storage
+    /// usage, so only their remaining bytes count toward the next preflight.
+    pub fn pending_file_batch_bytes(&self) -> u64 {
+        self.incoming_batches.values().fold(0_u64, |total, batch| {
+            let incoming_dir = batch.manifest_path.parent();
+            let remaining = batch
+                .manifest
+                .files
+                .iter()
+                .zip(&batch.files)
+                .filter_map(|(entry, completed)| completed.is_none().then_some(entry))
+                .fold(0_u64, |remaining, entry| {
+                    let received = incoming_dir
+                        .map(|directory| {
+                            directory.join(format!("{}.part", entry.transfer_id.as_hex()))
+                        })
+                        .and_then(|path| fs::metadata(path).ok())
+                        .map(|metadata| metadata.len().min(entry.size))
+                        .unwrap_or(0);
+                    remaining.saturating_add(entry.size.saturating_sub(received))
+                });
+            total.saturating_add(remaining)
+        })
     }
 
     pub fn batch_for_transfer(&self, source: &str, transfer_id: TransferId) -> Option<TransferId> {
@@ -1283,7 +1339,8 @@ mod tests {
     use super::{
         normalize_transferred_file_name, prepare_file_batch, FileBatchEntry, FileBatchManifest,
         FileBatchProgress, FileBatchRef, FileMeta, ReceivedFile, ShadowFilter, SyncEngine,
-        SyncPlatform, MAX_FILE_BATCH_BYTES, MAX_FILE_BATCH_COUNT, SHADOW_FILTER_MAX_ENTRIES,
+        SyncPlatform, MAX_ACTIVE_BATCHES_GLOBAL, MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES,
+        MAX_FILE_BATCH_COUNT, SHADOW_FILTER_MAX_ENTRIES,
     };
     use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
     use std::path::{Path, PathBuf};
@@ -1430,6 +1487,70 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("1 GiB"));
+    }
+
+    #[test]
+    fn active_file_batch_limits_are_enforced_without_affecting_other_peers() {
+        let directory = TestDirectory::new("batch-limits");
+        let mut sync = SyncEngine::new();
+
+        for batch_index in 0..MAX_ACTIVE_BATCHES_PER_PEER {
+            let mut manifest = manifest_with_sizes(&[0]);
+            manifest.batch_id = TransferId([batch_index as u8; 16]);
+            sync.begin_file_batch(manifest, "peer".to_string(), directory.path())
+                .unwrap();
+        }
+
+        let mut rejected = manifest_with_sizes(&[0]);
+        rejected.batch_id = TransferId([99; 16]);
+        assert!(sync
+            .begin_file_batch(rejected, "peer".to_string(), directory.path())
+            .unwrap_err()
+            .contains("active file batches"));
+
+        let mut other_peer = manifest_with_sizes(&[0]);
+        other_peer.batch_id = TransferId([100; 16]);
+        sync.begin_file_batch(other_peer, "other-peer".to_string(), directory.path())
+            .unwrap();
+    }
+
+    #[test]
+    fn pending_file_batch_bytes_exclude_partial_data_already_on_disk() {
+        let directory = TestDirectory::new("pending-batch-bytes");
+        let manifest = manifest_with_sizes(&[10, 20]);
+        let first_transfer = manifest.files[0].transfer_id;
+        let mut sync = SyncEngine::new();
+        sync.begin_file_batch(manifest, "peer-a".into(), directory.path())
+            .unwrap();
+        std::fs::write(
+            directory
+                .path()
+                .join(format!("{}.part", first_transfer.as_hex())),
+            [0_u8; 4],
+        )
+        .unwrap();
+
+        assert_eq!(sync.pending_file_batch_bytes(), 26);
+    }
+
+    #[test]
+    fn global_active_file_batch_limit_is_enforced() {
+        let directory = TestDirectory::new("batch-global-limit");
+        let mut sync = SyncEngine::new();
+
+        for batch_index in 0..MAX_ACTIVE_BATCHES_GLOBAL {
+            let mut manifest = manifest_with_sizes(&[0]);
+            manifest.batch_id = TransferId([batch_index as u8; 16]);
+            sync.begin_file_batch(manifest, format!("peer-{batch_index}"), directory.path())
+                .unwrap();
+        }
+
+        let mut rejected = manifest_with_sizes(&[0]);
+        rejected.batch_id = TransferId([99; 16]);
+        assert!(sync
+            .begin_file_batch(rejected, "peer-final".to_string(), directory.path())
+            .unwrap_err()
+            .contains("global active file batch limit"));
     }
 
     #[test]

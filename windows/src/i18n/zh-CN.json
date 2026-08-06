@@ -48,10 +48,12 @@
   "history.deleteEntry": "删除此条记录",
   "history.migrationWarningPrefix": "有",
   "history.migrationWarningSuffix": "条历史记录未能完成迁移。原数据已保留，并会在下次启动时重试。",
+  "history.actionFailed": "操作未能完成",
 
   "settings.title": "设置",
   "settings.loading": "加载中...",
   "settings.saved": "设置已保存",
+  "settings.saveFailed": "设置保存失败",
   "settings.general": "通用",
   "settings.notifications": "通知",
   "settings.progressBar": "进度条",
@@ -133,6 +135,7 @@
   "settings.storageOldData": "旧数据仍保留在原位置",
   "settings.storageDeleteOld": "删除旧数据",
   "settings.storageKeepOld": "保留",
+  "settings.storageActionFailed": "存储操作未能完成",
 
   "history.stopTransfer": "停止",
   "history.files": "个文件",

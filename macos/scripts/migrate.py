@@ -17,6 +17,13 @@ New format:
 
 The script decrypts Fernet rows and sends bounded chunks to the authenticated
 Rust API, which validates and stores each entry in the current format.
+
+The API token is intentionally not discoverable from a running app. For a
+manual recovery, start the daemon or app with an explicit 64-character token
+and run this script from the same shell, for example:
+
+  TAILSYNC_API_TOKEN=<64 hex chars> /path/to/TailSync.app/Contents/MacOS/TailSync &
+  TAILSYNC_API_TOKEN=<same value> python3 macos/scripts/migrate.py
 """
 
 import os

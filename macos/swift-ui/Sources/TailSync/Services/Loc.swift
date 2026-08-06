@@ -39,10 +39,12 @@ final class Loc: ObservableObject {
             colorTheme = TailSyncColorTheme(
                 storedValue: obj["color_theme"] as? String ?? "tailsync"
             ).rawValue
+            notificationsEnabled = obj["notifications_enabled"] as? Bool ?? true
         } else {
             lang = fallbackLang()
             theme = "system"
             colorTheme = TailSyncColorTheme.tailsync.rawValue
+            notificationsEnabled = true
         }
         applyTheme()
     }

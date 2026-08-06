@@ -289,7 +289,7 @@ async fn handle_connection(
         let frame = match timeout(
             CONNECTION_TIMEOUT,
             stream.read_frame_with_admission(|command, payload_length| match command {
-                Command::TextPayload | Command::ImagePayload => {
+                Command::TextPayload | Command::ImagePayload | Command::FileBatchStart => {
                     check_peer_event_budget(&peer_info.hostname, payload_length)
                         .map_err(ProtocolError::AdmissionRejected)
                 }
@@ -375,26 +375,39 @@ async fn handle_connection(
             }
             Command::FileBatchStart => {
                 let manifest: sync::FileBatchManifest = serde_json::from_slice(&frame.payload)?;
-                let already_active = sync_engine
-                    .lock()
-                    .await
-                    .has_file_batch(&peer_info.hostname, manifest.batch_id);
-                let preflight = if !already_active {
-                    database
-                        .lock()
-                        .await
-                        .reserve_for_file_batch(manifest.total_bytes)
-                        .map_err(|error| error.to_string())
-                } else {
-                    Ok(())
-                };
-                let result = match preflight {
-                    Ok(()) => sync_engine.lock().await.begin_file_batch(
-                        manifest.clone(),
-                        peer_info.hostname.clone(),
-                        &db::get_incoming_dir(),
-                    ),
-                    Err(error) => Err(error),
+                let result = {
+                    let _admission_guard = sync::file_batch_admission_lock().lock().await;
+                    match manifest.validate() {
+                        Err(error) => Err(error),
+                        Ok(()) => {
+                            let (already_active, pending_bytes) = {
+                                let engine = sync_engine.lock().await;
+                                (
+                                    engine.has_file_batch(&peer_info.hostname, manifest.batch_id),
+                                    engine.pending_file_batch_bytes(),
+                                )
+                            };
+                            let preflight = if !already_active {
+                                database
+                                    .lock()
+                                    .await
+                                    .reserve_for_file_batch(
+                                        manifest.total_bytes.saturating_add(pending_bytes),
+                                    )
+                                    .map_err(|error| error.to_string())
+                            } else {
+                                Ok(())
+                            };
+                            match preflight {
+                                Ok(()) => sync_engine.lock().await.begin_file_batch(
+                                    manifest.clone(),
+                                    peer_info.hostname.clone(),
+                                    &db::get_incoming_dir(),
+                                ),
+                                Err(error) => Err(error),
+                            }
+                        }
+                    }
                 };
                 if let Err(error) = &result {
                     sync_engine

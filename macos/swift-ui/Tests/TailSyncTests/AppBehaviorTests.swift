@@ -36,6 +36,24 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertEqual(error.localizedDescription, "Remote diagnostic details")
     }
 
+    func testUnknownConnectionModeFallsBackToAutomatic() throws {
+        let data = Data("""
+        {
+          "notifications_enabled": true,
+          "progress_bar_enabled": true,
+          "history_limit": 100,
+          "enabled_peers": {},
+          "theme": "system",
+          "language": "en",
+          "connection_mode": "future_mode"
+        }
+        """.utf8)
+
+        let settings = try JSONDecoder().decode(AppSettings.self, from: data)
+
+        XCTAssertEqual(settings.connection_mode, "auto")
+    }
+
     func testPairingRejectionsExplainHowToOpenTheOtherDevice() {
         let loc = Loc.shared
         let originalLanguage = loc.lang

@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationPollRunning = false
     private var isFirstNotificationPoll = true
     private var consecutiveWatchdogFailures = 0
+    private var terminationInProgress = false
     private var watchdogCheckRunning = false
     private var activeRouteSummary = ""
     private var activeTransfer: ApiClient.FileProgress?
@@ -102,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let status = await ApiClient.shared.getStatus()
                 if !reconnected || !status.alive || !status.tcpServerHealthy || !status.clipboardMonitorHealthy {
                     print("[TailSync] daemon unhealthy after wake — restarting")
-                    Self.stopDaemon()
+                    await Self.stopDaemonForRestart()
                     self.launchDaemon()
                 } else {
                     print("[TailSync] daemon healthy after wake — peers and clipboard monitor reset")
@@ -159,16 +160,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Remove status item FIRST — before anything that might block.
-        // This prevents ghost icons when quitting from the Dock.
+        // Remove the status item before the process exits to prevent ghost icons.
         if let item = statusItem {
             NSStatusBar.system.removeStatusItem(item)
             statusItem = nil
         }
-        // Wait for the child to release its API and peer-listener ports before
-        // the UI process exits. The status item is already gone, so this does
-        // not leave a stale menu-bar icon while shutdown completes.
-        Self.stopDaemon()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationInProgress else { return .terminateNow }
+        terminationInProgress = true
+        Task { @MainActor in
+            await Self.stopDaemonForRestart()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     // ── Status Item ─────────────────────────────────────────────
@@ -273,7 +279,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quitApp() {
-        Self.stopDaemon()
         NSApp.terminate(nil)
     }
 
@@ -362,6 +367,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         daemonProcess = nil
     }
 
+    private static func stopDaemonForRestart() async {
+        await Task.detached(priority: .userInitiated) {
+            Self.stopDaemon()
+        }.value
+    }
+
     /// Resolve the daemon binary path (same logic as launchDaemon).
     private func resolveDaemonPath() -> String? {
         let bundledPath = Bundle.main.bundlePath + "/Contents/MacOS/tailsyncd"
@@ -423,7 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Restart after 2 consecutive failures (~6s of downtime)
                     if self.consecutiveWatchdogFailures >= 2 {
                         print("[TailSync] daemon \(reason) — restarting...")
-                        Self.stopDaemon()
+                        await Self.stopDaemonForRestart()
                         self.launchDaemon()
                         self.consecutiveWatchdogFailures = 0
                     }

@@ -133,6 +133,7 @@ export function Settings() {
   const [storageBusy, setStorageBusy] = useState(false);
   const [oldStorage, setOldStorage] = useState<StorageMigrationResult | null>(null);
   const [saved, setSaved] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
   const [devices, setDevices] = useState<PeersResponse | null>(null);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [devicesError, setDevicesError] = useState("");
@@ -202,7 +203,9 @@ export function Settings() {
       }
     };
     void load(true);
-    const timer = window.setInterval(() => void load(), 5000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void load();
+    }, 5000);
     void listen("peer-health-changed", () => void load()).then((stop) => {
       if (active) unlisten = stop;
       else stop();
@@ -218,6 +221,7 @@ export function Settings() {
     const previous = settingsRef.current;
     if (!previous) return false;
     const next = { ...previous, ...patch };
+    setErrorMessage("");
     settingsRef.current = next;
     setSettings(next);
     const generation = settingsUpdates.current.begin();
@@ -246,13 +250,16 @@ export function Settings() {
         }
       }
       console.error("Save settings failed:", e);
+      setErrorMessage(t("settings.saveFailed"));
       return false;
     }
   };
 
   const commitHistoryLimit = async () => {
     if (historyLimitDraft === settingsRef.current?.history_limit) return;
-    await update({ history_limit: historyLimitDraft });
+    if (!(await update({ history_limit: historyLimitDraft }))) {
+      setHistoryLimitDraft(settingsRef.current?.history_limit ?? historyLimitDraft);
+    }
   };
 
   const commitStorageQuota = async () => {
@@ -279,6 +286,7 @@ export function Settings() {
     if (typeof parent !== "string") return;
     setStorageBusy(true);
     try {
+      setErrorMessage("");
       const result = await invoke<StorageMigrationResult>("change_storage_location", { parent });
       setOldStorage(result);
       const [canonical, status] = await Promise.all([
@@ -291,6 +299,7 @@ export function Settings() {
       setStorageStatus(status);
     } catch (error) {
       console.error("Storage migration failed:", error);
+      setErrorMessage(t("settings.storageActionFailed"));
     } finally {
       setStorageBusy(false);
     }
@@ -298,8 +307,14 @@ export function Settings() {
 
   const deleteOldStorage = async () => {
     if (!oldStorage) return;
-    await invoke("delete_old_storage", { path: oldStorage.old_root });
-    setOldStorage(null);
+    try {
+      setErrorMessage("");
+      await invoke("delete_old_storage", { path: oldStorage.old_root });
+      setOldStorage(null);
+    } catch (error) {
+      console.error("Delete old storage failed:", error);
+      setErrorMessage(t("settings.storageActionFailed"));
+    }
   };
 
   useEffect(() => {
@@ -1152,7 +1167,9 @@ export function Settings() {
       )}
 
       {/* ── Toast ── */}
-      {saved && <div className="toast" role="status">{t("settings.saved")}</div>}
+      {errorMessage ? (
+        <div className="toast" role="alert">{errorMessage}</div>
+      ) : saved && <div className="toast" role="status">{t("settings.saved")}</div>}
     </div>
   );
 }

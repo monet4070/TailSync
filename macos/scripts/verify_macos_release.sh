@@ -89,8 +89,18 @@ fi
 
 echo '[6/6] Verifying the JSON-lines API...'
 response="$(printf '{\"cmd\":\"get_version\",\"token\":\"%s\"}\n' "$API_TOKEN" | /usr/bin/nc -w 3 127.0.0.1 "$API_PORT")"
-if ! printf '%s\n' "$response" | grep -Eq '^\{"data":[0-9]+,"ok":true\}$'; then
+response_ok="$(printf '%s\n' "$response" | /usr/bin/plutil -extract ok raw -o - - 2>/dev/null || true)"
+response_data="$(printf '%s\n' "$response" | /usr/bin/plutil -extract data raw -o - - 2>/dev/null || true)"
+if [[ "$response_ok" != "true" || ! "$response_data" =~ ^[0-9]+$ ]]; then
     echo "Unexpected API response: $response" >&2
+    exit 1
+fi
+
+unauthorized_response="$(printf '{\"cmd\":\"get_version\"}\n' | /usr/bin/nc -w 3 127.0.0.1 "$API_PORT")"
+unauthorized_ok="$(printf '%s\n' "$unauthorized_response" | /usr/bin/plutil -extract ok raw -o - - 2>/dev/null || true)"
+unauthorized_error="$(printf '%s\n' "$unauthorized_response" | /usr/bin/plutil -extract error raw -o - - 2>/dev/null || true)"
+if [[ "$unauthorized_ok" != "false" || "$unauthorized_error" != "unauthorized" ]]; then
+    echo "Local API accepted a request without its capability token: $unauthorized_response" >&2
     exit 1
 fi
 

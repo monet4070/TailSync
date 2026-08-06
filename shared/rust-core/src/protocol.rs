@@ -3,7 +3,7 @@
 /// Frame structure:
 /// ┌──────────┬───────┬───────┬───────┬───────┬───────┬──────────┬──────────┐
 /// │ Magic(4) │ Ver(1)│Flags(1)│Cmd(2) │ Seq(4)│ Len(4)│ Payload   │Blake3(32)│
-/// │ "TSYN"   │ 0x01  │       │       │       │       │ (var)     │          │
+/// │ "TSYN"   │ 0x03  │       │       │       │       │ (var)     │          │
 /// └──────────┴───────┴───────┴───────┴───────┴───────┴──────────┴──────────┘
 /// Total header: 16 bytes + 32 byte checksum = 48 bytes overhead per frame
 use blake3::Hasher;

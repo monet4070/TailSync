@@ -392,19 +392,15 @@ pub async fn update_settings(
     state: State<'_, AppState>,
     settings_json: String,
 ) -> Result<(), String> {
-    let mut new_settings: crate::crypto::Settings =
+    let requested_settings: crate::crypto::Settings =
         serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
-    new_settings.validate_user_values()?;
+    let mut settings = state.settings.lock().await;
+    let new_settings = settings.prepare_user_update(requested_settings)?;
     let history_limit = new_settings.history_limit as i64;
     let storage_quota_bytes = new_settings.storage_quota_bytes;
-    let mut settings = state.settings.lock().await;
     let mode_changed = settings.connection_mode != new_settings.connection_mode;
-    new_settings.trusted_peer_keys = settings.trusted_peer_keys.clone();
-    new_settings.trusted_peer_addresses = settings.trusted_peer_addresses.clone();
-    new_settings.paired_peer_endpoints = settings.paired_peer_endpoints.clone();
-    new_settings.storage_root = settings.storage_root.clone();
+    new_settings.save().map_err(|e| e.to_string())?;
     *settings = new_settings;
-    settings.save().map_err(|e| e.to_string())?;
     drop(settings);
     state.db.lock().await.set_max_history(history_limit);
     state.db.lock().await.set_storage_quota(storage_quota_bytes);

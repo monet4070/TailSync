@@ -4484,6 +4484,7 @@ dependencies = [
  "env_logger",
  "hex",
  "if-addrs",
+ "image",
  "libc",
  "log",
  "mdns-sd",

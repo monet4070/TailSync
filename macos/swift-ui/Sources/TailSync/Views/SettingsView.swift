@@ -4,27 +4,38 @@ import UserNotifications
 
 private actor SettingsSaveCoordinator {
     private enum SaveResult: Sendable {
-        case success
-        case failure(String)
+        case success(AppSettings)
+        case failure(String, AppSettings)
     }
 
     private var tail: Task<SaveResult, Never>?
 
-    func save(_ settings: AppSettings) async -> String? {
+    func save(
+        _ settings: AppSettings,
+        fallback: AppSettings
+    ) async -> (error: String?, persisted: AppSettings) {
         let predecessor = tail
         let job = Task<SaveResult, Never> {
-            _ = await predecessor?.value
+            let lastPersisted: AppSettings
+            if let result = await predecessor?.value {
+                switch result {
+                case .success(let settings): lastPersisted = settings
+                case .failure(_, let settings): lastPersisted = settings
+                }
+            } else {
+                lastPersisted = fallback
+            }
             do {
                 try await ApiClient.shared.updateSettings(settings)
-                return .success
+                return .success(settings)
             } catch {
-                return .failure(error.localizedDescription)
+                return .failure(error.localizedDescription, lastPersisted)
             }
         }
         tail = job
         switch await job.value {
-        case .success: return nil
-        case .failure(let message): return message
+        case .success(let settings): return (nil, settings)
+        case .failure(let message, let settings): return (message, settings)
         }
     }
 }
@@ -45,14 +56,18 @@ struct SettingsView: View {
 
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var settings = AppSettings()
+    @State private var persistedSettings = AppSettings()
+    @State private var applyingPersistedSettings = false
     @State private var localDevice: ApiClient.DeviceSnapshot?
     @State private var peers: [ApiClient.PeerSnapshot] = []
     @State private var pairedPeerEndpoints: [String: String] = [:]
     @State private var isLoading = true
     @State private var peersLoading = false
     @State private var saved = false
-    @State private var errorMessage: String?
+    @State private var loadErrorMessage: String?
+    @State private var actionErrorMessage: String?
     @State private var peerError: String?
     @State private var pairingStatus: ApiClient.PairingStatus?
     @State private var pairingMessage: String?
@@ -80,14 +95,14 @@ struct SettingsView: View {
 
     var body: some View {
         Group {
-            if let errorMessage {
+            if let loadErrorMessage {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 28))
                         .foregroundColor(palette.warningColor)
                     Text(Loc.t("settings.error"))
                         .font(activeTheme.displayFont(size: 17, weight: .semibold))
-                    Text(errorMessage).font(.caption).foregroundColor(palette.secondaryColor)
+                    Text(loadErrorMessage).font(.caption).foregroundColor(palette.secondaryColor)
                     Button(Loc.t("settings.retry")) { load() }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -106,8 +121,8 @@ struct SettingsView: View {
                     .padding(.vertical, 12)
                 }
                 .overlay(alignment: .bottom) {
-                    if saved {
-                        Text(Loc.t("settings.saved"))
+                    if saved || actionErrorMessage != nil {
+                        Text(actionErrorMessage ?? Loc.t("settings.saved"))
                             .font(.caption)
                             .foregroundColor(palette.toastTextColor)
                             .padding(.horizontal, 12)
@@ -123,12 +138,14 @@ struct SettingsView: View {
             load()
             var peerRefreshTicks = 0
             while !Task.isCancelled {
-                await refreshPairingStatus()
-                peerRefreshTicks += 1
-                if peerRefreshTicks >= 5 {
-                    peerRefreshTicks = 0
-                    if !isLoading && !peerRequestInFlight {
-                        loadPeers(showLoading: false)
+                if scenePhase == .active {
+                    await refreshPairingStatus()
+                    peerRefreshTicks += 1
+                    if peerRefreshTicks >= 5 {
+                        peerRefreshTicks = 0
+                        if !isLoading && !peerRequestInFlight {
+                            loadPeers(showLoading: false)
+                        }
                     }
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -252,6 +269,7 @@ struct SettingsView: View {
                 let result = try await ApiClient.shared.changeStorageLocation(parent: url.path)
                 oldStorage = result
                 settings = try await ApiClient.shared.getSettings()
+                persistedSettings = settings
                 storageStatus = await ApiClient.shared.getStorageStatus()
                 let notice = UNMutableNotificationContent()
                 notice.title = "TailSync"
@@ -260,7 +278,7 @@ struct SettingsView: View {
                     UNNotificationRequest(identifier: UUID().uuidString, content: notice, trigger: nil)
                 )
             } catch {
-                errorMessage = error.localizedDescription
+                actionErrorMessage = error.localizedDescription
             }
         }
     }
@@ -271,7 +289,7 @@ struct SettingsView: View {
                 try await ApiClient.shared.deleteOldStorage(path: storage.oldRoot)
                 oldStorage = nil
             } catch {
-                errorMessage = error.localizedDescription
+                actionErrorMessage = error.localizedDescription
             }
         }
     }
@@ -663,10 +681,12 @@ struct SettingsView: View {
 
     private func load() {
         isLoading = true
-        errorMessage = nil
+        loadErrorMessage = nil
+        actionErrorMessage = nil
         Task { @MainActor in
             do {
                 settings = try await ApiClient.shared.getSettings()
+                persistedSettings = settings
                 storageStatus = await ApiClient.shared.getStorageStatus()
                 loc.lang = settings.language
                 loc.theme = settings.theme
@@ -676,7 +696,7 @@ struct SettingsView: View {
                 isLoading = false
                 loadPeers()
             } catch {
-                errorMessage = error.localizedDescription
+                loadErrorMessage = error.localizedDescription
                 isLoading = false
             }
         }
@@ -761,9 +781,14 @@ struct SettingsView: View {
 
         Task { @MainActor in
             do {
-                if let message = await saveCoordinator.save(value) {
+                let outcome = await saveCoordinator.save(value, fallback: persistedSettings)
+                if let message = outcome.error {
+                    guard generation == peerLoadGeneration else { return }
+                    persistedSettings = outcome.persisted
+                    applyPersistedSettings(outcome.persisted)
                     throw ApiError.serverError(message)
                 }
+                persistedSettings = outcome.persisted
                 guard generation == peerLoadGeneration,
                       requestedMode == settings.connection_mode else { return }
                 saved = true
@@ -774,23 +799,27 @@ struct SettingsView: View {
                 guard generation == peerLoadGeneration else { return }
                 peerRequestInFlight = false
                 peersLoading = false
-                errorMessage = error.localizedDescription
+                actionErrorMessage = error.localizedDescription
             }
         }
     }
 
     private func save() {
-        guard !isLoading else { return }
+        guard !isLoading, !applyingPersistedSettings else { return }
         let value = settings
+        actionErrorMessage = nil
         saveGeneration += 1
         let generation = saveGeneration
         Task { @MainActor in
-            let error = await saveCoordinator.save(value)
+            let outcome = await saveCoordinator.save(value, fallback: persistedSettings)
             guard generation == saveGeneration else { return }
-            if let error {
-                errorMessage = error
+            if let error = outcome.error {
+                persistedSettings = outcome.persisted
+                applyPersistedSettings(outcome.persisted)
+                actionErrorMessage = error
                 return
             }
+            persistedSettings = outcome.persisted
             saved = true
             do {
                 try await Task.sleep(nanoseconds: 1_200_000_000)
@@ -798,6 +827,20 @@ struct SettingsView: View {
                 return
             }
             if generation == saveGeneration { saved = false }
+        }
+    }
+
+    private func applyPersistedSettings(_ value: AppSettings) {
+        applyingPersistedSettings = true
+        settings = value
+        loc.lang = value.language
+        loc.theme = value.theme
+        loc.colorTheme = TailSyncColorTheme(storedValue: value.color_theme).rawValue
+        loc.notificationsEnabled = value.notifications_enabled
+        loc.applyTheme()
+        Task { @MainActor in
+            await Task.yield()
+            applyingPersistedSettings = false
         }
     }
 
@@ -893,12 +936,13 @@ struct SettingsView: View {
         guard !removingPeers.contains(hostname) else { return }
         removingPeers.insert(hostname)
         peers.removeAll { $0.hostname == hostname }
-        testResults.removeValue(forKey: hostname)
+        testResults = testResults.filter { !$0.key.hasPrefix("\(hostname)-") }
 
         Task { @MainActor in
             do {
                 try await ApiClient.shared.forgetPeer(hostname: hostname)
                 settings.enabled_peers.removeValue(forKey: hostname)
+                persistedSettings.enabled_peers.removeValue(forKey: hostname)
                 loadPeers()
             } catch {
                 peerError = error.localizedDescription
@@ -912,6 +956,7 @@ struct SettingsView: View {
         Task { @MainActor in
             if await ApiClient.shared.togglePeer(hostname: hostname, enabled: enabled) {
                 settings.enabled_peers[hostname] = enabled
+                persistedSettings.enabled_peers[hostname] = enabled
                 loadPeers()
             }
         }

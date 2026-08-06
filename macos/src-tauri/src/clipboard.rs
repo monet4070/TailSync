@@ -253,30 +253,44 @@ async fn clipboard_loop(
                 continue;
             }
             if !outbound_paths.is_empty() {
-                if file_event_gate.should_process(
-                    paths != &last_file_list,
-                    clipboard_changed,
-                    clipboard_event_at,
-                ) {
-                    last_file_list.clone_from(paths);
-                    last_text_hash.clear();
-                    last_image_hash.clear();
-                    if managed_count > 0 {
-                        info!("Ignored {managed_count} managed file(s) in a mixed clipboard event");
+                #[cfg(target_os = "macos")]
+                let files_are_readable =
+                    clipboard_file::clipboard_files_are_readable(&outbound_paths);
+                #[cfg(not(target_os = "macos"))]
+                let files_are_readable: Result<(), String> = Ok(());
+                match files_are_readable {
+                    Ok(()) => {
+                        if file_event_gate.should_process(
+                            paths != &last_file_list,
+                            clipboard_changed,
+                            clipboard_event_at,
+                        ) {
+                            last_file_list.clone_from(paths);
+                            last_text_hash.clear();
+                            last_image_hash.clear();
+                            if managed_count > 0 {
+                                info!(
+                                    "Ignored {managed_count} managed file(s) in a mixed clipboard event"
+                                );
+                            }
+                            info!("Clipboard files: {} file(s)", outbound_paths.len());
+                            let generation = sync_engine.lock().await.supersede_file_clipboard();
+                            crate::api::bump_clipboard_version();
+                            tokio::spawn(send_file_batch_to_peers(
+                                outbound_paths,
+                                generation,
+                                handle.clone(),
+                                pool.clone(),
+                                database.clone(),
+                                settings.clone(),
+                            ));
+                        }
+                        continue;
                     }
-                    info!("Clipboard files: {} file(s)", outbound_paths.len());
-                    let generation = sync_engine.lock().await.supersede_file_clipboard();
-                    crate::api::bump_clipboard_version();
-                    tokio::spawn(send_file_batch_to_peers(
-                        outbound_paths,
-                        generation,
-                        handle.clone(),
-                        pool.clone(),
-                        database.clone(),
-                        settings.clone(),
-                    ));
+                    Err(error) => {
+                        warn!("{error}; trying other clipboard representations");
+                    }
                 }
-                continue;
             }
         }
 
@@ -324,12 +338,25 @@ async fn clipboard_loop(
         }
 
         // ── 3. Try image ──────────────────────────────────────────
-        match clipboard.read_image() {
+        #[cfg(target_os = "macos")]
+        let image = match tokio::task::spawn_blocking(clipboard_file::read_clipboard_image).await {
+            Ok(result) => result,
+            Err(error) => Err(format!("Clipboard image helper task failed: {error}")),
+        };
+        #[cfg(not(target_os = "macos"))]
+        let image = clipboard
+            .read_image()
+            .map(|image| clipboard_file::ClipboardImageData {
+                width: image.width(),
+                height: image.height(),
+                rgba: image.rgba().to_vec(),
+            })
+            .map_err(|error| error.to_string());
+        match image {
             Ok(image) => {
-                let rgba = image.rgba();
-                let w = image.width();
-                let h = image.height();
-                let packed = pack_image_data(w, h, rgba);
+                let w = image.width;
+                let h = image.height;
+                let packed = pack_image_data(w, h, &image.rgba);
                 let hash = blake3::hash(&packed).to_hex().to_string();
                 if !image_event_gate.should_process(
                     hash != last_image_hash,

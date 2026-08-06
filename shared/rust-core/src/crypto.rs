@@ -207,9 +207,24 @@ impl Settings {
         Ok(())
     }
 
+    /// Builds a validated user-facing settings update while retaining fields
+    /// owned by pairing, peer management, and storage migration workflows.
+    pub fn prepare_user_update(&self, mut requested: Self) -> Result<Self, String> {
+        requested.enabled_peers = self.enabled_peers.clone();
+        requested.storage_root = self.storage_root.clone();
+        requested.trusted_peer_keys = self.trusted_peer_keys.clone();
+        requested.trusted_peer_addresses = self.trusted_peer_addresses.clone();
+        requested.paired_peer_endpoints = self.paired_peer_endpoints.clone();
+        requested.validate_user_values()?;
+        Ok(requested)
+    }
+
     pub fn set_theme(&mut self, theme: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.theme = theme.to_string();
-        self.save()
+        let mut updated = self.clone();
+        updated.theme = theme.to_string();
+        updated.save()?;
+        *self = updated;
+        Ok(())
     }
 
     pub fn toggle_peer(
@@ -217,8 +232,11 @@ impl Settings {
         hostname: &str,
         enabled: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.enabled_peers.insert(hostname.to_string(), enabled);
-        self.save()
+        let mut updated = self.clone();
+        updated.enabled_peers.insert(hostname.to_string(), enabled);
+        updated.save()?;
+        *self = updated;
+        Ok(())
     }
 
     pub fn trust_peer(
@@ -228,8 +246,11 @@ impl Settings {
         mode: &str,
         address: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.trust_peer_without_save(hostname, public_key, mode, address)?;
-        self.save()
+        let mut updated = self.clone();
+        updated.trust_peer_without_save(hostname, public_key, mode, address)?;
+        updated.save()?;
+        *self = updated;
+        Ok(())
     }
 
     #[doc(hidden)]
@@ -257,9 +278,11 @@ impl Settings {
         mode: &str,
         address: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let changed = self.remember_peer_address_without_save(hostname, mode, address)?;
+        let mut updated = self.clone();
+        let changed = updated.remember_peer_address_without_save(hostname, mode, address)?;
         if changed {
-            self.save()?;
+            updated.save()?;
+            *self = updated;
         }
         Ok(changed)
     }
@@ -306,11 +329,14 @@ impl Settings {
     }
 
     pub fn forget_peer(&mut self, hostname: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.trusted_peer_keys.remove(hostname);
-        self.trusted_peer_addresses.remove(hostname);
-        self.paired_peer_endpoints.remove(hostname);
-        self.enabled_peers.remove(hostname);
-        self.save()
+        let mut updated = self.clone();
+        updated.trusted_peer_keys.remove(hostname);
+        updated.trusted_peer_addresses.remove(hostname);
+        updated.paired_peer_endpoints.remove(hostname);
+        updated.enabled_peers.remove(hostname);
+        updated.save()?;
+        *self = updated;
+        Ok(())
     }
 }
 
@@ -1312,5 +1338,46 @@ mod tests {
         assert!(settings.validate_user_values().is_err());
         settings.language = "zh-CN".into();
         assert!(settings.validate_user_values().is_ok());
+    }
+
+    #[test]
+    fn user_update_preserves_server_owned_settings() {
+        let mut current = Settings::default();
+        current.enabled_peers.insert("desktop".into(), true);
+        current.storage_root = Some("/managed/storage".into());
+        current
+            .trusted_peer_keys
+            .insert("desktop".into(), "public-key".into());
+        current.trusted_peer_addresses.insert(
+            "desktop".into(),
+            std::collections::HashMap::from([("lan".into(), "192.0.2.8".into())]),
+        );
+        current
+            .paired_peer_endpoints
+            .insert("desktop".into(), "192.0.2.8".into());
+
+        let mut requested = Settings {
+            history_limit: 250,
+            theme: "dark".into(),
+            ..Settings::default()
+        };
+        requested.enabled_peers.insert("stale".into(), false);
+        requested.storage_root = Some(String::new());
+        requested
+            .trusted_peer_keys
+            .insert("stale".into(), "wrong-key".into());
+
+        let updated = current.prepare_user_update(requested).unwrap();
+
+        assert_eq!(updated.history_limit, 250);
+        assert_eq!(updated.theme, "dark");
+        assert_eq!(updated.enabled_peers, current.enabled_peers);
+        assert_eq!(updated.storage_root, current.storage_root);
+        assert_eq!(updated.trusted_peer_keys, current.trusted_peer_keys);
+        assert_eq!(
+            updated.trusted_peer_addresses,
+            current.trusted_peer_addresses
+        );
+        assert_eq!(updated.paired_peer_endpoints, current.paired_peer_endpoints);
     }
 }

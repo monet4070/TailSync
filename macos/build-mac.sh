@@ -4,6 +4,7 @@ cd "$(dirname "$0")"
 APP_NAME="TailSync"
 BUNDLE="$APP_NAME.app"
 STAGING_BUNDLE="$APP_NAME.app.staging"
+APP_VERSION="$(cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | /usr/bin/plutil -extract packages.0.version raw -o - -)"
 SIGN_IDENTITY="${TAILSYNC_CODESIGN_IDENTITY:--}"
 SKIP_SWIFT_BUILD=false
 if [[ "${1:-}" == "--skip-swift-build" ]]; then
@@ -20,7 +21,7 @@ echo "═══ Building $APP_NAME.app ═══"
 
 # ── Build binaries ─────────────────────────────────────────────
 echo "[1/6] Building Rust daemon..."
-cargo build --release --manifest-path src-tauri/Cargo.toml
+cargo build --locked --release --manifest-path src-tauri/Cargo.toml
 
 echo "[2/6] Building SwiftUI app..."
 if $SKIP_SWIFT_BUILD; then
@@ -54,7 +55,7 @@ if [ -f src-tauri/icons/icon.icns ]; then
 fi
 
 # ── Create Info.plist ──────────────────────────────────────────
-cat > "$STAGING_BUNDLE/Contents/Info.plist" << 'PLIST'
+cat > "$STAGING_BUNDLE/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -68,9 +69,9 @@ cat > "$STAGING_BUNDLE/Contents/Info.plist" << 'PLIST'
     <key>CFBundleDisplayName</key>
     <string>TailSync</string>
     <key>CFBundleVersion</key>
-    <string>2.1.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.1.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>

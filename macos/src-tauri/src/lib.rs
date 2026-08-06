@@ -148,12 +148,9 @@ fn start_parent_monitor(
     shutdown: tokio::sync::watch::Sender<bool>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Option<tauri::async_runtime::JoinHandle<()>> {
-    let Some(parent_pid) = std::env::var("TAILSYNC_PARENT_PID")
+    let parent_pid = std::env::var("TAILSYNC_PARENT_PID")
         .ok()
-        .and_then(|value| value.parse::<libc::pid_t>().ok())
-    else {
-        return None;
-    };
+        .and_then(|value| value.parse::<libc::pid_t>().ok())?;
     Some(tauri::async_runtime::spawn(async move {
         loop {
             tokio::select! {

@@ -34,6 +34,7 @@ private struct HistoryDateBounds {
 struct HistoryView: View {
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var entries: [HistoryEntry] = []
     @State private var keyword = ""
     @State private var selectedCategory = "all"
@@ -350,12 +351,13 @@ struct HistoryView: View {
             loadMigrationDiagnostics()
         }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            guard scenePhase == .active else { return }
             Task {
                 if let version = await ApiClient.shared.getVersion() {
                     let reconnected = !daemonOnline
                     if reconnected || version != lastVersion {
                         lastVersion = version
-                        load(targetPage: 0)
+                        load(targetPage: page, clearExisting: false)
                     }
                     daemonOnline = true
                     if reconnected {
@@ -423,7 +425,7 @@ struct HistoryView: View {
         .tailSyncThemed()
     }
 
-    private func load(targetPage: Int? = nil) {
+    private func load(targetPage: Int? = nil, clearExisting: Bool = true) {
         loadGeneration += 1
         let generation = loadGeneration
         let requestedPage = targetPage ?? page
@@ -438,8 +440,10 @@ struct HistoryView: View {
         let requestedEndTime = utcRFC3339(requestedBounds.end)
         isLoading = true
         errorMsg = nil
-        entries = []
-        hasNext = false
+        if clearExisting {
+            entries = []
+            hasNext = false
+        }
         Task {
             do {
                 let result = try await ApiClient.shared.getHistory(

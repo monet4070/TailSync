@@ -13,14 +13,14 @@
 [![macOS](https://img.shields.io/badge/macOS-SwiftUI-000000?logo=apple&logoColor=white)](#平台支持)
 [![Windows](https://img.shields.io/badge/Windows-Tauri-0078D4?logo=windows11&logoColor=white)](#平台支持)
 [![Rust](https://img.shields.io/badge/Core-Rust-DEA584?logo=rust&logoColor=black)](#技术架构)
-[![Protocol](https://img.shields.io/badge/Protocol-v2-2F81F7)](#安全模型)
-[![Version](https://img.shields.io/badge/Version-v2.0.2-D5684B)](https://github.com/monet4070/TailSync/tree/v2.0.2)
+[![Protocol](https://img.shields.io/badge/Protocol-v3-2F81F7)](#安全模型)
+[![Version](https://img.shields.io/badge/Version-v2.1.0-D5684B)](https://github.com/monet4070/TailSync/tree/v2.1.0)
 [![License](https://img.shields.io/badge/License-MIT-22C55E)](#许可证)
 
 </div>
 
 > [!NOTE]
-> TailSync v2 目前处于积极开发阶段。macOS 与 Windows 客户端已经可以互相同步，公开分发前仍需完成正式签名、公证和更多真实设备验收。
+> TailSync 2.1.0 目前处于积极开发阶段。macOS 与 Windows 客户端已经可以互相同步，并支持休眠/唤醒后自动恢复；公开分发前仍需完成正式签名、公证和更多真实设备验收。
 
 ## 为什么选择 TailSync
 
@@ -30,6 +30,8 @@
 | ⚡ | 智能路由 | `auto` 模式优先选择可用的 LAN，必要时切换到 Tailscale |
 | 🔐 | 安全配对 | 六位验证码、双端确认、固定设备身份和 Noise 加密连接 |
 | 🩺 | 真实在线状态 | 单一后台任务主动探测，不再把残留的 mDNS 记录当成在线 |
+| 🔋 | 唤醒恢复 | 睡眠唤醒后刷新事件时间戳、取消过期连接并重置剪贴板监听 |
+| 🗂️ | 智能历史 | 文本 / 图片 / 文件分类、日期筛选、搜索与恢复 |
 | 🔁 | 可靠传输 | 消息 ACK、自动重试、重放抑制、文件分块校验和运行期断线续传 |
 | 🖥️ | 原生体验 | macOS 菜单栏 SwiftUI 应用，Windows 系统托盘 Tauri 应用 |
 
@@ -39,30 +41,14 @@
 |---|---|---|
 | macOS | ✅ 可用 | SwiftUI 菜单栏应用 + Rust 守护进程 |
 | Windows | ✅ 可用 | React / TypeScript / Tauri 桌面应用 |
-| Android | 🧪 尚未纳入 v2 | 不属于当前跨平台兼容范围 |
+| Android | 🧪 尚未支持 | 不属于当前跨平台兼容范围 |
 
-macOS 和 Windows 使用同一个 `shared/rust-core` crate 作为 v2 线协议、加密、身份、配对、历史存储和同步状态机的单一实现。两端只分别维护平台接入层，并通过契约与互操作测试验证边界一致性。
-
-## 界面与主题
-
-Windows 使用 React / Tauri 界面，macOS 使用原生 SwiftUI 界面。两端提供一致的五套视觉主题，并支持跟随系统、浅色和深色三种显示模式。
-
-| 主题 | 视觉方向 |
-|---|---|
-| 画布 Canvas | 温暖、克制的编辑排版 |
-| 流光 Flux | 清晰、利落的青绿色几何界面 |
-| 书页 Ledger | 具有书卷感的衬线排版 |
-| 柔光 Aura | 柔和、圆润的玫瑰色界面 |
-| 单色 Mono | 强边界、高可读性的单色界面 |
-
-![TailSync Windows 与 macOS 五主题浅色模式对比](assets/tailsync-theme-comparison.png)
-
-> 对比图展示浅色模式。Windows 与 macOS 保留各自的平台交互和窗口结构，同时共享主题命名与核心色彩方向。
+macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/rust-core` 中的 v3 线协议、加密、历史存储和同步状态机，并通过跨平台漂移检查保持契约一致。
 
 ## 核心功能
 
 - 文本、图片、文件双向同步
-- 本地历史记录的搜索、恢复、删除和数量限制
+- 本地历史记录的搜索、恢复、删除、数量限制，以及文本 / 图片 / 文件分类和日期筛选
 - `auto`、`lan_only`、`tailscale_only` 三种连接策略
 - UDP、mDNS / DNS-SD 与 Tailscale 候选发现
 - LAN 与 Tailscale 独立健康检查及往返延迟显示
@@ -71,15 +57,19 @@ Windows 使用 React / Tauri 界面，macOS 使用原生 SwiftUI 界面。两端
 - 120 秒配对窗口、六位验证码、双向确认和失败锁闭
 - 文本与图片事件 ACK、重试、时间戳检查和消息 ID 去重
 - 1 MiB 文件分块、Blake3 校验、offset ACK 和运行期断线续传
-- 中英文界面、五套视觉主题、系统 / 浅色 / 深色模式、通知、设备启停与路由选择
+- 睡眠 / 唤醒恢复：刷新可靠事件时间戳、取消过期连接 worker 并重置剪贴板监听
+- 剪贴板监听活性纳入守护进程健康检查，不再把已停止工作的监听误判为健康
+- 文件回传抑制：应用托管的 `clipboard-files/` 文件不会被回传给原发送端
+- 文件名清理、1 GiB 接收上限和入站连接数限制
+- 中英文界面与本地化托盘菜单、浅色 / 深色 / 跟随系统及五套配色主题、通知、设备启停与路由选择
 
 ## 技术架构
 
 ```mermaid
 flowchart LR
     subgraph Mac[macOS]
-        S[SwiftUI 菜单栏 UI]
-        D[tailsyncd]
+        S[SwiftUI 菜单栏应用]
+        D[Rust 守护进程]
         H[clipboard-helper]
         S <-->|JSON Lines<br/>127.0.0.1:19889| D
         H --> D
@@ -91,7 +81,7 @@ flowchart LR
         R <--> T
     end
 
-    D --- C[shared/rust-core]
+    D --- C[共享 v3 协议与 Rust 核心]
     T --- C
     C --> P[发现与健康监控]
     C --> N[Noise 安全会话]
@@ -102,7 +92,7 @@ flowchart LR
 
 `shared/rust-core` 负责：
 
-- v2 帧协议、输入校验和 Noise 加密通道
+- v3 帧协议、输入校验和 Noise 加密通道
 - DEK、设置、固定设备身份和配对状态
 - 历史数据库、图片/文件生命周期和存储配额
 - 文本、图片和大文件同步状态机及可靠投递
@@ -142,7 +132,7 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 - 文本、图片和文件历史均使用系统保护的数据密钥加密存储。
 - 文件历史使用 1 MiB 分块 AES-256-GCM 容器；恢复时只在受控剪贴板目录生成临时明文。
 
-旧版协议 v1 与 v2 不兼容。升级后，需要在所有设备上重新完成配对。
+当前线协议为 v3，加入了原子文件批次；旧版 v2 帧会在成帧阶段被拒绝。跨设备使用时应同时升级所有客户端，已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.1.0，数据库 schema 为 v8，这三个版本号彼此独立。
 
 旧版 TailSync v1 历史数据库会在首次启动时自动导入。迁移按内容哈希保持幂等，损坏条目会写入诊断报告但不会阻止启动；原 `history.db` 和 `.fernet_key` 会保留，不会被自动删除。
 
@@ -152,9 +142,9 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 |---|---|---|
 | `19889` | UDP | LAN / Tailscale 发现与健康心跳 |
 | `19890` | TCP | 配对、认证和剪贴板数据传输 |
-| `127.0.0.1:19889` | TCP，仅 macOS 本机 | SwiftUI 与 Rust 守护进程通信 |
+| `127.0.0.1:19889` | TCP，仅 macOS 本机 | SwiftUI 外壳与 Rust 守护进程通信 |
 
-macOS 本地 API 只应绑定 loopback，不要通过端口转发暴露到其他设备。
+局域网发现使用 mDNS 服务名 `_tailsync._tcp.local.`。macOS 本地 API 只应绑定 loopback，不要通过端口转发暴露到其他设备。
 
 ## 从源码运行
 
@@ -225,7 +215,7 @@ macOS 默认数据目录：
 | `file-history/` | 分块 AEAD 加密的文件历史容器 |
 | `image-history/` | 加密图片历史文件 |
 | `incoming/` | 正在接收的临时文件与运行期续传状态 |
-| `clipboard-files/` | 恢复到系统剪贴板的临时明文文件；启动时清理 |
+| `clipboard-files/` | 恢复到系统剪贴板的临时明文文件；未被剪贴板引用且超过 10 分钟后定期清理 |
 | `config-v2.json` | 设置、信任公钥和已知设备地址 |
 | `identity-v1.bin` | 本机固定设备身份 |
 
@@ -241,38 +231,52 @@ cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
 swift test --package-path macos/swift-ui
 ```
 
-跨平台改动还应运行契约检查和 Windows ↔ macOS 双向线协议测试。
+共享源码改动还应运行跨平台漂移检查：
+
+```bash
+node windows/scripts/check_cross_platform_sync.mjs \
+  --win-root windows \
+  --mac-root macos \
+  --core-root shared/rust-core
+```
+
+macOS 打包后完整验证（前端、Rust、SwiftUI、Bonjour 声明、`19889`/`19890` 监听、本地 API 与剪贴板辅助进程）：
+
+```bash
+bash macos/scripts/verify_macos_release.sh "$PWD/windows"
+```
 
 ## 仓库结构
 
 ```text
 TailSync/
-├── shared/
-│   ├── rust-core/         # 协议、加密、身份、配对、历史和同步核心
-│   ├── schema/            # Settings JSON Schema 与 TypeScript 生成器
-│   └── art-direction.css  # Windows 工具窗口共享视觉变量
-├── macos/                 # SwiftUI 外壳、平台适配层和 macOS 打包脚本
-│   ├── swift-ui/
-│   ├── src-tauri/
+├── macos/                 # macOS 客户端：SwiftUI 菜单栏应用、Rust 守护进程与打包脚本
+│   ├── src-tauri/         #   Rust 守护进程和 macOS 平台适配层
+│   ├── swift-ui/          #   SwiftUI 菜单栏外壳
+│   ├── scripts/           #   漂移检查、迁移和发布验证脚本
 │   ├── build-mac.sh
 │   └── build-dmg.sh
-├── windows/               # React / Tauri Windows 客户端
+├── windows/               # Windows 客户端：React / Tauri 系统托盘应用
 │   ├── src/
-│   └── src-tauri/
-├── site/                  # 独立营销站点，不进入桌面安装包
-├── assets/                # 项目图标与 README 展示资源
+│   ├── src-tauri/
+│   └── scripts/
+├── shared/                # 共享 Rust 核心、设置 schema 和视觉规范
+├── site/                  # 独立项目站点
 ├── .github/workflows/     # CI 检查
+├── assets/                # 项目展示资源
 └── README.md
 ```
 
-平台 UI 和系统接入层可以按各自体验演进；共享业务规则只能在 `shared/rust-core` 修改。跨端改动合并前应通过契约检查、共享 core 测试和双向线协议测试。
+macOS 与 Windows 的平台 UI 可以按系统体验分别演进；共享业务规则只在 `shared/rust-core` 修改。跨端合并前应通过生成契约检查、共享 core 测试、漂移检查和双向线协议测试。
 
 ## 当前限制
 
-- 文件可以在应用运行期间断线续传，但应用重启后不会继续未完成传输。
+- 未完成文件批次可跨应用重启续传，`incoming/` 中的明文 `.part` 文件和续传状态最多保留 24 小时；`clipboard-files/` 中恢复到剪贴板的明文文件也属于瞬态数据。
+- macOS 本地 JSON-lines API 绑定 loopback，并对每个请求强制校验 256 位能力令牌；请求上限为 1 MiB，读写超时为 5 秒。仍不应通过端口转发暴露 `19889`。
+- `file-history/`、`image-history/` 与数据库内容均由应用数据密钥加密；系统磁盘加密仍可提供额外的整盘保护。
 - macOS 本地构建脚本生成的是 ad-hoc 签名应用，不是可公开分发的正式安装包。
 - 尚未完成自动更新、正式发布签名和完整的真实设备回归矩阵。
-- Android 客户端尚未纳入当前 v2 协议实现与兼容性保证。
+- Android 客户端尚未纳入当前 v3 协议实现与兼容性保证。
 
 ## 许可证
 

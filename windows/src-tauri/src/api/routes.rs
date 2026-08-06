@@ -465,30 +465,29 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 };
             };
             match serde_json::from_value::<crate::crypto::Settings>(settings_json) {
-                Ok(mut new_settings) => {
-                    if let Err(error) = new_settings.validate_user_values() {
-                        return Response {
-                            ok: false,
-                            data: None,
-                            error: Some(error),
-                        };
-                    }
+                Ok(requested_settings) => {
                     let mut settings = state.settings.lock().await;
+                    let new_settings = match settings.prepare_user_update(requested_settings) {
+                        Ok(new_settings) => new_settings,
+                        Err(error) => {
+                            return Response {
+                                ok: false,
+                                data: None,
+                                error: Some(error),
+                            };
+                        }
+                    };
                     let mode_changed = settings.connection_mode != new_settings.connection_mode;
-                    new_settings.trusted_peer_keys = settings.trusted_peer_keys.clone();
-                    new_settings.trusted_peer_addresses = settings.trusted_peer_addresses.clone();
-                    new_settings.paired_peer_endpoints = settings.paired_peer_endpoints.clone();
-                    new_settings.storage_root = settings.storage_root.clone();
                     let limit = new_settings.history_limit as i64;
                     let quota = new_settings.storage_quota_bytes;
-                    *settings = new_settings;
-                    if let Err(e) = settings.save() {
+                    if let Err(e) = new_settings.save() {
                         return Response {
                             ok: false,
                             data: None,
                             error: Some(e.to_string()),
                         };
                     }
+                    *settings = new_settings;
                     drop(settings);
                     if mode_changed {
                         state.pool.lock().await.disconnect_all();
