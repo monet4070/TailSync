@@ -112,7 +112,7 @@ impl SyncPlatform for TauriSyncPlatform {
         tauri::async_runtime::spawn(async move {
             let _progress_cleanup = FileProgressCleanup {
                 batch_id: batch_id.map(TransferId::as_hex),
-                device,
+                device: device.clone(),
             };
             let history_files = files
                 .iter()
@@ -134,7 +134,7 @@ impl SyncPlatform for TauriSyncPlatform {
                         &history_batch_id,
                         &history_files,
                         batch_total,
-                        "peer",
+                        &device,
                         true,
                         batch_complete,
                     )

@@ -36,7 +36,7 @@ import {
   Type,
   X,
 } from "lucide-react";
-import tailsyncIcon from "../../src-tauri/icons/32x32.png";
+import { ThemeLogo } from "../ThemeLogo";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -205,10 +205,11 @@ function FilterDropdown({
     <div className="filter-dropdown" ref={rootRef} data-testid={testId}>
       <button
         type="button"
-        className={`filter-trigger${open ? " is-open" : ""}`}
-        aria-label={label}
+        className={`filter-trigger${open ? " is-open" : ""}${value !== "all" ? " is-filtered" : ""}`}
+        aria-label={`${label}: ${selected?.label}`}
         aria-haspopup="listbox"
         aria-expanded={open}
+        title={`${label}: ${selected?.label}`}
         onClick={() => setOpen((current) => !current)}
       >
         {SelectedIcon && (
@@ -894,9 +895,7 @@ export function History() {
       {/* ── Title bar ── */}
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-brand">
-          <div className="titlebar-logo">
-            <img src={tailsyncIcon} alt="" />
-          </div>
+          <ThemeLogo />
           <span className="titlebar-text">TailSync</span>
           <span className="titlebar-badge">v2</span>
         </div>
@@ -911,48 +910,50 @@ export function History() {
       </div>
 
       {/* ── Search ── */}
-      <div className="search-bar">
-        <span className="search-icon">
-          <Search size={18} strokeWidth={1.7} aria-hidden="true" />
-        </span>
-        <input
-          type="text"
-          placeholder={t("history.searchPlaceholder")}
-          value={keywordDraft}
-          onChange={(e) => setKeywordDraft(e.target.value)}
-          autoFocus
-        />
-        <button
-          className="clear-history-btn"
-          type="button"
-          disabled={totalEntries === 0}
-          onClick={() => setShowClearConfirm(true)}
-          title={t("history.clearAll")}
-          aria-label={t("history.clearAll")}
-        >
-          <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
-        </button>
-      </div>
-
-      <div className="history-filter-bar">
-        <FilterDropdown
-          value={selectedCategory}
-          options={categoryOptions}
-          label={t("history.categoryFilter")}
-          testId="category-filter"
-          onChange={(value) =>
-            setSelectedCategory(value as "all" | HistoryCategory)
-          }
-        />
-        {(capabilities?.date_range_filter ?? true) && (
-          <FilterDropdown
-            value={selectedDateFilter}
-            options={dateOptions}
-            label={t("history.dateFilter")}
-            testId="date-filter"
-            onChange={handleDateFilterChange}
+      <div className="history-toolbar">
+        <div className="search-bar">
+          <span className="search-icon">
+            <Search size={18} strokeWidth={1.7} aria-hidden="true" />
+          </span>
+          <input
+            type="text"
+            placeholder={t("history.searchPlaceholder")}
+            value={keywordDraft}
+            onChange={(e) => setKeywordDraft(e.target.value)}
+            autoFocus
           />
-        )}
+          <button
+            className="clear-history-btn"
+            type="button"
+            disabled={totalEntries === 0}
+            onClick={() => setShowClearConfirm(true)}
+            title={t("history.clearAll")}
+            aria-label={t("history.clearAll")}
+          >
+            <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="history-filter-bar">
+          <FilterDropdown
+            value={selectedCategory}
+            options={categoryOptions}
+            label={t("history.categoryFilter")}
+            testId="category-filter"
+            onChange={(value) =>
+              setSelectedCategory(value as "all" | HistoryCategory)
+            }
+          />
+          {(capabilities?.date_range_filter ?? true) && (
+            <FilterDropdown
+              value={selectedDateFilter}
+              options={dateOptions}
+              label={t("history.dateFilter")}
+              testId="date-filter"
+              onChange={handleDateFilterChange}
+            />
+          )}
+        </div>
       </div>
 
       {(capabilities?.date_range_filter ?? true) && selectedDateFilter === "custom" && (
@@ -1090,6 +1091,11 @@ export function History() {
                     const delay = itemIndex * 30;
                     itemIndex++;
                     const isNew = newIds.has(entry.id);
+                    const isExpandedBatchReveal = Boolean(
+                      batchId
+                      && batchExpanded
+                      && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT,
+                    );
                     const categories = resolvedCategories(entry);
                     const category = categories[0];
                     const CategoryIcon = CATEGORY_ICONS[category];
@@ -1148,8 +1154,12 @@ export function History() {
                         </div>
                       )}
                       <article
-                        className={`history-item${isNew ? " is-new" : ""}${selectedId === entry.id ? " restored" : ""}`}
-                         style={{ animationDelay: `${delay}ms` }}
+                        className={`history-item${isNew ? " is-new" : ""}${selectedId === entry.id ? " restored" : ""}${isExpandedBatchReveal ? " batch-expanded-item" : ""}`}
+                         style={{
+                           animationDelay: isExpandedBatchReveal
+                             ? `${Math.min(batchPosition - COLLAPSED_BATCH_FILE_LIMIT, 3) * 12}ms`
+                             : `${delay}ms`,
+                         }}
                          data-id={entry.id}
                          onDoubleClick={() => handleRestore(entry.id)}
                          onContextMenu={(event) => {

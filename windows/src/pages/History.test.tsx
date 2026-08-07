@@ -79,6 +79,25 @@ describe("History item actions", () => {
     });
   });
 
+  it("keeps search and filters in one compact toolbar", async () => {
+    render(<History />);
+
+    await screen.findByText(entry.description);
+    const toolbar = document.querySelector(".history-toolbar");
+    expect(toolbar).not.toBeNull();
+    expect(toolbar).toContainElement(screen.getByPlaceholderText("history.searchPlaceholder"));
+    expect(toolbar).toContainElement(screen.getByTestId("category-filter"));
+    expect(toolbar).toContainElement(screen.getByTestId("date-filter"));
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "history.categoryFilter: history.category.all",
+    }));
+    fireEvent.click(screen.getByRole("option", { name: "history.category.image" }));
+    expect(screen.getByRole("button", {
+      name: "history.categoryFilter: history.category.image",
+    })).toHaveClass("is-filtered");
+  });
+
   it("offers copy-all for complete batches and persists pin changes", async () => {
     const batchEntries = [
       {
@@ -198,6 +217,12 @@ describe("History item actions", () => {
 
     fireEvent.click(showMore);
     expect(await screen.findByText("batch-file-6")).toBeInTheDocument();
+    expect(screen.getByText("batch-file-3").closest(".history-item"))
+      .toHaveClass("batch-expanded-item");
+    expect(screen.getByText("batch-file-3").closest(".history-item"))
+      .toHaveStyle({ animationDelay: "0ms" });
+    expect(screen.getByText("batch-file-6").closest(".history-item"))
+      .toHaveStyle({ animationDelay: "36ms" });
 
     fireEvent.click(screen.getByRole("button", { name: "history.showLess" }));
     expect(screen.queryByText("batch-file-3")).toBeNull();

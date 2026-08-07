@@ -348,6 +348,81 @@
   box-shadow: 0 0 0 1px var(--art-line);
 }
 
+.app .theme-logo {
+  position: relative;
+  display: inline-grid;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--brand) 78%, var(--art-line));
+  background: var(--brand);
+  color: var(--brand-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-text) 18%, transparent);
+}
+
+.app .theme-logo-glyph {
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+}
+
+.app.theme-tailsync .theme-logo {
+  border-radius: 6px;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--brand-text) 18%, transparent),
+    2px 2px 0 var(--brand-soft);
+}
+
+.app.theme-ocean .theme-logo {
+  border-width: 2px;
+  border-color: var(--brand);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--brand);
+  box-shadow: 3px 3px 0 var(--brand-soft);
+}
+
+.app.theme-ocean .theme-logo-glyph {
+  stroke-width: 2.4;
+}
+
+.app.theme-forest .theme-logo {
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-window));
+  color: var(--brand);
+  box-shadow:
+    inset 0 0 0 2px var(--bg-window),
+    inset 0 0 0 3px color-mix(in srgb, var(--brand) 48%, transparent);
+}
+
+.app.theme-forest .theme-logo-glyph {
+  width: 12px;
+  height: 12px;
+  stroke-width: 1.55;
+}
+
+.app.theme-rose .theme-logo {
+  border-color: color-mix(in srgb, var(--brand) 42%, var(--art-line));
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand);
+  box-shadow: 0 3px 9px color-mix(in srgb, var(--brand) 18%, transparent);
+}
+
+.app.theme-high-contrast .theme-logo {
+  border: 2px solid var(--bg-window);
+  border-radius: 0;
+  outline: 1px solid var(--brand);
+  background: var(--brand);
+  color: var(--brand-text);
+  box-shadow: none;
+}
+
+.app.theme-high-contrast .theme-logo-glyph {
+  stroke-width: 2.5;
+}
+
 .app .titlebar-text {
   font-family: var(--art-display);
   font-size: 17px;
@@ -2407,6 +2482,12 @@
   }
 }
 
+.app .history-list .history-item.batch-expanded-item {
+  animation-name: batch-item-reveal;
+  animation-duration: 120ms;
+  animation-timing-function: ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app,
   .app *,
@@ -2417,4 +2498,117 @@
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Keep the Windows history controls on one row across every art-direction theme. */
+.app > .history-toolbar {
+  z-index: 40;
+}
+
+.app .history-toolbar .search-bar {
+  --search-leading-column: 30px;
+  --search-action-column: 30px;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+}
+
+.app .history-toolbar .search-icon {
+  padding-left: 8px;
+}
+
+.app .history-toolbar .search-bar input {
+  height: 28px;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-body);
+}
+
+.app .history-toolbar .clear-history-btn {
+  margin-right: 0;
+}
+
+.app .history-toolbar .history-filter-bar {
+  gap: 4px;
+  padding: 0;
+  border-bottom: 0;
+}
+
+.app .history-toolbar .filter-trigger {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--art-line);
+  border-radius: var(--radius-sm);
+  justify-content: center;
+}
+
+.app .history-toolbar .filter-menu {
+  right: 0;
+  left: auto;
+}
+
+/* Dense Windows history rows keep all metadata while showing more entries. */
+.app .history-list .history-item {
+  align-items: center;
+  gap: 8px;
+  min-height: 54px;
+  padding: 7px 8px;
+}
+
+.app .history-list .item-preview {
+  width: 32px;
+  min-height: 32px;
+  flex-basis: 32px;
+}
+
+.app .history-list .item-icon,
+.app .history-list .item-thumb {
+  width: 32px;
+  height: 32px;
+}
+
+.app .history-list .item-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "meta meta"
+    "description footer";
+  align-items: center;
+  gap: 2px 6px;
+}
+
+.app .history-list .item-meta {
+  grid-area: meta;
+  gap: 5px;
+}
+
+.app .history-list .item-desc {
+  grid-area: description;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.app .history-list .item-footer {
+  grid-area: footer;
+  justify-self: end;
+  gap: 6px;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.app .history-list .pin-entry {
+  width: 20px;
+  height: 18px;
+}
+
+.app .history-list .history-batch-header {
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 10px;
+}
+
+.app .history-list .history-batch-header button {
+  min-height: 22px;
+  padding: 1px 6px;
 }

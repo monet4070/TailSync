@@ -146,15 +146,25 @@ html, body {
 }
 
 /* ── Search ───────────────────────────────────────────────────────── */
-.search-bar {
-  padding: 8px 14px 6px;
-  flex-shrink: 0;
+.history-toolbar {
   position: relative;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  flex-shrink: 0;
+}
+
+.search-bar {
+  position: relative;
+  min-width: 0;
 }
 
 .search-icon {
   position: absolute;
-  left: 24px;
+  left: 10px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--text-tertiary);
@@ -204,8 +214,8 @@ html, body {
 
 .clear-history-btn {
   position: absolute;
-  right: 15px;
-  top: 9px;
+  right: 1px;
+  top: 1px;
 }
 
 .clear-history-btn svg,
@@ -237,31 +247,28 @@ html, body {
 .search-results-count {
   font-size: 10px;
   color: var(--text-tertiary);
-  padding: 0 14px 4px;
+  padding: 0 10px 4px;
   flex-shrink: 0;
   font-weight: 500;
   letter-spacing: 0;
 }
 
 .history-filter-bar {
-  position: relative;
-  z-index: 8;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  padding: 0 14px 7px;
-  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .filter-dropdown {
   position: relative;
-  min-width: 0;
+  width: 30px;
+  flex: 0 0 30px;
 }
 
 .filter-trigger {
-  width: 100%;
-  height: 28px;
-  padding: 0 8px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   outline: none;
@@ -269,7 +276,8 @@ html, body {
   color: var(--text-secondary);
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 0;
   font: inherit;
   font-size: 11px;
   cursor: pointer;
@@ -278,10 +286,7 @@ html, body {
 }
 
 .filter-trigger > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: none;
 }
 
 .filter-trigger > svg {
@@ -289,9 +294,7 @@ html, body {
 }
 
 .filter-trigger > svg:last-child {
-  margin-left: auto;
-  color: var(--text-tertiary);
-  transition: transform 0.15s ease;
+  display: none;
 }
 
 .filter-trigger:hover,
@@ -301,8 +304,10 @@ html, body {
   color: var(--text-primary);
 }
 
-.filter-trigger.is-open > svg:last-child {
-  transform: rotate(180deg);
+.filter-trigger.is-filtered {
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border-strong));
+  background: var(--brand-soft);
+  color: var(--brand);
 }
 
 .filter-trigger:focus-visible {
@@ -313,11 +318,11 @@ html, body {
 .filter-menu {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  right: 0;
   z-index: 20;
   width: max-content;
   min-width: 100%;
-  max-width: min(230px, calc(100vw - 28px));
+  max-width: min(230px, calc(100vw - 20px));
   max-height: 250px;
   padding: 4px;
   overflow-y: auto;
@@ -325,11 +330,6 @@ html, body {
   border-radius: var(--radius-sm);
   background: var(--bg-raised);
   box-shadow: var(--shadow-lg);
-}
-
-.filter-dropdown:last-child .filter-menu {
-  right: 0;
-  left: auto;
 }
 
 .filter-option {
@@ -388,6 +388,10 @@ html, body {
   background: rgba(255, 255, 255, 0.045);
 }
 
+.app.dark .filter-trigger.is-filtered {
+  background: var(--brand-soft);
+}
+
 .app.dark .filter-trigger:hover,
 .app.dark .filter-trigger.is-open {
   background: var(--bg-card);
@@ -403,7 +407,7 @@ html, body {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: end;
   gap: 6px;
-  padding: 0 14px 7px;
+  padding: 0 10px 7px;
   flex-shrink: 0;
 }
 
@@ -488,7 +492,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 8px 5px;
+  padding: 10px 8px 4px;
   font-size: 11px;
   font-weight: var(--font-weight-strong);
   color: var(--text-tertiary);
@@ -651,6 +655,11 @@ html, body {
 @keyframes item-enter {
   from { opacity: 0; transform: translateY(6px) scale(0.98); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes batch-item-reveal {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* Restore feedback stays on a paint-only layer so the row never moves. */
@@ -930,7 +939,7 @@ html, body {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 7px 10px;
   border-top: 1px solid var(--divider);
   flex-shrink: 0;
 }

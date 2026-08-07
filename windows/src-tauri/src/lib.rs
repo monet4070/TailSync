@@ -180,32 +180,16 @@ fn start_parent_monitor(
 }
 
 #[cfg(target_os = "windows")]
-fn prepare_notification_icon() -> Option<std::path::PathBuf> {
-    const ICON_BYTES: &[u8] = include_bytes!("../icons/128x128.png");
-
-    let path = db::get_data_dir().join("notification-logo-v1.png");
-    if std::fs::read(&path).is_ok_and(|existing| existing == ICON_BYTES) {
-        return Some(path);
-    }
-    if let Err(error) = std::fs::write(&path, ICON_BYTES) {
-        log::warn!("Could not prepare the notification logo: {error}");
-        return None;
-    }
-    Some(path)
-}
-
-#[cfg(target_os = "windows")]
 fn start_background_notifications(
     app: tauri::AppHandle,
     db: Arc<Mutex<db::HistoryDB>>,
     settings: Arc<Mutex<crypto::Settings>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tauri::async_runtime::JoinHandle<()> {
-    use tauri_winrt_notification::{IconCrop, Toast};
+    use tauri_winrt_notification::Toast;
 
     tauri::async_runtime::spawn(async move {
         let app_id = app.config().identifier.clone();
-        let notification_icon = prepare_notification_icon();
         let mut last_seen_id = db
             .lock()
             .await
@@ -251,10 +235,7 @@ fn start_background_notifications(
                 "file" => format!("{} received from {}", entry.description, entry.source_peer),
                 _ => entry.description,
             };
-            let mut notification = Toast::new(&app_id).title("TailSync").text2(&body);
-            if let Some(icon) = notification_icon.as_deref() {
-                notification = notification.icon(icon, IconCrop::Square, "TailSync");
-            }
+            let notification = Toast::new(&app_id).title("TailSync").text2(&body);
             if let Err(error) = notification.show() {
                 log::debug!("Could not show background notification: {error}");
             }

@@ -30,7 +30,7 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import tailsyncIcon from "../../src-tauri/icons/32x32.png";
+import { ThemeLogo } from "../ThemeLogo";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -567,9 +567,7 @@ export function Settings() {
         {/* Title bar */}
         <div className="titlebar" data-tauri-drag-region>
           <div className="titlebar-brand">
-            <div className="titlebar-logo">
-              <img src={tailsyncIcon} alt="" />
-            </div>
+            <ThemeLogo />
             <span className="titlebar-text">{t("settings.title")}</span>
             <span className="titlebar-badge">v2</span>
           </div>
@@ -592,9 +590,7 @@ export function Settings() {
       {/* ── Title bar ── */}
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-brand">
-          <div className="titlebar-logo">
-            <img src={tailsyncIcon} alt="" />
-          </div>
+          <ThemeLogo />
           <span className="titlebar-text">{t("settings.title")}</span>
           <span className="titlebar-badge">v2</span>
         </div>

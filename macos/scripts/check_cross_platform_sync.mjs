@@ -125,6 +125,17 @@ function readCore(path) {
   return readFileSync(join(sharedCoreRoot, path), 'utf8');
 }
 
+function assertReceivedFileHistorySource(root, platform) {
+  const syncAdapter = read(root, 'src-tauri/src/sync_adapter.rs');
+  const storesAuthenticatedDevice = /add_file_batch_with_status\(\s*&history_batch_id,\s*&history_files,\s*batch_total,\s*&device,\s*true,\s*batch_complete,\s*\)/s;
+  if (!storesAuthenticatedDevice.test(syncAdapter)) {
+    fail(`${platform} received file history must store the authenticated device name.`);
+  }
+}
+
+assertReceivedFileHistorySource(winRoot, 'Windows');
+assertReceivedFileHistorySource(macRoot, 'macOS');
+
 const winPackage = JSON.parse(read(winRoot, 'package.json'));
 const winScripts = winPackage.scripts ?? {};
 for (const required of ['build', 'lint', 'test']) {
