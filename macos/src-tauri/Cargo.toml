@@ -57,6 +57,7 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSPasteboard", "NSRunningApplication"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows = "=0.62.2"
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Registry", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
