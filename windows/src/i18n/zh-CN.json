@@ -96,6 +96,7 @@
   "settings.connected": "已连接",
   "settings.notConnected": "未连接",
   "settings.testTcpPort": "测试 TailSync TCP 端口",
+  "settings.testRoute": "测试 TailSync 连接",
   "settings.testAddress": "测试地址连通性",
   "settings.failed": "失败",
   "settings.pairedWaiting": "已配对 - 等待设备上线",

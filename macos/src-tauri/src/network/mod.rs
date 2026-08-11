@@ -42,6 +42,7 @@ const PEER_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 pub static TCP_SERVER_HEALTHY: AtomicBool = AtomicBool::new(false);
 
 mod health;
+mod iroh;
 pub mod lan;
 pub mod mdns;
 pub use health::{
@@ -54,7 +55,9 @@ use health::{
 };
 #[cfg(test)]
 use health::{AuthenticatedSessionRegistry, PeerHealthTracker};
+pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
+pub use iroh::start_server as start_iroh_server;
 pub use server::start_server;
 #[cfg(test)]
 use server::ConnectionLimiter;
@@ -68,7 +71,7 @@ pub use pool::{
 #[cfg(test)]
 use pool::{
     connection_task, deliver_pending_frame, queue_pool_frame, race_connect_and_handshake,
-    AckExpectation, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate,
+    AckExpectation, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
 };
 mod rate_limit;
 use rate_limit::check_peer_event_budget;
@@ -336,6 +339,24 @@ pub fn merge_paired_peers(
                 }
             }
         }
+        if peer.trusted && mode == "auto" {
+            if let Some(endpoint_id) = settings
+                .trusted_peer_addresses
+                .get(&peer.hostname)
+                .and_then(|addresses| addresses.get("iroh"))
+            {
+                if !peer.candidates.iter().any(|candidate| {
+                    candidate.interface == ConnectionInterface::Iroh
+                        && candidate.address == *endpoint_id
+                }) {
+                    peer.candidates.push(PeerCandidate::remembered(
+                        ConnectionInterface::Iroh,
+                        endpoint_id,
+                    ));
+                }
+            }
+            peer.candidates.sort_by_key(|candidate| candidate.priority);
+        }
     }
 
     for (hostname, encoded_key) in &settings.trusted_peer_keys {
@@ -344,7 +365,11 @@ pub fn merge_paired_peers(
         }
         let remembered = settings.trusted_peer_addresses.get(hostname);
         let mut candidates = Vec::new();
-        for interface in [ConnectionInterface::Lan, ConnectionInterface::Tailscale] {
+        for interface in [
+            ConnectionInterface::Lan,
+            ConnectionInterface::Iroh,
+            ConnectionInterface::Tailscale,
+        ] {
             if mode != "auto" && mode_interface(mode) != Some(interface) {
                 continue;
             }
@@ -545,14 +570,21 @@ pub async fn start_pairing(
         .await
 }
 
-/// Test whether a discovered peer is accepting TailSync TCP connections.
+/// Test whether a discovered TailSync route accepts a transport connection.
 pub async fn test_connection(address: &str) -> Result<u64, String> {
-    let ip: IpAddr = address
-        .parse()
-        .map_err(|error| format!("Invalid peer address {address}: {error}"))?;
-    let addr = SocketAddr::new(ip, TCP_PORT);
     let started = tokio::time::Instant::now();
-    match timeout(Duration::from_secs(3), TcpStream::connect(addr)).await {
+    if let Ok(ip) = address.parse::<IpAddr>() {
+        let addr = SocketAddr::new(ip, TCP_PORT);
+        return match timeout(Duration::from_secs(3), TcpStream::connect(addr)).await {
+            Ok(Ok(_)) => Ok(started.elapsed().as_millis() as u64),
+            Ok(Err(error)) => Err(format!("Connection failed: {error}")),
+            Err(_) => Err("Connection timed out after 3 seconds".to_string()),
+        };
+    }
+
+    let endpoint_id = tailsync_core::iroh_transport::canonical_endpoint_id(address)?;
+    let endpoint = iroh::endpoint().await?;
+    match timeout(Duration::from_secs(3), endpoint.connect(&endpoint_id)).await {
         Ok(Ok(_)) => Ok(started.elapsed().as_millis() as u64),
         Ok(Err(error)) => Err(format!("Connection failed: {error}")),
         Err(_) => Err("Connection timed out after 3 seconds".to_string()),
@@ -568,8 +600,8 @@ mod tests {
         peer_socket_addr, queue_pool_frame, race_connect_and_handshake, secure,
         source_matches_mode, store_peer_cache, AckExpectation, AuthenticatedSessionRegistry,
         ConnectionInterface, ConnectionLimiter, ConnectionPool, PeerCandidate, PeerHealthTracker,
-        PeerStatus, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, RouteKey,
-        POOL_CHANNEL_SIZE, TCP_PORT,
+        PeerStatus, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
+        RouteKey, POOL_CHANNEL_SIZE, TCP_PORT,
     };
     use crate::crypto::{self, Settings};
     use crate::identity::DeviceIdentity;
@@ -731,6 +763,52 @@ mod tests {
             .all(|candidate| !candidate.online));
         assert!(peers[0].current_address.is_none());
         assert_eq!(peer_socket_addr(&peers[0]).unwrap().port(), TCP_PORT);
+    }
+
+    #[test]
+    fn automatic_mode_adds_iroh_between_lan_and_tailscale_only() {
+        let identity = DeviceIdentity::generate_for_test();
+        let mut settings = crypto::Settings::default();
+        settings
+            .trusted_peer_keys
+            .insert("windows".into(), STANDARD.encode(identity.public_key()));
+        settings.trusted_peer_addresses.insert(
+            "windows".into(),
+            HashMap::from([
+                ("lan".into(), "192.168.1.20".into()),
+                (
+                    "iroh".into(),
+                    "5866666666666666666666666666666666666666666666666666666666666666".into(),
+                ),
+                ("tailscale".into(), "100.64.0.2".into()),
+            ]),
+        );
+
+        let automatic = merge_paired_peers(&settings, "auto", Vec::new());
+        assert_eq!(
+            automatic[0]
+                .candidates
+                .iter()
+                .map(|candidate| candidate.interface)
+                .collect::<Vec<_>>(),
+            vec![
+                ConnectionInterface::Lan,
+                ConnectionInterface::Iroh,
+                ConnectionInterface::Tailscale,
+            ]
+        );
+        let lan_only = merge_paired_peers(&settings, "lan_only", Vec::new());
+        assert_eq!(lan_only[0].candidates.len(), 1);
+        assert_eq!(
+            lan_only[0].candidates[0].interface,
+            ConnectionInterface::Lan
+        );
+        let tailscale_only = merge_paired_peers(&settings, "tailscale_only", Vec::new());
+        assert_eq!(tailscale_only[0].candidates.len(), 1);
+        assert_eq!(
+            tailscale_only[0].candidates[0].interface,
+            ConnectionInterface::Tailscale
+        );
     }
 
     #[test]
@@ -971,6 +1049,7 @@ mod tests {
             secure::PeerIdentity {
                 hostname: "server".into(),
                 tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
             },
         )
         .await
@@ -985,7 +1064,7 @@ mod tests {
     ) -> ResolvedCandidate {
         ResolvedCandidate {
             candidate: PeerCandidate::new(interface, socket_addr.ip().to_string()),
-            socket_addr,
+            target: ResolvedTarget::Tcp(socket_addr),
         }
     }
 
@@ -1086,7 +1165,9 @@ mod tests {
         };
 
         let mut pool_value = ConnectionPool::new(identity, settings);
-        pool_value.senders.insert((addr, "blocked-peer".into()), tx);
+        pool_value
+            .senders
+            .insert((ResolvedTarget::Tcp(addr), "blocked-peer".into()), tx);
         let pool = Arc::new(Mutex::new(pool_value));
         let queued_pool = pool.clone();
         let blocked_send = tokio::spawn(async move {
@@ -1183,6 +1264,7 @@ mod tests {
                 secure::PeerIdentity {
                     hostname: "server".into(),
                     tailscale_ip: String::new(),
+                    iroh_endpoint_id: None,
                 },
             )
             .await
@@ -1213,6 +1295,7 @@ mod tests {
             secure::PeerIdentity {
                 hostname: "client".into(),
                 tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
             },
             "server",
             &expected_key,
@@ -1243,6 +1326,7 @@ mod tests {
                 secure::PeerIdentity {
                     hostname: "server".into(),
                     tailscale_ip: String::new(),
+                    iroh_endpoint_id: None,
                 },
             )
             .await
@@ -1269,6 +1353,7 @@ mod tests {
             secure::PeerIdentity {
                 hostname: "client".into(),
                 tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
             },
             "server",
             &expected_key,
@@ -1303,6 +1388,7 @@ mod tests {
                 secure::PeerIdentity {
                     hostname: "server".into(),
                     tailscale_ip: String::new(),
+                    iroh_endpoint_id: None,
                 },
             )
             .await
@@ -1331,6 +1417,7 @@ mod tests {
                     secure::PeerIdentity {
                         hostname: "server".into(),
                         tailscale_ip: String::new(),
+                        iroh_endpoint_id: None,
                     },
                 )
                 .await

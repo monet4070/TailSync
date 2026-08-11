@@ -478,6 +478,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                         }
                     };
                     let mode_changed = settings.connection_mode != new_settings.connection_mode;
+                    let connection_mode = new_settings.connection_mode.clone();
                     let limit = new_settings.history_limit as i64;
                     let quota = new_settings.storage_quota_bytes;
                     if let Err(e) = new_settings.save() {
@@ -492,6 +493,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     if mode_changed {
                         state.pool.lock().await.disconnect_all();
                         network::clear_peer_cache().await;
+                        network::refresh_iroh_for_mode(&connection_mode).await;
                     }
                     let mut db = state.db.lock().await;
                     db.set_max_history(limit);

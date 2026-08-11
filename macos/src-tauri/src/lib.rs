@@ -344,8 +344,10 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
     let settings_for_monitor = settings.clone();
     let settings_for_server = settings.clone();
+    let settings_for_iroh = settings.clone();
     let settings_for_discovery = settings.clone();
     let identity_for_server = identity.clone();
+    let identity_for_iroh = identity.clone();
     let identity_for_discovery = identity.clone();
 
     // Start JSON API server
@@ -423,6 +425,8 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
             // Start P2P network server
             let db_for_storage_monitor = db_for_setup.clone();
+            let db_for_iroh = db_for_setup.clone();
+            let sync_for_iroh = sync_for_setup.clone();
             let server_shutdown = shutdown_for_setup.clone();
             let server_task = tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::start_server(
@@ -439,6 +443,21 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
             track_task(&tasks_for_setup, server_task);
+            let iroh_shutdown = shutdown_for_setup.clone();
+            let iroh_task = tauri::async_runtime::spawn(async move {
+                if let Err(error) = network::start_iroh_server(
+                    sync_for_iroh,
+                    db_for_iroh,
+                    settings_for_iroh,
+                    identity_for_iroh,
+                    iroh_shutdown,
+                )
+                .await
+                {
+                    log::error!("Iroh server error: {error}");
+                }
+            });
+            track_task(&tasks_for_setup, iroh_task);
             let discovery_task = tauri::async_runtime::spawn(network::start_discovery_responder(
                 identity_for_discovery,
                 shutdown_for_setup.clone(),

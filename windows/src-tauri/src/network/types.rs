@@ -2,6 +2,7 @@
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionInterface {
     Lan,
+    Iroh,
     Tailscale,
 }
 
@@ -9,6 +10,7 @@ impl ConnectionInterface {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Lan => "lan",
+            Self::Iroh => "iroh",
             Self::Tailscale => "tailscale",
         }
     }
@@ -16,7 +18,8 @@ impl ConnectionInterface {
     pub(super) fn priority(self) -> u8 {
         match self {
             Self::Lan => 0,
-            Self::Tailscale => 1,
+            Self::Iroh => 1,
+            Self::Tailscale => 2,
         }
     }
 }

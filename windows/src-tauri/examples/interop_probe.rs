@@ -44,6 +44,7 @@ async fn run_server(bind_address: &str) -> ProbeResult {
         PeerIdentity {
             hostname: "mac-probe".into(),
             tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
         },
     )
     .await?;
@@ -121,6 +122,7 @@ async fn run_server(bind_address: &str) -> ProbeResult {
         PeerIdentity {
             hostname: "mac-probe".into(),
             tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
         },
     )
     .await?;
@@ -154,6 +156,7 @@ async fn run_client(address: &str, server_key: &str) -> ProbeResult {
         PeerIdentity {
             hostname: "win-probe".into(),
             tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
         },
         "mac-probe",
         &expected_key,
@@ -227,6 +230,7 @@ async fn run_client(address: &str, server_key: &str) -> ProbeResult {
         PeerIdentity {
             hostname: "win-probe".into(),
             tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
         },
     )
     .await?;

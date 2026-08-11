@@ -43,14 +43,14 @@ interface PeerDevice {
   connection_mode: "auto" | "lan" | "tailscale";
   trusted: boolean;
   fingerprint: string;
-  current_interface?: "lan" | "tailscale";
+  current_interface?: "lan" | "iroh" | "tailscale";
   current_address?: string | null;
   status?: "discovered" | "online" | "confirming" | "offline" | "connected";
   routes?: PeerRoute[];
 }
 
 interface PeerRoute {
-  interface: "lan" | "tailscale";
+  interface: "lan" | "iroh" | "tailscale";
   address: string;
   status: "discovered" | "online" | "confirming" | "offline" | "connected";
   online: boolean;
@@ -58,6 +58,12 @@ interface PeerRoute {
   latency_ms?: number | null;
   pairing_endpoint?: boolean;
 }
+
+const routeInterfaceLabel = (routeInterface: PeerRoute["interface"]) => {
+  if (routeInterface === "lan") return "LAN";
+  if (routeInterface === "iroh") return "Iroh";
+  return "Tailscale";
+};
 
 interface ConnectionTestResult {
   latency_ms: number;
@@ -704,7 +710,7 @@ export function Settings() {
                           <div className="peer-route" key={`${route.interface}-${route.address}`}>
                             <span className="peer-route-address">{route.address}</span>
                             <span className={`peer-route-interface ${route.interface}`}>
-                              {route.interface === "lan" ? "LAN" : "Tailscale"}
+                              {routeInterfaceLabel(route.interface)}
                             </span>
                             <span className="peer-route-status positive">
                               {t("settings.online")}
@@ -750,9 +756,9 @@ export function Settings() {
                           const reachabilityStatus = route.status === "connected" ? "online" : route.status;
                           return (
                             <div className="peer-route" key={`${route.interface}-${route.address}`}>
-                              <span className="peer-route-address">{route.address}</span>
+                              <span className="peer-route-address" title={route.address}>{route.address}</span>
                               <span className={`peer-route-interface ${route.interface}`}>
-                                {route.interface === "lan" ? "LAN" : "Tailscale"}
+                                {routeInterfaceLabel(route.interface)}
                               </span>
                               <span className={`peer-route-status health-${reachabilityStatus}`}>
                                 {reachabilityStatus === "online"
@@ -771,7 +777,7 @@ export function Settings() {
                                 className="connection-test-button"
                                 disabled={test?.status === "testing"}
                                 onClick={() => void testConnection(peer, route)}
-                                title={t("settings.testTcpPort")}
+                                title={t(route.interface === "iroh" ? "settings.testRoute" : "settings.testTcpPort")}
                                 aria-label={`${t("settings.testAddress")}: ${route.address}`}
                               >
                                 {test?.status === "testing"

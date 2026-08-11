@@ -125,7 +125,7 @@
 .device-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding-top: 1px; }
 .peer-route-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .peer-route { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-height: 20px; }
-.peer-route-address { min-width: 82px; color: var(--text-secondary); font: 10px var(--font-mono); }
+.peer-route-address { min-width: 82px; max-width: min(280px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font: 10px var(--font-mono); }
 .peer-route-interface { font-size: 9px; font-weight: 650; color: var(--brand); }
 .peer-route-interface.tailscale { color: var(--purple); }
 .peer-route-status { font-size: 9px; color: var(--text-tertiary); white-space: nowrap; }

@@ -143,16 +143,31 @@ impl PoolSender {
 }
 
 pub struct ConnectionPool {
-    pub(super) senders: HashMap<(SocketAddr, String), PoolSender>,
+    pub(super) senders: HashMap<(ResolvedTarget, String), PoolSender>,
     batch_serializers: HashMap<String, Arc<Mutex<()>>>,
     identity: Arc<DeviceIdentity>,
     settings: Arc<Mutex<crypto::Settings>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) enum ResolvedTarget {
+    Tcp(SocketAddr),
+    Iroh(String),
+}
+
+impl std::fmt::Display for ResolvedTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp(address) => address.fmt(formatter),
+            Self::Iroh(endpoint_id) => write!(formatter, "iroh:{endpoint_id}"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct ResolvedCandidate {
     pub(super) candidate: PeerCandidate,
-    pub(super) socket_addr: SocketAddr,
+    pub(super) target: ResolvedTarget,
 }
 
 fn resolve_candidates(peer: &tailscale::PeerInfo) -> Result<Vec<ResolvedCandidate>, String> {
@@ -172,14 +187,18 @@ fn resolve_candidates(peer: &tailscale::PeerInfo) -> Result<Vec<ResolvedCandidat
     candidates
         .into_iter()
         .map(|candidate| {
-            let ip: IpAddr = candidate
-                .address
-                .parse()
-                .map_err(|error| format!("Invalid peer address {}: {error}", candidate.address))?;
-            Ok(ResolvedCandidate {
-                socket_addr: SocketAddr::new(ip, TCP_PORT),
-                candidate,
-            })
+            let target = match candidate.interface {
+                ConnectionInterface::Iroh => ResolvedTarget::Iroh(
+                    tailsync_core::iroh_transport::canonical_endpoint_id(&candidate.address)?,
+                ),
+                ConnectionInterface::Lan | ConnectionInterface::Tailscale => {
+                    let ip: IpAddr = candidate.address.parse().map_err(|error| {
+                        format!("Invalid peer address {}: {error}", candidate.address)
+                    })?;
+                    ResolvedTarget::Tcp(SocketAddr::new(ip, TCP_PORT))
+                }
+            };
+            Ok(ResolvedCandidate { candidate, target })
         })
         .collect()
 }
@@ -204,7 +223,7 @@ impl ConnectionPool {
             hostname,
             vec![ResolvedCandidate {
                 candidate: PeerCandidate::new(interface, addr.ip().to_string()),
-                socket_addr: addr,
+                target: ResolvedTarget::Tcp(addr),
             }],
         )
     }
@@ -218,11 +237,12 @@ impl ConnectionPool {
         hostname: String,
         candidates: Vec<ResolvedCandidate>,
     ) -> Result<PoolSender, String> {
-        let addr = candidates
+        let target = candidates
             .first()
             .ok_or_else(|| format!("Peer {hostname} has no usable connection candidates"))?
-            .socket_addr;
-        let key = (addr, hostname.clone());
+            .target
+            .clone();
+        let key = (target, hostname.clone());
         if let Some(tx) = self.senders.get(&key) {
             return Ok(tx.clone());
         }
@@ -286,7 +306,7 @@ impl ConnectionPool {
         }
         let tx = self.sender_for(addr, hostname)?;
 
-        enqueue_pool_frame(tx, addr, cmd, payload).await
+        enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), cmd, payload).await
     }
 
     /// Remove a peer from the pool (e.g. when user disables it).
@@ -350,7 +370,7 @@ pub(crate) async fn queue_pool_frame(
         .map_err(|error| format!("Peer {hostname} has an invalid pinned key: {error}"))?;
 
     let tx = { pool.lock().await.sender_for(addr, hostname)? };
-    enqueue_pool_frame(tx, addr, cmd, payload).await
+    enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), cmd, payload).await
 }
 
 pub async fn queue_peer_frame(
@@ -380,7 +400,7 @@ pub async fn queue_peer_frame(
     let tx = { pool.lock().await.sender_for_peer(peer)? };
     let preferred = resolve_candidates(peer)?
         .first()
-        .map(|candidate| candidate.socket_addr)
+        .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
     enqueue_pool_frame(tx, preferred, cmd, payload).await
 }
@@ -406,7 +426,7 @@ pub async fn queue_peer_file_frame(
     let tx = { pool.lock().await.sender_for_peer(peer)? };
     let preferred = resolve_candidates(peer)?
         .first()
-        .map(|candidate| candidate.socket_addr)
+        .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
     let (completion_tx, completion_rx) = oneshot::channel();
     let queued = QueuedFrame::confirmed_file(command, payload, transfer_id, completion_tx)?;
@@ -437,7 +457,7 @@ pub async fn queue_peer_batch_frame(
     let tx = { pool.lock().await.sender_for_peer(peer)? };
     let preferred = resolve_candidates(peer)?
         .first()
-        .map(|candidate| candidate.socket_addr)
+        .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
     let (completion_tx, completion_rx) = oneshot::channel();
     let queued = QueuedFrame::confirmed_batch(command, payload, batch_id, completion_tx)?;
@@ -454,7 +474,10 @@ pub async fn prewarm_connections(
     pool: Arc<Mutex<ConnectionPool>>,
     peers: Vec<tailscale::PeerInfo>,
 ) {
-    for peer in peers.into_iter().filter(|peer| peer.enabled) {
+    for peer in peers
+        .into_iter()
+        .filter(|peer| peer.enabled && peer.trusted)
+    {
         if let Err(error) = pool.lock().await.sender_for_peer(&peer) {
             debug!("Could not prewarm {}: {error}", peer.hostname);
         }
@@ -463,24 +486,24 @@ pub async fn prewarm_connections(
 
 async fn enqueue_pool_frame(
     tx: PoolSender,
-    addr: SocketAddr,
+    target: ResolvedTarget,
     cmd: Command,
     payload: Vec<u8>,
 ) -> Result<(), String> {
     let queued = QueuedFrame::new(cmd, payload)?;
-    enqueue_queued_frame(tx, addr, queued).await
+    enqueue_queued_frame(tx, target, queued).await
 }
 
 async fn enqueue_queued_frame(
     tx: PoolSender,
-    addr: SocketAddr,
+    target: ResolvedTarget,
     queued: QueuedFrame,
 ) -> Result<(), String> {
     let command = queued.command;
     timeout(POOL_SEND_TIMEOUT, tx.channel_for(command).send(queued))
         .await
-        .map_err(|_| format!("Timed out queueing frame for {}", addr))?
-        .map_err(|_| format!("Connection to {} closed", addr))
+        .map_err(|_| format!("Timed out queueing frame for {target}"))?
+        .map_err(|_| format!("Connection to {target} closed"))
 }
 
 /// Background task for one pooled connection.
@@ -490,7 +513,7 @@ async fn enqueue_queued_frame(
 /// - Sends periodic heartbeats.
 /// - Reconnects transparently on write errors.
 pub(super) async fn connection_task(
-    candidates: Vec<ResolvedCandidate>,
+    mut candidates: Vec<ResolvedCandidate>,
     hostname: String,
     mut priority_rx: mpsc::Receiver<QueuedFrame>,
     mut bulk_rx: mpsc::Receiver<QueuedFrame>,
@@ -498,26 +521,31 @@ pub(super) async fn connection_task(
     settings: Arc<Mutex<crypto::Settings>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let Some(preferred_addr) = candidates.first().map(|candidate| candidate.socket_addr) else {
+    let Some(preferred_target) = candidates.first().map(|candidate| candidate.target.clone())
+    else {
         warn!("Connection task for {hostname} started without a route");
         return;
     };
     let mut pending: Option<PendingFrame> = None;
     let mut next_sequence = 1u32;
     loop {
-        let connection = race_connect_and_handshake(&candidates, &hostname, &identity, &settings);
-        tokio::pin!(connection);
-        let connection_result = tokio::select! {
-            biased;
-            _ = wait_for_shutdown(&mut shutdown) => return,
-            result = &mut connection => result,
+        refresh_remembered_iroh_candidate(&mut candidates, &hostname, &settings).await;
+        let connection_result = {
+            let connection =
+                race_connect_and_handshake(&candidates, &hostname, &identity, &settings);
+            tokio::pin!(connection);
+            tokio::select! {
+                biased;
+                _ = wait_for_shutdown(&mut shutdown) => return,
+                result = &mut connection => result,
+            }
         };
         let (mut stream, route) = match connection_result {
             Ok(result) => result,
             Err(e) => {
                 warn!(
                     "Pool connect to {} ({}) failed: {} — retrying in {:?}",
-                    preferred_addr, hostname, e, RECONNECT_DELAY
+                    preferred_target, hostname, e, RECONNECT_DELAY
                 );
                 tokio::select! {
                     biased;
@@ -527,7 +555,17 @@ pub(super) async fn connection_task(
                 continue;
             }
         };
-        let addr = route.socket_addr;
+        let learned_iroh =
+            refresh_remembered_iroh_candidate(&mut candidates, &hostname, &settings).await;
+        if learned_iroh
+            && candidates
+                .iter()
+                .any(|candidate| candidate.candidate.priority < route.candidate.priority)
+        {
+            debug!("Learned a preferred Iroh route for {hostname}; reselecting path");
+            continue;
+        }
+        let target = route.target.clone();
         let active = ActiveRoute {
             interface: route.candidate.interface,
             address: route.candidate.address.clone(),
@@ -535,7 +573,7 @@ pub(super) async fn connection_task(
         };
         debug!(
             "Pool connected to {} via {} in {} ms",
-            addr,
+            target,
             active.interface.as_str(),
             active.latency
         );
@@ -563,13 +601,13 @@ pub(super) async fn connection_task(
                 Ok(receipt) => frame.complete(Ok(receipt)),
                 Err(error) if is_permanent_delivery_error(&error) => {
                     warn!("Dropping event rejected by remote peer: {error}");
-                    debug!("Rejected event route: {addr}");
+                    debug!("Rejected event route: {target}");
                     frame.complete(Err(error));
                 }
                 Err(error) => {
                     debug!(
                         "Pool delivery to {} failed: {error} — reselecting path",
-                        addr
+                        target
                     );
                     pending = Some(frame);
                     continue;
@@ -599,7 +637,7 @@ pub(super) async fn connection_task(
                     } => result,
                 };
                 if !heartbeat_ok {
-                    debug!("Pool heartbeat to {} failed — reconnecting", addr);
+                    debug!("Pool heartbeat to {} failed — reconnecting", target);
                     break;
                 }
                 last_heartbeat = tokio::time::Instant::now();
@@ -635,14 +673,14 @@ pub(super) async fn connection_task(
                         Ok(receipt) => frame.complete(Ok(receipt)),
                         Err(error) if is_permanent_delivery_error(&error) => {
                             warn!("Dropping event rejected by remote peer: {error}");
-                            debug!("Rejected event route: {addr}");
+                            debug!("Rejected event route: {target}");
                             frame.complete(Err(error));
                         }
                         Err(error) => {
                             pending = Some(frame);
                             debug!(
                                 "Pool delivery to {} failed: {error} — reselecting path",
-                                addr
+                                target
                             );
                             break;
                         }
@@ -650,7 +688,7 @@ pub(super) async fn connection_task(
                 }
                 Ok(None) => {
                     // All senders dropped — exit this connection for good
-                    debug!("Pool channel for {} closed — shutting down", addr);
+                    debug!("Pool channel for {} closed — shutting down", target);
                     return;
                 }
                 Err(_) => {
@@ -660,6 +698,48 @@ pub(super) async fn connection_task(
         }
         // Outer loop: reconnect and try again
     }
+}
+
+async fn refresh_remembered_iroh_candidate(
+    candidates: &mut Vec<ResolvedCandidate>,
+    hostname: &str,
+    settings: &Arc<Mutex<crypto::Settings>>,
+) -> bool {
+    let endpoint_id = {
+        let settings = settings.lock().await;
+        if settings.connection_mode != "auto" {
+            candidates
+                .retain(|candidate| candidate.candidate.interface != ConnectionInterface::Iroh);
+            return false;
+        }
+        settings
+            .trusted_peer_addresses
+            .get(hostname)
+            .and_then(|addresses| addresses.get("iroh"))
+            .cloned()
+    };
+    let Some(endpoint_id) = endpoint_id else {
+        return false;
+    };
+    let Ok(endpoint_id) = tailsync_core::iroh_transport::canonical_endpoint_id(&endpoint_id) else {
+        return false;
+    };
+    candidates.retain(|candidate| {
+        candidate.candidate.interface != ConnectionInterface::Iroh
+            || candidate.candidate.address == endpoint_id
+    });
+    if candidates.iter().any(|candidate| {
+        candidate.candidate.interface == ConnectionInterface::Iroh
+            && candidate.candidate.address == endpoint_id
+    }) {
+        return false;
+    }
+    candidates.push(ResolvedCandidate {
+        candidate: PeerCandidate::new(ConnectionInterface::Iroh, endpoint_id.clone()),
+        target: ResolvedTarget::Iroh(endpoint_id),
+    });
+    candidates.sort_by_key(|candidate| candidate.candidate.priority);
+    true
 }
 
 pub(super) async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
@@ -889,6 +969,9 @@ pub(super) async fn race_connect_and_handshake(
     let has_lan = candidates
         .iter()
         .any(|candidate| candidate.candidate.interface == ConnectionInterface::Lan);
+    let has_iroh = candidates
+        .iter()
+        .any(|candidate| candidate.candidate.interface == ConnectionInterface::Iroh);
     let (tx, mut rx) = mpsc::channel(candidates.len().max(1));
     let mut tasks = Vec::with_capacity(candidates.len());
 
@@ -897,11 +980,7 @@ pub(super) async fn race_connect_and_handshake(
         let hostname = hostname.to_string();
         let identity = identity.clone();
         let settings = settings.clone();
-        let delay = if has_lan && candidate.candidate.interface == ConnectionInterface::Tailscale {
-            Duration::from_millis(250)
-        } else {
-            Duration::ZERO
-        };
+        let delay = candidate_delay(candidate.candidate.interface, has_lan, has_iroh);
         tasks.push(tokio::spawn(async move {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
@@ -909,13 +988,7 @@ pub(super) async fn race_connect_and_handshake(
             let started = tokio::time::Instant::now();
             let result = timeout(
                 HANDSHAKE_TIMEOUT,
-                connect_and_handshake(
-                    candidate.socket_addr,
-                    &hostname,
-                    &identity,
-                    &settings,
-                    candidate.candidate.interface,
-                ),
+                connect_and_handshake(&candidate.target, &hostname, &identity, &settings),
             )
             .await
             .map_err(|_| "handshake timed out".to_string())
@@ -939,39 +1012,104 @@ pub(super) async fn race_connect_and_handshake(
             Err(error) => errors.push(format!(
                 "{} {}: {error}",
                 candidate.candidate.interface.as_str(),
-                candidate.socket_addr
+                candidate.target
             )),
         }
     }
     Err(errors.join("; "))
 }
 
+fn candidate_delay(interface: ConnectionInterface, has_lan: bool, has_iroh: bool) -> Duration {
+    match interface {
+        ConnectionInterface::Lan => Duration::ZERO,
+        ConnectionInterface::Iroh if has_lan => Duration::from_millis(150),
+        ConnectionInterface::Iroh => Duration::ZERO,
+        ConnectionInterface::Tailscale if has_lan => Duration::from_millis(300),
+        ConnectionInterface::Tailscale if has_iroh => Duration::from_millis(150),
+        ConnectionInterface::Tailscale => Duration::ZERO,
+    }
+}
+
 /// One-shot connect + handshake.  Returns an authenticated stream.
 async fn connect_and_handshake(
-    addr: SocketAddr,
+    target: &ResolvedTarget,
     hostname: &str,
     identity: &DeviceIdentity,
     settings: &Arc<Mutex<crypto::Settings>>,
-    interface: ConnectionInterface,
 ) -> Result<secure::SecureConnection, Box<dyn std::error::Error + Send + Sync>> {
-    let expected_key = {
+    let (expected_key, mode) = {
         let settings = settings.lock().await;
-        settings
-            .trusted_peer_keys
-            .get(hostname)
-            .cloned()
-            .ok_or_else(|| format!("Peer {hostname} is not paired"))?
+        (
+            settings
+                .trusted_peer_keys
+                .get(hostname)
+                .cloned()
+                .ok_or_else(|| format!("Peer {hostname} is not paired"))?,
+            settings.connection_mode.clone(),
+        )
     };
     let expected_key = secure::decode_trusted_key(&expected_key)?;
-    let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(&addr)).await??;
-    secure::connect(
-        stream,
-        identity,
-        local_peer_identity(interface.as_str()),
-        hostname,
-        &expected_key,
-    )
-    .await
+    if matches!(target, ResolvedTarget::Iroh(_)) && mode != "auto" {
+        return Err(std::io::Error::other("Iroh is only available in automatic mode").into());
+    }
+    let connection = match target {
+        ResolvedTarget::Tcp(address) => {
+            let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(address)).await??;
+            secure::connect(
+                stream,
+                identity,
+                local_peer_identity(&mode),
+                hostname,
+                &expected_key,
+            )
+            .await?
+        }
+        ResolvedTarget::Iroh(endpoint_id) => {
+            let endpoint = iroh::endpoint().await.map_err(std::io::Error::other)?;
+            let stream = endpoint
+                .connect(endpoint_id)
+                .await
+                .map_err(std::io::Error::other)?;
+            secure::connect(
+                stream,
+                identity,
+                local_peer_identity(&mode),
+                hostname,
+                &expected_key,
+            )
+            .await?
+        }
+    };
+
+    if let ResolvedTarget::Iroh(endpoint_id) = target {
+        let claimed = connection
+            .peer_identity()
+            .iroh_endpoint_id
+            .as_deref()
+            .ok_or_else(|| {
+                std::io::Error::other("Peer did not bind its Noise identity to an Iroh endpoint")
+            })?;
+        let claimed = tailsync_core::iroh_transport::canonical_endpoint_id(claimed)
+            .map_err(std::io::Error::other)?;
+        if &claimed != endpoint_id {
+            return Err(std::io::Error::other(
+                "Peer Iroh endpoint does not match its Noise identity",
+            )
+            .into());
+        }
+    }
+
+    if let Some(endpoint_id) = &connection.peer_identity().iroh_endpoint_id {
+        if let Err(error) =
+            settings
+                .lock()
+                .await
+                .remember_peer_address(hostname, "iroh", endpoint_id)
+        {
+            warn!("Could not remember Iroh endpoint for {hostname}: {error}");
+        }
+    }
+    Ok(connection)
 }
 
 // ═══════════════════════════════════════════════════════════════════

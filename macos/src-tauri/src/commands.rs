@@ -168,6 +168,11 @@ pub async fn restore_entry(
                 info!("write_image failed for entry {} — using raw CF_DIB", id);
                 let bmp_dib = rgba_to_dib(rgba, w, h);
                 if bmp_dib.is_empty() {
+                    state
+                        .sync_engine
+                        .lock()
+                        .await
+                        .remove_image_shadow_filter(data);
                     return Err("DIB encode failed".into());
                 }
                 #[cfg(target_os = "windows")]
@@ -179,7 +184,14 @@ pub async fn restore_entry(
                     );
                 }
                 #[cfg(not(target_os = "windows"))]
-                return Err("write_image failed and no fallback on this platform".into());
+                {
+                    state
+                        .sync_engine
+                        .lock()
+                        .await
+                        .remove_image_shadow_filter(data);
+                    return Err("write_image failed and no fallback on this platform".into());
+                }
             }
         }
     } else if entry_type == "file" {
@@ -210,9 +222,10 @@ pub async fn restore_entry(
             sync.add_shadow_filter(&text);
         }
 
-        clipboard
-            .write_text(text.clone())
-            .map_err(|e| format!("Clipboard text write failed: {}", e))?;
+        if let Err(error) = clipboard.write_text(text.clone()) {
+            state.sync_engine.lock().await.remove_shadow_filter(&text);
+            return Err(format!("Clipboard text write failed: {}", error));
+        }
 
         info!(
             "Restored entry {} to clipboard ({} chars)",
@@ -379,6 +392,7 @@ pub async fn update_settings(
     let history_limit = new_settings.history_limit as i64;
     let storage_quota_bytes = new_settings.storage_quota_bytes;
     let mode_changed = settings.connection_mode != new_settings.connection_mode;
+    let connection_mode = new_settings.connection_mode.clone();
     new_settings.save().map_err(|e| e.to_string())?;
     *settings = new_settings;
     drop(settings);
@@ -387,6 +401,7 @@ pub async fn update_settings(
     if mode_changed {
         state.pool.lock().await.disconnect_all();
         network::clear_peer_cache().await;
+        network::refresh_iroh_for_mode(&connection_mode).await;
     }
     Ok(())
 }

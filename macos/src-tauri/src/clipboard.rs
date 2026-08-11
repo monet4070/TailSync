@@ -944,7 +944,7 @@ fn pack_image_data(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
 
 async fn shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) -> bool {
     let mut sync = sync_engine.lock().await;
-    if sync.consume_shadow_filter(hash) {
+    if sync.contains_shadow_filter(hash) {
         debug!("Text shadow-filter hit: {}", &hash[..8]);
         true
     } else {
@@ -954,7 +954,7 @@ async fn shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) ->
 
 async fn image_shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) -> bool {
     let mut sync = sync_engine.lock().await;
-    if sync.consume_image_shadow_filter(hash) {
+    if sync.contains_image_shadow_filter(hash) {
         debug!("Image shadow-filter hit: {}", &hash[..8]);
         true
     } else {

@@ -2,6 +2,14 @@ import SwiftUI
 import AppKit
 import UserNotifications
 
+private func routeInterfaceLabel(_ interface: String) -> String {
+    switch interface {
+    case "lan": return "LAN"
+    case "iroh": return "Iroh"
+    default: return "Tailscale"
+    }
+}
+
 private actor SettingsSaveCoordinator {
     private enum SaveResult: Sendable {
         case success(AppSettings)
@@ -563,8 +571,11 @@ struct SettingsView: View {
                     Text(route.address.isEmpty ? Loc.t("settings.pairedOffline") : route.address)
                         .font(.caption.monospaced())
                         .foregroundColor(palette.secondaryColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(route.address)
                     if let interface = route.interface {
-                        Text("· \(interface == "lan" ? "LAN" : "Tailscale")")
+                        Text("· \(routeInterfaceLabel(interface))")
                             .font(.caption2.weight(.medium))
                             .foregroundColor(palette.accentColor)
                     }

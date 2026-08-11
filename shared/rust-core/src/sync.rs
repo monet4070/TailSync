@@ -31,7 +31,6 @@ pub fn file_batch_admission_lock() -> &'static tokio::sync::Mutex<()> {
 }
 
 struct ShadowEntry {
-    remaining: u16,
     expires_at: Instant,
 }
 
@@ -50,7 +49,6 @@ impl ShadowFilter {
         let now = Instant::now();
         self.prune(now);
         if let Some(entry) = self.entries.get_mut(&hash) {
-            entry.remaining = entry.remaining.saturating_add(1);
             entry.expires_at = now + SHADOW_FILTER_TTL;
             return;
         }
@@ -67,25 +65,22 @@ impl ShadowFilter {
         self.entries.insert(
             hash,
             ShadowEntry {
-                remaining: 1,
                 expires_at: now + SHADOW_FILTER_TTL,
             },
         );
     }
 
-    fn consume(&mut self, hash: &str) -> bool {
+    /// Shadow entries intentionally remain sticky for the full TTL. Clipboard
+    /// backends can emit several events for one programmatic write, and every
+    /// one of those echoes must be suppressed. The accepted trade-off is that
+    /// a user copying identical content during the TTL is suppressed as well.
+    fn contains(&mut self, hash: &str) -> bool {
         self.prune(Instant::now());
-        let should_remove = match self.entries.get_mut(hash) {
-            Some(entry) => {
-                entry.remaining -= 1;
-                entry.remaining == 0
-            }
-            None => return false,
-        };
-        if should_remove {
-            self.entries.remove(hash);
-        }
-        true
+        self.entries.contains_key(hash)
+    }
+
+    fn remove(&mut self, hash: &str) -> bool {
+        self.entries.remove(hash).is_some()
     }
 
     fn prune(&mut self, now: Instant) {
@@ -445,6 +440,59 @@ struct FileReceiveState {
     writer: BufWriter<File>,
     hasher: blake3::Hasher,
     received: u64,
+    requires_full_hash: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingReceivedFile {
+    transfer_id: TransferId,
+    meta: FileMeta,
+    file: ReceivedFile,
+    hash_verified: bool,
+}
+
+impl PendingReceivedFile {
+    pub fn transfer_id(&self) -> TransferId {
+        self.transfer_id
+    }
+
+    pub fn batch_id(&self) -> Option<TransferId> {
+        self.meta.batch.map(|batch| batch.batch_id)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.file.path
+    }
+
+    pub fn verify_hash(mut self) -> Result<Self, String> {
+        if self.hash_verified {
+            return Ok(self);
+        }
+        let computed = hash_source_file(&self.file.path)?;
+        if computed != self.meta.hash {
+            return Err(format!(
+                "whole-file checksum mismatch for {}",
+                self.meta.name
+            ));
+        }
+        self.file.hash = computed;
+        self.hash_verified = true;
+        Ok(self)
+    }
+}
+
+#[derive(Debug)]
+pub struct FileReceiveProgress {
+    pub transfer_id: TransferId,
+    pub next_offset: u64,
+    pub completed: Option<PendingReceivedFile>,
+}
+
+#[derive(Debug, Clone)]
+struct CompletedTransfer {
+    size: u64,
+    hash: String,
+    completed_at: i64,
 }
 
 struct IncomingBatch {
@@ -468,9 +516,10 @@ pub struct SyncEngine {
     seen_messages: HashMap<(String, MessageId), i64>,
     /// Active file receives: authenticated peer + transfer ID → receive state.
     active_receives: HashMap<(String, TransferId), FileReceiveState>,
-    completed_transfers: HashMap<(String, TransferId), (u64, i64)>,
+    completed_transfers: HashMap<(String, TransferId), CompletedTransfer>,
     incoming_batches: HashMap<(String, TransferId), IncomingBatch>,
     cancelled_batches: HashSet<(String, TransferId)>,
+    completed_batches: HashMap<(String, TransferId), i64>,
     clipboard_generation: u64,
     /// Shadow-packet filter for text (echo suppression)
     shadow_filter: ShadowFilter,
@@ -493,6 +542,7 @@ impl SyncEngine {
             completed_transfers: HashMap::new(),
             incoming_batches: HashMap::new(),
             cancelled_batches: HashSet::new(),
+            completed_batches: HashMap::new(),
             clipboard_generation: 0,
             shadow_filter: ShadowFilter::new(),
             image_shadow_filter: ShadowFilter::new(),
@@ -524,7 +574,7 @@ impl SyncEngine {
         let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
         self.shadow_filter.insert(hash.clone());
         if let Err(error) = self.platform()?.write_text(text) {
-            self.shadow_filter.consume(&hash);
+            self.shadow_filter.remove(&hash);
             return Err(error);
         }
         Ok(())
@@ -562,7 +612,7 @@ impl SyncEngine {
             .platform()?
             .write_image(image.width, image.height, image.rgba)
         {
-            self.image_shadow_filter.consume(&hash);
+            self.image_shadow_filter.remove(&hash);
             return Err(error);
         }
         Ok((image.width, image.height))
@@ -703,10 +753,16 @@ impl SyncEngine {
 
     pub fn finish_file_batch(&mut self, source: &str, batch_id: TransferId) -> Result<(), String> {
         let key = (source.to_string(), batch_id);
-        let batch = self
-            .incoming_batches
-            .get(&key)
-            .ok_or_else(|| "File batch manifest is not available".to_string())?;
+        let now = chrono::Utc::now().timestamp();
+        self.completed_batches.retain(|_, completed_at| {
+            now.saturating_sub(*completed_at) <= SEEN_MESSAGE_RETENTION_SECONDS
+        });
+        let Some(batch) = self.incoming_batches.get(&key) else {
+            if self.completed_batches.contains_key(&key) || self.cancelled_batches.contains(&key) {
+                return Ok(());
+            }
+            return Err("File batch manifest is not available".to_string());
+        };
         let files = batch
             .files
             .clone()
@@ -729,6 +785,7 @@ impl SyncEngine {
                 source.to_string(),
             );
         }
+        self.completed_batches.insert(key, now);
         Ok(())
     }
 
@@ -797,7 +854,7 @@ impl SyncEngine {
         meta: FileMeta,
         file_path: &Path,
         source: String,
-    ) -> Result<(TransferId, u64), String> {
+    ) -> Result<FileReceiveProgress, String> {
         let transfer_id = meta.transfer_id.unwrap_or(TransferId([0; 16]));
         let key = (source.clone(), transfer_id);
         if let Some(batch_ref) = meta.batch {
@@ -830,19 +887,35 @@ impl SyncEngine {
                     && existing.hash == meta.hash
                     && existing.path.is_file()
                 {
-                    return Ok((transfer_id, existing.size));
+                    return Ok(FileReceiveProgress {
+                        transfer_id,
+                        next_offset: existing.size,
+                        completed: None,
+                    });
                 }
             }
         }
         let now = chrono::Utc::now().timestamp();
-        self.completed_transfers
-            .retain(|_, (_, at)| now.saturating_sub(*at) <= SEEN_MESSAGE_RETENTION_SECONDS);
-        if let Some((size, _)) = self.completed_transfers.get(&key) {
-            return Ok((transfer_id, *size));
+        self.completed_transfers.retain(|_, completed| {
+            now.saturating_sub(completed.completed_at) <= SEEN_MESSAGE_RETENTION_SECONDS
+        });
+        if let Some(completed) = self.completed_transfers.get(&key) {
+            if completed.size == meta.size && completed.hash == meta.hash {
+                return Ok(FileReceiveProgress {
+                    transfer_id,
+                    next_offset: completed.size,
+                    completed: None,
+                });
+            }
+            self.completed_transfers.remove(&key);
         }
         if let Some(state) = self.active_receives.get(&key) {
             if state.meta.hash == meta.hash && state.meta.size == meta.size {
-                return Ok((transfer_id, state.received));
+                return Ok(FileReceiveProgress {
+                    transfer_id,
+                    next_offset: state.received,
+                    completed: None,
+                });
             }
             return Err("transfer ID was reused with different metadata".to_string());
         }
@@ -906,22 +979,7 @@ impl SyncEngine {
             file.set_len(0).map_err(|error| error.to_string())?;
         }
         let received = file.metadata().map_err(|error| error.to_string())?.len();
-        let mut hasher = blake3::Hasher::new();
-        if received > 0 {
-            file.seek(SeekFrom::Start(0))
-                .map_err(|error| error.to_string())?;
-            let mut reader = BufReader::new(&file);
-            let mut buffer = vec![0u8; 64 * 1024];
-            loop {
-                let count = reader
-                    .read(&mut buffer)
-                    .map_err(|error| error.to_string())?;
-                if count == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..count]);
-            }
-        }
+        let requires_full_hash = received > 0;
         file.seek(SeekFrom::Start(received))
             .map_err(|error| error.to_string())?;
         let writer = BufWriter::with_capacity(FILE_CHUNK_SIZE, file);
@@ -931,8 +989,9 @@ impl SyncEngine {
             final_path,
             state_path,
             writer,
-            hasher,
+            hasher: blake3::Hasher::new(),
             received,
+            requires_full_hash,
         };
         persist_transfer_state(&state, &source)?;
 
@@ -947,21 +1006,32 @@ impl SyncEngine {
                 .active_receives
                 .remove(&key)
                 .ok_or_else(|| "completed transfer state disappeared".to_string())?;
-            self.finish_file_receive(state, &source).await?;
-            self.completed_transfers
-                .insert(key, (received, chrono::Utc::now().timestamp()));
+            let completed = self.finish_file_receive(state, &source).await?;
+            return Ok(FileReceiveProgress {
+                transfer_id,
+                next_offset: received,
+                completed,
+            });
         }
-        Ok((transfer_id, received))
+        Ok(FileReceiveProgress {
+            transfer_id,
+            next_offset: received,
+            completed: None,
+        })
     }
 
     pub async fn handle_resumable_file_chunk(
         &mut self,
         chunk: &FileChunkPayload,
         source: String,
-    ) -> Result<u64, String> {
+    ) -> Result<FileReceiveProgress, String> {
         let key = (source.clone(), chunk.transfer_id);
-        if let Some((size, _)) = self.completed_transfers.get(&key) {
-            return Ok(*size);
+        if let Some(completed) = self.completed_transfers.get(&key) {
+            return Ok(FileReceiveProgress {
+                transfer_id: chunk.transfer_id,
+                next_offset: completed.size,
+                completed: None,
+            });
         }
         let state = self
             .active_receives
@@ -969,7 +1039,11 @@ impl SyncEngine {
             .ok_or_else(|| "file transfer metadata is not available".to_string())?;
 
         if chunk.offset != state.received {
-            return Ok(state.received);
+            return Ok(FileReceiveProgress {
+                transfer_id: chunk.transfer_id,
+                next_offset: state.received,
+                completed: None,
+            });
         }
         if state.received.saturating_add(chunk.data.len() as u64) > state.meta.size {
             return Err(format!(
@@ -1001,11 +1075,18 @@ impl SyncEngine {
                 .active_receives
                 .remove(&key)
                 .ok_or_else(|| "completed transfer state disappeared".to_string())?;
-            self.finish_file_receive(state, &source).await?;
-            self.completed_transfers
-                .insert(key, (next_offset, chrono::Utc::now().timestamp()));
+            let completed = self.finish_file_receive(state, &source).await?;
+            return Ok(FileReceiveProgress {
+                transfer_id: chunk.transfer_id,
+                next_offset,
+                completed,
+            });
         }
-        Ok(next_offset)
+        Ok(FileReceiveProgress {
+            transfer_id: chunk.transfer_id,
+            next_offset,
+            completed: None,
+        })
     }
 
     /// Compatibility path for peers that send unframed v2 file chunks.
@@ -1029,12 +1110,12 @@ impl SyncEngine {
         &mut self,
         state: FileReceiveState,
         source: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Option<PendingReceivedFile>, String> {
         let mut writer = state.writer;
         writer.flush().map_err(|error| error.to_string())?;
         drop(writer);
         let computed = state.hasher.finalize().to_hex().to_string();
-        if computed != state.meta.hash {
+        if !state.requires_full_hash && computed != state.meta.hash {
             let _ = fs::remove_file(&state.tmp_path);
             if let Some(path) = state.state_path {
                 let _ = fs::remove_file(path);
@@ -1049,32 +1130,68 @@ impl SyncEngine {
         if let Some(path) = state.state_path {
             let _ = fs::remove_file(path);
         }
+        let pending = PendingReceivedFile {
+            transfer_id: state.meta.transfer_id.unwrap_or(TransferId([0; 16])),
+            file: ReceivedFile {
+                name: state.meta.name.clone(),
+                size: state.meta.size,
+                hash: if state.requires_full_hash {
+                    state.meta.hash.clone()
+                } else {
+                    computed
+                },
+                path: state.final_path,
+            },
+            hash_verified: !state.requires_full_hash,
+            meta: state.meta,
+        };
+        if pending.hash_verified {
+            self.commit_received_file(source, pending)?;
+            Ok(None)
+        } else {
+            info!(
+                "File receive complete: {} ({} bytes, awaiting resumed-file verification)",
+                pending.meta.name, pending.meta.size
+            );
+            Ok(Some(pending))
+        }
+    }
+
+    pub fn commit_received_file(
+        &mut self,
+        source: &str,
+        pending: PendingReceivedFile,
+    ) -> Result<(), String> {
+        if !pending.hash_verified {
+            return Err("Received file must be hash-verified before commit".to_string());
+        }
         info!(
             "File receive complete: {} ({} bytes, hash verified)",
-            state.meta.name, state.meta.size
+            pending.meta.name, pending.meta.size
         );
-        let received_file = ReceivedFile {
-            name: state.meta.name.clone(),
-            size: state.meta.size,
-            hash: computed,
-            path: state.final_path,
-        };
-        if let Some(batch_ref) = state.meta.batch {
+        let PendingReceivedFile {
+            transfer_id,
+            meta,
+            file: received_file,
+            ..
+        } = pending;
+        if let Some(batch_ref) = meta.batch {
             let batch = self
                 .incoming_batches
                 .get_mut(&(source.to_string(), batch_ref.batch_id))
                 .ok_or_else(|| "File batch state disappeared before completion".to_string())?;
-            let slot = batch
-                .files
+            let mut files = batch.files.clone();
+            let slot = files
                 .get_mut(usize::from(batch_ref.index))
                 .ok_or_else(|| "File batch index is out of range".to_string())?;
             *slot = Some(received_file);
             let persisted = PersistedIncomingBatch {
                 source: batch.source.clone(),
                 manifest: batch.manifest.clone(),
-                files: batch.files.clone(),
+                files: files.clone(),
             };
             persist_incoming_batch(&batch.manifest_path, &persisted)?;
+            batch.files = files;
             let completed_files = batch.files.iter().filter(|file| file.is_some()).count();
             let completed_bytes = batch
                 .files
@@ -1086,7 +1203,7 @@ impl SyncEngine {
                     batch_id: batch_ref.batch_id.as_hex(),
                     direction: "receiving".to_string(),
                     device: source.to_string(),
-                    current_file: state.meta.name,
+                    current_file: meta.name.clone(),
                     completed_files,
                     total_files: batch.manifest.files.len(),
                     transferred_bytes: completed_bytes,
@@ -1096,7 +1213,19 @@ impl SyncEngine {
         } else if let Some(platform) = self.platform.as_ref() {
             platform.files_received(None, vec![received_file], 1, true, true, source.to_string());
         }
+        self.completed_transfers.insert(
+            (source.to_string(), transfer_id),
+            CompletedTransfer {
+                size: meta.size,
+                hash: meta.hash,
+                completed_at: chrono::Utc::now().timestamp(),
+            },
+        );
         Ok(())
+    }
+
+    pub fn discard_received_file(&self, source: &str, batch_id: Option<TransferId>) {
+        self.clear_file_progress(batch_id, Some(source));
     }
 
     /// Cancel all active receives from a peer and clean up their temp state.
@@ -1165,12 +1294,22 @@ impl SyncEngine {
         self.image_shadow_filter.insert(hash);
     }
 
-    pub fn consume_shadow_filter(&mut self, hash: &str) -> bool {
-        self.shadow_filter.consume(hash)
+    pub fn contains_shadow_filter(&mut self, hash: &str) -> bool {
+        self.shadow_filter.contains(hash)
     }
 
-    pub fn consume_image_shadow_filter(&mut self, hash: &str) -> bool {
-        self.image_shadow_filter.consume(hash)
+    pub fn contains_image_shadow_filter(&mut self, hash: &str) -> bool {
+        self.image_shadow_filter.contains(hash)
+    }
+
+    pub fn remove_shadow_filter(&mut self, text: &str) {
+        let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+        self.shadow_filter.remove(&hash);
+    }
+
+    pub fn remove_image_shadow_filter(&mut self, data: &[u8]) {
+        let hash = blake3::hash(data).to_hex().to_string();
+        self.image_shadow_filter.remove(&hash);
     }
 
     // ── Internal ─────────────────────────────────────────────────
@@ -1288,11 +1427,26 @@ fn restore_persisted_received_file(
 
 pub fn cleanup_expired_transfers() {
     let incoming = crate::db::get_incoming_dir();
-    let Ok(entries) = fs::read_dir(&incoming) else {
+    cleanup_expired_transfers_in(
+        &incoming,
+        Duration::from_secs(INCOMPLETE_TRANSFER_RETENTION_SECONDS),
+    );
+}
+
+fn cleanup_expired_transfers_in(incoming: &Path, retention: Duration) {
+    let Ok(entries) = fs::read_dir(incoming) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        // Only the incoming root is inspected. Managed subdirectories such as
+        // clipboard-files have their own lifecycle and must never be touched.
+        if !metadata.is_file() {
+            continue;
+        }
         let file_name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -1300,17 +1454,13 @@ pub fn cleanup_expired_transfers() {
         let is_partial = file_name.ends_with(".part")
             || file_name.ends_with(".resume.json")
             || file_name.ends_with(".batch.json");
-        if !is_partial {
-            continue;
-        }
-        let expired = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
+        let expired = metadata
+            .modified()
             .ok()
             .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age.as_secs() > INCOMPLETE_TRANSFER_RETENTION_SECONDS);
+            .is_some_and(|age| age > retention);
         if expired {
-            if file_name.ends_with(".batch.json") {
+            if is_partial && file_name.ends_with(".batch.json") {
                 if let Ok(data) = fs::read(&path) {
                     if let Ok(batch) = serde_json::from_slice::<PersistedIncomingBatch>(&data) {
                         for (index, saved) in batch.files.iter().enumerate() {
@@ -1321,7 +1471,7 @@ pub fn cleanup_expired_transfers() {
                                 continue;
                             };
                             if let Some(file) =
-                                restore_persisted_received_file(saved, expected, &incoming)
+                                restore_persisted_received_file(saved, expected, incoming)
                             {
                                 let _ = fs::remove_file(file.path);
                             }
@@ -1329,6 +1479,9 @@ pub fn cleanup_expired_transfers() {
                     }
                 }
             }
+            // Non-partial root files only exist briefly between a successful
+            // rename and history import. Once stale, they are orphaned
+            // plaintext left by an import failure or process crash.
             let _ = fs::remove_file(path);
         }
     }
@@ -1345,6 +1498,7 @@ mod tests {
     use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant, SystemTime};
 
     #[derive(Debug)]
     struct TestDirectory(PathBuf);
@@ -1627,6 +1781,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_file_batch_is_idempotent() {
+        let directory = TestDirectory::new("batch-idempotent");
+        let manifest = manifest_with_sizes(&[0]);
+        let platform = Arc::new(TestPlatform::default());
+        let mut sync = SyncEngine::new();
+        sync.set_platform(platform.clone());
+        sync.begin_file_batch(manifest.clone(), "peer".to_string(), directory.path())
+            .unwrap();
+        receive_empty_file(&mut sync, &manifest, 0, directory.path(), "peer").await;
+
+        sync.finish_file_batch("peer", manifest.batch_id).unwrap();
+        sync.finish_file_batch("peer", manifest.batch_id).unwrap();
+        assert_eq!(platform.received().len(), 1);
+    }
+
+    #[tokio::test]
     async fn newer_clipboard_generation_prevents_old_batch_activation() {
         let directory = TestDirectory::new("superseded-batch");
         let manifest = manifest_with_sizes(&[0]);
@@ -1738,14 +1908,15 @@ mod tests {
             .is_file());
 
         let mut restored = SyncEngine::new();
-        let (_, offset) = restored
+        let offset = restored
             .begin_file_receive(
                 meta,
                 &directory.path().join("different-name.bin"),
                 "peer".to_string(),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .next_offset;
         assert_eq!(offset, 6);
     }
 
@@ -1761,18 +1932,30 @@ mod tests {
     }
 
     #[test]
-    fn shadow_filter_counts_duplicates_and_stays_bounded() {
+    fn shadow_filter_stays_sticky_and_bounded() {
         let mut filter = ShadowFilter::new();
         filter.insert("same".into());
         filter.insert("same".into());
-        assert!(filter.consume("same"));
-        assert!(filter.consume("same"));
-        assert!(!filter.consume("same"));
+        assert!(filter.contains("same"));
+        assert!(filter.contains("same"));
+        assert_eq!(filter.entries.len(), 1);
 
         for index in 0..(SHADOW_FILTER_MAX_ENTRIES + 20) {
             filter.insert(format!("hash-{index}"));
         }
         assert_eq!(filter.entries.len(), SHADOW_FILTER_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn shadow_filter_remove_rolls_back_and_expired_entries_miss() {
+        let mut filter = ShadowFilter::new();
+        filter.insert("rollback".into());
+        assert!(filter.remove("rollback"));
+        assert!(!filter.contains("rollback"));
+
+        filter.insert("expired".into());
+        filter.entries.get_mut("expired").unwrap().expires_at = Instant::now();
+        assert!(!filter.contains("expired"));
     }
 
     #[tokio::test]
@@ -1863,21 +2046,23 @@ mod tests {
                 .begin_file_receive(meta.clone(), &final_path, "peer".into())
                 .await
                 .unwrap()
-                .1,
+                .next_offset,
             0
         );
         assert_eq!(
             initial
                 .handle_resumable_file_chunk(&first, "peer".into())
                 .await
-                .unwrap(),
+                .unwrap()
+                .next_offset,
             6
         );
         assert_eq!(
             initial
                 .handle_resumable_file_chunk(&first, "peer".into())
                 .await
-                .unwrap(),
+                .unwrap()
+                .next_offset,
             6
         );
         drop(initial);
@@ -1888,7 +2073,7 @@ mod tests {
                 .begin_file_receive(meta, &directory.join("different-name.bin"), "peer".into())
                 .await
                 .unwrap()
-                .1,
+                .next_offset,
             6
         );
         drop(restored);
@@ -1899,5 +2084,208 @@ mod tests {
             6
         );
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn completed_transfer_shortcut_requires_matching_hash() {
+        let directory = TestDirectory::new("completed-transfer-hash");
+        let transfer_id = TransferId([71; 16]);
+        let original = b"original";
+        let original_meta = FileMeta {
+            transfer_id: Some(transfer_id),
+            name: "original.bin".into(),
+            size: original.len() as u64,
+            hash: blake3::hash(original).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: None,
+        };
+        let mut sync = SyncEngine::new();
+        sync.begin_file_receive(
+            original_meta,
+            &directory.path().join("original.bin"),
+            "peer".into(),
+        )
+        .await
+        .unwrap();
+        sync.handle_resumable_file_chunk(
+            &FileChunkPayload {
+                transfer_id,
+                offset: 0,
+                data: original.to_vec(),
+            },
+            "peer".into(),
+        )
+        .await
+        .unwrap();
+
+        let replacement = b"replaced";
+        let progress = sync
+            .begin_file_receive(
+                FileMeta {
+                    transfer_id: Some(transfer_id),
+                    name: "replacement.bin".into(),
+                    size: replacement.len() as u64,
+                    hash: blake3::hash(replacement).to_hex().to_string(),
+                    chunk_size: FILE_CHUNK_SIZE as u32,
+                    batch: None,
+                },
+                &directory.path().join("replacement.bin"),
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(progress.next_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn resumed_file_is_verified_before_commit() {
+        let directory = TestDirectory::new("resumed-file-verification");
+        let transfer_id = TransferId([72; 16]);
+        let data = b"first-second";
+        let meta = FileMeta {
+            transfer_id: Some(transfer_id),
+            name: "received.bin".into(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: None,
+        };
+        let mut initial = SyncEngine::new();
+        initial
+            .begin_file_receive(
+                meta.clone(),
+                &directory.path().join("received.bin"),
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        initial
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 0,
+                    data: b"first-".to_vec(),
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        initial.suspend_receive("peer");
+
+        let platform = Arc::new(TestPlatform::default());
+        let mut restored = SyncEngine::new();
+        restored.set_platform(platform.clone());
+        let progress = restored
+            .begin_file_receive(meta, &directory.path().join("different.bin"), "peer".into())
+            .await
+            .unwrap();
+        assert_eq!(progress.next_offset, 6);
+        let progress = restored
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 6,
+                    data: b"second".to_vec(),
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        assert!(platform.received().is_empty());
+        let verified = progress.completed.unwrap().verify_hash().unwrap();
+        restored.commit_received_file("peer", verified).unwrap();
+        assert_eq!(platform.received().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn corrupt_resumed_file_fails_deferred_verification() {
+        let directory = TestDirectory::new("corrupt-resumed-file");
+        let transfer_id = TransferId([73; 16]);
+        let expected = b"first-second";
+        let meta = FileMeta {
+            transfer_id: Some(transfer_id),
+            name: "received.bin".into(),
+            size: expected.len() as u64,
+            hash: blake3::hash(expected).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: None,
+        };
+        let mut initial = SyncEngine::new();
+        initial
+            .begin_file_receive(
+                meta.clone(),
+                &directory.path().join("received.bin"),
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        initial
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 0,
+                    data: b"wrong-".to_vec(),
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        initial.suspend_receive("peer");
+
+        let mut restored = SyncEngine::new();
+        restored
+            .begin_file_receive(meta, &directory.path().join("different.bin"), "peer".into())
+            .await
+            .unwrap();
+        let progress = restored
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 6,
+                    data: b"second".to_vec(),
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        let pending = progress.completed.unwrap();
+        let path = pending.path().to_path_buf();
+        assert!(pending
+            .verify_hash()
+            .unwrap_err()
+            .contains("checksum mismatch"));
+        assert!(path.is_file());
+    }
+
+    #[test]
+    fn expired_transfer_cleanup_removes_orphans_but_preserves_recent_and_nested_files() {
+        let directory = TestDirectory::new("expired-transfer-cleanup");
+        let old_plaintext = directory.path().join("hash-old.txt");
+        let recent_plaintext = directory.path().join("hash-recent.txt");
+        let old_partial = directory.path().join("transfer.part");
+        let nested_directory = directory.path().join("clipboard-files");
+        let nested_file = nested_directory.join("managed.txt");
+        std::fs::create_dir(&nested_directory).unwrap();
+        for path in [
+            &old_plaintext,
+            &recent_plaintext,
+            &old_partial,
+            &nested_file,
+        ] {
+            std::fs::write(path, b"data").unwrap();
+        }
+        let old = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        for path in [&old_plaintext, &old_partial, &nested_file] {
+            let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+
+        super::cleanup_expired_transfers_in(directory.path(), Duration::from_secs(60 * 60));
+
+        assert!(!old_plaintext.exists());
+        assert!(!old_partial.exists());
+        assert!(recent_plaintext.exists());
+        assert!(nested_file.exists());
     }
 }

@@ -56,7 +56,7 @@ struct StoredIdentity {
     public_key: String,
 }
 
-enum CreateOutcome {
+pub(crate) enum CreateOutcome {
     Created,
     AlreadyExists,
 }
@@ -127,39 +127,7 @@ impl DeviceIdentity {
     }
 
     fn load(path: &Path) -> Result<Self, IdentityError> {
-        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                IdentityError::NotFound
-            } else {
-                IdentityError::io("inspecting the identity file", error)
-            }
-        })?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(IdentityError::Corrupt(
-                "the identity path is not a regular file".to_string(),
-            ));
-        }
-        restrict_private_file(path)?;
-
-        let encrypted = std::fs::read(path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                IdentityError::NotFound
-            } else {
-                IdentityError::io("reading the identity file", error)
-            }
-        })?;
-        if encrypted.is_empty() {
-            return Err(IdentityError::Corrupt(
-                "the encrypted identity file is empty".to_string(),
-            ));
-        }
-        let plaintext = crypto::decrypt(&encrypted).map_err(|error| {
-            if crypto::is_key_store_error(error.as_ref()) {
-                IdentityError::Crypto(error.to_string())
-            } else {
-                IdentityError::Corrupt(format!("decryption failed: {error}"))
-            }
-        })?;
+        let plaintext = read_protected_bytes(path)?;
         let stored: StoredIdentity = serde_json::from_slice(&plaintext)
             .map_err(|error| IdentityError::Corrupt(format!("invalid JSON: {error}")))?;
         if stored.version != 1 {
@@ -188,9 +156,7 @@ impl DeviceIdentity {
         };
         let plaintext = serde_json::to_vec(&stored)
             .map_err(|error| IdentityError::Corrupt(format!("serialization failed: {error}")))?;
-        let encrypted = crypto::encrypt(&plaintext)
-            .map_err(|error| IdentityError::Crypto(error.to_string()))?;
-        persist_encrypted_create_only(path, &encrypted)
+        persist_protected_bytes_create_only(path, &plaintext)
     }
 
     fn validate(&self) -> Result<(), IdentityError> {
@@ -201,6 +167,51 @@ impl DeviceIdentity {
         }
         Ok(())
     }
+}
+
+pub(crate) fn read_protected_bytes(path: &Path) -> Result<Vec<u8>, IdentityError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            IdentityError::NotFound
+        } else {
+            IdentityError::io("inspecting the identity file", error)
+        }
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(IdentityError::Corrupt(
+            "the identity path is not a regular file".to_string(),
+        ));
+    }
+    restrict_private_file(path)?;
+
+    let encrypted = std::fs::read(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            IdentityError::NotFound
+        } else {
+            IdentityError::io("reading the identity file", error)
+        }
+    })?;
+    if encrypted.is_empty() {
+        return Err(IdentityError::Corrupt(
+            "the encrypted identity file is empty".to_string(),
+        ));
+    }
+    crypto::decrypt(&encrypted).map_err(|error| {
+        if crypto::is_key_store_error(error.as_ref()) {
+            IdentityError::Crypto(error.to_string())
+        } else {
+            IdentityError::Corrupt(format!("decryption failed: {error}"))
+        }
+    })
+}
+
+pub(crate) fn persist_protected_bytes_create_only(
+    path: &Path,
+    plaintext: &[u8],
+) -> Result<CreateOutcome, IdentityError> {
+    let encrypted =
+        crypto::encrypt(plaintext).map_err(|error| IdentityError::Crypto(error.to_string()))?;
+    persist_encrypted_create_only(path, &encrypted)
 }
 
 fn persist_encrypted_create_only(

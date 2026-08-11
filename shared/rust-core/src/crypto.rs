@@ -294,7 +294,15 @@ impl Settings {
         address: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let address = address.trim();
-        address.parse::<std::net::IpAddr>()?;
+        match mode {
+            "lan" | "tailscale" => {
+                address.parse::<std::net::IpAddr>()?;
+            }
+            "iroh" => {
+                let _ = crate::iroh_transport::canonical_endpoint_id(address)?;
+            }
+            _ => return Err(format!("Unsupported connection mode: {mode}").into()),
+        }
         let Some(public_key) = self.trusted_peer_keys.get(hostname).cloned() else {
             return Ok(false);
         };
@@ -312,9 +320,6 @@ impl Settings {
             self.trusted_peer_addresses.remove(&duplicate);
             self.paired_peer_endpoints.remove(&duplicate);
             self.enabled_peers.remove(&duplicate);
-        }
-        if !matches!(mode, "lan" | "tailscale") {
-            return Err(format!("Unsupported connection mode: {mode}").into());
         }
         let addresses = self
             .trusted_peer_addresses
@@ -349,6 +354,13 @@ fn settings_path() -> PathBuf {
 const DEK_SIZE: usize = 32;
 pub(crate) type DataKey = [u8; DEK_SIZE];
 
+#[cfg(all(not(test), target_os = "macos"))]
+const MACOS_KEYCHAIN_LEGACY_SERVICE: &str = "com.tailsync.app";
+#[cfg(all(not(test), target_os = "macos"))]
+const MACOS_KEYCHAIN_V2_SERVICE: &str = "com.tailsync.app.dek-v2";
+#[cfg(all(not(test), target_os = "macos"))]
+const MACOS_KEYCHAIN_ACCOUNT: &str = "encryption-key";
+
 #[derive(Debug, Error)]
 pub(crate) enum KeyStoreError {
     #[error("encryption key does not exist")]
@@ -357,6 +369,7 @@ pub(crate) enum KeyStoreError {
     AccessDenied(String),
     #[error("encryption key is corrupt: {0}")]
     Corrupt(String),
+    #[cfg(any(test, target_os = "windows"))]
     #[error("encryption key I/O failed while {operation}: {source}")]
     Io {
         operation: &'static str,
@@ -463,8 +476,42 @@ pub(crate) fn get_dek() -> Result<DataKey, KeyStoreError> {
 
     #[cfg(not(test))]
     {
+        #[cfg(feature = "test-support")]
+        if running_under_cargo_test_harness() {
+            return Ok([0x54; DEK_SIZE]);
+        }
         DEK_CACHE.get_or_try_init(&SystemKeyStore)
     }
+}
+
+#[cfg(all(not(test), feature = "test-support"))]
+fn running_under_cargo_test_harness() -> bool {
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    is_cargo_test_harness_executable(&executable)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn is_cargo_test_harness_executable(executable: &std::path::Path) -> bool {
+    let Some(parent) = executable
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+    else {
+        return false;
+    };
+    let Some(name) = executable.file_stem().and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    let Some(hash) = name.strip_prefix("tailsync_lib-") else {
+        return false;
+    };
+
+    // Cargo places libtest executables in target/<profile>/deps and appends a
+    // hexadecimal crate hash. Requiring both guards against accidentally
+    // enabling the test DEK in a normal or `--all-features` application build.
+    parent == "deps" && hash.len() >= 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Verify that the process can load the existing data key or safely create
@@ -501,6 +548,146 @@ fn decode_hex_key(encoded: &str, source: &str) -> Result<DataKey, KeyStoreError>
         KeyStoreError::Corrupt(format!("{source} is not valid hexadecimal: {error}"))
     })?;
     validate_key_bytes(&decoded, source)
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn create_macos_keychain_item(
+    service: &str,
+    account: &str,
+    password: &[u8],
+) -> Result<CreateOutcome, KeyStoreError> {
+    create_macos_keychain_item_in(None, service, account, password)
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn read_macos_keychain_item(service: &str, account: &str) -> Result<DataKey, KeyStoreError> {
+    read_macos_keychain_item_in(None, service, account)
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn read_legacy_macos_keychain_item() -> Result<DataKey, KeyStoreError> {
+    let output = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            MACOS_KEYCHAIN_LEGACY_SERVICE,
+            "-a",
+            MACOS_KEYCHAIN_ACCOUNT,
+            "-w",
+        ])
+        .output()
+        .map_err(|source| {
+            classify_macos_cli_io_error("reading the legacy macOS Keychain", source)
+        })?;
+
+    if output.status.success() {
+        let encoded = std::str::from_utf8(&output.stdout).map_err(|_| {
+            KeyStoreError::Corrupt("the legacy macOS Keychain value is not UTF-8".to_string())
+        })?;
+        return decode_hex_key(encoded, "the legacy macOS Keychain value");
+    }
+
+    match output.status.code() {
+        // The security CLI returns the low byte of the Security.framework OSStatus.
+        Some(44) => Err(KeyStoreError::NotFound), // errSecItemNotFound (-25300)
+        Some(36 | 51 | 128) => Err(KeyStoreError::AccessDenied(command_failure_message(
+            &output,
+        ))),
+        _ => Err(KeyStoreError::Platform {
+            operation: "reading the legacy macOS Keychain",
+            message: command_failure_message(&output),
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_keychain_item_in(
+    keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
+    service: &str,
+    account: &str,
+) -> Result<DataKey, KeyStoreError> {
+    use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
+    use security_framework_sys::base::errSecItemNotFound;
+
+    let mut search = ItemSearchOptions::new();
+    search
+        .class(ItemClass::generic_password())
+        .service(service)
+        .account(account)
+        .load_data(true);
+    if let Some(keychain) = keychain.as_ref() {
+        search.keychains(std::slice::from_ref(keychain));
+    }
+    match search.search() {
+        Ok(results) => {
+            let [SearchResult::Data(stored)] = results.as_slice() else {
+                return Err(KeyStoreError::Corrupt(
+                    "the macOS Keychain returned an unexpected item representation".to_string(),
+                ));
+            };
+            let encoded = std::str::from_utf8(stored).map_err(|_| {
+                KeyStoreError::Corrupt("the macOS Keychain value is not UTF-8".to_string())
+            })?;
+            decode_hex_key(encoded, "the macOS Keychain value")
+        }
+        Err(error) if error.code() == errSecItemNotFound => Err(KeyStoreError::NotFound),
+        Err(error) if is_macos_keychain_access_denied(error.code()) => {
+            Err(KeyStoreError::AccessDenied(format!(
+                "macOS Keychain refused to read the item: {error}"
+            )))
+        }
+        Err(error) => Err(KeyStoreError::Platform {
+            operation: "reading the macOS Keychain item",
+            message: format!("Security.framework returned {}: {error}", error.code()),
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn create_macos_keychain_item_in(
+    keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
+    service: &str,
+    account: &str,
+    password: &[u8],
+) -> Result<CreateOutcome, KeyStoreError> {
+    use core_foundation::data::CFData;
+    use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass, Location};
+    use security_framework_sys::base::errSecDuplicateItem;
+
+    let mut options = ItemAddOptions::new(ItemAddValue::Data {
+        class: ItemClass::generic_password(),
+        data: CFData::from_buffer(password),
+    });
+    options.set_service(service).set_account_name(account);
+    if let Some(keychain) = keychain {
+        options.set_location(Location::FileKeychain(keychain));
+    }
+    match options.add() {
+        Ok(()) => Ok(CreateOutcome::Created),
+        Err(error) if error.code() == errSecDuplicateItem => Ok(CreateOutcome::AlreadyExists),
+        Err(error) if is_macos_keychain_access_denied(error.code()) => {
+            Err(KeyStoreError::AccessDenied(format!(
+                "macOS Keychain refused to create the item: {error}"
+            )))
+        }
+        Err(error) => Err(KeyStoreError::Platform {
+            operation: "creating the macOS Keychain item",
+            message: format!("Security.framework returned {}: {error}", error.code()),
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_keychain_access_denied(status: i32) -> bool {
+    use security_framework_sys::base::errSecAuthFailed;
+
+    // These OSStatus values are stable Security.framework errors but are not
+    // all exported by security-framework-sys.
+    const ERR_SEC_USER_CANCELED: i32 = -128;
+    const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+    status == errSecAuthFailed
+        || status == ERR_SEC_USER_CANCELED
+        || status == ERR_SEC_INTERACTION_NOT_ALLOWED
 }
 
 /// Encrypt plaintext using AES-256-GCM
@@ -559,35 +746,10 @@ impl KeyStore for SystemKeyStore {
     fn read(&self) -> Result<DataKey, KeyStoreError> {
         #[cfg(target_os = "macos")]
         {
-            let output = std::process::Command::new("security")
-                .args([
-                    "find-generic-password",
-                    "-s",
-                    "com.tailsync.app",
-                    "-a",
-                    "encryption-key",
-                    "-w",
-                ])
-                .output()
-                .map_err(|source| classify_io_error("reading the macOS Keychain", source))?;
-
-            if output.status.success() {
-                let encoded = std::str::from_utf8(&output.stdout).map_err(|_| {
-                    KeyStoreError::Corrupt("the macOS Keychain value is not UTF-8".to_string())
-                })?;
-                return decode_hex_key(encoded, "the macOS Keychain value");
-            }
-
-            match output.status.code() {
-                // The security CLI returns the low byte of the Security.framework OSStatus.
-                Some(44) => Err(KeyStoreError::NotFound), // errSecItemNotFound (-25300)
-                Some(36 | 51 | 128) => Err(KeyStoreError::AccessDenied(command_failure_message(
-                    &output,
-                ))),
-                _ => Err(KeyStoreError::Platform {
-                    operation: "reading the macOS Keychain",
-                    message: command_failure_message(&output),
-                }),
+            match read_macos_keychain_item(MACOS_KEYCHAIN_V2_SERVICE, MACOS_KEYCHAIN_ACCOUNT) {
+                Ok(key) => Ok(key),
+                Err(KeyStoreError::NotFound) => read_legacy_macos_keychain_item(),
+                Err(error) => Err(error),
             }
         }
 
@@ -667,32 +829,15 @@ impl KeyStore for SystemKeyStore {
         #[cfg(target_os = "macos")]
         {
             let hex_key = hex::encode(key);
-            let output = std::process::Command::new("security")
-                .args([
-                    "add-generic-password",
-                    "-s",
-                    "com.tailsync.app",
-                    "-a",
-                    "encryption-key",
-                    "-w",
-                    &hex_key,
-                ])
-                .output()
-                .map_err(|source| classify_io_error("creating the macOS Keychain item", source))?;
-            if output.status.success() {
+            let outcome = create_macos_keychain_item(
+                MACOS_KEYCHAIN_V2_SERVICE,
+                MACOS_KEYCHAIN_ACCOUNT,
+                hex_key.as_bytes(),
+            )?;
+            if outcome == CreateOutcome::Created {
                 info!("New encryption key stored in the macOS Keychain");
-                return Ok(CreateOutcome::Created);
             }
-            match output.status.code() {
-                Some(45) => Ok(CreateOutcome::AlreadyExists), // errSecDuplicateItem (-25299)
-                Some(36 | 51 | 128) => Err(KeyStoreError::AccessDenied(command_failure_message(
-                    &output,
-                ))),
-                _ => Err(KeyStoreError::Platform {
-                    operation: "creating the macOS Keychain item",
-                    message: command_failure_message(&output),
-                }),
-            }
+            Ok(outcome)
         }
 
         #[cfg(target_os = "windows")]
@@ -836,12 +981,35 @@ impl KeyStore for SystemKeyStore {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "windows"))]
 fn classify_io_error(operation: &'static str, source: std::io::Error) -> KeyStoreError {
     if source.kind() == std::io::ErrorKind::PermissionDenied {
         KeyStoreError::AccessDenied(format!("{operation}: {source}"))
     } else {
         KeyStoreError::Io { operation, source }
+    }
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn classify_macos_cli_io_error(operation: &'static str, source: std::io::Error) -> KeyStoreError {
+    if source.kind() == std::io::ErrorKind::PermissionDenied {
+        KeyStoreError::AccessDenied(format!("{operation}: {source}"))
+    } else {
+        KeyStoreError::Platform {
+            operation,
+            message: source.to_string(),
+        }
+    }
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn command_failure_message(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        format!("security exited with status {}", output.status)
+    } else {
+        format!("security exited with status {}: {detail}", output.status)
     }
 }
 
@@ -867,17 +1035,6 @@ fn move_windows_key_file_create_only(
         Err(std::io::Error::last_os_error())
     } else {
         Ok(())
-    }
-}
-
-#[cfg(all(not(test), target_os = "macos"))]
-fn command_failure_message(output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let detail = stderr.trim();
-    if detail.is_empty() {
-        format!("security exited with status {}", output.status)
-    } else {
-        format!("security exited with status {}: {detail}", output.status)
     }
 }
 
@@ -1154,6 +1311,24 @@ mod tests {
     }
 
     #[test]
+    fn test_dek_is_limited_to_cargo_platform_test_executables() {
+        assert!(super::is_cargo_test_harness_executable(
+            std::path::Path::new("/workspace/target/debug/deps/tailsync_lib-b130076dc5f25812")
+        ));
+        for path in [
+            "/workspace/target/debug/tailsync",
+            "/workspace/target/debug/deps/tailsync_lib",
+            "/workspace/target/debug/deps/tailsync_lib-not-a-hash",
+            "/workspace/target/debug/deps/tailsync_core-b130076dc5f25812",
+            "/workspace/target/release/deps/tailsync-b130076dc5f25812",
+        ] {
+            assert!(!super::is_cargo_test_harness_executable(
+                std::path::Path::new(path)
+            ));
+        }
+    }
+
+    #[test]
     fn corrupt_settings_are_reported_and_preserved() {
         let path = std::env::temp_dir().join(format!(
             "tailsync-corrupt-settings-{}-{:016x}.json",
@@ -1205,6 +1380,70 @@ mod tests {
         std::fs::remove_dir(directory).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keychain_create_and_read_round_trip_without_cli_or_tty() {
+        use security_framework::os::macos::keychain::CreateOptions;
+
+        struct TemporaryDirectory(std::path::PathBuf);
+
+        impl Drop for TemporaryDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "tailsync-keychain-test-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let _temporary_directory = TemporaryDirectory(directory.clone());
+        let path = directory.join("test.keychain-db");
+        let mut create = CreateOptions::new();
+        create.password("tailsync-test");
+        let keychain = create.create(&path).unwrap();
+        let service = format!("com.tailsync.test.{:016x}", rand::random::<u64>());
+        let account = "encryption-key";
+        let key = [0x5a; DEK_SIZE];
+        let password = hex::encode(key);
+        let replacement = hex::encode([0x33; DEK_SIZE]);
+
+        assert_eq!(
+            super::create_macos_keychain_item_in(
+                Some(keychain.clone()),
+                &service,
+                account,
+                password.as_bytes(),
+            )
+            .unwrap(),
+            CreateOutcome::Created
+        );
+        assert_eq!(
+            super::create_macos_keychain_item_in(
+                Some(keychain.clone()),
+                &service,
+                account,
+                replacement.as_bytes(),
+            )
+            .unwrap(),
+            CreateOutcome::AlreadyExists
+        );
+        assert_eq!(
+            super::read_macos_keychain_item_in(Some(keychain.clone()), &service, account).unwrap(),
+            key
+        );
+        assert!(matches!(
+            super::read_macos_keychain_item_in(
+                Some(keychain),
+                "com.tailsync.test.missing",
+                account,
+            ),
+            Err(KeyStoreError::NotFound)
+        ));
+    }
+
     #[test]
     fn legacy_settings_default_to_an_empty_trust_store() {
         let settings: Settings = serde_json::from_str(
@@ -1252,6 +1491,31 @@ mod tests {
             .unwrap());
         assert!(settings
             .remember_peer_address_without_save("windows", "lan", "not-an-ip")
+            .is_err());
+    }
+
+    #[test]
+    fn paired_peer_iroh_endpoint_is_validated_and_remembered() {
+        const ENDPOINT_ID: &str =
+            "5866666666666666666666666666666666666666666666666666666666666666";
+        let mut settings = Settings::default();
+        settings
+            .trusted_peer_keys
+            .insert("windows".into(), "key".into());
+
+        assert!(settings
+            .remember_peer_address_without_save("windows", "iroh", ENDPOINT_ID)
+            .unwrap());
+        assert_eq!(
+            settings
+                .trusted_peer_addresses
+                .get("windows")
+                .and_then(|addresses| addresses.get("iroh"))
+                .map(String::as_str),
+            Some(ENDPOINT_ID)
+        );
+        assert!(settings
+            .remember_peer_address_without_save("windows", "iroh", "not-an-endpoint")
             .is_err());
     }
 

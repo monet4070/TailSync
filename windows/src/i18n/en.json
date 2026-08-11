@@ -96,6 +96,7 @@
   "settings.connected": "Connected",
   "settings.notConnected": "Not connected",
   "settings.testTcpPort": "Test TailSync TCP port",
+  "settings.testRoute": "Test TailSync route",
   "settings.testAddress": "Test address connectivity",
   "settings.failed": "Failed",
   "settings.pairedWaiting": "Paired - waiting for device",

@@ -4,6 +4,14 @@ import UserNotifications
 import Carbon
 import Darwin
 
+private func menuRouteInterfaceLabel(_ interface: String) -> String {
+    switch interface {
+    case "lan": return "LAN"
+    case "iroh": return "Iroh"
+    default: return "Tailscale"
+    }
+}
+
 enum TailSyncWindowPolicy {
     static func configure(_ window: NSWindow) {
         window.isMovableByWindowBackground = false
@@ -410,7 +418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.rebuildMenu()
                 }
                 let routeSummary = status.activeInterfaces
-                    .map { $0 == "lan" ? "LAN" : "Tailscale" }
+                    .map(menuRouteInterfaceLabel)
                     .sorted()
                     .joined(separator: " / ")
                 if routeSummary != self.activeRouteSummary {
