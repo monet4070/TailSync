@@ -53,6 +53,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -67,6 +69,12 @@ jobs:
       - name: Check cross-platform contracts
         shell: pwsh
         run: ./windows/scripts/check_cross_platform_sync.ps1 -WinRoot ./windows -MacRoot ./macos
+      - name: Install Windows frontend dependencies
+        working-directory: windows
+        run: npm ci
+      - name: Build Windows frontend assets
+        working-directory: windows
+        run: npm run build
       - name: Check formatting
         run: cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check
       - name: Check Windows application formatting
