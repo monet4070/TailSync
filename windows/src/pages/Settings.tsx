@@ -126,6 +126,29 @@ interface StorageMigrationResult {
   old_size_bytes: number;
 }
 
+interface UpdateStatus {
+  current_version: string;
+  updates_enabled: boolean;
+}
+
+interface UpdateInfo {
+  current_version: string;
+  version: string;
+  notes?: string | null;
+  published_at?: string | null;
+}
+
+type UpdatePhase =
+  | "loading"
+  | "idle"
+  | "checking"
+  | "available"
+  | "current"
+  | "disabled"
+  | "installing"
+  | "installed"
+  | "error";
+
 const GIB = 1024 * 1024 * 1024;
 
 function formatStorageSize(bytes: number) {
@@ -141,6 +164,10 @@ export function Settings() {
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [storageBusy, setStorageBusy] = useState(false);
   const [oldStorage, setOldStorage] = useState<StorageMigrationResult | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
+  const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("loading");
+  const [updateError, setUpdateError] = useState("");
   const [saved, setSaved] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [devices, setDevices] = useState<PeersResponse | null>(null);
@@ -182,6 +209,15 @@ export function Settings() {
       })
       .catch(console.error);
     invoke<StorageStatus>("get_storage_status").then(setStorageStatus).catch(console.error);
+    invoke<UpdateStatus>("get_update_status")
+      .then((status) => {
+        setUpdateStatus(status);
+        setUpdatePhase(status.updates_enabled ? "idle" : "disabled");
+      })
+      .catch((error) => {
+        setUpdateError(String(error));
+        setUpdatePhase("error");
+      });
   }, [setColorTheme, setLocale, setTheme]);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
@@ -567,6 +603,54 @@ export function Settings() {
     setColorTheme(value);
     if (!(await update({ color_theme: value }))) setColorTheme(previous);
   };
+
+  const checkForUpdate = async () => {
+    if (!updateStatus?.updates_enabled) {
+      setUpdatePhase("disabled");
+      return;
+    }
+    setUpdatePhase("checking");
+    setUpdateError("");
+    try {
+      const result = await invoke<UpdateInfo | null>("check_for_update");
+      setAvailableUpdate(result);
+      setUpdatePhase(result ? "available" : "current");
+    } catch (error) {
+      setUpdateError(String(error));
+      setUpdatePhase("error");
+    }
+  };
+
+  const installUpdate = async () => {
+    if (!availableUpdate) return;
+    setUpdatePhase("installing");
+    setUpdateError("");
+    try {
+      const installed = await invoke<boolean>("install_update");
+      setUpdatePhase(installed ? "installed" : "current");
+      if (!installed) setAvailableUpdate(null);
+    } catch (error) {
+      setUpdateError(String(error));
+      setUpdatePhase("error");
+    }
+  };
+
+  const updateMessage = (() => {
+    switch (updatePhase) {
+      case "loading": return t("settings.updateLoading");
+      case "checking": return t("settings.updateChecking");
+      case "available": return t("settings.updateAvailable")
+        .replace("{version}", availableUpdate?.version ?? "");
+      case "current": return t("settings.updateCurrent");
+      case "disabled": return t("settings.updateDisabled");
+      case "installing": return t("settings.updateInstalling");
+      case "installed": return t("settings.updateInstalled");
+      case "error": return updateError || t("settings.updateFailed");
+      default: return t("settings.updateReady");
+    }
+  })();
+
+  const updateBusy = updatePhase === "checking" || updatePhase === "installing";
 
   const appClassName = `app ${theme} theme-${colorTheme}`;
 
@@ -1107,6 +1191,40 @@ export function Settings() {
               </select>
               <ChevronDown size={14} strokeWidth={1.7} aria-hidden="true" />
             </div>
+          </div>
+        </section>
+
+        <section className="setting-group update-group">
+          <div className="setting-group-header">
+            <h3>{t("settings.updates")}</h3>
+            <p>{t("settings.updatesDescription")}</p>
+          </div>
+          <div className="setting-row update-row">
+            <div className="setting-row-info update-version">
+              <span>TailSync {updateStatus?.current_version ?? "-"}</span>
+              <small className={updatePhase === "error" ? "update-status error" : "update-status"}>
+                {updateMessage}
+              </small>
+            </div>
+            <button
+              className="update-action"
+              type="button"
+              onClick={() => void (availableUpdate ? installUpdate() : checkForUpdate())}
+              disabled={
+                updateBusy
+                || updatePhase === "loading"
+                || updatePhase === "disabled"
+                || updatePhase === "installed"
+              }
+            >
+              <RefreshCw
+                size={15}
+                strokeWidth={1.8}
+                className={updateBusy ? "spin" : undefined}
+                aria-hidden="true"
+              />
+              <span>{availableUpdate ? t("settings.updateInstall") : t("settings.updateCheck")}</span>
+            </button>
           </div>
         </section>
       </div>

@@ -588,6 +588,9 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::restore_file_batch,
             commands::get_version,
             commands::get_sync_warning,
+            commands::get_update_status,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())?;
     Ok(())

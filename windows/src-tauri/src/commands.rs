@@ -685,6 +685,34 @@ pub async fn get_sync_warning() -> Result<Option<tailsync_core::sync_warning::Sy
     Ok(tailsync_core::sync_warning::take())
 }
 
+#[derive(serde::Serialize)]
+pub struct UpdateStatus {
+    current_version: &'static str,
+    updates_enabled: bool,
+}
+
+/// Report updater availability separately from checking the network so a
+/// development build can explain why updates are unavailable in the UI.
+#[command]
+pub async fn get_update_status() -> Result<UpdateStatus, String> {
+    Ok(UpdateStatus {
+        current_version: env!("CARGO_PKG_VERSION"),
+        updates_enabled: crate::updates::public_key_configured(),
+    })
+}
+
+#[command]
+pub async fn check_for_update(
+    app: AppHandle,
+) -> Result<Option<crate::updates::UpdateInfo>, String> {
+    crate::updates::check_for_update(&app).await
+}
+
+#[command]
+pub async fn install_update(app: AppHandle) -> Result<bool, String> {
+    crate::updates::install_available_update(&app).await
+}
+
 /// Convert RGBA to CF_DIB clipboard format (BITMAPINFOHEADER + bottom-up BGRA pixels).
 /// No file header — this is what Windows stores in the clipboard as CF_DIB.
 fn rgba_to_dib(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
