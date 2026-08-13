@@ -46,6 +46,8 @@ interface PeerDevice {
   current_interface?: "lan" | "iroh" | "tailscale";
   current_address?: string | null;
   status?: "discovered" | "online" | "confirming" | "offline" | "connected";
+  protocol_error?: string | null;
+  required_protocol_version?: number | null;
   routes?: PeerRoute[];
 }
 
@@ -81,6 +83,7 @@ interface PeersResponse {
     connection_mode: "auto" | "lan_only" | "tailscale_only";
     public_key: string;
     fingerprint: string;
+    iroh_endpoint_id?: string | null;
     routes?: PeerRoute[];
   };
   peers: PeerDevice[];
@@ -694,6 +697,11 @@ export function Settings() {
                     <span>{t("settings.thisDevice")}</span>
                   </div>
                   <div className="device-fingerprint">{devices.self.fingerprint}</div>
+                  {devices.self.iroh_endpoint_id && (
+                    <div className="device-fingerprint" title={devices.self.iroh_endpoint_id}>
+                      iroh: {devices.self.iroh_endpoint_id}
+                    </div>
+                  )}
                   <div className="peer-route-list local-route-list">
                     {(devices.self.routes?.length
                       ? devices.self.routes
@@ -748,6 +756,14 @@ export function Settings() {
                     <div className="device-fingerprint">
                       {peer.trusted ? peer.fingerprint : t("settings.waitingSecurePairing")}
                     </div>
+                    {peer.required_protocol_version != null && (
+                      <div className="peer-protocol-warning" role="status">
+                        {t("settings.protocolUpgradeRequired").replace(
+                          "{version}",
+                          String(peer.required_protocol_version),
+                        )}
+                      </div>
+                    )}
                     {routes.length > 0 ? (
                       <div className="peer-route-list">
                         {routes.map((route) => {

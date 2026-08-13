@@ -3,9 +3,14 @@ param(
     [string]$Target = 'x86_64-pc-windows-msvc',
     [string]$OutputDirectory = 'release',
     [string]$BuildDirectory = 'target-package',
+    [string]$CertificateThumbprint = $env:TAILSYNC_WINDOWS_CERTIFICATE_THUMBPRINT,
+    [string]$TimestampUrl = 'https://timestamp.digicert.com',
     [switch]$InstallDependencies,
     [switch]$SkipChecks,
-    [switch]$SkipSmokeTest
+    [switch]$SkipSmokeTest,
+    [switch]$Release,
+    [ValidateSet('community', 'trusted')]
+    [string]$ReleaseTier = 'community'
 )
 
 Set-StrictMode -Version Latest
@@ -53,6 +58,20 @@ function New-ArtifactRecord {
 
 if ($env:OS -ne 'Windows_NT') {
     throw 'This packaging script must run on Windows.'
+}
+
+if ($Release) {
+    foreach ($requiredValue in @(
+        @{ Name = 'TAILSYNC_UPDATER_PUBLIC_KEY'; Value = $env:TAILSYNC_UPDATER_PUBLIC_KEY },
+        @{ Name = 'TAURI_SIGNING_PRIVATE_KEY'; Value = $env:TAURI_SIGNING_PRIVATE_KEY }
+    )) {
+        if ([string]::IsNullOrWhiteSpace([string]$requiredValue.Value)) {
+            throw "$($requiredValue.Name) is required for every published release."
+        }
+    }
+    if ($ReleaseTier -eq 'trusted' -and [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+        throw 'TAILSYNC_WINDOWS_CERTIFICATE_THUMBPRINT is required for a trusted release.'
+    }
 }
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
@@ -142,13 +161,30 @@ try {
 
     $previousTargetDirectory = $env:CARGO_TARGET_DIR
     $previousCi = $env:CI
+    $previousPublishedRelease = $env:TAILSYNC_PUBLISHED_RELEASE
     try {
         $env:CARGO_TARGET_DIR = $targetDirectory
         $env:CI = 'true'
+        if ($Release) {
+            $env:TAILSYNC_PUBLISHED_RELEASE = '1'
+        }
         Write-Host 'Building the release binary and NSIS installer...'
-        Invoke-Checked -FilePath $tauriCli -Arguments @(
-            'build', '--target', $Target, '--bundles', 'nsis', '--ci', '--no-sign'
-        )
+        $buildArguments = @('build', '--target', $Target, '--bundles', 'nsis', '--ci')
+        if ($Release -and $ReleaseTier -eq 'trusted') {
+            $releaseConfig = [ordered]@{
+                bundle = [ordered]@{
+                    windows = [ordered]@{
+                        certificateThumbprint = $CertificateThumbprint
+                        digestAlgorithm = 'sha256'
+                        timestampUrl = $TimestampUrl
+                    }
+                }
+            } | ConvertTo-Json -Depth 5 -Compress
+            $buildArguments += @('--config', $releaseConfig)
+        } else {
+            $buildArguments += '--no-sign'
+        }
+        Invoke-Checked -FilePath $tauriCli -Arguments $buildArguments
     }
     finally {
         if ($null -eq $previousTargetDirectory) {
@@ -160,6 +196,11 @@ try {
             Remove-Item Env:CI -ErrorAction SilentlyContinue
         } else {
             $env:CI = $previousCi
+        }
+        if ($null -eq $previousPublishedRelease) {
+            Remove-Item Env:TAILSYNC_PUBLISHED_RELEASE -ErrorAction SilentlyContinue
+        } else {
+            $env:TAILSYNC_PUBLISHED_RELEASE = $previousPublishedRelease
         }
     }
 
@@ -184,10 +225,91 @@ try {
 
     $portableFile = Get-Item -LiteralPath $portablePath
     $installerFile = Get-Item -LiteralPath $installerPath
+    if ($Release -and $ReleaseTier -eq 'trusted') {
+        foreach ($signedFile in @($portableFile, $installerFile)) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $signedFile.FullName
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                throw "Trusted release artifact is not Authenticode-valid: $($signedFile.Name) ($($signature.Status))"
+            }
+        }
+    }
     $artifacts = @(
         (New-ArtifactRecord -Kind 'portable' -File $portableFile),
         (New-ArtifactRecord -Kind 'nsis-installer' -File $installerFile)
     )
+    $updaterPath = $null
+    $updaterSignaturePath = $null
+    if ($Release) {
+        Write-Host 'Building and signing the downgrade-resistant updater archive...'
+        $updaterPath = Join-Path $releaseDirectory "$productName-$version-Windows-$architecture.nsis.zip"
+        $updaterSignaturePath = "$updaterPath.sig"
+        $updaterStaging = Join-Path ([System.IO.Path]::GetTempPath()) `
+            ('tailsync-updater-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $updaterStaging | Out-Null
+        try {
+            Copy-Item -LiteralPath $installerPath -Destination (Join-Path $updaterStaging $installerFile.Name)
+            $metadata = [ordered]@{
+                schema = 1
+                product = $productName
+                version = $version
+            } | ConvertTo-Json -Compress
+            $metadataPath = Join-Path $updaterStaging 'tailsync-update.json'
+            [System.IO.File]::WriteAllText(
+                $metadataPath,
+                $metadata,
+                [System.Text.UTF8Encoding]::new($false)
+            )
+            Remove-Item -LiteralPath $updaterPath, $updaterSignaturePath -Force -ErrorAction SilentlyContinue
+            Compress-Archive -LiteralPath @(
+                (Join-Path $updaterStaging $installerFile.Name),
+                $metadataPath
+            ) -DestinationPath $updaterPath -CompressionLevel Optimal
+            Invoke-Checked -FilePath $tauriCli -Arguments @('signer', 'sign', $updaterPath)
+            if (!(Test-Path -LiteralPath $updaterSignaturePath -PathType Leaf)) {
+                throw "Tauri signer did not produce $updaterSignaturePath"
+            }
+        }
+        finally {
+            $resolvedStaging = (Resolve-Path -LiteralPath $updaterStaging).Path
+            $systemTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+            if (!$resolvedStaging.StartsWith($systemTemp, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Refusing to remove unexpected updater staging directory: $resolvedStaging"
+            }
+            Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
+        }
+        $updaterFile = Get-Item -LiteralPath $updaterPath
+        $updaterSignatureFile = Get-Item -LiteralPath $updaterSignaturePath
+        $artifacts += [ordered]@{
+            kind = 'updater'
+            file = $updaterFile.Name
+            bytes = $updaterFile.Length
+            sha256 = (Get-FileHash -LiteralPath $updaterFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            signature = $updaterSignatureFile.Name
+        }
+        $artifacts += [ordered]@{
+            kind = 'updater-signature'
+            file = $updaterSignatureFile.Name
+            bytes = $updaterSignatureFile.Length
+            sha256 = (Get-FileHash -LiteralPath $updaterSignatureFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            signature = $null
+        }
+        $updaterPlatform = if ($Target.StartsWith('aarch64-')) {
+            'windows-aarch64'
+        } else {
+            'windows-x86_64'
+        }
+        $releaseFragment = [ordered]@{
+            schema = 1
+            product = $productName
+            version = $version
+            platform = $updaterPlatform
+            artifact = $updaterFile.Name
+            signatureFile = $updaterSignatureFile.Name
+        }
+        $releaseFragmentPath = Join-Path $releaseDirectory "release-$updaterPlatform.json"
+        $releaseFragment | ConvertTo-Json -Depth 3 | Set-Content `
+            -LiteralPath $releaseFragmentPath -Encoding utf8
+    }
     $checksumPath = Join-Path $releaseDirectory "$productName-$version-Windows-$architecture.sha256"
     $checksumLines = $artifacts | ForEach-Object { "$($_.sha256) *$($_.file)" }
     Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ascii
@@ -199,6 +321,7 @@ try {
         product = $productName
         version = $version
         target = $Target
+        releaseTier = if ($Release) { $ReleaseTier } else { 'development' }
         builtAtUtc = [DateTime]::UtcNow.ToString('o')
         sourceCommit = $commit
         sourceDirty = $dirty
@@ -229,6 +352,7 @@ try {
         finally {
             if ($null -ne $process -and !$process.HasExited) {
                 Stop-Process -Id $process.Id -Force
+                Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue
             }
             if ($null -eq $previousDataDirectory) {
                 Remove-Item Env:TAILSYNC_DATA_DIR -ErrorAction SilentlyContinue
@@ -240,7 +364,16 @@ try {
             if (!$resolvedSmokeRoot.StartsWith($systemTemp, [StringComparison]::OrdinalIgnoreCase)) {
                 throw "Refusing to remove unexpected smoke-test directory: $resolvedSmokeRoot"
             }
-            Remove-Item -LiteralPath $resolvedSmokeRoot -Recurse -Force
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+                try {
+                    Remove-Item -LiteralPath $resolvedSmokeRoot -Recurse -Force -ErrorAction Stop
+                    break
+                }
+                catch {
+                    if ($attempt -eq 5) { throw }
+                    Start-Sleep -Milliseconds (200 * $attempt)
+                }
+            }
         }
     }
 
@@ -248,8 +381,17 @@ try {
     Write-Host 'Windows package completed:'
     Write-Host "  Portable:  $portablePath"
     Write-Host "  Installer: $installerPath"
+    if ($Release) {
+        Write-Host "  Updater:   $updaterPath"
+        Write-Host "  Signature: $updaterSignaturePath"
+    }
     Write-Host "  Checksums: $checksumPath"
     Write-Host "  Manifest:  $buildManifestPath"
+    if ($Release -and $ReleaseTier -eq 'community') {
+        Write-Host '  Platform trust: Community build (no Authenticode certificate)'
+    } elseif ($Release -and $ReleaseTier -eq 'trusted') {
+        Write-Host '  Platform trust: Trusted build (Authenticode verified)'
+    }
 }
 finally {
     Pop-Location

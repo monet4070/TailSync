@@ -564,7 +564,11 @@ async fn notify_file_batch_error(
 }
 
 fn peer_is_transfer_eligible(peer: &network::tailscale::PeerInfo) -> bool {
-    peer.enabled && peer.trusted && peer.online
+    let has_iroh_route = peer
+        .candidates
+        .iter()
+        .any(|candidate| candidate.interface == network::ConnectionInterface::Iroh);
+    peer.enabled && peer.trusted && (peer.online || has_iroh_route)
 }
 
 fn summarize_file_batch_failures(failures: &[(String, String)]) -> String {
@@ -1012,16 +1016,14 @@ async fn broadcast_to_peers(
         if !peer_is_transfer_eligible(peer) {
             continue;
         }
-        if let Ok(addr) = network::peer_socket_addr(peer) {
-            let pool = pool.clone();
-            let payload = payload.clone();
-            let peer = peer.clone();
-            tokio::spawn(async move {
-                if let Err(e) = network::queue_peer_frame(&pool, &peer, cmd, payload).await {
-                    debug!("Broadcast to {} failed: {}", addr, e);
-                }
-            });
-        }
+        let pool = pool.clone();
+        let payload = payload.clone();
+        let peer = peer.clone();
+        tokio::spawn(async move {
+            if let Err(error) = network::queue_peer_frame(&pool, &peer, cmd, payload).await {
+                debug!("Broadcast to {} failed: {}", peer.hostname, error);
+            }
+        });
     }
 }
 
@@ -1105,6 +1107,17 @@ mod tests {
         assert!(!peer_is_transfer_eligible(&transfer_peer(
             true, true, false
         )));
+    }
+
+    #[test]
+    fn iroh_node_ids_are_valid_broadcast_targets_without_ip_parsing() {
+        let mut peer = transfer_peer(true, true, false);
+        peer.address = "7f5a1b2c3d4e5f60718293a4b5c6d7e8".into();
+        peer.candidates = vec![crate::network::PeerCandidate::new(
+            crate::network::ConnectionInterface::Iroh,
+            peer.address.clone(),
+        )];
+        assert!(peer_is_transfer_eligible(&peer));
     }
 
     #[test]

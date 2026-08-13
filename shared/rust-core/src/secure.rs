@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::de::Error as DeserializeError;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snow::{Builder, HandshakeState, TransportState};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
@@ -9,12 +11,67 @@ use crate::protocol::{self, Command, Frame, ProtocolError};
 const MAX_TRANSPORT_RECORD: usize = u16::MAX as usize;
 const MAX_TRANSPORT_PLAINTEXT: usize = MAX_TRANSPORT_RECORD - 16;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PeerIdentity {
     pub hostname: String,
     pub tailscale_ip: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iroh_endpoint_id: Option<String>,
+}
+
+impl Serialize for PeerIdentity {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("PeerIdentity", 5)?;
+        state.serialize_field("hostname", &self.hostname)?;
+        state.serialize_field("tailscale_ip", &self.tailscale_ip)?;
+        if let Some(endpoint_id) = &self.iroh_endpoint_id {
+            state.serialize_field("iroh_endpoint_id", endpoint_id)?;
+        }
+        state.serialize_field("protocol_version", &protocol::VERSION)?;
+        state.serialize_field("app_version", env!("CARGO_PKG_VERSION"))?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PeerIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireIdentity {
+            hostname: String,
+            tailscale_ip: String,
+            #[serde(default)]
+            iroh_endpoint_id: Option<String>,
+            #[serde(default)]
+            protocol_version: Option<u8>,
+            #[serde(default)]
+            app_version: Option<String>,
+        }
+
+        let identity = WireIdentity::deserialize(deserializer)?;
+        if let Some(version) = identity.protocol_version {
+            if version != protocol::VERSION {
+                let app = identity
+                    .app_version
+                    .as_deref()
+                    .map(|version| format!(" ({version})"))
+                    .unwrap_or_default();
+                return Err(D::Error::custom(format!(
+                    "Incompatible TailSync protocol: peer{app} uses v{version}, this version requires v{}. Update TailSync on both devices.",
+                    protocol::VERSION
+                )));
+            }
+        }
+        Ok(Self {
+            hostname: identity.hostname,
+            tailscale_ip: identity.tailscale_ip,
+            iroh_endpoint_id: identity.iroh_endpoint_id,
+        })
+    }
 }
 
 pub trait SessionIo: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -176,7 +233,10 @@ where
     let length = handshake.write_message(&[], &mut output)?;
     write_plain_frame(&mut stream, Command::HandshakeReq, &output[..length]).await?;
 
-    let ack = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE).await?;
+    let ack = read_handshake_response(&mut stream).await?;
+    if ack.command == Command::PeerError {
+        return Err(String::from_utf8_lossy(&ack.payload).to_string().into());
+    }
     if ack.command != Command::HandshakeAck {
         return Err("Handshake rejected".into());
     }
@@ -223,7 +283,7 @@ where
     let length = handshake.write_message(&[], &mut output)?;
     write_plain_frame(&mut stream, Command::PairingHandshakeReq, &output[..length]).await?;
 
-    let ack = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE).await?;
+    let ack = read_handshake_response(&mut stream).await?;
     if ack.command == Command::PeerError {
         return Err(String::from_utf8_lossy(&ack.payload).to_string().into());
     }
@@ -305,7 +365,21 @@ where
 {
     let mut handshake = build_handshake(identity, false)?;
     let mut output = vec![0u8; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
-    let request = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE).await?;
+    let request = match read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE).await {
+        Ok(request) => request,
+        Err(ProtocolError::UnsupportedVersion(peer_version)) => {
+            let message = ProtocolError::UnsupportedVersion(peer_version).to_string();
+            let _ = write_plain_frame_with_version(
+                &mut stream,
+                Command::PeerError,
+                message.as_bytes(),
+                peer_version,
+            )
+            .await;
+            return Err(message.into());
+        }
+        Err(error) => return Err(error.into()),
+    };
     let purpose = match request.command {
         Command::HandshakeReq => HandshakePurpose::Connection,
         Command::PairingHandshakeReq => HandshakePurpose::Pairing,
@@ -463,6 +537,42 @@ where
     Ok(())
 }
 
+async fn read_handshake_response<S>(
+    stream: &mut S,
+) -> Result<Frame, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: AsyncRead + Unpin + Send,
+{
+    read_plain_frame(stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
+        .await
+        .map_err(Into::into)
+}
+
+async fn write_plain_frame_with_version<S>(
+    stream: &mut S,
+    command: Command,
+    payload: &[u8],
+    version: u8,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    S: AsyncWrite + Unpin + Send,
+{
+    if payload.len() > command.payload_limit() {
+        return Err(ProtocolError::CommandPayloadTooLarge {
+            command,
+            actual: payload.len(),
+            limit: command.payload_limit(),
+        }
+        .into());
+    }
+    let frame = Frame::try_new(command, 0, 0, payload.to_vec())?;
+    stream
+        .write_all(&frame.encode_with_version(version))
+        .await?;
+    stream.flush().await?;
+    Ok(())
+}
+
 async fn read_plain_frame<S>(stream: &mut S, max_payload: usize) -> Result<Frame, ProtocolError>
 where
     S: AsyncRead + Unpin + Send,
@@ -473,6 +583,16 @@ where
         return Err(ProtocolError::InvalidMagic);
     }
     if header[4] != protocol::VERSION {
+        let payload_length =
+            u32::from_be_bytes([header[12], header[13], header[14], header[15]]) as usize;
+        if payload_length > max_payload {
+            return Err(ProtocolError::PayloadTooLarge(payload_length));
+        }
+        let remaining_length = payload_length
+            .checked_add(protocol::CHECKSUM_SIZE)
+            .ok_or(ProtocolError::PayloadTooLarge(payload_length))?;
+        let mut remaining = vec![0u8; remaining_length];
+        stream.read_exact(&mut remaining).await?;
         return Err(ProtocolError::UnsupportedVersion(header[4]));
     }
     let command_code = u16::from_be_bytes([header[6], header[7]]);
@@ -521,9 +641,9 @@ mod tests {
         let legacy: PeerIdentity =
             serde_json::from_str(r#"{"hostname":"legacy","tailscale_ip":"100.64.0.2"}"#).unwrap();
         assert!(legacy.iroh_endpoint_id.is_none());
-        assert!(!serde_json::to_string(&legacy)
-            .unwrap()
-            .contains("iroh_endpoint_id"));
+        let serialized_legacy = serde_json::to_string(&legacy).unwrap();
+        assert!(!serialized_legacy.contains("iroh_endpoint_id"));
+        assert!(serialized_legacy.contains("\"protocol_version\":3"));
 
         let with_iroh = PeerIdentity {
             hostname: "current".into(),
@@ -535,6 +655,18 @@ mod tests {
         assert!(serde_json::to_string(&with_iroh)
             .unwrap()
             .contains("iroh_endpoint_id"));
+    }
+
+    #[test]
+    fn peer_identity_rejects_an_explicitly_incompatible_wire_version() {
+        let error = serde_json::from_str::<PeerIdentity>(
+            r#"{"hostname":"old","tailscale_ip":"","protocol_version":2,"app_version":"2.0.2"}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("peer (2.0.2) uses v2"));
+        assert!(error.contains("requires v3"));
+        assert!(error.contains("Update TailSync on both devices"));
     }
 
     #[tokio::test]
@@ -836,5 +968,84 @@ mod tests {
             })
         ));
         sender.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn incompatible_handshake_gets_an_actionable_response_in_the_peer_version() {
+        let server_identity = DeviceIdentity::generate_for_test();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            accept(
+                stream,
+                &server_identity,
+                PeerIdentity {
+                    hostname: "server".into(),
+                    tailscale_ip: "127.0.0.1".into(),
+                    iroh_endpoint_id: None,
+                },
+            )
+            .await
+        });
+
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let legacy_request = Frame::try_new(Command::HandshakeReq, 0, 0, b"legacy".to_vec())
+            .unwrap()
+            .encode_with_version(2);
+        stream.write_all(&legacy_request).await.unwrap();
+
+        let message = ProtocolError::UnsupportedVersion(2).to_string();
+        let expected = Frame::try_new(Command::PeerError, 0, 0, message.into_bytes())
+            .unwrap()
+            .encode_with_version(2);
+        let mut response = vec![0; expected.len()];
+        stream.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, expected);
+
+        let error = match server.await.unwrap() {
+            Ok(_) => panic!("incompatible protocol unexpectedly completed the handshake"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("peer uses v2"));
+        assert!(error.contains("Update TailSync on both devices"));
+    }
+
+    #[tokio::test]
+    async fn peer_closing_the_handshake_remains_a_network_error() {
+        let client_identity = DeviceIdentity::generate_for_test();
+        let expected_identity = DeviceIdentity::generate_for_test();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let legacy_peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
+                .await
+                .unwrap();
+            assert_eq!(request.command, Command::HandshakeReq);
+        });
+
+        let result = connect(
+            TcpStream::connect(address).await.unwrap(),
+            &client_identity,
+            PeerIdentity {
+                hostname: "client".into(),
+                tailscale_ip: "127.0.0.1".into(),
+                iroh_endpoint_id: None,
+            },
+            "legacy",
+            expected_identity.public_key(),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("legacy peer unexpectedly completed the handshake"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("early eof") || error.contains("connection reset"));
+        assert!(!error.contains("older TailSync version"));
+        assert!(!error.contains("update TailSync on both devices"));
+        legacy_peer.await.unwrap();
     }
 }

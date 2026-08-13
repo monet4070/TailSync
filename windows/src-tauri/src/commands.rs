@@ -7,7 +7,8 @@ use tauri::{command, AppHandle, Manager, State};
 #[derive(serde::Serialize)]
 pub struct HistoryPage {
     pub entries: Vec<db::HistoryEntry>,
-    pub total: usize,
+    pub total: Option<usize>,
+    pub has_more: bool,
 }
 
 /// Get clipboard history entries
@@ -44,8 +45,8 @@ pub async fn get_history_page(
     offset: Option<usize>,
 ) -> Result<HistoryPage, String> {
     let db = state.db.lock().await;
-    let entries = db
-        .get_all_filtered(
+    let page = db
+        .get_page_filtered(
             keyword.as_deref(),
             category.as_deref(),
             start_time.as_deref(),
@@ -54,15 +55,11 @@ pub async fn get_history_page(
             offset.unwrap_or(0),
         )
         .map_err(|e| e.to_string())?;
-    let total = db
-        .count_all_filtered(
-            keyword.as_deref(),
-            category.as_deref(),
-            start_time.as_deref(),
-            end_time.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(HistoryPage { entries, total })
+    Ok(HistoryPage {
+        entries: page.entries,
+        total: page.total,
+        has_more: page.has_more,
+    })
 }
 
 #[command]
@@ -97,7 +94,9 @@ pub async fn search_history(
 #[command]
 pub async fn delete_entry(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let mut db = state.db.lock().await;
-    db.delete(id).map_err(|e| e.to_string())
+    db.delete(id).map_err(|e| e.to_string())?;
+    crate::api::bump_clipboard_version();
+    Ok(())
 }
 
 /// Delete all clipboard history entries.
@@ -199,12 +198,12 @@ pub async fn restore_entry(
             crate::api::restore_file_path_to_clipboard(
                 &path,
                 file_name.as_deref().unwrap_or("restored_file"),
-            );
+            )?;
         } else {
             crate::api::restore_file_to_clipboard(
                 data.as_deref().ok_or("File history data is unavailable")?,
                 file_name.as_deref().unwrap_or("restored_file"),
-            );
+            )?;
         }
 
         info!(
@@ -314,6 +313,7 @@ pub async fn trust_peer(
             .map_err(|error| error.to_string())?;
     }
     state.pool.lock().await.disconnect_hostname(hostname);
+    crate::network::clear_protocol_compatibility_error(hostname);
     Ok(fingerprint)
 }
 
@@ -328,6 +328,7 @@ pub async fn forget_peer(state: State<'_, AppState>, hostname: String) -> Result
         .forget_peer(hostname)
         .map_err(|error| error.to_string())?;
     state.pool.lock().await.disconnect_hostname(hostname);
+    crate::network::clear_protocol_compatibility_error(hostname);
     Ok(())
 }
 
@@ -416,8 +417,12 @@ pub async fn update_settings(
     new_settings.save().map_err(|e| e.to_string())?;
     *settings = new_settings;
     drop(settings);
-    state.db.lock().await.set_max_history(history_limit);
-    state.db.lock().await.set_storage_quota(storage_quota_bytes);
+    {
+        let mut db = state.db.lock().await;
+        db.set_max_history(history_limit);
+        db.set_storage_quota(storage_quota_bytes);
+        db.enforce_limits().map_err(|error| error.to_string())?;
+    }
     if mode_changed {
         state.pool.lock().await.disconnect_all();
         network::clear_peer_cache().await;
@@ -557,19 +562,25 @@ pub async fn change_storage_location(
 ) -> Result<db::StorageMigrationResult, String> {
     use tauri_plugin_notification::NotificationExt;
     let parent = std::path::PathBuf::from(parent);
+    let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let active = crate::api::has_active_file_progress();
         if !active {
             break;
         }
+        if tokio::time::Instant::now() >= wait_deadline {
+            return Err("Timed out waiting for active file transfers to finish".to_string());
+        }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    let _ = app
-        .notification()
-        .builder()
-        .title("TailSync")
-        .body("File transfers finished. Moving TailSync data now.")
-        .show();
+    if state.settings.lock().await.notifications_enabled {
+        let _ = app
+            .notification()
+            .builder()
+            .title("TailSync")
+            .body("File transfers finished. Moving TailSync data now.")
+            .show();
+    }
     let previous_storage_root = state.settings.lock().await.storage_root.clone();
     let database = state.db.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -666,6 +677,12 @@ pub async fn get_version() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "version": crate::api::get_clipboard_version()
     }))
+}
+
+#[command]
+pub async fn get_sync_warning() -> Result<Option<tailsync_core::sync_warning::SyncWarning>, String>
+{
+    Ok(tailsync_core::sync_warning::take())
 }
 
 /// Convert RGBA to CF_DIB clipboard format (BITMAPINFOHEADER + bottom-up BGRA pixels).

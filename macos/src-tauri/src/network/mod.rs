@@ -40,6 +40,33 @@ const PEER_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Used by the macOS SwiftUI shell to verify that the peer listener survived
 /// sleep/wake transitions.
 pub static TCP_SERVER_HEALTHY: AtomicBool = AtomicBool::new(false);
+static PROTOCOL_COMPATIBILITY_ERRORS: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
+
+fn protocol_compatibility_errors() -> &'static StdMutex<HashMap<String, String>> {
+    PROTOCOL_COMPATIBILITY_ERRORS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+pub(crate) fn record_protocol_compatibility_error(hostname: &str, error: &str) {
+    protocol_compatibility_errors()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(hostname.to_string(), error.chars().take(500).collect());
+}
+
+pub(crate) fn clear_protocol_compatibility_error(hostname: &str) {
+    protocol_compatibility_errors()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(hostname);
+}
+
+pub fn protocol_compatibility_error(hostname: &str) -> Option<String> {
+    protocol_compatibility_errors()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(hostname)
+        .cloned()
+}
 
 mod health;
 mod iroh;
@@ -58,6 +85,10 @@ use health::{AuthenticatedSessionRegistry, PeerHealthTracker};
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
 pub use iroh::start_server as start_iroh_server;
+
+pub fn local_iroh_endpoint_id(mode: &str) -> Option<String> {
+    (mode == "auto").then(iroh::local_endpoint_id).flatten()
+}
 pub use server::start_server;
 #[cfg(test)]
 use server::ConnectionLimiter;
@@ -70,8 +101,8 @@ pub use pool::{
 };
 #[cfg(test)]
 use pool::{
-    connection_task, deliver_pending_frame, queue_pool_frame, race_connect_and_handshake,
-    AckExpectation, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
+    connection_task, deliver_pending_frame, race_connect_and_handshake, AckExpectation,
+    PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
 };
 mod rate_limit;
 use rate_limit::check_peer_event_budget;
@@ -597,18 +628,16 @@ mod tests {
         acquire_peer_file_batch, bind_tcp_listener, cached_discover_peers, clear_peer_cache,
         connection_task, deliver_pending_frame, merge_discovery_results,
         merge_lan_discovery_results, merge_paired_peers, merge_tailscale_heartbeat,
-        peer_socket_addr, queue_pool_frame, race_connect_and_handshake, secure,
-        source_matches_mode, store_peer_cache, AckExpectation, AuthenticatedSessionRegistry,
-        ConnectionInterface, ConnectionLimiter, ConnectionPool, PeerCandidate, PeerHealthTracker,
-        PeerStatus, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
-        RouteKey, POOL_CHANNEL_SIZE, TCP_PORT,
+        peer_socket_addr, queue_peer_frame, race_connect_and_handshake,
+        record_protocol_compatibility_error, secure, source_matches_mode, store_peer_cache,
+        AckExpectation, AuthenticatedSessionRegistry, ConnectionInterface, ConnectionLimiter,
+        ConnectionPool, PeerCandidate, PeerHealthTracker, PeerStatus, PendingFrame, PoolSender,
+        QueuedFrame, ResolvedCandidate, ResolvedTarget, RouteKey, POOL_CHANNEL_SIZE, TCP_PORT,
     };
     use crate::crypto::{self, Settings};
     use crate::identity::DeviceIdentity;
     use crate::network::tailscale::{LocalInfo, PeerInfo};
-    use crate::protocol::{
-        unix_timestamp_ms, Command, EventEnvelope, Frame, MessageId, EVENT_TIMESTAMP_WINDOW_MS,
-    };
+    use crate::protocol::{unix_timestamp_ms, Command, EventEnvelope, Frame, MessageId};
     use base64::{engine::general_purpose::STANDARD, Engine};
     use std::collections::HashMap;
     use std::net::IpAddr;
@@ -616,6 +645,19 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::{mpsc, watch, Mutex};
     use tokio::time::{timeout, Duration, Instant};
+
+    #[test]
+    fn protocol_compatibility_diagnostic_is_recorded_and_cleared() {
+        let hostname = format!("compatibility-test-{}", rand::random::<u64>());
+        let message = "Incompatible TailSync protocol: peer uses v2";
+        record_protocol_compatibility_error(&hostname, message);
+        assert_eq!(
+            super::protocol_compatibility_error(&hostname).as_deref(),
+            Some(message)
+        );
+        super::clear_protocol_compatibility_error(&hostname);
+        assert_eq!(super::protocol_compatibility_error(&hostname), None);
+    }
 
     fn route(address: &str, interface: ConnectionInterface) -> RouteKey {
         RouteKey {
@@ -1170,15 +1212,23 @@ mod tests {
             .insert((ResolvedTarget::Tcp(addr), "blocked-peer".into()), tx);
         let pool = Arc::new(Mutex::new(pool_value));
         let queued_pool = pool.clone();
+        let peer = PeerInfo {
+            hostname: "blocked-peer".into(),
+            tailscale_ip: addr.ip().to_string(),
+            online: true,
+            enabled: true,
+            address: addr.ip().to_string(),
+            connection_mode: "lan".into(),
+            trusted: true,
+            fingerprint: String::new(),
+            candidates: vec![PeerCandidate::new(
+                ConnectionInterface::Lan,
+                addr.ip().to_string(),
+            )],
+            current_interface: None,
+        };
         let blocked_send = tokio::spawn(async move {
-            queue_pool_frame(
-                &queued_pool,
-                addr,
-                "blocked-peer".into(),
-                Command::TextPayload,
-                vec![2],
-            )
-            .await
+            queue_peer_frame(&queued_pool, &peer, Command::TextPayload, vec![2]).await
         });
 
         tokio::task::yield_now().await;
@@ -1373,7 +1423,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_pending_event_does_not_block_a_new_event_after_reconnect() {
+    async fn fifteen_minute_old_event_is_not_revived_after_reconnect() {
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = Arc::new(DeviceIdentity::generate_for_test());
         let settings = race_settings(&server_identity);
@@ -1447,7 +1497,7 @@ mod tests {
         let (_bulk_tx, bulk_rx) = mpsc::channel(4);
         let old_envelope = EventEnvelope {
             message_id: MessageId::random(),
-            timestamp_ms: unix_timestamp_ms() - EVENT_TIMESTAMP_WINDOW_MS - 1,
+            timestamp_ms: unix_timestamp_ms() - 15 * 60 * 1000,
             content: b"before-sleep".to_vec(),
         };
         priority_tx

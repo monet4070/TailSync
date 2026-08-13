@@ -49,6 +49,8 @@ struct HistoryView: View {
     @State private var lastVersion: UInt64 = 0
     @State private var daemonOnline = false
     @State private var fileProgress: ApiClient.FileProgress? = nil
+    @State private var progressBarEnabled = true
+    @State private var progressPollInFlight = false
     @State private var showingClearAlert = false
     @State private var loadGeneration = 0
     @State private var supportedCategories: Set<String> = []
@@ -57,6 +59,8 @@ struct HistoryView: View {
     @State private var historyCapabilitiesChecked = false
     @State private var historyCapabilitiesLoading = false
     @State private var unresolvedMigrationCount = 0
+    @State private var syncWarning: String? = nil
+    @State private var syncWarningTask: Task<Void, Never>? = nil
     @State private var restoreFeedbackTask: Task<Void, Never>? = nil
     @State private var expandedBatchIds: Set<String> = []
 
@@ -347,12 +351,15 @@ struct HistoryView: View {
         }
         .onAppear {
             load()
+            loadProgressPreference()
             loadHistoryCapabilities()
             loadMigrationDiagnostics()
         }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
-            guard scenePhase == .active else { return }
-            Task {
+            guard scenePhase == .active, !progressPollInFlight else { return }
+            progressPollInFlight = true
+            Task { @MainActor in
+                defer { progressPollInFlight = false }
                 if let version = await ApiClient.shared.getVersion() {
                     let reconnected = !daemonOnline
                     if reconnected || version != lastVersion {
@@ -368,7 +375,22 @@ struct HistoryView: View {
                     daemonOnline = false
                 }
                 if !historyCapabilitiesChecked { loadHistoryCapabilities() }
-                fileProgress = await ApiClient.shared.getFileProgress()
+                if progressBarEnabled {
+                    fileProgress = await ApiClient.shared.getFileProgress()
+                } else {
+                    fileProgress = nil
+                }
+                if let warning = await ApiClient.shared.takeSyncWarning(),
+                   warning.kind == "expired_event" {
+                    syncWarning = Loc.t("history.syncExpired")
+                        .replacingOccurrences(of: "{peer}", with: warning.peer)
+                    syncWarningTask?.cancel()
+                    syncWarningTask = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(8))
+                        guard !Task.isCancelled else { return }
+                        syncWarning = nil
+                    }
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
@@ -377,12 +399,31 @@ struct HistoryView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
             reloadActiveDateFilter()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .tailSyncSettingsChanged)) { notification in
+            guard let settings = notification.object as? AppSettings else { return }
+            progressBarEnabled = settings.progress_bar_enabled
+            if !progressBarEnabled { fileProgress = nil }
+        }
         .onDisappear {
             restoreFeedbackTask?.cancel()
             restoreFeedbackTask = nil
+            syncWarningTask?.cancel()
+            syncWarningTask = nil
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
+                if let syncWarning {
+                    Text(syncWarning)
+                        .font(activeTheme.readingFont(size: 11))
+                        .foregroundColor(palette.primaryColor)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(palette.surfaceColor)
+                        .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
+                        .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+                        .accessibilityLabel(syncWarning)
+                }
                 if let p = fileProgress, p.active {
                     VStack(spacing: 5) {
                         ProgressView(value: Double(p.sent), total: Double(max(p.total, 1))).progressViewStyle(.linear)
@@ -490,6 +531,15 @@ struct HistoryView: View {
         }
     }
 
+    private func loadProgressPreference() {
+        Task {
+            if let settings = try? await ApiClient.shared.getSettings() {
+                progressBarEnabled = settings.progress_bar_enabled
+                if !progressBarEnabled { fileProgress = nil }
+            }
+        }
+    }
+
     private func isBatchStart(_ entry: HistoryEntry) -> Bool {
         guard let batchId = entry.batch_id,
               let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
@@ -571,6 +621,7 @@ struct HistoryView: View {
             do {
                 try await ApiClient.shared.restoreEntry(id: id)
             } catch {
+                errorMsg = error.localizedDescription
                 return
             }
             guard !Task.isCancelled else { return }
@@ -605,6 +656,8 @@ struct HistoryView: View {
                 page = 0
                 hasNext = false
                 loadMigrationDiagnostics()
+            } else {
+                errorMsg = Loc.t("history.deleteError")
             }
         }
     }

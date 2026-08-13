@@ -55,4 +55,11 @@ describe("useI18n", () => {
     expect(result.current.locale).toBe("fr");
     expect(result.current.t("history.title")).toBe(en["history.title"]);
   });
+
+  it("localizes the actionable protocol upgrade prompt", () => {
+    expect(en["settings.protocolUpgradeRequired"].replace("{version}", "3"))
+      .toContain("protocol v3");
+    expect(zhCN["settings.protocolUpgradeRequired"].replace("{version}", "3"))
+      .toContain("协议 v3");
+  });
 });

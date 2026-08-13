@@ -408,14 +408,18 @@ if (!/clipboard_file::write_clipboard_files/.test(macApiSourceForClipboard) ||
   fail('macOS file restoration must use the packaged clipboard helper, not the Swift toolchain.');
 }
 
-const macVerifierPath = join(macRoot, 'scripts/verify_macos_release.sh');
-if (!existsSync(macVerifierPath)) fail('Missing macOS release verification script: scripts/verify_macos_release.sh');
+const macSourceCheckPath = join(macRoot, 'scripts/check_macos_sources.sh');
+const macVerifierPath = join(macRoot, 'scripts/verify_macos_bundle.sh');
+if (!existsSync(macSourceCheckPath)) fail('Missing macOS source verification script.');
+if (!existsSync(macVerifierPath)) fail('Missing macOS bundle verification script.');
+const macSourceCheck = readFileSync(macSourceCheckPath, 'utf8');
 const macVerifier = readFileSync(macVerifierPath, 'utf8');
 for (const pattern of [
-  /cargo test .*--lib/,
-  /cargo clippy .*--lib.*-D warnings/,
+  /cargo test .*--all-targets/,
+  /cargo clippy .*--all-targets.*-D warnings/,
   /swift build .*--package-path swift-ui/,
-  /\.\/build-mac\.sh/,
+]) if (!pattern.test(macSourceCheck)) fail(`macOS source verifier is missing required check: ${pattern}`);
+for (const pattern of [
   /codesign --verify --deep --strict/,
   /19889/,
   /19890/,

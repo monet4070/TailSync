@@ -2,6 +2,7 @@ use std::io;
 use std::path::Path;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
 use std::task::{Context, Poll};
 
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
@@ -15,6 +16,7 @@ use crate::identity::{
 
 pub const ALPN: &[u8] = b"tailsync/3";
 const SECRET_KEY_SIZE: usize = 32;
+static IDENTITY_RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub fn canonical_endpoint_id(value: &str) -> Result<String, String> {
     EndpointId::from_str(value.trim())
@@ -23,7 +25,7 @@ pub fn canonical_endpoint_id(value: &str) -> Result<String, String> {
 }
 
 pub fn persistent_endpoint_id() -> Result<String, String> {
-    load_or_create_secret_key(&identity_path())
+    load_or_recover_secret_key(&identity_path())
         .map(|secret_key| secret_key.public().to_string())
         .map_err(|error| format!("Could not load Iroh identity: {error}"))
 }
@@ -46,7 +48,7 @@ pub struct IrohBiStream {
 
 impl IrohEndpoint {
     pub async fn bind() -> Result<Self, String> {
-        let secret_key = load_or_create_secret_key(&identity_path())
+        let secret_key = load_or_recover_secret_key(&identity_path())
             .map_err(|error| format!("Could not load Iroh identity: {error}"))?;
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(secret_key)
@@ -158,6 +160,63 @@ fn load_or_create_secret_key(path: &Path) -> Result<SecretKey, IdentityError> {
     }
 }
 
+fn load_or_recover_secret_key(path: &Path) -> Result<SecretKey, IdentityError> {
+    let _guard = IDENTITY_RECOVERY_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    match load_or_create_secret_key(path) {
+        Ok(key) => Ok(key),
+        Err(IdentityError::Corrupt(reason)) => {
+            let archived = archive_corrupt_identity(path)?;
+            if let Some(archived) = archived {
+                log::warn!(
+                    "Archived a corrupt Iroh route identity at {} ({reason}); generating a new route identity",
+                    archived.display()
+                );
+            }
+            load_or_create_secret_key(path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn archive_corrupt_identity(path: &Path) -> Result<Option<std::path::PathBuf>, IdentityError> {
+    let parent = path.parent().ok_or_else(|| {
+        IdentityError::Corrupt("the Iroh identity path has no parent directory".to_string())
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("iroh-identity-v1.bin");
+    for _ in 0..16 {
+        let archived = parent.join(format!(
+            "{file_name}.corrupt-{}-{:016x}",
+            chrono::Utc::now().timestamp_millis(),
+            rand::random::<u64>()
+        ));
+        match std::fs::rename(path, &archived) {
+            Ok(()) => return Ok(Some(archived)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(IdentityError::Io {
+                    operation: "archiving a corrupt Iroh identity",
+                    source: error,
+                });
+            }
+        }
+    }
+    Err(IdentityError::Io {
+        operation: "archiving a corrupt Iroh identity",
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique corrupt identity archive path",
+        ),
+    })
+}
+
 fn read_secret_key(path: &Path) -> Result<SecretKey, IdentityError> {
     let bytes = read_protected_bytes(path)?;
     let bytes: [u8; SECRET_KEY_SIZE] = bytes.try_into().map_err(|bytes: Vec<u8>| {
@@ -190,6 +249,35 @@ mod tests {
         let second = load_or_create_secret_key(&path).unwrap();
 
         assert_eq!(first.public(), second.public());
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn corrupt_iroh_identity_is_archived_before_regeneration() {
+        let directory = std::env::temp_dir().join(format!(
+            "tailsync-corrupt-iroh-identity-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("iroh-identity-v1.bin");
+        std::fs::write(&path, b"not an encrypted identity").unwrap();
+
+        let recovered = load_or_recover_secret_key(&path).unwrap();
+        let reloaded = load_or_recover_secret_key(&path).unwrap();
+        let archives = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("iroh-identity-v1.bin.corrupt-")
+            })
+            .count();
+
+        assert_eq!(recovered.public(), reloaded.public());
+        assert_eq!(archives, 1);
         let _ = std::fs::remove_dir_all(directory);
     }
 }

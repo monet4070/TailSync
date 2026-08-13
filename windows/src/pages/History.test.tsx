@@ -36,7 +36,7 @@ describe("History item actions", () => {
         case "get_settings":
           return Promise.resolve({ progress_bar_enabled: true });
         case "get_history_page":
-          return Promise.resolve({ entries: [entry], total: 1 });
+          return Promise.resolve({ entries: [entry], total: 1, has_more: false });
         case "get_history_capabilities":
           return Promise.resolve({
             classifier_version: 1,
@@ -134,7 +134,7 @@ describe("History item actions", () => {
         case "get_settings":
           return Promise.resolve({ progress_bar_enabled: true });
         case "get_history_page":
-          return Promise.resolve({ entries: batchEntries, total: batchEntries.length });
+          return Promise.resolve({ entries: batchEntries, total: batchEntries.length, has_more: false });
         case "get_history_capabilities":
           return Promise.resolve({
             classifier_version: 1,
@@ -191,7 +191,7 @@ describe("History item actions", () => {
         case "get_settings":
           return Promise.resolve({ progress_bar_enabled: true });
         case "get_history_page":
-          return Promise.resolve({ entries: batchEntries, total: batchEntries.length });
+          return Promise.resolve({ entries: batchEntries, total: batchEntries.length, has_more: false });
         case "get_history_capabilities":
           return Promise.resolve({
             classifier_version: 1,
@@ -248,7 +248,7 @@ describe("History item actions", () => {
         case "get_settings":
           return Promise.resolve({ progress_bar_enabled: true });
         case "get_history_page":
-          return Promise.resolve({ entries: batchEntries, total: batchEntries.length });
+          return Promise.resolve({ entries: batchEntries, total: batchEntries.length, has_more: false });
         case "get_history_capabilities":
           return Promise.resolve({
             classifier_version: 1,

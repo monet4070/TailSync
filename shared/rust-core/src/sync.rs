@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 const SEEN_MESSAGE_RETENTION_SECONDS: i64 = 10 * 60;
 pub const INCOMPLETE_TRANSFER_RETENTION_SECONDS: u64 = 24 * 60 * 60;
+const CANCELLED_BATCH_RETENTION_SECONDS: i64 = 24 * 60 * 60;
+const CANCELLED_BATCH_MAX_ENTRIES: usize = 1024;
 pub const MAX_FILE_BATCH_COUNT: usize = 20;
 pub const MAX_FILE_BATCH_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_ACTIVE_BATCHES_PER_PEER: usize = 2;
@@ -518,7 +520,7 @@ pub struct SyncEngine {
     active_receives: HashMap<(String, TransferId), FileReceiveState>,
     completed_transfers: HashMap<(String, TransferId), CompletedTransfer>,
     incoming_batches: HashMap<(String, TransferId), IncomingBatch>,
-    cancelled_batches: HashSet<(String, TransferId)>,
+    cancelled_batches: HashMap<(String, TransferId), i64>,
     completed_batches: HashMap<(String, TransferId), i64>,
     clipboard_generation: u64,
     /// Shadow-packet filter for text (echo suppression)
@@ -541,7 +543,7 @@ impl SyncEngine {
             active_receives: HashMap::new(),
             completed_transfers: HashMap::new(),
             incoming_batches: HashMap::new(),
-            cancelled_batches: HashSet::new(),
+            cancelled_batches: HashMap::new(),
             completed_batches: HashMap::new(),
             clipboard_generation: 0,
             shadow_filter: ShadowFilter::new(),
@@ -635,7 +637,8 @@ impl SyncEngine {
         // quota preflight, but this remains the authoritative core check.
         manifest.validate()?;
         let key = (source.clone(), manifest.batch_id);
-        if self.cancelled_batches.contains(&key) {
+        self.prune_cancelled_batches();
+        if self.cancelled_batches.contains_key(&key) {
             return Err("File batch was cancelled; copy the files again to retry".to_string());
         }
         if let Some(existing) = self.incoming_batches.get(&key) {
@@ -758,7 +761,10 @@ impl SyncEngine {
             now.saturating_sub(*completed_at) <= SEEN_MESSAGE_RETENTION_SECONDS
         });
         let Some(batch) = self.incoming_batches.get(&key) else {
-            if self.completed_batches.contains_key(&key) || self.cancelled_batches.contains(&key) {
+            self.prune_cancelled_batches();
+            if self.completed_batches.contains_key(&key)
+                || self.cancelled_batches.contains_key(&key)
+            {
                 return Ok(());
             }
             return Err("File batch manifest is not available".to_string());
@@ -791,7 +797,9 @@ impl SyncEngine {
 
     pub async fn cancel_file_batch(&mut self, source: &str, batch_id: TransferId) {
         let key = (source.to_string(), batch_id);
-        self.cancelled_batches.insert(key.clone());
+        self.prune_cancelled_batches();
+        self.cancelled_batches
+            .insert(key.clone(), chrono::Utc::now().timestamp());
         if let Some(batch) = self.incoming_batches.remove(&key) {
             let _ = fs::remove_file(batch.manifest_path);
             let completed = batch.files.into_iter().flatten().collect::<Vec<_>>();
@@ -859,7 +867,8 @@ impl SyncEngine {
         let key = (source.clone(), transfer_id);
         if let Some(batch_ref) = meta.batch {
             let batch_key = (source.clone(), batch_ref.batch_id);
-            if self.cancelled_batches.contains(&batch_key) {
+            self.prune_cancelled_batches();
+            if self.cancelled_batches.contains_key(&batch_key) {
                 return Err("File batch was cancelled".to_string());
             }
             let batch = self.incoming_batches.get(&batch_key).ok_or_else(|| {
@@ -1263,8 +1272,28 @@ impl SyncEngine {
             }
         }
         self.incoming_batches.retain(|(peer, _), _| peer != source);
-        self.cancelled_batches.retain(|(peer, _)| peer != source);
+        self.cancelled_batches.retain(|(peer, _), _| peer != source);
         self.clear_file_progress(None, Some(source));
+    }
+
+    fn prune_cancelled_batches(&mut self) {
+        let now = chrono::Utc::now().timestamp();
+        self.cancelled_batches.retain(|_, cancelled_at| {
+            now.saturating_sub(*cancelled_at) <= CANCELLED_BATCH_RETENTION_SECONDS
+        });
+        if self.cancelled_batches.len() <= CANCELLED_BATCH_MAX_ENTRIES {
+            return;
+        }
+        let mut oldest = self
+            .cancelled_batches
+            .iter()
+            .map(|(key, at)| (key.clone(), *at))
+            .collect::<Vec<_>>();
+        oldest.sort_by_key(|(_, at)| *at);
+        let remove = oldest.len().saturating_sub(CANCELLED_BATCH_MAX_ENTRIES);
+        for (key, _) in oldest.into_iter().take(remove) {
+            self.cancelled_batches.remove(&key);
+        }
     }
 
     // ── Shadow filter helpers ────────────────────────────────────
@@ -1492,7 +1521,8 @@ mod tests {
     use super::{
         normalize_transferred_file_name, prepare_file_batch, FileBatchEntry, FileBatchManifest,
         FileBatchProgress, FileBatchRef, FileMeta, ReceivedFile, ShadowFilter, SyncEngine,
-        SyncPlatform, MAX_ACTIVE_BATCHES_GLOBAL, MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES,
+        SyncPlatform, CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS,
+        MAX_ACTIVE_BATCHES_GLOBAL, MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES,
         MAX_FILE_BATCH_COUNT, SHADOW_FILTER_MAX_ENTRIES,
     };
     use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
@@ -1520,6 +1550,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn cancelled_batch_cache_expires_and_caps_entries() {
+        let mut engine = SyncEngine::new();
+        let now = chrono::Utc::now().timestamp();
+        let expired_key = ("expired-peer".to_string(), TransferId([0xFE; 16]));
+        engine.cancelled_batches.insert(
+            expired_key.clone(),
+            now - CANCELLED_BATCH_RETENTION_SECONDS - 1,
+        );
+        for index in 0..(CANCELLED_BATCH_MAX_ENTRIES + 32) {
+            let mut id = [0_u8; 16];
+            id[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            engine
+                .cancelled_batches
+                .insert(("peer".to_string(), TransferId(id)), now);
+        }
+
+        engine.prune_cancelled_batches();
+
+        assert_eq!(engine.cancelled_batches.len(), CANCELLED_BATCH_MAX_ENTRIES);
+        assert!(!engine.cancelled_batches.contains_key(&expired_key));
     }
 
     #[derive(Debug, Clone)]

@@ -1,0 +1,276 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAILSYNC_RELEASE_TIER: ${{ vars.TAILSYNC_RELEASE_TIER || 'community' }}
+
+jobs:
+  validate:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+      - name: Match tag to every application manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/validate-release-version.mjs --root . --tag "$RELEASE_TAG"
+      - name: Validate release tier
+        run: |
+          case "$TAILSYNC_RELEASE_TIER" in
+            community|trusted) ;;
+            *) echo "TAILSYNC_RELEASE_TIER must be community or trusted." >&2; exit 1 ;;
+          esac
+      - name: Test release metadata generators
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs
+
+  windows:
+    name: Package Windows (${{ vars.TAILSYNC_RELEASE_TIER || 'community' }})
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      TAILSYNC_UPDATER_PUBLIC_KEY: ${{ secrets.TAILSYNC_UPDATER_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            shared/rust-core
+            windows/src-tauri
+      - name: Install frontend and Tauri CLI
+        working-directory: windows
+        run: npm ci
+      - name: Import Windows code-signing certificate
+        if: env.TAILSYNC_RELEASE_TIER == 'trusted'
+        shell: pwsh
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_BASE64)) {
+            throw 'WINDOWS_CERTIFICATE_BASE64 is required.'
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'tailsync-code-signing.pfx'
+          [IO.File]::WriteAllBytes(
+            $certificatePath,
+            [Convert]::FromBase64String($env:CERTIFICATE_BASE64)
+          )
+          $password = ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate `
+            -FilePath $certificatePath `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password $password
+          if ($null -eq $certificate -or [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
+            throw 'Could not import the Windows code-signing certificate.'
+          }
+          "TAILSYNC_WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" >> $env:GITHUB_ENV
+      - name: Build Windows release and signed updater
+        shell: pwsh
+        run: ./windows/scripts/package-windows.ps1 -Release -ReleaseTier $env:TAILSYNC_RELEASE_TIER
+      - name: Upload Windows release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailsync-windows-release
+          path: windows/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: Package macOS (${{ vars.TAILSYNC_RELEASE_TIER || 'community' }})
+    needs: validate
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      TAILSYNC_RELEASE: "1"
+      TAILSYNC_RELEASE_TIER: ${{ vars.TAILSYNC_RELEASE_TIER || 'community' }}
+      TAILSYNC_MACOS_TARGET: universal-apple-darwin
+      TAILSYNC_UPDATER_PUBLIC_KEY: ${{ secrets.TAILSYNC_UPDATER_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAILSYNC_CODESIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      TAILSYNC_NOTARY_PROFILE: tailsync-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            shared/rust-core
+            macos/src-tauri
+      - name: Install Tauri CLI
+        working-directory: windows
+        run: npm ci
+      - name: Check macOS sources before using signing credentials
+        run: bash macos/scripts/check_macos_sources.sh "$GITHUB_WORKSPACE/windows"
+      - name: Import Developer ID certificate
+        if: env.TAILSYNC_RELEASE_TIER == 'trusted'
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$CERTIFICATE_BASE64"
+          keychain="$RUNNER_TEMP/tailsync-signing.keychain-db"
+          certificate="$RUNNER_TEMP/tailsync-signing.p12"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$CERTIFICATE_BASE64" | openssl base64 -d -A > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          echo "TAILSYNC_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "TAILSYNC_NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - name: Store notarization credentials
+        if: env.TAILSYNC_RELEASE_TIER == 'trusted'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials "$TAILSYNC_NOTARY_PROFILE" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --keychain "$TAILSYNC_NOTARY_KEYCHAIN"
+      - name: Build universal macOS release and signed updater
+        env:
+          TAILSYNC_TAURI_CLI: ${{ github.workspace }}/windows/node_modules/.bin/tauri
+        run: ./macos/build-dmg.sh
+      - name: Launch and verify the packaged macOS application
+        run: bash macos/scripts/verify_macos_bundle.sh
+      - name: Upload macOS release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailsync-macos-release
+          path: macos/release/*
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove temporary signing keychain
+        if: always() && env.TAILSYNC_RELEASE_TIER == 'trusted'
+        run: |
+          if [[ -n "${TAILSYNC_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$TAILSYNC_SIGNING_KEYCHAIN" || true
+          fi
+
+  publish:
+    name: Publish GitHub Release and updater manifest
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tailsync-*-release
+          path: release
+          merge-multiple: true
+      - name: Generate and validate stable latest.json
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          node scripts/generate-update-manifest.mjs \
+            --input release \
+            --output release/latest.json \
+            --repository "$RELEASE_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --notes "TailSync $RELEASE_TAG"
+          node --test scripts/generate-update-manifest.test.mjs
+      - name: Write community release notice
+        if: env.TAILSYNC_RELEASE_TIER == 'community'
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Community build
+
+          This release uses TailSync's free updater signature, SHA-256 checksums, and downgrade protection. The macOS application is ad-hoc signed and not Apple-notarized. The Windows executables do not carry a commercial Authenticode signature, so the operating system may show an unidentified-developer or SmartScreen warning on first launch.
+          EOF
+      - name: Write trusted release notice
+        if: env.TAILSYNC_RELEASE_TIER == 'trusted'
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Trusted build
+
+          This release is platform-signed, uses TailSync's updater signature, and includes SHA-256 checksums and downgrade protection.
+          EOF
+      - name: Publish stable release
+        if: ${{ !contains(github.ref_name, '-') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          generate_release_notes: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            release/*.dmg
+            release/*-setup.exe
+            release/*-portable.exe
+            release/*.nsis.zip
+            release/*.nsis.zip.sig
+            release/*.app.tar.gz
+            release/*.app.tar.gz.sig
+            release/*-build.json
+            release/*.sha256
+            release/latest.json
+      - name: Publish prerelease without a stable updater manifest
+        if: ${{ contains(github.ref_name, '-') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          generate_release_notes: true
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            release/*.dmg
+            release/*-setup.exe
+            release/*-portable.exe
+            release/*.nsis.zip
+            release/*.nsis.zip.sig
+            release/*.app.tar.gz
+            release/*.app.tar.gz.sig
+            release/*-build.json
+            release/*.sha256

@@ -31,8 +31,8 @@ pub(super) fn initialize(connection: &Connection) -> Result<(), rusqlite::Error>
             ON history(timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_history_type
             ON history(type);
-        CREATE INDEX IF NOT EXISTS idx_history_description
-            ON history(description);
+        CREATE INDEX IF NOT EXISTS idx_history_description_nontext
+            ON history(description) WHERE type <> 'text';
         CREATE INDEX IF NOT EXISTS idx_history_hash
             ON history(data_hash);
 

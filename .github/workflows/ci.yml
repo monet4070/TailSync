@@ -45,16 +45,17 @@ jobs:
         run: npm run build
 
   rust-windows:
-    name: Rust and interop (Windows)
+    name: Packaged application (Windows)
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.91.0
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
@@ -75,51 +76,51 @@ jobs:
         run: cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings
       - name: Run Windows application Clippy
         run: cargo clippy --locked --manifest-path windows/src-tauri/Cargo.toml --all-targets -- -D warnings
-      - name: Run shared core unit tests
+      - name: Run shared core unit tests, including v1 migration fixtures
         run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
       - name: Run Windows application unit tests
         run: cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib
-      - name: Build application
-        run: cargo build --locked --manifest-path windows/src-tauri/Cargo.toml
       - name: Run bidirectional interoperability probe
         shell: pwsh
         run: ./windows/scripts/test_cross_project_interop.ps1 -WinRoot ./windows -MacRoot ./macos
+      - name: Build NSIS and run the packaged executable smoke test
+        shell: pwsh
+        run: ./windows/scripts/package-windows.ps1 -InstallDependencies -SkipChecks
+      - name: Upload packaged Windows smoke artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailsync-windows-ci-package
+          path: windows/release/*
+          if-no-files-found: error
+          retention-days: 3
 
   rust-macos:
-    name: Rust and Swift (macOS)
+    name: Packaged application (macOS)
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
         with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             shared/rust-core
             macos/src-tauri
-      - name: Check shared core formatting
-        run: cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check
-      - name: Check macOS application formatting
-        run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
-      - name: Run shared core Clippy
-        run: cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings
-      - name: Run macOS application Clippy
-        run: cargo clippy --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets -- -D warnings
-      - name: Run shared core unit tests
-        run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
-      - name: Run macOS application unit tests
-        run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
-      - name: Build Rust daemon
-        run: cargo build --locked --manifest-path macos/src-tauri/Cargo.toml
-      - name: Run Swift tests
-        run: swift test --package-path macos/swift-ui
-      - name: Build release SwiftUI executable
-        run: swift build -c release --package-path macos/swift-ui
+      - name: Check macOS sources and cross-platform contracts
+        run: bash macos/scripts/check_macos_sources.sh "$GITHUB_WORKSPACE/windows"
+      - name: Build the macOS application bundle
+        run: bash macos/build-mac.sh --skip-swift-build
+      - name: Launch and verify the packaged macOS application
+        run: bash macos/scripts/verify_macos_bundle.sh
 
   scripts:
-    name: Migration script syntax
+    name: Release and recovery scripts
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -127,4 +128,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m py_compile windows/scripts/migrate.py macos/scripts/migrate.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check manual recovery entry points
+        run: python -m py_compile windows/scripts/migrate.py macos/scripts/migrate.py shared/scripts/migrate_v1.py
+      - name: Run manual v1 recovery functional tests
+        run: python -m unittest shared/scripts/test_migrate_v1.py
+      - name: Test signed updater manifest generation
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs
+      - name: Validate checked-in application versions
+        run: |
+          RELEASE_VERSION="$(node -p "require('./windows/src-tauri/tauri.conf.json').version")"
+          node scripts/validate-release-version.mjs --root . --tag "v$RELEASE_VERSION"

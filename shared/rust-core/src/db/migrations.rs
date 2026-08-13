@@ -240,6 +240,28 @@ impl HistoryDB {
         if version < 8 {
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",
+                params![8_i64],
+            )?;
+        }
+
+        if version < 9 {
+            info!("Running database migration v9 (removing plaintext text previews)...");
+            conn.execute_batch("PRAGMA secure_delete = ON;")?;
+            conn.execute(
+                "UPDATE history SET description = ?1 WHERE type = 'text'",
+                params![TEXT_DESCRIPTION_PLACEHOLDER],
+            )?;
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS idx_history_description;
+                 DROP INDEX IF EXISTS idx_history_description_nontext;
+                 CREATE INDEX idx_history_description_nontext
+                    ON history(description) WHERE type <> 'text';",
+            )?;
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+            // Mark v9 complete only after the residual-data cleanup succeeds.
+            // If the process exits first, startup safely repeats this idempotent migration.
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
                 params![SCHEMA_VERSION],
             )?;
         }

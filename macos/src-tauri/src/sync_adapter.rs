@@ -114,6 +114,7 @@ impl SyncPlatform for TauriSyncPlatform {
                 batch_id: batch_id.map(TransferId::as_hex),
                 device: device.clone(),
             };
+            let notifications_enabled = settings.lock().await.notifications_enabled;
             let history_files = files
                 .iter()
                 .map(|file| db::HistoryFileInput {
@@ -145,12 +146,14 @@ impl SyncPlatform for TauriSyncPlatform {
                 Ok(Ok(paths)) => paths,
                 Ok(Err(error)) => {
                     log::error!("DB save file batch failed: {error}");
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("TailSync")
-                        .body(format!("File batch failed: {error}"))
-                        .show();
+                    if notifications_enabled {
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title("TailSync")
+                            .body(format!("File batch failed: {error}"))
+                            .show();
+                    }
                     return;
                 }
                 Err(error) => {
@@ -167,14 +170,16 @@ impl SyncPlatform for TauriSyncPlatform {
                         Ok(path) => clipboard_paths.push(path),
                         Err(error) => {
                             log::error!("Could not prepare received batch for clipboard: {error}");
-                            let _ = app
-                                .notification()
-                                .builder()
-                                .title("TailSync")
-                                .body(format!(
-                                    "Could not place received files on the clipboard: {error}"
-                                ))
-                                .show();
+                            if notifications_enabled {
+                                let _ = app
+                                    .notification()
+                                    .builder()
+                                    .title("TailSync")
+                                    .body(format!(
+                                        "Could not place received files on the clipboard: {error}"
+                                    ))
+                                    .show();
+                            }
                             return;
                         }
                     }
@@ -183,16 +188,18 @@ impl SyncPlatform for TauriSyncPlatform {
                     log::info!("Received file batch was superseded before clipboard activation");
                 } else if let Err(error) = clipboard_file::write_clipboard_files(&clipboard_paths) {
                     log::error!("Could not restore file batch clipboard: {error}");
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("TailSync")
-                        .body(format!("Could not update the clipboard: {error}"))
-                        .show();
+                    if notifications_enabled {
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title("TailSync")
+                            .body(format!("Could not update the clipboard: {error}"))
+                            .show();
+                    }
                     return;
                 }
             }
-            if batch_complete && settings.lock().await.notifications_enabled {
+            if batch_complete && notifications_enabled {
                 let body = format!("Received {} file(s)", names.len());
                 let _ = app
                     .notification()
@@ -206,12 +213,18 @@ impl SyncPlatform for TauriSyncPlatform {
 
     fn file_batch_failed(&self, _batch_id: Option<TransferId>, message: &str) {
         log::error!("File batch failed: {message}");
-        let _ = self
-            .app
-            .notification()
-            .builder()
-            .title("TailSync")
-            .body(message)
-            .show();
+        let app = self.app.clone();
+        let settings = self.settings.clone();
+        let message = message.to_string();
+        tauri::async_runtime::spawn(async move {
+            if settings.lock().await.notifications_enabled {
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("TailSync")
+                    .body(message)
+                    .show();
+            }
+        });
     }
 }

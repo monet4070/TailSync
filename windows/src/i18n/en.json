@@ -49,6 +49,7 @@
   "history.migrationWarningPrefix": "Migration could not complete for",
   "history.migrationWarningSuffix": "history entries. They remain preserved and will be retried on the next start.",
   "history.actionFailed": "The action could not be completed",
+  "history.syncExpired": "An older clipboard item was not sent to {peer}, preventing it from replacing newer clipboard content.",
 
   "settings.title": "Settings",
   "settings.loading": "Loading...",
@@ -93,6 +94,7 @@
   "settings.confirming": "Confirming...",
   "settings.discovered": "Discovered",
   "settings.offline": "Offline",
+  "settings.protocolUpgradeRequired": "Incompatible version. Update both devices to a release using protocol v{version}.",
   "settings.connected": "Connected",
   "settings.notConnected": "Not connected",
   "settings.testTcpPort": "Test TailSync TCP port",

@@ -1,5 +1,5 @@
 use log::{info, warn};
-use rusqlite::{params, params_from_iter, types::Value, Connection};
+use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
 use crate::crypto;
@@ -34,18 +34,17 @@ pub use paths::{
 };
 pub use storage::delete_old_storage;
 pub use types::{
-    FileEncryptionMigrationBatch, HistoryEntry, HistoryFileInput, MigrationDiagnostics,
-    MigrationIssue, StorageMigrationResult, StorageStatus,
+    FileEncryptionMigrationBatch, HistoryEntry, HistoryFileInput, HistoryQueryPage,
+    MigrationDiagnostics, MigrationIssue, StorageMigrationResult, StorageStatus,
 };
 
 /// Database schema version
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
-fn escape_like_literal(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
+const TEXT_DESCRIPTION_PLACEHOLDER: &str = "Encrypted text";
+
+fn text_preview(text: &str) -> String {
+    text.chars().take(100).collect()
 }
 
 fn remove_unreferenced_persisted_files(conn: &Connection, persisted: &[(Vec<u8>, PathBuf)]) {
@@ -105,8 +104,9 @@ impl HistoryDB {
         let file_history_dir = storage_dir.join("file-history");
         let image_history_dir = storage_dir.join("image-history");
 
-        // Enable WAL mode for concurrent read/write
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        // Enable WAL mode for concurrent read/write. secure_delete overwrites
+        // deleted cells in the main database; explicit deletes also truncate WAL.
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON;")?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
         schema::initialize(&conn)?;
@@ -172,7 +172,6 @@ impl HistoryDB {
 
         let encrypted = crypto::encrypt(text.as_bytes())?;
         let timestamp = chrono::Utc::now().to_rfc3339();
-        let description = text.chars().take(100).collect::<String>();
         let classification = history_classifier::classify_text(text);
         let categories = serde_json::to_string(&classification.categories())?;
 
@@ -183,7 +182,7 @@ impl HistoryDB {
              VALUES (?1, 'text', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 timestamp,
-                description,
+                TEXT_DESCRIPTION_PLACEHOLDER,
                 encrypted,
                 text.len() as i64,
                 source_peer,
@@ -465,12 +464,16 @@ impl HistoryDB {
 
     /// Get the entry description for an entry (filename for file entries).
     pub fn get_description(&self, id: i64) -> Result<String, Box<dyn std::error::Error>> {
-        let desc: String = self.conn.query_row(
-            "SELECT description FROM history WHERE id = ?1",
+        let (entry_type, description, stored): (String, String, Vec<u8>) = self.conn.query_row(
+            "SELECT type, description, data FROM history WHERE id = ?1",
             params![id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        Ok(desc)
+        if entry_type == "text" {
+            let plaintext = self.read_text_payload_compat(&stored)?;
+            return Ok(text_preview(std::str::from_utf8(&plaintext)?));
+        }
+        Ok(description)
     }
 
     /// Get the entry type ("text" | "image" | "file") for an entry.
@@ -733,7 +736,7 @@ impl HistoryDB {
     pub fn add_text_migrated(
         &mut self,
         time: &str,
-        desc: &str,
+        _desc: &str,
         data: &[u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let data_hash = blake3::hash(data).to_hex().to_string();
@@ -756,7 +759,7 @@ impl HistoryDB {
              VALUES (?1, 'text', ?2, ?3, ?4, 'migrated', ?5, ?6, ?7, ?8, ?9)",
             params![
                 time,
-                desc,
+                TEXT_DESCRIPTION_PLACEHOLDER,
                 encrypted,
                 data.len() as i64,
                 data_hash,
@@ -981,8 +984,175 @@ mod tests {
         assert_eq!(db.get_all(Some("a_b"), None, 10, 0).unwrap().len(), 1);
         assert_eq!(db.get_all(Some(r"C:\Temp"), None, 10, 0).unwrap().len(), 1);
         assert_eq!(db.get_all(Some("剪贴板"), None, 10, 0).unwrap().len(), 1);
-        assert_eq!(escape_like_literal(r"100%_\"), r"100\%\_\\");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn keyword_pages_are_bounded_and_do_not_read_non_text_payloads() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-bounded-search-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+        for index in 0..4 {
+            db.add_text(&format!("needle text {index}"), "self")
+                .unwrap();
+        }
+        db.conn
+            .execute(
+                "INSERT INTO history
+                    (timestamp, type, description, data, size_bytes, source_peer, data_hash,
+                     category, categories, category_confidence, classifier_version)
+                 VALUES
+                    ('2026-01-01T00:00:00Z', 'file', 'needle-large.bin', zeroblob(8388608),
+                     8388608, 'self', 'large', 'file', '[\"file\"]', 100, 1)",
+                [],
+            )
+            .unwrap();
+
+        let first = db
+            .get_page_filtered(Some("needle"), None, None, None, 2, 0)
+            .unwrap();
+        assert_eq!(first.entries.len(), 2);
+        assert_eq!(first.total, None);
+        assert!(first.has_more);
+
+        let last = db
+            .get_page_filtered(Some("needle"), None, None, None, 2, 4)
+            .unwrap();
+        assert_eq!(last.entries.len(), 1);
+        assert_eq!(last.entries[0].description, "needle-large.bin");
+        assert!(!last.has_more);
+        assert_eq!(
+            db.count_all_filtered(Some("needle"), None, None, None)
+                .unwrap(),
+            5
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn text_previews_are_decrypted_only_when_history_is_read() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-encrypted-preview-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+        let secret = "ts_live_super_sensitive_token";
+
+        db.add_text(secret, "self").unwrap();
+
+        let stored_description: String = db
+            .conn
+            .query_row("SELECT description FROM history", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored_description, TEXT_DESCRIPTION_PLACEHOLDER);
+        assert!(!stored_description.contains(secret));
+
+        let entries = db.get_all(Some("sensitive_token"), None, 10, 0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].description, secret);
+        assert_eq!(db.get_description(entries[0].id).unwrap(), secret);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn keyword_search_matches_text_beyond_the_display_preview() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-full-text-search-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+        let text = format!("{}deep_search_needle", "x".repeat(150));
+        db.add_text(&text, "self").unwrap();
+
+        let entries = db
+            .get_page_filtered(Some("deep_search_needle"), None, None, None, 10, 0)
+            .unwrap()
+            .entries;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].description.chars().count(), 100);
+        assert!(!entries[0].description.contains("deep_search_needle"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn migration_v9_scrubs_legacy_plaintext_previews_from_sqlite_files() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-migration-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db_path = root.join("history-v2.db");
+        let secret = "legacy_plaintext_preview_should_disappear";
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+            schema::initialize(&conn).unwrap();
+            conn.execute("INSERT INTO schema_version (version) VALUES (8)", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO history
+                    (timestamp, type, description, data, size_bytes, source_peer, data_hash)
+                 VALUES ('2026-01-01T00:00:00Z', 'text', ?1, X'00', 1, 'self', 'hash')",
+                params![secret],
+            )
+            .unwrap();
+            HistoryDB::migrate(
+                &conn,
+                &root.join("file-history"),
+                &root.join("image-history"),
+            )
+            .unwrap();
+            let description: String = conn
+                .query_row("SELECT description FROM history", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(description, TEXT_DESCRIPTION_PLACEHOLDER);
+        }
+
+        for path in [
+            db_path.clone(),
+            root.join("history-v2.db-wal"),
+            root.join("history-v2.db-shm"),
+        ] {
+            if path.is_file() {
+                let bytes = std::fs::read(path).unwrap();
+                assert!(!bytes
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()));
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_delete_truncates_the_write_ahead_log() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-delete-checkpoint-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut db = HistoryDB::open_at(&root).unwrap();
+        db.add_text("delete me", "self").unwrap();
+        let id: i64 = db
+            .conn
+            .query_row("SELECT id FROM history", [], |row| row.get(0))
+            .unwrap();
+
+        db.delete(id).unwrap();
+
+        let wal_path = root.join("history-v2.db-wal");
+        assert!(
+            !wal_path.exists() || std::fs::metadata(&wal_path).unwrap().len() == 0,
+            "explicit delete left data in {}",
+            wal_path.display()
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1022,6 +1192,57 @@ mod tests {
             )
             .unwrap();
         assert_eq!(db.file_ids_over_byte_limit(10).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn image_writes_enforce_the_shared_file_byte_quota() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-image-quota-{:016x}",
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+        db.set_storage_quota(30);
+        let mut image = Vec::from([2_u32.to_le_bytes(), 2_u32.to_le_bytes()].concat());
+        image.extend_from_slice(&[0x44; 16]);
+        db.add_image(&image, "self").unwrap();
+        let mut second = Vec::from([2_u32.to_le_bytes(), 2_u32.to_le_bytes()].concat());
+        second.extend_from_slice(&[0x55; 16]);
+        db.add_image(&second, "self").unwrap();
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM history WHERE type = 'image'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "image additions did not enforce the shared byte quota"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn changing_limits_can_be_enforced_immediately() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-immediate-limits-{:016x}",
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+        for index in 0..5 {
+            db.add_text(&format!("entry-{index}"), "self").unwrap();
+        }
+        db.set_max_history(2);
+        db.enforce_limits().unwrap();
+
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

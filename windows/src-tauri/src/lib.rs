@@ -6,6 +6,7 @@ mod commands;
 mod network;
 mod sync_adapter;
 mod tray;
+mod updates;
 
 pub use tailsync_core::{
     crypto, db, history_classifier, identity, pairing, protocol, secure, sync,
@@ -429,8 +430,12 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(updates::plugin_builder().build())
         .setup(move |app| {
             let handle = app.handle().clone();
+            updates::register_app_handle(handle.clone());
+            #[cfg(target_os = "windows")]
+            updates::spawn_automatic_update_check(handle.clone());
             if let Some(task) =
                 start_parent_monitor(shutdown_for_parent, shutdown_for_setup.clone())
             {
@@ -582,6 +587,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::delete_old_storage,
             commands::restore_file_batch,
             commands::get_version,
+            commands::get_sync_warning,
         ])
         .run(tauri::generate_context!())?;
     Ok(())

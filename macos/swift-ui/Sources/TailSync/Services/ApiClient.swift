@@ -27,7 +27,10 @@ final class ApiClient: @unchecked Sendable {
         }
     }
 
-    private func request(_ json: [String: Any]) async throws -> [String: Any] {
+    private func request(
+        _ json: [String: Any],
+        timeoutSeconds: Int = 3
+    ) async throws -> [String: Any] {
         var authenticated = json
         authenticated["token"] = capabilityToken
         var data = try JSONSerialization.data(withJSONObject: authenticated)
@@ -46,7 +49,7 @@ final class ApiClient: @unchecked Sendable {
                 address.sin_family = sa_family_t(AF_INET)
                 address.sin_port = CFSwapInt16HostToBig(self.port)
                 inet_pton(AF_INET, "127.0.0.1", &address.sin_addr)
-                var timeout = timeval(tv_sec: 3, tv_usec: 0)
+                var timeout = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
                 setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
                 setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
@@ -151,6 +154,47 @@ final class ApiClient: @unchecked Sendable {
     func ping() async -> Bool {
         guard let response = try? await request(["cmd": "ping"]) else { return false }
         return response["ok"] as? Bool == true
+    }
+
+    struct SyncWarning {
+        let kind: String
+        let peer: String
+    }
+
+    func takeSyncWarning() async -> SyncWarning? {
+        guard let response = try? await request(["cmd": "get_sync_warning"]),
+              response["ok"] as? Bool == true,
+              let data = response["data"] as? [String: Any],
+              let kind = data["kind"] as? String,
+              let peer = data["peer"] as? String else { return nil }
+        return SyncWarning(kind: kind, peer: peer)
+    }
+
+    struct UpdateInfo: Decodable {
+        let current_version: String
+        let version: String
+        let notes: String?
+        let published_at: String?
+    }
+
+    func checkForUpdate() async throws -> UpdateInfo? {
+        let response = try await request(["cmd": "check_for_update"], timeoutSeconds: 30)
+        guard response["ok"] as? Bool == true else {
+            throw ApiError.serverError(response["error"] as? String ?? "Update check failed")
+        }
+        guard let value = response["data"], !(value is NSNull) else { return nil }
+        return try JSONDecoder().decode(
+            UpdateInfo.self,
+            from: JSONSerialization.data(withJSONObject: value)
+        )
+    }
+
+    func installUpdate() async throws -> Bool {
+        let response = try await request(["cmd": "install_update"], timeoutSeconds: 600)
+        guard response["ok"] as? Bool == true else {
+            throw ApiError.serverError(response["error"] as? String ?? "Update installation failed")
+        }
+        return ((response["data"] as? [String: Any])?["installed"] as? Bool) ?? false
     }
 
     func requestShutdown() async -> Bool {
@@ -286,7 +330,7 @@ final class ApiClient: @unchecked Sendable {
     }
 
     func changeStorageLocation(parent: String) async throws -> StorageMigrationResult {
-        let response = try await request(["cmd": "change_storage_location", "parent": parent])
+        let response = try await request(["cmd": "change_storage_location", "parent": parent], timeoutSeconds: 600)
         guard response["ok"] as? Bool == true,
               let data = response["data"] as? [String: Any] else {
             throw ApiError.serverError(response["error"] as? String ?? "unknown")
@@ -299,7 +343,10 @@ final class ApiClient: @unchecked Sendable {
     }
 
     func deleteOldStorage(path: String) async throws {
-        let response = try await request(["cmd": "delete_old_storage", "path": path])
+        let response = try await request(
+            ["cmd": "delete_old_storage", "path": path],
+            timeoutSeconds: 600
+        )
         guard response["ok"] as? Bool == true else {
             throw ApiError.serverError(response["error"] as? String ?? "unknown")
         }
@@ -377,6 +424,7 @@ final class ApiClient: @unchecked Sendable {
         let connection_mode: String
         let public_key: String
         let fingerprint: String
+        let iroh_endpoint_id: String?
 
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -385,9 +433,10 @@ final class ApiClient: @unchecked Sendable {
             connection_mode = try values.decodeIfPresent(String.self, forKey: .connection_mode) ?? "tailscale"
             public_key = try values.decodeIfPresent(String.self, forKey: .public_key) ?? ""
             fingerprint = try values.decodeIfPresent(String.self, forKey: .fingerprint) ?? ""
+            iroh_endpoint_id = try values.decodeIfPresent(String.self, forKey: .iroh_endpoint_id)
         }
 
-        private enum CodingKeys: String, CodingKey { case hostname, tailscale_ip, connection_mode, public_key, fingerprint }
+        private enum CodingKeys: String, CodingKey { case hostname, tailscale_ip, connection_mode, public_key, fingerprint, iroh_endpoint_id }
     }
 
     struct PeerSnapshot: Decodable, Identifiable {
@@ -455,6 +504,8 @@ final class ApiClient: @unchecked Sendable {
         let candidates: [Candidate]
         let routes: [Route]
         let status: String
+        let protocolError: String?
+        let requiredProtocolVersion: Int?
         var id: String { hostname }
 
         init(from decoder: Decoder) throws {
@@ -473,16 +524,24 @@ final class ApiClient: @unchecked Sendable {
             routes = try values.decodeIfPresent([Route].self, forKey: .routes) ?? []
             status = try values.decodeIfPresent(String.self, forKey: .status)
                 ?? (current_address != nil ? "connected" : online ? "online" : "offline")
+            protocolError = try values.decodeIfPresent(String.self, forKey: .protocolError)
+            requiredProtocolVersion = try values.decodeIfPresent(Int.self, forKey: .requiredProtocolVersion)
         }
 
-        private enum CodingKeys: String, CodingKey { case hostname, tailscale_ip, address, online, enabled, connection_mode, trusted, fingerprint, current_interface, current_address, candidates, routes, status }
+        private enum CodingKeys: String, CodingKey {
+            case hostname, tailscale_ip, address, online, enabled, connection_mode, trusted,
+                 fingerprint, current_interface, current_address, candidates, routes, status
+            case protocolError = "protocol_error"
+            case requiredProtocolVersion = "required_protocol_version"
+        }
     }
 
     typealias PeersResult = (
         local: DeviceSnapshot?,
         peers: [PeerSnapshot],
         pairedEndpoints: [String: String],
-        error: String?
+        error: String?,
+        requestSucceeded: Bool
     )
 
     private func decodePeersResponse(_ response: [String: Any]) -> PeersResult? {
@@ -504,14 +563,15 @@ final class ApiClient: @unchecked Sendable {
             local,
             peers,
             data["paired_peer_endpoints"] as? [String: String] ?? [:],
-            data["discovery_error"] as? String
+            data["discovery_error"] as? String,
+            true
         )
     }
 
     func getPeers() async -> PeersResult {
         guard let response = try? await request(["cmd": "get_peers"]),
               let result = decodePeersResponse(response) else {
-            return (nil, [], [:], responseError())
+            return (nil, [], [:], responseError(), false)
         }
         return result
     }
@@ -519,7 +579,7 @@ final class ApiClient: @unchecked Sendable {
     func refreshPeers() async -> PeersResult {
         guard let response = try? await request(["cmd": "refresh_peers"]),
               let result = decodePeersResponse(response) else {
-            return (nil, [], [:], responseError())
+            return (nil, [], [:], responseError(), false)
         }
         return result
     }

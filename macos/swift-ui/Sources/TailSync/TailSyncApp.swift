@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeRouteSummary = ""
     private var activeTransfer: ApiClient.FileProgress?
     private var storageUnavailable = false
+    private var updateCheckRunning = false
     private static var historyWC: NSWindowController?
     private static var settingsWC: NSWindowController?
     private static var daemonProcess: Process?
@@ -73,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startNotificationPoller()
         startDaemonWatchdog()
         registerSleepWakeNotifications()
+        scheduleUpdateCheck()
     }
 
     /// Request notification permission for UNUserNotificationCenter (needed
@@ -250,6 +252,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sItem = NSMenuItem(title: isZh ? "设置" : "Settings",
                                 action: #selector(openSettings), keyEquivalent: "")
         sItem.target = self; menu.addItem(sItem)
+        let updateItem = NSMenuItem(
+            title: Loc.t("menu.checkForUpdates"),
+            action: #selector(checkForUpdatesAction),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
         if !activeRouteSummary.isEmpty {
             menu.addItem(.separator())
             let routeItem = NSMenuItem(
@@ -281,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openHistory() { Self.showHistory() }
     @objc private func openSettings() { Self.showSettings() }
+    @objc private func checkForUpdatesAction() { scheduleUpdateCheck(showWhenCurrent: true) }
     @objc private func stopTransfer() {
         guard let transfer = activeTransfer else { return }
         Task { await ApiClient.shared.cancelFileBatch(transfer.batchId) }
@@ -288,6 +298,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    private func scheduleUpdateCheck(showWhenCurrent: Bool = false) {
+        guard !updateCheckRunning else { return }
+        updateCheckRunning = true
+        Task { @MainActor [weak self] in
+            defer { self?.updateCheckRunning = false }
+            for _ in 0..<20 {
+                if await ApiClient.shared.ping() { break }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            do {
+                guard let update = try await ApiClient.shared.checkForUpdate() else {
+                    if showWhenCurrent { self?.showUpdateMessage(Loc.t("update.current")) }
+                    return
+                }
+                self?.presentUpdate(update)
+            } catch {
+                // Development builds intentionally omit the production update key.
+                if showWhenCurrent {
+                    self?.showUpdateMessage(error.localizedDescription, error: true)
+                }
+            }
+        }
+    }
+
+    private func presentUpdate(_ update: ApiClient.UpdateInfo) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = Loc.t("update.available")
+            .replacingOccurrences(of: "{version}", with: update.version)
+        let notes = update.notes?.trimmingCharacters(in: .whitespacesAndNewlines)
+        alert.informativeText = notes.flatMap { $0.isEmpty ? nil : $0 }
+            ?? Loc.t("update.installPrompt")
+        alert.addButton(withTitle: Loc.t("update.install"))
+        alert.addButton(withTitle: Loc.t("common.cancel"))
+
+        let visibleWindow = [NSApp.keyWindow, Self.settingsWC?.window, Self.historyWC?.window]
+            .compactMap { $0 }
+            .first(where: { $0.isVisible })
+        if visibleWindow == nil {
+            Self.showHistory()
+        }
+        guard let parentWindow = visibleWindow ?? Self.historyWC?.window else { return }
+        alert.beginSheetModal(for: parentWindow) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            Task { @MainActor in
+                do {
+                    guard try await ApiClient.shared.installUpdate() else { return }
+                    await Self.stopDaemonForRestart()
+                    try Self.scheduleUpdatedAppRelaunch()
+                    NSApp.terminate(nil)
+                } catch {
+                    self?.showUpdateMessage(error.localizedDescription, error: true)
+                }
+            }
+        }
+    }
+
+    private func showUpdateMessage(_ message: String, error: Bool = false) {
+        let alert = NSAlert()
+        alert.alertStyle = error ? .warning : .informational
+        alert.messageText = error ? Loc.t("update.failed") : Loc.t("update.title")
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     // ── Daemon ──────────────────────────────────────────────────
@@ -379,6 +455,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         await Task.detached(priority: .userInitiated) {
             Self.stopDaemon()
         }.value
+    }
+
+    private static func scheduleUpdatedAppRelaunch() throws {
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = [
+            "-c",
+            "sleep 1; exec /usr/bin/open \"$1\"",
+            "tailsync-relaunch",
+            Bundle.main.bundleURL.path,
+        ]
+        relaunch.standardOutput = FileHandle.nullDevice
+        relaunch.standardError = FileHandle.nullDevice
+        try relaunch.run()
     }
 
     /// Resolve the daemon binary path (same logic as launchDaemon).

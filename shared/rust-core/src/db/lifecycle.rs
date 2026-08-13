@@ -3,7 +3,8 @@ use super::*;
 impl HistoryDB {
     /// Delete a history entry and its unreferenced external payload.
     pub fn delete(&mut self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
-        self.delete_entries_with_batch_policy(&[id], None, true)
+        self.delete_entries_with_batch_policy(&[id], None, true)?;
+        Ok(())
     }
 
     /// Remove every history entry in one transaction.
@@ -24,9 +25,8 @@ impl HistoryDB {
         }
         std::fs::create_dir_all(&self.image_history_dir)?;
         // Reclaim pages after an explicit user-initiated clear operation.
-        let _ = self
-            .conn
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
         Ok(())
     }
 
@@ -62,7 +62,7 @@ impl HistoryDB {
             info!("Trimmed {} entries (total cap)", excess);
         }
 
-        if entry_type == "file" {
+        if matches!(entry_type, "file" | "image") {
             let quota = i64::try_from(self.storage_quota_bytes).unwrap_or(i64::MAX);
             let ids = self.expand_batch_groups(self.file_ids_over_byte_limit(quota)?)?;
             if !ids.is_empty() {
@@ -72,6 +72,14 @@ impl HistoryDB {
             }
         }
 
+        Ok(())
+    }
+
+    /// Apply current count and byte limits immediately after settings change.
+    pub fn enforce_limits(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        for entry_type in ["text", "image", "file"] {
+            self.trim(entry_type)?;
+        }
         Ok(())
     }
 
@@ -255,6 +263,10 @@ impl HistoryDB {
             }
         }
         tx.commit()?;
+        // Every deletion path, including quota trimming and duplicate
+        // replacement, must remove deleted rows from the WAL as well.
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
 
         for (stored, directory, reference) in references {
             let remaining: i64 = self.conn.query_row(

@@ -27,6 +27,12 @@ impl PendingFrame {
     }
 }
 
+fn record_permanent_delivery_warning(hostname: &str, error: &str) {
+    if error.contains("event timestamp is outside the accepted window") {
+        tailsync_core::sync_warning::record_expired_event(hostname);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) enum AckExpectation {
     None,
@@ -276,10 +282,8 @@ impl ConnectionPool {
         Ok(tx)
     }
 
-    /// Push a frame to the peer. Creates a persistent background connection on
-    /// first use. Prefer `queue_pool_frame` when calling through the shared
-    /// `Arc<Mutex<ConnectionPool>>`, because it releases the pool lock before
-    /// waiting for queue capacity.
+    /// Push a frame to a TCP peer. Creates a persistent background connection
+    /// on first use.
     pub async fn send(
         &mut self,
         addr: SocketAddr,
@@ -340,37 +344,6 @@ pub async fn acquire_peer_file_batch(
             .clone()
     };
     serializer.lock_owned().await
-}
-
-#[allow(dead_code)]
-pub(crate) async fn queue_pool_frame(
-    pool: &Arc<Mutex<ConnectionPool>>,
-    addr: SocketAddr,
-    hostname: String,
-    cmd: Command,
-    payload: Vec<u8>,
-) -> Result<(), String> {
-    if payload.len() > cmd.payload_limit() {
-        return Err(format!(
-            "{:?} payload exceeds the {} byte limit",
-            cmd,
-            cmd.payload_limit()
-        ));
-    }
-
-    let settings = { pool.lock().await.settings.clone() };
-    let trusted_key = settings
-        .lock()
-        .await
-        .trusted_peer_keys
-        .get(&hostname)
-        .cloned()
-        .ok_or_else(|| format!("Peer {hostname} is not paired"))?;
-    secure::decode_trusted_key(&trusted_key)
-        .map_err(|error| format!("Peer {hostname} has an invalid pinned key: {error}"))?;
-
-    let tx = { pool.lock().await.sender_for(addr, hostname)? };
-    enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), cmd, payload).await
 }
 
 pub async fn queue_peer_frame(
@@ -537,8 +510,14 @@ pub(super) async fn connection_task(
             result = connection => result,
         };
         let (mut stream, route) = match connection_result {
-            Ok(result) => result,
+            Ok(result) => {
+                clear_protocol_compatibility_error(&hostname);
+                result
+            }
             Err(e) => {
+                if e.contains("Incompatible TailSync protocol:") {
+                    record_protocol_compatibility_error(&hostname, &e);
+                }
                 warn!(
                     "Pool connect to {} ({}) failed: {} — retrying in {:?}",
                     preferred_target, hostname, e, RECONNECT_DELAY
@@ -590,6 +569,7 @@ pub(super) async fn connection_task(
             match delivery {
                 Ok(receipt) => frame.complete(Ok(receipt)),
                 Err(error) if is_permanent_delivery_error(&error) => {
+                    record_permanent_delivery_warning(&hostname, &error);
                     warn!("Dropping event rejected by remote peer: {error}");
                     debug!("Rejected event route: {target}");
                     frame.complete(Err(error));
@@ -655,6 +635,7 @@ pub(super) async fn connection_task(
                     match delivery {
                         Ok(receipt) => frame.complete(Ok(receipt)),
                         Err(error) if is_permanent_delivery_error(&error) => {
+                            record_permanent_delivery_warning(&hostname, &error);
                             warn!("Dropping event rejected by remote peer: {error}");
                             debug!("Rejected event route: {target}");
                             frame.complete(Err(error));
@@ -756,17 +737,16 @@ pub(super) async fn deliver_pending_frame(
             Ok(DeliveryReceipt::default())
         }
         AckExpectation::Event(message_id) => {
-            let mut envelope = EventEnvelope::decode(&pending.queued.payload)
+            let envelope = EventEnvelope::decode(&pending.queued.payload)
                 .map_err(|error| error.to_string())?;
             if envelope.message_id != message_id {
                 return Err("queued event ID does not match its acknowledgement".to_string());
             }
-            envelope.timestamp_ms = unix_timestamp_ms();
             let frame = Frame::try_new(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                envelope.encode(),
+                pending.queued.payload.clone(),
             )
             .map_err(|error| error.to_string())?;
             deliver_event_frame(stream, pending, &frame, message_id).await?;

@@ -342,6 +342,12 @@ struct SettingsView: View {
                     .font(.caption2.monospaced())
                     .foregroundColor(palette.tertiaryColor)
                     .textSelection(.enabled)
+                if let endpoint = localDevice?.iroh_endpoint_id {
+                    Text("iroh: \(endpoint)")
+                        .font(.caption2.monospaced())
+                        .foregroundColor(palette.tertiaryColor)
+                        .textSelection(.enabled)
+                }
             }
             Spacer()
         }
@@ -567,6 +573,15 @@ struct SettingsView: View {
                         .font(.caption2)
                         .foregroundColor(peer.trusted ? palette.positiveColor : palette.warningColor)
                 }
+                if let version = peer.requiredProtocolVersion {
+                    Text(
+                        Loc.t("settings.protocolUpgradeRequired")
+                            .replacingOccurrences(of: "{version}", with: String(version))
+                    )
+                    .font(.caption2)
+                    .foregroundColor(palette.warningColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 7) {
                     Text(route.address.isEmpty ? Loc.t("settings.pairedOffline") : route.address)
                         .font(.caption.monospaced())
@@ -735,11 +750,13 @@ struct SettingsView: View {
     }
 
     private func applyPeerResult(_ result: ApiClient.PeersResult, showLoading: Bool) {
-        localDevice = result.local
-        peers = result.peers.filter { peer in
-            peer.online || peer.trusted || peer.status == "discovered"
+        if result.requestSucceeded {
+            localDevice = result.local
+            peers = result.peers.filter { peer in
+                peer.online || peer.trusted || peer.status == "discovered"
+            }
+            pairedPeerEndpoints = result.pairedEndpoints
         }
-        pairedPeerEndpoints = result.pairedEndpoints
         peerError = result.error
         peerRequestInFlight = false
         if showLoading {
@@ -831,6 +848,7 @@ struct SettingsView: View {
                 return
             }
             persistedSettings = outcome.persisted
+            NotificationCenter.default.post(name: .tailSyncSettingsChanged, object: outcome.persisted)
             saved = true
             do {
                 try await Task.sleep(nanoseconds: 1_200_000_000)

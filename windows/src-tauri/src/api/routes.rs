@@ -75,7 +75,7 @@ pub(crate) fn peer_snapshot_data(
                     })
                 })
                 .collect::<Vec<_>>();
-            let mut value = match serde_json::to_value(peer) {
+            let mut value = match serde_json::to_value(&peer) {
                 Ok(value) => value,
                 Err(error) => {
                     log::warn!("Could not serialize peer snapshot: {error}");
@@ -87,6 +87,15 @@ pub(crate) fn peer_snapshot_data(
                 .map(|candidate| candidate.address.as_str()));
             value["status"] = serde_json::json!(peer_status);
             value["routes"] = Value::Array(routes);
+            let protocol_error = peer
+                .trusted
+                .then(|| network::protocol_compatibility_error(&peer.hostname))
+                .flatten();
+            value["protocol_error"] = serde_json::json!(protocol_error);
+            value["required_protocol_version"] = protocol_error
+                .as_ref()
+                .map(|_| serde_json::json!(crate::protocol::VERSION))
+                .unwrap_or(Value::Null);
             Some(value)
         })
         .collect::<Vec<_>>();
@@ -114,6 +123,7 @@ pub(crate) fn peer_snapshot_data(
             "connection_mode": mode,
             "public_key": identity.public_key_base64(),
             "fingerprint": identity.fingerprint(),
+            "iroh_endpoint_id": network::local_iroh_endpoint_id(&mode),
         },
         "peers": peers,
         "paired_peer_endpoints": settings.paired_peer_endpoints,
@@ -128,6 +138,44 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             data: None,
             error: None,
         },
+
+        "check_for_update" => {
+            let result = match crate::updates::app_handle() {
+                Ok(handle) => crate::updates::check_for_update(handle).await,
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(update) => Response {
+                    ok: true,
+                    data: Some(serde_json::to_value(update).unwrap_or(Value::Null)),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error),
+                },
+            }
+        }
+
+        "install_update" => {
+            let result = match crate::updates::app_handle() {
+                Ok(handle) => crate::updates::install_available_update(handle).await,
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(installed) => Response {
+                    ok: true,
+                    data: Some(serde_json::json!({ "installed": installed })),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error),
+                },
+            }
+        }
 
         "get_file_progress" => {
             let info = get_file_progress();
@@ -191,6 +239,12 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
         "get_version" => Response {
             ok: true,
             data: Some(serde_json::json!(CLIPBOARD_VERSION.load(Ordering::Acquire))),
+            error: None,
+        },
+
+        "get_sync_warning" => Response {
+            ok: true,
+            data: serde_json::to_value(tailsync_core::sync_warning::take()).ok(),
             error: None,
         },
 
@@ -335,11 +389,14 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             };
             let mut db = state.db.lock().await;
             match db.delete(id) {
-                Ok(()) => Response {
-                    ok: true,
-                    data: None,
-                    error: None,
-                },
+                Ok(()) => {
+                    bump_clipboard_version();
+                    Response {
+                        ok: true,
+                        data: None,
+                        error: None,
+                    }
+                }
                 Err(e) => Response {
                     ok: false,
                     data: None,
@@ -416,9 +473,27 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                         }
                     } else if entry_type == "file" {
                         if let Some(path) = file_path {
-                            restore_file_path_to_clipboard(&path, &file_name);
+                            if let Err(error) = restore_file_path_to_clipboard(&path, &file_name) {
+                                return Response {
+                                    ok: false,
+                                    data: None,
+                                    error: Some(error),
+                                };
+                            }
                         } else if let Some(data) = data.as_deref() {
-                            restore_file_to_clipboard(data, &file_name);
+                            if let Err(error) = restore_file_to_clipboard(data, &file_name) {
+                                return Response {
+                                    ok: false,
+                                    data: None,
+                                    error: Some(error),
+                                };
+                            }
+                        } else {
+                            return Response {
+                                ok: false,
+                                data: None,
+                                error: Some("file history data is unavailable".into()),
+                            };
                         }
                     } else {
                         let text = String::from_utf8_lossy(data.as_deref().unwrap_or_default())
@@ -498,6 +573,13 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     let mut db = state.db.lock().await;
                     db.set_max_history(limit);
                     db.set_storage_quota(quota);
+                    if let Err(error) = db.enforce_limits() {
+                        return Response {
+                            ok: false,
+                            data: None,
+                            error: Some(error.to_string()),
+                        };
+                    }
                     Response {
                         ok: true,
                         data: None,
@@ -520,7 +602,15 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     error: Some("missing parent".into()),
                 };
             };
+            let wait_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
             while has_active_file_progress() {
+                if tokio::time::Instant::now() >= wait_deadline {
+                    return Response {
+                        ok: false,
+                        data: None,
+                        error: Some("Timed out waiting for active file transfers to finish".into()),
+                    };
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
             let previous_storage_root = state.settings.lock().await.storage_root.clone();
@@ -752,6 +842,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             };
             if result.is_ok() {
                 state.pool.lock().await.disconnect_hostname(hostname);
+                network::clear_protocol_compatibility_error(hostname);
             }
             match result {
                 Ok(()) => Response {
@@ -784,6 +875,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .map_err(|error| error.to_string());
             if result.is_ok() {
                 state.pool.lock().await.disconnect_hostname(hostname);
+                network::clear_protocol_compatibility_error(hostname);
             }
             match result {
                 Ok(()) => Response {

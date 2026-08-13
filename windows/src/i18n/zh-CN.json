@@ -49,6 +49,7 @@
   "history.migrationWarningPrefix": "有",
   "history.migrationWarningSuffix": "条历史记录未能完成迁移。原数据已保留，并会在下次启动时重试。",
   "history.actionFailed": "操作未能完成",
+  "history.syncExpired": "一条较早的剪贴板内容未发送到 {peer}，以避免覆盖对方较新的剪贴板内容。",
 
   "settings.title": "设置",
   "settings.loading": "加载中...",
@@ -93,6 +94,7 @@
   "settings.confirming": "正在确认...",
   "settings.discovered": "已发现",
   "settings.offline": "离线",
+  "settings.protocolUpgradeRequired": "版本不兼容，请将两台设备都更新到使用协议 v{version} 的版本。",
   "settings.connected": "已连接",
   "settings.notConnected": "未连接",
   "settings.testTcpPort": "测试 TailSync TCP 端口",

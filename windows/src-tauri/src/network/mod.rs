@@ -44,6 +44,33 @@ const PEER_ONLINE_TTL: Duration = Duration::from_secs(12);
 /// Used by the macOS SwiftUI shell to verify that the peer listener survived
 /// sleep/wake transitions.
 pub static TCP_SERVER_HEALTHY: AtomicBool = AtomicBool::new(false);
+static PROTOCOL_COMPATIBILITY_ERRORS: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
+
+fn protocol_compatibility_errors() -> &'static StdMutex<HashMap<String, String>> {
+    PROTOCOL_COMPATIBILITY_ERRORS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+pub(crate) fn record_protocol_compatibility_error(hostname: &str, error: &str) {
+    protocol_compatibility_errors()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(hostname.to_string(), error.chars().take(500).collect());
+}
+
+pub(crate) fn clear_protocol_compatibility_error(hostname: &str) {
+    protocol_compatibility_errors()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(hostname);
+}
+
+pub fn protocol_compatibility_error(hostname: &str) -> Option<String> {
+    protocol_compatibility_errors()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(hostname)
+        .cloned()
+}
 
 mod health;
 mod iroh;
@@ -57,6 +84,10 @@ use health::{record_probe_miss, record_probe_success, PeerRouteKey};
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
 pub use iroh::start_server as start_iroh_server;
+
+pub fn local_iroh_endpoint_id(mode: &str) -> Option<String> {
+    (mode == "auto").then(iroh::local_endpoint_id).flatten()
+}
 pub use server::start_server;
 #[cfg(test)]
 use server::ConnectionLimiter;
@@ -69,8 +100,8 @@ pub use pool::{
 };
 #[cfg(test)]
 use pool::{
-    connection_task, deliver_pending_frame, queue_pool_frame, race_connect_and_handshake,
-    AckExpectation, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
+    connection_task, deliver_pending_frame, race_connect_and_handshake, AckExpectation,
+    PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
 };
 mod rate_limit;
 use rate_limit::check_peer_event_budget;
@@ -670,18 +701,16 @@ mod tests {
         acquire_peer_file_batch, bind_tcp_listener, cached_discover_peers, clear_peer_cache,
         connection_task, deliver_pending_frame, merge_discovery_results,
         merge_lan_discovery_results, merge_paired_peers, peer_socket_addr, prewarm_connections,
-        queue_pool_frame, race_connect_and_handshake, record_probe_miss, record_probe_success,
-        register_active_session, route_health, secure, source_matches_mode, store_peer_cache,
-        AckExpectation, ConnectionInterface, ConnectionLimiter, ConnectionPool, PeerCandidate,
-        PeerRouteKey, PeerStatus, PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate,
-        ResolvedTarget, POOL_CHANNEL_SIZE, TCP_PORT,
+        queue_peer_frame, race_connect_and_handshake, record_probe_miss, record_probe_success,
+        record_protocol_compatibility_error, register_active_session, route_health, secure,
+        source_matches_mode, store_peer_cache, AckExpectation, ConnectionInterface,
+        ConnectionLimiter, ConnectionPool, PeerCandidate, PeerRouteKey, PeerStatus, PendingFrame,
+        PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget, POOL_CHANNEL_SIZE, TCP_PORT,
     };
     use crate::crypto::{self, Settings};
     use crate::identity::DeviceIdentity;
     use crate::network::tailscale::{LocalInfo, PeerInfo};
-    use crate::protocol::{
-        unix_timestamp_ms, Command, EventEnvelope, Frame, MessageId, EVENT_TIMESTAMP_WINDOW_MS,
-    };
+    use crate::protocol::{unix_timestamp_ms, Command, EventEnvelope, Frame, MessageId};
     use base64::{engine::general_purpose::STANDARD, Engine};
     use std::collections::HashMap;
     use std::net::IpAddr;
@@ -689,6 +718,19 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::{mpsc, watch, Mutex};
     use tokio::time::{timeout, Duration};
+
+    #[test]
+    fn protocol_compatibility_diagnostic_is_recorded_and_cleared() {
+        let hostname = format!("compatibility-test-{}", rand::random::<u64>());
+        let message = "Incompatible TailSync protocol: peer uses v2";
+        record_protocol_compatibility_error(&hostname, message);
+        assert_eq!(
+            super::protocol_compatibility_error(&hostname).as_deref(),
+            Some(message)
+        );
+        super::clear_protocol_compatibility_error(&hostname);
+        assert_eq!(super::protocol_compatibility_error(&hostname), None);
+    }
 
     #[tokio::test]
     async fn listener_can_rebind_after_a_connection_closes() {
@@ -1295,7 +1337,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_pending_event_does_not_block_a_new_event_after_reconnect() {
+    async fn fifteen_minute_old_event_is_not_revived_after_reconnect() {
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = Arc::new(DeviceIdentity::generate_for_test());
         let settings = race_settings(&server_identity);
@@ -1337,9 +1379,10 @@ mod tests {
             let retried = second_connection.read_frame().await.unwrap();
             let retried_envelope = EventEnvelope::decode(&retried.payload).unwrap();
             assert_eq!(retried_envelope.message_id, first_envelope.message_id);
-            retried_envelope
+            assert_eq!(retried_envelope.timestamp_ms, first_envelope.timestamp_ms);
+            assert!(retried_envelope
                 .validate_timestamp(unix_timestamp_ms())
-                .unwrap();
+                .is_err());
             second_connection
                 .write_frame(
                     &Frame::try_new(
@@ -1390,7 +1433,7 @@ mod tests {
         let mut before_sleep =
             QueuedFrame::new(Command::TextPayload, b"before-sleep".to_vec()).unwrap();
         let mut stale = EventEnvelope::decode(&before_sleep.payload).unwrap();
-        stale.timestamp_ms = unix_timestamp_ms() - EVENT_TIMESTAMP_WINDOW_MS - 1;
+        stale.timestamp_ms = unix_timestamp_ms() - 15 * 60 * 1000;
         before_sleep.payload = stale.encode();
         priority.send(before_sleep).await.unwrap();
         priority
@@ -1442,15 +1485,23 @@ mod tests {
             .insert((ResolvedTarget::Tcp(addr), "blocked-peer".into()), tx);
         let pool = Arc::new(Mutex::new(pool_value));
         let queued_pool = pool.clone();
+        let peer = PeerInfo {
+            hostname: "blocked-peer".into(),
+            tailscale_ip: addr.ip().to_string(),
+            online: true,
+            enabled: true,
+            address: addr.ip().to_string(),
+            connection_mode: "lan".into(),
+            trusted: true,
+            fingerprint: String::new(),
+            candidates: vec![PeerCandidate::new(
+                ConnectionInterface::Lan,
+                addr.ip().to_string(),
+            )],
+            current_interface: None,
+        };
         let blocked_send = tokio::spawn(async move {
-            queue_pool_frame(
-                &queued_pool,
-                addr,
-                "blocked-peer".into(),
-                Command::TextPayload,
-                vec![2],
-            )
-            .await
+            queue_peer_frame(&queued_pool, &peer, Command::TextPayload, vec![2]).await
         });
 
         tokio::task::yield_now().await;

@@ -36,6 +36,12 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/monet4070/TailSync/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
     }
   }
 }

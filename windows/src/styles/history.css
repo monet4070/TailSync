@@ -1008,6 +1008,12 @@ html, body {
   white-space: nowrap;
 }
 
+.sync-warning-toast {
+  max-width: min(520px, calc(100vw - 32px));
+  white-space: normal;
+  text-align: center;
+}
+
 /* ── Confirmation dialog ────────────────────────────────────────── */
 .dialog-backdrop {
   position: fixed;

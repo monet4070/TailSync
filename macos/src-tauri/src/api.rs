@@ -181,43 +181,37 @@ pub fn clear_file_batch_cancel(batch_id: &str) {
 
 /// Write file content to a temp file and put its URL on the macOS clipboard.
 #[cfg(target_os = "macos")]
-pub fn restore_file_to_clipboard(data: &[u8], fname: &str) {
-    match crate::db::materialize_clipboard_bytes(data, fname) {
-        Ok(path) => write_file_path_to_clipboard(&path),
-        Err(error) => log::error!("Could not prepare legacy file for clipboard: {error}"),
-    }
+pub fn restore_file_to_clipboard(data: &[u8], fname: &str) -> Result<(), String> {
+    let path = crate::db::materialize_clipboard_bytes(data, fname)
+        .map_err(|error| format!("Could not prepare legacy file for clipboard: {error}"))?;
+    write_file_path_to_clipboard(&path)
 }
 
-pub fn restore_file_path_to_clipboard(file_path: &Path, file_name: &str) {
-    let clipboard_path = match crate::db::materialize_clipboard_file(file_path, file_name) {
-        Ok(path) => path,
-        Err(error) => {
-            log::error!("Could not prepare file for clipboard: {error}");
-            return;
-        }
-    };
-    write_file_path_to_clipboard(&clipboard_path);
+pub fn restore_file_path_to_clipboard(file_path: &Path, file_name: &str) -> Result<(), String> {
+    let clipboard_path = crate::db::materialize_clipboard_file(file_path, file_name)
+        .map_err(|error| format!("Could not prepare file for clipboard: {error}"))?;
+    write_file_path_to_clipboard(&clipboard_path)
 }
 
 #[cfg(target_os = "macos")]
-fn write_file_path_to_clipboard(file_path: &Path) {
-    match crate::clipboard_file::write_clipboard_files(&[file_path.to_path_buf()]) {
-        Ok(()) => log::info!("Restored file to clipboard: {}", file_path.display()),
-        Err(error) => log::error!("Could not restore file to clipboard: {error}"),
-    }
+fn write_file_path_to_clipboard(file_path: &Path) -> Result<(), String> {
+    crate::clipboard_file::write_clipboard_files(&[file_path.to_path_buf()])
+        .map_err(|error| format!("Could not restore file to clipboard: {error}"))?;
+    log::info!("Restored file to clipboard: {}", file_path.display());
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
-pub fn restore_file_to_clipboard(data: &[u8], fname: &str) {
-    match crate::db::materialize_clipboard_bytes(data, fname) {
-        Ok(path) => write_file_path_to_clipboard(&path),
-        Err(error) => log::error!("Could not prepare legacy file for clipboard: {error}"),
-    }
+pub fn restore_file_to_clipboard(data: &[u8], fname: &str) -> Result<(), String> {
+    let path = crate::db::materialize_clipboard_bytes(data, fname)
+        .map_err(|error| format!("Could not prepare legacy file for clipboard: {error}"))?;
+    write_file_path_to_clipboard(&path)
 }
 
 #[cfg(target_os = "windows")]
-fn write_file_path_to_clipboard(file_path: &Path) {
+fn write_file_path_to_clipboard(file_path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
@@ -235,30 +229,42 @@ fn write_file_path_to_clipboard(file_path: &Path) {
 
     unsafe {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return;
+            return Err("Could not open the Windows clipboard".to_string());
         }
-        EmptyClipboard();
+        if EmptyClipboard() == 0 {
+            CloseClipboard();
+            return Err("Could not clear the Windows clipboard".to_string());
+        }
         let h = GlobalAlloc(GHND, total_size);
-        if !h.is_null() {
-            let ptr = GlobalLock(h) as *mut u8;
-            // Write DROPFILES header
-            let header = DropFilesHeader {
-                p_files: path_offset,
-                pt: [0, 0],
-                f_nc: 0,
-                f_wide: 1,
-            };
-            std::ptr::copy_nonoverlapping(
-                &header as *const _ as *const u8,
-                ptr,
-                std::mem::size_of::<DropFilesHeader>(),
-            );
-            // Write wide path + double null
-            let path_ptr = ptr.add(path_offset as usize) as *mut u16;
-            std::ptr::copy_nonoverlapping(wide_path.as_ptr(), path_ptr, wide_path.len());
-            path_ptr.add(wide_path.len()).write(0); // double null
-            GlobalUnlock(h);
-            SetClipboardData(15, h); // CF_HDROP
+        if h.is_null() {
+            CloseClipboard();
+            return Err("Could not allocate Windows clipboard memory".to_string());
+        }
+        let ptr = GlobalLock(h) as *mut u8;
+        if ptr.is_null() {
+            GlobalFree(h);
+            CloseClipboard();
+            return Err("Could not lock Windows clipboard memory".to_string());
+        }
+        let header = DropFilesHeader {
+            p_files: path_offset,
+            pt: [0, 0],
+            f_nc: 0,
+            f_wide: 1,
+        };
+        std::ptr::copy_nonoverlapping(
+            &header as *const _ as *const u8,
+            ptr,
+            std::mem::size_of::<DropFilesHeader>(),
+        );
+        let path_ptr = ptr.add(path_offset as usize) as *mut u16;
+        std::ptr::copy_nonoverlapping(wide_path.as_ptr(), path_ptr, wide_path.len());
+        path_ptr.add(wide_path.len()).write(0);
+        GlobalUnlock(h);
+        if SetClipboardData(15, h).is_null() {
+            GlobalFree(h);
+            CloseClipboard();
+            return Err("Could not publish the file to the Windows clipboard".to_string());
         }
         CloseClipboard();
     }
@@ -266,6 +272,7 @@ fn write_file_path_to_clipboard(file_path: &Path) {
         "Restored file to Windows clipboard: {}",
         file_path.display()
     );
+    Ok(())
 }
 
 #[repr(C)]
@@ -278,10 +285,14 @@ struct DropFilesHeader {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn restore_file_to_clipboard(_data: &[u8], _fname: &str) {}
+pub fn restore_file_to_clipboard(_data: &[u8], _fname: &str) -> Result<(), String> {
+    Err("File clipboard restore is unavailable on this platform".to_string())
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn write_file_path_to_clipboard(_file_path: &Path) {}
+fn write_file_path_to_clipboard(_file_path: &Path) -> Result<(), String> {
+    Err("File clipboard restore is unavailable on this platform".to_string())
+}
 
 /// Nearest-neighbor downscale of a validated packed RGBA image.
 pub fn thumbnail_rgba(

@@ -339,7 +339,9 @@ pub struct Frame {
 pub enum ProtocolError {
     #[error("invalid magic bytes: expected TSYN")]
     InvalidMagic,
-    #[error("unsupported protocol version: {0}")]
+    #[error(
+        "Incompatible TailSync protocol: peer uses v{0}, this version requires v{VERSION}. Update TailSync on both devices."
+    )]
     UnsupportedVersion(u8),
     #[error("checksum mismatch")]
     ChecksumMismatch,
@@ -452,12 +454,18 @@ impl Frame {
 
     /// Encode frame to bytes for wire transmission
     pub fn encode(&self) -> Vec<u8> {
+        self.encode_with_version(VERSION)
+    }
+
+    /// Encode a control response for a peer whose framing version is unsupported.
+    /// This is intentionally crate-private: normal traffic must always use VERSION.
+    pub(crate) fn encode_with_version(&self, version: u8) -> Vec<u8> {
         let payload_len = self.payload.len() as u32;
         let mut buf = Vec::with_capacity(HEADER_SIZE + self.payload.len() + CHECKSUM_SIZE);
 
         // Header
         buf.extend_from_slice(&MAGIC);
-        buf.push(VERSION);
+        buf.push(version);
         buf.push(self.flags.0);
         buf.extend_from_slice(&(self.command as u16).to_be_bytes());
         buf.extend_from_slice(&self.sequence.to_be_bytes());

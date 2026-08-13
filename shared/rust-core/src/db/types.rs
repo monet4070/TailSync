@@ -21,6 +21,13 @@ pub struct HistoryEntry {
     pub batch_status: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HistoryQueryPage {
+    pub entries: Vec<HistoryEntry>,
+    pub total: Option<usize>,
+    pub has_more: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct HistoryFileInput {
     pub name: String,

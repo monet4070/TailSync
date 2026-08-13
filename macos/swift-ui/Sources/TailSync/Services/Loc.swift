@@ -4,6 +4,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let tailSyncLocaleChanged = Notification.Name("TailSyncLocaleChanged")
+    static let tailSyncSettingsChanged = Notification.Name("TailSyncSettingsChanged")
 }
 
 /// Observable localization service.  Reads/watches the language and theme
@@ -88,6 +89,7 @@ final class Loc: ObservableObject {
             "history.incomplete": "Incomplete",
             "history.pin": "Pin",
             "history.unpin": "Unpin",
+            "history.syncExpired": "An older clipboard item was not sent to {peer}, preventing it from replacing newer clipboard content.",
             "common.cancel": "Cancel",
             "history.categoryFilter": "Filter by category",
             "history.category.all": "All categories",
@@ -132,7 +134,14 @@ final class Loc: ObservableObject {
             "settings.retry": "Retry",
             "menu.history": "History",
             "menu.settings": "Settings",
+            "menu.checkForUpdates": "Check for Updates",
             "menu.quit": "Quit TailSync",
+            "update.title": "TailSync Update",
+            "update.available": "TailSync {version} is available",
+            "update.installPrompt": "Install the signed update now?",
+            "update.install": "Install Update",
+            "update.current": "TailSync is up to date.",
+            "update.failed": "Update Failed",
             "settings.network": "Network",
             "settings.connectionMode": "Connection",
             "settings.modeAuto": "Automatic",
@@ -166,6 +175,7 @@ final class Loc: ObservableObject {
             "settings.disconnected": "Not connected",
             "settings.online": "Online",
             "settings.offline": "Offline",
+            "settings.protocolUpgradeRequired": "Incompatible version. Update both devices to a release using protocol v{version}.",
             "settings.confirming": "Confirming…",
             "settings.discovered": "Discovered",
             "settings.paired": "Paired",
@@ -213,6 +223,7 @@ final class Loc: ObservableObject {
             "history.incomplete": "未完成",
             "history.pin": "置顶",
             "history.unpin": "取消置顶",
+            "history.syncExpired": "一条较早的剪贴板内容未发送到 {peer}，以避免覆盖对方较新的剪贴板内容。",
             "common.cancel": "取消",
             "history.categoryFilter": "按分类筛选",
             "history.category.all": "全部分类",
@@ -257,7 +268,14 @@ final class Loc: ObservableObject {
             "settings.retry": "重试",
             "menu.history": "历史记录",
             "menu.settings": "设置",
+            "menu.checkForUpdates": "检查更新",
             "menu.quit": "退出 TailSync",
+            "update.title": "TailSync 更新",
+            "update.available": "TailSync {version} 已可用",
+            "update.installPrompt": "现在安装已签名的更新吗？",
+            "update.install": "安装更新",
+            "update.current": "TailSync 已是最新版。",
+            "update.failed": "更新失败",
             "settings.network": "网络",
             "settings.connectionMode": "连接方式",
             "settings.modeAuto": "自动",
@@ -291,6 +309,7 @@ final class Loc: ObservableObject {
             "settings.disconnected": "未连接",
             "settings.online": "在线",
             "settings.offline": "离线",
+            "settings.protocolUpgradeRequired": "版本不兼容，请将两台设备都更新到使用协议 v{version} 的版本。",
             "settings.confirming": "正在确认…",
             "settings.discovered": "已发现",
             "settings.paired": "已配对",

@@ -7,3 +7,4 @@ pub mod pairing;
 pub mod protocol;
 pub mod secure;
 pub mod sync;
+pub mod sync_warning;
