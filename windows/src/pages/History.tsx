@@ -216,7 +216,6 @@ function FilterDropdown({
         aria-label={`${label}: ${selected?.label}`}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={`${label}: ${selected?.label}`}
         onClick={() => setOpen((current) => !current)}
       >
         {SelectedIcon && (

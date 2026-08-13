@@ -325,11 +325,27 @@ html, body {
   max-width: min(230px, calc(100vw - 20px));
   max-height: 250px;
   padding: 4px;
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--bg-raised);
   box-shadow: var(--shadow-lg);
+}
+
+.filter-menu::-webkit-scrollbar {
+  width: 4px;
+  height: 0;
+}
+
+.filter-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.filter-menu::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: var(--border-strong);
 }
 
 .filter-option {
