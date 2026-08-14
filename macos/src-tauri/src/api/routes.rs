@@ -18,6 +18,7 @@ pub(crate) fn peer_snapshot_data(
             network::tailscale::LocalInfo {
                 hostname: network::lan::local_hostname(),
                 tailscale_ip: String::new(),
+                candidates: Vec::new(),
             },
             Vec::new(),
             Some(error),

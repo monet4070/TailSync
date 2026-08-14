@@ -697,6 +697,7 @@ mod tests {
                 LocalInfo {
                     hostname: "macbook".into(),
                     tailscale_ip: "100.64.0.1".into(),
+                    candidates: Vec::new(),
                 },
                 vec![peer],
             )),

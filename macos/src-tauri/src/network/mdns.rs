@@ -216,6 +216,7 @@ pub fn snapshot() -> (LocalInfo, Vec<PeerInfo>) {
         LocalInfo {
             hostname: lan::local_hostname(),
             tailscale_ip: String::new(),
+            candidates: Vec::new(),
         },
         peers,
     )

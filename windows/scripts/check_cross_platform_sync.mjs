@@ -104,9 +104,7 @@ assertTreeMatch('src-tauri/src', [
   'network/health.rs',
   'network/peer_cache.rs',
   'network/pool.rs',
-  'network/server.rs',
   'network/tailscale.rs',
-  'network/types.rs',
   'tray.rs',
 ]);
 for (const path of [
@@ -123,6 +121,36 @@ function read(root, path) {
 
 function readCore(path) {
   return readFileSync(join(sharedCoreRoot, path), 'utf8');
+}
+
+// Peer discovery/health/delivery types moved into the shared core: platform
+// files must be pure re-export shims so the shared contract cannot drift.
+// The checks strip comments and anchor on a statement start so a commented
+// `// pub use ...` can never satisfy them.
+function isReExportShim(source, corePath, required) {
+  const code = source
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  const statement = new RegExp(
+    `^\\s*pub use ${corePath.replaceAll('.', '\\.')}::\\{[^}]*\\b${required}\\b`,
+    'm',
+  );
+  return statement.test(code);
+}
+// Negative self-check: a commented re-export must not pass.
+if (isReExportShim('// pub use tailsync_core::peer::types::{PeerInfo}', 'tailsync_core::peer::types', 'PeerInfo')) {
+  fail('Drift-check shim detector accepted a commented-out re-export.');
+}
+for (const [root, label] of [[winRoot, 'Windows'], [macRoot, 'macOS']]) {
+  const typesSource = read(root, 'src-tauri/src/network/types.rs');
+  if (!isReExportShim(typesSource, 'tailsync_core::peer::types', 'PeerStatus')) {
+    fail(`${label} network/types.rs must re-export the shared peer types from tailsync_core.`);
+  }
+  const tailscaleSource = read(root, 'src-tauri/src/network/tailscale.rs');
+  if (!isReExportShim(tailscaleSource, 'tailsync_core::peer::types', 'PeerInfo')) {
+    fail(`${label} network/tailscale.rs must re-export PeerInfo from tailsync_core.`);
+  }
 }
 
 function assertReceivedFileHistorySource(root, platform) {
@@ -371,7 +399,7 @@ if (missingSwiftProgressFields.length) {
 }
 assertJsonFields('Image thumbnail', macApiContractSource, ['width', 'height', 'rgba_b64']);
 
-const peerInfoFields = rustFields(read(macRoot, 'src-tauri/src/network/tailscale.rs'), 'PeerInfo');
+const peerInfoFields = rustFields(readCore('src/peer/types.rs'), 'PeerInfo');
 peerInfoFields.add('routes');
 const swiftPeerFields = swiftFields(swiftSource, 'PeerSnapshot');
 swiftPeerFields.delete('id');

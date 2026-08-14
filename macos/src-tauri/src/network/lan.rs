@@ -193,6 +193,7 @@ pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
         LocalInfo {
             hostname: local_hostname(),
             tailscale_ip: local_ip(),
+            candidates: Vec::new(),
         },
         peers,
     ))

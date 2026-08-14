@@ -7,127 +7,11 @@ pub(super) struct PoolSender {
     pub(super) shutdown: watch::Sender<bool>,
 }
 
-pub(super) struct QueuedFrame {
-    pub(super) command: Command,
-    pub(super) payload: Vec<u8>,
-    pub(super) acknowledgement: AckExpectation,
-    pub(super) completion: Option<oneshot::Sender<Result<DeliveryReceipt, String>>>,
-}
-
-pub(super) struct PendingFrame {
-    pub(super) queued: QueuedFrame,
-    pub(super) sequence: u32,
-}
-
-impl PendingFrame {
-    fn complete(mut self, result: Result<DeliveryReceipt, String>) {
-        if let Some(completion) = self.queued.completion.take() {
-            let _ = completion.send(result);
-        }
-    }
-}
-
-fn record_permanent_delivery_warning(hostname: &str, error: &str) {
-    if error.contains("event timestamp is outside the accepted window") {
-        tailsync_core::sync_warning::record_expired_event(hostname);
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum AckExpectation {
-    None,
-    Event(MessageId),
-    File(TransferId),
-    Batch(TransferId),
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DeliveryReceipt {
-    pub next_offset: Option<u64>,
-}
-
-impl QueuedFrame {
-    pub(super) fn new(command: Command, content: Vec<u8>) -> Result<Self, String> {
-        let (payload, acknowledgement) =
-            if matches!(command, Command::TextPayload | Command::ImagePayload) {
-                let envelope = EventEnvelope::new(content);
-                if envelope.encoded_len() > command.payload_limit() {
-                    return Err(format!(
-                        "{:?} reliable payload exceeds the {} byte limit",
-                        command,
-                        command.payload_limit()
-                    ));
-                }
-                let message_id = envelope.message_id;
-                (envelope.encode(), AckExpectation::Event(message_id))
-            } else {
-                if content.len() > command.payload_limit() {
-                    return Err(format!(
-                        "{:?} payload exceeds the {} byte limit",
-                        command,
-                        command.payload_limit()
-                    ));
-                }
-                (content, AckExpectation::None)
-            };
-        Ok(Self {
-            command,
-            payload,
-            acknowledgement,
-            completion: None,
-        })
-    }
-
-    fn confirmed_file(
-        command: Command,
-        payload: Vec<u8>,
-        transfer_id: TransferId,
-        completion: oneshot::Sender<Result<DeliveryReceipt, String>>,
-    ) -> Result<Self, String> {
-        if !matches!(
-            command,
-            Command::FileMeta | Command::FileChunk | Command::FileComplete
-        ) {
-            return Err(format!("{:?} is not a confirmable file command", command));
-        }
-        if payload.len() > command.payload_limit() {
-            return Err(format!(
-                "{:?} payload exceeds the {} byte limit",
-                command,
-                command.payload_limit()
-            ));
-        }
-        Ok(Self {
-            command,
-            payload,
-            acknowledgement: AckExpectation::File(transfer_id),
-            completion: Some(completion),
-        })
-    }
-
-    fn confirmed_batch(
-        command: Command,
-        payload: Vec<u8>,
-        batch_id: TransferId,
-        completion: oneshot::Sender<Result<DeliveryReceipt, String>>,
-    ) -> Result<Self, String> {
-        if !matches!(
-            command,
-            Command::FileBatchStart | Command::FileBatchComplete
-        ) {
-            return Err(format!("{:?} is not a confirmable batch command", command));
-        }
-        if payload.len() > command.payload_limit() {
-            return Err(format!("{:?} payload exceeds the limit", command));
-        }
-        Ok(Self {
-            command,
-            payload,
-            acknowledgement: AckExpectation::Batch(batch_id),
-            completion: Some(completion),
-        })
-    }
-}
+use tailsync_core::peer::delivery::{
+    record_permanent_delivery_warning, DeliveryConfig, DeliveryError,
+};
+pub(super) use tailsync_core::peer::delivery::{PendingFrame, QueuedFrame};
+pub use tailsync_core::peer::types::DeliveryReceipt;
 
 impl PoolSender {
     #[cfg(test)]
@@ -155,26 +39,7 @@ pub struct ConnectionPool {
     settings: Arc<Mutex<crypto::Settings>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum ResolvedTarget {
-    Tcp(SocketAddr),
-    Iroh(String),
-}
-
-impl std::fmt::Display for ResolvedTarget {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Tcp(address) => address.fmt(formatter),
-            Self::Iroh(endpoint_id) => write!(formatter, "iroh:{endpoint_id}"),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct ResolvedCandidate {
-    pub(super) candidate: PeerCandidate,
-    pub(super) target: ResolvedTarget,
-}
+pub(super) use tailsync_core::peer::types::{ResolvedCandidate, ResolvedTarget};
 
 fn resolve_candidates(peer: &tailscale::PeerInfo) -> Result<Vec<ResolvedCandidate>, String> {
     let mut candidates = peer.candidates.clone();
@@ -404,10 +269,11 @@ pub async fn queue_peer_file_frame(
     let (completion_tx, completion_rx) = oneshot::channel();
     let queued = QueuedFrame::confirmed_file(command, payload, transfer_id, completion_tx)?;
     enqueue_queued_frame(tx, preferred, queued).await?;
-    timeout(FILE_CONFIRM_TIMEOUT, completion_rx)
+    let completion = timeout(FILE_CONFIRM_TIMEOUT, completion_rx)
         .await
         .map_err(|_| format!("Timed out waiting for {:?} confirmation", command))?
-        .map_err(|_| format!("Connection task for {} closed", peer.hostname))?
+        .map_err(|_| format!("Connection task for {} closed", peer.hostname))?;
+    completion.map_err(|error| error.to_string())
 }
 
 pub async fn queue_peer_batch_frame(
@@ -435,10 +301,11 @@ pub async fn queue_peer_batch_frame(
     let (completion_tx, completion_rx) = oneshot::channel();
     let queued = QueuedFrame::confirmed_batch(command, payload, batch_id, completion_tx)?;
     enqueue_queued_frame(tx, preferred, queued).await?;
-    timeout(FILE_CONFIRM_TIMEOUT, completion_rx)
+    let completion = timeout(FILE_CONFIRM_TIMEOUT, completion_rx)
         .await
         .map_err(|_| format!("Timed out waiting for {:?} confirmation", command))?
-        .map_err(|_| format!("Connection task for {} closed", peer.hostname))?
+        .map_err(|_| format!("Connection task for {} closed", peer.hostname))?;
+    completion.map_err(|error| error.to_string())
 }
 
 /// Start persistent connection tasks before the first clipboard payload so
@@ -472,7 +339,7 @@ async fn enqueue_queued_frame(
     target: ResolvedTarget,
     queued: QueuedFrame,
 ) -> Result<(), String> {
-    let command = queued.command;
+    let command = queued.command();
     timeout(POOL_SEND_TIMEOUT, tx.channel_for(command).send(queued))
         .await
         .map_err(|_| format!("Timed out queueing frame for {target}"))?
@@ -556,12 +423,10 @@ pub(super) async fn connection_task(
             active.interface.as_str(),
             active.latency
         );
-        let _active_guard = authenticated_sessions().register(
-            RouteKey {
-                hostname: hostname.clone(),
-                interface: active.interface,
-                address: route.candidate.address,
-            },
+        let _active_guard = register_active_session(
+            &hostname,
+            active.interface,
+            &route.candidate.address,
             active.latency,
         );
 
@@ -574,12 +439,12 @@ pub(super) async fn connection_task(
             let delivery = tokio::select! {
                 biased;
                 _ = wait_for_shutdown(&mut shutdown) => return,
-                result = deliver_pending_frame(&mut stream, &frame) => result,
+                result = deliver_pending_frame(&mut stream, &frame, &DeliveryConfig::DEFAULT) => result,
             };
             match delivery {
                 Ok(receipt) => frame.complete(Ok(receipt)),
-                Err(error) if is_permanent_delivery_error(&error) => {
-                    record_permanent_delivery_warning(&hostname, &error);
+                Err(error @ DeliveryError::Rejected(_)) => {
+                    record_permanent_delivery_warning(&hostname, &error.to_string());
                     warn!("Dropping event rejected by remote peer: {error}");
                     debug!("Rejected event route: {target}");
                     frame.complete(Err(error));
@@ -639,20 +504,17 @@ pub(super) async fn connection_task(
             };
             match next {
                 Ok(Some(queued)) => {
-                    let frame = PendingFrame {
-                        queued,
-                        sequence: next_sequence,
-                    };
+                    let frame = PendingFrame::new(queued, next_sequence);
                     next_sequence = next_sequence.wrapping_add(1).max(1);
                     let delivery = tokio::select! {
                         biased;
                         _ = wait_for_shutdown(&mut shutdown) => return,
-                        result = deliver_pending_frame(&mut stream, &frame) => result,
+                        result = deliver_pending_frame(&mut stream, &frame, &DeliveryConfig::DEFAULT) => result,
                     };
                     match delivery {
                         Ok(receipt) => frame.complete(Ok(receipt)),
-                        Err(error) if is_permanent_delivery_error(&error) => {
-                            record_permanent_delivery_warning(&hostname, &error);
+                        Err(error @ DeliveryError::Rejected(_)) => {
+                            record_permanent_delivery_warning(&hostname, &error.to_string());
                             warn!("Dropping event rejected by remote peer: {error}");
                             debug!("Rejected event route: {target}");
                             frame.complete(Err(error));
@@ -733,281 +595,33 @@ pub(super) async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
         }
     }
 }
-
-pub(super) async fn deliver_pending_frame(
-    stream: &mut secure::SecureConnection,
-    pending: &PendingFrame,
-) -> Result<DeliveryReceipt, String> {
-    match pending.queued.acknowledgement {
-        AckExpectation::None => {
-            let frame = Frame::try_new(
-                pending.queued.command,
-                0,
-                pending.sequence,
-                pending.queued.payload.clone(),
-            )
-            .map_err(|error| error.to_string())?;
-            stream
-                .write_frame(&frame)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok(DeliveryReceipt::default())
-        }
-        AckExpectation::Event(message_id) => {
-            let envelope = EventEnvelope::decode(&pending.queued.payload)
-                .map_err(|error| error.to_string())?;
-            if envelope.message_id != message_id {
-                return Err("queued event ID does not match its acknowledgement".to_string());
-            }
-            let frame = Frame::try_new(
-                pending.queued.command,
-                0,
-                pending.sequence,
-                pending.queued.payload.clone(),
-            )
-            .map_err(|error| error.to_string())?;
-            deliver_event_frame(stream, pending, &frame, message_id).await?;
-            Ok(DeliveryReceipt::default())
-        }
-        AckExpectation::File(transfer_id) => {
-            let frame = Frame::try_new(
-                pending.queued.command,
-                0,
-                pending.sequence,
-                pending.queued.payload.clone(),
-            )
-            .map_err(|error| error.to_string())?;
-            return deliver_file_frame(stream, pending, &frame, transfer_id).await;
-        }
-        AckExpectation::Batch(batch_id) => {
-            let frame = Frame::try_new(
-                pending.queued.command,
-                0,
-                pending.sequence,
-                pending.queued.payload.clone(),
-            )
-            .map_err(|error| error.to_string())?;
-            return deliver_batch_frame(stream, pending, &frame, batch_id).await;
-        }
-    }
-}
-
-fn is_permanent_delivery_error(error: &str) -> bool {
-    error.starts_with("peer rejected event:")
-        || error.starts_with("peer rejected file:")
-        || error.starts_with("peer rejected batch:")
-}
-
-async fn deliver_event_frame(
-    stream: &mut secure::SecureConnection,
-    pending: &PendingFrame,
-    frame: &Frame,
-    message_id: MessageId,
-) -> Result<(), String> {
-    for attempt in 0..EVENT_MAX_ATTEMPTS {
-        stream
-            .write_frame(frame)
-            .await
-            .map_err(|error| error.to_string())?;
-        match timeout(EVENT_ACK_TIMEOUT, stream.read_frame()).await {
-            Ok(Ok(ack)) if ack.command == Command::EventAck => {
-                let acknowledged =
-                    MessageId::from_ack_payload(&ack.payload).map_err(|error| error.to_string())?;
-                if ack.sequence != pending.sequence || acknowledged != message_id {
-                    return Err("received an acknowledgement for a different event".to_string());
-                }
-                return Ok(());
-            }
-            Ok(Ok(frame)) if frame.command == Command::PeerError => {
-                return Err(format!(
-                    "peer rejected event: {}",
-                    String::from_utf8_lossy(&frame.payload)
-                ));
-            }
-            Ok(Ok(frame)) => {
-                return Err(format!("expected EventAck, received {:?}", frame.command));
-            }
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(_) if attempt + 1 < EVENT_MAX_ATTEMPTS => {
-                let multiplier = 1u32 << attempt;
-                tokio::time::sleep(EVENT_RETRY_BASE_DELAY * multiplier).await;
-            }
-            Err(_) => {
-                return Err(format!(
-                    "event acknowledgement timed out after {EVENT_MAX_ATTEMPTS} attempts"
-                ));
-            }
-        }
-    }
-    unreachable!("event retry loop always returns")
-}
-
-async fn deliver_file_frame(
-    stream: &mut secure::SecureConnection,
-    pending: &PendingFrame,
-    frame: &Frame,
-    transfer_id: TransferId,
-) -> Result<DeliveryReceipt, String> {
-    for attempt in 0..EVENT_MAX_ATTEMPTS {
-        stream
-            .write_frame(frame)
-            .await
-            .map_err(|error| error.to_string())?;
-        match timeout(FILE_ACK_TIMEOUT, stream.read_frame()).await {
-            Ok(Ok(ack)) if matches!(ack.command, Command::FileAck | Command::FileResume) => {
-                let offset = FileOffset::decode(&ack.payload).map_err(|error| error.to_string())?;
-                if ack.sequence != pending.sequence || offset.transfer_id != transfer_id {
-                    return Err("received a file acknowledgement for another transfer".to_string());
-                }
-                return Ok(DeliveryReceipt {
-                    next_offset: Some(offset.next_offset),
-                });
-            }
-            Ok(Ok(frame)) => {
-                if frame.command == Command::PeerError {
-                    return Err(format!(
-                        "peer rejected file: {}",
-                        String::from_utf8_lossy(&frame.payload)
-                    ));
-                }
-                return Err(format!(
-                    "expected file acknowledgement, received {:?}",
-                    frame.command
-                ));
-            }
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(_) if attempt + 1 < EVENT_MAX_ATTEMPTS => {
-                let multiplier = 1u32 << attempt;
-                tokio::time::sleep(EVENT_RETRY_BASE_DELAY * multiplier).await;
-            }
-            Err(_) => {
-                return Err(format!(
-                    "file acknowledgement timed out after {EVENT_MAX_ATTEMPTS} attempts"
-                ));
-            }
-        }
-    }
-    unreachable!("file retry loop always returns")
-}
-
-async fn deliver_batch_frame(
-    stream: &mut secure::SecureConnection,
-    pending: &PendingFrame,
-    frame: &Frame,
-    batch_id: TransferId,
-) -> Result<DeliveryReceipt, String> {
-    for attempt in 0..EVENT_MAX_ATTEMPTS {
-        stream
-            .write_frame(frame)
-            .await
-            .map_err(|error| error.to_string())?;
-        match timeout(FILE_ACK_TIMEOUT, stream.read_frame()).await {
-            Ok(Ok(ack)) if ack.command == Command::FileBatchAccept => {
-                if ack.sequence != pending.sequence || ack.payload.as_slice() != batch_id.0 {
-                    return Err("received an acknowledgement for another file batch".to_string());
-                }
-                return Ok(DeliveryReceipt::default());
-            }
-            Ok(Ok(reject)) if reject.command == Command::FileBatchReject => {
-                return Err(format!(
-                    "peer rejected batch: {}",
-                    String::from_utf8_lossy(&reject.payload)
-                ));
-            }
-            Ok(Ok(error)) if error.command == Command::PeerError => {
-                return Err(format!(
-                    "peer rejected batch: {}",
-                    String::from_utf8_lossy(&error.payload)
-                ));
-            }
-            Ok(Ok(other)) => {
-                return Err(format!(
-                    "expected batch acknowledgement, received {:?}",
-                    other.command
-                ));
-            }
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(_) if attempt + 1 < EVENT_MAX_ATTEMPTS => {
-                let multiplier = 1u32 << attempt;
-                tokio::time::sleep(EVENT_RETRY_BASE_DELAY * multiplier).await;
-            }
-            Err(_) => return Err("file batch acknowledgement timed out".to_string()),
-        }
-    }
-    unreachable!("batch retry loop always returns")
-}
-
+pub(super) use tailsync_core::peer::delivery::deliver_pending_frame;
 pub(super) async fn race_connect_and_handshake(
     candidates: &[ResolvedCandidate],
     hostname: &str,
     identity: &Arc<DeviceIdentity>,
     settings: &Arc<Mutex<crypto::Settings>>,
 ) -> Result<(secure::SecureConnection, ResolvedCandidate), String> {
-    let has_lan = candidates
-        .iter()
-        .any(|candidate| candidate.candidate.interface == ConnectionInterface::Lan);
-    let has_iroh = candidates
-        .iter()
-        .any(|candidate| candidate.candidate.interface == ConnectionInterface::Iroh);
-    let (tx, mut rx) = mpsc::channel(candidates.len().max(1));
-    let mut tasks = Vec::with_capacity(candidates.len());
-
-    for candidate in candidates.iter().cloned() {
-        let tx = tx.clone();
-        let hostname = hostname.to_string();
-        let identity = identity.clone();
-        let settings = settings.clone();
-        let delay = candidate_delay(candidate.candidate.interface, has_lan, has_iroh);
-        tasks.push(tokio::spawn(async move {
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
+    let identity = identity.clone();
+    let settings = settings.clone();
+    let hostname = hostname.to_string();
+    tailsync_core::peer::delivery::race_connections(
+        candidates,
+        HANDSHAKE_TIMEOUT,
+        move |target, _candidate| {
+            let identity = identity.clone();
+            let settings = settings.clone();
+            let hostname = hostname.clone();
+            async move {
+                connect_and_handshake(&target, &hostname, &identity, &settings)
+                    .await
+                    .map_err(|error| error.to_string())
             }
-            let started = tokio::time::Instant::now();
-            let result = timeout(
-                HANDSHAKE_TIMEOUT,
-                connect_and_handshake(&candidate.target, &hostname, &identity, &settings),
-            )
-            .await
-            .map_err(|_| "handshake timed out".to_string())
-            .and_then(|result| result.map_err(|error| error.to_string()));
-            let mut candidate = candidate;
-            candidate.candidate.latency = Some(started.elapsed().as_millis() as u64);
-            let _ = tx.send((candidate, result)).await;
-        }));
-    }
-    drop(tx);
-
-    let mut errors = Vec::new();
-    while let Some((candidate, result)) = rx.recv().await {
-        match result {
-            Ok(stream) => {
-                for task in tasks {
-                    task.abort();
-                }
-                return Ok((stream, candidate));
-            }
-            Err(error) => errors.push(format!(
-                "{} {}: {error}",
-                candidate.candidate.interface.as_str(),
-                candidate.target
-            )),
-        }
-    }
-    Err(errors.join("; "))
+        },
+    )
+    .await
 }
 
-fn candidate_delay(interface: ConnectionInterface, has_lan: bool, has_iroh: bool) -> Duration {
-    match interface {
-        ConnectionInterface::Lan => Duration::ZERO,
-        ConnectionInterface::Iroh if has_lan => Duration::from_millis(150),
-        ConnectionInterface::Iroh => Duration::ZERO,
-        ConnectionInterface::Tailscale if has_lan => Duration::from_millis(300),
-        ConnectionInterface::Tailscale if has_iroh => Duration::from_millis(150),
-        ConnectionInterface::Tailscale => Duration::ZERO,
-    }
-}
-
-/// One-shot connect + handshake.  Returns an authenticated stream.
 async fn connect_and_handshake(
     target: &ResolvedTarget,
     hostname: &str,

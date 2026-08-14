@@ -25,52 +25,24 @@ pub(crate) fn peer_snapshot_data(
         ),
     };
 
-    let peers = network::merge_paired_peers(settings, &mode, peers)
+    let mut peers = network::merge_paired_peers(settings, &mode, peers);
+    network::apply_peer_health(&mut peers);
+    let peers = peers
         .into_iter()
-        .filter_map(|mut peer| {
-            let route_health = peer
+        .filter_map(|peer| {
+            let paired_endpoint = settings.paired_peer_endpoints.get(&peer.hostname);
+            let routes = peer
                 .candidates
                 .iter()
                 .map(|candidate| {
-                    let health = network::route_health(
-                        &peer.hostname,
-                        candidate.interface,
-                        &candidate.address,
-                    );
-                    (candidate.clone(), health)
-                })
-                .collect::<Vec<_>>();
-            peer.online = route_health.iter().any(|(_, health)| health.online);
-            let current_route = route_health
-                .iter()
-                .find(|(_, health)| health.connected)
-                .map(|(candidate, _)| candidate.clone());
-            peer.current_interface = current_route.as_ref().map(|candidate| candidate.interface);
-            let peer_status = [
-                network::PeerStatus::Connected,
-                network::PeerStatus::Online,
-                network::PeerStatus::Confirming,
-                network::PeerStatus::Discovered,
-                network::PeerStatus::Offline,
-            ]
-            .into_iter()
-            .find(|status| {
-                route_health
-                    .iter()
-                    .any(|(_, health)| health.status == *status)
-            })
-            .unwrap_or(network::PeerStatus::Offline);
-            let paired_endpoint = settings.paired_peer_endpoints.get(&peer.hostname);
-            let routes = route_health
-                .into_iter()
-                .map(|(candidate, health)| {
+                    let connected = peer.current_address.as_deref() == Some(&candidate.address);
                     serde_json::json!({
                         "interface": candidate.interface,
                         "address": candidate.address,
-                        "status": health.status,
-                        "online": health.online,
-                        "connected": health.connected,
-                        "latency_ms": health.latency_ms,
+                        "status": if connected { network::PeerStatus::Connected } else { candidate.status },
+                        "online": candidate.online,
+                        "connected": connected,
+                        "latency_ms": candidate.latency,
                         "pairing_endpoint": paired_endpoint == Some(&candidate.address),
                         "rtt_capable": candidate.rtt_capable,
                     })
@@ -83,10 +55,6 @@ pub(crate) fn peer_snapshot_data(
                     return None;
                 }
             };
-            value["current_address"] = serde_json::json!(current_route
-                .as_ref()
-                .map(|candidate| candidate.address.as_str()));
-            value["status"] = serde_json::json!(peer_status);
             value["routes"] = Value::Array(routes);
             let protocol_error = peer
                 .trusted

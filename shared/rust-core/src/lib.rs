@@ -4,6 +4,7 @@ pub mod history_classifier;
 pub mod identity;
 pub mod iroh_transport;
 pub mod pairing;
+pub mod peer;
 pub mod protocol;
 pub mod secure;
 pub mod sync;

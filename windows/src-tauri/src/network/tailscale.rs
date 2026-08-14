@@ -1,38 +1,11 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::{lan, ConnectionInterface, PeerCandidate};
+use super::{lan, ConnectionInterface, PeerCandidate, PeerStatus};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerInfo {
-    pub hostname: String,
-    pub tailscale_ip: String,
-    pub online: bool,
-    pub enabled: bool, // User-toggled
-    #[serde(default)]
-    pub address: String,
-    #[serde(default)]
-    pub connection_mode: String,
-    #[serde(default)]
-    pub trusted: bool,
-    #[serde(default)]
-    pub fingerprint: String,
-    #[serde(default)]
-    pub candidates: Vec<PeerCandidate>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_interface: Option<ConnectionInterface>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalInfo {
-    pub hostname: String,
-    pub tailscale_ip: String,
-    #[serde(default)]
-    pub candidates: Vec<PeerCandidate>,
-}
+pub use tailsync_core::peer::types::{LocalInfo, PeerInfo};
 
 fn tailscale_binary() -> PathBuf {
     #[cfg(target_os = "macos")]
@@ -187,6 +160,8 @@ fn parse_status(bytes: &[u8]) -> Result<(LocalInfo, Vec<PeerInfo>), String> {
                     fingerprint: String::new(),
                     candidates: vec![PeerCandidate::new(ConnectionInterface::Tailscale, peer_ip)],
                     current_interface: None,
+                    current_address: None,
+                    status: PeerStatus::Discovered,
                 });
             }
         }

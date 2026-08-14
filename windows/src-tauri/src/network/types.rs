@@ -1,108 +1,45 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectionInterface {
-    Lan,
-    Iroh,
-    Tailscale,
-}
+//! Platform view of the shared peer types.
+//!
+//! All peer discovery, health, and delivery types live in
+//! `tailsync_core::peer::types`; this module only re-exports them so existing
+//! `network::types` call sites stay unchanged. The file is byte-identical on
+//! both platforms (enforced by the cross-platform drift check), even though
+//! macOS does not consume the Windows-only `ActiveRoute`/`PeerHealthSnapshot`
+//! types — the re-export keeps the shared contract surface complete.
 
-impl ConnectionInterface {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Lan => "lan",
-            Self::Iroh => "iroh",
-            Self::Tailscale => "tailscale",
-        }
-    }
-
-    pub(super) fn priority(self) -> u8 {
-        match self {
-            Self::Lan => 0,
-            Self::Iroh => 1,
-            Self::Tailscale => 2,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PeerCandidate {
-    pub interface: ConnectionInterface,
-    pub address: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latency: Option<u64>,
-    pub priority: u8,
-    /// Whether latency can be measured over this route. LAN/Tailscale routes
-    /// are always testable; Iroh routes require the peer to have advertised
-    /// RTT support and to have been rediscovered.
-    #[serde(default = "candidate_rtt_capable_default")]
-    pub rtt_capable: bool,
-}
-
-fn candidate_rtt_capable_default() -> bool {
-    false
-}
-
-impl PeerCandidate {
-    pub fn new(interface: ConnectionInterface, address: impl Into<String>) -> Self {
-        Self {
-            interface,
-            address: address.into(),
-            latency: None,
-            priority: interface.priority(),
-            rtt_capable: interface != ConnectionInterface::Iroh,
-        }
-    }
-
-    pub fn set_rtt_capable(&mut self, capable: bool) {
-        self.rtt_capable = capable;
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ActiveRoute {
-    pub interface: ConnectionInterface,
-    pub address: String,
-    pub latency: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PeerStatus {
-    Discovered,
-    Online,
-    Confirming,
-    Offline,
-    Connected,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PeerHealthSnapshot {
-    pub status: PeerStatus,
-    pub online: bool,
-    pub connected: bool,
-    pub latency_ms: Option<u64>,
-}
+#[allow(unused_imports)] // Contract surface: both platforms share this exact file.
+pub use tailsync_core::peer::types::{
+    ActiveRoute, ConnectionInterface, PeerCandidate, PeerHealthSnapshot, PeerStatus,
+};
 
 #[cfg(test)]
-mod tests {
-    use super::{ConnectionInterface, PeerCandidate};
+mod contract_tests {
+    use super::*;
+    use tailsync_core::peer::types as core_types;
 
-    #[test]
-    fn new_candidates_only_assume_tcp_routes_support_rtt() {
-        assert!(!PeerCandidate::new(ConnectionInterface::Iroh, "endpoint").rtt_capable);
-        assert!(PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.2").rtt_capable);
-        assert!(PeerCandidate::new(ConnectionInterface::Tailscale, "100.64.0.2").rtt_capable);
+    /// Compile-time identity proof: the platform re-exports must be the very
+    /// same types as the shared core ones, not lookalikes. If this file
+    /// drifts from the core contract, these assignments stop compiling.
+    fn same<T>(value: T) -> T {
+        value
     }
 
     #[test]
-    fn legacy_candidates_without_capability_fail_closed() {
-        let candidate: PeerCandidate = serde_json::from_value(serde_json::json!({
-            "interface": "iroh",
-            "address": "endpoint",
-            "priority": 1
-        }))
-        .expect("legacy candidate");
-
-        assert!(!candidate.rtt_capable);
+    fn re_exported_types_are_the_shared_core_types() {
+        let _: core_types::ConnectionInterface = same(ConnectionInterface::Lan);
+        let _: core_types::PeerStatus = same(PeerStatus::Offline);
+        let _: core_types::PeerCandidate =
+            same(PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.2"));
+        let _: core_types::PeerHealthSnapshot = same(PeerHealthSnapshot {
+            status: PeerStatus::Online,
+            online: true,
+            connected: false,
+            latency_ms: None,
+        });
+        let _: core_types::ActiveRoute = same(ActiveRoute {
+            interface: ConnectionInterface::Lan,
+            address: "192.168.1.2".into(),
+            latency: 1,
+        });
     }
 }

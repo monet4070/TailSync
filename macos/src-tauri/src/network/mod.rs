@@ -13,8 +13,8 @@ use crate::db;
 use crate::identity::DeviceIdentity;
 use crate::pairing::{PairingManager, PendingPairing};
 use crate::protocol::{
-    unix_timestamp_ms, Command, EventEnvelope, FileChunkPayload, FileOffset, Frame, MessageId,
-    ProtocolError, TransferId, FILE_CHUNK_SIZE,
+    unix_timestamp_ms, Command, EventEnvelope, FileChunkPayload, FileOffset, Frame, ProtocolError,
+    TransferId, FILE_CHUNK_SIZE,
 };
 use crate::sync;
 
@@ -27,11 +27,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Max queued frames per peer before backpressure kicks in
 const POOL_CHANNEL_SIZE: usize = 64;
 const POOL_SEND_TIMEOUT: Duration = Duration::from_secs(5);
-const EVENT_ACK_TIMEOUT: Duration = Duration::from_millis(750);
-const EVENT_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
-const EVENT_MAX_ATTEMPTS: usize = 4;
 const FILE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const FILE_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Reconnect back-off
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
@@ -77,11 +73,9 @@ pub use health::{
     record_address_test_success, ActiveRoute,
 };
 use health::{
-    authenticated_sessions, clear_peer_health, update_peer_health,
-    update_peer_health_for_failed_round, RouteKey,
+    clear_peer_health, register_active_session, update_peer_health,
+    update_peer_health_for_failed_round,
 };
-#[cfg(test)]
-use health::{AuthenticatedSessionRegistry, PeerHealthTracker};
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
 pub use iroh::start_server as start_iroh_server;
@@ -101,8 +95,8 @@ pub use pool::{
 };
 #[cfg(test)]
 use pool::{
-    connection_task, deliver_pending_frame, race_connect_and_handshake, AckExpectation,
-    PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
+    connection_task, deliver_pending_frame, race_connect_and_handshake, PendingFrame, PoolSender,
+    QueuedFrame, ResolvedCandidate, ResolvedTarget,
 };
 mod rate_limit;
 use rate_limit::check_peer_event_budget;
@@ -112,7 +106,28 @@ pub(crate) use peer_cache::store_peer_cache;
 pub use peer_cache::{
     cached_discover_peers, clear_peer_cache, peer_cache_refresh_loop, request_peer_refresh_and_wait,
 };
+pub use tailsync_core::peer::directory::{
+    infer_interface, merge_discovery_results, merge_lan_discovery_results, mode_interface,
+    PairingTarget,
+};
 pub(crate) use tailsync_core::secure;
+
+/// Platform-bound wrappers over the shared Peer Directory rules: they bind
+/// platform capabilities (Iroh RTT probing) and constants (peer TCP port)
+/// while keeping the external signatures stable for callers.
+pub fn merge_paired_peers(
+    settings: &crypto::Settings,
+    mode: &str,
+    discovered: Vec<tailscale::PeerInfo>,
+) -> Vec<tailscale::PeerInfo> {
+    tailsync_core::peer::directory::merge_paired_peers(settings, mode, discovered, |endpoint_id| {
+        iroh::supports_rtt(endpoint_id)
+    })
+}
+
+pub fn peer_socket_addr(peer: &tailscale::PeerInfo) -> Result<SocketAddr, String> {
+    tailsync_core::peer::directory::peer_socket_addr(peer, TCP_PORT)
+}
 pub mod tailscale;
 mod types;
 pub use types::{ConnectionInterface, PeerCandidate, PeerStatus};
@@ -239,224 +254,9 @@ async fn discover_lan_hybrid() -> Result<(tailscale::LocalInfo, Vec<tailscale::P
     merge_lan_discovery_results(udp_result, mdns_result)
 }
 
-fn merge_lan_discovery_results(
-    udp_result: Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String>,
-    mdns_result: Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String>,
-) -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
-    let mut local = None;
-    let mut peers = std::collections::BTreeMap::<String, tailscale::PeerInfo>::new();
-    let mut errors = Vec::new();
-    for (source, result) in [("udp", udp_result), ("mdns", mdns_result)] {
-        match result {
-            Ok((found_local, found_peers)) => {
-                local.get_or_insert(found_local);
-                for peer in found_peers {
-                    match peers.get_mut(&peer.hostname) {
-                        Some(existing) => {
-                            existing.online |= peer.online;
-                            existing.candidates.extend(peer.candidates);
-                        }
-                        None => {
-                            peers.insert(peer.hostname.clone(), peer);
-                        }
-                    }
-                }
-            }
-            Err(error) => errors.push(format!("{source}: {error}")),
-        }
-    }
-    let Some(local) = local else {
-        return Err(format!("LAN discovery failed ({})", errors.join("; ")));
-    };
-    let mut peers = peers.into_values().collect::<Vec<_>>();
-    for peer in &mut peers {
-        peer.candidates.sort_by(|left, right| {
-            left.priority
-                .cmp(&right.priority)
-                .then_with(|| left.address.cmp(&right.address))
-        });
-        peer.candidates.dedup_by(|left, right| {
-            left.interface == right.interface && left.address == right.address
-        });
-        if let Some(candidate) = peer.candidates.first() {
-            peer.address.clone_from(&candidate.address);
-            peer.tailscale_ip.clone_from(&candidate.address);
-        }
-    }
-    Ok((local, peers))
-}
-
 async fn discover_auto() -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
     let (lan_result, tailscale_result) = tokio::join!(discover_lan_hybrid(), discover_tailscale());
     merge_discovery_results(lan_result, tailscale_result)
-}
-
-fn merge_discovery_results(
-    lan_result: Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String>,
-    tailscale_result: Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String>,
-) -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
-    let mut local = None;
-    let mut merged = std::collections::BTreeMap::<String, tailscale::PeerInfo>::new();
-    let mut errors = Vec::new();
-
-    for (interface, result) in [
-        (ConnectionInterface::Lan, lan_result),
-        (ConnectionInterface::Tailscale, tailscale_result),
-    ] {
-        match result {
-            Ok((found_local, peers)) => {
-                if local.is_none() || interface == ConnectionInterface::Lan {
-                    local = Some(found_local);
-                }
-                for mut peer in peers {
-                    let address = if peer.address.is_empty() {
-                        peer.tailscale_ip.clone()
-                    } else {
-                        peer.address.clone()
-                    };
-                    if peer.candidates.is_empty() && !address.is_empty() {
-                        peer.candidates.push(PeerCandidate::new(interface, address));
-                    }
-                    peer.connection_mode = "auto".to_string();
-                    match merged.get_mut(&peer.hostname) {
-                        Some(existing) => {
-                            existing.online |= peer.online;
-                            existing.candidates.extend(peer.candidates);
-                        }
-                        None => {
-                            merged.insert(peer.hostname.clone(), peer);
-                        }
-                    }
-                }
-            }
-            Err(error) => errors.push(format!("{}: {error}", interface.as_str())),
-        }
-    }
-
-    let Some(local) = local else {
-        return Err(format!(
-            "Automatic discovery failed ({})",
-            errors.join("; ")
-        ));
-    };
-    let mut peers = merged.into_values().collect::<Vec<_>>();
-    for peer in &mut peers {
-        peer.candidates.sort_by_key(|candidate| candidate.priority);
-        peer.candidates.dedup_by(|left, right| {
-            left.interface == right.interface && left.address == right.address
-        });
-        if let Some(preferred) = peer.candidates.first() {
-            peer.address.clone_from(&preferred.address);
-        }
-    }
-    Ok((local, peers))
-}
-
-pub fn merge_paired_peers(
-    settings: &crypto::Settings,
-    mode: &str,
-    mut discovered: Vec<tailscale::PeerInfo>,
-) -> Vec<tailscale::PeerInfo> {
-    let mut known_hostnames = std::collections::HashSet::new();
-    for peer in &mut discovered {
-        known_hostnames.insert(peer.hostname.clone());
-        peer.enabled = settings
-            .enabled_peers
-            .get(&peer.hostname)
-            .copied()
-            .unwrap_or(true);
-        if let Some(encoded_key) = settings.trusted_peer_keys.get(&peer.hostname) {
-            if let Ok(key) = crate::identity::decode_public_key(encoded_key) {
-                peer.trusted = true;
-                peer.fingerprint = crate::identity::fingerprint(&key);
-            }
-        }
-        if peer.candidates.is_empty() {
-            let address = if peer.address.is_empty() {
-                &peer.tailscale_ip
-            } else {
-                &peer.address
-            };
-            if let Some(interface) = mode_interface(mode) {
-                if !address.is_empty() {
-                    peer.candidates
-                        .push(PeerCandidate::new(interface, address.clone()));
-                }
-            }
-        }
-        if peer.trusted && mode == "auto" {
-            if let Some(endpoint_id) = settings
-                .trusted_peer_addresses
-                .get(&peer.hostname)
-                .and_then(|addresses| addresses.get("iroh"))
-            {
-                if !peer.candidates.iter().any(|candidate| {
-                    candidate.interface == ConnectionInterface::Iroh
-                        && candidate.address == *endpoint_id
-                }) {
-                    let mut candidate =
-                        PeerCandidate::remembered(ConnectionInterface::Iroh, endpoint_id);
-                    candidate.set_rtt_capable(iroh::supports_rtt(endpoint_id));
-                    peer.candidates.push(candidate);
-                }
-            }
-            peer.candidates.sort_by_key(|candidate| candidate.priority);
-        }
-    }
-
-    for (hostname, encoded_key) in &settings.trusted_peer_keys {
-        if known_hostnames.contains(hostname) {
-            continue;
-        }
-        let remembered = settings.trusted_peer_addresses.get(hostname);
-        let mut candidates = Vec::new();
-        for interface in [
-            ConnectionInterface::Lan,
-            ConnectionInterface::Iroh,
-            ConnectionInterface::Tailscale,
-        ] {
-            if mode != "auto" && mode_interface(mode) != Some(interface) {
-                continue;
-            }
-            if let Some(address) =
-                remembered.and_then(|addresses| addresses.get(interface.as_str()))
-            {
-                let mut candidate = PeerCandidate::remembered(interface, address);
-                if interface == ConnectionInterface::Iroh {
-                    candidate.set_rtt_capable(iroh::supports_rtt(&candidate.address));
-                }
-                candidates.push(candidate);
-            }
-        }
-        candidates.sort_by_key(|candidate| candidate.priority);
-        let address = candidates
-            .first()
-            .map(|candidate| candidate.address.clone())
-            .unwrap_or_default();
-        let fingerprint = crate::identity::decode_public_key(encoded_key)
-            .map(|key| crate::identity::fingerprint(&key))
-            .unwrap_or_default();
-        discovered.push(tailscale::PeerInfo {
-            hostname: hostname.clone(),
-            tailscale_ip: address.clone(),
-            online: false,
-            enabled: settings
-                .enabled_peers
-                .get(hostname)
-                .copied()
-                .unwrap_or(true),
-            address,
-            connection_mode: mode.to_string(),
-            trusted: true,
-            fingerprint,
-            candidates,
-            current_interface: None,
-            current_address: None,
-            status: PeerStatus::Offline,
-        });
-    }
-    discovered.sort_by(|left, right| left.hostname.cmp(&right.hostname));
-    discovered
 }
 
 pub async fn remember_peer_addresses(
@@ -501,25 +301,6 @@ pub async fn remember_peer_addresses(
     }
 }
 
-pub fn mode_interface(mode: &str) -> Option<ConnectionInterface> {
-    match mode {
-        "lan" | "lan_only" => Some(ConnectionInterface::Lan),
-        "tailscale" | "tailscale_only" => Some(ConnectionInterface::Tailscale),
-        _ => None,
-    }
-}
-
-pub fn infer_interface(address: &str) -> Result<ConnectionInterface, String> {
-    let ip: IpAddr = address
-        .parse()
-        .map_err(|error| format!("Invalid peer address {address}: {error}"))?;
-    if source_matches_mode(ip, "tailscale_only") {
-        Ok(ConnectionInterface::Tailscale)
-    } else {
-        Ok(ConnectionInterface::Lan)
-    }
-}
-
 pub async fn start_discovery_responder(
     identity: Arc<DeviceIdentity>,
     mut shutdown: watch::Receiver<bool>,
@@ -528,18 +309,6 @@ pub async fn start_discovery_responder(
         _ = async { tokio::join!(lan::start_responder(), mdns::run(identity)); } => {}
         _ = wait_for_shutdown(&mut shutdown) => info!("Discovery responders stopped"),
     }
-}
-
-pub fn peer_socket_addr(peer: &tailscale::PeerInfo) -> Result<SocketAddr, String> {
-    let address = if peer.address.is_empty() {
-        &peer.tailscale_ip
-    } else {
-        &peer.address
-    };
-    let ip: IpAddr = address
-        .parse()
-        .map_err(|e| format!("Invalid peer address {address}: {e}"))?;
-    Ok(SocketAddr::new(ip, TCP_PORT))
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -553,33 +322,11 @@ pub async fn start_pairing(
     settings: Arc<Mutex<crypto::Settings>>,
     address: &str,
 ) -> Result<(), String> {
-    enum PairingTarget {
-        Tcp(IpAddr),
-        Iroh(String),
-    }
-    let address = address.trim();
-    let target = match address.parse::<IpAddr>() {
-        Ok(ip) => PairingTarget::Tcp(ip),
-        Err(_) => PairingTarget::Iroh(
-            tailsync_core::iroh_transport::canonical_endpoint_id(address).map_err(|error| {
-                let message = format!("Invalid peer address: {error}");
-                message
-            })?,
-        ),
-    };
+    let target = tailsync_core::peer::directory::parse_pairing_target(address)?;
     let mode = settings.lock().await.connection_mode.clone();
-    match &target {
-        PairingTarget::Tcp(ip) if !source_matches_mode(*ip, &mode) => {
-            let message = "Peer address is outside the selected network".to_string();
-            pairing.record_failure(message.clone()).await;
-            return Err(message);
-        }
-        PairingTarget::Iroh(_) if mode != "auto" => {
-            let message = "Iroh pairing is only available in automatic mode".to_string();
-            pairing.record_failure(message.clone()).await;
-            return Err(message);
-        }
-        _ => {}
+    if let Err(message) = tailsync_core::peer::directory::validate_pairing_target(&target, &mode) {
+        pairing.record_failure(message.clone()).await;
+        return Err(message);
     }
     pairing.begin_handshake().await?;
 
@@ -654,11 +401,7 @@ pub async fn start_pairing(
         .await
 }
 
-#[derive(Debug, serde::Serialize)]
-pub struct RouteLatency {
-    pub latency_ms: u64,
-    pub path: String,
-}
+pub use tailsync_core::peer::types::RouteLatency;
 
 /// Measure the latency of a discovered TailSync route. The path is "tcp" for
 /// plain TCP routes and "direct" or "relay" for Iroh routes, so callers can
@@ -708,25 +451,23 @@ pub async fn test_connection(address: &str) -> Result<RouteLatency, String> {
 mod tests {
     use super::{
         acquire_peer_file_batch, bind_tcp_listener, cached_discover_peers, clear_peer_cache,
-        connection_task, deliver_pending_frame, merge_discovery_results,
-        merge_lan_discovery_results, merge_paired_peers, merge_tailscale_heartbeat,
-        peer_socket_addr, queue_peer_frame, race_connect_and_handshake,
-        record_protocol_compatibility_error, secure, source_matches_mode, store_peer_cache,
-        AckExpectation, AuthenticatedSessionRegistry, ConnectionInterface, ConnectionLimiter,
-        ConnectionPool, PeerCandidate, PeerHealthTracker, PeerStatus, PendingFrame, PoolSender,
-        QueuedFrame, ResolvedCandidate, ResolvedTarget, RouteKey, POOL_CHANNEL_SIZE, TCP_PORT,
+        connection_task, deliver_pending_frame, merge_tailscale_heartbeat, queue_peer_frame,
+        race_connect_and_handshake, record_protocol_compatibility_error, secure, store_peer_cache,
+        ConnectionInterface, ConnectionLimiter, ConnectionPool, PeerCandidate, PeerStatus,
+        PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
+        POOL_CHANNEL_SIZE,
     };
     use crate::crypto::{self, Settings};
     use crate::identity::DeviceIdentity;
     use crate::network::tailscale::{LocalInfo, PeerInfo};
     use crate::protocol::{unix_timestamp_ms, Command, EventEnvelope, Frame, MessageId};
     use base64::{engine::general_purpose::STANDARD, Engine};
-    use std::collections::HashMap;
     use std::net::IpAddr;
     use std::sync::Arc;
+    use tailsync_core::peer::delivery::AckExpectation;
     use tokio::net::TcpListener;
     use tokio::sync::{mpsc, watch, Mutex};
-    use tokio::time::{timeout, Duration, Instant};
+    use tokio::time::{timeout, Duration};
 
     #[test]
     fn protocol_compatibility_diagnostic_is_recorded_and_cleared() {
@@ -739,73 +480,6 @@ mod tests {
         );
         super::clear_protocol_compatibility_error(&hostname);
         assert_eq!(super::protocol_compatibility_error(&hostname), None);
-    }
-
-    fn route(address: &str, interface: ConnectionInterface) -> RouteKey {
-        RouteKey {
-            hostname: "windows".into(),
-            interface,
-            address: address.into(),
-        }
-    }
-
-    #[test]
-    fn peer_health_requires_a_real_heartbeat_and_two_misses_to_go_offline() {
-        let route = route("192.168.1.20", ConnectionInterface::Lan);
-        let started = Instant::now();
-        let mut tracker = PeerHealthTracker::default();
-
-        tracker.ensure_candidate(route.clone());
-        assert_eq!(
-            tracker.status_at(&route, started, false),
-            PeerStatus::Discovered
-        );
-
-        tracker.apply_round(
-            started,
-            ConnectionInterface::Lan,
-            [(route.clone(), 8)].into_iter().collect(),
-        );
-        assert_eq!(
-            tracker.status_at(&route, started, false),
-            PeerStatus::Online
-        );
-        assert_eq!(tracker.latency(&route), Some(8));
-
-        tracker.apply_round(
-            started + Duration::from_secs(5),
-            ConnectionInterface::Lan,
-            HashMap::new(),
-        );
-        assert_eq!(
-            tracker.status_at(&route, started + Duration::from_secs(5), false),
-            PeerStatus::Confirming
-        );
-
-        tracker.apply_round(
-            started + Duration::from_secs(10),
-            ConnectionInterface::Lan,
-            HashMap::new(),
-        );
-        assert_eq!(
-            tracker.status_at(&route, started + Duration::from_secs(10), false),
-            PeerStatus::Offline
-        );
-    }
-
-    #[test]
-    fn authenticated_session_forces_online_and_is_reference_counted() {
-        let route = route("192.168.1.20", ConnectionInterface::Lan);
-        let registry = AuthenticatedSessionRegistry::default();
-        let first = registry.register(route.clone(), 4);
-        let second = registry.register(route.clone(), 6);
-
-        assert!(registry.is_connected(&route));
-        assert_eq!(registry.active_route("windows").unwrap().latency, 6);
-        drop(first);
-        assert!(registry.is_connected(&route));
-        drop(second);
-        assert!(!registry.is_connected(&route));
     }
 
     #[tokio::test]
@@ -833,119 +507,6 @@ mod tests {
 
         let rebound = bind_tcp_listener(address).unwrap();
         assert_eq!(rebound.local_addr().unwrap(), address);
-    }
-
-    #[test]
-    fn connection_modes_only_accept_expected_address_ranges() {
-        let tailscale: IpAddr = "100.96.1.2".parse().unwrap();
-        let lan: IpAddr = "192.168.1.24".parse().unwrap();
-        let public: IpAddr = "203.0.113.5".parse().unwrap();
-
-        assert!(source_matches_mode(tailscale, "tailscale"));
-        assert!(!source_matches_mode(lan, "tailscale"));
-        assert!(source_matches_mode(lan, "lan"));
-        assert!(!source_matches_mode(public, "lan"));
-        assert!(source_matches_mode(tailscale, "auto"));
-        assert!(source_matches_mode(lan, "auto"));
-        assert!(!source_matches_mode(public, "auto"));
-    }
-
-    #[test]
-    fn peer_socket_addr_supports_ipv6_addresses() {
-        let peer = PeerInfo {
-            hostname: "macbook".into(),
-            tailscale_ip: "fd7a:115c:a1e0::1".into(),
-            online: true,
-            enabled: true,
-            address: String::new(),
-            connection_mode: "tailscale".into(),
-            trusted: false,
-            fingerprint: String::new(),
-            candidates: Vec::new(),
-            current_interface: None,
-            current_address: None,
-            status: Default::default(),
-        };
-        assert_eq!(
-            peer_socket_addr(&peer).unwrap(),
-            "[fd7a:115c:a1e0::1]:19890".parse().unwrap()
-        );
-    }
-
-    #[test]
-    fn paired_peer_with_remembered_address_survives_empty_discovery() {
-        let identity = DeviceIdentity::generate_for_test();
-        let mut settings = crypto::Settings {
-            connection_mode: "lan".into(),
-            ..Default::default()
-        };
-        settings
-            .trusted_peer_keys
-            .insert("windows".into(), STANDARD.encode(identity.public_key()));
-        settings.trusted_peer_addresses.insert(
-            "windows".into(),
-            HashMap::from([("lan".into(), "192.168.1.20".into())]),
-        );
-
-        let peers = merge_paired_peers(&settings, "lan", Vec::new());
-
-        assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].hostname, "windows");
-        assert_eq!(peers[0].address, "192.168.1.20");
-        assert!(peers[0].trusted);
-        assert!(!peers[0].online);
-        assert!(peers[0]
-            .candidates
-            .iter()
-            .all(|candidate| !candidate.online));
-        assert!(peers[0].current_address.is_none());
-        assert_eq!(peer_socket_addr(&peers[0]).unwrap().port(), TCP_PORT);
-    }
-
-    #[test]
-    fn automatic_mode_adds_iroh_between_lan_and_tailscale_only() {
-        let identity = DeviceIdentity::generate_for_test();
-        let mut settings = crypto::Settings::default();
-        settings
-            .trusted_peer_keys
-            .insert("windows".into(), STANDARD.encode(identity.public_key()));
-        settings.trusted_peer_addresses.insert(
-            "windows".into(),
-            HashMap::from([
-                ("lan".into(), "192.168.1.20".into()),
-                (
-                    "iroh".into(),
-                    "5866666666666666666666666666666666666666666666666666666666666666".into(),
-                ),
-                ("tailscale".into(), "100.64.0.2".into()),
-            ]),
-        );
-
-        let automatic = merge_paired_peers(&settings, "auto", Vec::new());
-        assert_eq!(
-            automatic[0]
-                .candidates
-                .iter()
-                .map(|candidate| candidate.interface)
-                .collect::<Vec<_>>(),
-            vec![
-                ConnectionInterface::Lan,
-                ConnectionInterface::Iroh,
-                ConnectionInterface::Tailscale,
-            ]
-        );
-        let lan_only = merge_paired_peers(&settings, "lan_only", Vec::new());
-        assert_eq!(lan_only[0].candidates.len(), 1);
-        assert_eq!(
-            lan_only[0].candidates[0].interface,
-            ConnectionInterface::Lan
-        );
-        let tailscale_only = merge_paired_peers(&settings, "tailscale_only", Vec::new());
-        assert_eq!(tailscale_only[0].candidates.len(), 1);
-        assert_eq!(
-            tailscale_only[0].candidates[0].interface,
-            ConnectionInterface::Tailscale
-        );
     }
 
     #[test]
@@ -1010,6 +571,7 @@ mod tests {
         let local = LocalInfo {
             hostname: "local".into(),
             tailscale_ip: "127.0.0.1".into(),
+            candidates: Vec::new(),
         };
         let peers = vec![PeerInfo {
             hostname: "cached-peer".into(),
@@ -1050,120 +612,6 @@ mod tests {
             current_address: None,
             status: PeerStatus::Online,
         }
-    }
-
-    #[test]
-    fn automatic_discovery_merges_interfaces_and_prefers_lan() {
-        let lan_local = LocalInfo {
-            hostname: "macbook".into(),
-            tailscale_ip: "192.168.1.10".into(),
-        };
-        let tailscale_local = LocalInfo {
-            hostname: "macbook".into(),
-            tailscale_ip: "100.64.0.1".into(),
-        };
-        let (_, peers) = merge_discovery_results(
-            Ok((
-                lan_local,
-                vec![discovered_peer(
-                    "windows",
-                    "192.168.1.20",
-                    ConnectionInterface::Lan,
-                )],
-            )),
-            Ok((
-                tailscale_local,
-                vec![discovered_peer(
-                    "windows",
-                    "100.64.0.2",
-                    ConnectionInterface::Tailscale,
-                )],
-            )),
-        )
-        .unwrap();
-
-        assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].address, "192.168.1.20");
-        assert_eq!(peers[0].candidates.len(), 2);
-        assert!(peers[0].candidates.iter().all(|candidate| candidate.online));
-        assert!(peers[0].current_address.is_none());
-        assert_eq!(peers[0].candidates[0].interface, ConnectionInterface::Lan);
-        assert_eq!(
-            peers[0].candidates[1].interface,
-            ConnectionInterface::Tailscale
-        );
-    }
-
-    #[test]
-    fn automatic_discovery_survives_one_unavailable_interface() {
-        let local = LocalInfo {
-            hostname: "macbook".into(),
-            tailscale_ip: "100.64.0.1".into(),
-        };
-        let (_, peers) = merge_discovery_results(
-            Err("UDP blocked".into()),
-            Ok((
-                local,
-                vec![discovered_peer(
-                    "windows",
-                    "100.64.0.2",
-                    ConnectionInterface::Tailscale,
-                )],
-            )),
-        )
-        .unwrap();
-
-        assert_eq!(peers.len(), 1);
-        assert_eq!(
-            peers[0].candidates[0].interface,
-            ConnectionInterface::Tailscale
-        );
-    }
-
-    #[test]
-    fn mdns_and_udp_results_are_deduplicated_without_losing_udp_compatibility() {
-        let local = LocalInfo {
-            hostname: "macbook".into(),
-            tailscale_ip: "192.168.1.10".into(),
-        };
-        let udp_peer = discovered_peer("windows", "192.168.1.20", ConnectionInterface::Lan);
-        let mdns_peer = udp_peer.clone();
-        let (_, peers) = merge_lan_discovery_results(
-            Ok((local.clone(), vec![udp_peer])),
-            Ok((local, vec![mdns_peer])),
-        )
-        .unwrap();
-
-        assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].hostname, "windows");
-        assert_eq!(peers[0].candidates.len(), 1);
-        assert_eq!(peers[0].candidates[0].address, "192.168.1.20");
-    }
-
-    #[test]
-    fn mdns_only_candidate_is_discovered_but_not_online() {
-        let local = LocalInfo {
-            hostname: "macbook".into(),
-            tailscale_ip: "192.168.1.10".into(),
-        };
-        let mut mdns_peer = discovered_peer("windows", "192.168.1.20", ConnectionInterface::Lan);
-        mdns_peer.online = false;
-        mdns_peer.status = PeerStatus::Discovered;
-        mdns_peer.candidates = vec![PeerCandidate::remembered(
-            ConnectionInterface::Lan,
-            "192.168.1.20",
-        )];
-
-        let (_, peers) = merge_lan_discovery_results(
-            Ok((local.clone(), Vec::new())),
-            Ok((local, vec![mdns_peer])),
-        )
-        .unwrap();
-
-        assert_eq!(peers.len(), 1);
-        assert!(!peers[0].online);
-        assert_eq!(peers[0].status, PeerStatus::Discovered);
-        assert!(!peers[0].candidates[0].online);
     }
 
     #[test]
@@ -1390,10 +838,13 @@ mod tests {
 
         let priority = priority_rx.recv().await.unwrap();
         let bulk = bulk_rx.recv().await.unwrap();
-        assert_eq!(priority.command, Command::TextPayload);
-        assert!(matches!(priority.acknowledgement, AckExpectation::Event(_)));
-        assert_eq!(bulk.command, Command::FileChunk);
-        assert!(matches!(bulk.acknowledgement, AckExpectation::None));
+        assert_eq!(priority.command(), Command::TextPayload);
+        assert!(matches!(
+            priority.acknowledgement(),
+            AckExpectation::Event(_)
+        ));
+        assert_eq!(bulk.command(), Command::FileChunk);
+        assert!(matches!(bulk.acknowledgement(), AckExpectation::None));
     }
 
     #[tokio::test]
@@ -1449,12 +900,18 @@ mod tests {
         )
         .await
         .unwrap();
-        let pending = PendingFrame {
-            queued: QueuedFrame::new(Command::TextPayload, b"reliable".to_vec()).unwrap(),
-            sequence: 42,
-        };
+        let pending = PendingFrame::new(
+            QueuedFrame::new(Command::TextPayload, b"reliable".to_vec()).unwrap(),
+            42,
+        );
 
-        deliver_pending_frame(&mut client, &pending).await.unwrap();
+        deliver_pending_frame(
+            &mut client,
+            &pending,
+            &tailsync_core::peer::delivery::DeliveryConfig::DEFAULT,
+        )
+        .await
+        .unwrap();
         server.await.unwrap();
     }
 
@@ -1507,15 +964,19 @@ mod tests {
         )
         .await
         .unwrap();
-        let pending = PendingFrame {
-            queued: QueuedFrame::new(Command::TextPayload, b"reliable".to_vec()).unwrap(),
-            sequence: 7,
-        };
+        let pending = PendingFrame::new(
+            QueuedFrame::new(Command::TextPayload, b"reliable".to_vec()).unwrap(),
+            7,
+        );
 
-        let error = deliver_pending_frame(&mut client, &pending)
-            .await
-            .unwrap_err();
-        assert!(error.contains("different event"));
+        let error = deliver_pending_frame(
+            &mut client,
+            &pending,
+            &tailsync_core::peer::delivery::DeliveryConfig::DEFAULT,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("different event"));
         server.await.unwrap();
     }
 
@@ -1598,12 +1059,7 @@ mod tests {
             content: b"before-sleep".to_vec(),
         };
         priority_tx
-            .send(QueuedFrame {
-                command: Command::TextPayload,
-                payload: old_envelope.encode(),
-                acknowledgement: AckExpectation::Event(old_envelope.message_id),
-                completion: None,
-            })
+            .send(QueuedFrame::new_with_envelope(Command::TextPayload, old_envelope).unwrap())
             .await
             .unwrap();
         priority_tx

@@ -394,14 +394,8 @@ async fn handle_accepted_connection(
         }
     }
     secure::write_ready(&mut stream).await?;
-    let _active_guard = authenticated_sessions().register(
-        RouteKey {
-            hostname: peer_info.hostname.clone(),
-            interface: source_interface,
-            address: source_address.clone(),
-        },
-        0,
-    );
+    let _active_guard =
+        register_active_session(&peer_info.hostname, source_interface, &source_address, 0);
     let _receive_guard = ReceiveSuspendGuard {
         sync_engine: sync_engine.clone(),
         source: peer_info.hostname.clone(),
@@ -950,29 +944,7 @@ fn validate_packed_image(content: &[u8]) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn source_matches_mode(ip: std::net::IpAddr, mode: &str) -> bool {
-    if mode == "auto" {
-        return source_matches_mode(ip, "lan_only") || source_matches_mode(ip, "tailscale_only");
-    }
-    match (ip, mode) {
-        (std::net::IpAddr::V4(ip), "tailscale" | "tailscale_only") => {
-            let octets = ip.octets();
-            octets[0] == 100 && (64..=127).contains(&octets[1])
-        }
-        (std::net::IpAddr::V6(ip), "tailscale" | "tailscale_only") => {
-            let segments = ip.segments();
-            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
-        }
-        (std::net::IpAddr::V4(ip), "lan" | "lan_only") => {
-            ip.is_private() || ip.is_link_local() || ip.is_loopback()
-        }
-        (std::net::IpAddr::V6(ip), "lan" | "lan_only") => {
-            let first = ip.segments()[0];
-            (first & 0xfe00) == 0xfc00 || ip.is_unicast_link_local() || ip.is_loopback()
-        }
-        _ => false,
-    }
-}
+pub(super) use tailsync_core::peer::directory::source_matches_mode;
 
 pub(super) fn local_peer_identity(mode: &str) -> secure::PeerIdentity {
     // Peer authentication is bound to the Noise static key and hostname. The

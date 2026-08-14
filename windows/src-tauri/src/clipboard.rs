@@ -1053,6 +1053,8 @@ mod tests {
             fingerprint: String::new(),
             candidates: Vec::new(),
             current_interface: None,
+            current_address: None,
+            status: Default::default(),
         }
     }
 

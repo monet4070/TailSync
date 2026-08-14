@@ -6,7 +6,7 @@ use tokio::net::UdpSocket;
 use tokio::time::{timeout, Duration, Instant};
 
 use super::tailscale::{LocalInfo, PeerInfo};
-use super::{ConnectionInterface, PeerCandidate, TCP_PORT};
+use super::{ConnectionInterface, PeerCandidate, PeerStatus, TCP_PORT};
 
 const DISCOVERY_PORT: u16 = 19889;
 const DISCOVERY_REQUEST: &[u8] = b"TAILSYNC_DISCOVER_V1";
@@ -209,6 +209,8 @@ pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
             fingerprint: String::new(),
             candidates,
             current_interface: None,
+            current_address: None,
+            status: PeerStatus::Online,
         });
     }
 

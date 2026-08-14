@@ -6,7 +6,7 @@ use tokio::time::Duration;
 
 use super::lan;
 use super::tailscale::{LocalInfo, PeerInfo};
-use super::{source_matches_mode, ConnectionInterface, PeerCandidate, TCP_PORT};
+use super::{source_matches_mode, ConnectionInterface, PeerCandidate, PeerStatus, TCP_PORT};
 use crate::identity::DeviceIdentity;
 
 const SERVICE_TYPE: &str = "_tailsync._tcp.local.";
@@ -192,6 +192,8 @@ pub fn snapshot() -> (LocalInfo, Vec<PeerInfo>) {
             fingerprint: String::new(),
             candidates,
             current_interface: None,
+            current_address: None,
+            status: PeerStatus::Discovered,
         });
     }
     peers.sort_by(|left, right| left.hostname.cmp(&right.hostname));

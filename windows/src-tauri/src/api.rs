@@ -689,6 +689,8 @@ mod tests {
                         "192.168.31.247",
                     )],
                     current_interface: None,
+                    current_address: None,
+                    status: Default::default(),
                 }],
             )),
         );
@@ -805,6 +807,8 @@ mod tests {
                     fingerprint: String::new(),
                     candidates: vec![PeerCandidate::new(ConnectionInterface::Lan, lan_address)],
                     current_interface: None,
+                    current_address: None,
+                    status: Default::default(),
                 }],
             )),
         );
