@@ -68,7 +68,7 @@
   background: transparent;
   color: var(--text-secondary);
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -110,13 +110,13 @@
 .device-avatar.self { color: var(--brand); background: var(--brand-soft); }
 .device-info { flex: 1; min-width: 0; }
 .device-name { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; font-weight: 600; color: var(--text-primary); }
-.device-name > span { padding: 1px 5px; border-radius: 3px; color: var(--brand); background: var(--brand-soft); font-size: 9px; white-space: nowrap; }
+.device-name > span { padding: 1px 5px; border-radius: 3px; color: var(--brand); background: var(--brand-soft); font-size: 10px; white-space: nowrap; }
 .device-name > .peer-badge.paired { color: var(--green); background: var(--green-soft); }
 .device-name > .peer-badge.unpaired { color: var(--text-tertiary); background: var(--bg-input); }
-.device-address { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font: 10px var(--font-mono); }
-.device-fingerprint { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font: 9px var(--font-mono); }
-.peer-protocol-warning { margin-top: 5px; color: var(--orange); font-size: 10px; line-height: 1.35; }
-.device-status { flex-shrink: 0; font-size: 10px; color: var(--text-tertiary); }
+.device-address { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font: 11px var(--font-mono); }
+.device-fingerprint { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font: 10px var(--font-mono); }
+.peer-protocol-warning { margin-top: 5px; color: var(--orange); font-size: 11px; line-height: 1.35; }
+.device-status { flex-shrink: 0; font-size: 11px; color: var(--text-tertiary); }
 .device-status.online::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: var(--green); }
 .device-list-state { padding: 18px 8px 8px; text-align: center; color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
 .device-list-state.error { color: #d84a4a; }
@@ -126,23 +126,23 @@
 .device-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding-top: 1px; }
 .peer-route-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .peer-route { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-height: 20px; }
-.peer-route-address { min-width: 82px; max-width: min(280px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font: 10px var(--font-mono); }
-.peer-route-interface { font-size: 9px; font-weight: 650; color: var(--brand); }
+.peer-route-address { min-width: 82px; max-width: min(280px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font: 11px var(--font-mono); }
+.peer-route-interface { font-size: 10px; font-weight: 600; color: var(--brand); }
 .peer-route-interface.tailscale { color: var(--purple); }
-.peer-route-status { font-size: 9px; color: var(--text-tertiary); white-space: nowrap; }
+.peer-route-status { font-size: 10px; color: var(--text-tertiary); white-space: nowrap; }
 .peer-route-status.positive { color: var(--green); }
-.peer-route-status.health-connected { color: var(--green); font-weight: 650; }
-.peer-route-status.health-online { color: var(--brand); font-weight: 650; }
+.peer-route-status.health-connected { color: var(--green); font-weight: 600; }
+.peer-route-status.health-online { color: var(--brand); font-weight: 600; }
 .peer-route-status.health-confirming { color: #c58a16; }
 .peer-route-status.health-discovered { color: var(--text-secondary); }
 .peer-route-status.health-offline { color: var(--text-tertiary); }
 .peer-route-connection {
   padding: 1px 4px;
   border-radius: 4px;
-  font-size: 9px;
+  font-size: 10px;
   white-space: nowrap;
 }
-.peer-route-connection.connected { color: var(--green); background: var(--green-soft); font-weight: 650; }
+.peer-route-connection.connected { color: var(--green); background: var(--green-soft); font-weight: 600; }
 .peer-route-connection.idle { color: var(--text-tertiary); background: var(--bg-input); }
 .connection-test-button {
   width: 24px;
@@ -159,7 +159,7 @@
 .connection-test-button:hover { color: var(--brand); background: var(--brand-soft); }
 .connection-test-button:disabled { cursor: default; opacity: 0.65; }
 .connection-test-button svg { width: 16px; height: 16px; }
-.connection-test-result { font: 9px var(--font-mono); white-space: nowrap; }
+.connection-test-result { font: 10px var(--font-mono); white-space: nowrap; }
 .connection-test-result.success { color: var(--green); }
 .connection-test-result.error { color: #d84a4a; }
 
@@ -204,7 +204,7 @@
 
 .pairing-window-row > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .pairing-window-row strong { color: var(--text-primary); font-size: 12px; font-weight: 600; }
-.pairing-window-row span { color: var(--text-tertiary); font-size: 10px; }
+.pairing-window-row span { color: var(--text-tertiary); font-size: 11px; }
 .pairing-window-close {
   width: 48px;
   height: 28px;
@@ -230,7 +230,7 @@
 
 .pair-dialog-icon { color: var(--brand); background: var(--brand-soft); }
 .pair-dialog-icon svg { display: block; }
-.pair-dialog h2 { font-size: 15px; font-weight: 650; color: var(--text-primary); }
+.pair-dialog h2 { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .pair-dialog .confirm-dialog-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .pairing-code {
   margin-top: 16px;
@@ -241,16 +241,16 @@
   white-space: nowrap;
 }
 .pairing-check-copy { margin-top: 9px; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
-.pairing-peer-fingerprint { margin-top: 8px; color: var(--text-tertiary); font: 9px var(--font-mono); overflow-wrap: anywhere; }
-.pairing-progress { margin-top: 9px; color: var(--brand); font-size: 10px; }
+.pairing-peer-fingerprint { margin-top: 8px; color: var(--text-tertiary); font: 10px var(--font-mono); overflow-wrap: anywhere; }
+.pairing-progress { margin-top: 9px; color: var(--brand); font-size: 11px; }
 .pairing-waiting { min-height: 96px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-secondary); font-size: 11px; }
 .pairing-spinner { width: 22px; height: 22px; border: 2px solid var(--border-strong); border-top-color: var(--brand); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .pairing-instruction { width: 100%; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--brand) 24%, var(--border-strong)); border-radius: var(--radius-sm); background: var(--brand-soft); display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.pairing-instruction span { color: var(--brand); font-size: 10px; font-weight: 650; }
-.pairing-instruction strong { max-width: 245px; color: var(--text-primary); font-size: 13px; font-weight: 650; line-height: 1.5; }
-.pairing-instruction small { color: var(--text-tertiary); font-size: 9px; }
+.pairing-instruction span { color: var(--brand); font-size: 11px; font-weight: 600; }
+.pairing-instruction strong { max-width: 245px; color: var(--text-primary); font-size: 13px; font-weight: 600; line-height: 1.5; }
+.pairing-instruction small { color: var(--text-tertiary); font-size: 10px; }
 .pair-key-field { display: block; margin-top: 16px; text-align: left; }
-.pair-key-field span { display: block; margin-bottom: 6px; color: var(--text-secondary); font-size: 10px; }
+.pair-key-field span { display: block; margin-bottom: 6px; color: var(--text-secondary); font-size: 11px; }
 .pair-key-field input {
   width: 100%;
   height: 34px;
@@ -263,7 +263,7 @@
   font: 10px var(--font-mono);
 }
 .pair-key-field input:focus { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand-soft); }
-.pair-dialog-error { margin-top: 8px; color: #d84a4a; font-size: 10px; line-height: 1.4; text-align: left; overflow-wrap: anywhere; }
+.pair-dialog-error { margin-top: 8px; color: #d84a4a; font-size: 11px; line-height: 1.4; text-align: left; overflow-wrap: anywhere; }
 .confirm-dialog-actions button.pair-submit { border-color: var(--brand); background: var(--brand); color: var(--brand-text); }
 
 @media (prefers-reduced-motion: reduce) {
@@ -520,7 +520,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 500;
   font-family: inherit;
   color: var(--text-secondary);
@@ -871,13 +871,13 @@
 .shortcut-dialog-header h2 {
   color: var(--text-primary);
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .shortcut-dialog-header p {
   margin-top: 2px;
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .shortcut-capture-target {
@@ -934,13 +934,13 @@
 
 .shortcut-capture-again {
   color: var(--text-tertiary);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .shortcut-dialog-message {
   min-height: 28px;
   padding: 7px 2px 3px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.4;
 }
 

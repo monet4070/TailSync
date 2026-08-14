@@ -13,8 +13,6 @@ html, body {
   line-height: 1.5;
   color: var(--text-primary);
   background: var(--bg-window);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
   user-select: none;
 }
 
@@ -90,7 +88,7 @@ html, body {
 }
 
 .titlebar-badge {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 500;
   color: var(--brand);
   background: var(--brand-soft);
@@ -245,7 +243,7 @@ html, body {
 }
 
 .search-results-count {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-tertiary);
   padding: 0 10px 4px;
   flex-shrink: 0;
@@ -436,7 +434,7 @@ html, body {
 
 .custom-date-range label > span {
   color: var(--text-tertiary);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   line-height: 1.2;
 }
@@ -487,7 +485,7 @@ html, body {
 .date-range-error {
   grid-column: 1 / -1;
   color: #d84a4a;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.3;
 }
 
@@ -577,7 +575,7 @@ html, body {
   width: 100%;
   min-width: 0;
   position: relative;
-  animation: item-enter 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: item-enter 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 .history-item:hover {
@@ -629,7 +627,7 @@ html, body {
   border-radius: var(--radius-sm);
   background: var(--bg-window);
   color: var(--text-primary);
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -751,7 +749,7 @@ html, body {
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--warning, #b7791f) 9%, var(--bg-card));
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.4;
 }
 
@@ -789,7 +787,7 @@ html, body {
 }
 
 .item-type {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0;
@@ -913,7 +911,7 @@ html, body {
 }
 
 .item-peer {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-tertiary);
   margin-left: auto;
   overflow: hidden;
@@ -943,7 +941,7 @@ html, body {
 }
 
 .item-size {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -1068,7 +1066,7 @@ html, body {
 }
 
 .confirm-dialog-icon svg { width: 19px; height: 19px; }
-.confirm-dialog h2 { font-size: 15px; font-weight: 650; color: var(--text-primary); }
+.confirm-dialog h2 { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .confirm-dialog p { margin-top: 6px; font-size: 11px; line-height: 1.55; color: var(--text-secondary); }
 
 .confirm-dialog-actions {
@@ -1085,7 +1083,7 @@ html, body {
   background: var(--bg-card);
   color: var(--text-primary);
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   cursor: pointer;
 }
 
