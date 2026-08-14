@@ -5910,6 +5910,7 @@ dependencies = [
  "tauri-plugin-updater",
  "thiserror 2.0.18",
  "tokio",
+ "windows 0.62.2",
  "windows-sys 0.59.0",
  "zip",
 ]
