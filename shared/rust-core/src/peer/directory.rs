@@ -20,14 +20,17 @@ use std::net::{IpAddr, SocketAddr};
 
 use crate::crypto::Settings;
 use crate::identity;
-use crate::peer::types::{ConnectionInterface, LocalInfo, PeerCandidate, PeerInfo, PeerStatus};
+use crate::peer::types::{
+    ConnectionInterface, ConnectionMode, LocalInfo, PeerCandidate, PeerInfo, PeerStatus,
+};
 
 /// Map a connection mode string to the single interface it allows.
+/// `Auto` allows every interface and therefore has no single mapping.
 pub fn mode_interface(mode: &str) -> Option<ConnectionInterface> {
-    match mode {
-        "lan" | "lan_only" => Some(ConnectionInterface::Lan),
-        "tailscale" | "tailscale_only" => Some(ConnectionInterface::Tailscale),
-        _ => None,
+    match ConnectionMode::parse(mode)? {
+        ConnectionMode::Auto => None,
+        ConnectionMode::LanOnly => Some(ConnectionInterface::Lan),
+        ConnectionMode::TailscaleOnly => Some(ConnectionInterface::Tailscale),
     }
 }
 
@@ -312,6 +315,10 @@ pub fn merge_paired_peers(
     discovered: Vec<PeerInfo>,
     rtt_capable: impl Fn(&str) -> bool,
 ) -> Vec<PeerInfo> {
+    // Unknown modes (e.g. cache-only lookups) allow no remembered routes,
+    // matching the historic `mode_interface` behavior.
+    let mode_parsed = ConnectionMode::parse(mode);
+    let allows = |interface| mode_parsed.map(|m| m.allows(interface)).unwrap_or(false);
     let mut discovered_by_hostname = BTreeMap::new();
 
     for mut peer in discovered {
@@ -373,7 +380,7 @@ pub fn merge_paired_peers(
                     ConnectionInterface::Iroh,
                     ConnectionInterface::Tailscale,
                 ] {
-                    if mode != "auto" && mode_interface(mode) != Some(interface) {
+                    if !allows(interface) {
                         continue;
                     }
                     let Some(address) = remembered.get(interface.as_str()) else {
@@ -415,7 +422,7 @@ pub fn merge_paired_peers(
             ConnectionInterface::Iroh,
             ConnectionInterface::Tailscale,
         ] {
-            if mode != "auto" && mode_interface(mode) != Some(interface) {
+            if !allows(interface) {
                 continue;
             }
             if let Some(address) =
@@ -446,7 +453,9 @@ pub fn merge_paired_peers(
                 .copied()
                 .unwrap_or(true),
             address,
-            connection_mode: mode.to_string(),
+            connection_mode: mode_parsed
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default(),
             trusted: true,
             fingerprint,
             candidates,

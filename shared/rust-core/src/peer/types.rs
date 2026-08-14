@@ -38,6 +38,56 @@ impl ConnectionInterface {
     }
 }
 
+/// The user-selected connection strategy. Parsed once at the core
+/// boundary so directory and health rules share one interpretation of the
+/// mode strings that come from settings and the JSON API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionMode {
+    Auto,
+    LanOnly,
+    TailscaleOnly,
+}
+
+impl ConnectionMode {
+    /// Parse a settings/API mode string. Accepts the canonical and legacy
+    /// spellings used by both platforms.
+    pub fn parse(mode: &str) -> Option<Self> {
+        match mode {
+            "auto" => Some(Self::Auto),
+            "lan" | "lan_only" => Some(Self::LanOnly),
+            "tailscale" | "tailscale_only" => Some(Self::TailscaleOnly),
+            _ => None,
+        }
+    }
+
+    /// The canonical serialized form of this mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::LanOnly => "lan",
+            Self::TailscaleOnly => "tailscale",
+        }
+    }
+
+    /// Whether this mode permits connecting over `interface`.
+    pub fn allows(self, interface: ConnectionInterface) -> bool {
+        match self {
+            Self::Auto => true,
+            Self::LanOnly => interface == ConnectionInterface::Lan,
+            Self::TailscaleOnly => interface == ConnectionInterface::Tailscale,
+        }
+    }
+
+    /// The discovery interfaces this mode probes (Auto probes both).
+    pub fn interfaces(self) -> &'static [ConnectionInterface] {
+        match self {
+            Self::Auto => &[ConnectionInterface::Lan, ConnectionInterface::Tailscale],
+            Self::LanOnly => &[ConnectionInterface::Lan],
+            Self::TailscaleOnly => &[ConnectionInterface::Tailscale],
+        }
+    }
+}
+
 /// Lifecycle status of a discovered peer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -233,6 +283,47 @@ mod tests {
         assert!(!candidate.online);
         assert_eq!(candidate.status, PeerStatus::Discovered);
         assert_eq!(candidate.priority, 1);
+    }
+
+    #[test]
+    fn connection_mode_parses_canonical_and_legacy_spellings() {
+        assert_eq!(ConnectionMode::parse("auto"), Some(ConnectionMode::Auto));
+        assert_eq!(ConnectionMode::parse("lan"), Some(ConnectionMode::LanOnly));
+        assert_eq!(
+            ConnectionMode::parse("lan_only"),
+            Some(ConnectionMode::LanOnly)
+        );
+        assert_eq!(
+            ConnectionMode::parse("tailscale"),
+            Some(ConnectionMode::TailscaleOnly)
+        );
+        assert_eq!(
+            ConnectionMode::parse("tailscale_only"),
+            Some(ConnectionMode::TailscaleOnly)
+        );
+        assert_eq!(ConnectionMode::parse("cache-test"), None);
+        assert_eq!(ConnectionMode::Auto.as_str(), "auto");
+    }
+
+    #[test]
+    fn connection_mode_allows_only_its_interfaces() {
+        let lan = ConnectionInterface::Lan;
+        let tail = ConnectionInterface::Tailscale;
+        let iroh = ConnectionInterface::Iroh;
+        assert!(
+            ConnectionMode::Auto.allows(lan)
+                && ConnectionMode::Auto.allows(tail)
+                && ConnectionMode::Auto.allows(iroh)
+        );
+        assert!(ConnectionMode::LanOnly.allows(lan) && !ConnectionMode::LanOnly.allows(tail));
+        assert!(
+            !ConnectionMode::TailscaleOnly.allows(lan)
+                && ConnectionMode::TailscaleOnly.allows(tail)
+        );
+        assert_eq!(
+            ConnectionMode::LanOnly.interfaces(),
+            &[ConnectionInterface::Lan]
+        );
     }
 
     #[test]

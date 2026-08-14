@@ -632,7 +632,9 @@ async fn deliver_batch_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::DeviceIdentity;
     use crate::peer::types::PeerCandidate;
+    use std::sync::Arc;
 
     fn transfer_id(byte: u8) -> TransferId {
         TransferId([byte; 16])
@@ -925,5 +927,269 @@ mod tests {
             completed_for_assert.load(std::sync::atomic::Ordering::SeqCst),
             0
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Real delivery over an in-memory Noise connection pair. These tests
+    // exercise the full delivery path (handshake, framing, ACK validation,
+    // retry, rejection) without sockets, so both platforms share them.
+    // ------------------------------------------------------------------
+
+    fn server_identity() -> Arc<DeviceIdentity> {
+        Arc::new(DeviceIdentity::generate_for_test())
+    }
+
+    fn server_peer_identity() -> crate::secure::PeerIdentity {
+        crate::secure::PeerIdentity {
+            hostname: "server".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        }
+    }
+
+    fn client_peer_identity() -> crate::secure::PeerIdentity {
+        crate::secure::PeerIdentity {
+            hostname: "client".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        }
+    }
+
+    /// Establish a Noise-authenticated pair over an in-memory duplex and
+    /// return the client connection plus the server connection (the caller
+    /// drives both sides from the test).
+    async fn establish_pair(
+        server_identity: &Arc<DeviceIdentity>,
+        client_identity: &DeviceIdentity,
+    ) -> (SecureConnection, SecureConnection) {
+        let expected_key = server_identity.public_key().to_vec();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_identity = server_identity.clone();
+        let server = tokio::spawn(async move {
+            let accepted =
+                crate::secure::accept(server_io, &server_identity, server_peer_identity())
+                    .await
+                    .unwrap();
+            let mut connection = accepted.connection;
+            crate::secure::write_ready(&mut connection).await.unwrap();
+            connection
+        });
+        let client = crate::secure::connect(
+            client_io,
+            client_identity,
+            client_peer_identity(),
+            "server",
+            &expected_key,
+        )
+        .await
+        .unwrap();
+        let server = server.await.unwrap();
+        (client, server)
+    }
+
+    #[tokio::test]
+    async fn delivers_event_with_acknowledgement() {
+        let server_identity = server_identity();
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+
+        let server_task = tokio::spawn(async move {
+            let frame = server.read_frame().await.unwrap();
+            let message_id = EventEnvelope::decode(&frame.payload).unwrap().message_id;
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::EventAck,
+                        0,
+                        frame.sequence,
+                        message_id.ack_payload(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let pending = PendingFrame::new(
+            QueuedFrame::new(Command::TextPayload, b"hello".to_vec()).unwrap(),
+            1,
+        );
+        let receipt = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap();
+        assert_eq!(receipt.next_offset, None);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_rejection_is_permanent() {
+        let server_identity = server_identity();
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+
+        let server_task = tokio::spawn(async move {
+            let frame = server.read_frame().await.unwrap();
+            server
+                .write_frame(
+                    &Frame::try_new(Command::PeerError, 0, frame.sequence, b"bad event".to_vec())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let pending = PendingFrame::new(
+            QueuedFrame::new(Command::TextPayload, b"hello".to_vec()).unwrap(),
+            2,
+        );
+        let err = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DeliveryError::Rejected(_)));
+        assert!(!err.is_retryable());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_ack_for_another_message_is_a_protocol_error() {
+        let server_identity = server_identity();
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+
+        let server_task = tokio::spawn(async move {
+            let frame = server.read_frame().await.unwrap();
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::EventAck,
+                        0,
+                        frame.sequence,
+                        MessageId([0xEE; 16]).ack_payload(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let pending = PendingFrame::new(
+            QueuedFrame::new(Command::TextPayload, b"hello".to_vec()).unwrap(),
+            3,
+        );
+        let err = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DeliveryError::Protocol(_)));
+        assert!(err.is_retryable());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn event_is_retried_with_the_same_sequence_until_acknowledged() {
+        let server_identity = server_identity();
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+
+        // The server reads the first attempt but stays silent; the client's
+        // ACK window expires and it retries the identical frame. Only the
+        // second attempt is acknowledged.
+        let server_task = tokio::spawn(async move {
+            let first = server.read_frame().await.unwrap();
+            let retry = server.read_frame().await.unwrap();
+            assert_eq!(retry.sequence, first.sequence);
+            assert_eq!(retry.payload, first.payload);
+            let message_id = EventEnvelope::decode(&retry.payload).unwrap().message_id;
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::EventAck,
+                        0,
+                        retry.sequence,
+                        message_id.ack_payload(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let pending = PendingFrame::new(
+            QueuedFrame::new(Command::TextPayload, b"reliable".to_vec()).unwrap(),
+            42,
+        );
+        // Event ACK window is 750 ms; one silent round + ack must fit in the
+        // 4 default attempts.
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delivers_file_chunk_with_offset_ack() {
+        let server_identity = server_identity();
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let transfer = TransferId([0xAB; 16]);
+
+        let server_task = tokio::spawn(async move {
+            let frame = server.read_frame().await.unwrap();
+            let ack = FileOffset {
+                transfer_id: transfer,
+                next_offset: 4096,
+            };
+            server
+                .write_frame(
+                    &Frame::try_new(Command::FileAck, 0, frame.sequence, ack.encode()).unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let (tx, _rx) = oneshot::channel();
+        let pending = PendingFrame::new(
+            QueuedFrame::confirmed_file(Command::FileChunk, vec![0u8; 8], transfer, tx).unwrap(),
+            5,
+        );
+        let receipt = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap();
+        assert_eq!(receipt.next_offset, Some(4096));
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delivers_batch_with_accept_ack() {
+        let server_identity = server_identity();
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let batch = TransferId([0xCD; 16]);
+
+        let server_task = tokio::spawn(async move {
+            let frame = server.read_frame().await.unwrap();
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::FileBatchAccept,
+                        0,
+                        frame.sequence,
+                        batch.0.to_vec(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let (tx, _rx) = oneshot::channel();
+        let pending = PendingFrame::new(
+            QueuedFrame::confirmed_batch(Command::FileBatchStart, Vec::new(), batch, tx).unwrap(),
+            6,
+        );
+        let receipt = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap();
+        assert_eq!(receipt.next_offset, None);
+        server_task.await.unwrap();
     }
 }

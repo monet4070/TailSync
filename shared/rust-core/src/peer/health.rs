@@ -25,7 +25,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::peer::types::{
-    ActiveRoute, ConnectionInterface, PeerHealthSnapshot, PeerInfo, PeerStatus,
+    ActiveRoute, ConnectionInterface, ConnectionMode, PeerHealthSnapshot, PeerInfo, PeerStatus,
 };
 
 /// How recently a probe must have succeeded for a route to count as online.
@@ -288,11 +288,11 @@ impl Drop for SessionGuard {
 }
 
 fn interfaces_for_mode(mode: &str) -> &'static [ConnectionInterface] {
-    match mode {
-        "lan" | "lan_only" => &[ConnectionInterface::Lan],
-        "tailscale" | "tailscale_only" => &[ConnectionInterface::Tailscale],
-        _ => &[ConnectionInterface::Lan, ConnectionInterface::Tailscale],
-    }
+    // Unknown modes fall back to probing both interfaces, matching the
+    // historic behavior.
+    ConnectionMode::parse(mode)
+        .unwrap_or(ConnectionMode::Auto)
+        .interfaces()
 }
 
 /// Feed one discovery round into the tracker: ensure every candidate route is

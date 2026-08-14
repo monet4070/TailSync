@@ -55,8 +55,10 @@ cargo test --locked --manifest-path shared/rust-core/Cargo.toml
 node windows/scripts/check_cross_platform_sync.mjs --win-root windows --mac-root macos --core-root shared/rust-core
 ```
 
-共享逻辑的测试在 core 内（单点）；平台测试覆盖真实 I/O 回归。Windows Rust crate 需 CI 验证
-（本地 macOS 无法编译 windows target）。
+共享逻辑的测试在 core 内（单点）；平台测试覆盖真实 I/O 回归。Windows Rust crate 在 macOS
+上通过 host 编译验证（见 `scripts/check-windows-host.sh`：fmt + check --all-targets +
+test --no-run），Windows 原生编译/打包/运行由 CI 负责。注意 host 编译会因
+`#[cfg(target_os = windows)]` 块被裁掉而产生 dead-code 伪警告，属正常现象。
 
 ## 已知缺口
 
