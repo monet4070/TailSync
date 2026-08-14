@@ -51,6 +51,7 @@ struct TrayTransferState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrayMenuState {
     language: String,
+    sync_enabled: bool,
     storage_unavailable: bool,
     transfer: Option<TrayTransferState>,
 }
@@ -58,6 +59,7 @@ struct TrayMenuState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrayMenuStructure {
     language: String,
+    sync_enabled: bool,
     storage_unavailable: bool,
     transfer_visible: bool,
 }
@@ -85,6 +87,7 @@ impl TrayMenuState {
 
         Self {
             language,
+            sync_enabled: true,
             storage_unavailable,
             transfer,
         }
@@ -93,6 +96,7 @@ impl TrayMenuState {
     fn structure(&self) -> TrayMenuStructure {
         TrayMenuStructure {
             language: self.language.clone(),
+            sync_enabled: self.sync_enabled,
             storage_unavailable: self.storage_unavailable,
             transfer_visible: self.transfer.is_some(),
         }
@@ -105,6 +109,7 @@ struct BuiltTrayMenu<R: Runtime> {
     progress_item: Option<MenuItem<R>>,
     current_file_item: Option<MenuItem<R>>,
     stop_item: Option<MenuItem<R>>,
+    sync_item: MenuItem<R>,
 }
 
 fn build_tray_menu<R: Runtime>(
@@ -114,6 +119,23 @@ fn build_tray_menu<R: Runtime>(
     let labels = tray_labels(&state.language);
     let show = MenuItem::with_id(app, "show", labels.history, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", labels.settings, true, None::<&str>)?;
+    let sync = MenuItem::with_id(
+        app,
+        "sync_toggle",
+        if state.sync_enabled {
+            if state.language == "zh-CN" {
+                "暂停同步"
+            } else {
+                "Pause sync"
+            }
+        } else if state.language == "zh-CN" {
+            "开启同步"
+        } else {
+            "Enable sync"
+        },
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", labels.quit, true, None::<&str>)?;
     let storage_warning = MenuItem::with_id(
@@ -163,6 +185,7 @@ fn build_tray_menu<R: Runtime>(
                         &current,
                         &stop,
                         &progress_separator,
+                        &sync,
                         &show,
                         &settings,
                         &separator,
@@ -177,6 +200,7 @@ fn build_tray_menu<R: Runtime>(
                         &current,
                         &stop,
                         &progress_separator,
+                        &sync,
                         &show,
                         &settings,
                         &separator,
@@ -192,6 +216,7 @@ fn build_tray_menu<R: Runtime>(
                     &[
                         &storage_warning,
                         &warning_separator,
+                        &sync,
                         &show,
                         &settings,
                         &separator,
@@ -204,7 +229,7 @@ fn build_tray_menu<R: Runtime>(
             )
         } else {
             (
-                Menu::with_items(app, &[&show, &settings, &separator, &quit])?,
+                Menu::with_items(app, &[&sync, &show, &settings, &separator, &quit])?,
                 None,
                 None,
                 None,
@@ -217,6 +242,7 @@ fn build_tray_menu<R: Runtime>(
         progress_item,
         current_file_item,
         stop_item,
+        sync_item: sync,
     })
 }
 
@@ -235,6 +261,23 @@ fn refresh_tray_menu<R: Runtime>(
             .map_err(|error| error.to_string())?;
         *built = next_menu;
         return Ok(());
+    }
+
+    if built.state.sync_enabled != next_state.sync_enabled {
+        built
+            .sync_item
+            .set_text(if next_state.sync_enabled {
+                if next_state.language == "zh-CN" {
+                    "暂停同步"
+                } else {
+                    "Pause sync"
+                }
+            } else if next_state.language == "zh-CN" {
+                "开启同步"
+            } else {
+                "Enable sync"
+            })
+            .map_err(|error| error.to_string())?;
     }
 
     if let (Some(current), Some(next)) = (&built.state.transfer, &next_state.transfer) {
@@ -287,7 +330,19 @@ fn initial_tray_menu_state(app: &AppHandle, language: String) -> TrayMenuState {
                 .map(|db| !db.storage_status().available)
         })
         .unwrap_or(false);
-    TrayMenuState::from_current_progress(language, storage_unavailable)
+    let sync_enabled = app
+        .try_state::<crate::AppState>()
+        .and_then(|state| {
+            state
+                .settings
+                .try_lock()
+                .ok()
+                .map(|settings| settings.sync_enabled)
+        })
+        .unwrap_or(true);
+    let mut menu_state = TrayMenuState::from_current_progress(language, storage_unavailable);
+    menu_state.sync_enabled = sync_enabled;
+    menu_state
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -319,9 +374,12 @@ pub fn start_tray(app_handle: AppHandle) {
             else {
                 break;
             };
-            let language = settings.lock().await.language.clone();
+            let settings_snapshot = settings.lock().await.clone();
+            let language = settings_snapshot.language;
             let storage_unavailable = !db.lock().await.storage_status().available;
-            let next_state = TrayMenuState::from_current_progress(language, storage_unavailable);
+            let mut next_state =
+                TrayMenuState::from_current_progress(language, storage_unavailable);
+            next_state.sync_enabled = settings_snapshot.sync_enabled;
             if let Err(error) = refresh_tray_menu(&updater, &mut menu, next_state) {
                 log::debug!("Could not refresh tray transfer state: {error}");
             }
@@ -443,6 +501,14 @@ fn create_tauri_tray(app: &AppHandle) -> Result<BuiltTrayMenu<tauri::Wry>, Strin
                     let _ = crate::commands::open_settings_window(h).await;
                 });
             }
+            "sync_toggle" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = crate::commands::toggle_sync_for_app(&app).await {
+                        log::warn!("Could not toggle sync from tray: {error}");
+                    }
+                });
+            }
             "stop_transfer" => {
                 let Some(progress) = crate::api::get_file_progress() else {
                     return;
@@ -519,6 +585,14 @@ fn create_tauri_tray(app: &AppHandle) -> Result<(), String> {
                     let _ = crate::commands::open_settings_window(h).await;
                 });
             }
+            "sync_toggle" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = crate::commands::toggle_sync_for_app(&app).await {
+                        log::warn!("Could not toggle sync from fallback tray: {error}");
+                    }
+                });
+            }
             "quit" => request_shutdown(app),
             _ => {}
         })
@@ -576,11 +650,13 @@ mod tests {
     fn transfer_content_updates_keep_the_same_menu_structure() {
         let current = TrayMenuState {
             language: "en".into(),
+            sync_enabled: true,
             storage_unavailable: false,
             transfer: Some(transfer("1 / 3 files - 10%", "Phone  a.zip", true)),
         };
         let updated = TrayMenuState {
             language: "en".into(),
+            sync_enabled: true,
             storage_unavailable: false,
             transfer: Some(transfer("2 / 3 files - 75%", "Phone  b.zip", false)),
         };
@@ -593,6 +669,7 @@ mod tests {
     fn structural_tray_changes_require_a_menu_rebuild() {
         let idle = TrayMenuState {
             language: "en".into(),
+            sync_enabled: true,
             storage_unavailable: false,
             transfer: None,
         };

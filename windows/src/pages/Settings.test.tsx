@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingsData } from "../types/settings.generated";
 import { Settings } from "./Settings";
@@ -7,6 +7,7 @@ const {
   hideMock,
   invokeMock,
   listenMock,
+  eventHandlers,
   openMock,
   setColorThemeMock,
   setLocaleMock,
@@ -14,7 +15,11 @@ const {
 } = vi.hoisted(() => ({
   hideMock: vi.fn(),
   invokeMock: vi.fn(),
-  listenMock: vi.fn(() => Promise.resolve(vi.fn())),
+  eventHandlers: new Map<string, (event: { payload: unknown }) => void>(),
+  listenMock: vi.fn((event: string, handler: (event: { payload: unknown }) => void) => {
+    eventHandlers.set(event, handler);
+    return Promise.resolve(vi.fn());
+  }),
   openMock: vi.fn(),
   setColorThemeMock: vi.fn(),
   setLocaleMock: vi.fn(),
@@ -57,6 +62,8 @@ const settings: SettingsData = {
   progress_bar_enabled: true,
   storage_quota_bytes: 10 * 1024 * 1024 * 1024,
   storage_root: null,
+  sync_enabled: true,
+  sync_shortcut: "CommandOrControl+Shift+S",
   theme: "system",
   trusted_peer_addresses: {},
   trusted_peer_keys: {},
@@ -112,6 +119,7 @@ function installInvokeMock(updatesEnabled: boolean) {
 describe("Settings updates", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    eventHandlers.clear();
   });
 
   it("shows the app version without contacting the update service when no key is configured", async () => {
@@ -142,5 +150,81 @@ describe("Settings updates", () => {
       expect(invokeMock).toHaveBeenCalledWith("install_update");
       expect(screen.getByText("settings.updateInstalled")).toBeInTheDocument();
     });
+  });
+
+  it("reflects tray and global-shortcut sync changes in the visible toggle", async () => {
+    installInvokeMock(false);
+    render(<Settings />);
+
+    const label = await screen.findByText("settings.syncEnabled");
+    const toggle = label.closest(".setting-row")?.querySelector("input[type='checkbox']");
+    expect(toggle).toBeChecked();
+
+    await waitFor(() => expect(eventHandlers.has("sync-state-changed")).toBe(true));
+    act(() => {
+      eventHandlers.get("sync-state-changed")?.({ payload: { enabled: false } });
+    });
+
+    expect(toggle).not.toBeChecked();
+  });
+
+  it("records a physical-key shortcut and saves it only after confirmation", async () => {
+    installInvokeMock(false);
+    render(<Settings />);
+
+    const recorder = await screen.findByRole("button", { name: "settings.shortcutRecord" });
+    fireEvent.click(recorder);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("suspend_sync_shortcut"));
+    const captureTarget = screen.getByRole("button", { name: "settings.shortcutRecording" });
+
+    fireEvent.keyDown(captureTarget, {
+      code: "Slash",
+      key: "?",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("set_sync_shortcut", expect.anything());
+    expect(screen.getByText("settings.shortcutCaptured")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "settings.shortcutSave" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_sync_shortcut", {
+        shortcut: "Control+Shift+Slash",
+      });
+    });
+    expect(screen.getByText("/")).toBeInTheDocument();
+  });
+
+  it("keeps the recorder open when a global shortcut is already occupied", async () => {
+    installInvokeMock(false);
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_settings") return Promise.resolve(settings);
+      if (command === "get_storage_status") return Promise.resolve({
+        root: "C:\\TailSync",
+        used_bytes: 0,
+        quota_bytes: settings.storage_quota_bytes,
+        available: true,
+      });
+      if (command === "get_update_status") return Promise.resolve({
+        current_version: "2.1.0",
+        updates_enabled: false,
+      });
+      if (command === "get_peers") return Promise.resolve(peers);
+      if (command === "set_sync_shortcut") return Promise.reject(new Error("already registered"));
+      return Promise.resolve(undefined);
+    });
+    render(<Settings />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "settings.shortcutRecord" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("suspend_sync_shortcut"));
+    fireEvent.keyDown(screen.getByRole("button", { name: "settings.shortcutRecording" }), {
+      code: "F12",
+      key: "F12",
+      altKey: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "settings.shortcutSave" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("settings.shortcutConflict");
+    expect(screen.getByRole("dialog", { name: "settings.shortcutDialogTitle" })).toBeInTheDocument();
   });
 });

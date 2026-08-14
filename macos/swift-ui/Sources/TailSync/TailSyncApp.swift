@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeRouteSummary = ""
     private var activeTransfer: ApiClient.FileProgress?
     private var storageUnavailable = false
+    private var syncEnabled = true
     private var updateCheckRunning = false
     private static var historyWC: NSWindowController?
     private static var settingsWC: NSWindowController?
@@ -246,6 +247,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(stop)
             menu.addItem(.separator())
         }
+        let syncItem = NSMenuItem(
+            title: isZh
+                ? (syncEnabled ? "暂停同步" : "开启同步")
+                : (syncEnabled ? "Pause sync" : "Enable sync"),
+            action: #selector(toggleSyncAction),
+            keyEquivalent: ""
+        )
+        syncItem.target = self
+        menu.addItem(syncItem)
+        menu.addItem(.separator())
         let hItem = NSMenuItem(title: isZh ? "历史记录" : "History",
                                 action: #selector(openHistory), keyEquivalent: "")
         hItem.target = self; menu.addItem(hItem)
@@ -291,6 +302,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openHistory() { Self.showHistory() }
     @objc private func openSettings() { Self.showSettings() }
     @objc private func checkForUpdatesAction() { scheduleUpdateCheck(showWhenCurrent: true) }
+    @objc private func toggleSyncAction() {
+        Task { @MainActor [weak self] in
+            guard let self, let enabled = await ApiClient.shared.toggleSync() else { return }
+            self.syncEnabled = enabled
+            self.rebuildMenu()
+        }
+    }
     @objc private func stopTransfer() {
         guard let transfer = activeTransfer else { return }
         Task { await ApiClient.shared.cancelFileBatch(transfer.batchId) }
@@ -505,6 +523,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let unavailable = await ApiClient.shared.getStorageStatus()?.available == false
                 if unavailable != self.storageUnavailable {
                     self.storageUnavailable = unavailable
+                    self.rebuildMenu()
+                }
+                if let settings = try? await ApiClient.shared.getSettings(),
+                   settings.sync_enabled != self.syncEnabled {
+                    self.syncEnabled = settings.sync_enabled
                     self.rebuildMenu()
                 }
                 let routeSummary = status.activeInterfaces

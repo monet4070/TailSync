@@ -449,6 +449,8 @@ struct Request {
     #[serde(default)]
     enabled: Option<bool>,
     #[serde(default)]
+    shortcut: Option<String>,
+    #[serde(default)]
     public_key: Option<String>,
     #[serde(default)]
     address: Option<String>,

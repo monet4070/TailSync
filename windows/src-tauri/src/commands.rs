@@ -2,7 +2,82 @@ use crate::db;
 use crate::network;
 use crate::AppState;
 use log::info;
-use tauri::{command, AppHandle, Manager, State};
+use tauri::{command, AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+const SYNC_STATE_CHANGED_EVENT: &str = "sync-state-changed";
+
+fn emit_sync_state(app: &tauri::AppHandle, enabled: bool) {
+    if let Err(error) = app.emit(
+        SYNC_STATE_CHANGED_EVENT,
+        serde_json::json!({ "enabled": enabled }),
+    ) {
+        log::debug!("Could not emit sync state change: {error}");
+    }
+}
+
+pub(crate) async fn set_sync_enabled_for_app(
+    app: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "TailSync state is unavailable".to_string())?;
+    state
+        .settings
+        .lock()
+        .await
+        .set_sync_enabled(enabled)
+        .map_err(|error| error.to_string())?;
+    emit_sync_state(app, enabled);
+    Ok(())
+}
+
+pub(crate) async fn toggle_sync_for_app(app: &tauri::AppHandle) -> Result<bool, String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "TailSync state is unavailable".to_string())?;
+    let enabled = {
+        let mut settings = state.settings.lock().await;
+        let enabled = !settings.sync_enabled;
+        settings
+            .set_sync_enabled(enabled)
+            .map_err(|error| error.to_string())?;
+        enabled
+    };
+    emit_sync_state(app, enabled);
+    Ok(enabled)
+}
+
+fn install_sync_shortcut(app: &tauri::AppHandle, shortcut: &str) -> Result<(), String> {
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| error.to_string())?;
+    if shortcut.is_empty() {
+        return Ok(());
+    }
+    app.global_shortcut()
+        .on_shortcut(shortcut, |app, _shortcut, event| {
+            use tauri_plugin_global_shortcut::ShortcutState;
+            if event.state != ShortcutState::Pressed {
+                return;
+            }
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = toggle_sync_for_app(&app).await {
+                    log::warn!("Could not toggle sync from shortcut: {error}");
+                }
+            });
+        })
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn register_saved_sync_shortcut(
+    app: &tauri::AppHandle,
+    shortcut: &str,
+) -> Result<(), String> {
+    install_sync_shortcut(app, shortcut)
+}
 
 #[derive(serde::Serialize)]
 pub struct HistoryPage {
@@ -393,6 +468,72 @@ pub async fn toggle_peer(
     Ok(())
 }
 
+/// Get whether this device broadcasts clipboard changes and its configured shortcut.
+#[command]
+pub async fn get_sync_state(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let settings = state.settings.lock().await;
+    Ok(serde_json::json!({
+        "enabled": settings.sync_enabled,
+        "shortcut": settings.sync_shortcut,
+    }))
+}
+
+/// Enable or pause local clipboard broadcasting.
+#[command]
+pub async fn set_sync_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    set_sync_enabled_for_app(&app, enabled).await
+}
+
+#[command]
+pub async fn toggle_sync(app: tauri::AppHandle) -> Result<bool, String> {
+    toggle_sync_for_app(&app).await
+}
+
+#[command]
+pub fn suspend_sync_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn resume_sync_shortcut(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let shortcut = state.settings.lock().await.sync_shortcut.clone();
+    install_sync_shortcut(&app, &shortcut)
+}
+
+#[command]
+pub async fn set_sync_shortcut(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    shortcut: String,
+) -> Result<(), String> {
+    let shortcut = shortcut.trim().to_string();
+    let previous = state.settings.lock().await.sync_shortcut.clone();
+    if let Err(error) = install_sync_shortcut(&app, &shortcut) {
+        if let Err(restore_error) = install_sync_shortcut(&app, &previous) {
+            log::warn!("Could not restore previous sync shortcut: {restore_error}");
+        }
+        return Err(error);
+    }
+    if let Err(error) = state
+        .settings
+        .lock()
+        .await
+        .set_sync_shortcut(&shortcut)
+        .map_err(|error| error.to_string())
+    {
+        if let Err(restore_error) = install_sync_shortcut(&app, &previous) {
+            log::warn!("Could not restore previous sync shortcut: {restore_error}");
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Get current settings
 #[command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<crate::crypto::Settings, String> {
@@ -403,6 +544,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<crate::crypto::S
 /// Update settings
 #[command]
 pub async fn update_settings(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     settings_json: String,
 ) -> Result<(), String> {
@@ -413,10 +555,15 @@ pub async fn update_settings(
     let history_limit = new_settings.history_limit as i64;
     let storage_quota_bytes = new_settings.storage_quota_bytes;
     let mode_changed = settings.connection_mode != new_settings.connection_mode;
+    let shortcut_changed = settings.sync_shortcut != new_settings.sync_shortcut;
+    let shortcut = new_settings.sync_shortcut.clone();
     let connection_mode = new_settings.connection_mode.clone();
     new_settings.save().map_err(|e| e.to_string())?;
     *settings = new_settings;
     drop(settings);
+    if shortcut_changed {
+        install_sync_shortcut(&app, &shortcut)?;
+    }
     {
         let mut db = state.db.lock().await;
         db.set_max_history(history_limit);

@@ -408,6 +408,21 @@ final class ApiClient: @unchecked Sendable {
         }
     }
 
+    func setSyncEnabled(_ enabled: Bool) async -> Bool {
+        guard let response = try? await request(["cmd": "set_sync_enabled", "enabled": enabled]) else {
+            return false
+        }
+        return response["ok"] as? Bool == true
+    }
+
+    func toggleSync() async -> Bool? {
+        guard let response = try? await request(["cmd": "toggle_sync"]),
+              response["ok"] as? Bool == true,
+              let data = response["data"] as? [String: Any],
+              let enabled = data["enabled"] as? Bool else { return nil }
+        return enabled
+    }
+
     func reconnectPeers() async -> Bool {
         guard let response = try? await request(["cmd": "reconnect_peers"]) else { return false }
         return response["ok"] as? Bool == true

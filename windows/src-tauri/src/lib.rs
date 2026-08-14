@@ -106,16 +106,20 @@ async fn coordinate_shutdown(
 ) {
     wait_for_shutdown(&mut shutdown).await;
     info!("Application shutdown coordinator started");
-    if tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        pool.lock().await.disconnect_all();
-    })
-    .await
-    .is_err()
-    {
-        log::warn!("Timed out while closing peer connections");
-    }
-
-    stop_background_tasks(tasks, std::time::Duration::from_secs(3)).await;
+    let close_connections = async {
+        if tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            pool.lock().await.disconnect_all();
+        })
+        .await
+        .is_err()
+        {
+            log::warn!("Timed out while closing peer connections");
+        }
+    };
+    tokio::join!(
+        close_connections,
+        stop_background_tasks(tasks, std::time::Duration::from_millis(750))
+    );
     info!("Background services stopped");
     handle.exit(0);
 }
@@ -429,6 +433,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(updates::plugin_builder().build())
         .setup(move |app| {
@@ -463,9 +468,23 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 pairing: pairing.clone(),
                 shutdown: shutdown_for_state,
             };
+            let initial_sync_shortcut = state.settings.blocking_lock().sync_shortcut.clone();
             app.manage(state);
+            if let Err(error) =
+                commands::register_saved_sync_shortcut(&handle, &initial_sync_shortcut)
+            {
+                log::warn!("Could not register saved sync shortcut: {error}");
+            }
             #[cfg(all(not(target_os = "macos"), not(test)))]
             tray::start_tray(handle.clone());
+            if std::env::var_os("TAILSYNC_OPEN_SETTINGS_ON_START").is_some() {
+                let settings_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::open_settings_window(settings_handle).await {
+                        log::warn!("Could not open settings test window: {error}");
+                    }
+                });
+            }
             let pool_for_health = pool_for_setup.clone();
 
             // Start clipboard monitor (file → text → image)
@@ -567,6 +586,12 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::refresh_peers,
             commands::test_connection,
             commands::toggle_peer,
+            commands::get_sync_state,
+            commands::set_sync_enabled,
+            commands::toggle_sync,
+            commands::suspend_sync_shortcut,
+            commands::resume_sync_shortcut,
+            commands::set_sync_shortcut,
             commands::trust_peer,
             commands::forget_peer,
             commands::enable_pairing,

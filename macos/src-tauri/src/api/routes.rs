@@ -498,6 +498,65 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
+        "get_sync_state" => {
+            let settings = state.settings.lock().await;
+            Response {
+                ok: true,
+                data: Some(serde_json::json!({
+                    "enabled": settings.sync_enabled,
+                    "shortcut": settings.sync_shortcut,
+                })),
+                error: None,
+            }
+        }
+
+        "set_sync_enabled" => {
+            let enabled = req.enabled.unwrap_or(true);
+            let result = state
+                .settings
+                .lock()
+                .await
+                .set_sync_enabled(enabled)
+                .map_err(|error| error.to_string());
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
+        "toggle_sync" => {
+            let mut settings = state.settings.lock().await;
+            let enabled = !settings.sync_enabled;
+            match settings.set_sync_enabled(enabled) {
+                Ok(()) => Response {
+                    ok: true,
+                    data: Some(serde_json::json!({ "enabled": enabled })),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "set_sync_shortcut" => {
+            let shortcut = req.shortcut.unwrap_or_default();
+            let result = state
+                .settings
+                .lock()
+                .await
+                .set_sync_shortcut(&shortcut)
+                .map_err(|error| error.to_string());
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
         "update_settings" => {
             let Some(settings_json) = req.settings else {
                 return Response {

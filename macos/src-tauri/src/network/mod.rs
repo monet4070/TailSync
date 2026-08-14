@@ -1226,6 +1226,8 @@ mod tests {
                 addr.ip().to_string(),
             )],
             current_interface: None,
+            current_address: None,
+            status: Default::default(),
         };
         let blocked_send = tokio::spawn(async move {
             queue_peer_frame(&queued_pool, &peer, Command::TextPayload, vec![2]).await
