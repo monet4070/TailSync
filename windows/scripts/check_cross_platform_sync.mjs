@@ -103,7 +103,6 @@ assertTreeMatch('src-tauri/src', [
   'network/mod.rs',
   'network/health.rs',
   'network/peer_cache.rs',
-  'network/pool.rs',
   'network/tailscale.rs',
   'tray.rs',
 ]);

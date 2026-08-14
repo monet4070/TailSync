@@ -11,10 +11,6 @@ pub(super) use tailsync_core::peer::delivery::QueuedFrame;
 pub use tailsync_core::peer::types::DeliveryReceipt;
 
 impl PoolSender {
-    fn request_shutdown(&self) {
-        let _ = self.shutdown.send(true);
-    }
-
     #[cfg(test)]
     pub(super) fn same_channel(&self, other: &Self) -> bool {
         self.priority.same_channel(&other.priority) && self.bulk.same_channel(&other.bulk)
@@ -26,6 +22,10 @@ impl PoolSender {
         } else {
             &self.priority
         }
+    }
+
+    fn request_shutdown(&self) {
+        let _ = self.shutdown.send(true);
     }
 }
 
