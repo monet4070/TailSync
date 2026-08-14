@@ -36,9 +36,9 @@
   --radius-lg: 12px;
   --radius-full: 9999px;
 
-  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    "SF Pro Display", "Segoe UI", "Microsoft YaHei UI", "PingFang SC",
-    "Helvetica Neue", sans-serif;
+  --font-system-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+    "PingFang SC", sans-serif;
+  --font-ui: var(--font-system-ui);
   --font-display: var(--font-ui);
   --font-content: var(--font-ui);
   --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
@@ -283,18 +283,15 @@
 .app.theme-tailsync {
   --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display",
     "Segoe UI Variable Display", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  --font-content: -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-content: var(--font-system-ui);
 }
 
 .app.theme-ocean {
-  --font-ui: "Bahnschrift", "Avenir Next", "DengXian", "Hiragino Sans GB",
-    "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-ui: var(--font-system-ui);
   --font-display: "Bahnschrift SemiBold", "Avenir Next Demi Bold", "Segoe UI",
     "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  --font-content: "Avenir Next", "DengXian", "Hiragino Sans GB", "Segoe UI",
-    "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  --font-weight-content: 450;
+  --font-content: var(--font-system-ui);
+  --font-weight-content: 500;
   --line-height-ui: 1.55;
   --titlebar-height: 40px;
   --history-row-padding-y: 11px;
@@ -313,9 +310,9 @@
 }
 
 .app.theme-forest {
-  --font-ui: "Constantia", "Songti SC", "STSong", "SimSun", "Georgia", serif;
+  --font-ui: var(--font-system-ui);
   --font-display: "Constantia", "Songti SC", "STSong", "SimSun", "Georgia", serif;
-  --font-content: "Georgia", "Songti SC", "STSong", "SimSun", "Constantia", serif;
+  --font-content: var(--font-system-ui);
   --font-weight-content: 400;
   --font-size-title: 13px;
   --font-size-content: 14px;
@@ -338,12 +335,10 @@
 }
 
 .app.theme-rose {
-  --font-ui: "Candara", "Corbel", "YouYuan", "Hiragino Maru Gothic ProN",
-    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-ui: var(--font-system-ui);
   --font-display: "Candara", "YouYuan", "Hiragino Maru Gothic ProN",
     "PingFang SC", "Microsoft YaHei UI", sans-serif;
-  --font-content: "Corbel", "Candara", "YouYuan", "Hiragino Maru Gothic ProN",
-    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-content: var(--font-system-ui);
   --font-size-title: 13px;
   --font-size-content: 14px;
   --line-height-ui: 1.58;
@@ -364,9 +359,9 @@
 }
 
 .app.theme-high-contrast {
-  --font-ui: "Arial", "Helvetica", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-ui: var(--font-system-ui);
   --font-display: "Arial Black", "Arial", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  --font-content: "Arial", "Helvetica", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-content: var(--font-system-ui);
   --font-size-ui: 14px;
   --font-size-title: 13px;
   --font-size-content: 14px;
