@@ -352,6 +352,13 @@ pub fn apply_peer_health(
     now: Instant,
 ) {
     for peer in peers {
+        // The projection re-derives online/status/current fields, but
+        // feeding it contradictory hand-constructed state is a bug: catch
+        // it at the boundary in debug builds and in the test suite.
+        debug_assert!(
+            peer.is_consistent(),
+            "inconsistent peer state before projection"
+        );
         // Projection always starts from a clean slate: if the peer's last
         // authenticated session closed, the stale current route must not
         // survive into the new snapshot.
@@ -624,7 +631,7 @@ mod tests {
         let mut peers = vec![PeerInfo {
             hostname: "peer-a".into(),
             tailscale_ip: "100.100.250.26".into(),
-            online: true,
+            online: false,
             enabled: true,
             address: "192.168.250.26".into(),
             connection_mode: "auto".into(),
@@ -694,7 +701,7 @@ mod tests {
         let mut peers = vec![PeerInfo {
             hostname: "peer-c".into(),
             tailscale_ip: "100.100.250.28".into(),
-            online: false,
+            online: true,
             enabled: true,
             address: "100.100.250.28".into(),
             connection_mode: "auto".into(),

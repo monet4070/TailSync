@@ -36,16 +36,21 @@ pub(crate) fn peer_snapshot_data(
                 .iter()
                 .map(|candidate| {
                     let connected = peer.current_address.as_deref() == Some(&candidate.address);
-                    serde_json::json!({
-                        "interface": candidate.interface,
-                        "address": candidate.address,
-                        "status": if connected { network::PeerStatus::Connected } else { candidate.status },
-                        "online": candidate.online,
-                        "connected": connected,
-                        "latency_ms": candidate.latency,
-                        "pairing_endpoint": paired_endpoint == Some(&candidate.address),
-                        "rtt_capable": candidate.rtt_capable,
+                    serde_json::to_value(tailsync_core::peer::types::PeerRouteSnapshot {
+                        interface: candidate.interface,
+                        address: candidate.address.clone(),
+                        status: if connected {
+                            network::PeerStatus::Connected
+                        } else {
+                            candidate.status
+                        },
+                        online: candidate.online,
+                        connected,
+                        latency_ms: candidate.latency,
+                        pairing_endpoint: paired_endpoint == Some(&candidate.address),
+                        rtt_capable: candidate.rtt_capable,
                     })
+                    .expect("peer route snapshot always serializes")
                 })
                 .collect::<Vec<_>>();
             let mut value = match serde_json::to_value(&peer) {
@@ -72,16 +77,17 @@ pub(crate) fn peer_snapshot_data(
         .candidates
         .iter()
         .map(|candidate| {
-            serde_json::json!({
-                "interface": candidate.interface,
-                "address": candidate.address,
-                "status": network::PeerStatus::Connected,
-                "online": true,
-                "connected": true,
-                "latency_ms": Value::Null,
-                "pairing_endpoint": false,
-                "rtt_capable": candidate.rtt_capable,
+            serde_json::to_value(tailsync_core::peer::types::PeerRouteSnapshot {
+                interface: candidate.interface,
+                address: candidate.address.clone(),
+                status: network::PeerStatus::Connected,
+                online: true,
+                connected: true,
+                latency_ms: None,
+                pairing_endpoint: false,
+                rtt_capable: candidate.rtt_capable,
             })
+            .expect("local route snapshot always serializes")
         })
         .collect::<Vec<_>>();
 

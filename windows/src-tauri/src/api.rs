@@ -678,7 +678,7 @@ mod tests {
                 vec![PeerInfo {
                     hostname: "Mac".into(),
                     tailscale_ip: "192.168.31.247".into(),
-                    online: true,
+                    online: false,
                     enabled: true,
                     address: "192.168.31.247".into(),
                     connection_mode: "auto".into(),
@@ -799,7 +799,7 @@ mod tests {
                 vec![PeerInfo {
                     hostname: hostname.into(),
                     tailscale_ip: lan_address.into(),
-                    online: true,
+                    online: false,
                     enabled: true,
                     address: lan_address.into(),
                     connection_mode: "auto".into(),

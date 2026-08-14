@@ -675,7 +675,7 @@ mod tests {
         let peer = PeerInfo {
             hostname: "mode-only-peer".into(),
             tailscale_ip: "100.64.0.2".into(),
-            online: true,
+            online: false,
             enabled: true,
             address: "100.64.0.2".into(),
             connection_mode: "tailscale".into(),

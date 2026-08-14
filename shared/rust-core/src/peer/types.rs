@@ -89,6 +89,13 @@ impl ConnectionMode {
 }
 
 /// Lifecycle status of a discovered peer.
+///
+/// Invariant: a peer or candidate is `online` iff its status is
+/// [`PeerStatus::Connected`], [`PeerStatus::Online`], or
+/// [`PeerStatus::Confirming`]. [`PeerInfo::is_consistent`] and
+/// [`PeerCandidate::is_consistent`] check this; the health projection
+/// (`apply_peer_health`) is the single place that derives both fields, so
+/// wire data always satisfies it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerStatus {
@@ -98,6 +105,13 @@ pub enum PeerStatus {
     Online,
     Connected,
     Offline,
+}
+
+impl PeerStatus {
+    /// Whether the status counts as online in the health model.
+    pub fn is_online(self) -> bool {
+        matches!(self, Self::Connected | Self::Online | Self::Confirming)
+    }
 }
 
 /// One reachable route for a peer, with the health fields the health monitor
@@ -130,6 +144,12 @@ fn candidate_rtt_capable_default() -> bool {
 }
 
 impl PeerCandidate {
+    /// Whether `online`/\ agree under the health-model invariant and
+    /// `priority` matches the interface rank.
+    pub fn is_consistent(&self) -> bool {
+        self.online == self.status.is_online() && self.priority == self.interface.priority()
+    }
+
     pub fn new(interface: ConnectionInterface, address: impl Into<String>) -> Self {
         Self {
             interface,
@@ -172,6 +192,33 @@ pub struct PeerHealthSnapshot {
     pub online: bool,
     pub connected: bool,
     pub latency_ms: Option<u64>,
+}
+
+impl PeerInfo {
+    /// Whether the peer-level fields and every candidate satisfy the
+    /// health-model invariant (`online` iff status is connected/online/
+    /// confirming). The health projection derives all of these, so this
+    /// should only fail on hand-constructed values.
+    pub fn is_consistent(&self) -> bool {
+        self.online == self.status.is_online()
+            && self.candidates.iter().all(PeerCandidate::is_consistent)
+    }
+}
+
+/// One serialized route row of the peer snapshot, shared by both platform
+/// JSON APIs (mirrored by the Swift `Route` DTO and the React `PeerRoute`
+/// interface). Field names are part of the wire contract; the drift check
+/// compares this struct's fields against the contract lists.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PeerRouteSnapshot {
+    pub interface: ConnectionInterface,
+    pub address: String,
+    pub status: PeerStatus,
+    pub online: bool,
+    pub connected: bool,
+    pub latency_ms: Option<u64>,
+    pub pairing_endpoint: bool,
+    pub rtt_capable: bool,
 }
 
 /// A discovered or remembered peer device. This is the unified cross-platform
@@ -324,6 +371,52 @@ mod tests {
             ConnectionMode::LanOnly.interfaces(),
             &[ConnectionInterface::Lan]
         );
+    }
+
+    #[test]
+    fn health_consistency_invariant_holds_for_constructors() {
+        // Constructors produce consistent state: online matches status.
+        let discovered = PeerCandidate::remembered(ConnectionInterface::Lan, "192.168.1.2");
+        assert!(discovered.is_consistent());
+        let fresh = PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.3");
+        assert!(fresh.is_consistent());
+        let peer = PeerInfo {
+            hostname: "peer".into(),
+            tailscale_ip: String::new(),
+            online: false,
+            enabled: true,
+            address: String::new(),
+            connection_mode: "lan".into(),
+            trusted: false,
+            fingerprint: String::new(),
+            candidates: vec![discovered],
+            current_interface: None,
+            current_address: None,
+            status: PeerStatus::Discovered,
+        };
+        assert!(peer.is_consistent());
+    }
+
+    #[test]
+    fn health_consistency_invariant_detects_contradictions() {
+        let mut candidate = PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.2");
+        candidate.status = PeerStatus::Offline;
+        assert!(!candidate.is_consistent());
+        let peer = PeerInfo {
+            hostname: "peer".into(),
+            tailscale_ip: String::new(),
+            online: true,
+            enabled: true,
+            address: String::new(),
+            connection_mode: "lan".into(),
+            trusted: false,
+            fingerprint: String::new(),
+            candidates: Vec::new(),
+            current_interface: None,
+            current_address: None,
+            status: PeerStatus::Offline,
+        };
+        assert!(!peer.is_consistent());
     }
 
     #[test]

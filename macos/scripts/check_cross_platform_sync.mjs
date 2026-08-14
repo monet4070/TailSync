@@ -404,13 +404,26 @@ const swiftPeerFields = swiftFields(swiftSource, 'PeerSnapshot');
 swiftPeerFields.delete('id');
 assertSameFields('SwiftUI/Rust peer snapshot', peerInfoFields, swiftPeerFields);
 const routeFields = ['interface', 'address', 'status', 'online', 'connected',
-  'latency_ms', 'pairing_endpoint'];
-assertJsonFields('Windows peer route snapshot', winApiContractSource, routeFields);
-assertJsonFields('macOS peer route snapshot', macApiContractSource, routeFields);
+  'latency_ms', 'pairing_endpoint', 'rtt_capable'];
+// The route row shape is defined once by the shared PeerRouteSnapshot
+// struct; both API contracts and the Swift DTO must stay in lockstep.
+assertSameFields('Peer route snapshot vs core struct', new Set(routeFields),
+  rustFields(readCore('src/peer/types.rs'), 'PeerRouteSnapshot'));
+// The serialized field names now live in the shared struct, so the API
+// contracts must reference it (compile-time guarantee) rather than spell
+// out JSON literals that can drift.
+for (const [root, label] of [[winRoot, 'Windows'], [macRoot, 'macOS']]) {
+  const routesSource = read(root, 'src-tauri/src/api/routes.rs');
+  if (!routesSource.includes('tailsync_core::peer::types::PeerRouteSnapshot')) {
+    fail(`${label} api routes must serialize routes via the shared PeerRouteSnapshot.`);
+  }
+}
 for (const marker of [
   /struct Route: Decodable/,
   /case latencyMs = "latency_ms"/,
   /case pairingEndpoint = "pairing_endpoint"/,
+  /case rttCapable = "rtt_capable"/,
+  /rttCapable = try values.decodeIfPresent\(Bool.self, forKey: \.rttCapable\)/,
 ]) if (!marker.test(swiftSource)) fail('SwiftUI peer route DTO is missing normalized route fields.');
 
 const infoPlist = read(macRoot, 'src-tauri/Info.plist');
