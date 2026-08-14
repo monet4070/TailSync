@@ -105,6 +105,16 @@
         "null"
       ]
     },
+    "sync_enabled": {
+      "default": true,
+      "description": "Whether this device broadcasts newly copied clipboard content.",
+      "type": "boolean"
+    },
+    "sync_shortcut": {
+      "default": "CommandOrControl+Shift+S",
+      "description": "Optional global shortcut used to toggle sync. Empty disables it.",
+      "type": "string"
+    },
     "theme": {
       "$ref": "#/definitions/ThemeContract",
       "default": "system"
@@ -140,6 +150,8 @@
     "progress_bar_enabled",
     "storage_quota_bytes",
     "storage_root",
+    "sync_enabled",
+    "sync_shortcut",
     "theme",
     "trusted_peer_addresses",
     "trusted_peer_keys"

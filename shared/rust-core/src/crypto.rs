@@ -15,6 +15,12 @@ use crate::db;
 pub struct Settings {
     pub notifications_enabled: bool,
     pub progress_bar_enabled: bool,
+    /// Whether this device broadcasts newly copied clipboard content.
+    #[serde(default = "default_sync_enabled")]
+    pub sync_enabled: bool,
+    /// Optional global shortcut used to toggle sync. Empty disables it.
+    #[serde(default = "default_sync_shortcut")]
+    pub sync_shortcut: String,
     #[schemars(range(min = 10, max = 500))]
     pub history_limit: u32,
     /// Bulk history and transfer storage. None keeps bulk data in the system
@@ -92,6 +98,14 @@ fn default_connection_mode() -> String {
     "auto".to_string()
 }
 
+fn default_sync_enabled() -> bool {
+    true
+}
+
+fn default_sync_shortcut() -> String {
+    "CommandOrControl+Shift+S".to_string()
+}
+
 fn default_color_theme() -> String {
     "tailsync".to_string()
 }
@@ -122,6 +136,8 @@ impl Default for Settings {
         Settings {
             notifications_enabled: true,
             progress_bar_enabled: true,
+            sync_enabled: default_sync_enabled(),
+            sync_shortcut: default_sync_shortcut(),
             history_limit: 100,
             storage_root: None,
             storage_quota_bytes: default_storage_quota_bytes(),
@@ -234,6 +250,22 @@ impl Settings {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut updated = self.clone();
         updated.enabled_peers.insert(hostname.to_string(), enabled);
+        updated.save()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn set_sync_enabled(&mut self, enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let mut updated = self.clone();
+        updated.sync_enabled = enabled;
+        updated.save()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn set_sync_shortcut(&mut self, shortcut: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut updated = self.clone();
+        updated.sync_shortcut = shortcut.trim().to_string();
         updated.save()?;
         *self = updated;
         Ok(())

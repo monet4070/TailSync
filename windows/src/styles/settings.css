@@ -715,6 +715,275 @@
   margin-bottom: 0;
 }
 
+.shortcut-row {
+  cursor: default;
+}
+
+.peer-sync-state {
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 3px;
+}
+
+.peer-sync-state.ready {
+  color: #27855f;
+}
+
+.peer-sync-state.blocked {
+  color: #b56a2d;
+}
+
+.shortcut-control {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  width: min(270px, 100%);
+}
+
+.shortcut-recorder {
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  font-size: 12px;
+  gap: 8px;
+  justify-content: flex-start;
+  min-height: 32px;
+  min-width: 0;
+  padding: 4px 8px;
+}
+
+.shortcut-recorder:hover:not(:disabled) {
+  border-color: var(--brand);
+}
+
+.shortcut-recorder:focus-visible {
+  border-color: var(--brand);
+  outline: 2px solid var(--brand-soft);
+}
+
+.shortcut-recorder:disabled,
+.shortcut-icon-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.shortcut-keycaps {
+  align-items: center;
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.shortcut-keycaps kbd {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  min-width: 22px;
+  padding: 0 5px;
+  text-align: center;
+}
+
+.shortcut-empty {
+  color: var(--text-tertiary);
+}
+
+.shortcut-edit-icon {
+  color: var(--text-tertiary);
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.shortcut-icon-button {
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+  width: 32px;
+}
+
+.shortcut-icon-button:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.shortcut-icon-button:focus-visible {
+  outline: 2px solid var(--brand-soft);
+}
+
+@media (max-width: 520px) {
+  .shortcut-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .shortcut-control {
+    width: 100%;
+  }
+}
+
+.shortcut-dialog {
+  width: min(360px, calc(100vw - 32px));
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+  animation: dialog-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.shortcut-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.shortcut-dialog-icon {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.shortcut-dialog-header h2 {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.shortcut-dialog-header p {
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.shortcut-capture-target {
+  width: 100%;
+  min-height: 84px;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+
+.shortcut-capture-target.active {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px var(--brand-soft);
+}
+
+.shortcut-capture-target:focus-visible {
+  outline: 2px solid var(--brand-soft);
+  outline-offset: 2px;
+}
+
+.shortcut-capture-target:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.shortcut-dialog-keycaps {
+  justify-content: center;
+  max-width: 100%;
+  overflow: visible;
+}
+
+.shortcut-dialog-keycaps kbd {
+  min-width: 30px;
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.shortcut-capture-placeholder {
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.shortcut-capture-again {
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.shortcut-dialog-message {
+  min-height: 28px;
+  padding: 7px 2px 3px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.shortcut-dialog-message .error { color: #d84a4a; }
+.shortcut-dialog-message .ready { color: var(--green); }
+
+.shortcut-dialog-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.shortcut-dialog-actions button {
+  height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.shortcut-dialog-actions button.primary {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--brand-text);
+}
+
+.shortcut-dialog-actions button:hover:not(:disabled) {
+  border-color: var(--brand);
+}
+
+.shortcut-dialog-actions button:focus-visible {
+  outline: 2px solid var(--brand-soft);
+  outline-offset: 1px;
+}
+
+.shortcut-dialog-actions button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .update-row {
   cursor: default;
   gap: 12px;

@@ -168,6 +168,16 @@ struct SettingsView: View {
     private var generalSection: some View {
         settingsCard(title: Loc.t("settings.general")) {
             settingRow {
+                Text(Loc.t("settings.syncEnabled"))
+                Spacer()
+                Toggle("", isOn: $settings.sync_enabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .onChange(of: settings.sync_enabled) { _ in save() }
+            }
+            themedDivider.padding(.leading, 16)
+            settingRow {
                 Text(Loc.t("settings.notifications"))
                 Spacer()
                 Toggle("", isOn: $settings.notifications_enabled)

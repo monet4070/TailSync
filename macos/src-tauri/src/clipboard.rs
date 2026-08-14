@@ -423,6 +423,10 @@ async fn send_file_batch_to_peers(
     database: Arc<Mutex<db::HistoryDB>>,
     settings: Arc<Mutex<crypto::Settings>>,
 ) {
+    if !settings.lock().await.sync_enabled {
+        info!("Sync is paused; keeping clipboard files local");
+        return;
+    }
     let prepared = match tokio::task::spawn_blocking(move || {
         sync::prepare_file_batch(paths, generation)
     })
@@ -568,7 +572,15 @@ fn peer_is_transfer_eligible(peer: &network::tailscale::PeerInfo) -> bool {
         .candidates
         .iter()
         .any(|candidate| candidate.interface == network::ConnectionInterface::Iroh);
-    peer.enabled && peer.trusted && (peer.online || has_iroh_route)
+    peer.enabled
+        && peer.trusted
+        && (!peer.candidates.is_empty()
+            || !peer.address.is_empty()
+            || !peer.tailscale_ip.is_empty())
+        && (peer.online
+            || has_iroh_route
+            || !peer.address.is_empty()
+            || !peer.tailscale_ip.is_empty())
 }
 
 fn summarize_file_batch_failures(failures: &[(String, String)]) -> String {
@@ -1010,6 +1022,10 @@ async fn broadcast_to_peers(
     cmd: Command,
     payload: Vec<u8>,
 ) {
+    if !settings.lock().await.sync_enabled {
+        debug!("Sync is paused; skipping clipboard broadcast");
+        return;
+    }
     let peers = configured_peers(settings).await;
 
     for peer in &peers {
@@ -1096,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn immediate_transfers_require_enabled_trusted_online_peers() {
+    fn immediate_transfers_require_enabled_trusted_peers_with_a_route() {
         assert!(peer_is_transfer_eligible(&transfer_peer(true, true, true)));
         assert!(!peer_is_transfer_eligible(&transfer_peer(
             false, true, true
@@ -1104,9 +1120,7 @@ mod tests {
         assert!(!peer_is_transfer_eligible(&transfer_peer(
             true, false, true
         )));
-        assert!(!peer_is_transfer_eligible(&transfer_peer(
-            true, true, false
-        )));
+        assert!(peer_is_transfer_eligible(&transfer_peer(true, true, false)));
     }
 
     #[test]

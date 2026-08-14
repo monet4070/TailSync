@@ -21,9 +21,12 @@ import {
   Grid2X2,
   FolderOpen,
   HardDrive,
+  Keyboard,
   Monitor,
   Moon,
+  Pencil,
   RefreshCw,
+  RotateCcw,
   Settings2,
   Sun,
   Trash2,
@@ -31,6 +34,7 @@ import {
   X,
 } from "lucide-react";
 import { ThemeLogo } from "../ThemeLogo";
+import { captureShortcut, shortcutKeycaps } from "../utils/shortcut";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -126,6 +130,15 @@ interface StorageMigrationResult {
   old_size_bytes: number;
 }
 
+const peerCanSync = (peer: PeerDevice) =>
+  peer.trusted && peer.enabled && (
+    Boolean(peer.current_interface)
+    || peer.online
+    || Boolean(peer.address)
+    || Boolean(peer.tailscale_ip)
+    || Boolean(peer.routes?.some((route) => Boolean(route.address)))
+  );
+
 interface UpdateStatus {
   current_version: string;
   updates_enabled: boolean;
@@ -137,6 +150,8 @@ interface UpdateInfo {
   notes?: string | null;
   published_at?: string | null;
 }
+
+const DEFAULT_SYNC_SHORTCUT = "CommandOrControl+Shift+S";
 
 type UpdatePhase =
   | "loading"
@@ -179,6 +194,13 @@ export function Settings() {
   const [pairingError, setPairingError] = useState("");
   const [pairingBusy, setPairingBusy] = useState(false);
   const [connectionTests, setConnectionTests] = useState<Record<string, ConnectionTestState>>({});
+  const [shortcutDraft, setShortcutDraft] = useState(DEFAULT_SYNC_SHORTCUT);
+  const [shortcutBusy, setShortcutBusy] = useState(false);
+  const [shortcutRecording, setShortcutRecording] = useState(false);
+  const [shortcutCandidate, setShortcutCandidate] = useState("");
+  const [shortcutPreviewKeys, setShortcutPreviewKeys] = useState<string[]>([]);
+  const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
+  const [shortcutDialogError, setShortcutDialogError] = useState("");
   const {
     theme,
     setTheme,
@@ -188,6 +210,13 @@ export function Settings() {
   } = useTheme();
   const { t, setLocale } = useI18n();
   const toastTimer = useRef<number>(0);
+  const shortcutTriggerRef = useRef<HTMLButtonElement>(null);
+  const shortcutDialogRef = useRef<HTMLDivElement>(null);
+  const shortcutCaptureRef = useRef<HTMLButtonElement>(null);
+  const shortcutPreviousFocus = useRef<HTMLElement | null>(null);
+  const cancelShortcutHandlerRef = useRef<() => Promise<void>>(async () => undefined);
+  const shortcutCaptureHandlerRef = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  const shortcutRecordingRef = useRef(false);
   const previousPairingPhase = useRef<PairingStatus["phase"] | null>(null);
   const pairingBusyRef = useRef(pairingBusy);
   const settingsRef = useRef<SettingsData | null>(null);
@@ -203,6 +232,7 @@ export function Settings() {
         setSettings(s);
         setHistoryLimitDraft(s.history_limit);
         setStorageQuotaDraft(String(Math.round(s.storage_quota_bytes / GIB)));
+        setShortcutDraft(s.sync_shortcut);
         if (isThemePreference(s.theme)) setTheme(s.theme);
         if (isColorTheme(s.color_theme)) setColorTheme(s.color_theme);
         setLocale(s.language);
@@ -221,6 +251,28 @@ export function Settings() {
   }, [setColorTheme, setLocale, setTheme]);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  useEffect(() => () => {
+    if (shortcutRecordingRef.current) void invoke("resume_sync_shortcut");
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<{ enabled: boolean }>("sync-state-changed", ({ payload }) => {
+      if (!active) return;
+      const current = settingsRef.current;
+      if (!current || current.sync_enabled === payload.enabled) return;
+      const next = { ...current, sync_enabled: payload.enabled };
+      settingsRef.current = next;
+      setSettings(next);
+    }).then((stop) => {
+      if (active) unlisten = stop;
+      else stop();
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
   useEffect(() => {
     pairingBusyRef.current = pairingBusy;
   }, [pairingBusy]);
@@ -604,6 +656,220 @@ export function Settings() {
     if (!(await update({ color_theme: value }))) setColorTheme(previous);
   };
 
+  const commitShortcut = async (
+    nextShortcut = shortcutDraft,
+    forceRegistration = false,
+    reportInline = false,
+  ) => {
+    const current = settingsRef.current;
+    if (!current) return false;
+    const shortcut = nextShortcut.trim();
+    if (!forceRegistration && shortcut === current.sync_shortcut) return true;
+    setShortcutBusy(true);
+    setErrorMessage("");
+    try {
+      await invoke("set_sync_shortcut", { shortcut });
+      const next = { ...current, sync_shortcut: shortcut };
+      settingsRef.current = next;
+      setSettings(next);
+      setShortcutDraft(shortcut);
+      setSaved(true);
+      window.clearTimeout(toastTimer.current);
+      toastTimer.current = window.setTimeout(() => setSaved(false), 1500);
+      return true;
+    } catch (error) {
+      console.error("Shortcut registration failed:", error);
+      await invoke("resume_sync_shortcut").catch(console.error);
+      setShortcutDraft(current.sync_shortcut);
+      if (!reportInline) setErrorMessage(t("settings.shortcutConflict"));
+      return false;
+    } finally {
+      setShortcutBusy(false);
+    }
+  };
+
+  const startShortcutRecording = async () => {
+    if (shortcutBusy || shortcutRecording) return;
+    setShortcutBusy(true);
+    setErrorMessage("");
+    try {
+      await invoke("suspend_sync_shortcut");
+      shortcutRecordingRef.current = true;
+      shortcutPreviousFocus.current = document.activeElement as HTMLElement | null;
+      setShortcutCandidate("");
+      setShortcutPreviewKeys([]);
+      setShortcutDialogError("");
+      setShortcutCaptureActive(true);
+      setShortcutRecording(true);
+    } catch (error) {
+      console.error("Could not start shortcut recording:", error);
+      setErrorMessage(t("settings.shortcutConflict"));
+    } finally {
+      setShortcutBusy(false);
+    }
+  };
+
+  const cancelShortcutRecording = async () => {
+    shortcutRecordingRef.current = false;
+    setShortcutRecording(false);
+    setShortcutCandidate("");
+    setShortcutPreviewKeys([]);
+    setShortcutDialogError("");
+    setShortcutCaptureActive(false);
+    setShortcutDraft(settingsRef.current?.sync_shortcut ?? DEFAULT_SYNC_SHORTCUT);
+    try {
+      await invoke("resume_sync_shortcut");
+    } catch (error) {
+      console.error("Could not restore shortcut:", error);
+      setErrorMessage(t("settings.shortcutConflict"));
+    }
+  };
+
+  const restartShortcutCapture = () => {
+    setShortcutCandidate("");
+    setShortcutPreviewKeys([]);
+    setShortcutDialogError("");
+    setShortcutCaptureActive(true);
+    window.requestAnimationFrame(() => shortcutCaptureRef.current?.focus());
+  };
+
+  const confirmShortcut = async () => {
+    if (!shortcutCandidate || shortcutBusy) return;
+    const success = await commitShortcut(shortcutCandidate, true, true);
+    if (success) {
+      shortcutRecordingRef.current = false;
+      setShortcutRecording(false);
+      setShortcutCaptureActive(false);
+      setShortcutDialogError("");
+      return;
+    }
+
+    setShortcutDialogError(t("settings.shortcutConflict"));
+    try {
+      await invoke("suspend_sync_shortcut");
+      shortcutRecordingRef.current = true;
+    } catch (error) {
+      console.error("Could not keep shortcut capture isolated:", error);
+      shortcutRecordingRef.current = false;
+      setShortcutRecording(false);
+      setErrorMessage(t("settings.shortcutConflict"));
+    }
+  };
+
+  const handleShortcutCaptureEvent = (
+    event: KeyboardEvent | React.KeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (!shortcutRecording || !shortcutCaptureActive || event.repeat) return;
+    if (
+      event.key === "Escape"
+      && !event.ctrlKey
+      && !event.altKey
+      && !event.shiftKey
+      && !event.metaKey
+    ) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const result = captureShortcut(event);
+    setShortcutPreviewKeys(result.keycaps);
+    if (result.kind === "modifier") {
+      setShortcutDialogError("");
+    } else if (result.kind === "invalid") {
+      setShortcutCandidate("");
+      setShortcutDialogError(t(
+        result.reason === "modifier-required"
+          ? "settings.shortcutModifierRequired"
+          : "settings.shortcutUnsupported",
+      ));
+    } else {
+      setShortcutCandidate(result.shortcut);
+      setShortcutDialogError("");
+      setShortcutCaptureActive(false);
+    }
+  };
+  cancelShortcutHandlerRef.current = cancelShortcutRecording;
+  shortcutCaptureHandlerRef.current = handleShortcutCaptureEvent;
+
+  useEffect(() => {
+    if (!shortcutRecording) return;
+    const dialog = shortcutDialogRef.current;
+    if (!dialog) return;
+    const focusableSelector = [
+      "button:not([disabled])",
+      "[href]",
+      "input:not([disabled])",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+    const frame = window.requestAnimationFrame(() => shortcutCaptureRef.current?.focus());
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key === "Escape"
+        && !event.ctrlKey
+        && !event.altKey
+        && !event.shiftKey
+        && !event.metaKey
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        void cancelShortcutHandlerRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(focusableSelector)];
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleDialogKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", handleDialogKeyDown);
+      shortcutPreviousFocus.current?.focus();
+      shortcutPreviousFocus.current = null;
+    };
+  }, [shortcutRecording]);
+
+  useEffect(() => {
+    if (!shortcutRecording || !shortcutCaptureActive) return;
+    const handleShortcutKeyUp = (event: KeyboardEvent) => {
+      if (["Control", "Alt", "Shift", "Meta", "AltGraph"].includes(event.key)) {
+        setShortcutPreviewKeys([]);
+      }
+    };
+    const handleShortcutKeyDown = (event: KeyboardEvent) => {
+      shortcutCaptureHandlerRef.current(event);
+    };
+    window.addEventListener("keydown", handleShortcutKeyDown, true);
+    window.addEventListener("keyup", handleShortcutKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", handleShortcutKeyDown, true);
+      window.removeEventListener("keyup", handleShortcutKeyUp, true);
+    };
+  }, [shortcutRecording, shortcutCaptureActive]);
+
+  const setGlobalSync = async (enabled: boolean) => {
+    const current = settingsRef.current;
+    if (!current) return;
+    const next = { ...current, sync_enabled: enabled };
+    settingsRef.current = next;
+    setSettings(next);
+    try {
+      await invoke("set_sync_enabled", { enabled });
+    } catch (error) {
+      console.error("Could not change sync state:", error);
+      settingsRef.current = current;
+      setSettings(current);
+      setErrorMessage(t("settings.saveFailed"));
+    }
+  };
+
   const checkForUpdate = async () => {
     if (!updateStatus?.updates_enabled) {
       setUpdatePhase("disabled");
@@ -840,6 +1106,15 @@ export function Settings() {
                     <div className="device-fingerprint">
                       {peer.trusted ? peer.fingerprint : t("settings.waitingSecurePairing")}
                     </div>
+                    <div className={`peer-sync-state ${peerCanSync(peer) ? "ready" : "blocked"}`}>
+                      {peerCanSync(peer)
+                        ? t("settings.syncReady")
+                        : !peer.trusted
+                          ? t("settings.syncNeedsPairing")
+                          : !peer.enabled
+                            ? t("settings.syncPeerPaused")
+                            : t("settings.syncNoRoute")}
+                    </div>
                     {peer.required_protocol_version != null && (
                       <div className="peer-protocol-warning" role="status">
                         {t("settings.protocolUpgradeRequired").replace(
@@ -956,6 +1231,81 @@ export function Settings() {
           <div className="setting-group-header">
             <h3>{t("settings.general")}</h3>
             <p>{t("settings.generalDescription")}</p>
+          </div>
+
+          <div
+            className="setting-row"
+            onClick={() => void setGlobalSync(!settings.sync_enabled)}
+          >
+            <div className="setting-row-info">
+              <span>{t("settings.syncEnabled")}</span>
+              <small>{t("settings.syncEnabledDescription")}</small>
+            </div>
+            <label className="toggle" onClick={(event) => event.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={settings.sync_enabled}
+                onChange={(event) => void setGlobalSync(event.target.checked)}
+              />
+              <div className="toggle-track" />
+            </label>
+          </div>
+
+          <div className="setting-row shortcut-row">
+            <div className="setting-row-info">
+              <span>{t("settings.syncShortcut")}</span>
+              <small>{t("settings.syncShortcutDescription")}</small>
+            </div>
+            <div className="shortcut-control">
+              <button
+                ref={shortcutTriggerRef}
+                type="button"
+                className="shortcut-recorder"
+                disabled={shortcutBusy}
+                onClick={() => void startShortcutRecording()}
+                aria-haspopup="dialog"
+                aria-expanded={shortcutRecording}
+                aria-label={t("settings.shortcutRecord")}
+              >
+                <Keyboard size={16} strokeWidth={1.7} aria-hidden="true" />
+                {shortcutKeycaps(shortcutDraft).length > 0 ? (
+                  <span className="shortcut-keycaps" aria-label={shortcutDraft}>
+                    {shortcutKeycaps(shortcutDraft).map((key, index) => (
+                      <kbd key={`${key}-${index}`}>{key}</kbd>
+                    ))}
+                  </span>
+                ) : (
+                  <span className="shortcut-empty">{t("settings.shortcutDisabled")}</span>
+                )}
+                <Pencil className="shortcut-edit-icon" size={13} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="shortcut-icon-button"
+                disabled={shortcutBusy || shortcutRecording || shortcutDraft === DEFAULT_SYNC_SHORTCUT}
+                onClick={() => {
+                  setShortcutDraft(DEFAULT_SYNC_SHORTCUT);
+                  void commitShortcut(DEFAULT_SYNC_SHORTCUT);
+                }}
+                title={t("settings.shortcutReset")}
+                aria-label={t("settings.shortcutReset")}
+              >
+                <RotateCcw size={15} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="shortcut-icon-button"
+                disabled={shortcutBusy || shortcutRecording || !settings.sync_shortcut}
+                onClick={() => {
+                  setShortcutDraft("");
+                  void commitShortcut("");
+                }}
+                title={t("settings.shortcutClear")}
+                aria-label={t("settings.shortcutClear")}
+              >
+                <X size={15} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            </div>
           </div>
 
           <div
@@ -1228,6 +1578,84 @@ export function Settings() {
           </div>
         </section>
       </div>
+
+      {shortcutRecording && (
+        <div className="dialog-backdrop" onMouseDown={() => void cancelShortcutRecording()}>
+          <div
+            className="shortcut-dialog"
+            ref={shortcutDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="shortcut-dialog-title"
+            tabIndex={-1}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="shortcut-dialog-header">
+              <div className="shortcut-dialog-icon">
+                <Keyboard size={20} strokeWidth={1.7} aria-hidden="true" />
+              </div>
+              <div>
+                <h2 id="shortcut-dialog-title">{t("settings.shortcutDialogTitle")}</h2>
+                <p>{t("settings.shortcutDialogPrompt")}</p>
+              </div>
+            </div>
+
+            <button
+              ref={shortcutCaptureRef}
+              type="button"
+              className={`shortcut-capture-target${shortcutCaptureActive ? " active" : " captured"}`}
+              onClick={restartShortcutCapture}
+              onKeyDown={handleShortcutCaptureEvent}
+              disabled={shortcutBusy}
+              aria-label={shortcutCaptureActive
+                ? t("settings.shortcutRecording")
+                : t("settings.shortcutRecordAgain")}
+            >
+              {shortcutPreviewKeys.length > 0 ? (
+                <span className="shortcut-keycaps shortcut-dialog-keycaps">
+                  {shortcutPreviewKeys.map((key, index) => (
+                    <kbd key={`${key}-${index}`}>{key}</kbd>
+                  ))}
+                </span>
+              ) : (
+                <span className="shortcut-capture-placeholder">
+                  {t("settings.shortcutRecording")}
+                </span>
+              )}
+              {!shortcutCaptureActive && (
+                <span className="shortcut-capture-again">{t("settings.shortcutRecordAgain")}</span>
+              )}
+            </button>
+
+            <div className="shortcut-dialog-message" aria-live="polite">
+              {shortcutDialogError && (
+                <span className="error" role="alert">{shortcutDialogError}</span>
+              )}
+              {!shortcutDialogError && shortcutCandidate && (
+                <span className="ready">{t("settings.shortcutCaptured")}</span>
+              )}
+            </div>
+
+            <div className="shortcut-dialog-actions">
+              <button
+                type="button"
+                onClick={() => void cancelShortcutRecording()}
+                disabled={shortcutBusy}
+              >
+                {t("settings.shortcutCancel")}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void confirmShortcut()}
+                disabled={!shortcutCandidate || shortcutBusy}
+              >
+                {t("settings.shortcutSave")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pairingOpen && (
         <div className="dialog-backdrop" onMouseDown={() => void closePairing()}>

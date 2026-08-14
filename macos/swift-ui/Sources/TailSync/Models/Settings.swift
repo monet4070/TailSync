@@ -3,6 +3,8 @@ import Foundation
 struct AppSettings: Codable, Equatable, Sendable {
     var notifications_enabled: Bool = true
     var progress_bar_enabled: Bool = true
+    var sync_enabled: Bool = true
+    var sync_shortcut: String = "CommandOrControl+Shift+S"
     var history_limit: Int = 100
     var storage_root: String? = nil
     var storage_quota_bytes: UInt64 = 10 * 1024 * 1024 * 1024
@@ -16,7 +18,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var paired_peer_endpoints: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case notifications_enabled, progress_bar_enabled, history_limit
+        case notifications_enabled, progress_bar_enabled, sync_enabled, sync_shortcut, history_limit
         case storage_root, storage_quota_bytes
         case enabled_peers, theme, color_theme, language, connection_mode
         case trusted_peer_keys, trusted_peer_addresses, paired_peer_endpoints
@@ -28,6 +30,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         notifications_enabled = try values.decodeIfPresent(Bool.self, forKey: .notifications_enabled) ?? true
         progress_bar_enabled = try values.decodeIfPresent(Bool.self, forKey: .progress_bar_enabled) ?? true
+        sync_enabled = try values.decodeIfPresent(Bool.self, forKey: .sync_enabled) ?? true
+        sync_shortcut = try values.decodeIfPresent(String.self, forKey: .sync_shortcut) ?? "CommandOrControl+Shift+S"
         history_limit = try values.decodeIfPresent(Int.self, forKey: .history_limit) ?? 100
         storage_root = try values.decodeIfPresent(String.self, forKey: .storage_root)
         storage_quota_bytes = try values.decodeIfPresent(UInt64.self, forKey: .storage_quota_bytes) ?? 10 * 1024 * 1024 * 1024

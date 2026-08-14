@@ -11,6 +11,8 @@ export interface SettingsData {
   progress_bar_enabled: boolean;
   storage_quota_bytes: number;
   storage_root: string | null;
+  sync_enabled: boolean;
+  sync_shortcut: string;
   theme: "system" | "light" | "dark";
   trusted_peer_addresses: Record<string, Record<string, string>>;
   trusted_peer_keys: Record<string, string>;
