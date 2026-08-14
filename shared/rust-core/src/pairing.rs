@@ -191,8 +191,13 @@ impl PairingManager {
         }
         self.window_signal.send_replace(true);
 
-        let manager = Arc::downgrade(self);
         let generation = self.state.lock().await.generation;
+        self.schedule_expiration(generation);
+        self.status().await
+    }
+
+    fn schedule_expiration(self: &Arc<Self>, generation: u64) {
+        let manager = Arc::downgrade(self);
         tokio::spawn(async move {
             tokio::time::sleep(
                 manager
@@ -204,7 +209,6 @@ impl PairingManager {
                 manager.expire(generation).await;
             }
         });
-        self.status().await
     }
 
     pub async fn status(&self) -> PairingStatus {
@@ -250,7 +254,7 @@ impl PairingManager {
         if pending.remote_public_key == self.identity.public_key() {
             return Err("Cannot pair this device with itself".to_string());
         }
-        if !matches!(pending.interface.as_str(), "lan" | "tailscale") {
+        if !matches!(pending.interface.as_str(), "lan" | "iroh" | "tailscale") {
             return Err("Invalid pairing interface".to_string());
         }
         let verification_code = derive_verification_code(
@@ -358,25 +362,52 @@ impl PairingManager {
         }
     }
 
-    async fn expire(&self, generation: u64) {
-        let control = {
+    async fn expire(self: &Arc<Self>, generation: u64) {
+        let (control, close_window, next_generation) = {
             let mut state = self.state.lock().await;
             if !state.enabled || state.generation != generation {
                 return;
             }
             let control = state.control.take();
-            state.enabled = false;
-            state.phase = PairingPhase::TimedOut;
-            state.deadline = None;
-            state.expires_at = None;
-            state.error = Some("Pairing window timed out".to_string());
-            state.generation = state.generation.wrapping_add(1);
-            state.session_id = state.session_id.wrapping_add(1);
-            control
+            if control.is_some() {
+                state.failed_attempts = state.failed_attempts.saturating_add(1);
+                state.peer = None;
+                state.error = Some("Pairing session timed out".to_string());
+                if state.failed_attempts >= self.max_failures {
+                    state.enabled = false;
+                    state.phase = PairingPhase::Locked;
+                    state.deadline = None;
+                    state.expires_at = None;
+                    state.generation = state.generation.wrapping_add(1);
+                    state.session_id = state.session_id.wrapping_add(1);
+                    (control, true, None)
+                } else {
+                    state.phase = PairingPhase::Waiting;
+                    state.deadline = Some(Instant::now() + self.window_duration);
+                    state.expires_at = Some(unix_timestamp_after(self.window_duration));
+                    state.generation = state.generation.wrapping_add(1);
+                    state.session_id = state.session_id.wrapping_add(1);
+                    (control, false, Some(state.generation))
+                }
+            } else {
+                state.enabled = false;
+                state.phase = PairingPhase::TimedOut;
+                state.deadline = None;
+                state.expires_at = None;
+                state.error = Some("Pairing window timed out".to_string());
+                state.generation = state.generation.wrapping_add(1);
+                state.session_id = state.session_id.wrapping_add(1);
+                (control, true, None)
+            }
         };
-        self.window_signal.send_replace(false);
+        if close_window {
+            self.window_signal.send_replace(false);
+        }
         if let Some(control) = control {
             let _ = control.send(PairingAction::Cancel).await;
+        }
+        if let Some(generation) = next_generation {
+            self.schedule_expiration(generation);
         }
     }
 
@@ -544,7 +575,7 @@ impl PairingManager {
         self.record_failure(error).await;
     }
 
-    async fn expire_current_session(&self, session_id: u64) {
+    async fn expire_current_session(self: &Arc<Self>, session_id: u64) {
         let generation = {
             let state = self.state.lock().await;
             if state.session_id != session_id {
@@ -607,6 +638,7 @@ mod tests {
 
         let expired = manager.status().await;
         assert!(!expired.pairing_enabled);
+        assert_eq!(expired.failed_attempts, 0);
         assert_eq!(expired.phase, PairingPhase::TimedOut);
     }
 
@@ -631,7 +663,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_timeouts_count_toward_pairing_lockout() {
+        let manager = PairingManager::with_policy(
+            Arc::new(Mutex::new(Settings::default())),
+            Arc::new(DeviceIdentity::generate_for_test()),
+            Duration::from_secs(1),
+            3,
+            false,
+        );
+        manager.enable().await;
+
+        for attempt in 1..=3 {
+            let generation = {
+                let mut state = manager.state.lock().await;
+                let (control, _receiver) = mpsc::channel(1);
+                state.control = Some(control);
+                state.phase = PairingPhase::Verification;
+                state.generation
+            };
+            manager.expire(generation).await;
+            let status = manager.status().await;
+            assert_eq!(status.failed_attempts, attempt);
+            if attempt < 3 {
+                assert!(status.pairing_enabled);
+                assert_eq!(status.phase, PairingPhase::Waiting);
+            }
+        }
+
+        let status = manager.status().await;
+        assert!(!status.pairing_enabled);
+        assert_eq!(status.phase, PairingPhase::Locked);
+    }
+
+    #[tokio::test]
     async fn both_confirmations_save_both_peer_keys_and_close_windows() {
+        const IROH_ENDPOINT_ID: &str =
+            "5866666666666666666666666666666666666666666666666666666666666666";
         let server_settings = Arc::new(Mutex::new(Settings::default()));
         let client_settings = Arc::new(Mutex::new(Settings::default()));
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
@@ -658,13 +725,14 @@ mod tests {
         let server_identity_for_task = server_identity.clone();
         let server_manager_for_task = server_manager.clone();
         let server = tokio::spawn(async move {
-            let (stream, peer_address) = listener.accept().await.unwrap();
+            let (stream, _peer_address) = listener.accept().await.unwrap();
             let accepted = secure::accept_with_pairing_window(
                 stream,
                 &server_identity_for_task,
                 PeerIdentity {
                     hostname: "server".into(),
                     tailscale_ip: String::new(),
+                    iroh_endpoint_id: None,
                 },
                 server_manager_for_task.subscribe_window(),
             )
@@ -679,8 +747,8 @@ mod tests {
                     hostname: accepted.peer_identity.hostname,
                     remote_public_key: accepted.remote_public_key,
                     handshake_hash: accepted.handshake_hash,
-                    address: peer_address.ip().to_string(),
-                    interface: "lan".into(),
+                    address: IROH_ENDPOINT_ID.into(),
+                    interface: "iroh".into(),
                 })
                 .await
                 .unwrap();
@@ -692,6 +760,7 @@ mod tests {
             PeerIdentity {
                 hostname: "client".into(),
                 tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
             },
         )
         .await
@@ -702,8 +771,8 @@ mod tests {
                 hostname: accepted.peer_identity.hostname,
                 remote_public_key: accepted.remote_public_key,
                 handshake_hash: accepted.handshake_hash,
-                address: address.ip().to_string(),
-                interface: "lan".into(),
+                address: IROH_ENDPOINT_ID.into(),
+                interface: "iroh".into(),
             })
             .await
             .unwrap();
@@ -745,6 +814,26 @@ mod tests {
         assert_eq!(
             client_settings.lock().await.trusted_peer_keys.get("server"),
             Some(&server_identity.public_key_base64())
+        );
+        assert_eq!(
+            server_settings
+                .lock()
+                .await
+                .trusted_peer_addresses
+                .get("client")
+                .and_then(|routes| routes.get("iroh"))
+                .map(String::as_str),
+            Some(IROH_ENDPOINT_ID)
+        );
+        assert_eq!(
+            client_settings
+                .lock()
+                .await
+                .trusted_peer_addresses
+                .get("server")
+                .and_then(|routes| routes.get("iroh"))
+                .map(String::as_str),
+            Some(IROH_ENDPOINT_ID)
         );
     }
 }

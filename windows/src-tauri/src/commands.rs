@@ -2,12 +2,125 @@ use crate::db;
 use crate::network;
 use crate::AppState;
 use log::info;
-use tauri::{command, AppHandle, Manager, State};
+use tauri::{command, AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+const SYNC_STATE_CHANGED_EVENT: &str = "sync-state-changed";
+
+fn emit_sync_state(app: &tauri::AppHandle, enabled: bool) {
+    if let Err(error) = app.emit(
+        SYNC_STATE_CHANGED_EVENT,
+        serde_json::json!({ "enabled": enabled }),
+    ) {
+        log::debug!("Could not emit sync state change: {error}");
+    }
+}
+
+pub(crate) async fn set_sync_enabled_for_app(
+    app: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "TailSync state is unavailable".to_string())?;
+    state
+        .settings
+        .lock()
+        .await
+        .set_sync_enabled(enabled)
+        .map_err(|error| error.to_string())?;
+    emit_sync_state(app, enabled);
+    Ok(())
+}
+
+pub(crate) async fn toggle_sync_for_app(app: &tauri::AppHandle) -> Result<bool, String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "TailSync state is unavailable".to_string())?;
+    let enabled = {
+        let mut settings = state.settings.lock().await;
+        let enabled = !settings.sync_enabled;
+        settings
+            .set_sync_enabled(enabled)
+            .map_err(|error| error.to_string())?;
+        enabled
+    };
+    emit_sync_state(app, enabled);
+    Ok(enabled)
+}
+
+fn install_sync_shortcut(app: &tauri::AppHandle, shortcut: &str) -> Result<(), String> {
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| error.to_string())?;
+    if shortcut.is_empty() {
+        return Ok(());
+    }
+    app.global_shortcut()
+        .on_shortcut(shortcut, |app, _shortcut, event| {
+            use tauri_plugin_global_shortcut::ShortcutState;
+            if event.state != ShortcutState::Pressed {
+                return;
+            }
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = toggle_sync_for_app(&app).await {
+                    log::warn!("Could not toggle sync from shortcut: {error}");
+                }
+            });
+        })
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn register_saved_sync_shortcut(
+    app: &tauri::AppHandle,
+    shortcut: &str,
+) -> Result<(), String> {
+    install_sync_shortcut(app, shortcut)
+}
+
+/// Apply a shortcut change as a transaction: register the next shortcut first,
+/// then persist it, restoring the previous shortcut if either step fails.
+/// Returns the original failure, with any restore failure appended.
+fn apply_shortcut_change<R, S>(
+    previous: &str,
+    next: &str,
+    mut register: R,
+    mut save: S,
+) -> Result<(), String>
+where
+    R: FnMut(&str) -> Result<(), String>,
+    S: FnMut() -> Result<(), String>,
+{
+    if next == previous {
+        return register(next);
+    }
+    if let Err(error) = register(next) {
+        return Err(rollback_shortcut(previous, &mut register, error));
+    }
+    if let Err(error) = save() {
+        return Err(rollback_shortcut(previous, &mut register, error));
+    }
+    Ok(())
+}
+
+fn rollback_shortcut<R>(previous: &str, register: &mut R, original_error: String) -> String
+where
+    R: FnMut(&str) -> Result<(), String>,
+{
+    match register(previous) {
+        Ok(()) => original_error,
+        Err(restore_error) => {
+            format!("{original_error}; could not restore the previous shortcut: {restore_error}")
+        }
+    }
+}
 
 #[derive(serde::Serialize)]
 pub struct HistoryPage {
     pub entries: Vec<db::HistoryEntry>,
-    pub total: usize,
+    pub total: Option<usize>,
+    pub has_more: bool,
 }
 
 /// Get clipboard history entries
@@ -44,8 +157,8 @@ pub async fn get_history_page(
     offset: Option<usize>,
 ) -> Result<HistoryPage, String> {
     let db = state.db.lock().await;
-    let entries = db
-        .get_all_filtered(
+    let page = db
+        .get_page_filtered(
             keyword.as_deref(),
             category.as_deref(),
             start_time.as_deref(),
@@ -54,15 +167,11 @@ pub async fn get_history_page(
             offset.unwrap_or(0),
         )
         .map_err(|e| e.to_string())?;
-    let total = db
-        .count_all_filtered(
-            keyword.as_deref(),
-            category.as_deref(),
-            start_time.as_deref(),
-            end_time.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(HistoryPage { entries, total })
+    Ok(HistoryPage {
+        entries: page.entries,
+        total: page.total,
+        has_more: page.has_more,
+    })
 }
 
 #[command]
@@ -97,7 +206,9 @@ pub async fn search_history(
 #[command]
 pub async fn delete_entry(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let mut db = state.db.lock().await;
-    db.delete(id).map_err(|e| e.to_string())
+    db.delete(id).map_err(|e| e.to_string())?;
+    crate::api::bump_clipboard_version();
+    Ok(())
 }
 
 /// Delete all clipboard history entries.
@@ -168,6 +279,11 @@ pub async fn restore_entry(
                 info!("write_image failed for entry {} — using raw CF_DIB", id);
                 let bmp_dib = rgba_to_dib(rgba, w, h);
                 if bmp_dib.is_empty() {
+                    state
+                        .sync_engine
+                        .lock()
+                        .await
+                        .remove_image_shadow_filter(data);
                     return Err("DIB encode failed".into());
                 }
                 #[cfg(target_os = "windows")]
@@ -179,7 +295,14 @@ pub async fn restore_entry(
                     );
                 }
                 #[cfg(not(target_os = "windows"))]
-                return Err("write_image failed and no fallback on this platform".into());
+                {
+                    state
+                        .sync_engine
+                        .lock()
+                        .await
+                        .remove_image_shadow_filter(data);
+                    return Err("write_image failed and no fallback on this platform".into());
+                }
             }
         }
     } else if entry_type == "file" {
@@ -187,12 +310,12 @@ pub async fn restore_entry(
             crate::api::restore_file_path_to_clipboard(
                 &path,
                 file_name.as_deref().unwrap_or("restored_file"),
-            );
+            )?;
         } else {
             crate::api::restore_file_to_clipboard(
                 data.as_deref().ok_or("File history data is unavailable")?,
                 file_name.as_deref().unwrap_or("restored_file"),
-            );
+            )?;
         }
 
         info!(
@@ -210,9 +333,10 @@ pub async fn restore_entry(
             sync.add_shadow_filter(&text);
         }
 
-        clipboard
-            .write_text(text.clone())
-            .map_err(|e| format!("Clipboard text write failed: {}", e))?;
+        if let Err(error) = clipboard.write_text(text.clone()) {
+            state.sync_engine.lock().await.remove_shadow_filter(&text);
+            return Err(format!("Clipboard text write failed: {}", error));
+        }
 
         info!(
             "Restored entry {} to clipboard ({} chars)",
@@ -246,7 +370,7 @@ pub async fn refresh_peers(state: State<'_, AppState>) -> Result<serde_json::Val
     get_peers(state).await
 }
 
-/// Test whether a peer's TailSync TCP port is reachable.
+/// Measure latency over a peer's selected TailSync route.
 #[command]
 pub async fn test_connection(address: String) -> Result<serde_json::Value, String> {
     let address = address.trim();
@@ -254,9 +378,9 @@ pub async fn test_connection(address: String) -> Result<serde_json::Value, Strin
         return Err("Missing peer address".to_string());
     }
     match network::test_connection(address).await {
-        Ok(latency_ms) => {
-            network::record_address_test_success(address, latency_ms);
-            Ok(serde_json::json!({ "latency_ms": latency_ms }))
+        Ok(route) => {
+            network::record_address_test_success(address, route.latency_ms);
+            Ok(serde_json::to_value(route).map_err(|error| error.to_string())?)
         }
         Err(error) => {
             network::record_address_test_failure(address);
@@ -301,6 +425,7 @@ pub async fn trust_peer(
             .map_err(|error| error.to_string())?;
     }
     state.pool.lock().await.disconnect_hostname(hostname);
+    crate::network::clear_protocol_compatibility_error(hostname);
     Ok(fingerprint)
 }
 
@@ -315,6 +440,7 @@ pub async fn forget_peer(state: State<'_, AppState>, hostname: String) -> Result
         .forget_peer(hostname)
         .map_err(|error| error.to_string())?;
     state.pool.lock().await.disconnect_hostname(hostname);
+    crate::network::clear_protocol_compatibility_error(hostname);
     Ok(())
 }
 
@@ -379,6 +505,61 @@ pub async fn toggle_peer(
     Ok(())
 }
 
+/// Get whether this device broadcasts clipboard changes and its configured shortcut.
+#[command]
+pub async fn get_sync_state(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let settings = state.settings.lock().await;
+    Ok(serde_json::json!({
+        "enabled": settings.sync_enabled,
+        "shortcut": settings.sync_shortcut,
+    }))
+}
+
+/// Enable or pause local clipboard broadcasting.
+#[command]
+pub async fn set_sync_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    set_sync_enabled_for_app(&app, enabled).await
+}
+
+#[command]
+pub async fn toggle_sync(app: tauri::AppHandle) -> Result<bool, String> {
+    toggle_sync_for_app(&app).await
+}
+
+#[command]
+pub fn suspend_sync_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn resume_sync_shortcut(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let shortcut = state.settings.lock().await.sync_shortcut.clone();
+    install_sync_shortcut(&app, &shortcut)
+}
+
+#[command]
+pub async fn set_sync_shortcut(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    shortcut: String,
+) -> Result<(), String> {
+    let shortcut = shortcut.trim().to_string();
+    let mut settings = state.settings.lock().await;
+    let previous = settings.sync_shortcut.clone();
+    let register = |next: &str| install_sync_shortcut(&app, next);
+    let save = || {
+        settings
+            .set_sync_shortcut(&shortcut)
+            .map_err(|error| error.to_string())
+    };
+    apply_shortcut_change(&previous, &shortcut, register, save)
+}
+
 /// Get current settings
 #[command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<crate::crypto::Settings, String> {
@@ -389,6 +570,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<crate::crypto::S
 /// Update settings
 #[command]
 pub async fn update_settings(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     settings_json: String,
 ) -> Result<(), String> {
@@ -399,14 +581,29 @@ pub async fn update_settings(
     let history_limit = new_settings.history_limit as i64;
     let storage_quota_bytes = new_settings.storage_quota_bytes;
     let mode_changed = settings.connection_mode != new_settings.connection_mode;
-    new_settings.save().map_err(|e| e.to_string())?;
+    let shortcut_changed = settings.sync_shortcut != new_settings.sync_shortcut;
+    let previous_shortcut = settings.sync_shortcut.clone();
+    let shortcut = new_settings.sync_shortcut.clone();
+    let connection_mode = new_settings.connection_mode.clone();
+    if shortcut_changed {
+        let register = |next: &str| install_sync_shortcut(&app, next);
+        let save = || new_settings.save().map_err(|error| error.to_string());
+        apply_shortcut_change(&previous_shortcut, &shortcut, register, save)?;
+    } else {
+        new_settings.save().map_err(|e| e.to_string())?;
+    }
     *settings = new_settings;
     drop(settings);
-    state.db.lock().await.set_max_history(history_limit);
-    state.db.lock().await.set_storage_quota(storage_quota_bytes);
+    {
+        let mut db = state.db.lock().await;
+        db.set_max_history(history_limit);
+        db.set_storage_quota(storage_quota_bytes);
+        db.enforce_limits().map_err(|error| error.to_string())?;
+    }
     if mode_changed {
         state.pool.lock().await.disconnect_all();
         network::clear_peer_cache().await;
+        network::refresh_iroh_for_mode(&connection_mode).await;
     }
     Ok(())
 }
@@ -542,19 +739,25 @@ pub async fn change_storage_location(
 ) -> Result<db::StorageMigrationResult, String> {
     use tauri_plugin_notification::NotificationExt;
     let parent = std::path::PathBuf::from(parent);
+    let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let active = crate::api::has_active_file_progress();
         if !active {
             break;
         }
+        if tokio::time::Instant::now() >= wait_deadline {
+            return Err("Timed out waiting for active file transfers to finish".to_string());
+        }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    let _ = app
-        .notification()
-        .builder()
-        .title("TailSync")
-        .body("File transfers finished. Moving TailSync data now.")
-        .show();
+    if state.settings.lock().await.notifications_enabled {
+        let _ = app
+            .notification()
+            .builder()
+            .title("TailSync")
+            .body("File transfers finished. Moving TailSync data now.")
+            .show();
+    }
     let previous_storage_root = state.settings.lock().await.storage_root.clone();
     let database = state.db.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -653,6 +856,40 @@ pub async fn get_version() -> Result<serde_json::Value, String> {
     }))
 }
 
+#[command]
+pub async fn get_sync_warning() -> Result<Option<tailsync_core::sync_warning::SyncWarning>, String>
+{
+    Ok(tailsync_core::sync_warning::take())
+}
+
+#[derive(serde::Serialize)]
+pub struct UpdateStatus {
+    current_version: &'static str,
+    updates_enabled: bool,
+}
+
+/// Report updater availability separately from checking the network so a
+/// development build can explain why updates are unavailable in the UI.
+#[command]
+pub async fn get_update_status() -> Result<UpdateStatus, String> {
+    Ok(UpdateStatus {
+        current_version: env!("CARGO_PKG_VERSION"),
+        updates_enabled: crate::updates::public_key_configured(),
+    })
+}
+
+#[command]
+pub async fn check_for_update(
+    app: AppHandle,
+) -> Result<Option<crate::updates::UpdateInfo>, String> {
+    crate::updates::check_for_update(&app).await
+}
+
+#[command]
+pub async fn install_update(app: AppHandle) -> Result<bool, String> {
+    crate::updates::install_available_update(&app).await
+}
+
 /// Convert RGBA to CF_DIB clipboard format (BITMAPINFOHEADER + bottom-up BGRA pixels).
 /// No file header — this is what Windows stores in the clipboard as CF_DIB.
 fn rgba_to_dib(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
@@ -717,5 +954,92 @@ fn set_clipboard_dib(dib: &[u8]) {
             SetClipboardData(8, h); // CF_DIB = 8
         }
         CloseClipboard();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shortcut_transaction_registers_new_then_persists() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            Ok(())
+        };
+        let saved = std::cell::Cell::new(false);
+        let save = || {
+            saved.set(true);
+            Ok(())
+        };
+        assert!(apply_shortcut_change("old", "new", register, save).is_ok());
+        assert!(saved.get());
+        assert_eq!(*calls.borrow(), vec!["register:new"]);
+    }
+
+    #[test]
+    fn shortcut_transaction_register_failure_restores_previous() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            if next == "taken" {
+                Err("shortcut is taken".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let save = || panic!("save must not run after register failure");
+        let error = apply_shortcut_change("old", "taken", register, save).unwrap_err();
+        assert_eq!(error, "shortcut is taken");
+        assert_eq!(*calls.borrow(), vec!["register:taken", "register:old"]);
+    }
+
+    #[test]
+    fn shortcut_transaction_save_failure_restores_previous() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            Ok(())
+        };
+        let save = || Err("disk is full".to_string());
+        let error = apply_shortcut_change("old", "new", register, save).unwrap_err();
+        assert_eq!(error, "disk is full");
+        assert_eq!(*calls.borrow(), vec!["register:new", "register:old"]);
+    }
+
+    #[test]
+    fn shortcut_transaction_restore_failure_mentions_both_errors() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            if next == "new" {
+                Ok(())
+            } else {
+                Err("old shortcut no longer available".to_string())
+            }
+        };
+        let save = || Err("disk is full".to_string());
+        let error = apply_shortcut_change("old", "new", register, save).unwrap_err();
+        assert!(error.contains("disk is full"), "got: {error}");
+        assert!(
+            error.contains("old shortcut no longer available"),
+            "got: {error}"
+        );
+        assert_eq!(*calls.borrow(), vec!["register:new", "register:old"]);
+    }
+
+    #[test]
+    fn shortcut_transaction_reregisters_unchanged_shortcut_without_saving() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            Ok(())
+        };
+        let save = || {
+            panic!("save must not run for an unchanged shortcut");
+        };
+        assert!(apply_shortcut_change("same", "same", register, save).is_ok());
+        assert_eq!(*calls.borrow(), vec!["register:same"]);
     }
 }

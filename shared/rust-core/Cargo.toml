@@ -14,6 +14,7 @@ directories = "5"
 fernet = { version = "0.2", default-features = false, features = ["rustcrypto"] }
 fs2 = "0.4"
 hex = "0.4"
+iroh = "=1.0.3"
 log = "0.4"
 rand = "0.8"
 ring = "0.17"
@@ -29,7 +30,10 @@ tokio = { version = "1", features = ["full"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
 libc = "0.2"
+security-framework = "3"
+security-framework-sys = "2"
 
 [features]
 test-support = []

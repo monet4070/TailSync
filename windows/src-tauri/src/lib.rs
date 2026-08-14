@@ -6,6 +6,7 @@ mod commands;
 mod network;
 mod sync_adapter;
 mod tray;
+mod updates;
 
 pub use tailsync_core::{
     crypto, db, history_classifier, identity, pairing, protocol, secure, sync,
@@ -105,16 +106,20 @@ async fn coordinate_shutdown(
 ) {
     wait_for_shutdown(&mut shutdown).await;
     info!("Application shutdown coordinator started");
-    if tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        pool.lock().await.disconnect_all();
-    })
-    .await
-    .is_err()
-    {
-        log::warn!("Timed out while closing peer connections");
-    }
-
-    stop_background_tasks(tasks, std::time::Duration::from_secs(3)).await;
+    let close_connections = async {
+        if tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            pool.lock().await.disconnect_all();
+        })
+        .await
+        .is_err()
+        {
+            log::warn!("Timed out while closing peer connections");
+        }
+    };
+    tokio::join!(
+        close_connections,
+        stop_background_tasks(tasks, std::time::Duration::from_millis(750))
+    );
     info!("Background services stopped");
     handle.exit(0);
 }
@@ -391,8 +396,10 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let settings_for_monitor = settings.clone();
     let settings_for_notifications = settings.clone();
     let settings_for_server = settings.clone();
+    let settings_for_iroh = settings.clone();
     let settings_for_discovery = settings.clone();
     let identity_for_server = identity.clone();
+    let identity_for_iroh = identity.clone();
     let identity_for_discovery = identity.clone();
 
     // Start JSON API server
@@ -426,9 +433,14 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(updates::plugin_builder().build())
         .setup(move |app| {
             let handle = app.handle().clone();
+            updates::register_app_handle(handle.clone());
+            #[cfg(target_os = "windows")]
+            updates::spawn_automatic_update_check(handle.clone());
             if let Some(task) =
                 start_parent_monitor(shutdown_for_parent, shutdown_for_setup.clone())
             {
@@ -456,9 +468,23 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 pairing: pairing.clone(),
                 shutdown: shutdown_for_state,
             };
+            let initial_sync_shortcut = state.settings.blocking_lock().sync_shortcut.clone();
             app.manage(state);
+            if let Err(error) =
+                commands::register_saved_sync_shortcut(&handle, &initial_sync_shortcut)
+            {
+                log::warn!("Could not register saved sync shortcut: {error}");
+            }
             #[cfg(all(not(target_os = "macos"), not(test)))]
             tray::start_tray(handle.clone());
+            if std::env::var_os("TAILSYNC_OPEN_SETTINGS_ON_START").is_some() {
+                let settings_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::open_settings_window(settings_handle).await {
+                        log::warn!("Could not open settings test window: {error}");
+                    }
+                });
+            }
             let pool_for_health = pool_for_setup.clone();
 
             // Start clipboard monitor (file → text → image)
@@ -483,6 +509,10 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
             // Start P2P network server
             let db_for_storage_monitor = db_for_setup.clone();
+            let db_for_iroh = db_for_setup.clone();
+            let sync_for_iroh = sync_for_setup.clone();
+            let pairing_for_server = pairing.clone();
+            let pairing_for_iroh = pairing.clone();
             let server_shutdown = shutdown_for_setup.clone();
             let server_task = tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::start_server(
@@ -490,7 +520,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     db_for_setup,
                     settings_for_server,
                     identity_for_server,
-                    pairing,
+                    pairing_for_server,
                     server_shutdown,
                 )
                 .await
@@ -499,6 +529,22 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
             track_task(&tasks_for_setup, server_task);
+            let iroh_shutdown = shutdown_for_setup.clone();
+            let iroh_task = tauri::async_runtime::spawn(async move {
+                if let Err(error) = network::start_iroh_server(
+                    sync_for_iroh,
+                    db_for_iroh,
+                    settings_for_iroh,
+                    identity_for_iroh,
+                    pairing_for_iroh,
+                    iroh_shutdown,
+                )
+                .await
+                {
+                    log::error!("Iroh server error: {error}");
+                }
+            });
+            track_task(&tasks_for_setup, iroh_task);
             let discovery_task = tauri::async_runtime::spawn(network::start_discovery_responder(
                 identity_for_discovery,
                 shutdown_for_setup.clone(),
@@ -543,6 +589,12 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::refresh_peers,
             commands::test_connection,
             commands::toggle_peer,
+            commands::get_sync_state,
+            commands::set_sync_enabled,
+            commands::toggle_sync,
+            commands::suspend_sync_shortcut,
+            commands::resume_sync_shortcut,
+            commands::set_sync_shortcut,
             commands::trust_peer,
             commands::forget_peer,
             commands::enable_pairing,
@@ -563,6 +615,10 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::delete_old_storage,
             commands::restore_file_batch,
             commands::get_version,
+            commands::get_sync_warning,
+            commands::get_update_status,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())?;
     Ok(())

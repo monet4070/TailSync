@@ -181,43 +181,37 @@ pub fn clear_file_batch_cancel(batch_id: &str) {
 
 /// Write file content to a temp file and put its URL on the macOS clipboard.
 #[cfg(target_os = "macos")]
-pub fn restore_file_to_clipboard(data: &[u8], fname: &str) {
-    match crate::db::materialize_clipboard_bytes(data, fname) {
-        Ok(path) => write_file_path_to_clipboard(&path),
-        Err(error) => log::error!("Could not prepare legacy file for clipboard: {error}"),
-    }
+pub fn restore_file_to_clipboard(data: &[u8], fname: &str) -> Result<(), String> {
+    let path = crate::db::materialize_clipboard_bytes(data, fname)
+        .map_err(|error| format!("Could not prepare legacy file for clipboard: {error}"))?;
+    write_file_path_to_clipboard(&path)
 }
 
-pub fn restore_file_path_to_clipboard(file_path: &Path, file_name: &str) {
-    let clipboard_path = match crate::db::materialize_clipboard_file(file_path, file_name) {
-        Ok(path) => path,
-        Err(error) => {
-            log::error!("Could not prepare file for clipboard: {error}");
-            return;
-        }
-    };
-    write_file_path_to_clipboard(&clipboard_path);
+pub fn restore_file_path_to_clipboard(file_path: &Path, file_name: &str) -> Result<(), String> {
+    let clipboard_path = crate::db::materialize_clipboard_file(file_path, file_name)
+        .map_err(|error| format!("Could not prepare file for clipboard: {error}"))?;
+    write_file_path_to_clipboard(&clipboard_path)
 }
 
 #[cfg(target_os = "macos")]
-fn write_file_path_to_clipboard(file_path: &Path) {
-    match crate::clipboard_file::write_clipboard_files(&[file_path.to_path_buf()]) {
-        Ok(()) => log::info!("Restored file to clipboard: {}", file_path.display()),
-        Err(error) => log::error!("Could not restore file to clipboard: {error}"),
-    }
+fn write_file_path_to_clipboard(file_path: &Path) -> Result<(), String> {
+    crate::clipboard_file::write_clipboard_files(&[file_path.to_path_buf()])
+        .map_err(|error| format!("Could not restore file to clipboard: {error}"))?;
+    log::info!("Restored file to clipboard: {}", file_path.display());
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
-pub fn restore_file_to_clipboard(data: &[u8], fname: &str) {
-    match crate::db::materialize_clipboard_bytes(data, fname) {
-        Ok(path) => write_file_path_to_clipboard(&path),
-        Err(error) => log::error!("Could not prepare legacy file for clipboard: {error}"),
-    }
+pub fn restore_file_to_clipboard(data: &[u8], fname: &str) -> Result<(), String> {
+    let path = crate::db::materialize_clipboard_bytes(data, fname)
+        .map_err(|error| format!("Could not prepare legacy file for clipboard: {error}"))?;
+    write_file_path_to_clipboard(&path)
 }
 
 #[cfg(target_os = "windows")]
-fn write_file_path_to_clipboard(file_path: &Path) {
+fn write_file_path_to_clipboard(file_path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
@@ -235,30 +229,42 @@ fn write_file_path_to_clipboard(file_path: &Path) {
 
     unsafe {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return;
+            return Err("Could not open the Windows clipboard".to_string());
         }
-        EmptyClipboard();
+        if EmptyClipboard() == 0 {
+            CloseClipboard();
+            return Err("Could not clear the Windows clipboard".to_string());
+        }
         let h = GlobalAlloc(GHND, total_size);
-        if !h.is_null() {
-            let ptr = GlobalLock(h) as *mut u8;
-            // Write DROPFILES header
-            let header = DropFilesHeader {
-                p_files: path_offset,
-                pt: [0, 0],
-                f_nc: 0,
-                f_wide: 1,
-            };
-            std::ptr::copy_nonoverlapping(
-                &header as *const _ as *const u8,
-                ptr,
-                std::mem::size_of::<DropFilesHeader>(),
-            );
-            // Write wide path + double null
-            let path_ptr = ptr.add(path_offset as usize) as *mut u16;
-            std::ptr::copy_nonoverlapping(wide_path.as_ptr(), path_ptr, wide_path.len());
-            path_ptr.add(wide_path.len()).write(0); // double null
-            GlobalUnlock(h);
-            SetClipboardData(15, h); // CF_HDROP
+        if h.is_null() {
+            CloseClipboard();
+            return Err("Could not allocate Windows clipboard memory".to_string());
+        }
+        let ptr = GlobalLock(h) as *mut u8;
+        if ptr.is_null() {
+            GlobalFree(h);
+            CloseClipboard();
+            return Err("Could not lock Windows clipboard memory".to_string());
+        }
+        let header = DropFilesHeader {
+            p_files: path_offset,
+            pt: [0, 0],
+            f_nc: 0,
+            f_wide: 1,
+        };
+        std::ptr::copy_nonoverlapping(
+            &header as *const _ as *const u8,
+            ptr,
+            std::mem::size_of::<DropFilesHeader>(),
+        );
+        let path_ptr = ptr.add(path_offset as usize) as *mut u16;
+        std::ptr::copy_nonoverlapping(wide_path.as_ptr(), path_ptr, wide_path.len());
+        path_ptr.add(wide_path.len()).write(0);
+        GlobalUnlock(h);
+        if SetClipboardData(15, h).is_null() {
+            GlobalFree(h);
+            CloseClipboard();
+            return Err("Could not publish the file to the Windows clipboard".to_string());
         }
         CloseClipboard();
     }
@@ -266,6 +272,7 @@ fn write_file_path_to_clipboard(file_path: &Path) {
         "Restored file to Windows clipboard: {}",
         file_path.display()
     );
+    Ok(())
 }
 
 #[repr(C)]
@@ -278,10 +285,14 @@ struct DropFilesHeader {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn restore_file_to_clipboard(_data: &[u8], _fname: &str) {}
+pub fn restore_file_to_clipboard(_data: &[u8], _fname: &str) -> Result<(), String> {
+    Err("File clipboard restore is unavailable on this platform".to_string())
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn write_file_path_to_clipboard(_file_path: &Path) {}
+fn write_file_path_to_clipboard(_file_path: &Path) -> Result<(), String> {
+    Err("File clipboard restore is unavailable on this platform".to_string())
+}
 
 /// Nearest-neighbor downscale of a validated packed RGBA image.
 pub fn thumbnail_rgba(
@@ -423,6 +434,8 @@ struct Request {
     hostname: Option<String>,
     #[serde(default)]
     enabled: Option<bool>,
+    #[serde(default)]
+    shortcut: Option<String>,
     #[serde(default)]
     public_key: Option<String>,
     #[serde(default)]
@@ -665,7 +678,7 @@ mod tests {
                 vec![PeerInfo {
                     hostname: "Mac".into(),
                     tailscale_ip: "192.168.31.247".into(),
-                    online: true,
+                    online: false,
                     enabled: true,
                     address: "192.168.31.247".into(),
                     connection_mode: "auto".into(),
@@ -676,6 +689,8 @@ mod tests {
                         "192.168.31.247",
                     )],
                     current_interface: None,
+                    current_address: None,
+                    status: Default::default(),
                 }],
             )),
         );
@@ -690,14 +705,63 @@ mod tests {
         assert_eq!(routes[0]["online"].as_bool(), Some(false));
         assert_eq!(routes[0]["connected"].as_bool(), Some(false));
         assert_eq!(routes[0]["pairing_endpoint"].as_bool(), Some(true));
+        assert_eq!(routes[0]["rtt_capable"].as_bool(), Some(true));
         assert_eq!(routes[1]["interface"].as_str(), Some("tailscale"));
         assert_eq!(routes[1]["address"].as_str(), Some("100.111.236.101"));
         assert_eq!(routes[1]["online"].as_bool(), Some(false));
         assert_eq!(routes[1]["connected"].as_bool(), Some(false));
         assert_eq!(routes[1]["pairing_endpoint"].as_bool(), Some(false));
+        assert_eq!(routes[1]["rtt_capable"].as_bool(), Some(true));
         assert_eq!(
             data["paired_peer_endpoints"]["Mac"].as_str(),
             Some("192.168.31.247")
+        );
+    }
+
+    #[test]
+    fn peer_snapshot_exposes_an_actionable_protocol_upgrade_diagnostic() {
+        let identity = DeviceIdentity::generate_for_test();
+        let remote = DeviceIdentity::generate_for_test();
+        let hostname = format!("protocol-snapshot-test-{}", rand::random::<u64>());
+        let address = "192.168.252.31";
+        let mut settings = Settings::default();
+        settings
+            .trusted_peer_keys
+            .insert(hostname.clone(), remote.public_key_base64());
+        settings.trusted_peer_addresses.insert(
+            hostname.clone(),
+            HashMap::from([("lan".into(), address.into())]),
+        );
+        crate::network::record_protocol_compatibility_error(
+            &hostname,
+            "Incompatible TailSync protocol: peer uses v2",
+        );
+
+        let data = peer_snapshot_data(
+            &identity,
+            &settings,
+            Ok((
+                LocalInfo {
+                    hostname: "windows".into(),
+                    tailscale_ip: String::new(),
+                    candidates: Vec::new(),
+                },
+                Vec::new(),
+            )),
+        );
+        crate::network::clear_protocol_compatibility_error(&hostname);
+
+        let peer = data["peers"]
+            .as_array()
+            .and_then(|peers| peers.iter().find(|peer| peer["hostname"] == hostname))
+            .expect("trusted peer snapshot");
+        assert_eq!(
+            peer["protocol_error"].as_str(),
+            Some("Incompatible TailSync protocol: peer uses v2")
+        );
+        assert_eq!(
+            peer["required_protocol_version"].as_u64(),
+            Some(crate::protocol::VERSION.into())
         );
     }
 
@@ -735,7 +799,7 @@ mod tests {
                 vec![PeerInfo {
                     hostname: hostname.into(),
                     tailscale_ip: lan_address.into(),
-                    online: true,
+                    online: false,
                     enabled: true,
                     address: lan_address.into(),
                     connection_mode: "auto".into(),
@@ -743,6 +807,8 @@ mod tests {
                     fingerprint: String::new(),
                     candidates: vec![PeerCandidate::new(ConnectionInterface::Lan, lan_address)],
                     current_interface: None,
+                    current_address: None,
+                    status: Default::default(),
                 }],
             )),
         );

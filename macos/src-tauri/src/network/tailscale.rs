@@ -1,39 +1,10 @@
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
 use super::{ConnectionInterface, PeerCandidate, PeerStatus};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerInfo {
-    pub hostname: String,
-    pub tailscale_ip: String,
-    pub online: bool,
-    pub enabled: bool, // User-toggled
-    #[serde(default)]
-    pub address: String,
-    #[serde(default)]
-    pub connection_mode: String,
-    #[serde(default)]
-    pub trusted: bool,
-    #[serde(default)]
-    pub fingerprint: String,
-    #[serde(default)]
-    pub candidates: Vec<PeerCandidate>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_interface: Option<ConnectionInterface>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_address: Option<String>,
-    #[serde(default)]
-    pub status: PeerStatus,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalInfo {
-    pub hostname: String,
-    pub tailscale_ip: String,
-}
+pub use tailsync_core::peer::types::{LocalInfo, PeerInfo};
 
 #[cfg(not(target_os = "macos"))]
 fn tailscale_binary() -> Option<PathBuf> {
@@ -149,6 +120,7 @@ fn parse_status(bytes: &[u8]) -> Result<(LocalInfo, Vec<PeerInfo>), String> {
     let local = LocalInfo {
         hostname,
         tailscale_ip: self_ips,
+        candidates: Vec::new(),
     };
 
     // Peer info

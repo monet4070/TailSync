@@ -103,10 +103,7 @@ assertTreeMatch('src-tauri/src', [
   'network/mod.rs',
   'network/health.rs',
   'network/peer_cache.rs',
-  'network/pool.rs',
-  'network/server.rs',
   'network/tailscale.rs',
-  'network/types.rs',
   'tray.rs',
 ]);
 for (const path of [
@@ -123,6 +120,36 @@ function read(root, path) {
 
 function readCore(path) {
   return readFileSync(join(sharedCoreRoot, path), 'utf8');
+}
+
+// Peer discovery/health/delivery types moved into the shared core: platform
+// files must be pure re-export shims so the shared contract cannot drift.
+// The checks strip comments and anchor on a statement start so a commented
+// `// pub use ...` can never satisfy them.
+function isReExportShim(source, corePath, required) {
+  const code = source
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  const statement = new RegExp(
+    `^\\s*pub use ${corePath.replaceAll('.', '\\.')}::\\{[^}]*\\b${required}\\b`,
+    'm',
+  );
+  return statement.test(code);
+}
+// Negative self-check: a commented re-export must not pass.
+if (isReExportShim('// pub use tailsync_core::peer::types::{PeerInfo}', 'tailsync_core::peer::types', 'PeerInfo')) {
+  fail('Drift-check shim detector accepted a commented-out re-export.');
+}
+for (const [root, label] of [[winRoot, 'Windows'], [macRoot, 'macOS']]) {
+  const typesSource = read(root, 'src-tauri/src/network/types.rs');
+  if (!isReExportShim(typesSource, 'tailsync_core::peer::types', 'PeerStatus')) {
+    fail(`${label} network/types.rs must re-export the shared peer types from tailsync_core.`);
+  }
+  const tailscaleSource = read(root, 'src-tauri/src/network/tailscale.rs');
+  if (!isReExportShim(tailscaleSource, 'tailsync_core::peer::types', 'PeerInfo')) {
+    fail(`${label} network/tailscale.rs must re-export PeerInfo from tailsync_core.`);
+  }
 }
 
 function assertReceivedFileHistorySource(root, platform) {
@@ -371,19 +398,32 @@ if (missingSwiftProgressFields.length) {
 }
 assertJsonFields('Image thumbnail', macApiContractSource, ['width', 'height', 'rgba_b64']);
 
-const peerInfoFields = rustFields(read(macRoot, 'src-tauri/src/network/tailscale.rs'), 'PeerInfo');
+const peerInfoFields = rustFields(readCore('src/peer/types.rs'), 'PeerInfo');
 peerInfoFields.add('routes');
 const swiftPeerFields = swiftFields(swiftSource, 'PeerSnapshot');
 swiftPeerFields.delete('id');
 assertSameFields('SwiftUI/Rust peer snapshot', peerInfoFields, swiftPeerFields);
 const routeFields = ['interface', 'address', 'status', 'online', 'connected',
-  'latency_ms', 'pairing_endpoint'];
-assertJsonFields('Windows peer route snapshot', winApiContractSource, routeFields);
-assertJsonFields('macOS peer route snapshot', macApiContractSource, routeFields);
+  'latency_ms', 'pairing_endpoint', 'rtt_capable'];
+// The route row shape is defined once by the shared PeerRouteSnapshot
+// struct; both API contracts and the Swift DTO must stay in lockstep.
+assertSameFields('Peer route snapshot vs core struct', new Set(routeFields),
+  rustFields(readCore('src/peer/types.rs'), 'PeerRouteSnapshot'));
+// The serialized field names now live in the shared struct, so the API
+// contracts must reference it (compile-time guarantee) rather than spell
+// out JSON literals that can drift.
+for (const [root, label] of [[winRoot, 'Windows'], [macRoot, 'macOS']]) {
+  const routesSource = read(root, 'src-tauri/src/api/routes.rs');
+  if (!routesSource.includes('tailsync_core::peer::types::PeerRouteSnapshot')) {
+    fail(`${label} api routes must serialize routes via the shared PeerRouteSnapshot.`);
+  }
+}
 for (const marker of [
   /struct Route: Decodable/,
   /case latencyMs = "latency_ms"/,
   /case pairingEndpoint = "pairing_endpoint"/,
+  /case rttCapable = "rtt_capable"/,
+  /rttCapable = try values.decodeIfPresent\(Bool.self, forKey: \.rttCapable\)/,
 ]) if (!marker.test(swiftSource)) fail('SwiftUI peer route DTO is missing normalized route fields.');
 
 const infoPlist = read(macRoot, 'src-tauri/Info.plist');
@@ -408,14 +448,18 @@ if (!/clipboard_file::write_clipboard_files/.test(macApiSourceForClipboard) ||
   fail('macOS file restoration must use the packaged clipboard helper, not the Swift toolchain.');
 }
 
-const macVerifierPath = join(macRoot, 'scripts/verify_macos_release.sh');
-if (!existsSync(macVerifierPath)) fail('Missing macOS release verification script: scripts/verify_macos_release.sh');
+const macSourceCheckPath = join(macRoot, 'scripts/check_macos_sources.sh');
+const macVerifierPath = join(macRoot, 'scripts/verify_macos_bundle.sh');
+if (!existsSync(macSourceCheckPath)) fail('Missing macOS source verification script.');
+if (!existsSync(macVerifierPath)) fail('Missing macOS bundle verification script.');
+const macSourceCheck = readFileSync(macSourceCheckPath, 'utf8');
 const macVerifier = readFileSync(macVerifierPath, 'utf8');
 for (const pattern of [
-  /cargo test .*--lib/,
-  /cargo clippy .*--lib.*-D warnings/,
+  /cargo test .*--all-targets/,
+  /cargo clippy .*--all-targets.*-D warnings/,
   /swift build .*--package-path swift-ui/,
-  /\.\/build-mac\.sh/,
+]) if (!pattern.test(macSourceCheck)) fail(`macOS source verifier is missing required check: ${pattern}`);
+for (const pattern of [
   /codesign --verify --deep --strict/,
   /19889/,
   /19890/,

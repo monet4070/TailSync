@@ -20,7 +20,7 @@
 </div>
 
 > [!NOTE]
-> TailSync 2.1.0 目前处于积极开发阶段。macOS 与 Windows 客户端已经可以互相同步，并支持休眠/唤醒后自动恢复；公开分发前仍需完成正式签名、公证和更多真实设备验收。
+> TailSync 2.1.0 目前处于积极开发阶段。macOS 与 Windows 客户端已经可以互相同步，并支持休眠/唤醒后自动恢复。tag 流水线默认生成免费的 Community Release：更新包仍有 TailSync 私钥签名、SHA-256 校验和降级保护，但 macOS 未公证、Windows 无商业代码签名；付费平台签名可在以后切换为 Trusted Release。首次公开发布前仍需配置 updater 密钥并完成真实设备验收。
 
 ## 为什么选择 TailSync
 
@@ -30,7 +30,7 @@
 | ⚡ | 智能路由 | `auto` 模式优先选择可用的 LAN，必要时切换到 Tailscale |
 | 🔐 | 安全配对 | 六位验证码、双端确认、固定设备身份和 Noise 加密连接 |
 | 🩺 | 真实在线状态 | 单一后台任务主动探测，不再把残留的 mDNS 记录当成在线 |
-| 🔋 | 唤醒恢复 | 睡眠唤醒后刷新事件时间戳、取消过期连接并重置剪贴板监听 |
+| 🔋 | 唤醒恢复 | 睡眠唤醒后保留原始事件时间、取消过期连接并重置剪贴板监听 |
 | 🗂️ | 智能历史 | 文本 / 图片 / 文件分类、日期筛选、搜索与恢复 |
 | 🔁 | 可靠传输 | 消息 ACK、自动重试、重放抑制、文件分块校验和运行期断线续传 |
 | 🖥️ | 原生体验 | macOS 菜单栏 SwiftUI 应用，Windows 系统托盘 Tauri 应用 |
@@ -57,7 +57,7 @@ macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/r
 - 120 秒配对窗口、六位验证码、双向确认和失败锁闭
 - 文本与图片事件 ACK、重试、时间戳检查和消息 ID 去重
 - 1 MiB 文件分块、Blake3 校验、offset ACK 和运行期断线续传
-- 睡眠 / 唤醒恢复：刷新可靠事件时间戳、取消过期连接 worker 并重置剪贴板监听
+- 睡眠 / 唤醒恢复：保留可靠事件的原始时间戳、取消过期连接 worker 并重置剪贴板监听
 - 剪贴板监听活性纳入守护进程健康检查，不再把已停止工作的监听误判为健康
 - 文件回传抑制：应用托管的 `clipboard-files/` 文件不会被回传给原发送端
 - 文件名清理、1 GiB 接收上限和入站连接数限制
@@ -132,7 +132,7 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 - 文本、图片和文件历史均使用系统保护的数据密钥加密存储。
 - 文件历史使用 1 MiB 分块 AES-256-GCM 容器；恢复时只在受控剪贴板目录生成临时明文。
 
-当前线协议为 v3，加入了原子文件批次；旧版 v2 帧会在成帧阶段被拒绝。跨设备使用时应同时升级所有客户端，已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.1.0，数据库 schema 为 v8，这三个版本号彼此独立。
+当前线协议为 v3，加入了原子文件批次；握手会交换协议版本，不匹配时明确提示同时更新两端。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.1.0，数据库 schema 为 v9，这三个版本号彼此独立。
 
 旧版 TailSync v1 历史数据库会在首次启动时自动导入。迁移按内容哈希保持幂等，损坏条目会写入诊断报告但不会阻止启动；原 `history.db` 和 `.fernet_key` 会保留，不会被自动删除。
 
@@ -165,7 +165,7 @@ xcode-select --install
 open TailSync.app
 ```
 
-`build-mac.sh` 会构建 SwiftUI 外壳、Rust 守护进程和剪贴板辅助程序，并生成 ad-hoc 签名的 `TailSync.app`。公开分发仍需 Developer ID 签名和 Apple 公证。
+`build-mac.sh` 会构建 SwiftUI 外壳、Rust 守护进程和剪贴板辅助程序。默认本地构建和 Community Release 使用 ad-hoc 签名；只有将发布层级切换为 `trusted` 并配置 Apple Developer 凭据后，才使用 Developer ID 签名和公证。
 
 生成带 `Applications` 快捷方式、可作为 GitHub Release 附件的 DMG：
 
@@ -173,13 +173,17 @@ open TailSync.app
 ./build-dmg.sh
 ```
 
-产物位于 `macos/release/`，并同时生成 SHA-256 校验文件。正式签名和公证：
+产物位于 `macos/release/`，并同时生成 SHA-256 校验文件。生成带 updater 签名的 Community Release：
 
 ```bash
-TAILSYNC_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-TAILSYNC_NOTARY_PROFILE="tailsync-notary" \
+TAILSYNC_RELEASE=1 \
+TAILSYNC_RELEASE_TIER=community \
+TAILSYNC_UPDATER_PUBLIC_KEY="..." \
+TAURI_SIGNING_PRIVATE_KEY="..." \
 ./build-dmg.sh
 ```
+
+Community Release 首次打开仍会触发 Gatekeeper 警告。未来具备付费账号后，可按[发布手册](docs/RELEASE.md)切换为 Trusted Release，无需更换 updater 密钥或更新协议。
 
 ### Windows
 
@@ -191,13 +195,13 @@ npm ci
 npm run tauri:dev
 ```
 
-构建 Windows 安装包：
+构建并烟测 Windows 安装包：
 
 ```powershell
-npm run tauri:build:win
+./scripts/package-windows.ps1
 ```
 
-产物位于 `src-tauri/target/release/bundle/`。
+正式 tag 默认生成无 Authenticode 的 Community Release，同时强制生成并验证签名 updater ZIP。未来配置代码签名证书后可切换为 Trusted Release。完整的密钥、证书和发布步骤见[发布手册](docs/RELEASE.md)。
 
 ## 数据存储
 
@@ -211,7 +215,7 @@ macOS 默认数据目录：
 
 | 路径 | 内容 |
 |---|---|
-| `history-v2.db` | 历史元数据、加密文本和内容引用 |
+| `history-v2.db` | 历史元数据、加密文本和内容引用；文本预览仅在读取时解密 |
 | `file-history/` | 分块 AEAD 加密的文件历史容器 |
 | `image-history/` | 加密图片历史文件 |
 | `incoming/` | 正在接收的临时文件与运行期续传状态 |
@@ -220,6 +224,7 @@ macOS 默认数据目录：
 | `identity-v1.bin` | 本机固定设备身份 |
 
 Windows 使用系统应用数据目录保存同一套结构。重新安装或替换应用程序本体不会主动删除历史、身份和配对信息。
+文本历史的 `description` 列只保存固定占位符，关键词搜索在解密后执行；删除历史时同时启用 SQLite `secure_delete` 并截断 WAL，避免明文预览或已删页残留在旁路文件。
 
 ## 开发验证
 
@@ -261,6 +266,7 @@ TailSync/
 │   ├── src-tauri/
 │   └── scripts/
 ├── shared/                # 共享 Rust 核心、设置 schema 和视觉规范
+├── docs/                  # 发布操作手册
 ├── site/                  # 独立项目站点
 ├── .github/workflows/     # CI 检查
 ├── assets/                # 项目展示资源
@@ -273,9 +279,9 @@ macOS 与 Windows 的平台 UI 可以按系统体验分别演进；共享业务�
 
 - 未完成文件批次可跨应用重启续传，`incoming/` 中的明文 `.part` 文件和续传状态最多保留 24 小时；`clipboard-files/` 中恢复到剪贴板的明文文件也属于瞬态数据。
 - macOS 本地 JSON-lines API 绑定 loopback，并对每个请求强制校验 256 位能力令牌；请求上限为 1 MiB，读写超时为 5 秒。仍不应通过端口转发暴露 `19889`。
-- `file-history/`、`image-history/` 与数据库内容均由应用数据密钥加密；系统磁盘加密仍可提供额外的整盘保护。
-- macOS 本地构建脚本生成的是 ad-hoc 签名应用，不是可公开分发的正式安装包。
-- 尚未完成自动更新、正式发布签名和完整的真实设备回归矩阵。
+- 历史正文与图片/文件负载由应用数据密钥加密；类型、时间戳等数据库元数据不加密，系统磁盘加密仍可提供额外的整盘保护。
+- 默认 tag 产物是 Community Release：macOS 使用 ad-hoc 签名且未公证，Windows 不含商业 Authenticode 签名，因此首次打开会出现 Gatekeeper 或 SmartScreen 警告；不要通过关闭系统安全功能来规避警告。
+- updater 签名、稳定通道 manifest 和降级保护已经接入，但尚未在本仓库凭据下完成首次线上更新及完整真实设备回归矩阵。预发布 tag 不进入稳定更新通道。
 - Android 客户端尚未纳入当前 v3 协议实现与兼容性保证。
 
 ## 许可证

@@ -1,38 +1,11 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::{lan, ConnectionInterface, PeerCandidate};
+use super::{lan, ConnectionInterface, PeerCandidate, PeerStatus};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerInfo {
-    pub hostname: String,
-    pub tailscale_ip: String,
-    pub online: bool,
-    pub enabled: bool, // User-toggled
-    #[serde(default)]
-    pub address: String,
-    #[serde(default)]
-    pub connection_mode: String,
-    #[serde(default)]
-    pub trusted: bool,
-    #[serde(default)]
-    pub fingerprint: String,
-    #[serde(default)]
-    pub candidates: Vec<PeerCandidate>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_interface: Option<ConnectionInterface>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalInfo {
-    pub hostname: String,
-    pub tailscale_ip: String,
-    #[serde(default)]
-    pub candidates: Vec<PeerCandidate>,
-}
+pub use tailsync_core::peer::types::{LocalInfo, PeerInfo};
 
 fn tailscale_binary() -> PathBuf {
     #[cfg(target_os = "macos")]
@@ -111,6 +84,16 @@ fn apply_probed_hostnames(peers: &mut [PeerInfo], hostnames: &HashMap<IpAddr, la
             for candidate in &mut peer.candidates {
                 candidate.latency = Some(response.latency_ms);
             }
+            if let Some(endpoint_id) = &response.iroh_endpoint_id {
+                if !peer.candidates.iter().any(|candidate| {
+                    candidate.interface == ConnectionInterface::Iroh
+                        && candidate.address == *endpoint_id
+                }) {
+                    let mut candidate = PeerCandidate::new(ConnectionInterface::Iroh, endpoint_id);
+                    candidate.set_rtt_capable(super::iroh::supports_rtt(&candidate.address));
+                    peer.candidates.push(candidate);
+                }
+            }
         }
     }
 }
@@ -177,6 +160,8 @@ fn parse_status(bytes: &[u8]) -> Result<(LocalInfo, Vec<PeerInfo>), String> {
                     fingerprint: String::new(),
                     candidates: vec![PeerCandidate::new(ConnectionInterface::Tailscale, peer_ip)],
                     current_interface: None,
+                    current_address: None,
+                    status: PeerStatus::Discovered,
                 });
             }
         }
@@ -249,6 +234,7 @@ mod tests {
             lan::ProbeResponse {
                 hostname: "Mac".to_string(),
                 latency_ms: 12,
+                iroh_endpoint_id: None,
             },
         )]);
 

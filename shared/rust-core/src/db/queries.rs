@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::{params_from_iter, types::Value};
 
 impl HistoryDB {
     pub fn get_all(
@@ -22,8 +23,38 @@ impl HistoryDB {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<HistoryEntry>, Box<dyn std::error::Error>> {
+        Ok(self
+            .get_page_filtered(keyword, category, start_time, end_time, limit, offset)?
+            .entries)
+    }
+
+    pub fn get_page_filtered(
+        &self,
+        keyword: Option<&str>,
+        category: Option<&str>,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<HistoryQueryPage, Box<dyn std::error::Error>> {
+        let keyword = keyword.filter(|value| !value.trim().is_empty());
+        if let Some(keyword) = keyword {
+            let (entries, _, has_more) = self.scan_keyword_matches(
+                keyword,
+                category,
+                start_time,
+                end_time,
+                Some((limit, offset)),
+            )?;
+            return Ok(HistoryQueryPage {
+                entries,
+                total: None,
+                has_more,
+            });
+        }
+
         let (filter_clause, mut values) =
-            Self::history_filter_clause(keyword, category, start_time, end_time)?;
+            Self::history_filter_clause(category, start_time, end_time)?;
 
         let mut sql = String::from(
             "SELECT id, timestamp, type, description, data_hash, size_bytes, source_peer,
@@ -32,20 +63,38 @@ impl HistoryDB {
                     CASE WHEN batch_id IS NULL THEN NULL ELSE
                         (SELECT COUNT(*) FROM history AS batch_entries
                          WHERE batch_entries.batch_id = history.batch_id)
-                    END AS batch_count
+                    END AS batch_count,
+                    CASE WHEN type = 'text' THEN data ELSE NULL END AS text_data
              FROM history",
         );
         sql.push_str(&filter_clause);
         sql.push_str(" ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?");
-        values.push(Value::Integer(limit as i64));
-        values.push(Value::Integer(offset as i64));
+        values.push(Value::Integer(i64::try_from(limit)?));
+        values.push(Value::Integer(i64::try_from(offset)?));
 
-        let entries = self
+        let rows = self
             .conn
             .prepare(&sql)?
-            .query_map(params_from_iter(values.iter()), Self::row_to_entry)?
+            .query_map(params_from_iter(values.iter()), |row| {
+                Ok((Self::row_to_entry(row)?, row.get::<_, Option<Vec<u8>>>(17)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(entries)
+        let mut entries = Vec::with_capacity(rows.len());
+        for (mut entry, stored) in rows {
+            if let Some(stored) = stored {
+                self.hydrate_text_description(&mut entry, &stored);
+            }
+            entries.push(entry);
+        }
+        let total = self.count_all_filtered(None, category, start_time, end_time)?;
+        let has_more = offset
+            .checked_add(entries.len())
+            .is_some_and(|consumed| consumed < total);
+        Ok(HistoryQueryPage {
+            entries,
+            total: Some(total),
+            has_more,
+        })
     }
 
     pub fn count_all_filtered(
@@ -55,8 +104,12 @@ impl HistoryDB {
         start_time: Option<&str>,
         end_time: Option<&str>,
     ) -> Result<usize, Box<dyn std::error::Error>> {
-        let (filter_clause, values) =
-            Self::history_filter_clause(keyword, category, start_time, end_time)?;
+        if let Some(keyword) = keyword.filter(|value| !value.trim().is_empty()) {
+            let (_, count, _) =
+                self.scan_keyword_matches(keyword, category, start_time, end_time, None)?;
+            return Ok(count);
+        }
+        let (filter_clause, values) = Self::history_filter_clause(category, start_time, end_time)?;
         let sql = format!("SELECT COUNT(*) FROM history{filter_clause}");
         let count: i64 = self
             .conn
@@ -64,13 +117,90 @@ impl HistoryDB {
         Ok(count.max(0) as usize)
     }
 
+    fn scan_keyword_matches(
+        &self,
+        keyword: &str,
+        category: Option<&str>,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        page: Option<(usize, usize)>,
+    ) -> Result<(Vec<HistoryEntry>, usize, bool), Box<dyn std::error::Error>> {
+        let (filter_clause, mut values) =
+            Self::history_filter_clause(category, start_time, end_time)?;
+        let escaped = format!("%{}%", escape_like_literal(keyword));
+        let candidate =
+            "(type = 'text' OR description LIKE ? ESCAPE '\\' OR source_peer LIKE ? ESCAPE '\\'
+              OR type LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\'
+              OR EXISTS (SELECT 1 FROM json_each(history.categories) AS label
+                         WHERE label.value LIKE ? ESCAPE '\\'))";
+        let where_clause = if filter_clause.is_empty() {
+            format!(" WHERE {candidate}")
+        } else {
+            format!("{filter_clause} AND {candidate}")
+        };
+        for _ in 0..5 {
+            values.push(Value::Text(escaped.clone()));
+        }
+        let sql = format!(
+            "SELECT id, timestamp, type, description, data_hash, size_bytes, source_peer,
+                    category, category_confidence, classifier_version, categories,
+                    pinned, batch_id, batch_index, batch_total, batch_status,
+                    CASE WHEN batch_id IS NULL THEN NULL ELSE
+                        (SELECT COUNT(*) FROM history AS batch_entries
+                         WHERE batch_entries.batch_id = history.batch_id)
+                    END AS batch_count,
+                    CASE WHEN type = 'text' THEN data ELSE NULL END AS text_data
+             FROM history{where_clause} ORDER BY timestamp DESC, id DESC"
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(values.iter()))?;
+        let (limit, offset) = page.unwrap_or((0, 0));
+        let mut entries = Vec::with_capacity(limit);
+        let mut count = 0usize;
+        let mut has_more = false;
+
+        while let Some(row) = rows.next()? {
+            let mut entry = Self::row_to_entry(row)?;
+            let mut full_text_matches = false;
+            if let Some(stored) = row.get::<_, Option<Vec<u8>>>(17)? {
+                match self
+                    .read_text_payload_compat(&stored)
+                    .and_then(|data| Ok(String::from_utf8(data)?))
+                {
+                    Ok(text) => {
+                        full_text_matches = text.to_lowercase().contains(&keyword.to_lowercase());
+                        entry.description = text_preview(&text);
+                    }
+                    Err(error) => warn!(
+                        "Could not decrypt history text preview for entry {}: {error}",
+                        entry.id
+                    ),
+                }
+            }
+            if !full_text_matches && !Self::entry_metadata_matches_keyword(&entry, keyword) {
+                continue;
+            }
+            count = count.saturating_add(1);
+            let Some((_, _)) = page else {
+                continue;
+            };
+            if count <= offset {
+                continue;
+            }
+            if entries.len() == limit {
+                has_more = true;
+                break;
+            }
+            entries.push(entry);
+        }
+        Ok((entries, count, has_more))
+    }
+
     fn history_filter_clause(
-        keyword: Option<&str>,
         category: Option<&str>,
         start_time: Option<&str>,
         end_time: Option<&str>,
     ) -> Result<(String, Vec<Value>), Box<dyn std::error::Error>> {
-        let keyword = keyword.filter(|value| !value.trim().is_empty());
         let category = category.filter(|value| !value.is_empty() && *value != "all");
         if let Some(category) =
             category.filter(|value| !history_classifier::is_known_category(value))
@@ -99,18 +229,6 @@ impl HistoryDB {
 
         let mut conditions = Vec::new();
         let mut values = Vec::<Value>::new();
-        if let Some(keyword) = keyword {
-            let pattern = format!("%{}%", escape_like_literal(keyword));
-            conditions.push(
-                "(description LIKE ? ESCAPE '\\' OR source_peer LIKE ? ESCAPE '\\'
-                  OR type LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\'
-                  OR EXISTS (SELECT 1 FROM json_each(history.categories) AS label
-                             WHERE label.value LIKE ? ESCAPE '\\'))",
-            );
-            for _ in 0..5 {
-                values.push(Value::Text(pattern.clone()));
-            }
-        }
         if let Some(category) = category {
             conditions.push(
                 "EXISTS (SELECT 1 FROM json_each(history.categories) AS label
@@ -133,6 +251,36 @@ impl HistoryDB {
         };
         Ok((filter_clause, values))
     }
+
+    fn hydrate_text_description(&self, entry: &mut HistoryEntry, stored: &[u8]) {
+        if entry.entry_type != "text" {
+            return;
+        }
+        match self
+            .read_text_payload_compat(stored)
+            .and_then(|data| Ok(text_preview(std::str::from_utf8(&data)?)))
+        {
+            Ok(description) => entry.description = description,
+            Err(error) => warn!(
+                "Could not decrypt history text preview for entry {}: {error}",
+                entry.id
+            ),
+        }
+    }
+
+    fn entry_metadata_matches_keyword(entry: &HistoryEntry, keyword: &str) -> bool {
+        let keyword = keyword.to_lowercase();
+        [
+            entry.description.as_str(),
+            entry.source_peer.as_str(),
+            entry.entry_type.as_str(),
+            entry.category.as_str(),
+        ]
+        .into_iter()
+        .chain(entry.categories.iter().map(String::as_str))
+        .any(|value| value.to_lowercase().contains(&keyword))
+    }
+
     fn row_to_entry(row: &rusqlite::Row) -> Result<HistoryEntry, rusqlite::Error> {
         let category = row.get::<_, String>(7)?;
         let encoded_categories = row.get::<_, String>(10)?;
@@ -163,4 +311,11 @@ impl HistoryDB {
             batch_count: row.get(16)?,
         })
     }
+}
+
+fn escape_like_literal(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }

@@ -6,6 +6,9 @@ BUNDLE="$APP_NAME.app"
 STAGING_BUNDLE="$APP_NAME.app.staging"
 APP_VERSION="$(cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | /usr/bin/plutil -extract packages.0.version raw -o - -)"
 SIGN_IDENTITY="${TAILSYNC_CODESIGN_IDENTITY:--}"
+FORMAL_RELEASE="${TAILSYNC_RELEASE:-0}"
+RELEASE_TIER="${TAILSYNC_RELEASE_TIER:-community}"
+MACOS_TARGET="${TAILSYNC_MACOS_TARGET:-native}"
 SKIP_SWIFT_BUILD=false
 if [[ "${1:-}" == "--skip-swift-build" ]]; then
     SKIP_SWIFT_BUILD=true
@@ -17,24 +20,75 @@ export CLANG_MODULE_CACHE_PATH="$SWIFT_MODULE_CACHE_DIR"
 export SWIFTPM_MODULECACHE_OVERRIDE="$SWIFT_MODULE_CACHE_DIR"
 mkdir -p "$SWIFT_MODULE_CACHE_DIR"
 
+if [[ "$RELEASE_TIER" != "community" && "$RELEASE_TIER" != "trusted" ]]; then
+    echo "TAILSYNC_RELEASE_TIER must be community or trusted." >&2
+    exit 2
+fi
+
+if [[ "$FORMAL_RELEASE" == "1" ]]; then
+    export TAILSYNC_PUBLISHED_RELEASE=1
+    if [[ "$RELEASE_TIER" == "trusted" && "$SIGN_IDENTITY" == "-" ]]; then
+        echo "TAILSYNC_CODESIGN_IDENTITY is required for a trusted release." >&2
+        exit 1
+    fi
+    if [[ -z "${TAILSYNC_UPDATER_PUBLIC_KEY:-}" ]]; then
+        echo "TAILSYNC_UPDATER_PUBLIC_KEY is required for a formal release." >&2
+        exit 1
+    fi
+fi
+
+if [[ "$FORMAL_RELEASE" == "1" && "$RELEASE_TIER" == "community" ]]; then
+    SIGN_IDENTITY="-"
+fi
+
 echo "═══ Building $APP_NAME.app ═══"
 
 # ── Build binaries ─────────────────────────────────────────────
 echo "[1/6] Building Rust daemon..."
-cargo build --locked --release --manifest-path src-tauri/Cargo.toml
+if [[ "$MACOS_TARGET" == "universal-apple-darwin" ]]; then
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    cargo build --locked --release --target aarch64-apple-darwin --manifest-path src-tauri/Cargo.toml
+    cargo build --locked --release --target x86_64-apple-darwin --manifest-path src-tauri/Cargo.toml
+    mkdir -p "$RUST_TARGET_DIR/release"
+    lipo -create \
+        "$RUST_TARGET_DIR/aarch64-apple-darwin/release/tailsync" \
+        "$RUST_TARGET_DIR/x86_64-apple-darwin/release/tailsync" \
+        -output "$RUST_TARGET_DIR/release/tailsync"
+elif [[ "$MACOS_TARGET" == "native" ]]; then
+    cargo build --locked --release --manifest-path src-tauri/Cargo.toml
+else
+    echo "Unsupported TAILSYNC_MACOS_TARGET: $MACOS_TARGET" >&2
+    exit 2
+fi
 
 echo "[2/6] Building SwiftUI app..."
 if $SKIP_SWIFT_BUILD; then
-    test -x swift-ui/.build/release/TailSync
+    SWIFT_BIN_DIR="$(swift build -c release --show-bin-path --package-path swift-ui)"
+    test -x "$SWIFT_BIN_DIR/TailSync"
     echo "Using existing verified release binary."
 else
-    swift build -c release --package-path swift-ui
+    if [[ "$MACOS_TARGET" == "universal-apple-darwin" ]]; then
+        swift build -c release --arch arm64 --arch x86_64 --package-path swift-ui
+        SWIFT_BIN_DIR="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path --package-path swift-ui)"
+    else
+        swift build -c release --package-path swift-ui
+        SWIFT_BIN_DIR="$(swift build -c release --show-bin-path --package-path swift-ui)"
+    fi
 fi
 
 echo "[3/6] Building clipboard helper..."
 HELPER_BIN="$RUST_TARGET_DIR/release/clipboard-helper"
 mkdir -p "$(dirname "$HELPER_BIN")"
-(cd src-tauri && swiftc -O clipboard-helper.swift -o "$HELPER_BIN")
+if [[ "$MACOS_TARGET" == "universal-apple-darwin" ]]; then
+    HELPER_ARM64="$RUST_TARGET_DIR/release/clipboard-helper-arm64"
+    HELPER_X86_64="$RUST_TARGET_DIR/release/clipboard-helper-x86_64"
+    (cd src-tauri && swiftc -O -target arm64-apple-macosx13.0 clipboard-helper.swift -o "$HELPER_ARM64")
+    (cd src-tauri && swiftc -O -target x86_64-apple-macosx13.0 clipboard-helper.swift -o "$HELPER_X86_64")
+    lipo -create "$HELPER_ARM64" "$HELPER_X86_64" -output "$HELPER_BIN"
+    rm -f "$HELPER_ARM64" "$HELPER_X86_64"
+else
+    (cd src-tauri && swiftc -O clipboard-helper.swift -o "$HELPER_BIN")
+fi
 chmod +x "$HELPER_BIN"
 
 # ── Create bundle structure ────────────────────────────────────
@@ -44,7 +98,7 @@ mkdir -p "$STAGING_BUNDLE/Contents/MacOS"
 mkdir -p "$STAGING_BUNDLE/Contents/Resources"
 
 # Copy binaries
-cp swift-ui/.build/release/TailSync "$STAGING_BUNDLE/Contents/MacOS/TailSync"
+cp "$SWIFT_BIN_DIR/TailSync" "$STAGING_BUNDLE/Contents/MacOS/TailSync"
 cp "$RUST_TARGET_DIR/release/tailsync" "$STAGING_BUNDLE/Contents/MacOS/tailsyncd"
 cp "$HELPER_BIN" "$STAGING_BUNDLE/Contents/MacOS/clipboard-helper"
 chmod +x "$STAGING_BUNDLE/Contents/MacOS/"*
@@ -53,6 +107,10 @@ chmod +x "$STAGING_BUNDLE/Contents/MacOS/"*
 if [ -f src-tauri/icons/icon.icns ]; then
     cp src-tauri/icons/icon.icns "$STAGING_BUNDLE/Contents/Resources/icon.icns"
 fi
+
+# The client compares this signed metadata with latest.json before installing.
+printf '{"schema":1,"product":"TailSync","version":"%s"}\n' "$APP_VERSION" \
+    > "$STAGING_BUNDLE/Contents/Resources/tailsync-update.json"
 
 # ── Create Info.plist ──────────────────────────────────────────
 cat > "$STAGING_BUNDLE/Contents/Info.plist" << PLIST
@@ -111,6 +169,7 @@ test -x "$STAGING_BUNDLE/Contents/MacOS/clipboard-helper"
 /usr/bin/plutil -lint "$STAGING_BUNDLE/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$STAGING_BUNDLE/Contents/Info.plist" | grep -q 'local network access'
 /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices:0' "$STAGING_BUNDLE/Contents/Info.plist" | grep -qx '_tailsync._tcp'
+grep -Fq "\"version\":\"$APP_VERSION\"" "$STAGING_BUNDLE/Contents/Resources/tailsync-update.json"
 
 rm -rf "$BUNDLE"
 mv "$STAGING_BUNDLE" "$BUNDLE"

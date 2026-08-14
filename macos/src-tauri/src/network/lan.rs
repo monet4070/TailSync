@@ -17,6 +17,19 @@ struct DiscoveryResponse {
     version: u8,
     hostname: String,
     tcp_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iroh_endpoint_id: Option<String>,
+    #[serde(default)]
+    iroh_rtt: bool,
+}
+
+fn advertised_iroh_endpoint(response: &DiscoveryResponse) -> Option<String> {
+    let endpoint_id = response.iroh_endpoint_id.as_deref()?;
+    let endpoint_id = tailsync_core::iroh_transport::canonical_endpoint_id(endpoint_id).ok()?;
+    if response.iroh_rtt {
+        super::iroh::remember_rtt_capability(&endpoint_id);
+    }
+    Some(endpoint_id)
 }
 
 pub fn local_hostname() -> String {
@@ -145,6 +158,15 @@ async fn probe_targets(
         if !seen.insert((response.hostname.clone(), source.ip())) {
             continue;
         }
+        let mut candidates = vec![PeerCandidate {
+            latency: Some(started.elapsed().as_millis() as u64),
+            ..PeerCandidate::new(interface, source.ip().to_string())
+        }];
+        if let Some(endpoint_id) = advertised_iroh_endpoint(&response) {
+            let mut candidate = PeerCandidate::remembered(ConnectionInterface::Iroh, endpoint_id);
+            candidate.set_rtt_capable(super::iroh::supports_rtt(&candidate.address));
+            candidates.push(candidate);
+        }
         peers.push(PeerInfo {
             hostname: response.hostname,
             tailscale_ip: source.ip().to_string(),
@@ -154,10 +176,7 @@ async fn probe_targets(
             connection_mode: interface.as_str().to_string(),
             trusted: false,
             fingerprint: String::new(),
-            candidates: vec![PeerCandidate {
-                latency: Some(started.elapsed().as_millis() as u64),
-                ..PeerCandidate::new(interface, source.ip().to_string())
-            }],
+            candidates,
             current_interface: None,
             current_address: None,
             status: PeerStatus::Online,
@@ -174,6 +193,7 @@ pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
         LocalInfo {
             hostname: local_hostname(),
             tailscale_ip: local_ip(),
+            candidates: Vec::new(),
         },
         peers,
     ))
@@ -212,6 +232,8 @@ pub async fn start_responder() {
             version: 1,
             hostname: local_hostname(),
             tcp_port: TCP_PORT,
+            iroh_endpoint_id: super::iroh::local_endpoint_id(),
+            iroh_rtt: true,
         };
         let payload = match serde_json::to_vec(&response) {
             Ok(payload) => payload,
@@ -251,6 +273,8 @@ mod tests {
             version: 1,
             hostname: hostname.into(),
             tcp_port: 19890,
+            iroh_endpoint_id: None,
+            iroh_rtt: false,
         }
     }
 

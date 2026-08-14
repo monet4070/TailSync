@@ -2,6 +2,39 @@ import SwiftUI
 import AppKit
 import UserNotifications
 
+private func routeInterfaceLabel(_ interface: String) -> String {
+    switch interface {
+    case "lan": return "LAN"
+    case "iroh": return "Iroh"
+    default: return "Tailscale"
+    }
+}
+
+struct SettingsPollingPlan {
+    let refreshPairingStatus: Bool
+    let refreshPeers: Bool
+}
+
+enum SettingsPollingPolicy {
+    static func next(
+        applicationIsActive: Bool,
+        peerRefreshTicks: inout Int
+    ) -> SettingsPollingPlan {
+        var refreshPeers = false
+        if applicationIsActive {
+            peerRefreshTicks += 1
+            if peerRefreshTicks >= 5 {
+                peerRefreshTicks = 0
+                refreshPeers = true
+            }
+        }
+        return SettingsPollingPlan(
+            refreshPairingStatus: true,
+            refreshPeers: refreshPeers
+        )
+    }
+}
+
 private actor SettingsSaveCoordinator {
     private enum SaveResult: Sendable {
         case success(AppSettings)
@@ -50,13 +83,13 @@ struct SettingsView: View {
         let status: String
         let latencyMs: Int?
         let isPairingEndpoint: Bool
+        let rttCapable: Bool
 
         var id: String { "\(peer.hostname)-\(interface ?? "unknown")-\(address)" }
     }
 
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.scenePhase) private var scenePhase
     @State private var settings = AppSettings()
     @State private var persistedSettings = AppSettings()
     @State private var applyingPersistedSettings = false
@@ -76,7 +109,7 @@ struct SettingsView: View {
     @State private var previousPairingPhase: String?
     @State private var testingPeers: Set<String> = []
     @State private var removingPeers: Set<String> = []
-    @State private var testResults: [String: (latencyMs: Int, error: String)] = [:]
+    @State private var testResults: [String: (latencyMs: Int, path: String, error: String)] = [:]
     @State private var peerLoadGeneration = 0
     @State private var peerRequestInFlight = false
     @State private var saveGeneration = 0
@@ -84,6 +117,11 @@ struct SettingsView: View {
     @State private var storageStatus: ApiClient.StorageStatus?
     @State private var storageBusy = false
     @State private var oldStorage: ApiClient.StorageMigrationResult?
+    @State private var isRecordingShortcut = false
+    @State private var shortcutDraft = ""
+    @State private var shortcutError = ""
+    @State private var shortcutBusy = false
+    @State private var shortcutMonitor: Any?
 
     private var activeTheme: TailSyncColorTheme {
         TailSyncColorTheme(storedValue: loc.colorTheme)
@@ -138,15 +176,15 @@ struct SettingsView: View {
             load()
             var peerRefreshTicks = 0
             while !Task.isCancelled {
-                if scenePhase == .active {
+                let pollingPlan = SettingsPollingPolicy.next(
+                    applicationIsActive: NSApp.isActive,
+                    peerRefreshTicks: &peerRefreshTicks
+                )
+                if pollingPlan.refreshPairingStatus {
                     await refreshPairingStatus()
-                    peerRefreshTicks += 1
-                    if peerRefreshTicks >= 5 {
-                        peerRefreshTicks = 0
-                        if !isLoading && !peerRequestInFlight {
-                            loadPeers(showLoading: false)
-                        }
-                    }
+                }
+                if pollingPlan.refreshPeers && !isLoading && !peerRequestInFlight {
+                    loadPeers(showLoading: false)
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
@@ -154,11 +192,35 @@ struct SettingsView: View {
         .sheet(isPresented: $showPairingSheet) {
             pairingSheet
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: GlobalShortcutController.syncStateChanged)
+        ) { notification in
+            if let enabled = notification.userInfo?["enabled"] as? Bool {
+                settings.sync_enabled = enabled
+            }
+        }
+        .onDisappear {
+            if isRecordingShortcut {
+                cancelShortcutRecording()
+            }
+        }
         .tailSyncThemed()
     }
 
     private var generalSection: some View {
         settingsCard(title: Loc.t("settings.general")) {
+            settingRow {
+                Text(Loc.t("settings.syncEnabled"))
+                Spacer()
+                Toggle("", isOn: $settings.sync_enabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .onChange(of: settings.sync_enabled) { _ in save() }
+            }
+            themedDivider.padding(.leading, 16)
+            shortcutRow
+            themedDivider.padding(.leading, 16)
             settingRow {
                 Text(Loc.t("settings.notifications"))
                 Spacer()
@@ -182,6 +244,114 @@ struct SettingsView: View {
                     .onChange(of: settings.progress_bar_enabled) { _ in save() }
             }
         }
+    }
+
+    private var shortcutRow: some View {
+        settingRow {
+            Text(Loc.t("settings.syncShortcut"))
+            Spacer()
+            if isRecordingShortcut {
+                Text(shortcutDraft.isEmpty
+                     ? Loc.t("settings.shortcutRecording")
+                     : ShortcutDisplayFormatter.string(for: shortcutDraft))
+                    .font(.caption2.monospaced())
+                    .foregroundColor(palette.accentColor)
+                Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording() }
+                    .buttonStyle(.borderless)
+                    .disabled(shortcutBusy)
+                Button(Loc.t("settings.shortcutSave")) { confirmShortcut() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(shortcutDraft.isEmpty || shortcutBusy)
+            } else {
+                Text(settings.sync_shortcut.isEmpty
+                     ? Loc.t("settings.shortcutNone")
+                     : ShortcutDisplayFormatter.string(for: settings.sync_shortcut))
+                    .font(.caption2.monospaced())
+                    .foregroundColor(palette.tertiaryColor)
+                Button(Loc.t("settings.shortcutRecord")) { startShortcutRecording() }
+                    .buttonStyle(.borderless)
+                    .disabled(shortcutBusy)
+            }
+            if !shortcutError.isEmpty {
+                Text(shortcutError)
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private func startShortcutRecording() {
+        guard !isRecordingShortcut, !shortcutBusy else { return }
+        GlobalShortcutController.shared.unregister()
+        shortcutDraft = ""
+        shortcutError = ""
+        shortcutBusy = false
+        isRecordingShortcut = true
+        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard isRecordingShortcut else { return event }
+            if let shortcut = Self.capturedShortcut(from: event) {
+                shortcutDraft = shortcut
+                shortcutError = ""
+            }
+            return nil
+        }
+    }
+
+    private func cancelShortcutRecording() {
+        finishShortcutRecording()
+        if case .failure(let error) =
+            GlobalShortcutController.shared.register(shortcut: settings.sync_shortcut) {
+            shortcutError = error.message
+        }
+    }
+
+    private func finishShortcutRecording() {
+        if let monitor = shortcutMonitor {
+            NSEvent.removeMonitor(monitor)
+            shortcutMonitor = nil
+        }
+        isRecordingShortcut = false
+        shortcutDraft = ""
+        shortcutError = ""
+    }
+
+    private func confirmShortcut() {
+        guard isRecordingShortcut, !shortcutDraft.isEmpty else { return }
+        let next = shortcutDraft
+        let previous = settings.sync_shortcut
+        let controller = GlobalShortcutController.shared
+        shortcutBusy = true
+        shortcutError = ""
+        Task { @MainActor in
+            let error = await GlobalShortcutController.apply(
+                previous: previous,
+                next: next,
+                register: { controller.register(shortcut: $0) },
+                persist: { await ApiClient.shared.setSyncShortcut($0) }
+            )
+            shortcutBusy = false
+            if let error {
+                shortcutError = error
+                return
+            }
+            finishShortcutRecording()
+            settings.sync_shortcut = next
+            persistedSettings.sync_shortcut = next
+        }
+    }
+
+    private static func capturedShortcut(from event: NSEvent) -> String? {
+        var modifiers: [String] = []
+        if event.modifierFlags.contains(.command) { modifiers.append("CommandOrControl") }
+        if event.modifierFlags.contains(.control) { modifiers.append("Control") }
+        if event.modifierFlags.contains(.option) { modifiers.append("Alt") }
+        if event.modifierFlags.contains(.shift) { modifiers.append("Shift") }
+        guard !modifiers.isEmpty else { return nil }
+        let keyCode = UInt32(event.keyCode)
+        guard let name = ShortcutParser.keyCodeName(for: keyCode) else { return nil }
+        return (modifiers + [name]).joined(separator: "+")
     }
 
     private var historySection: some View {
@@ -334,6 +504,12 @@ struct SettingsView: View {
                     .font(.caption2.monospaced())
                     .foregroundColor(palette.tertiaryColor)
                     .textSelection(.enabled)
+                if let endpoint = localDevice?.iroh_endpoint_id {
+                    Text("iroh: \(endpoint)")
+                        .font(.caption2.monospaced())
+                        .foregroundColor(palette.tertiaryColor)
+                        .textSelection(.enabled)
+                }
             }
             Spacer()
         }
@@ -502,7 +678,8 @@ struct SettingsView: View {
                         status: $0.connected ? "connected" : $0.status,
                         latencyMs: $0.latencyMs,
                         isPairingEndpoint: peer.trusted
-                            && ($0.pairingEndpoint || $0.address == pairedAddress)
+                            && ($0.pairingEndpoint || $0.address == pairedAddress),
+                        rttCapable: $0.rttCapable
                     )
                 }
             }
@@ -516,7 +693,8 @@ struct SettingsView: View {
                         connected: peer.current_address == $0.address,
                         status: peer.current_address == $0.address ? "connected" : $0.status,
                         latencyMs: $0.latency,
-                        isPairingEndpoint: peer.trusted && $0.address == pairedAddress
+                        isPairingEndpoint: peer.trusted && $0.address == pairedAddress,
+                        rttCapable: $0.rttCapable
                     )
                 }
             }
@@ -530,7 +708,8 @@ struct SettingsView: View {
                     ? "connected"
                     : peer.candidates.first?.status ?? peer.status,
                 latencyMs: peer.candidates.first?.latency,
-                isPairingEndpoint: peer.trusted && peer.address == pairedAddress
+                isPairingEndpoint: peer.trusted && peer.address == pairedAddress,
+                rttCapable: true
             )]
         }
     }
@@ -559,12 +738,24 @@ struct SettingsView: View {
                         .font(.caption2)
                         .foregroundColor(peer.trusted ? palette.positiveColor : palette.warningColor)
                 }
+                if let version = peer.requiredProtocolVersion {
+                    Text(
+                        Loc.t("settings.protocolUpgradeRequired")
+                            .replacingOccurrences(of: "{version}", with: String(version))
+                    )
+                    .font(.caption2)
+                    .foregroundColor(palette.warningColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 7) {
                     Text(route.address.isEmpty ? Loc.t("settings.pairedOffline") : route.address)
                         .font(.caption.monospaced())
                         .foregroundColor(palette.secondaryColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(route.address)
                     if let interface = route.interface {
-                        Text("· \(interface == "lan" ? "LAN" : "Tailscale")")
+                        Text("· \(routeInterfaceLabel(interface))")
                             .font(.caption2.weight(.medium))
                             .foregroundColor(palette.accentColor)
                     }
@@ -583,7 +774,11 @@ struct SettingsView: View {
                             .foregroundColor(palette.tertiaryColor)
                     }
                     if let result = testResults[route.id] {
-                        Text(result.error.isEmpty ? "\(result.latencyMs) ms" : result.error)
+                        let label = result.error.isEmpty
+                            ? "\(result.latencyMs) ms"
+                                + (result.path == "relay" ? " · \(Loc.t("settings.relayPath"))" : "")
+                            : result.error
+                        Text(label)
                             .font(.caption2)
                             .foregroundColor(result.error.isEmpty ? .green : .red)
                             .lineLimit(1)
@@ -603,7 +798,10 @@ struct SettingsView: View {
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
-                .help(Loc.t("settings.testConnection"))
+                .disabled(route.interface == "iroh" && !route.rttCapable)
+                .help(route.interface == "iroh" && !route.rttCapable
+                    ? Loc.t("settings.testRouteRediscover")
+                    : Loc.t("settings.testConnection"))
             }
 
             if route.isPairingEndpoint, removingPeers.contains(peer.hostname) {
@@ -724,11 +922,13 @@ struct SettingsView: View {
     }
 
     private func applyPeerResult(_ result: ApiClient.PeersResult, showLoading: Bool) {
-        localDevice = result.local
-        peers = result.peers.filter { peer in
-            peer.online || peer.trusted || peer.status == "discovered"
+        if result.requestSucceeded {
+            localDevice = result.local
+            peers = result.peers.filter { peer in
+                peer.online || peer.trusted || peer.status == "discovered"
+            }
+            pairedPeerEndpoints = result.pairedEndpoints
         }
-        pairedPeerEndpoints = result.pairedEndpoints
         peerError = result.error
         peerRequestInFlight = false
         if showLoading {
@@ -820,6 +1020,7 @@ struct SettingsView: View {
                 return
             }
             persistedSettings = outcome.persisted
+            NotificationCenter.default.post(name: .tailSyncSettingsChanged, object: outcome.persisted)
             saved = true
             do {
                 try await Task.sleep(nanoseconds: 1_200_000_000)
@@ -967,7 +1168,7 @@ struct SettingsView: View {
         testingPeers.insert(route.id)
         Task { @MainActor in
             testResults[route.id] = await ApiClient.shared.testConnection(address: route.address)
-                ?? (0, Loc.t("settings.connectionFailed"))
+                ?? (0, "", Loc.t("settings.connectionFailed"))
             testingPeers.remove(route.id)
         }
     }

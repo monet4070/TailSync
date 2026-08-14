@@ -25,68 +25,51 @@ pub(crate) fn peer_snapshot_data(
         ),
     };
 
-    let peers = network::merge_paired_peers(settings, &mode, peers)
+    let mut peers = network::merge_paired_peers(settings, &mode, peers);
+    network::apply_peer_health(&mut peers);
+    let peers = peers
         .into_iter()
-        .filter_map(|mut peer| {
-            let route_health = peer
+        .filter_map(|peer| {
+            let paired_endpoint = settings.paired_peer_endpoints.get(&peer.hostname);
+            let routes = peer
                 .candidates
                 .iter()
                 .map(|candidate| {
-                    let health = network::route_health(
-                        &peer.hostname,
-                        candidate.interface,
-                        &candidate.address,
-                    );
-                    (candidate.clone(), health)
-                })
-                .collect::<Vec<_>>();
-            peer.online = route_health.iter().any(|(_, health)| health.online);
-            let current_route = route_health
-                .iter()
-                .find(|(_, health)| health.connected)
-                .map(|(candidate, _)| candidate.clone());
-            peer.current_interface = current_route.as_ref().map(|candidate| candidate.interface);
-            let peer_status = [
-                network::PeerStatus::Connected,
-                network::PeerStatus::Online,
-                network::PeerStatus::Confirming,
-                network::PeerStatus::Discovered,
-                network::PeerStatus::Offline,
-            ]
-            .into_iter()
-            .find(|status| {
-                route_health
-                    .iter()
-                    .any(|(_, health)| health.status == *status)
-            })
-            .unwrap_or(network::PeerStatus::Offline);
-            let paired_endpoint = settings.paired_peer_endpoints.get(&peer.hostname);
-            let routes = route_health
-                .into_iter()
-                .map(|(candidate, health)| {
-                    serde_json::json!({
-                        "interface": candidate.interface,
-                        "address": candidate.address,
-                        "status": health.status,
-                        "online": health.online,
-                        "connected": health.connected,
-                        "latency_ms": health.latency_ms,
-                        "pairing_endpoint": paired_endpoint == Some(&candidate.address),
+                    let connected = peer.current_address.as_deref() == Some(&candidate.address);
+                    serde_json::to_value(tailsync_core::peer::types::PeerRouteSnapshot {
+                        interface: candidate.interface,
+                        address: candidate.address.clone(),
+                        status: if connected {
+                            network::PeerStatus::Connected
+                        } else {
+                            candidate.status
+                        },
+                        online: candidate.online,
+                        connected,
+                        latency_ms: candidate.latency,
+                        pairing_endpoint: paired_endpoint == Some(&candidate.address),
+                        rtt_capable: candidate.rtt_capable,
                     })
+                    .expect("peer route snapshot always serializes")
                 })
                 .collect::<Vec<_>>();
-            let mut value = match serde_json::to_value(peer) {
+            let mut value = match serde_json::to_value(&peer) {
                 Ok(value) => value,
                 Err(error) => {
                     log::warn!("Could not serialize peer snapshot: {error}");
                     return None;
                 }
             };
-            value["current_address"] = serde_json::json!(current_route
-                .as_ref()
-                .map(|candidate| candidate.address.as_str()));
-            value["status"] = serde_json::json!(peer_status);
             value["routes"] = Value::Array(routes);
+            let protocol_error = peer
+                .trusted
+                .then(|| network::protocol_compatibility_error(&peer.hostname))
+                .flatten();
+            value["protocol_error"] = serde_json::json!(protocol_error);
+            value["required_protocol_version"] = protocol_error
+                .as_ref()
+                .map(|_| serde_json::json!(crate::protocol::VERSION))
+                .unwrap_or(Value::Null);
             Some(value)
         })
         .collect::<Vec<_>>();
@@ -94,15 +77,17 @@ pub(crate) fn peer_snapshot_data(
         .candidates
         .iter()
         .map(|candidate| {
-            serde_json::json!({
-                "interface": candidate.interface,
-                "address": candidate.address,
-                "status": network::PeerStatus::Connected,
-                "online": true,
-                "connected": true,
-                "latency_ms": Value::Null,
-                "pairing_endpoint": false,
+            serde_json::to_value(tailsync_core::peer::types::PeerRouteSnapshot {
+                interface: candidate.interface,
+                address: candidate.address.clone(),
+                status: network::PeerStatus::Connected,
+                online: true,
+                connected: true,
+                latency_ms: None,
+                pairing_endpoint: false,
+                rtt_capable: candidate.rtt_capable,
             })
+            .expect("local route snapshot always serializes")
         })
         .collect::<Vec<_>>();
 
@@ -114,6 +99,7 @@ pub(crate) fn peer_snapshot_data(
             "connection_mode": mode,
             "public_key": identity.public_key_base64(),
             "fingerprint": identity.fingerprint(),
+            "iroh_endpoint_id": network::local_iroh_endpoint_id(&mode),
         },
         "peers": peers,
         "paired_peer_endpoints": settings.paired_peer_endpoints,
@@ -128,6 +114,44 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             data: None,
             error: None,
         },
+
+        "check_for_update" => {
+            let result = match crate::updates::app_handle() {
+                Ok(handle) => crate::updates::check_for_update(handle).await,
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(update) => Response {
+                    ok: true,
+                    data: Some(serde_json::to_value(update).unwrap_or(Value::Null)),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error),
+                },
+            }
+        }
+
+        "install_update" => {
+            let result = match crate::updates::app_handle() {
+                Ok(handle) => crate::updates::install_available_update(handle).await,
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(installed) => Response {
+                    ok: true,
+                    data: Some(serde_json::json!({ "installed": installed })),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error),
+                },
+            }
+        }
 
         "get_file_progress" => {
             let info = get_file_progress();
@@ -191,6 +215,12 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
         "get_version" => Response {
             ok: true,
             data: Some(serde_json::json!(CLIPBOARD_VERSION.load(Ordering::Acquire))),
+            error: None,
+        },
+
+        "get_sync_warning" => Response {
+            ok: true,
+            data: serde_json::to_value(tailsync_core::sync_warning::take()).ok(),
             error: None,
         },
 
@@ -335,11 +365,14 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             };
             let mut db = state.db.lock().await;
             match db.delete(id) {
-                Ok(()) => Response {
-                    ok: true,
-                    data: None,
-                    error: None,
-                },
+                Ok(()) => {
+                    bump_clipboard_version();
+                    Response {
+                        ok: true,
+                        data: None,
+                        error: None,
+                    }
+                }
                 Err(e) => Response {
                     ok: false,
                     data: None,
@@ -416,9 +449,27 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                         }
                     } else if entry_type == "file" {
                         if let Some(path) = file_path {
-                            restore_file_path_to_clipboard(&path, &file_name);
+                            if let Err(error) = restore_file_path_to_clipboard(&path, &file_name) {
+                                return Response {
+                                    ok: false,
+                                    data: None,
+                                    error: Some(error),
+                                };
+                            }
                         } else if let Some(data) = data.as_deref() {
-                            restore_file_to_clipboard(data, &file_name);
+                            if let Err(error) = restore_file_to_clipboard(data, &file_name) {
+                                return Response {
+                                    ok: false,
+                                    data: None,
+                                    error: Some(error),
+                                };
+                            }
+                        } else {
+                            return Response {
+                                ok: false,
+                                data: None,
+                                error: Some("file history data is unavailable".into()),
+                            };
                         }
                     } else {
                         let text = String::from_utf8_lossy(data.as_deref().unwrap_or_default())
@@ -456,6 +507,65 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
+        "get_sync_state" => {
+            let settings = state.settings.lock().await;
+            Response {
+                ok: true,
+                data: Some(serde_json::json!({
+                    "enabled": settings.sync_enabled,
+                    "shortcut": settings.sync_shortcut,
+                })),
+                error: None,
+            }
+        }
+
+        "set_sync_enabled" => {
+            let enabled = req.enabled.unwrap_or(true);
+            let result = state
+                .settings
+                .lock()
+                .await
+                .set_sync_enabled(enabled)
+                .map_err(|error| error.to_string());
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
+        "toggle_sync" => {
+            let mut settings = state.settings.lock().await;
+            let enabled = !settings.sync_enabled;
+            match settings.set_sync_enabled(enabled) {
+                Ok(()) => Response {
+                    ok: true,
+                    data: Some(serde_json::json!({ "enabled": enabled })),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "set_sync_shortcut" => {
+            let shortcut = req.shortcut.unwrap_or_default();
+            let result = state
+                .settings
+                .lock()
+                .await
+                .set_sync_shortcut(&shortcut)
+                .map_err(|error| error.to_string());
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
         "update_settings" => {
             let Some(settings_json) = req.settings else {
                 return Response {
@@ -467,7 +577,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             match serde_json::from_value::<crate::crypto::Settings>(settings_json) {
                 Ok(requested_settings) => {
                     let mut settings = state.settings.lock().await;
-                    let new_settings = match settings.prepare_user_update(requested_settings) {
+                    let mut new_settings = match settings.prepare_user_update(requested_settings) {
                         Ok(new_settings) => new_settings,
                         Err(error) => {
                             return Response {
@@ -477,7 +587,12 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                             };
                         }
                     };
+                    // The shortcut is registered through the dedicated
+                    // set_sync_shortcut command; ignore any value arriving via
+                    // generic settings so runtime and persisted state stay aligned.
+                    new_settings.sync_shortcut = settings.sync_shortcut.clone();
                     let mode_changed = settings.connection_mode != new_settings.connection_mode;
+                    let connection_mode = new_settings.connection_mode.clone();
                     let limit = new_settings.history_limit as i64;
                     let quota = new_settings.storage_quota_bytes;
                     if let Err(e) = new_settings.save() {
@@ -492,10 +607,18 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     if mode_changed {
                         state.pool.lock().await.disconnect_all();
                         network::clear_peer_cache().await;
+                        network::refresh_iroh_for_mode(&connection_mode).await;
                     }
                     let mut db = state.db.lock().await;
                     db.set_max_history(limit);
                     db.set_storage_quota(quota);
+                    if let Err(error) = db.enforce_limits() {
+                        return Response {
+                            ok: false,
+                            data: None,
+                            error: Some(error.to_string()),
+                        };
+                    }
                     Response {
                         ok: true,
                         data: None,
@@ -518,7 +641,15 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     error: Some("missing parent".into()),
                 };
             };
+            let wait_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
             while has_active_file_progress() {
+                if tokio::time::Instant::now() >= wait_deadline {
+                    return Response {
+                        ok: false,
+                        data: None,
+                        error: Some("Timed out waiting for active file transfers to finish".into()),
+                    };
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
             let previous_storage_root = state.settings.lock().await.storage_root.clone();
@@ -750,6 +881,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             };
             if result.is_ok() {
                 state.pool.lock().await.disconnect_hostname(hostname);
+                network::clear_protocol_compatibility_error(hostname);
             }
             match result {
                 Ok(()) => Response {
@@ -782,6 +914,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .map_err(|error| error.to_string());
             if result.is_ok() {
                 state.pool.lock().await.disconnect_hostname(hostname);
+                network::clear_protocol_compatibility_error(hostname);
             }
             match result {
                 Ok(()) => Response {
@@ -807,11 +940,14 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 };
             }
             match network::test_connection(hostname).await {
-                Ok(latency_ms) => {
-                    network::record_address_test_success(hostname, latency_ms);
+                Ok(route) => {
+                    network::record_address_test_success(hostname, route.latency_ms);
                     Response {
                         ok: true,
-                        data: Some(serde_json::json!({ "latency_ms": latency_ms })),
+                        data: Some(serde_json::json!({
+                            "latency_ms": route.latency_ms,
+                            "path": route.path,
+                        })),
                         error: None,
                     }
                 }

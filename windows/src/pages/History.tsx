@@ -85,7 +85,8 @@ interface ImageThumbnail {
 
 interface HistoryPageResult {
   entries: HistoryEntry[];
-  total: number;
+  total: number | null;
+  has_more: boolean;
 }
 
 interface HistoryCapabilities {
@@ -97,6 +98,12 @@ interface HistoryCapabilities {
 
 interface MigrationDiagnostics {
   unresolved_count: number;
+}
+
+interface SyncWarning {
+  kind: "expired_event";
+  peer: string;
+  occurred_at_ms: number;
 }
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -209,7 +216,6 @@ function FilterDropdown({
         aria-label={`${label}: ${selected?.label}`}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={`${label}: ${selected?.label}`}
         onClick={() => setOpen((current) => !current)}
       >
         {SelectedIcon && (
@@ -487,7 +493,8 @@ function LazyThumbnail({
 
 export function History() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
-  const [totalEntries, setTotalEntries] = useState(0);
+  const [totalEntries, setTotalEntries] = useState<number | null>(0);
+  const [hasMoreEntries, setHasMoreEntries] = useState(false);
   const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
   const [migrationDiagnostics, setMigrationDiagnostics] = useState<MigrationDiagnostics | null>(null);
   const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
@@ -508,8 +515,10 @@ export function History() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [syncWarning, setSyncWarning] = useState("");
   const restoreFeedbackTimer = useRef<number>(0);
   const actionErrorTimer = useRef<number>(0);
+  const syncWarningTimer = useRef<number>(0);
   const newGlowTimers = useRef<Set<number>>(new Set());
 
   const lastVersion = useRef<number>(0);
@@ -534,6 +543,7 @@ export function History() {
   useEffect(() => () => {
     window.clearTimeout(restoreFeedbackTimer.current);
     window.clearTimeout(actionErrorTimer.current);
+    window.clearTimeout(syncWarningTimer.current);
     newGlowTimers.current.forEach(window.clearTimeout);
     newGlowTimers.current.clear();
   }, []);
@@ -590,8 +600,8 @@ export function History() {
   );
   const hasActiveFilters =
     Boolean(keywordDraft) || selectedCategory !== "all" || selectedDateFilter !== "all";
-  const totalPages = historyPageCount(totalEntries);
-  const hasNext = page < totalPages - 1;
+  const totalPages = historyPageCount(totalEntries ?? 0);
+  const hasNext = totalEntries === null ? hasMoreEntries : page < totalPages - 1;
   const hasPrev = page > 0;
 
   const handleDateFilterChange = useCallback((value: string) => {
@@ -671,6 +681,7 @@ export function History() {
     if (!activeDateBounds.valid) {
       setEntries([]);
       setTotalEntries(0);
+      setHasMoreEntries(false);
       setLoading(false);
       return;
     }
@@ -695,14 +706,17 @@ export function History() {
       const result = await invoke<HistoryPageResult>("get_history_page", query);
       if (!historyRequests.current.isCurrent(requestGeneration)) return;
 
-      const normalizedPage = normalizeHistoryPage(page, result.total);
-      if (normalizedPage !== page) {
-        setPage(normalizedPage);
-        return;
+      if (result.total !== null) {
+        const normalizedPage = normalizeHistoryPage(page, result.total);
+        if (normalizedPage !== page) {
+          setPage(normalizedPage);
+          return;
+        }
       }
 
       setEntries(result.entries);
       setTotalEntries(result.total);
+      setHasMoreEntries(result.has_more);
 
       const queryChanged = lastQueryKey.current !== queryKey;
       if (!queryChanged) {
@@ -757,6 +771,16 @@ export function History() {
       if (resp.version !== lastVersion.current) {
         lastVersion.current = resp.version;
         await loadHistory();
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const warning = await invoke<SyncWarning | null>("get_sync_warning");
+      if (warning?.kind === "expired_event") {
+        setSyncWarning(t("history.syncExpired").replace("{peer}", warning.peer));
+        window.clearTimeout(syncWarningTimer.current);
+        syncWarningTimer.current = window.setTimeout(() => setSyncWarning(""), 8000);
       }
     } catch {
       /* ignore */
@@ -834,6 +858,7 @@ export function History() {
       await invoke("clear_history");
       setEntries([]);
       setTotalEntries(0);
+      setHasMoreEntries(false);
       setThumbnails(new Map());
       thumbnailIds.current.clear();
       setPage(0);
@@ -989,7 +1014,7 @@ export function History() {
         </div>
       )}
 
-      {hasActiveFilters && totalEntries > 0 && (
+      {hasActiveFilters && totalEntries !== null && totalEntries > 0 && (
         <div className="search-results-count">
           {totalEntries} {t(totalEntries === 1 ? "history.result" : "history.results")}
         </div>
@@ -1238,7 +1263,7 @@ export function History() {
       )}
 
       {/* ── Pagination ── */}
-      {totalEntries > 0 && entries.length > 0 && (
+      {entries.length > 0 && (
         <div className="pagination">
           <button
             className="page-btn"
@@ -1254,7 +1279,7 @@ export function History() {
             {t("history.prev")}
           </button>
           <span className="page-info">
-            {page + 1} / {totalPages}
+            {totalEntries === null ? page + 1 : `${page + 1} / ${totalPages}`}
           </span>
           <button
             className="page-btn"
@@ -1307,6 +1332,8 @@ export function History() {
       {/* ── Toast ── */}
       {actionError ? (
         <div className="toast" role="alert">{actionError}</div>
+      ) : syncWarning ? (
+        <div className="toast sync-warning-toast" role="status">{syncWarning}</div>
       ) : restoredEntry && (
         <div className="toast" key={restoredEntry.id}>
           {t("history.restored")}

@@ -15,6 +15,7 @@ const SERVICE_TYPE: &str = "_tailsync._tcp.local.";
 struct MdnsRecord {
     hostname: String,
     addresses: Vec<String>,
+    iroh_endpoint_id: Option<String>,
 }
 
 static CACHE: OnceLock<Mutex<HashMap<String, MdnsRecord>>> = OnceLock::new();
@@ -94,6 +95,14 @@ async fn run_once(identity: &DeviceIdentity) -> Result<(), String> {
                 if addresses.is_empty() {
                     continue;
                 }
+                let iroh_endpoint_id = service.get_property_val_str("iroh").and_then(|value| {
+                    tailsync_core::iroh_transport::canonical_endpoint_id(value).ok()
+                });
+                if service.get_property_val_str("iroh_rtt") == Some("1") {
+                    if let Some(endpoint_id) = &iroh_endpoint_id {
+                        super::iroh::remember_rtt_capability(endpoint_id);
+                    }
+                }
                 cache()
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -102,6 +111,7 @@ async fn run_once(identity: &DeviceIdentity) -> Result<(), String> {
                         MdnsRecord {
                             hostname,
                             addresses,
+                            iroh_endpoint_id,
                         },
                     );
             }
@@ -122,10 +132,13 @@ fn build_service_info(identity: &DeviceIdentity) -> Result<ServiceInfo, String> 
     let hostname = lan::local_hostname();
     let service_hostname = format!("{}.local.", dns_label(&hostname));
     let fingerprint = identity.fingerprint();
+    let iroh_endpoint_id = super::iroh::local_endpoint_id().unwrap_or_default();
     let properties = [
         ("protocol", "2"),
         ("hostname", hostname.as_str()),
         ("fingerprint", fingerprint.as_str()),
+        ("iroh", iroh_endpoint_id.as_str()),
+        ("iroh_rtt", "1"),
     ];
     ServiceInfo::new(
         SERVICE_TYPE,
@@ -170,11 +183,16 @@ pub fn snapshot() -> (LocalInfo, Vec<PeerInfo>) {
         .collect::<Vec<_>>();
     let mut peers = Vec::new();
     for record in records {
-        let candidates = record
+        let mut candidates = record
             .addresses
             .iter()
             .map(|address| PeerCandidate::remembered(ConnectionInterface::Lan, address))
             .collect::<Vec<_>>();
+        if let Some(endpoint_id) = record.iroh_endpoint_id {
+            let mut candidate = PeerCandidate::remembered(ConnectionInterface::Iroh, endpoint_id);
+            candidate.set_rtt_capable(super::iroh::supports_rtt(&candidate.address));
+            candidates.push(candidate);
+        }
         let Some(address) = record.addresses.first().cloned() else {
             continue;
         };
@@ -198,6 +216,7 @@ pub fn snapshot() -> (LocalInfo, Vec<PeerInfo>) {
         LocalInfo {
             hostname: lan::local_hostname(),
             tailscale_ip: String::new(),
+            candidates: Vec::new(),
         },
         peers,
     )
@@ -217,6 +236,7 @@ mod tests {
         assert!(service.get_fullname().ends_with(SERVICE_TYPE));
         assert_eq!(service.get_port(), TCP_PORT);
         assert_eq!(service.get_property_val_str("protocol"), Some("2"));
+        assert_eq!(service.get_property_val_str("iroh_rtt"), Some("1"));
         assert_eq!(
             service.get_property_val_str("fingerprint"),
             Some(identity.fingerprint().as_str())

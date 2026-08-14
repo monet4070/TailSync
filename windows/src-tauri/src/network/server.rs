@@ -2,40 +2,44 @@ use super::*;
 
 pub(super) struct ConnectionLimiter {
     total: Arc<Semaphore>,
-    per_ip: StdMutex<HashMap<IpAddr, usize>>,
-    max_per_ip: usize,
+    per_source: StdMutex<HashMap<String, usize>>,
+    max_per_source: usize,
 }
 
 pub(super) struct ConnectionPermit {
     limiter: Arc<ConnectionLimiter>,
-    ip: IpAddr,
+    source: String,
     _total: OwnedSemaphorePermit,
 }
 
 impl ConnectionLimiter {
-    pub(super) fn new(max_total: usize, max_per_ip: usize) -> Arc<Self> {
+    pub(super) fn new(max_total: usize, max_per_source: usize) -> Arc<Self> {
         Arc::new(Self {
             total: Arc::new(Semaphore::new(max_total)),
-            per_ip: StdMutex::new(HashMap::new()),
-            max_per_ip,
+            per_source: StdMutex::new(HashMap::new()),
+            max_per_source,
         })
     }
 
     pub(super) fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionPermit> {
+        self.try_acquire_source(ip.to_string())
+    }
+
+    pub(super) fn try_acquire_source(self: &Arc<Self>, source: String) -> Option<ConnectionPermit> {
         let total = self.total.clone().try_acquire_owned().ok()?;
         let mut counts = self
-            .per_ip
+            .per_source
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let count = counts.entry(ip).or_default();
-        if *count >= self.max_per_ip {
+        let count = counts.entry(source.clone()).or_default();
+        if *count >= self.max_per_source {
             return None;
         }
         *count += 1;
         drop(counts);
         Some(ConnectionPermit {
             limiter: self.clone(),
-            ip,
+            source,
             _total: total,
         })
     }
@@ -45,13 +49,13 @@ impl Drop for ConnectionPermit {
     fn drop(&mut self) {
         let mut counts = self
             .limiter
-            .per_ip
+            .per_source
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(count) = counts.get_mut(&self.ip) {
+        if let Some(count) = counts.get_mut(&self.source) {
             *count -= 1;
             if *count == 0 {
-                counts.remove(&self.ip);
+                counts.remove(&self.source);
             }
         }
     }
@@ -205,15 +209,121 @@ async fn handle_connection(
     )
     .await
     .map_err(|_| "Handshake timed out")??;
+    handle_accepted_connection(
+        accepted,
+        InboundSource::Tcp(peer_addr),
+        sync_engine,
+        database,
+        settings,
+        Some(pairing),
+    )
+    .await
+}
+
+pub(super) async fn handle_iroh_connection(
+    stream: tailsync_core::iroh_transport::IrohBiStream,
+    remote_endpoint_id: String,
+    sync_engine: Arc<Mutex<sync::SyncEngine>>,
+    database: Arc<Mutex<db::HistoryDB>>,
+    settings: Arc<Mutex<crypto::Settings>>,
+    identity: Arc<DeviceIdentity>,
+    pairing: Arc<PairingManager>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if settings.lock().await.connection_mode != "auto" {
+        return Err("Iroh connections are only accepted in automatic mode".into());
+    }
+    let accepted = timeout(
+        HANDSHAKE_TIMEOUT,
+        secure::accept_with_pairing_window(
+            stream,
+            &identity,
+            local_peer_identity("auto"),
+            pairing.subscribe_window(),
+        ),
+    )
+    .await
+    .map_err(|_| "Handshake timed out")??;
+    let claimed_endpoint_id = accepted
+        .peer_identity
+        .iroh_endpoint_id
+        .as_deref()
+        .ok_or("Peer did not bind its Noise identity to an Iroh endpoint")?;
+    let claimed_endpoint_id =
+        tailsync_core::iroh_transport::canonical_endpoint_id(claimed_endpoint_id)?;
+    if claimed_endpoint_id != remote_endpoint_id {
+        return Err("Peer Iroh endpoint does not match its Noise identity".into());
+    }
+    if accepted.purpose == secure::HandshakePurpose::Pairing {
+        super::iroh::remember_rtt_capability(&remote_endpoint_id);
+    }
+    handle_accepted_connection(
+        accepted,
+        InboundSource::Iroh(remote_endpoint_id),
+        sync_engine,
+        database,
+        settings,
+        Some(pairing),
+    )
+    .await
+}
+
+enum InboundSource {
+    Tcp(SocketAddr),
+    Iroh(String),
+}
+
+impl InboundSource {
+    fn interface(&self) -> Result<ConnectionInterface, String> {
+        match self {
+            Self::Tcp(address) => infer_interface(&address.ip().to_string()),
+            Self::Iroh(_) => Ok(ConnectionInterface::Iroh),
+        }
+    }
+
+    fn address(&self) -> String {
+        match self {
+            Self::Tcp(address) => address.ip().to_string(),
+            Self::Iroh(endpoint_id) => endpoint_id.clone(),
+        }
+    }
+
+    fn description(&self) -> String {
+        match self {
+            Self::Tcp(address) => address.to_string(),
+            Self::Iroh(endpoint_id) => format!("iroh:{endpoint_id}"),
+        }
+    }
+
+    fn is_allowed(&self, mode: &str) -> bool {
+        match self {
+            Self::Tcp(address) => source_matches_mode(address.ip(), mode),
+            Self::Iroh(_) => mode == "auto",
+        }
+    }
+}
+
+async fn handle_accepted_connection(
+    accepted: secure::AcceptedConnection,
+    source: InboundSource,
+    sync_engine: Arc<Mutex<sync::SyncEngine>>,
+    database: Arc<Mutex<db::HistoryDB>>,
+    settings: Arc<Mutex<crypto::Settings>>,
+    pairing: Option<Arc<PairingManager>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let purpose = accepted.purpose;
     let handshake_hash = accepted.handshake_hash;
     let mut stream = accepted.connection;
     let peer_info = accepted.peer_identity;
     let peer_public_key = accepted.remote_public_key;
+    let peer_addr = source.description();
+    let source_address = source.address();
+    let source_interface = source.interface()?;
 
     if purpose == secure::HandshakePurpose::Pairing {
-        let address = peer_addr.ip().to_string();
-        let interface = infer_interface(&address)?.as_str().to_string();
+        let Some(pairing) = pairing else {
+            secure::write_error(&mut stream, "Pairing over Iroh is not supported").await?;
+            return Ok(());
+        };
         secure::write_ready(&mut stream).await?;
         return pairing
             .install_session(PendingPairing {
@@ -221,8 +331,8 @@ async fn handle_connection(
                 hostname: peer_info.hostname,
                 remote_public_key: peer_public_key,
                 handshake_hash,
-                address,
-                interface,
+                address: source_address,
+                interface: source_interface.as_str().to_string(),
             })
             .await
             .map_err(Into::into);
@@ -240,7 +350,7 @@ async fn handle_connection(
                 .get(&peer_info.hostname)
                 .copied()
                 .unwrap_or(true),
-            source_matches_mode(peer_addr.ip(), &settings.connection_mode),
+            source.is_allowed(&settings.connection_mode),
         )
     };
     if !source_allowed
@@ -258,24 +368,34 @@ async fn handle_connection(
         peer_info.hostname,
         secure::fingerprint(&peer_public_key)
     );
-    let source_interface = infer_interface(&peer_addr.ip().to_string())?;
-    if let Err(error) = settings.lock().await.remember_peer_address(
-        &peer_info.hostname,
-        source_interface.as_str(),
-        &peer_addr.ip().to_string(),
-    ) {
-        warn!(
-            "Could not remember address for {}: {error}",
-            peer_info.hostname
-        );
+    {
+        let mut settings = settings.lock().await;
+        if let Err(error) = settings.remember_peer_address(
+            &peer_info.hostname,
+            source_interface.as_str(),
+            &source_address,
+        ) {
+            warn!(
+                "Could not remember address for {}: {error}",
+                peer_info.hostname
+            );
+        }
+        if source_interface != ConnectionInterface::Iroh {
+            if let Some(endpoint_id) = &peer_info.iroh_endpoint_id {
+                if let Err(error) =
+                    settings.remember_peer_address(&peer_info.hostname, "iroh", endpoint_id)
+                {
+                    warn!(
+                        "Could not remember Iroh endpoint for {}: {error}",
+                        peer_info.hostname
+                    );
+                }
+            }
+        }
     }
     secure::write_ready(&mut stream).await?;
-    let _active_guard = register_active_session(
-        &peer_info.hostname,
-        source_interface,
-        &peer_addr.ip().to_string(),
-        0,
-    );
+    let _active_guard =
+        register_active_session(&peer_info.hostname, source_interface, &source_address, 0);
     let _receive_guard = ReceiveSuspendGuard {
         sync_engine: sync_engine.clone(),
         source: peer_info.hostname.clone(),
@@ -329,7 +449,7 @@ async fn handle_connection(
                     .get(&peer_info.hostname)
                     .copied()
                     .unwrap_or(true)
-                && source_matches_mode(peer_addr.ip(), &settings.connection_mode)
+                && source.is_allowed(&settings.connection_mode)
         };
         if !still_authorized {
             secure::write_error(&mut stream, "Peer authorization was revoked").await?;
@@ -520,20 +640,36 @@ async fn handle_connection(
                 let file_path =
                     incoming_dir.join(format!("{:016x}-{}", rand::random::<u64>(), meta.name));
                 let meta_batch_id = meta.batch.map(|batch| batch.batch_id);
-                let result = sync_engine
-                    .lock()
-                    .await
-                    .begin_file_receive(meta, &file_path, peer_info.hostname.clone())
-                    .await;
+                let result = {
+                    let mut sync = sync_engine.lock().await;
+                    sync.begin_file_receive(meta, &file_path, peer_info.hostname.clone())
+                        .await
+                };
+                let result = match result {
+                    Ok(mut progress) => {
+                        if let Some(pending) = progress.completed.take() {
+                            verify_and_commit_received_file(
+                                &sync_engine,
+                                &peer_info.hostname,
+                                pending,
+                            )
+                            .await
+                            .map(|()| progress)
+                        } else {
+                            Ok(progress)
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
                 match result {
-                    Ok((transfer_id, next_offset)) if resumable => {
+                    Ok(progress) if resumable => {
                         let response = Frame::try_new(
                             Command::FileResume,
                             0,
                             frame.sequence,
                             FileOffset {
-                                transfer_id,
-                                next_offset,
+                                transfer_id: progress.transfer_id,
+                                next_offset: progress.next_offset,
                             }
                             .encode(),
                         )?;
@@ -541,10 +677,12 @@ async fn handle_connection(
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        sync_engine
-                            .lock()
-                            .await
-                            .notify_file_batch_failed(meta_batch_id, &error);
+                        let mut sync = sync_engine.lock().await;
+                        sync.notify_file_batch_failed(meta_batch_id, &error);
+                        if let Some(batch_id) = meta_batch_id {
+                            sync.cancel_file_batch(&peer_info.hostname, batch_id).await;
+                        }
+                        drop(sync);
                         secure::write_error(&mut stream, &error).await?;
                     }
                 }
@@ -554,14 +692,34 @@ async fn handle_connection(
                     match FileChunkPayload::decode(&frame.payload) {
                         Ok(chunk) => {
                             let expected_end = chunk.offset.saturating_add(chunk.data.len() as u64);
-                            match sync_engine
-                                .lock()
-                                .await
-                                .handle_resumable_file_chunk(&chunk, peer_info.hostname.clone())
-                                .await
-                            {
-                                Ok(next_offset) => {
-                                    let command = if next_offset >= expected_end {
+                            let (result, chunk_batch_id) = {
+                                let mut sync = sync_engine.lock().await;
+                                let batch_id =
+                                    sync.batch_for_transfer(&peer_info.hostname, chunk.transfer_id);
+                                let result = sync
+                                    .handle_resumable_file_chunk(&chunk, peer_info.hostname.clone())
+                                    .await;
+                                (result, batch_id)
+                            };
+                            let result = match result {
+                                Ok(mut progress) => {
+                                    if let Some(pending) = progress.completed.take() {
+                                        verify_and_commit_received_file(
+                                            &sync_engine,
+                                            &peer_info.hostname,
+                                            pending,
+                                        )
+                                        .await
+                                        .map(|()| progress)
+                                    } else {
+                                        Ok(progress)
+                                    }
+                                }
+                                Err(error) => Err(error),
+                            };
+                            match result {
+                                Ok(progress) => {
+                                    let command = if progress.next_offset >= expected_end {
                                         Command::FileAck
                                     } else {
                                         Command::FileResume
@@ -572,7 +730,7 @@ async fn handle_connection(
                                         frame.sequence,
                                         FileOffset {
                                             transfer_id: chunk.transfer_id,
-                                            next_offset,
+                                            next_offset: progress.next_offset,
                                         }
                                         .encode(),
                                     )?;
@@ -580,10 +738,8 @@ async fn handle_connection(
                                 }
                                 Err(error) => {
                                     let mut sync = sync_engine.lock().await;
-                                    let batch_id = sync
-                                        .batch_for_transfer(&peer_info.hostname, chunk.transfer_id);
-                                    sync.notify_file_batch_failed(batch_id, &error);
-                                    if let Some(batch_id) = batch_id {
+                                    sync.notify_file_batch_failed(chunk_batch_id, &error);
+                                    if let Some(batch_id) = chunk_batch_id {
                                         sync.cancel_file_batch(&peer_info.hostname, batch_id).await;
                                     }
                                     drop(sync);
@@ -750,43 +906,53 @@ async fn process_event_content(
     Ok(())
 }
 
+async fn verify_and_commit_received_file(
+    sync_engine: &Arc<Mutex<sync::SyncEngine>>,
+    source: &str,
+    pending: sync::PendingReceivedFile,
+) -> Result<(), String> {
+    let path = pending.path().to_path_buf();
+    let batch_id = pending.batch_id();
+    let verification = tokio::task::spawn_blocking(move || pending.verify_hash())
+        .await
+        .map_err(|error| format!("File verification task failed: {error}"))?;
+    match verification {
+        Ok(verified) => {
+            let result = sync_engine
+                .lock()
+                .await
+                .commit_received_file(source, verified);
+            if result.is_err() {
+                let _ = std::fs::remove_file(&path);
+            }
+            result
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&path);
+            sync_engine
+                .lock()
+                .await
+                .discard_received_file(source, batch_id);
+            Err(error)
+        }
+    }
+}
+
 fn validate_packed_image(content: &[u8]) -> Result<(), String> {
     crate::protocol::PackedImage::try_from(content)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn source_matches_mode(ip: std::net::IpAddr, mode: &str) -> bool {
-    if mode == "auto" {
-        return source_matches_mode(ip, "lan_only") || source_matches_mode(ip, "tailscale_only");
-    }
-    match (ip, mode) {
-        (std::net::IpAddr::V4(ip), "tailscale" | "tailscale_only") => {
-            let octets = ip.octets();
-            octets[0] == 100 && (64..=127).contains(&octets[1])
-        }
-        (std::net::IpAddr::V6(ip), "tailscale" | "tailscale_only") => {
-            let segments = ip.segments();
-            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
-        }
-        (std::net::IpAddr::V4(ip), "lan" | "lan_only") => {
-            ip.is_private() || ip.is_link_local() || ip.is_loopback()
-        }
-        (std::net::IpAddr::V6(ip), "lan" | "lan_only") => {
-            let first = ip.segments()[0];
-            (first & 0xfe00) == 0xfc00 || ip.is_unicast_link_local() || ip.is_loopback()
-        }
-        _ => false,
-    }
-}
+pub(super) use tailsync_core::peer::directory::source_matches_mode;
 
 pub(super) fn local_peer_identity(mode: &str) -> secure::PeerIdentity {
     // Peer authentication is bound to the Noise static key and hostname. The
     // socket address is recorded separately, so handshakes must not block on
     // spawning `tailscale status` for every connection attempt.
-    let _ = mode;
     secure::PeerIdentity {
         hostname: lan::local_hostname(),
         tailscale_ip: String::new(),
+        iroh_endpoint_id: (mode == "auto").then(iroh::local_endpoint_id).flatten(),
     }
 }

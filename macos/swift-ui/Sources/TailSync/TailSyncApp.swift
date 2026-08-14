@@ -4,9 +4,31 @@ import UserNotifications
 import Carbon
 import Darwin
 
+private func menuRouteInterfaceLabel(_ interface: String) -> String {
+    switch interface {
+    case "lan": return "LAN"
+    case "iroh": return "Iroh"
+    default: return "Tailscale"
+    }
+}
+
 enum TailSyncWindowPolicy {
     static func configure(_ window: NSWindow) {
         window.isMovableByWindowBackground = false
+    }
+}
+
+enum DaemonShutdownPolicy {
+    static let requestWait: TimeInterval = 0.25
+    static let gracefulExitWait: TimeInterval = 1.0
+    static let terminateWait: TimeInterval = 0.25
+    static let pollInterval: TimeInterval = 0.025
+    static var maximumWait: TimeInterval { requestWait + gracefulExitWait + terminateWait }
+}
+
+enum DaemonLifecyclePolicy {
+    static func allowsDaemonActivity(terminationInProgress: Bool) -> Bool {
+        !terminationInProgress
     }
 }
 
@@ -31,9 +53,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeRouteSummary = ""
     private var activeTransfer: ApiClient.FileProgress?
     private var storageUnavailable = false
+    private var syncEnabled = true
+    private var shortcutRegistered = false
+    private var updateCheckRunning = false
+    private var notificationTimer: Timer?
+    private var watchdogTimer: Timer?
     private static var historyWC: NSWindowController?
     private static var settingsWC: NSWindowController?
     private static var daemonProcess: Process?
+    private static let daemonStopLock = NSLock()
+
+    private var daemonActivityAllowed: Bool {
+        DaemonLifecyclePolicy.allowsDaemonActivity(
+            terminationInProgress: terminationInProgress
+        )
+    }
 
     /// Force the process to be UIElement (no Dock icon) at the Carbon/CGRemote level.
     /// This is lower-level than NSApp.setActivationPolicy and works even when
@@ -65,6 +99,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startNotificationPoller()
         startDaemonWatchdog()
         registerSleepWakeNotifications()
+        scheduleUpdateCheck()
+
+        GlobalShortcutController.shared.onActivate = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.daemonActivityAllowed else { return }
+                guard let enabled = await ApiClient.shared.toggleSync(), self.daemonActivityAllowed else { return }
+                self.syncEnabled = enabled
+                self.rebuildMenu()
+                NotificationCenter.default.post(
+                    name: GlobalShortcutController.syncStateChanged,
+                    object: nil,
+                    userInfo: ["enabled": enabled]
+                )
+            }
+        }
     }
 
     /// Request notification permission for UNUserNotificationCenter (needed
@@ -92,18 +141,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             print("[TailSync] system woke up — reconnecting...")
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.daemonActivityAllowed else { return }
                 // Give Tailscale time to re-establish its tunnel
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard self.daemonActivityAllowed else { return }
 
                 // Cancel stale connection workers and reset clipboard polling
                 // before evaluating post-wake health.
                 let reconnected = await ApiClient.shared.reconnectPeers()
+                guard self.daemonActivityAllowed else { return }
                 try? await Task.sleep(nanoseconds: 300_000_000)
+                guard self.daemonActivityAllowed else { return }
                 let status = await ApiClient.shared.getStatus()
+                guard self.daemonActivityAllowed else { return }
                 if !reconnected || !status.alive || !status.tcpServerHealthy || !status.clipboardMonitorHealthy {
                     print("[TailSync] daemon unhealthy after wake — restarting")
                     await Self.stopDaemonForRestart()
+                    guard self.daemonActivityAllowed else { return }
                     self.launchDaemon()
                 } else {
                     print("[TailSync] daemon healthy after wake — peers and clipboard monitor reset")
@@ -115,9 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Background poller: checks for remote clipboard events and shows
     /// notifications even before the History window is opened.
     private func startNotificationPoller() {
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        notificationTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.notificationPollRunning else { return }
+                guard let self, self.daemonActivityAllowed, !self.notificationPollRunning else { return }
                 self.notificationPollRunning = true
                 defer { self.notificationPollRunning = false }
 
@@ -133,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard Loc.shared.notificationsEnabled else { return }
                 guard Bundle.main.bundleURL.pathExtension == "app" else { return }
                 guard let latest = try? await ApiClient.shared.getHistory(limit: 1, offset: 0),
+                      self.daemonActivityAllowed,
                       let newest = latest.first,
                       newest.id > self.lastNotifiedId,
                       newest.source_peer != "self" else { return }
@@ -160,21 +215,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stopBackgroundActivity()
         // Remove the status item before the process exits to prevent ghost icons.
         if let item = statusItem {
             NSStatusBar.system.removeStatusItem(item)
             statusItem = nil
         }
+        GlobalShortcutController.shared.unregister()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !terminationInProgress else { return .terminateNow }
+        guard !terminationInProgress else { return .terminateLater }
         terminationInProgress = true
+        stopBackgroundActivity()
         Task { @MainActor in
             await Self.stopDaemonForRestart()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    private func stopBackgroundActivity() {
+        notificationTimer?.invalidate()
+        notificationTimer = nil
+        watchdogTimer?.invalidate()
+        watchdogTimer = nil
+        GlobalShortcutController.shared.onActivate = nil
     }
 
     // ── Status Item ─────────────────────────────────────────────
@@ -236,12 +302,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(stop)
             menu.addItem(.separator())
         }
+        let syncItem = NSMenuItem(
+            title: isZh
+                ? (syncEnabled ? "暂停同步" : "开启同步")
+                : (syncEnabled ? "Pause sync" : "Enable sync"),
+            action: #selector(toggleSyncAction),
+            keyEquivalent: ""
+        )
+        syncItem.target = self
+        menu.addItem(syncItem)
+        menu.addItem(.separator())
         let hItem = NSMenuItem(title: isZh ? "历史记录" : "History",
                                 action: #selector(openHistory), keyEquivalent: "")
         hItem.target = self; menu.addItem(hItem)
         let sItem = NSMenuItem(title: isZh ? "设置" : "Settings",
                                 action: #selector(openSettings), keyEquivalent: "")
         sItem.target = self; menu.addItem(sItem)
+        let updateItem = NSMenuItem(
+            title: Loc.t("menu.checkForUpdates"),
+            action: #selector(checkForUpdatesAction),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
         if !activeRouteSummary.isEmpty {
             menu.addItem(.separator())
             let routeItem = NSMenuItem(
@@ -273,6 +356,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openHistory() { Self.showHistory() }
     @objc private func openSettings() { Self.showSettings() }
+    @objc private func checkForUpdatesAction() { scheduleUpdateCheck(showWhenCurrent: true) }
+    @objc private func toggleSyncAction() {
+        Task { @MainActor [weak self] in
+            guard let self, let enabled = await ApiClient.shared.toggleSync() else { return }
+            self.syncEnabled = enabled
+            self.rebuildMenu()
+        }
+    }
     @objc private func stopTransfer() {
         guard let transfer = activeTransfer else { return }
         Task { await ApiClient.shared.cancelFileBatch(transfer.batchId) }
@@ -282,9 +373,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    private func scheduleUpdateCheck(showWhenCurrent: Bool = false) {
+        guard !updateCheckRunning else { return }
+        updateCheckRunning = true
+        Task { @MainActor [weak self] in
+            defer { self?.updateCheckRunning = false }
+            for _ in 0..<20 {
+                if await ApiClient.shared.ping() { break }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            do {
+                guard let update = try await ApiClient.shared.checkForUpdate() else {
+                    if showWhenCurrent { self?.showUpdateMessage(Loc.t("update.current")) }
+                    return
+                }
+                self?.presentUpdate(update)
+            } catch {
+                // Development builds intentionally omit the production update key.
+                if showWhenCurrent {
+                    self?.showUpdateMessage(error.localizedDescription, error: true)
+                }
+            }
+        }
+    }
+
+    private func presentUpdate(_ update: ApiClient.UpdateInfo) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = Loc.t("update.available")
+            .replacingOccurrences(of: "{version}", with: update.version)
+        let notes = update.notes?.trimmingCharacters(in: .whitespacesAndNewlines)
+        alert.informativeText = notes.flatMap { $0.isEmpty ? nil : $0 }
+            ?? Loc.t("update.installPrompt")
+        alert.addButton(withTitle: Loc.t("update.install"))
+        alert.addButton(withTitle: Loc.t("common.cancel"))
+
+        let visibleWindow = [NSApp.keyWindow, Self.settingsWC?.window, Self.historyWC?.window]
+            .compactMap { $0 }
+            .first(where: { $0.isVisible })
+        if visibleWindow == nil {
+            Self.showHistory()
+        }
+        guard let parentWindow = visibleWindow ?? Self.historyWC?.window else { return }
+        alert.beginSheetModal(for: parentWindow) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            Task { @MainActor in
+                do {
+                    guard try await ApiClient.shared.installUpdate() else { return }
+                    await Self.stopDaemonForRestart()
+                    try Self.scheduleUpdatedAppRelaunch()
+                    NSApp.terminate(nil)
+                } catch {
+                    self?.showUpdateMessage(error.localizedDescription, error: true)
+                }
+            }
+        }
+    }
+
+    private func showUpdateMessage(_ message: String, error: Bool = false) {
+        let alert = NSAlert()
+        alert.alertStyle = error ? .warning : .informational
+        alert.messageText = error ? Loc.t("update.failed") : Loc.t("update.title")
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     // ── Daemon ──────────────────────────────────────────────────
 
     private func launchDaemon() {
+        guard daemonActivityAllowed else { return }
         if let binPath = resolveDaemonPath() {
             startDaemonProcess(binPath)
         } else {
@@ -336,28 +494,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Ask the daemon to drain its background tasks, then use bounded signal fallbacks.
     private static func stopDaemon() {
-        guard let proc = daemonProcess, proc.isRunning else { return }
+        daemonStopLock.lock()
+        defer { daemonStopLock.unlock() }
+        guard let proc = daemonProcess, proc.isRunning else {
+            daemonProcess = nil
+            return
+        }
 
         let requestFinished = DispatchSemaphore(value: 0)
         Task.detached {
             _ = await ApiClient.shared.requestShutdown()
             requestFinished.signal()
         }
-        _ = requestFinished.wait(timeout: .now() + 1.0)
+        _ = requestFinished.wait(timeout: .now() + DaemonShutdownPolicy.requestWait)
 
-        // Rust allows up to two seconds for peer disconnect and three seconds
-        // for background task drain, with a small allowance for API delivery.
-        for _ in 0..<60 {
-            if !proc.isRunning { break }
-            Thread.sleep(forTimeInterval: 0.1)
-        }
+        waitForDaemonExit(proc, timeout: DaemonShutdownPolicy.gracefulExitWait)
         if proc.isRunning {
             print("[TailSync] daemon did not finish coordinated shutdown — sending SIGTERM")
             proc.terminate()
-            for _ in 0..<10 {
-                if !proc.isRunning { break }
-                Thread.sleep(forTimeInterval: 0.1)
-            }
+            waitForDaemonExit(proc, timeout: DaemonShutdownPolicy.terminateWait)
         }
         if proc.isRunning {
             print("[TailSync] daemon did not exit after SIGTERM — sending SIGKILL")
@@ -367,10 +522,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         daemonProcess = nil
     }
 
+    private static func waitForDaemonExit(_ process: Process, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: DaemonShutdownPolicy.pollInterval)
+        }
+    }
+
     private static func stopDaemonForRestart() async {
         await Task.detached(priority: .userInitiated) {
             Self.stopDaemon()
         }.value
+    }
+
+    private static func scheduleUpdatedAppRelaunch() throws {
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = [
+            "-c",
+            "sleep 1; exec /usr/bin/open \"$1\"",
+            "tailsync-relaunch",
+            Bundle.main.bundleURL.path,
+        ]
+        relaunch.standardOutput = FileHandle.nullDevice
+        relaunch.standardError = FileHandle.nullDevice
+        try relaunch.run()
     }
 
     /// Resolve the daemon binary path (same logic as launchDaemon).
@@ -393,24 +569,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Watchdog: restart daemon if it dies or becomes unresponsive.
     private func startDaemonWatchdog() {
-        Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, !self.watchdogCheckRunning else { return }
+                guard let self, self.daemonActivityAllowed, !self.watchdogCheckRunning else { return }
                 self.watchdogCheckRunning = true
                 defer { self.watchdogCheckRunning = false }
                 let status = await ApiClient.shared.getStatus()
+                guard self.daemonActivityAllowed else { return }
                 let transfer = await ApiClient.shared.getFileProgress()
+                guard self.daemonActivityAllowed else { return }
                 if transfer != self.activeTransfer {
                     self.activeTransfer = transfer
                     self.rebuildMenu()
                 }
                 let unavailable = await ApiClient.shared.getStorageStatus()?.available == false
+                guard self.daemonActivityAllowed else { return }
                 if unavailable != self.storageUnavailable {
                     self.storageUnavailable = unavailable
                     self.rebuildMenu()
                 }
+                if let settings = try? await ApiClient.shared.getSettings() {
+                    guard self.daemonActivityAllowed else { return }
+                    if settings.sync_enabled != self.syncEnabled {
+                        self.syncEnabled = settings.sync_enabled
+                        self.rebuildMenu()
+                    }
+                    if !self.shortcutRegistered {
+                        self.shortcutRegistered = true
+                        if case .failure(let error) =
+                            GlobalShortcutController.shared.register(shortcut: settings.sync_shortcut)
+                        {
+                            print("[TailSync] could not register sync shortcut: \(error)")
+                        }
+                    }
+                }
                 let routeSummary = status.activeInterfaces
-                    .map { $0 == "lan" ? "LAN" : "Tailscale" }
+                    .map(menuRouteInterfaceLabel)
                     .sorted()
                     .joined(separator: " / ")
                 if routeSummary != self.activeRouteSummary {
@@ -435,6 +629,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if self.consecutiveWatchdogFailures >= 2 {
                         print("[TailSync] daemon \(reason) — restarting...")
                         await Self.stopDaemonForRestart()
+                        guard self.daemonActivityAllowed else { return }
                         self.launchDaemon()
                         self.consecutiveWatchdogFailures = 0
                     }

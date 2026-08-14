@@ -1,67 +1,45 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectionInterface {
-    Lan,
-    Tailscale,
-}
+//! Platform view of the shared peer types.
+//!
+//! All peer discovery, health, and delivery types live in
+//! `tailsync_core::peer::types`; this module only re-exports them so existing
+//! `network::types` call sites stay unchanged. The file is byte-identical on
+//! both platforms (enforced by the cross-platform drift check), even though
+//! macOS does not consume the Windows-only `ActiveRoute`/`PeerHealthSnapshot`
+//! types — the re-export keeps the shared contract surface complete.
 
-impl ConnectionInterface {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Lan => "lan",
-            Self::Tailscale => "tailscale",
-        }
+#[allow(unused_imports)] // Contract surface: both platforms share this exact file.
+pub use tailsync_core::peer::types::{
+    ActiveRoute, ConnectionInterface, PeerCandidate, PeerHealthSnapshot, PeerStatus,
+};
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use tailsync_core::peer::types as core_types;
+
+    /// Compile-time identity proof: the platform re-exports must be the very
+    /// same types as the shared core ones, not lookalikes. If this file
+    /// drifts from the core contract, these assignments stop compiling.
+    fn same<T>(value: T) -> T {
+        value
     }
 
-    pub(super) fn priority(self) -> u8 {
-        match self {
-            Self::Lan => 0,
-            Self::Tailscale => 1,
-        }
+    #[test]
+    fn re_exported_types_are_the_shared_core_types() {
+        let _: core_types::ConnectionInterface = same(ConnectionInterface::Lan);
+        let _: core_types::PeerStatus = same(PeerStatus::Offline);
+        let _: core_types::PeerCandidate =
+            same(PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.2"));
+        let _: core_types::PeerHealthSnapshot = same(PeerHealthSnapshot {
+            status: PeerStatus::Online,
+            online: true,
+            connected: false,
+            latency_ms: None,
+        });
+        let _: core_types::ActiveRoute = same(ActiveRoute {
+            interface: ConnectionInterface::Lan,
+            address: "192.168.1.2".into(),
+            latency: 1,
+        });
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PeerCandidate {
-    pub interface: ConnectionInterface,
-    pub address: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latency: Option<u64>,
-    pub priority: u8,
-}
-
-impl PeerCandidate {
-    pub fn new(interface: ConnectionInterface, address: impl Into<String>) -> Self {
-        Self {
-            interface,
-            address: address.into(),
-            latency: None,
-            priority: interface.priority(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ActiveRoute {
-    pub interface: ConnectionInterface,
-    pub address: String,
-    pub latency: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PeerStatus {
-    Discovered,
-    Online,
-    Confirming,
-    Offline,
-    Connected,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PeerHealthSnapshot {
-    pub status: PeerStatus,
-    pub online: bool,
-    pub connected: bool,
-    pub latency_ms: Option<u64>,
 }

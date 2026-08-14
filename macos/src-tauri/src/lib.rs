@@ -5,6 +5,7 @@ mod clipboard_file;
 mod commands;
 mod network;
 mod sync_adapter;
+mod updates;
 
 pub use tailsync_core::{
     crypto, db, history_classifier, identity, pairing, protocol, secure, sync,
@@ -16,6 +17,8 @@ use tauri::Manager;
 use tokio::sync::{watch, Mutex};
 
 type BackgroundTasks = Arc<StdMutex<Vec<tauri::async_runtime::JoinHandle<()>>>>;
+const PEER_DISCONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const BACKGROUND_TASK_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(750);
 
 pub struct AppState {
     pub db: Arc<Mutex<db::HistoryDB>>,
@@ -104,16 +107,20 @@ async fn coordinate_shutdown(
 ) {
     wait_for_shutdown(&mut shutdown).await;
     info!("Application shutdown coordinator started");
-    if tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        pool.lock().await.disconnect_all();
-    })
-    .await
-    .is_err()
-    {
-        log::warn!("Timed out while closing peer connections");
-    }
-
-    stop_background_tasks(tasks, std::time::Duration::from_secs(3)).await;
+    let close_connections = async {
+        if tokio::time::timeout(PEER_DISCONNECT_TIMEOUT, async {
+            pool.lock().await.disconnect_all();
+        })
+        .await
+        .is_err()
+        {
+            log::warn!("Timed out while closing peer connections");
+        }
+    };
+    tokio::join!(
+        close_connections,
+        stop_background_tasks(tasks, BACKGROUND_TASK_SHUTDOWN_TIMEOUT)
+    );
     info!("Background services stopped");
     handle.exit(0);
 }
@@ -344,8 +351,10 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
     let settings_for_monitor = settings.clone();
     let settings_for_server = settings.clone();
+    let settings_for_iroh = settings.clone();
     let settings_for_discovery = settings.clone();
     let identity_for_server = identity.clone();
+    let identity_for_iroh = identity.clone();
     let identity_for_discovery = identity.clone();
 
     // Start JSON API server
@@ -380,9 +389,11 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(updates::plugin_builder().build())
         .setup(move |app| {
             hide_bundled_daemon_from_dock();
             let handle = app.handle().clone();
+            updates::register_app_handle(handle.clone());
             if let Some(task) =
                 start_parent_monitor(shutdown_for_parent, shutdown_for_setup.clone())
             {
@@ -423,6 +434,10 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
             // Start P2P network server
             let db_for_storage_monitor = db_for_setup.clone();
+            let db_for_iroh = db_for_setup.clone();
+            let sync_for_iroh = sync_for_setup.clone();
+            let pairing_for_server = pairing.clone();
+            let pairing_for_iroh = pairing.clone();
             let server_shutdown = shutdown_for_setup.clone();
             let server_task = tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::start_server(
@@ -430,7 +445,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     db_for_setup,
                     settings_for_server,
                     identity_for_server,
-                    pairing,
+                    pairing_for_server,
                     server_shutdown,
                 )
                 .await
@@ -439,6 +454,22 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
             track_task(&tasks_for_setup, server_task);
+            let iroh_shutdown = shutdown_for_setup.clone();
+            let iroh_task = tauri::async_runtime::spawn(async move {
+                if let Err(error) = network::start_iroh_server(
+                    sync_for_iroh,
+                    db_for_iroh,
+                    settings_for_iroh,
+                    identity_for_iroh,
+                    pairing_for_iroh,
+                    iroh_shutdown,
+                )
+                .await
+                {
+                    log::error!("Iroh server error: {error}");
+                }
+            });
+            track_task(&tasks_for_setup, iroh_task);
             let discovery_task = tauri::async_runtime::spawn(network::start_discovery_responder(
                 identity_for_discovery,
                 shutdown_for_setup.clone(),
@@ -499,6 +530,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::delete_old_storage,
             commands::restore_file_batch,
             commands::get_version,
+            commands::get_sync_warning,
         ])
         .run(tauri::generate_context!())?;
     Ok(())
@@ -506,7 +538,9 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod shutdown_tests {
-    use super::{stop_background_tasks, track_task, BackgroundTasks};
+    use super::{
+        stop_background_tasks, track_task, BackgroundTasks, BACKGROUND_TASK_SHUTDOWN_TIMEOUT,
+    };
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex as StdMutex,
@@ -556,5 +590,23 @@ mod shutdown_tests {
         stop_background_tasks(tasks, std::time::Duration::from_millis(1)).await;
 
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stalled_shutdown_tasks_stay_within_the_interactive_exit_budget() {
+        let tasks = tasks();
+        track_task(
+            &tasks,
+            tauri::async_runtime::JoinHandle::Tokio(tokio::spawn(std::future::pending())),
+        );
+
+        let started = tokio::time::Instant::now();
+        stop_background_tasks(tasks, BACKGROUND_TASK_SHUTDOWN_TIMEOUT).await;
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "stalled shutdown took {:?}",
+            started.elapsed()
+        );
     }
 }
