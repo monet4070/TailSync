@@ -11,10 +11,12 @@
 //! and one test suite.
 
 use std::future::Future;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{timeout, Duration};
 
-use crate::peer::types::{ConnectionInterface, DeliveryReceipt, ResolvedCandidate, ResolvedTarget};
+use crate::peer::types::{
+    ActiveRoute, ConnectionInterface, DeliveryReceipt, ResolvedCandidate, ResolvedTarget,
+};
 use crate::protocol::{Command, EventEnvelope, FileOffset, Frame, MessageId, TransferId};
 use crate::secure::SecureConnection;
 
@@ -72,6 +74,31 @@ impl DeliveryConfig {
 impl Default for DeliveryConfig {
     fn default() -> Self {
         Self::DEFAULT
+    }
+}
+
+/// A connection that can exchange protocol frames. Implemented by the
+/// real [`SecureConnection`] and by in-memory pairs in tests, so the whole
+/// delivery path (and the connection worker) is testable without sockets.
+pub trait DeliveryConnection: Send {
+    fn write_frame(
+        &mut self,
+        frame: &Frame,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send;
+    fn read_frame(&mut self) -> impl std::future::Future<Output = Result<Frame, String>> + Send;
+}
+
+impl DeliveryConnection for SecureConnection {
+    async fn write_frame(&mut self, frame: &Frame) -> Result<(), String> {
+        SecureConnection::write_frame(self, frame)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn read_frame(&mut self) -> Result<Frame, String> {
+        SecureConnection::read_frame(self)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -428,8 +455,8 @@ pub(crate) fn validate_file_ack(
 /// exponential backoff; file and batch frames are retried on the file ACK
 /// window. Peer rejections surface as permanent errors the caller must not
 /// retry.
-pub async fn deliver_pending_frame(
-    stream: &mut SecureConnection,
+pub async fn deliver_pending_frame<T: DeliveryConnection>(
+    stream: &mut T,
     pending: &PendingFrame,
     config: &DeliveryConfig,
 ) -> Result<DeliveryReceipt, DeliveryError> {
@@ -489,8 +516,8 @@ pub async fn deliver_pending_frame(
     }
 }
 
-async fn deliver_event_frame(
-    stream: &mut SecureConnection,
+async fn deliver_event_frame<T: DeliveryConnection>(
+    stream: &mut T,
     pending: &PendingFrame,
     frame: &Frame,
     message_id: MessageId,
@@ -533,8 +560,8 @@ async fn deliver_event_frame(
     unreachable!("event retry loop always returns")
 }
 
-async fn deliver_file_frame(
-    stream: &mut SecureConnection,
+async fn deliver_file_frame<T: DeliveryConnection>(
+    stream: &mut T,
     pending: &PendingFrame,
     frame: &Frame,
     transfer_id: TransferId,
@@ -576,8 +603,8 @@ async fn deliver_file_frame(
     unreachable!("file retry loop always returns")
 }
 
-async fn deliver_batch_frame(
-    stream: &mut SecureConnection,
+async fn deliver_batch_frame<T: DeliveryConnection>(
+    stream: &mut T,
     pending: &PendingFrame,
     frame: &Frame,
     batch_id: TransferId,
@@ -627,6 +654,277 @@ async fn deliver_batch_frame(
         }
     }
     unreachable!("batch retry loop always returns")
+}
+
+/// Timing for the per-peer connection worker loop. Defaults match the shared
+/// platform constants (30 s heartbeat, 10 s heartbeat ACK window, 5 s
+/// reconnect delay).
+#[derive(Debug, Clone, Copy)]
+pub struct WorkerConfig {
+    pub heartbeat_interval: Duration,
+    pub heartbeat_ack_timeout: Duration,
+    pub reconnect_delay: Duration,
+    pub delivery: DeliveryConfig,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            heartbeat_interval: Duration::from_secs(30),
+            heartbeat_ack_timeout: Duration::from_secs(10),
+            reconnect_delay: Duration::from_secs(5),
+            delivery: DeliveryConfig::DEFAULT,
+        }
+    }
+}
+
+/// Platform capabilities the per-peer connection worker needs. The adapter
+/// owns candidate resolution, the connection + handshake executor, session
+/// registration, protocol-compatibility diagnostics, and remembered-Iroh
+/// refresh; the worker owns the lifecycle loop itself (reconnect, heartbeat,
+/// keep-frame-across-reconnect, priority queue selection) so both platforms
+/// run a single implementation.
+#[allow(async_fn_in_trait)] // Concrete adapters; Send bounds are checked at the worker boundary.
+pub trait ConnectionAdapter: Send + Sync {
+    type Connection: DeliveryConnection;
+
+    /// Connect and authenticate one route. Failures are retried by the
+    /// worker after `reconnect_delay`.
+    async fn connect(
+        &self,
+        hostname: &str,
+        candidates: &[ResolvedCandidate],
+    ) -> Result<(Self::Connection, ResolvedCandidate), String>;
+
+    /// Record an authenticated session for the route (forces `connected`).
+    fn register_session(
+        &self,
+        hostname: &str,
+        interface: ConnectionInterface,
+        address: &str,
+        latency_ms: u64,
+    );
+
+    fn record_protocol_error(&self, hostname: &str, error: &str);
+    fn clear_protocol_error(&self, hostname: &str);
+
+    /// Refresh remembered Iroh candidates; returns true when a new preferred
+    /// route was learned (the worker then reselects the path).
+    async fn refresh_candidates(
+        &self,
+        hostname: &str,
+        candidates: &mut Vec<ResolvedCandidate>,
+    ) -> bool;
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
+        }
+    }
+}
+
+/// Background worker for one pooled connection: connects and handshakes,
+/// serves queued frames with heartbeat keepalive, reconnects transparently
+/// on transient failures, and keeps the in-flight frame across reconnects so
+/// clipboard content is never lost silently. Exits when all senders drop or
+/// shutdown is signalled.
+pub async fn run_connection_worker<A: ConnectionAdapter>(
+    adapter: &A,
+    config: &WorkerConfig,
+    mut candidates: Vec<ResolvedCandidate>,
+    hostname: String,
+    mut priority_rx: mpsc::Receiver<QueuedFrame>,
+    mut bulk_rx: mpsc::Receiver<QueuedFrame>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let Some(preferred_target) = candidates.first().map(|candidate| candidate.target.clone())
+    else {
+        log::warn!("Connection task for {hostname} started without a route");
+        return;
+    };
+    let mut pending: Option<PendingFrame> = None;
+    let mut next_sequence = 1u32;
+    loop {
+        adapter.refresh_candidates(&hostname, &mut candidates).await;
+        let connection_result = {
+            let connection = adapter.connect(&hostname, &candidates);
+            tokio::pin!(connection);
+            tokio::select! {
+                biased;
+                _ = wait_for_shutdown(&mut shutdown) => return,
+                result = &mut connection => result,
+            }
+        };
+        let (mut stream, route) = match connection_result {
+            Ok(result) => {
+                adapter.clear_protocol_error(&hostname);
+                result
+            }
+            Err(error) => {
+                if error.contains("Incompatible TailSync protocol:") {
+                    adapter.record_protocol_error(&hostname, &error);
+                }
+                log::warn!(
+                    "Pool connect to {} ({}) failed: {} — retrying in {:?}",
+                    preferred_target,
+                    hostname,
+                    error,
+                    config.reconnect_delay
+                );
+                tokio::select! {
+                    biased;
+                    _ = wait_for_shutdown(&mut shutdown) => return,
+                    _ = tokio::time::sleep(config.reconnect_delay) => {}
+                }
+                continue;
+            }
+        };
+        let learned_iroh = adapter.refresh_candidates(&hostname, &mut candidates).await;
+        if learned_iroh
+            && candidates
+                .iter()
+                .any(|candidate| candidate.candidate.priority < route.candidate.priority)
+        {
+            log::debug!("Learned a preferred Iroh route for {hostname}; reselecting path");
+            continue;
+        }
+        let target = route.target.clone();
+        let active = ActiveRoute {
+            interface: route.candidate.interface,
+            address: route.candidate.address.clone(),
+            latency: route.candidate.latency.unwrap_or_default(),
+        };
+        log::debug!(
+            "Pool connected to {} via {} in {} ms",
+            target,
+            active.interface.as_str(),
+            active.latency
+        );
+        adapter.register_session(
+            &hostname,
+            active.interface,
+            &route.candidate.address,
+            active.latency,
+        );
+
+        let mut last_heartbeat = tokio::time::Instant::now();
+
+        // A write can fail after the frame has been removed from the queue.
+        // Keep that frame across reconnects so transient breaks do not lose
+        // clipboard content silently.
+        if let Some(frame) = pending.take() {
+            let delivery = tokio::select! {
+                biased;
+                _ = wait_for_shutdown(&mut shutdown) => return,
+                result = deliver_pending_frame(&mut stream, &frame, &config.delivery) => result,
+            };
+            match delivery {
+                Ok(receipt) => frame.complete(Ok(receipt)),
+                Err(error @ DeliveryError::Rejected(_)) => {
+                    record_permanent_delivery_warning(&hostname, &error.to_string());
+                    log::warn!("Dropping event rejected by remote peer: {error}");
+                    log::debug!("Rejected event route: {target}");
+                    frame.complete(Err(error));
+                }
+                Err(error) => {
+                    log::debug!(
+                        "Pool delivery to {} failed: {error} — reselecting path",
+                        target
+                    );
+                    pending = Some(frame);
+                    continue;
+                }
+            }
+        }
+
+        // Inner loop: read from channel, write to wire
+        loop {
+            if last_heartbeat.elapsed() >= config.heartbeat_interval {
+                let Ok(hb) = Frame::try_new(Command::Heartbeat, 0, next_sequence, vec![]) else {
+                    log::error!("Could not construct a heartbeat frame");
+                    return;
+                };
+                next_sequence = next_sequence.wrapping_add(1).max(1);
+                let heartbeat_ok = tokio::select! {
+                    biased;
+                    _ = wait_for_shutdown(&mut shutdown) => return,
+                    result = async {
+                        if stream.write_frame(&hb).await.is_err() {
+                            return false;
+                        }
+                        matches!(
+                            timeout(config.heartbeat_ack_timeout, stream.read_frame()).await,
+                            Ok(Ok(Frame { command: Command::HeartbeatAck, .. }))
+                        )
+                    } => result,
+                };
+                if !heartbeat_ok {
+                    log::debug!("Pool heartbeat to {} failed — reconnecting", target);
+                    break;
+                }
+                last_heartbeat = tokio::time::Instant::now();
+            }
+
+            // Wait for next frame or heartbeat deadline
+            let deadline = config
+                .heartbeat_interval
+                .saturating_sub(last_heartbeat.elapsed());
+            let next_frame = async {
+                tokio::select! {
+                    biased;
+                    frame = priority_rx.recv() => frame,
+                    frame = bulk_rx.recv() => frame,
+                }
+            };
+            let next = tokio::select! {
+                biased;
+                _ = wait_for_shutdown(&mut shutdown) => return,
+                result = tokio::time::timeout(deadline, next_frame) => result,
+            };
+            match next {
+                Ok(Some(queued)) => {
+                    let frame = PendingFrame::new(queued, next_sequence);
+                    next_sequence = next_sequence.wrapping_add(1).max(1);
+                    let delivery = tokio::select! {
+                        biased;
+                        _ = wait_for_shutdown(&mut shutdown) => return,
+                        result = deliver_pending_frame(&mut stream, &frame, &config.delivery) => result,
+                    };
+                    match delivery {
+                        Ok(receipt) => frame.complete(Ok(receipt)),
+                        Err(error @ DeliveryError::Rejected(_)) => {
+                            record_permanent_delivery_warning(&hostname, &error.to_string());
+                            log::warn!("Dropping event rejected by remote peer: {error}");
+                            log::debug!("Rejected event route: {target}");
+                            frame.complete(Err(error));
+                        }
+                        Err(error) => {
+                            pending = Some(frame);
+                            log::debug!(
+                                "Pool delivery to {} failed: {error} — reselecting path",
+                                target
+                            );
+                            break;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // All senders dropped — exit this connection for good
+                    log::debug!("Pool channel for {} closed — shutting down", target);
+                    return;
+                }
+                Err(_) => {
+                    // Timeout — loop back to send heartbeat
+                }
+            }
+        }
+        // Outer loop: reconnect and try again
+    }
 }
 
 #[cfg(test)]
@@ -1191,5 +1489,397 @@ mod tests {
             .unwrap();
         assert_eq!(receipt.next_offset, None);
         server_task.await.unwrap();
+    }
+
+    // ------------------------------------------------------------------
+    // Connection worker tests: the worker runs against in-memory frame
+    // connections and a scripted fake adapter, so reconnect, keep-frame,
+    // rejection, and shutdown behavior are testable without sockets.
+    // ------------------------------------------------------------------
+
+    struct MemoryConnection {
+        io: tokio::io::DuplexStream,
+    }
+
+    impl DeliveryConnection for MemoryConnection {
+        async fn write_frame(&mut self, frame: &Frame) -> Result<(), String> {
+            let bytes = frame.encode();
+            let len = (bytes.len() as u32).to_be_bytes();
+            tokio::io::AsyncWriteExt::write_all(&mut self.io, &len)
+                .await
+                .map_err(|e| e.to_string())?;
+            tokio::io::AsyncWriteExt::write_all(&mut self.io, &bytes)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+
+        async fn read_frame(&mut self) -> Result<Frame, String> {
+            let mut len = [0u8; 4];
+            tokio::io::AsyncReadExt::read_exact(&mut self.io, &mut len)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
+            tokio::io::AsyncReadExt::read_exact(&mut self.io, &mut buf)
+                .await
+                .map_err(|e| e.to_string())?;
+            let (frame, _) = Frame::decode(&buf).map_err(|e| e.to_string())?;
+            Ok(frame)
+        }
+    }
+
+    struct FakeAdapter {
+        connects: tokio::sync::Mutex<
+            std::collections::VecDeque<Result<(MemoryConnection, ResolvedCandidate), String>>,
+        >,
+        sessions: std::sync::Mutex<Vec<(String, ConnectionInterface, String, u64)>>,
+        connect_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ConnectionAdapter for FakeAdapter {
+        type Connection = MemoryConnection;
+
+        async fn connect(
+            &self,
+            _hostname: &str,
+            _candidates: &[ResolvedCandidate],
+        ) -> Result<(MemoryConnection, ResolvedCandidate), String> {
+            self.connect_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.connects
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or_else(|| Err("no more connections scripted".to_string()))
+        }
+
+        fn register_session(
+            &self,
+            hostname: &str,
+            interface: ConnectionInterface,
+            address: &str,
+            latency_ms: u64,
+        ) {
+            self.sessions.lock().unwrap().push((
+                hostname.to_string(),
+                interface,
+                address.to_string(),
+                latency_ms,
+            ));
+        }
+
+        fn record_protocol_error(&self, _hostname: &str, _error: &str) {}
+        fn clear_protocol_error(&self, _hostname: &str) {}
+
+        async fn refresh_candidates(
+            &self,
+            _hostname: &str,
+            _candidates: &mut Vec<ResolvedCandidate>,
+        ) -> bool {
+            false
+        }
+    }
+
+    fn fast_worker_config() -> WorkerConfig {
+        WorkerConfig {
+            heartbeat_interval: Duration::from_secs(30),
+            heartbeat_ack_timeout: Duration::from_millis(100),
+            reconnect_delay: Duration::from_millis(10),
+            delivery: DeliveryConfig::DEFAULT,
+        }
+    }
+
+    fn fast_file_config() -> DeliveryConfig {
+        DeliveryConfig::try_new(
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+            1,
+        )
+        .unwrap()
+    }
+
+    fn scripted_adapter(
+        connects: Vec<Result<(MemoryConnection, ResolvedCandidate), String>>,
+    ) -> FakeAdapter {
+        FakeAdapter {
+            connects: tokio::sync::Mutex::new(connects.into()),
+            sessions: std::sync::Mutex::new(Vec::new()),
+            connect_calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_delivers_frames_and_registers_session() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+        let adapter = std::sync::Arc::new(scripted_adapter(vec![Ok((
+            MemoryConnection { io: client_io },
+            candidate.clone(),
+        ))]));
+
+        let server = tokio::spawn(async move {
+            let mut server = MemoryConnection { io: server_io };
+            let frame = server.read_frame().await.unwrap();
+            let transfer = TransferId([0x11; 16]);
+            let ack = FileOffset {
+                transfer_id: transfer,
+                next_offset: 1024,
+            };
+            server
+                .write_frame(
+                    &Frame::try_new(Command::FileAck, 0, frame.sequence, ack.encode()).unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let (priority_tx, priority_rx) = mpsc::channel(4);
+        let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let adapter_for_worker = adapter.clone();
+        let worker = tokio::spawn(async move {
+            run_connection_worker(
+                adapter_for_worker.as_ref(),
+                &fast_worker_config(),
+                vec![candidate],
+                "peer".into(),
+                priority_rx,
+                bulk_rx,
+                shutdown_rx,
+            )
+            .await
+        });
+
+        let (completion_tx, mut completion_rx) = oneshot::channel();
+        let queued = QueuedFrame::confirmed_file(
+            Command::FileChunk,
+            vec![0u8; 8],
+            TransferId([0x11; 16]),
+            completion_tx,
+        )
+        .unwrap();
+        priority_tx.send(queued).await.unwrap();
+
+        let receipt = timeout(Duration::from_secs(2), &mut completion_rx)
+            .await
+            .expect("delivery completion")
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.next_offset, Some(1024));
+        server.await.unwrap();
+
+        // Worker keeps running after the delivery: drop senders to let it
+        // exit, then verify the session was registered.
+        drop(priority_tx);
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        let sessions = adapter.sessions.lock().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].0, "peer");
+        assert_eq!(sessions[0].1, ConnectionInterface::Lan);
+    }
+
+    #[tokio::test]
+    async fn worker_keeps_pending_frame_across_reconnect() {
+        let (client_a, server_a) = tokio::io::duplex(64 * 1024);
+        let (client_b, server_b) = tokio::io::duplex(64 * 1024);
+        let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+        let adapter = std::sync::Arc::new(scripted_adapter(vec![
+            Ok((MemoryConnection { io: client_a }, candidate.clone())),
+            Ok((MemoryConnection { io: client_b }, candidate.clone())),
+        ]));
+
+        // First connection: the server reads the frame but stays silent, so
+        // the delivery times out (file ACK window 50 ms, one attempt) and the
+        // worker reconnects with the frame kept pending.
+        let server_a_task = tokio::spawn(async move {
+            let mut server = MemoryConnection { io: server_a };
+            let _frame = server.read_frame().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+        // Second connection: the server acknowledges the retried frame.
+        let server_b_task = tokio::spawn(async move {
+            let mut server = MemoryConnection { io: server_b };
+            let frame = server.read_frame().await.unwrap();
+            let ack = FileOffset {
+                transfer_id: TransferId([0x22; 16]),
+                next_offset: 2048,
+            };
+            server
+                .write_frame(
+                    &Frame::try_new(Command::FileAck, 0, frame.sequence, ack.encode()).unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut config = fast_worker_config();
+        config.delivery = fast_file_config();
+        let config = std::sync::Arc::new(config);
+        let (priority_tx, priority_rx) = mpsc::channel(4);
+        let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let adapter_for_worker = adapter.clone();
+        let config_for_worker = config.clone();
+        let worker = tokio::spawn(async move {
+            run_connection_worker(
+                adapter_for_worker.as_ref(),
+                &config_for_worker,
+                vec![candidate],
+                "peer".into(),
+                priority_rx,
+                bulk_rx,
+                shutdown_rx,
+            )
+            .await
+        });
+
+        let (completion_tx, mut completion_rx) = oneshot::channel();
+        let queued = QueuedFrame::confirmed_file(
+            Command::FileChunk,
+            vec![0u8; 8],
+            TransferId([0x22; 16]),
+            completion_tx,
+        )
+        .unwrap();
+        priority_tx.send(queued).await.unwrap();
+
+        // The frame must be delivered on the second connection with the
+        // same transfer, proving it survived the reconnect.
+        let receipt = timeout(Duration::from_secs(3), &mut completion_rx)
+            .await
+            .expect("retried delivery completion")
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.next_offset, Some(2048));
+
+        drop(priority_tx);
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        server_a_task.await.unwrap();
+        server_b_task.await.unwrap();
+        assert_eq!(
+            adapter
+                .connect_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_drops_permanently_rejected_frames() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+        let adapter = std::sync::Arc::new(scripted_adapter(vec![Ok((
+            MemoryConnection { io: client_io },
+            candidate.clone(),
+        ))]));
+
+        let server = tokio::spawn(async move {
+            let mut server = MemoryConnection { io: server_io };
+            let frame = server.read_frame().await.unwrap();
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::PeerError,
+                        0,
+                        frame.sequence,
+                        b"rejected batch: quota".to_vec(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let (priority_tx, priority_rx) = mpsc::channel(4);
+        let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let adapter_for_worker = adapter.clone();
+        let worker = tokio::spawn(async move {
+            run_connection_worker(
+                adapter_for_worker.as_ref(),
+                &fast_worker_config(),
+                vec![candidate],
+                "peer".into(),
+                priority_rx,
+                bulk_rx,
+                shutdown_rx,
+            )
+            .await
+        });
+
+        let (completion_tx, mut completion_rx) = oneshot::channel();
+        let queued = QueuedFrame::confirmed_batch(
+            Command::FileBatchStart,
+            Vec::new(),
+            TransferId([0x33; 16]),
+            completion_tx,
+        )
+        .unwrap();
+        priority_tx.send(queued).await.unwrap();
+
+        let err = timeout(Duration::from_secs(2), &mut completion_rx)
+            .await
+            .expect("rejection completion")
+            .unwrap()
+            .expect_err("rejected delivery must fail");
+        assert!(matches!(err, DeliveryError::Rejected(_)));
+        server.await.unwrap();
+
+        // The worker keeps serving (rejections are dropped, not fatal):
+        // drop senders and confirm clean exit without any reconnect.
+        drop(priority_tx);
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            adapter
+                .connect_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_exits_on_shutdown() {
+        let (client_io, _server_io) = tokio::io::duplex(64 * 1024);
+        let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+        let adapter = std::sync::Arc::new(scripted_adapter(vec![Ok((
+            MemoryConnection { io: client_io },
+            candidate.clone(),
+        ))]));
+
+        let (priority_tx, priority_rx) = mpsc::channel(4);
+        let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let adapter_for_worker = adapter.clone();
+        let worker = tokio::spawn(async move {
+            run_connection_worker(
+                adapter_for_worker.as_ref(),
+                &fast_worker_config(),
+                vec![candidate],
+                "peer".into(),
+                priority_rx,
+                bulk_rx,
+                shutdown_rx,
+            )
+            .await
+        });
+
+        // Let the worker connect first, then signal shutdown.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        shutdown_tx.send(true).unwrap();
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("worker must exit on shutdown")
+            .unwrap();
+        drop(priority_tx);
     }
 }

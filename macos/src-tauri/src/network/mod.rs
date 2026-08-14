@@ -20,7 +20,6 @@ use crate::sync;
 
 /// Default TCP port for TailSync
 pub const TCP_PORT: u16 = 19890;
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -70,7 +69,7 @@ pub mod lan;
 pub mod mdns;
 pub use health::{
     active_routes_snapshot, apply_peer_health, record_address_test_failure,
-    record_address_test_success, ActiveRoute,
+    record_address_test_success,
 };
 use health::{
     clear_peer_health, register_active_session, update_peer_health,
@@ -95,8 +94,8 @@ pub use pool::{
 };
 #[cfg(test)]
 use pool::{
-    connection_task, deliver_pending_frame, race_connect_and_handshake, PendingFrame, PoolSender,
-    QueuedFrame, ResolvedCandidate, ResolvedTarget,
+    connection_task, race_connect_and_handshake, PoolSender, QueuedFrame, ResolvedCandidate,
+    ResolvedTarget,
 };
 mod rate_limit;
 use rate_limit::check_peer_event_budget;
@@ -451,11 +450,10 @@ pub async fn test_connection(address: &str) -> Result<RouteLatency, String> {
 mod tests {
     use super::{
         acquire_peer_file_batch, bind_tcp_listener, cached_discover_peers, clear_peer_cache,
-        connection_task, deliver_pending_frame, merge_tailscale_heartbeat, queue_peer_frame,
-        race_connect_and_handshake, record_protocol_compatibility_error, secure, store_peer_cache,
-        ConnectionInterface, ConnectionLimiter, ConnectionPool, PeerCandidate, PeerStatus,
-        PendingFrame, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget,
-        POOL_CHANNEL_SIZE,
+        connection_task, merge_tailscale_heartbeat, queue_peer_frame, race_connect_and_handshake,
+        record_protocol_compatibility_error, secure, store_peer_cache, ConnectionInterface,
+        ConnectionLimiter, ConnectionPool, PeerCandidate, PeerStatus, PoolSender, QueuedFrame,
+        ResolvedCandidate, ResolvedTarget, POOL_CHANNEL_SIZE,
     };
     use crate::crypto::{self, Settings};
     use crate::identity::DeviceIdentity;
@@ -465,6 +463,7 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::Arc;
     use tailsync_core::peer::delivery::AckExpectation;
+    use tailsync_core::peer::delivery::{deliver_pending_frame, PendingFrame};
     use tokio::net::TcpListener;
     use tokio::sync::{mpsc, watch, Mutex};
     use tokio::time::{timeout, Duration};

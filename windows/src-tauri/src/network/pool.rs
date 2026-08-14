@@ -7,10 +7,7 @@ pub(super) struct PoolSender {
     pub(super) shutdown: watch::Sender<bool>,
 }
 
-use tailsync_core::peer::delivery::{
-    record_permanent_delivery_warning, DeliveryConfig, DeliveryError,
-};
-pub(super) use tailsync_core::peer::delivery::{PendingFrame, QueuedFrame};
+pub(super) use tailsync_core::peer::delivery::QueuedFrame;
 pub use tailsync_core::peer::types::DeliveryReceipt;
 
 impl PoolSender {
@@ -346,186 +343,76 @@ async fn enqueue_queued_frame(
         .map_err(|_| format!("Connection to {target} closed"))
 }
 
-/// Background task for one pooled connection.
+/// Platform adapter for the shared connection worker.
 ///
-/// - Connects + handshakes, then loops reading from `rx`.
-/// - Each `(cmd, payload)` becomes a frame on the wire.
-/// - Sends periodic heartbeats.
-/// - Reconnects transparently on write errors.
-pub(super) async fn connection_task(
-    mut candidates: Vec<ResolvedCandidate>,
-    hostname: String,
-    mut priority_rx: mpsc::Receiver<QueuedFrame>,
-    mut bulk_rx: mpsc::Receiver<QueuedFrame>,
+/// Binds candidate resolution, the connect + handshake executor, session
+/// registration, and protocol diagnostics to this crate's network module.
+struct PoolAdapter {
     identity: Arc<DeviceIdentity>,
     settings: Arc<Mutex<crypto::Settings>>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    let Some(preferred_target) = candidates.first().map(|candidate| candidate.target.clone())
-    else {
-        warn!("Connection task for {hostname} started without a route");
-        return;
-    };
-    let mut pending: Option<PendingFrame> = None;
-    let mut next_sequence = 1u32;
-    loop {
-        refresh_remembered_iroh_candidate(&mut candidates, &hostname, &settings).await;
-        let connection = race_connect_and_handshake(&candidates, &hostname, &identity, &settings);
-        let connection_result = tokio::select! {
-            biased;
-            _ = wait_for_shutdown(&mut shutdown) => return,
-            result = connection => result,
-        };
-        let (mut stream, route) = match connection_result {
-            Ok(result) => {
-                clear_protocol_compatibility_error(&hostname);
-                result
-            }
-            Err(e) => {
-                if e.contains("Incompatible TailSync protocol:") {
-                    record_protocol_compatibility_error(&hostname, &e);
-                }
-                warn!(
-                    "Pool connect to {} ({}) failed: {} — retrying in {:?}",
-                    preferred_target, hostname, e, RECONNECT_DELAY
-                );
-                tokio::select! {
-                    biased;
-                    _ = wait_for_shutdown(&mut shutdown) => return,
-                    _ = tokio::time::sleep(RECONNECT_DELAY) => {}
-                }
-                continue;
-            }
-        };
-        let learned_iroh =
-            refresh_remembered_iroh_candidate(&mut candidates, &hostname, &settings).await;
-        if learned_iroh
-            && candidates
-                .iter()
-                .any(|candidate| candidate.candidate.priority < route.candidate.priority)
-        {
-            debug!("Learned a preferred Iroh route for {hostname}; reselecting path");
-            continue;
-        }
-        let target = route.target.clone();
-        let latency_ms = route.candidate.latency.unwrap_or_default();
-        debug!(
-            "Pool connected to {} via {} in {} ms",
-            target,
-            route.candidate.interface.as_str(),
-            latency_ms
-        );
-        let _active_guard = register_active_session(
-            &hostname,
-            route.candidate.interface,
-            &route.candidate.address,
-            latency_ms,
-        );
+}
 
-        let mut last_heartbeat = tokio::time::Instant::now();
+impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
+    type Connection = secure::SecureConnection;
 
-        // A write can fail after the frame has been removed from the queue.
-        // Keep that frame across reconnects so transient breaks do not lose
-        // clipboard content silently.
-        if let Some(frame) = pending.take() {
-            let delivery = tokio::select! {
-                biased;
-                _ = wait_for_shutdown(&mut shutdown) => return,
-                result = deliver_pending_frame(&mut stream, &frame, &DeliveryConfig::DEFAULT) => result,
-            };
-            match delivery {
-                Ok(receipt) => frame.complete(Ok(receipt)),
-                Err(error @ DeliveryError::Rejected(_)) => {
-                    record_permanent_delivery_warning(&hostname, &error.to_string());
-                    warn!("Dropping event rejected by remote peer: {error}");
-                    debug!("Rejected event route: {target}");
-                    frame.complete(Err(error));
-                }
-                Err(error) => {
-                    debug!(
-                        "Pool delivery to {} failed: {error} — reselecting path",
-                        target
-                    );
-                    pending = Some(frame);
-                    continue;
-                }
-            }
-        }
-
-        // Inner loop: read from channel, write to wire
-        loop {
-            if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-                let Ok(hb) = Frame::try_new(Command::Heartbeat, 0, next_sequence, vec![]) else {
-                    error!("Could not construct a heartbeat frame");
-                    return;
-                };
-                next_sequence = next_sequence.wrapping_add(1).max(1);
-                let heartbeat_ok = tokio::select! {
-                    biased;
-                    _ = wait_for_shutdown(&mut shutdown) => return,
-                    result = async {
-                        stream.write_frame(&hb).await.is_ok()
-                            && matches!(
-                                timeout(CONNECTION_TIMEOUT, stream.read_frame()).await,
-                                Ok(Ok(Frame { command: Command::HeartbeatAck, .. }))
-                            )
-                    } => result,
-                };
-                if !heartbeat_ok {
-                    debug!("Pool heartbeat to {} failed — reconnecting", target);
-                    break;
-                }
-                last_heartbeat = tokio::time::Instant::now();
-            }
-
-            // Wait for next frame or heartbeat deadline
-            let deadline = HEARTBEAT_INTERVAL.saturating_sub(last_heartbeat.elapsed());
-            let next_frame = tokio::select! {
-                biased;
-                _ = wait_for_shutdown(&mut shutdown) => return,
-                frame = priority_rx.recv() => Some(frame),
-                frame = bulk_rx.recv() => Some(frame),
-                _ = tokio::time::sleep(deadline) => None,
-            };
-            match next_frame {
-                Some(Some(queued)) => {
-                    let frame = PendingFrame::new(queued, next_sequence);
-                    next_sequence = next_sequence.wrapping_add(1).max(1);
-                    let delivery = tokio::select! {
-                        biased;
-                        _ = wait_for_shutdown(&mut shutdown) => return,
-                        result = deliver_pending_frame(&mut stream, &frame, &DeliveryConfig::DEFAULT) => result,
-                    };
-                    match delivery {
-                        Ok(receipt) => frame.complete(Ok(receipt)),
-                        Err(error @ DeliveryError::Rejected(_)) => {
-                            record_permanent_delivery_warning(&hostname, &error.to_string());
-                            warn!("Dropping event rejected by remote peer: {error}");
-                            debug!("Rejected event route: {target}");
-                            frame.complete(Err(error));
-                        }
-                        Err(error) => {
-                            pending = Some(frame);
-                            debug!(
-                                "Pool delivery to {} failed: {error} — reselecting path",
-                                target
-                            );
-                            break;
-                        }
-                    }
-                }
-                Some(None) => {
-                    // All senders dropped — exit this connection for good
-                    debug!("Pool channel for {} closed — shutting down", target);
-                    return;
-                }
-                None => {
-                    // Timeout — loop back to send heartbeat
-                }
-            }
-        }
-        // Outer loop: reconnect and try again
+    async fn connect(
+        &self,
+        hostname: &str,
+        candidates: &[ResolvedCandidate],
+    ) -> Result<(secure::SecureConnection, ResolvedCandidate), String> {
+        race_connect_and_handshake(candidates, hostname, &self.identity, &self.settings).await
     }
+
+    fn register_session(
+        &self,
+        hostname: &str,
+        interface: ConnectionInterface,
+        address: &str,
+        latency_ms: u64,
+    ) {
+        register_active_session(hostname, interface, address, latency_ms);
+    }
+
+    fn record_protocol_error(&self, hostname: &str, error: &str) {
+        record_protocol_compatibility_error(hostname, error);
+    }
+
+    fn clear_protocol_error(&self, hostname: &str) {
+        clear_protocol_compatibility_error(hostname);
+    }
+
+    async fn refresh_candidates(
+        &self,
+        hostname: &str,
+        candidates: &mut Vec<ResolvedCandidate>,
+    ) -> bool {
+        refresh_remembered_iroh_candidate(candidates, hostname, &self.settings).await
+    }
+}
+
+/// Background task for one pooled connection: delegates the entire lifecycle
+/// loop (reconnect, heartbeat, keep-frame, queue priority) to the shared
+/// worker in `tailsync_core`.
+pub(super) async fn connection_task(
+    candidates: Vec<ResolvedCandidate>,
+    hostname: String,
+    priority_rx: mpsc::Receiver<QueuedFrame>,
+    bulk_rx: mpsc::Receiver<QueuedFrame>,
+    identity: Arc<DeviceIdentity>,
+    settings: Arc<Mutex<crypto::Settings>>,
+    shutdown: watch::Receiver<bool>,
+) {
+    let adapter = PoolAdapter { identity, settings };
+    tailsync_core::peer::delivery::run_connection_worker(
+        &adapter,
+        &tailsync_core::peer::delivery::WorkerConfig::default(),
+        candidates,
+        hostname,
+        priority_rx,
+        bulk_rx,
+        shutdown,
+    )
+    .await
 }
 
 async fn refresh_remembered_iroh_candidate(
@@ -580,7 +467,6 @@ pub(super) async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
         }
     }
 }
-pub(super) use tailsync_core::peer::delivery::deliver_pending_frame;
 pub(super) async fn race_connect_and_handshake(
     candidates: &[ResolvedCandidate],
     hostname: &str,
