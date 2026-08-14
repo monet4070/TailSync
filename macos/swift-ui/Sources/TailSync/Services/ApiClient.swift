@@ -415,6 +415,13 @@ final class ApiClient: @unchecked Sendable {
         return response["ok"] as? Bool == true
     }
 
+    func setSyncShortcut(_ shortcut: String) async -> Bool {
+        guard let response = try? await request(["cmd": "set_sync_shortcut", "shortcut": shortcut]) else {
+            return false
+        }
+        return response["ok"] as? Bool == true
+    }
+
     func toggleSync() async -> Bool? {
         guard let response = try? await request(["cmd": "toggle_sync"]),
               response["ok"] as? Bool == true,
@@ -463,6 +470,7 @@ final class ApiClient: @unchecked Sendable {
             let connected: Bool
             let latencyMs: Int?
             let pairingEndpoint: Bool
+            let rttCapable: Bool
 
             init(from decoder: Decoder) throws {
                 let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -474,6 +482,8 @@ final class ApiClient: @unchecked Sendable {
                 latencyMs = try values.decodeIfPresent(Int.self, forKey: .latencyMs)
                     ?? values.decodeIfPresent(Int.self, forKey: .legacyLatency)
                 pairingEndpoint = try values.decodeIfPresent(Bool.self, forKey: .pairingEndpoint) ?? false
+                rttCapable = try values.decodeIfPresent(Bool.self, forKey: .rttCapable)
+                    ?? (interface != "iroh")
             }
 
             private enum CodingKeys: String, CodingKey {
@@ -481,6 +491,7 @@ final class ApiClient: @unchecked Sendable {
                 case latencyMs = "latency_ms"
                 case legacyLatency = "latency"
                 case pairingEndpoint = "pairing_endpoint"
+                case rttCapable = "rtt_capable"
             }
         }
 
@@ -490,6 +501,7 @@ final class ApiClient: @unchecked Sendable {
             let online: Bool
             let latency: Int?
             let status: String
+            let rttCapable: Bool
 
             init(from decoder: Decoder) throws {
                 let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -499,10 +511,13 @@ final class ApiClient: @unchecked Sendable {
                 latency = try values.decodeIfPresent(Int.self, forKey: .latency)
                 status = try values.decodeIfPresent(String.self, forKey: .status)
                     ?? (online ? "online" : "discovered")
+                rttCapable = try values.decodeIfPresent(Bool.self, forKey: .rttCapable)
+                    ?? (interface != "iroh")
             }
 
             private enum CodingKeys: String, CodingKey {
                 case interface, address, online, latency, status
+                case rttCapable = "rtt_capable"
             }
         }
 
@@ -675,14 +690,14 @@ final class ApiClient: @unchecked Sendable {
         )
     }
 
-    func testConnection(address: String) async -> (latencyMs: Int, error: String)? {
+    func testConnection(address: String) async -> (latencyMs: Int, path: String, error: String)? {
         guard let response = try? await request(["cmd": "test_connection", "hostname": address]) else { return nil }
         if response["ok"] as? Bool == true,
            let data = response["data"] as? [String: Any],
            let latency = (data["latency_ms"] as? NSNumber)?.intValue {
-            return (latency, "")
+            return (latency, data["path"] as? String ?? "", "")
         }
-        return (0, response["error"] as? String ?? "Connection failed")
+        return (0, "", response["error"] as? String ?? "Connection failed")
     }
 
     private func responseError() -> String {

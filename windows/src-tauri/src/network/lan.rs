@@ -19,12 +19,26 @@ struct DiscoveryResponse {
     version: u8,
     hostname: String,
     tcp_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iroh_endpoint_id: Option<String>,
+    #[serde(default)]
+    iroh_rtt: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct ProbeResponse {
     pub hostname: String,
     pub latency_ms: u64,
+    pub iroh_endpoint_id: Option<String>,
+}
+
+fn advertised_iroh_endpoint(response: &DiscoveryResponse) -> Option<String> {
+    let endpoint_id = response.iroh_endpoint_id.as_deref()?;
+    let endpoint_id = tailsync_core::iroh_transport::canonical_endpoint_id(endpoint_id).ok()?;
+    if response.iroh_rtt {
+        super::iroh::remember_rtt_capability(&endpoint_id);
+    }
+    Some(endpoint_id)
 }
 
 /// Ask known overlay-network addresses which TailSync hostname they expose.
@@ -70,11 +84,13 @@ pub(super) fn probe_hostnames(addresses: &[IpAddr]) -> HashMap<IpAddr, ProbeResp
             && response.tcp_port == TCP_PORT
             && !response.hostname.trim().is_empty()
         {
+            let iroh_endpoint_id = advertised_iroh_endpoint(&response);
             resolved.insert(
                 source.ip(),
                 ProbeResponse {
                     hostname: response.hostname,
                     latency_ms: started.elapsed().as_millis() as u64,
+                    iroh_endpoint_id,
                 },
             );
         }
@@ -173,8 +189,15 @@ pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
         if !seen.insert((response.hostname.clone(), source.ip())) {
             continue;
         }
-        let mut candidate = PeerCandidate::new(ConnectionInterface::Lan, source.ip().to_string());
-        candidate.latency = Some(started.elapsed().as_millis() as u64);
+        let mut lan_candidate =
+            PeerCandidate::new(ConnectionInterface::Lan, source.ip().to_string());
+        lan_candidate.latency = Some(started.elapsed().as_millis() as u64);
+        let mut candidates = vec![lan_candidate];
+        if let Some(endpoint_id) = advertised_iroh_endpoint(&response) {
+            let mut candidate = PeerCandidate::new(ConnectionInterface::Iroh, endpoint_id);
+            candidate.set_rtt_capable(super::iroh::supports_rtt(&candidate.address));
+            candidates.push(candidate);
+        }
         peers.push(PeerInfo {
             hostname: response.hostname,
             tailscale_ip: source.ip().to_string(),
@@ -184,7 +207,7 @@ pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
             connection_mode: "lan".to_string(),
             trusted: false,
             fingerprint: String::new(),
-            candidates: vec![candidate],
+            candidates,
             current_interface: None,
         });
     }
@@ -223,6 +246,8 @@ pub async fn start_responder() {
             version: 1,
             hostname: local_hostname(),
             tcp_port: TCP_PORT,
+            iroh_endpoint_id: super::iroh::local_endpoint_id(),
+            iroh_rtt: true,
         };
         let payload = match serde_json::to_vec(&response) {
             Ok(payload) => payload,

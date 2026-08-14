@@ -1202,10 +1202,10 @@ mod tests {
         ));
         let mut db = test_database(&root);
         db.set_storage_quota(30);
-        let mut image = Vec::from([2_u32.to_le_bytes(), 2_u32.to_le_bytes()].concat());
+        let mut image = [2_u32.to_le_bytes(), 2_u32.to_le_bytes()].concat();
         image.extend_from_slice(&[0x44; 16]);
         db.add_image(&image, "self").unwrap();
-        let mut second = Vec::from([2_u32.to_le_bytes(), 2_u32.to_le_bytes()].concat());
+        let mut second = [2_u32.to_le_bytes(), 2_u32.to_le_bytes()].concat();
         second.extend_from_slice(&[0x55; 16]);
         db.add_image(&second, "self").unwrap();
 

@@ -703,11 +703,13 @@ mod tests {
         assert_eq!(routes[0]["online"].as_bool(), Some(false));
         assert_eq!(routes[0]["connected"].as_bool(), Some(false));
         assert_eq!(routes[0]["pairing_endpoint"].as_bool(), Some(true));
+        assert_eq!(routes[0]["rtt_capable"].as_bool(), Some(true));
         assert_eq!(routes[1]["interface"].as_str(), Some("tailscale"));
         assert_eq!(routes[1]["address"].as_str(), Some("100.111.236.101"));
         assert_eq!(routes[1]["online"].as_bool(), Some(false));
         assert_eq!(routes[1]["connected"].as_bool(), Some(false));
         assert_eq!(routes[1]["pairing_endpoint"].as_bool(), Some(false));
+        assert_eq!(routes[1]["rtt_capable"].as_bool(), Some(true));
         assert_eq!(
             data["paired_peer_endpoints"]["Mac"].as_str(),
             Some("192.168.31.247")

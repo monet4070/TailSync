@@ -31,6 +31,15 @@ pub struct PeerCandidate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency: Option<u64>,
     pub priority: u8,
+    /// Whether latency can be measured over this route. LAN/Tailscale routes
+    /// are always testable; Iroh routes require the peer to have advertised
+    /// RTT support and to have been rediscovered.
+    #[serde(default = "candidate_rtt_capable_default")]
+    pub rtt_capable: bool,
+}
+
+fn candidate_rtt_capable_default() -> bool {
+    false
 }
 
 impl PeerCandidate {
@@ -40,7 +49,12 @@ impl PeerCandidate {
             address: address.into(),
             latency: None,
             priority: interface.priority(),
+            rtt_capable: interface != ConnectionInterface::Iroh,
         }
+    }
+
+    pub fn set_rtt_capable(&mut self, capable: bool) {
+        self.rtt_capable = capable;
     }
 }
 
@@ -67,4 +81,28 @@ pub struct PeerHealthSnapshot {
     pub online: bool,
     pub connected: bool,
     pub latency_ms: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConnectionInterface, PeerCandidate};
+
+    #[test]
+    fn new_candidates_only_assume_tcp_routes_support_rtt() {
+        assert!(!PeerCandidate::new(ConnectionInterface::Iroh, "endpoint").rtt_capable);
+        assert!(PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.2").rtt_capable);
+        assert!(PeerCandidate::new(ConnectionInterface::Tailscale, "100.64.0.2").rtt_capable);
+    }
+
+    #[test]
+    fn legacy_candidates_without_capability_fail_closed() {
+        let candidate: PeerCandidate = serde_json::from_value(serde_json::json!({
+            "interface": "iroh",
+            "address": "endpoint",
+            "priority": 1
+        }))
+        .expect("legacy candidate");
+
+        assert!(!candidate.rtt_capable);
+    }
 }

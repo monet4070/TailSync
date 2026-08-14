@@ -137,11 +137,30 @@ pub async fn discover_peers(
 ) -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
     match mode {
         "auto" => discover_auto().await,
-        "lan_only" | "lan" => discover_lan_hybrid().await,
+        "lan_only" | "lan" => {
+            let (mut local, mut peers) = discover_lan_hybrid().await?;
+            local
+                .candidates
+                .retain(|candidate| candidate.interface == ConnectionInterface::Lan);
+            for peer in &mut peers {
+                peer.candidates
+                    .retain(|candidate| candidate.interface == ConnectionInterface::Lan);
+            }
+            Ok((local, peers))
+        }
         "tailscale_only" | "tailscale" => {
-            tokio::task::spawn_blocking(tailscale::get_peers)
-                .await
-                .map_err(|error| format!("Tailscale discovery task failed: {error}"))?
+            let (mut local, mut peers) =
+                tokio::task::spawn_blocking(tailscale::get_peers)
+                    .await
+                    .map_err(|error| format!("Tailscale discovery task failed: {error}"))??;
+            local
+                .candidates
+                .retain(|candidate| candidate.interface == ConnectionInterface::Tailscale);
+            for peer in &mut peers {
+                peer.candidates
+                    .retain(|candidate| candidate.interface == ConnectionInterface::Tailscale);
+            }
+            Ok((local, peers))
         }
         other => Err(format!("Unsupported connection mode: {other}")),
     }
@@ -405,7 +424,11 @@ pub fn merge_paired_peers(
                     if !peer.candidates.iter().any(|candidate| {
                         candidate.interface == interface && candidate.address == *address
                     }) {
-                        peer.candidates.push(PeerCandidate::new(interface, address));
+                        let mut candidate = PeerCandidate::new(interface, address);
+                        if interface == ConnectionInterface::Iroh {
+                            candidate.set_rtt_capable(iroh::supports_rtt(&candidate.address));
+                        }
+                        peer.candidates.push(candidate);
                     }
                 }
             }
@@ -447,7 +470,11 @@ pub fn merge_paired_peers(
             if let Some(address) =
                 remembered.and_then(|addresses| addresses.get(interface.as_str()))
             {
-                candidates.push(PeerCandidate::new(interface, address));
+                let mut candidate = PeerCandidate::new(interface, address);
+                if interface == ConnectionInterface::Iroh {
+                    candidate.set_rtt_capable(iroh::supports_rtt(&candidate.address));
+                }
+                candidates.push(candidate);
             }
         }
         candidates.sort_by_key(|candidate| candidate.priority);
@@ -608,36 +635,71 @@ pub async fn start_pairing(
     settings: Arc<Mutex<crypto::Settings>>,
     address: &str,
 ) -> Result<(), String> {
-    pairing.begin_handshake().await?;
-    let ip: IpAddr = match address.trim().parse() {
-        Ok(ip) => ip,
-        Err(error) => {
-            let message = format!("Invalid peer address {address}: {error}");
+    enum PairingTarget {
+        Tcp(IpAddr),
+        Iroh(String),
+    }
+    let address = address.trim();
+    let target = match address.parse::<IpAddr>() {
+        Ok(ip) => PairingTarget::Tcp(ip),
+        Err(_) => PairingTarget::Iroh(
+            tailsync_core::iroh_transport::canonical_endpoint_id(address).map_err(|error| {
+                let message = format!("Invalid peer address: {error}");
+                message
+            })?,
+        ),
+    };
+    let mode = settings.lock().await.connection_mode.clone();
+    match &target {
+        PairingTarget::Tcp(ip) if !source_matches_mode(*ip, &mode) => {
+            let message = "Peer address is outside the selected network".to_string();
             pairing.record_failure(message.clone()).await;
             return Err(message);
         }
-    };
-    let (mode, source_allowed) = {
-        let settings = settings.lock().await;
-        (
-            settings.connection_mode.clone(),
-            source_matches_mode(ip, &settings.connection_mode),
-        )
-    };
-    if !source_allowed {
-        let message = "Peer address is outside the selected network".to_string();
-        pairing.record_failure(message.clone()).await;
-        return Err(message);
+        PairingTarget::Iroh(_) if mode != "auto" => {
+            let message = "Iroh pairing is only available in automatic mode".to_string();
+            pairing.record_failure(message.clone()).await;
+            return Err(message);
+        }
+        _ => {}
     }
+    pairing.begin_handshake().await?;
 
-    let socket_address = SocketAddr::new(ip, TCP_PORT);
     let mut window = pairing.subscribe_window();
     let operation = timeout(HANDSHAKE_TIMEOUT, async {
-        let stream = TcpStream::connect(socket_address).await?;
-        secure::connect_pairing(stream, &identity, local_peer_identity(&mode)).await
+        match &target {
+            PairingTarget::Tcp(ip) => {
+                let stream = TcpStream::connect(SocketAddr::new(*ip, TCP_PORT))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let accepted =
+                    secure::connect_pairing(stream, &identity, local_peer_identity(&mode))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                Ok((accepted, ip.to_string(), infer_interface(&ip.to_string())?))
+            }
+            PairingTarget::Iroh(endpoint_id) => {
+                let endpoint = iroh::endpoint().await?;
+                let stream = endpoint.connect(endpoint_id).await?;
+                let accepted =
+                    secure::connect_pairing(stream, &identity, local_peer_identity("auto"))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                let claimed = accepted
+                    .peer_identity
+                    .iroh_endpoint_id
+                    .as_deref()
+                    .ok_or("Peer did not bind its Noise identity to an Iroh endpoint")?;
+                if tailsync_core::iroh_transport::canonical_endpoint_id(claimed)? != *endpoint_id {
+                    return Err("Peer Iroh endpoint does not match its Noise identity".to_string());
+                }
+                iroh::remember_rtt_capability(endpoint_id);
+                Ok((accepted, endpoint_id.clone(), ConnectionInterface::Iroh))
+            }
+        }
     });
     tokio::pin!(operation);
-    let accepted = loop {
+    let (accepted, pairing_address, pairing_interface) = loop {
         tokio::select! {
             result = &mut operation => {
                 break match result {
@@ -668,31 +730,60 @@ pub async fn start_pairing(
             hostname: accepted.peer_identity.hostname,
             remote_public_key: accepted.remote_public_key,
             handshake_hash: accepted.handshake_hash,
-            address: ip.to_string(),
-            interface: infer_interface(&ip.to_string())?.as_str().to_string(),
+            address: pairing_address,
+            interface: pairing_interface.as_str().to_string(),
         })
         .await
 }
 
-/// Test whether a discovered TailSync route accepts a transport connection.
-pub async fn test_connection(address: &str) -> Result<u64, String> {
+#[derive(Debug, serde::Serialize)]
+pub struct RouteLatency {
+    pub latency_ms: u64,
+    pub path: String,
+}
+
+/// Measure the latency of a discovered TailSync route. The path is "tcp" for
+/// plain TCP routes and "direct" or "relay" for Iroh routes, so callers can
+/// distinguish a direct connection from a cold-start relay sample.
+pub async fn test_connection(address: &str) -> Result<RouteLatency, String> {
     let started = tokio::time::Instant::now();
     if let Ok(ip) = address.parse::<IpAddr>() {
         let addr = SocketAddr::new(ip, TCP_PORT);
         return match timeout(Duration::from_secs(3), TcpStream::connect(addr)).await {
-            Ok(Ok(_)) => Ok(started.elapsed().as_millis() as u64),
+            Ok(Ok(_)) => Ok(RouteLatency {
+                latency_ms: started.elapsed().as_millis() as u64,
+                path: "tcp".into(),
+            }),
             Ok(Err(error)) => Err(format!("Connection failed: {error}")),
             Err(_) => Err("Connection timed out after 3 seconds".to_string()),
         };
     }
 
     let endpoint_id = tailsync_core::iroh_transport::canonical_endpoint_id(address)?;
-    let endpoint = iroh::endpoint().await?;
-    match timeout(Duration::from_secs(3), endpoint.connect(&endpoint_id)).await {
-        Ok(Ok(_)) => Ok(started.elapsed().as_millis() as u64),
-        Ok(Err(error)) => Err(format!("Connection failed: {error}")),
-        Err(_) => Err("Connection timed out after 3 seconds".to_string()),
+    if !iroh::supports_rtt(&endpoint_id) {
+        return Err(
+            "The peer must be updated and rediscovered before Iroh latency can be tested safely"
+                .to_string(),
+        );
     }
+    let endpoint = iroh::endpoint().await?;
+    let probe = match timeout(Duration::from_secs(3), endpoint.connect_rtt(&endpoint_id)).await {
+        Ok(Ok(probe)) => probe,
+        Ok(Err(error)) => return Err(format!("Connection failed: {error}")),
+        Err(_) => return Err("Connection timed out after 3 seconds".to_string()),
+    };
+    let sample = probe
+        .measure_rtt(Duration::from_millis(500))
+        .await
+        .ok_or_else(|| "Iroh connection did not report route latency".to_string())?;
+    let path = match sample.path {
+        tailsync_core::iroh_transport::RttPath::Direct => "direct",
+        tailsync_core::iroh_transport::RttPath::Relay => "relay",
+    };
+    Ok(RouteLatency {
+        latency_ms: sample.rtt.as_millis().min(u64::MAX as u128) as u64,
+        path: path.into(),
+    })
 }
 
 #[cfg(test)]
@@ -734,12 +825,25 @@ mod tests {
 
     #[tokio::test]
     async fn listener_can_rebind_after_a_connection_closes() {
-        let listener = bind_tcp_listener("127.0.0.1:0".parse().unwrap()).unwrap();
+        // Port 0 comes from the same range used by parallel outbound tests,
+        // which can claim the port between close and rebind.
+        let base_port = 20_000 + (std::process::id() % 9_000) as u16;
+        let listener = (base_port..base_port + 100)
+            .find_map(|port| bind_tcp_listener(([127, 0, 0, 1], port).into()).ok())
+            .expect("a free non-ephemeral test port");
         let address = listener.local_addr().unwrap();
         let (client, accepted) =
             tokio::join!(tokio::net::TcpStream::connect(address), listener.accept());
         drop(client.unwrap());
-        drop(accepted.unwrap());
+        let (mut accepted, _) = accepted.unwrap();
+        let mut eof = [0_u8; 1];
+        assert_eq!(
+            tokio::io::AsyncReadExt::read(&mut accepted, &mut eof)
+                .await
+                .unwrap(),
+            0
+        );
+        drop(accepted);
         drop(listener);
 
         let rebound = bind_tcp_listener(address).unwrap();

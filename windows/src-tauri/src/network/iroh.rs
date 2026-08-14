@@ -1,5 +1,6 @@
 use super::server::ConnectionLimiter;
 use super::*;
+use std::collections::HashSet;
 
 use tailsync_core::iroh_transport::IrohEndpoint;
 
@@ -11,6 +12,7 @@ struct EndpointState {
 
 static ENDPOINT_STATE: OnceLock<Mutex<EndpointState>> = OnceLock::new();
 static LOCAL_ENDPOINT_ID: OnceLock<StdMutex<Option<String>>> = OnceLock::new();
+static RTT_CAPABLE_ENDPOINTS: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
 static MODE_CHANGED: OnceLock<Notify> = OnceLock::new();
 
 fn endpoint_state() -> &'static Mutex<EndpointState> {
@@ -19,6 +21,24 @@ fn endpoint_state() -> &'static Mutex<EndpointState> {
 
 fn local_endpoint_id_state() -> &'static StdMutex<Option<String>> {
     LOCAL_ENDPOINT_ID.get_or_init(|| StdMutex::new(None))
+}
+
+fn rtt_capable_endpoints() -> &'static StdMutex<HashSet<String>> {
+    RTT_CAPABLE_ENDPOINTS.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+pub(super) fn remember_rtt_capability(endpoint_id: &str) {
+    rtt_capable_endpoints()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(endpoint_id.to_string());
+}
+
+pub(super) fn supports_rtt(endpoint_id: &str) -> bool {
+    rtt_capable_endpoints()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(endpoint_id)
 }
 
 fn mode_changed() -> &'static Notify {
@@ -117,6 +137,7 @@ pub async fn start_server(
     database: Arc<Mutex<db::HistoryDB>>,
     settings: Arc<Mutex<crypto::Settings>>,
     identity: Arc<DeviceIdentity>,
+    pairing: Arc<PairingManager>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let limiter = ConnectionLimiter::new(64, 8);
@@ -175,10 +196,18 @@ pub async fn start_server(
                     warn!("Connection limit reached for an inbound Iroh peer");
                     continue;
                 };
+                if accepted.is_rtt_probe() {
+                    handlers.spawn(async move {
+                        let _permit = permit;
+                        accepted.wait_for_close().await;
+                    });
+                    continue;
+                }
                 let sync = sync_engine.clone();
                 let db = database.clone();
                 let settings = settings.clone();
                 let identity = identity.clone();
+                let pairing = pairing.clone();
                 handlers.spawn(async move {
                     let _permit = permit;
                     let stream = match timeout(HANDSHAKE_TIMEOUT, accepted.accept_stream()).await {
@@ -199,6 +228,7 @@ pub async fn start_server(
                         db,
                         settings,
                         identity,
+                        pairing,
                     )
                     .await
                     {
@@ -212,9 +242,12 @@ pub async fn start_server(
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
             Err(error) => {
-                warn!("Iroh accept error: {error}");
-                invalidate_endpoint(generation).await;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                debug!("Rejected inbound Iroh connection: {error}");
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                    _ = mode_changed().notified() => {}
+                    _ = wait_for_shutdown(&mut shutdown) => break,
+                }
             }
         }
     }

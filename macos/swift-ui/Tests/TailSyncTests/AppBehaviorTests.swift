@@ -36,6 +36,44 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertEqual(error.localizedDescription, "Remote diagnostic details")
     }
 
+    func testDaemonShutdownPolicyKeepsInteractiveExitUnderTwoSeconds() {
+        XCTAssertLessThan(DaemonShutdownPolicy.maximumWait, 2)
+        XCTAssertLessThanOrEqual(DaemonShutdownPolicy.pollInterval, 0.05)
+    }
+
+    func testTerminationPreventsAllDaemonActivity() {
+        XCTAssertTrue(
+            DaemonLifecyclePolicy.allowsDaemonActivity(terminationInProgress: false)
+        )
+        XCTAssertFalse(
+            DaemonLifecyclePolicy.allowsDaemonActivity(terminationInProgress: true)
+        )
+    }
+
+    func testLegacyIrohRoutesFailClosedForLatencyTesting() throws {
+        let iroh = try JSONDecoder().decode(
+            ApiClient.PeerSnapshot.Route.self,
+            from: Data(#"{"interface":"iroh","address":"endpoint"}"#.utf8)
+        )
+        let lan = try JSONDecoder().decode(
+            ApiClient.PeerSnapshot.Route.self,
+            from: Data(#"{"interface":"lan","address":"192.168.1.2"}"#.utf8)
+        )
+        let irohCandidate = try JSONDecoder().decode(
+            ApiClient.PeerSnapshot.Candidate.self,
+            from: Data(#"{"interface":"iroh","address":"endpoint"}"#.utf8)
+        )
+        let lanCandidate = try JSONDecoder().decode(
+            ApiClient.PeerSnapshot.Candidate.self,
+            from: Data(#"{"interface":"lan","address":"192.168.1.2"}"#.utf8)
+        )
+
+        XCTAssertFalse(iroh.rttCapable)
+        XCTAssertTrue(lan.rttCapable)
+        XCTAssertFalse(irohCandidate.rttCapable)
+        XCTAssertTrue(lanCandidate.rttCapable)
+    }
+
     func testUnknownConnectionModeFallsBackToAutomatic() throws {
         let data = Data("""
         {
@@ -76,6 +114,35 @@ final class AppBehaviorTests: XCTestCase {
                 .pairingErrorDescription.contains("允许配对")
         )
         XCTAssertTrue(Loc.t("settings.pairingInstruction").contains("允许配对"))
+    }
+
+    func testPairingStatusPollingDoesNotDependOnSwiftUISceneActivity() {
+        var peerRefreshTicks = 0
+
+        let backgroundPlan = SettingsPollingPolicy.next(
+            applicationIsActive: false,
+            peerRefreshTicks: &peerRefreshTicks
+        )
+
+        XCTAssertTrue(backgroundPlan.refreshPairingStatus)
+        XCTAssertFalse(backgroundPlan.refreshPeers)
+        XCTAssertEqual(peerRefreshTicks, 0)
+
+        for _ in 0..<4 {
+            let plan = SettingsPollingPolicy.next(
+                applicationIsActive: true,
+                peerRefreshTicks: &peerRefreshTicks
+            )
+            XCTAssertTrue(plan.refreshPairingStatus)
+            XCTAssertFalse(plan.refreshPeers)
+        }
+        let fifthActivePlan = SettingsPollingPolicy.next(
+            applicationIsActive: true,
+            peerRefreshTicks: &peerRefreshTicks
+        )
+        XCTAssertTrue(fifthActivePlan.refreshPairingStatus)
+        XCTAssertTrue(fifthActivePlan.refreshPeers)
+        XCTAssertEqual(peerRefreshTicks, 0)
     }
 
     func testCanvasUsesTheWindowsSemanticColorTokens() throws {

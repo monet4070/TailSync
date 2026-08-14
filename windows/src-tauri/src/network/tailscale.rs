@@ -111,6 +111,16 @@ fn apply_probed_hostnames(peers: &mut [PeerInfo], hostnames: &HashMap<IpAddr, la
             for candidate in &mut peer.candidates {
                 candidate.latency = Some(response.latency_ms);
             }
+            if let Some(endpoint_id) = &response.iroh_endpoint_id {
+                if !peer.candidates.iter().any(|candidate| {
+                    candidate.interface == ConnectionInterface::Iroh
+                        && candidate.address == *endpoint_id
+                }) {
+                    let mut candidate = PeerCandidate::new(ConnectionInterface::Iroh, endpoint_id);
+                    candidate.set_rtt_capable(super::iroh::supports_rtt(&candidate.address));
+                    peer.candidates.push(candidate);
+                }
+            }
         }
     }
 }
@@ -249,6 +259,7 @@ mod tests {
             lan::ProbeResponse {
                 hostname: "Mac".to_string(),
                 latency_ms: 12,
+                iroh_endpoint_id: None,
             },
         )]);
 

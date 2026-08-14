@@ -1,7 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingsData } from "../types/settings.generated";
-import { Settings } from "./Settings";
+import {
+  pairingAddressForPeer,
+  routeSupportsLatencyTest,
+  Settings,
+  type PeerDevice,
+  type PeerRoute,
+} from "./Settings";
 
 const {
   hideMock,
@@ -226,5 +232,65 @@ describe("Settings updates", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("settings.shortcutConflict");
     expect(screen.getByRole("dialog", { name: "settings.shortcutDialogTitle" })).toBeInTheDocument();
+  });
+});
+
+describe("pairingAddressForPeer", () => {
+  const peer = (overrides: Partial<PeerDevice> = {}): PeerDevice => ({
+    hostname: "MacBook",
+    tailscale_ip: "100.64.0.5",
+    address: "192.168.1.10",
+    online: true,
+    enabled: true,
+    connection_mode: "auto",
+    trusted: false,
+    fingerprint: "abcd",
+    ...overrides,
+  });
+
+  it("prefers the iroh route over other candidates", () => {
+    const result = pairingAddressForPeer(peer({
+      routes: [
+        { interface: "lan", address: "192.168.1.10", status: "online", online: true, connected: false, latency_ms: 2 },
+        { interface: "iroh", address: "5866666666666666666666666666666666666666666666666666666666666666", status: "online", online: true, connected: false, latency_ms: 30 },
+      ],
+    }));
+    expect(result).toBe("5866666666666666666666666666666666666666666666666666666666666666");
+  });
+
+  it("returns null when the active route is iroh but no route lists an address", () => {
+    expect(pairingAddressForPeer(peer({ current_interface: "iroh", routes: [] }))).toBeNull();
+  });
+
+  it("falls back to the connected route and then the peer address for TCP pairing", () => {
+    expect(pairingAddressForPeer(peer({
+      routes: [
+        { interface: "tailscale", address: "100.64.0.5", status: "online", online: true, connected: true, latency_ms: 20 },
+      ],
+    }))).toBe("100.64.0.5");
+    expect(pairingAddressForPeer(peer({ routes: [], address: "", tailscale_ip: "100.64.0.5" }))).toBe("100.64.0.5");
+    expect(pairingAddressForPeer(peer({ routes: [], address: "", tailscale_ip: "" }))).toBeNull();
+  });
+});
+
+describe("routeSupportsLatencyTest", () => {
+  const route = (overrides: Partial<PeerRoute> = {}): PeerRoute => ({
+    interface: "iroh" as const,
+    address: "endpoint",
+    status: "online" as const,
+    online: true,
+    connected: false,
+    ...overrides,
+  });
+
+  it("fails closed for an iroh route without an explicit capability", () => {
+    expect(routeSupportsLatencyTest(route())).toBe(false);
+    expect(routeSupportsLatencyTest(route({ rtt_capable: false }))).toBe(false);
+    expect(routeSupportsLatencyTest(route({ rtt_capable: true }))).toBe(true);
+  });
+
+  it("keeps TCP route tests available", () => {
+    expect(routeSupportsLatencyTest(route({ interface: "lan" }))).toBe(true);
+    expect(routeSupportsLatencyTest(route({ interface: "tailscale" }))).toBe(true);
   });
 });

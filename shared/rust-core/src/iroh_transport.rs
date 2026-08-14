@@ -4,9 +4,10 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointId, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::db;
@@ -15,6 +16,7 @@ use crate::identity::{
 };
 
 pub const ALPN: &[u8] = b"tailsync/3";
+pub const RTT_ALPN: &[u8] = b"tailsync/3/rtt";
 const SECRET_KEY_SIZE: usize = 32;
 static IDENTITY_RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -43,7 +45,36 @@ pub struct AcceptedConnection {
 pub struct IrohBiStream {
     send: SendStream,
     recv: RecvStream,
-    _connection: Connection,
+    connection: Connection,
+}
+
+pub struct IrohRttProbe {
+    connection: Connection,
+    endpoint: Endpoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SelectedPathMetrics {
+    rtt: Duration,
+    direct: bool,
+}
+
+/// The transport used for a measured route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RttPath {
+    /// A peer-to-peer UDP path (possibly via NAT hole punching).
+    Direct,
+    /// A path relayed through an Iroh relay server.
+    Relay,
+}
+
+/// A latency sample for the selected route, together with the path that was
+/// measured. The path matters because a freshly bound probe endpoint may still
+/// be on the relay when a direct path would be reachable later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RttSample {
+    pub rtt: Duration,
+    pub path: RttPath,
 }
 
 impl IrohEndpoint {
@@ -52,7 +83,7 @@ impl IrohEndpoint {
             .map_err(|error| format!("Could not load Iroh identity: {error}"))?;
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(secret_key)
-            .alpns(vec![ALPN.to_vec()])
+            .alpns(vec![ALPN.to_vec(), RTT_ALPN.to_vec()])
             .bind()
             .await
             .map_err(|error| format!("Could not start Iroh endpoint: {error}"))?;
@@ -66,9 +97,13 @@ impl IrohEndpoint {
     pub async fn connect(&self, endpoint_id: &str) -> Result<IrohBiStream, String> {
         let endpoint_id = EndpointId::from_str(&canonical_endpoint_id(endpoint_id)?)
             .map_err(|error| format!("Invalid Iroh endpoint ID: {error}"))?;
+        self.connect_addr(endpoint_id.into()).await
+    }
+
+    async fn connect_addr(&self, endpoint_addr: EndpointAddr) -> Result<IrohBiStream, String> {
         let connection = self
             .endpoint
-            .connect(endpoint_id, ALPN)
+            .connect(endpoint_addr, ALPN)
             .await
             .map_err(|error| format!("Iroh connection failed: {error}"))?;
         let (send, recv) = connection
@@ -76,6 +111,25 @@ impl IrohEndpoint {
             .await
             .map_err(|error| format!("Could not open Iroh stream: {error}"))?;
         Ok(IrohBiStream::new(send, recv, connection))
+    }
+
+    pub async fn connect_rtt(&self, endpoint_id: &str) -> Result<IrohRttProbe, String> {
+        let endpoint_id = EndpointId::from_str(&canonical_endpoint_id(endpoint_id)?)
+            .map_err(|error| format!("Invalid Iroh endpoint ID: {error}"))?;
+        let endpoint = Endpoint::builder(presets::N0)
+            .bind()
+            .await
+            .map_err(|error| format!("Could not start isolated Iroh probe: {error}"))?;
+        connect_rtt_from(endpoint, endpoint_id.into()).await
+    }
+
+    #[cfg(test)]
+    async fn connect_rtt_addr(&self, endpoint_addr: EndpointAddr) -> Result<IrohRttProbe, String> {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .bind()
+            .await
+            .map_err(|error| format!("Could not start isolated Iroh probe: {error}"))?;
+        connect_rtt_from(endpoint, endpoint_addr).await
     }
 
     pub async fn accept(&self) -> Result<Option<AcceptedConnection>, String> {
@@ -98,6 +152,14 @@ impl IrohEndpoint {
 }
 
 impl AcceptedConnection {
+    pub fn is_rtt_probe(&self) -> bool {
+        self.connection.alpn() == RTT_ALPN
+    }
+
+    pub async fn wait_for_close(self) {
+        let _ = self.connection.closed().await;
+    }
+
     pub async fn accept_stream(self) -> Result<IrohBiStream, String> {
         let connection = self.connection;
         let (send, recv) = connection
@@ -113,9 +175,90 @@ impl IrohBiStream {
         Self {
             send,
             recv,
-            _connection: connection,
+            connection,
         }
     }
+
+    /// Return the selected QUIC path's RTT, allowing a direct path a short
+    /// opportunity to replace the initial relay path after connection setup.
+    pub async fn measure_rtt(&self, direct_path_wait: Duration) -> Option<RttSample> {
+        measure_connection_rtt(&self.connection, direct_path_wait).await
+    }
+}
+
+impl IrohRttProbe {
+    pub async fn measure_rtt(self, direct_path_wait: Duration) -> Option<RttSample> {
+        let sample = measure_connection_rtt(&self.connection, direct_path_wait).await;
+        self.endpoint.close().await;
+        sample
+    }
+}
+
+async fn connect_rtt_from(
+    endpoint: Endpoint,
+    endpoint_addr: EndpointAddr,
+) -> Result<IrohRttProbe, String> {
+    let connection = endpoint
+        .connect(endpoint_addr, RTT_ALPN)
+        .await
+        .map_err(|error| format!("Iroh connection failed: {error}"))?;
+    Ok(IrohRttProbe {
+        connection,
+        endpoint,
+    })
+}
+
+fn selected_path_metrics(connection: &Connection) -> Option<SelectedPathMetrics> {
+    let paths = connection.paths();
+    select_path_metrics(
+        paths
+            .iter()
+            .map(|path| SelectedPathMetrics {
+                rtt: path.rtt(),
+                direct: path.is_ip(),
+            })
+            .zip(paths.iter().map(|path| path.is_selected())),
+    )
+}
+
+async fn measure_connection_rtt(
+    connection: &Connection,
+    direct_path_wait: Duration,
+) -> Option<RttSample> {
+    let deadline = tokio::time::Instant::now() + direct_path_wait;
+    let mut latest = None;
+    loop {
+        if let Some(metrics) = selected_path_metrics(connection) {
+            latest = Some(sample_from_metrics(metrics));
+            if metrics.direct {
+                return latest;
+            }
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return latest;
+        }
+        tokio::time::sleep(remaining.min(Duration::from_millis(50))).await;
+    }
+}
+
+fn sample_from_metrics(metrics: SelectedPathMetrics) -> RttSample {
+    RttSample {
+        rtt: metrics.rtt,
+        path: if metrics.direct {
+            RttPath::Direct
+        } else {
+            RttPath::Relay
+        },
+    }
+}
+
+fn select_path_metrics(
+    paths: impl Iterator<Item = (SelectedPathMetrics, bool)>,
+) -> Option<SelectedPathMetrics> {
+    paths
+        .filter_map(|(metrics, selected)| selected.then_some(metrics))
+        .next()
 }
 
 impl AsyncRead for IrohBiStream {
@@ -235,6 +378,186 @@ fn identity_path() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn repeated_rtt_probes_use_isolated_endpoints_without_opening_business_streams() {
+        let server = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![ALPN.to_vec(), RTT_ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let server_addr = server.endpoint.addr();
+        let client = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
+        };
+        let server_task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let accepted = server.accept().await.unwrap().unwrap();
+                assert!(accepted.is_rtt_probe());
+            }
+        });
+
+        let first = client.connect_rtt_addr(server_addr.clone()).await.unwrap();
+        assert!(first
+            .measure_rtt(Duration::from_millis(100))
+            .await
+            .is_some());
+        let second = client.connect_rtt_addr(server_addr).await.unwrap();
+        assert!(second
+            .measure_rtt(Duration::from_millis(100))
+            .await
+            .is_some());
+
+        client.close().await;
+        tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reverse_direction_rtt_probe_does_not_close_an_existing_business_stream() {
+        let mac = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![ALPN.to_vec(), RTT_ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let windows = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![ALPN.to_vec(), RTT_ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let mac_addr = mac.endpoint.addr();
+        let windows_addr = windows.endpoint.addr();
+        let mac_for_server = mac.clone();
+        let (business_done_tx, business_done_rx) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let accepted = mac_for_server.accept().await.unwrap().unwrap();
+            let mut stream = accepted.accept_stream().await.unwrap();
+            let mut request = [0u8; 4];
+            tokio::io::AsyncReadExt::read_exact(&mut stream, &mut request)
+                .await
+                .unwrap();
+            assert_eq!(&request, b"ping");
+            tokio::io::AsyncWriteExt::write_all(&mut stream, b"pong")
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::flush(&mut stream).await.unwrap();
+            let _ = business_done_rx.await;
+        });
+        let windows_for_probe = windows.clone();
+        let probe_task = tokio::spawn(async move {
+            let accepted = windows_for_probe.accept().await.unwrap().unwrap();
+            assert!(accepted.is_rtt_probe());
+        });
+
+        let mut business = windows.connect_addr(mac_addr).await.unwrap();
+        let probe = mac.connect_rtt_addr(windows_addr).await.unwrap();
+        assert!(probe
+            .measure_rtt(Duration::from_millis(100))
+            .await
+            .is_some());
+
+        tokio::io::AsyncWriteExt::write_all(&mut business, b"ping")
+            .await
+            .unwrap();
+        let mut response = [0u8; 4];
+        tokio::io::AsyncReadExt::read_exact(&mut business, &mut response)
+            .await
+            .unwrap();
+        assert_eq!(&response, b"pong");
+        let _ = business_done_tx.send(());
+        server_task.await.unwrap();
+        probe_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_alpn_does_not_prevent_the_next_business_connection() {
+        let server = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![ALPN.to_vec(), RTT_ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let server_addr = server.endpoint.addr();
+        let unsupported_client = Endpoint::builder(presets::Minimal).bind().await.unwrap();
+        let unsupported_for_connect = unsupported_client.clone();
+        let rejected_connect = tokio::spawn(async move {
+            unsupported_for_connect
+                .connect(server_addr, b"tailsync/unsupported")
+                .await
+        });
+        assert!(server.accept().await.is_err());
+        unsupported_client.close().await;
+        assert!(rejected_connect.await.unwrap().is_err());
+
+        let client = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
+        };
+        let accept_business = async {
+            loop {
+                match server.accept().await {
+                    Ok(Some(accepted)) => break accepted,
+                    Ok(None) => panic!("server endpoint closed"),
+                    Err(_) => continue,
+                }
+            }
+        };
+        let (accepted, connected) =
+            tokio::join!(accept_business, client.connect_addr(server.endpoint.addr()));
+        assert!(!accepted.is_rtt_probe());
+        assert!(connected.is_ok());
+    }
+
+    #[test]
+    fn rtt_measurement_uses_the_selected_path() {
+        let relay = SelectedPathMetrics {
+            rtt: Duration::from_millis(240),
+            direct: false,
+        };
+        let direct = SelectedPathMetrics {
+            rtt: Duration::from_millis(4),
+            direct: true,
+        };
+
+        assert_eq!(
+            select_path_metrics([(relay, false), (direct, true)].into_iter()),
+            Some(direct)
+        );
+    }
+
+    #[test]
+    fn rtt_samples_label_the_measured_path() {
+        let relay = SelectedPathMetrics {
+            rtt: Duration::from_millis(240),
+            direct: false,
+        };
+        let direct = SelectedPathMetrics {
+            rtt: Duration::from_millis(4),
+            direct: true,
+        };
+        assert_eq!(
+            sample_from_metrics(relay),
+            RttSample {
+                rtt: Duration::from_millis(240),
+                path: RttPath::Relay,
+            }
+        );
+        assert_eq!(
+            sample_from_metrics(direct),
+            RttSample {
+                rtt: Duration::from_millis(4),
+                path: RttPath::Direct,
+            }
+        );
+    }
 
     #[test]
     fn persisted_identity_keeps_the_same_endpoint_id() {

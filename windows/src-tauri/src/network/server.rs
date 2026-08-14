@@ -227,27 +227,34 @@ pub(super) async fn handle_iroh_connection(
     database: Arc<Mutex<db::HistoryDB>>,
     settings: Arc<Mutex<crypto::Settings>>,
     identity: Arc<DeviceIdentity>,
+    pairing: Arc<PairingManager>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if settings.lock().await.connection_mode != "auto" {
         return Err("Iroh connections are only accepted in automatic mode".into());
     }
     let accepted = timeout(
         HANDSHAKE_TIMEOUT,
-        secure::accept(stream, &identity, local_peer_identity("auto")),
+        secure::accept_with_pairing_window(
+            stream,
+            &identity,
+            local_peer_identity("auto"),
+            pairing.subscribe_window(),
+        ),
     )
     .await
     .map_err(|_| "Handshake timed out")??;
-    if accepted.purpose == secure::HandshakePurpose::Connection {
-        let claimed_endpoint_id = accepted
-            .peer_identity
-            .iroh_endpoint_id
-            .as_deref()
-            .ok_or("Peer did not bind its Noise identity to an Iroh endpoint")?;
-        let claimed_endpoint_id =
-            tailsync_core::iroh_transport::canonical_endpoint_id(claimed_endpoint_id)?;
-        if claimed_endpoint_id != remote_endpoint_id {
-            return Err("Peer Iroh endpoint does not match its Noise identity".into());
-        }
+    let claimed_endpoint_id = accepted
+        .peer_identity
+        .iroh_endpoint_id
+        .as_deref()
+        .ok_or("Peer did not bind its Noise identity to an Iroh endpoint")?;
+    let claimed_endpoint_id =
+        tailsync_core::iroh_transport::canonical_endpoint_id(claimed_endpoint_id)?;
+    if claimed_endpoint_id != remote_endpoint_id {
+        return Err("Peer Iroh endpoint does not match its Noise identity".into());
+    }
+    if accepted.purpose == secure::HandshakePurpose::Pairing {
+        super::iroh::remember_rtt_capability(&remote_endpoint_id);
     }
     handle_accepted_connection(
         accepted,
@@ -255,7 +262,7 @@ pub(super) async fn handle_iroh_connection(
         sync_engine,
         database,
         settings,
-        None,
+        Some(pairing),
     )
     .await
 }

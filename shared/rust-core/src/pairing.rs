@@ -254,7 +254,7 @@ impl PairingManager {
         if pending.remote_public_key == self.identity.public_key() {
             return Err("Cannot pair this device with itself".to_string());
         }
-        if !matches!(pending.interface.as_str(), "lan" | "tailscale") {
+        if !matches!(pending.interface.as_str(), "lan" | "iroh" | "tailscale") {
             return Err("Invalid pairing interface".to_string());
         }
         let verification_code = derive_verification_code(
@@ -697,6 +697,8 @@ mod tests {
 
     #[tokio::test]
     async fn both_confirmations_save_both_peer_keys_and_close_windows() {
+        const IROH_ENDPOINT_ID: &str =
+            "5866666666666666666666666666666666666666666666666666666666666666";
         let server_settings = Arc::new(Mutex::new(Settings::default()));
         let client_settings = Arc::new(Mutex::new(Settings::default()));
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
@@ -723,7 +725,7 @@ mod tests {
         let server_identity_for_task = server_identity.clone();
         let server_manager_for_task = server_manager.clone();
         let server = tokio::spawn(async move {
-            let (stream, peer_address) = listener.accept().await.unwrap();
+            let (stream, _peer_address) = listener.accept().await.unwrap();
             let accepted = secure::accept_with_pairing_window(
                 stream,
                 &server_identity_for_task,
@@ -745,8 +747,8 @@ mod tests {
                     hostname: accepted.peer_identity.hostname,
                     remote_public_key: accepted.remote_public_key,
                     handshake_hash: accepted.handshake_hash,
-                    address: peer_address.ip().to_string(),
-                    interface: "lan".into(),
+                    address: IROH_ENDPOINT_ID.into(),
+                    interface: "iroh".into(),
                 })
                 .await
                 .unwrap();
@@ -769,8 +771,8 @@ mod tests {
                 hostname: accepted.peer_identity.hostname,
                 remote_public_key: accepted.remote_public_key,
                 handshake_hash: accepted.handshake_hash,
-                address: address.ip().to_string(),
-                interface: "lan".into(),
+                address: IROH_ENDPOINT_ID.into(),
+                interface: "iroh".into(),
             })
             .await
             .unwrap();
@@ -812,6 +814,26 @@ mod tests {
         assert_eq!(
             client_settings.lock().await.trusted_peer_keys.get("server"),
             Some(&server_identity.public_key_base64())
+        );
+        assert_eq!(
+            server_settings
+                .lock()
+                .await
+                .trusted_peer_addresses
+                .get("client")
+                .and_then(|routes| routes.get("iroh"))
+                .map(String::as_str),
+            Some(IROH_ENDPOINT_ID)
+        );
+        assert_eq!(
+            client_settings
+                .lock()
+                .await
+                .trusted_peer_addresses
+                .get("server")
+                .and_then(|routes| routes.get("iroh"))
+                .map(String::as_str),
+            Some(IROH_ENDPOINT_ID)
         );
     }
 }

@@ -79,6 +79,43 @@ pub(crate) fn register_saved_sync_shortcut(
     install_sync_shortcut(app, shortcut)
 }
 
+/// Apply a shortcut change as a transaction: register the next shortcut first,
+/// then persist it, restoring the previous shortcut if either step fails.
+/// Returns the original failure, with any restore failure appended.
+fn apply_shortcut_change<R, S>(
+    previous: &str,
+    next: &str,
+    mut register: R,
+    mut save: S,
+) -> Result<(), String>
+where
+    R: FnMut(&str) -> Result<(), String>,
+    S: FnMut() -> Result<(), String>,
+{
+    if next == previous {
+        return register(next);
+    }
+    if let Err(error) = register(next) {
+        return Err(rollback_shortcut(previous, &mut register, error));
+    }
+    if let Err(error) = save() {
+        return Err(rollback_shortcut(previous, &mut register, error));
+    }
+    Ok(())
+}
+
+fn rollback_shortcut<R>(previous: &str, register: &mut R, original_error: String) -> String
+where
+    R: FnMut(&str) -> Result<(), String>,
+{
+    match register(previous) {
+        Ok(()) => original_error,
+        Err(restore_error) => {
+            format!("{original_error}; could not restore the previous shortcut: {restore_error}")
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct HistoryPage {
     pub entries: Vec<db::HistoryEntry>,
@@ -333,7 +370,7 @@ pub async fn refresh_peers(state: State<'_, AppState>) -> Result<serde_json::Val
     get_peers(state).await
 }
 
-/// Test whether a peer's TailSync TCP port is reachable.
+/// Measure latency over a peer's selected TailSync route.
 #[command]
 pub async fn test_connection(address: String) -> Result<serde_json::Value, String> {
     let address = address.trim();
@@ -341,9 +378,9 @@ pub async fn test_connection(address: String) -> Result<serde_json::Value, Strin
         return Err("Missing peer address".to_string());
     }
     match network::test_connection(address).await {
-        Ok(latency_ms) => {
-            network::record_address_test_success(address, latency_ms);
-            Ok(serde_json::json!({ "latency_ms": latency_ms }))
+        Ok(route) => {
+            network::record_address_test_success(address, route.latency_ms);
+            Ok(serde_json::to_value(route).map_err(|error| error.to_string())?)
         }
         Err(error) => {
             network::record_address_test_failure(address);
@@ -512,26 +549,15 @@ pub async fn set_sync_shortcut(
     shortcut: String,
 ) -> Result<(), String> {
     let shortcut = shortcut.trim().to_string();
-    let previous = state.settings.lock().await.sync_shortcut.clone();
-    if let Err(error) = install_sync_shortcut(&app, &shortcut) {
-        if let Err(restore_error) = install_sync_shortcut(&app, &previous) {
-            log::warn!("Could not restore previous sync shortcut: {restore_error}");
-        }
-        return Err(error);
-    }
-    if let Err(error) = state
-        .settings
-        .lock()
-        .await
-        .set_sync_shortcut(&shortcut)
-        .map_err(|error| error.to_string())
-    {
-        if let Err(restore_error) = install_sync_shortcut(&app, &previous) {
-            log::warn!("Could not restore previous sync shortcut: {restore_error}");
-        }
-        return Err(error);
-    }
-    Ok(())
+    let mut settings = state.settings.lock().await;
+    let previous = settings.sync_shortcut.clone();
+    let register = |next: &str| install_sync_shortcut(&app, next);
+    let save = || {
+        settings
+            .set_sync_shortcut(&shortcut)
+            .map_err(|error| error.to_string())
+    };
+    apply_shortcut_change(&previous, &shortcut, register, save)
 }
 
 /// Get current settings
@@ -556,14 +582,18 @@ pub async fn update_settings(
     let storage_quota_bytes = new_settings.storage_quota_bytes;
     let mode_changed = settings.connection_mode != new_settings.connection_mode;
     let shortcut_changed = settings.sync_shortcut != new_settings.sync_shortcut;
+    let previous_shortcut = settings.sync_shortcut.clone();
     let shortcut = new_settings.sync_shortcut.clone();
     let connection_mode = new_settings.connection_mode.clone();
-    new_settings.save().map_err(|e| e.to_string())?;
+    if shortcut_changed {
+        let register = |next: &str| install_sync_shortcut(&app, next);
+        let save = || new_settings.save().map_err(|error| error.to_string());
+        apply_shortcut_change(&previous_shortcut, &shortcut, register, save)?;
+    } else {
+        new_settings.save().map_err(|e| e.to_string())?;
+    }
     *settings = new_settings;
     drop(settings);
-    if shortcut_changed {
-        install_sync_shortcut(&app, &shortcut)?;
-    }
     {
         let mut db = state.db.lock().await;
         db.set_max_history(history_limit);
@@ -924,5 +954,92 @@ fn set_clipboard_dib(dib: &[u8]) {
             SetClipboardData(8, h); // CF_DIB = 8
         }
         CloseClipboard();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shortcut_transaction_registers_new_then_persists() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            Ok(())
+        };
+        let saved = std::cell::Cell::new(false);
+        let save = || {
+            saved.set(true);
+            Ok(())
+        };
+        assert!(apply_shortcut_change("old", "new", register, save).is_ok());
+        assert!(saved.get());
+        assert_eq!(*calls.borrow(), vec!["register:new"]);
+    }
+
+    #[test]
+    fn shortcut_transaction_register_failure_restores_previous() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            if next == "taken" {
+                Err("shortcut is taken".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let save = || panic!("save must not run after register failure");
+        let error = apply_shortcut_change("old", "taken", register, save).unwrap_err();
+        assert_eq!(error, "shortcut is taken");
+        assert_eq!(*calls.borrow(), vec!["register:taken", "register:old"]);
+    }
+
+    #[test]
+    fn shortcut_transaction_save_failure_restores_previous() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            Ok(())
+        };
+        let save = || Err("disk is full".to_string());
+        let error = apply_shortcut_change("old", "new", register, save).unwrap_err();
+        assert_eq!(error, "disk is full");
+        assert_eq!(*calls.borrow(), vec!["register:new", "register:old"]);
+    }
+
+    #[test]
+    fn shortcut_transaction_restore_failure_mentions_both_errors() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            if next == "new" {
+                Ok(())
+            } else {
+                Err("old shortcut no longer available".to_string())
+            }
+        };
+        let save = || Err("disk is full".to_string());
+        let error = apply_shortcut_change("old", "new", register, save).unwrap_err();
+        assert!(error.contains("disk is full"), "got: {error}");
+        assert!(
+            error.contains("old shortcut no longer available"),
+            "got: {error}"
+        );
+        assert_eq!(*calls.borrow(), vec!["register:new", "register:old"]);
+    }
+
+    #[test]
+    fn shortcut_transaction_reregisters_unchanged_shortcut_without_saving() {
+        let calls = std::cell::RefCell::new(Vec::<String>::new());
+        let register = |next: &str| {
+            calls.borrow_mut().push(format!("register:{next}"));
+            Ok(())
+        };
+        let save = || {
+            panic!("save must not run for an unchanged shortcut");
+        };
+        assert!(apply_shortcut_change("same", "same", register, save).is_ok());
+        assert_eq!(*calls.borrow(), vec!["register:same"]);
     }
 }

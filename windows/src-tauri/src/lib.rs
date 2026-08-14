@@ -511,6 +511,8 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             let db_for_storage_monitor = db_for_setup.clone();
             let db_for_iroh = db_for_setup.clone();
             let sync_for_iroh = sync_for_setup.clone();
+            let pairing_for_server = pairing.clone();
+            let pairing_for_iroh = pairing.clone();
             let server_shutdown = shutdown_for_setup.clone();
             let server_task = tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::start_server(
@@ -518,7 +520,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     db_for_setup,
                     settings_for_server,
                     identity_for_server,
-                    pairing,
+                    pairing_for_server,
                     server_shutdown,
                 )
                 .await
@@ -534,6 +536,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     db_for_iroh,
                     settings_for_iroh,
                     identity_for_iroh,
+                    pairing_for_iroh,
                     iroh_shutdown,
                 )
                 .await

@@ -38,7 +38,7 @@ import { captureShortcut, shortcutKeycaps } from "../utils/shortcut";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
-interface PeerDevice {
+export interface PeerDevice {
   hostname: string;
   tailscale_ip: string;
   address: string;
@@ -55,7 +55,7 @@ interface PeerDevice {
   routes?: PeerRoute[];
 }
 
-interface PeerRoute {
+export interface PeerRoute {
   interface: "lan" | "iroh" | "tailscale";
   address: string;
   status: "discovered" | "online" | "confirming" | "offline" | "connected";
@@ -63,6 +63,7 @@ interface PeerRoute {
   connected: boolean;
   latency_ms?: number | null;
   pairing_endpoint?: boolean;
+  rtt_capable?: boolean;
 }
 
 const routeInterfaceLabel = (routeInterface: PeerRoute["interface"]) => {
@@ -71,13 +72,33 @@ const routeInterfaceLabel = (routeInterface: PeerRoute["interface"]) => {
   return "Tailscale";
 };
 
+export const routeSupportsLatencyTest = (route: PeerRoute) => (
+  route.interface !== "iroh" || route.rtt_capable === true
+);
+
+export function pairingAddressForPeer(peer: PeerDevice): string | null {
+  const routes = (peer.routes ?? []).filter((route) => route.address.trim());
+  const irohRoute = routes.find((candidate) => candidate.interface === "iroh");
+  if (irohRoute) return irohRoute.address;
+  if (peer.current_interface === "iroh") return null;
+  const route = routes.find((candidate) => candidate.connected)
+    ?? routes.find((candidate) => candidate.online)
+    ?? routes.find((candidate) => candidate.status === "confirming")
+    ?? routes.find((candidate) => candidate.address === peer.current_address)
+    ?? routes.find((candidate) => candidate.address === peer.address)
+    ?? routes[0];
+  return route?.address ?? (peer.address?.trim() || peer.tailscale_ip?.trim() || null);
+}
+
 interface ConnectionTestResult {
   latency_ms: number;
+  path?: "tcp" | "direct" | "relay";
 }
 
 interface ConnectionTestState {
   status: "testing" | "success" | "error";
   latency_ms?: number;
+  path?: "tcp" | "direct" | "relay";
 }
 
 interface PeersResponse {
@@ -549,7 +570,7 @@ export function Settings() {
   };
 
   const openPairing = async (peer: PeerDevice) => {
-    const address = peer.address || peer.tailscale_ip;
+    const address = pairingAddressForPeer(peer);
     if (!address) return;
     setPairingTarget(peer);
     setPairingOpen(true);
@@ -623,7 +644,7 @@ export function Settings() {
       });
       setConnectionTests((current) => ({
         ...current,
-        [key]: { status: "success", latency_ms: result.latency_ms },
+        [key]: { status: "success", latency_ms: result.latency_ms, path: result.path },
       }));
     } catch (error) {
       console.error("Connection test failed:", error);
@@ -1091,8 +1112,10 @@ export function Settings() {
                     online: peer.online,
                     connected: Boolean(peer.current_interface),
                     latency_ms: null,
+                    rtt_capable: peer.current_interface !== "iroh",
                   } satisfies PeerRoute]
                   : [];
+              const pairingAddress = pairingAddressForPeer(peer);
               return (
                 <div className="device-row peer-device-row" key={peer.hostname}>
                   <div className="device-avatar">{peer.hostname.slice(0, 1).toUpperCase()}</div>
@@ -1150,9 +1173,12 @@ export function Settings() {
                               <button
                                 type="button"
                                 className="connection-test-button"
-                                disabled={test?.status === "testing"}
+                                disabled={test?.status === "testing"
+                                  || !routeSupportsLatencyTest(route)}
                                 onClick={() => void testConnection(peer, route)}
-                                title={t(route.interface === "iroh" ? "settings.testRoute" : "settings.testTcpPort")}
+                                title={!routeSupportsLatencyTest(route)
+                                  ? t("settings.testRouteRediscover")
+                                  : t(route.interface === "iroh" ? "settings.testRoute" : "settings.testTcpPort")}
                                 aria-label={`${t("settings.testAddress")}: ${route.address}`}
                               >
                                 {test?.status === "testing"
@@ -1160,7 +1186,10 @@ export function Settings() {
                                   : <Activity size={16} strokeWidth={1.7} aria-hidden="true" />}
                               </button>
                               {test?.status === "success" && (
-                                <span className="connection-test-result success">{test.latency_ms} ms</span>
+                                <span className="connection-test-result success">
+                                  {test.latency_ms} ms
+                                  {test.path === "relay" && ` · ${t("settings.relayPath")}`}
+                                </span>
                               )}
                               {test?.status === "error" && (
                                 <span className="connection-test-result error">
@@ -1199,7 +1228,13 @@ export function Settings() {
                         </button>
                       </>
                     ) : (
-                      <button type="button" className="pair-device-action" onClick={() => void openPairing(peer)}>
+                      <button
+                        type="button"
+                        className="pair-device-action"
+                        onClick={() => void openPairing(peer)}
+                        disabled={!pairingAddress}
+                        title={pairingAddress ? undefined : t("settings.pairUnavailable")}
+                      >
                         {t("settings.pair")}
                       </button>
                     )}

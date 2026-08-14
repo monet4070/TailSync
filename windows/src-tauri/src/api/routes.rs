@@ -72,6 +72,7 @@ pub(crate) fn peer_snapshot_data(
                         "connected": health.connected,
                         "latency_ms": health.latency_ms,
                         "pairing_endpoint": paired_endpoint == Some(&candidate.address),
+                        "rtt_capable": candidate.rtt_capable,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -111,6 +112,7 @@ pub(crate) fn peer_snapshot_data(
                 "connected": true,
                 "latency_ms": Value::Null,
                 "pairing_endpoint": false,
+                "rtt_capable": candidate.rtt_capable,
             })
         })
         .collect::<Vec<_>>();
@@ -601,7 +603,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             match serde_json::from_value::<crate::crypto::Settings>(settings_json) {
                 Ok(requested_settings) => {
                     let mut settings = state.settings.lock().await;
-                    let new_settings = match settings.prepare_user_update(requested_settings) {
+                    let mut new_settings = match settings.prepare_user_update(requested_settings) {
                         Ok(new_settings) => new_settings,
                         Err(error) => {
                             return Response {
@@ -611,6 +613,10 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                             };
                         }
                     };
+                    // The shortcut is registered through the dedicated
+                    // set_sync_shortcut command; ignore any value arriving via
+                    // generic settings so runtime and persisted state stay aligned.
+                    new_settings.sync_shortcut = settings.sync_shortcut.clone();
                     let mode_changed = settings.connection_mode != new_settings.connection_mode;
                     let connection_mode = new_settings.connection_mode.clone();
                     let limit = new_settings.history_limit as i64;
@@ -960,11 +966,14 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 };
             }
             match network::test_connection(hostname).await {
-                Ok(latency_ms) => {
-                    network::record_address_test_success(hostname, latency_ms);
+                Ok(route) => {
+                    network::record_address_test_success(hostname, route.latency_ms);
                     Response {
                         ok: true,
-                        data: Some(serde_json::json!({ "latency_ms": latency_ms })),
+                        data: Some(serde_json::json!({
+                            "latency_ms": route.latency_ms,
+                            "path": route.path,
+                        })),
                         error: None,
                     }
                 }
