@@ -50,7 +50,7 @@ final class AppBehaviorTests: XCTestCase {
         )
     }
 
-    func testLegacyIrohRoutesFailClosedForLatencyTesting() throws {
+    func testIrohRouteRttCapabilityDefaultsAndExplicitValues() throws {
         let iroh = try JSONDecoder().decode(
             ApiClient.PeerSnapshot.Route.self,
             from: Data(#"{"interface":"iroh","address":"endpoint"}"#.utf8)
@@ -67,11 +67,21 @@ final class AppBehaviorTests: XCTestCase {
             ApiClient.PeerSnapshot.Candidate.self,
             from: Data(#"{"interface":"lan","address":"192.168.1.2"}"#.utf8)
         )
+        let capableIroh = try JSONDecoder().decode(
+            ApiClient.PeerSnapshot.Route.self,
+            from: Data(#"{"interface":"iroh","address":"endpoint","rtt_capable":true}"#.utf8)
+        )
+        let capableIrohCandidate = try JSONDecoder().decode(
+            ApiClient.PeerSnapshot.Candidate.self,
+            from: Data(#"{"interface":"iroh","address":"endpoint","rtt_capable":true}"#.utf8)
+        )
 
         XCTAssertFalse(iroh.rttCapable)
         XCTAssertTrue(lan.rttCapable)
         XCTAssertFalse(irohCandidate.rttCapable)
         XCTAssertTrue(lanCandidate.rttCapable)
+        XCTAssertTrue(capableIroh.rttCapable)
+        XCTAssertTrue(capableIrohCandidate.rttCapable)
     }
 
     func testUnknownConnectionModeFallsBackToAutomatic() throws {

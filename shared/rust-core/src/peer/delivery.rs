@@ -687,6 +687,7 @@ impl Default for WorkerConfig {
 #[allow(async_fn_in_trait)] // Concrete adapters; Send bounds are checked at the worker boundary.
 pub trait ConnectionAdapter: Send + Sync {
     type Connection: DeliveryConnection;
+    type SessionLease: Send;
 
     /// Connect and authenticate one route. Failures are retried by the
     /// worker after `reconnect_delay`.
@@ -703,7 +704,7 @@ pub trait ConnectionAdapter: Send + Sync {
         interface: ConnectionInterface,
         address: &str,
         latency_ms: u64,
-    );
+    ) -> Self::SessionLease;
 
     fn record_protocol_error(&self, hostname: &str, error: &str);
     fn clear_protocol_error(&self, hostname: &str);
@@ -805,7 +806,7 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
             active.interface.as_str(),
             active.latency
         );
-        adapter.register_session(
+        let _session_lease = adapter.register_session(
             &hostname,
             active.interface,
             &route.candidate.address,
@@ -1533,11 +1534,24 @@ mod tests {
             std::collections::VecDeque<Result<(MemoryConnection, ResolvedCandidate), String>>,
         >,
         sessions: std::sync::Mutex<Vec<(String, ConnectionInterface, String, u64)>>,
+        active_sessions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         connect_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    struct FakeSessionLease {
+        active_sessions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Drop for FakeSessionLease {
+        fn drop(&mut self) {
+            self.active_sessions
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     impl ConnectionAdapter for FakeAdapter {
         type Connection = MemoryConnection;
+        type SessionLease = FakeSessionLease;
 
         async fn connect(
             &self,
@@ -1559,13 +1573,18 @@ mod tests {
             interface: ConnectionInterface,
             address: &str,
             latency_ms: u64,
-        ) {
+        ) -> FakeSessionLease {
+            self.active_sessions
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.sessions.lock().unwrap().push((
                 hostname.to_string(),
                 interface,
                 address.to_string(),
                 latency_ms,
             ));
+            FakeSessionLease {
+                active_sessions: self.active_sessions.clone(),
+            }
         }
 
         fn record_protocol_error(&self, _hostname: &str, _error: &str) {}
@@ -1605,6 +1624,7 @@ mod tests {
         FakeAdapter {
             connects: tokio::sync::Mutex::new(connects.into()),
             sessions: std::sync::Mutex::new(Vec::new()),
+            active_sessions: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             connect_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -1668,6 +1688,13 @@ mod tests {
             .unwrap();
         assert_eq!(receipt.next_offset, Some(1024));
         server.await.unwrap();
+        assert_eq!(
+            adapter
+                .active_sessions
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the session lease must remain active while the worker owns the connection"
+        );
 
         // Worker keeps running after the delivery: drop senders to let it
         // exit, then verify the session was registered.
@@ -1680,6 +1707,13 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].0, "peer");
         assert_eq!(sessions[0].1, ConnectionInterface::Lan);
+        assert_eq!(
+            adapter
+                .active_sessions
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the session lease must be released when the worker exits"
+        );
     }
 
     #[tokio::test]

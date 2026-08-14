@@ -64,8 +64,8 @@ impl ConnectionMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::LanOnly => "lan",
-            Self::TailscaleOnly => "tailscale",
+            Self::LanOnly => "lan_only",
+            Self::TailscaleOnly => "tailscale_only",
         }
     }
 
@@ -90,12 +90,13 @@ impl ConnectionMode {
 
 /// Lifecycle status of a discovered peer.
 ///
-/// Invariant: a peer or candidate is `online` iff its status is
+/// Projected health state is consistent when a peer or candidate is `online`
+/// iff its status is
 /// [`PeerStatus::Connected`], [`PeerStatus::Online`], or
 /// [`PeerStatus::Confirming`]. [`PeerInfo::is_consistent`] and
-/// [`PeerCandidate::is_consistent`] check this; the health projection
-/// (`apply_peer_health`) is the single place that derives both fields, so
-/// wire data always satisfies it.
+/// [`PeerCandidate::is_consistent`] check this. Legacy wire data can contain
+/// older field combinations; the health projection (`apply_peer_health`)
+/// normalizes both fields before exposing a fresh snapshot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerStatus {
@@ -144,7 +145,7 @@ fn candidate_rtt_capable_default() -> bool {
 }
 
 impl PeerCandidate {
-    /// Whether `online`/\ agree under the health-model invariant and
+    /// Whether `online` and `status` agree under the health model and
     /// `priority` matches the interface rank.
     pub fn is_consistent(&self) -> bool {
         self.online == self.status.is_online() && self.priority == self.interface.priority()
@@ -197,8 +198,8 @@ pub struct PeerHealthSnapshot {
 impl PeerInfo {
     /// Whether the peer-level fields and every candidate satisfy the
     /// health-model invariant (`online` iff status is connected/online/
-    /// confirming). The health projection derives all of these, so this
-    /// should only fail on hand-constructed values.
+    /// confirming). The health projection derives all of these; legacy wire
+    /// values may remain inconsistent until that projection runs.
     pub fn is_consistent(&self) -> bool {
         self.online == self.status.is_online()
             && self.candidates.iter().all(PeerCandidate::is_consistent)
@@ -350,6 +351,8 @@ mod tests {
         );
         assert_eq!(ConnectionMode::parse("cache-test"), None);
         assert_eq!(ConnectionMode::Auto.as_str(), "auto");
+        assert_eq!(ConnectionMode::LanOnly.as_str(), "lan_only");
+        assert_eq!(ConnectionMode::TailscaleOnly.as_str(), "tailscale_only");
     }
 
     #[test]

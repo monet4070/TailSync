@@ -354,6 +354,7 @@ struct PoolAdapter {
 
 impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
     type Connection = secure::SecureConnection;
+    type SessionLease = tailsync_core::peer::health::SessionGuard;
 
     async fn connect(
         &self,
@@ -369,8 +370,8 @@ impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
         interface: ConnectionInterface,
         address: &str,
         latency_ms: u64,
-    ) {
-        register_active_session(hostname, interface, address, latency_ms);
+    ) -> Self::SessionLease {
+        register_active_session(hostname, interface, address, latency_ms)
     }
 
     fn record_protocol_error(&self, hostname: &str, error: &str) {

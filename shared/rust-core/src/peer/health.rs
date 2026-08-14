@@ -352,13 +352,6 @@ pub fn apply_peer_health(
     now: Instant,
 ) {
     for peer in peers {
-        // The projection re-derives online/status/current fields, but
-        // feeding it contradictory hand-constructed state is a bug: catch
-        // it at the boundary in debug builds and in the test suite.
-        debug_assert!(
-            peer.is_consistent(),
-            "inconsistent peer state before projection"
-        );
         // Projection always starts from a clean slate: if the peer's last
         // authenticated session closed, the stale current route must not
         // survive into the new snapshot.
@@ -373,10 +366,7 @@ pub fn apply_peer_health(
             };
             let connected = sessions.is_connected(&route);
             candidate.status = tracker.status_at(&route, now, connected);
-            candidate.online = matches!(
-                candidate.status,
-                PeerStatus::Connected | PeerStatus::Online | PeerStatus::Confirming
-            );
+            candidate.online = candidate.status.is_online();
             candidate.latency = tracker.latency(&route).or(candidate.latency);
             if status_rank(candidate.status) > status_rank(peer_status) {
                 peer_status = candidate.status;
@@ -388,9 +378,10 @@ pub fn apply_peer_health(
             peer_status = PeerStatus::Connected;
         }
         peer.status = peer_status;
-        peer.online = matches!(
-            peer_status,
-            PeerStatus::Connected | PeerStatus::Online | PeerStatus::Confirming
+        peer.online = peer_status.is_online();
+        debug_assert!(
+            peer.is_consistent(),
+            "health projection produced inconsistent state"
         );
     }
 }
@@ -653,6 +644,43 @@ mod tests {
         assert_eq!(peers[0].candidates[0].latency, Some(3));
         assert_eq!(peers[0].candidates[1].status, PeerStatus::Offline);
         assert!(!peers[0].candidates[1].online);
+    }
+
+    #[test]
+    fn apply_peer_health_normalizes_inconsistent_legacy_input() {
+        let tracker = HealthTracker::default();
+        let sessions = SessionRegistry::default();
+        let now = Instant::now();
+        let legacy_candidate: PeerCandidate = serde_json::from_value(serde_json::json!({
+            "interface": "lan",
+            "address": "192.168.250.40",
+            "priority": 0
+        }))
+        .expect("legacy candidate");
+        assert!(!legacy_candidate.is_consistent());
+
+        let mut peers = vec![PeerInfo {
+            hostname: "legacy-peer".into(),
+            tailscale_ip: String::new(),
+            online: false,
+            enabled: true,
+            address: "192.168.250.40".into(),
+            connection_mode: "lan_only".into(),
+            trusted: false,
+            fingerprint: String::new(),
+            candidates: vec![legacy_candidate],
+            current_interface: None,
+            current_address: None,
+            status: PeerStatus::Discovered,
+        }];
+
+        apply_peer_health(&mut peers, &tracker, &sessions, now);
+
+        assert!(peers[0].is_consistent());
+        assert!(!peers[0].online);
+        assert_eq!(peers[0].status, PeerStatus::Discovered);
+        assert_eq!(peers[0].candidates[0].status, PeerStatus::Discovered);
+        assert!(!peers[0].candidates[0].online);
     }
 
     #[test]
