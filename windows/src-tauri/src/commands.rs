@@ -397,35 +397,26 @@ pub async fn trust_peer(
     public_key: String,
     address: Option<String>,
 ) -> Result<String, String> {
-    let hostname = hostname.trim();
-    if hostname.is_empty() || hostname.len() > 255 {
-        return Err("Invalid peer hostname".to_string());
-    }
-    let public_key = crate::identity::canonical_public_key(&public_key)?;
-    if public_key == state.identity.public_key_base64() {
-        return Err("Cannot pair this device with itself".to_string());
-    }
-    let decoded = crate::identity::decode_public_key(&public_key)?;
-    let fingerprint = crate::identity::fingerprint(&decoded);
-    {
-        let mut settings = state.settings.lock().await;
-        let mode = match (settings.connection_mode.as_str(), address.as_deref()) {
-            ("auto", Some(address)) => network::infer_interface(address)?.as_str().to_string(),
-            (mode, _) => network::mode_interface(mode)
-                .map(|interface| interface.as_str().to_string())
-                .unwrap_or_else(|| "lan".to_string()),
-        };
-        settings
-            .trust_peer(
-                hostname,
-                &public_key,
-                &mode,
-                address.as_deref().filter(|value| !value.trim().is_empty()),
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    state.pool.lock().await.disconnect_hostname(hostname);
-    crate::network::clear_protocol_compatibility_error(hostname);
+    let fingerprint = crate::identity::trust_peer(
+        &state.identity,
+        &state.settings,
+        &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
+        &hostname,
+        &public_key,
+        address.as_deref(),
+    )
+    .await
+    .map_err(|failure| match failure {
+        crate::identity::TrustPeerFailure::InvalidHostname => "Invalid peer hostname".to_string(),
+        crate::identity::TrustPeerFailure::SelfPairing => {
+            "Cannot pair this device with itself".to_string()
+        }
+        crate::identity::TrustPeerFailure::Key(error)
+        | crate::identity::TrustPeerFailure::Interface(error)
+        | crate::identity::TrustPeerFailure::Trust(error) => error,
+    })?;
+    state.pool.lock().await.disconnect_hostname(hostname.trim());
+    crate::network::clear_protocol_compatibility_error(hostname.trim());
     Ok(fingerprint)
 }
 
@@ -477,7 +468,11 @@ pub async fn start_pairing(
 pub async fn confirm_pairing(
     state: State<'_, AppState>,
 ) -> Result<crate::pairing::PairingStatus, String> {
-    state.pairing.confirm().await
+    state
+        .pairing
+        .confirm()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[command]
@@ -576,34 +571,26 @@ pub async fn update_settings(
 ) -> Result<(), String> {
     let requested_settings: crate::crypto::Settings =
         serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
-    let mut settings = state.settings.lock().await;
-    let new_settings = settings.prepare_user_update(requested_settings)?;
-    let history_limit = new_settings.history_limit as i64;
-    let storage_quota_bytes = new_settings.storage_quota_bytes;
-    let mode_changed = settings.connection_mode != new_settings.connection_mode;
-    let shortcut_changed = settings.sync_shortcut != new_settings.sync_shortcut;
-    let previous_shortcut = settings.sync_shortcut.clone();
-    let shortcut = new_settings.sync_shortcut.clone();
-    let connection_mode = new_settings.connection_mode.clone();
-    if shortcut_changed {
-        let register = |next: &str| install_sync_shortcut(&app, next);
-        let save = || new_settings.save().map_err(|error| error.to_string());
-        apply_shortcut_change(&previous_shortcut, &shortcut, register, save)?;
-    } else {
-        new_settings.save().map_err(|e| e.to_string())?;
-    }
-    *settings = new_settings;
-    drop(settings);
-    {
-        let mut db = state.db.lock().await;
-        db.set_max_history(history_limit);
-        db.set_storage_quota(storage_quota_bytes);
-        db.enforce_limits().map_err(|error| error.to_string())?;
-    }
-    if mode_changed {
+    let apply_shortcut_transaction =
+        |new_settings: &crate::crypto::Settings, previous: &str, next: &str| {
+            let register = |candidate: &str| install_sync_shortcut(&app, candidate);
+            apply_shortcut_change(previous, next, register, || {
+                new_settings.save().map_err(|error| error.to_string())
+            })
+        };
+    let outcome = crate::crypto::apply_settings_update(
+        &state.settings,
+        &state.db,
+        requested_settings,
+        &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
+        Some(&apply_shortcut_transaction),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if outcome.mode_changed {
         state.pool.lock().await.disconnect_all();
         network::clear_peer_cache().await;
-        network::refresh_iroh_for_mode(&connection_mode).await;
+        network::refresh_iroh_for_mode(&outcome.connection_mode).await;
     }
     Ok(())
 }
@@ -739,63 +726,46 @@ pub async fn change_storage_location(
 ) -> Result<db::StorageMigrationResult, String> {
     use tauri_plugin_notification::NotificationExt;
     let parent = std::path::PathBuf::from(parent);
-    let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let active = crate::api::has_active_file_progress();
-        if !active {
-            break;
+    let notifications_enabled = state.settings.lock().await.notifications_enabled;
+    let show = || {
+        if notifications_enabled {
+            let _ = app
+                .notification()
+                .builder()
+                .title("TailSync")
+                .body("File transfers finished. Moving TailSync data now.")
+                .show();
         }
-        if tokio::time::Instant::now() >= wait_deadline {
-            return Err("Timed out waiting for active file transfers to finish".to_string());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    if state.settings.lock().await.notifications_enabled {
-        let _ = app
-            .notification()
-            .builder()
-            .title("TailSync")
-            .body("File transfers finished. Moving TailSync data now.")
-            .show();
-    }
-    let previous_storage_root = state.settings.lock().await.storage_root.clone();
-    let database = state.db.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        database
-            .blocking_lock()
-            .migrate_storage_parent(&parent)
-            .map_err(|error| error.to_string())
-    })
+    };
+    let notify: Option<&(dyn Fn() + Send + Sync)> = Some(&show);
+    db::migrate_storage_with_rollback(
+        &state.db,
+        &state.settings,
+        &parent,
+        db::StorageMigrationHooks {
+            wait_timeout: std::time::Duration::from_secs(60),
+            has_active_transfers: &crate::api::has_active_file_progress,
+            notify,
+            persist_settings: &|settings: &crate::crypto::Settings| {
+                settings.save().map_err(|error| error.to_string())
+            },
+        },
+    )
     .await
-    .map_err(|error| error.to_string())??;
-    let mut settings = state.settings.lock().await;
-    settings.storage_root = Some(result.new_root.clone());
-    if let Err(error) = settings.save().map_err(|error| error.to_string()) {
-        settings.storage_root = previous_storage_root;
-        drop(settings);
-        let old_root = std::path::PathBuf::from(&result.old_root);
-        let database = state.db.clone();
-        let rollback = tokio::task::spawn_blocking(move || {
-            database
-                .blocking_lock()
-                .reopen_storage_at(&old_root)
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|join_error| join_error.to_string())?;
-        return match rollback {
-            Ok(()) => {
-                let _ = db::delete_old_storage(std::path::Path::new(&result.new_root));
-                Err(format!(
-                    "Could not save the new storage location; TailSync returned to the old location: {error}"
-                ))
-            }
-            Err(rollback_error) => Err(format!(
-                "Could not save the new storage location ({error}); rollback also failed: {rollback_error}"
-            )),
-        };
-    }
-    Ok(result)
+    .map_err(|failure| match failure {
+        db::StorageMigrationFailure::TimedOutWaitingForTransfers => {
+            "Timed out waiting for active file transfers to finish".to_string()
+        }
+        db::StorageMigrationFailure::Migrate(error) => error,
+        db::StorageMigrationFailure::SaveFailedAfterRollback { save_error } => format!(
+            "Could not save the new storage location; TailSync returned to the old location: {save_error}"
+        ),
+        db::StorageMigrationFailure::RollbackAlsoFailed { save_error, rollback_error } => {
+            format!(
+                "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
+            )
+        }
+    })
 }
 
 #[command]

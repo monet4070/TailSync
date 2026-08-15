@@ -37,3 +37,6 @@ security-framework-sys = "2"
 
 [features]
 test-support = []
+
+[dev-dependencies]
+proptest = "1"

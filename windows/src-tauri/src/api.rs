@@ -7,12 +7,12 @@ mod imports;
 mod routes;
 mod transport;
 
-pub(crate) use imports::ImportRegistry;
 use imports::{
     append_import_chunk, begin_import, finish_import, import_response, import_size_limit,
 };
 use routes::handle_cmd;
 pub(crate) use routes::{history_capabilities_data, peer_snapshot_data};
+pub(crate) use tailsync_core::import::ImportRegistry;
 pub use transport::start;
 #[cfg(test)]
 use transport::{bind_api_listener, read_request_with_limits};
@@ -27,9 +27,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -330,10 +328,6 @@ const API_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const API_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const API_BIND_RETRY_DELAY: Duration = Duration::from_millis(250);
 const API_MAX_CONNECTIONS: usize = 16;
-const IMPORT_CHUNK_MAX_BYTES: usize = 512 * 1024;
-const API_MAX_IMPORTS: usize = 4;
-const IMPORT_SESSION_TTL: Duration = Duration::from_secs(10 * 60);
-const MAX_IMPORT_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct ApiToken([u8; 32]);

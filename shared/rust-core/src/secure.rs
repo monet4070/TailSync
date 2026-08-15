@@ -621,7 +621,7 @@ where
 }
 
 pub fn decode_trusted_key(encoded: &str) -> Result<Vec<u8>, String> {
-    identity::decode_public_key(encoded)
+    identity::decode_public_key(encoded).map_err(|error| error.to_string())
 }
 
 pub fn fingerprint(public_key: &[u8]) -> String {

@@ -308,7 +308,12 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "confirm_pairing" => match state.pairing.confirm().await {
+        "confirm_pairing" => match state
+            .pairing
+            .confirm()
+            .await
+            .map_err(|error| error.to_string())
+        {
             Ok(status) => Response {
                 ok: true,
                 data: Some(serde_json::to_value(status).unwrap_or_default()),
@@ -575,54 +580,40 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 };
             };
             match serde_json::from_value::<crate::crypto::Settings>(settings_json) {
-                Ok(requested_settings) => {
-                    let mut settings = state.settings.lock().await;
-                    let mut new_settings = match settings.prepare_user_update(requested_settings) {
-                        Ok(new_settings) => new_settings,
-                        Err(error) => {
-                            return Response {
-                                ok: false,
-                                data: None,
-                                error: Some(error),
-                            };
-                        }
-                    };
+                Ok(mut requested_settings) => {
                     // The shortcut is registered through the dedicated
                     // set_sync_shortcut command; ignore any value arriving via
                     // generic settings so runtime and persisted state stay aligned.
-                    new_settings.sync_shortcut = settings.sync_shortcut.clone();
-                    let mode_changed = settings.connection_mode != new_settings.connection_mode;
-                    let connection_mode = new_settings.connection_mode.clone();
-                    let limit = new_settings.history_limit as i64;
-                    let quota = new_settings.storage_quota_bytes;
-                    if let Err(e) = new_settings.save() {
-                        return Response {
-                            ok: false,
-                            data: None,
-                            error: Some(e.to_string()),
-                        };
-                    }
-                    *settings = new_settings;
-                    drop(settings);
-                    if mode_changed {
-                        state.pool.lock().await.disconnect_all();
-                        network::clear_peer_cache().await;
-                        network::refresh_iroh_for_mode(&connection_mode).await;
-                    }
-                    let mut db = state.db.lock().await;
-                    db.set_max_history(limit);
-                    db.set_storage_quota(quota);
-                    if let Err(error) = db.enforce_limits() {
-                        return Response {
+                    requested_settings.sync_shortcut =
+                        state.settings.lock().await.sync_shortcut.clone();
+                    match crate::crypto::apply_settings_update(
+                        &state.settings,
+                        &state.db,
+                        requested_settings,
+                        &|settings: &crate::crypto::Settings| {
+                            settings.save().map_err(|error| error.to_string())
+                        },
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => {
+                            if outcome.mode_changed {
+                                state.pool.lock().await.disconnect_all();
+                                network::clear_peer_cache().await;
+                                network::refresh_iroh_for_mode(&outcome.connection_mode).await;
+                            }
+                            Response {
+                                ok: true,
+                                data: None,
+                                error: None,
+                            }
+                        }
+                        Err(error) => Response {
                             ok: false,
                             data: None,
                             error: Some(error.to_string()),
-                        };
-                    }
-                    Response {
-                        ok: true,
-                        data: None,
-                        error: None,
+                        },
                     }
                 }
                 Err(e) => Response {
@@ -641,76 +632,47 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     error: Some("missing parent".into()),
                 };
             };
-            let wait_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-            while has_active_file_progress() {
-                if tokio::time::Instant::now() >= wait_deadline {
-                    return Response {
-                        ok: false,
-                        data: None,
-                        error: Some("Timed out waiting for active file transfers to finish".into()),
-                    };
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-            let previous_storage_root = state.settings.lock().await.storage_root.clone();
-            let database = state.db.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                database
-                    .blocking_lock()
-                    .migrate_storage_parent(std::path::Path::new(&parent))
-                    .map_err(|error| error.to_string())
-            })
+            let parent = std::path::PathBuf::from(parent);
+            match db::migrate_storage_with_rollback(
+                &state.db,
+                &state.settings,
+                &parent,
+                db::StorageMigrationHooks {
+                    wait_timeout: std::time::Duration::from_secs(60),
+                    has_active_transfers: &has_active_file_progress,
+                    notify: None,
+                    persist_settings: &|settings: &crate::crypto::Settings| {
+                        settings.save().map_err(|error| error.to_string())
+                    },
+                },
+            )
             .await
-            .map_err(|error| error.to_string())
-            .and_then(|result| result);
-            match result {
-                Ok(result) => {
-                    let mut settings = state.settings.lock().await;
-                    settings.storage_root = Some(result.new_root.clone());
-                    match settings.save().map_err(|error| error.to_string()) {
-                        Ok(()) => Response {
-                            ok: true,
-                            data: serde_json::to_value(result).ok(),
-                            error: None,
-                        },
-                        Err(error) => {
-                            settings.storage_root = previous_storage_root;
-                            drop(settings);
-                            let old_root = std::path::PathBuf::from(&result.old_root);
-                            let database = state.db.clone();
-                            let rollback = tokio::task::spawn_blocking(move || {
-                                database
-                                    .blocking_lock()
-                                    .reopen_storage_at(&old_root)
-                                    .map_err(|error| error.to_string())
-                            })
-                            .await
-                            .map_err(|join_error| join_error.to_string())
-                            .and_then(|result| result);
-                            Response {
-                                ok: false,
-                                data: None,
-                                error: Some(match rollback {
-                                    Ok(()) => {
-                                        let _ = db::delete_old_storage(std::path::Path::new(
-                                            &result.new_root,
-                                        ));
-                                        format!(
-                                            "Could not save the new storage location; TailSync returned to the old location: {error}"
-                                        )
-                                    }
-                                    Err(rollback_error) => format!(
-                                        "Could not save the new storage location ({error}); rollback also failed: {rollback_error}"
-                                    ),
-                                }),
-                            }
-                        }
-                    }
-                }
-                Err(error) => Response {
+            {
+                Ok(result) => Response {
+                    ok: true,
+                    data: serde_json::to_value(result).ok(),
+                    error: None,
+                },
+                Err(failure) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(match failure {
+                        db::StorageMigrationFailure::TimedOutWaitingForTransfers => {
+                            "Timed out waiting for active file transfers to finish".to_string()
+                        }
+                        db::StorageMigrationFailure::Migrate(error) => error,
+                        db::StorageMigrationFailure::SaveFailedAfterRollback { save_error } => {
+                            format!(
+                                "Could not save the new storage location; TailSync returned to the old location: {save_error}"
+                            )
+                        }
+                        db::StorageMigrationFailure::RollbackAlsoFailed {
+                            save_error,
+                            rollback_error,
+                        } => format!(
+                            "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
+                        ),
+                    }),
                 },
             }
         }
@@ -823,68 +785,32 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .address
                 .as_deref()
                 .filter(|value| !value.trim().is_empty());
-            if hostname.is_empty() || hostname.len() > 255 {
-                return Response {
-                    ok: false,
-                    data: None,
-                    error: Some("invalid hostname".into()),
-                };
-            }
-            let public_key = match identity::canonical_public_key(public_key) {
-                Ok(key) => key,
-                Err(error) => {
-                    return Response {
-                        ok: false,
-                        data: None,
-                        error: Some(error),
-                    }
+            let result = identity::trust_peer(
+                &state.identity,
+                &state.settings,
+                &|settings: &crate::crypto::Settings| {
+                    settings.save().map_err(|error| error.to_string())
+                },
+                hostname,
+                public_key,
+                address,
+            )
+            .await
+            .map_err(|failure| match failure {
+                identity::TrustPeerFailure::InvalidHostname => "invalid hostname".to_string(),
+                identity::TrustPeerFailure::SelfPairing => {
+                    "cannot pair this device with itself".to_string()
                 }
-            };
-            if public_key == state.identity.public_key_base64() {
-                return Response {
-                    ok: false,
-                    data: None,
-                    error: Some("cannot pair this device with itself".into()),
-                };
-            }
-            let decoded = match identity::decode_public_key(&public_key) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    return Response {
-                        ok: false,
-                        data: None,
-                        error: Some(error),
-                    }
-                }
-            };
-            let fingerprint = identity::fingerprint(&decoded);
-            let result = {
-                let mut settings = state.settings.lock().await;
-                let mode = match (settings.connection_mode.as_str(), req.address.as_deref()) {
-                    ("auto", Some(address)) => match network::infer_interface(address) {
-                        Ok(interface) => interface.as_str().to_string(),
-                        Err(error) => {
-                            return Response {
-                                ok: false,
-                                data: None,
-                                error: Some(error),
-                            }
-                        }
-                    },
-                    (mode, _) => network::mode_interface(mode)
-                        .map(|interface| interface.as_str().to_string())
-                        .unwrap_or_else(|| "lan".to_string()),
-                };
-                settings
-                    .trust_peer(hostname, &public_key, &mode, address)
-                    .map_err(|error| error.to_string())
-            };
+                identity::TrustPeerFailure::Key(error)
+                | identity::TrustPeerFailure::Interface(error)
+                | identity::TrustPeerFailure::Trust(error) => error,
+            });
             if result.is_ok() {
                 state.pool.lock().await.disconnect_hostname(hostname);
                 network::clear_protocol_compatibility_error(hostname);
             }
             match result {
-                Ok(()) => Response {
+                Ok(fingerprint) => Response {
                     ok: true,
                     data: Some(serde_json::json!({ "fingerprint": fingerprint })),
                     error: None,

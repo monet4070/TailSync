@@ -1,9 +1,46 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  cancelFileBatch,
+  clearHistory,
+  deleteEntry,
+  getFileProgress,
+  getHistoryCapabilities,
+  getHistoryPage,
+  getMigrationDiagnostics,
+  getSettings,
+  getSyncWarning,
+  getVersion,
+  restoreEntry,
+  restoreFileBatch,
+  setHistoryPinned,
+  type FileProgress,
+  type HistoryCapabilities,
+  type HistoryCategory,
+  type HistoryEntry,
+  type MigrationDiagnostics,
+} from "../tailsyncClient";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
+import { useTransient } from "../hooks/useTransient";
+import {
+  useThumbnailCache,
+  type ThumbnailData,
+} from "../hooks/useThumbnailCache";
+import { buildHistoryQuery } from "../utils/historyQuery";
+import {
+  GROUP_LABEL_KEYS,
+  computeBatchInfos,
+  groupEntriesByDate,
+} from "../utils/historyGrouping";
 import { useVisiblePolling } from "../hooks/useVisiblePolling";
+import {
+  DATE_FILTER_OPTIONS,
+  dateBounds,
+  dateInputValue,
+  localCalendarContextKey,
+  type DateFilter,
+} from "../utils/historyFilters";
 import { LatestRequest } from "../utils/asyncControl";
 import {
   HISTORY_PAGE_SIZE,
@@ -39,72 +76,6 @@ import {
 import { ThemeLogo } from "../ThemeLogo";
 
 /* ── Types ──────────────────────────────────────────────────────── */
-
-type HistoryCategory =
-  | "text"
-  | "website"
-  | "code"
-  | "command"
-  | "structured_data"
-  | "path"
-  | "image"
-  | "file";
-
-interface HistoryEntry {
-  id: number;
-  timestamp: string;
-  type: "text" | "image" | "file";
-  description: string;
-  data_hash: string;
-  size_bytes: number;
-  source_peer: string;
-  category?: HistoryCategory;
-  categories?: HistoryCategory[];
-  category_confidence?: number;
-  classifier_version?: number;
-  pinned?: boolean;
-  batch_id?: string | null;
-  batch_index?: number | null;
-  batch_total?: number | null;
-  batch_count?: number | null;
-  batch_status?: "complete" | "incomplete";
-}
-
-interface ThumbnailData {
-  b64: string;
-  width: number;
-  height: number;
-}
-
-interface ImageThumbnail {
-  id: number;
-  thumbnail_b64: string;
-  thumbnail_width: number;
-  thumbnail_height: number;
-}
-
-interface HistoryPageResult {
-  entries: HistoryEntry[];
-  total: number | null;
-  has_more: boolean;
-}
-
-interface HistoryCapabilities {
-  classifier_version: number;
-  categories: HistoryCategory[];
-  multiple_labels: boolean;
-  date_range_filter: boolean;
-}
-
-interface MigrationDiagnostics {
-  unresolved_count: number;
-}
-
-interface SyncWarning {
-  kind: "expired_event";
-  peer: string;
-  occurred_at_ms: number;
-}
 
 /* ── Constants ──────────────────────────────────────────────────── */
 
@@ -157,15 +128,6 @@ function resolvedCategories(entry: HistoryEntry): HistoryCategory[] {
     (category, index, values) => values.indexOf(category) === index,
   );
 }
-
-type DateFilter =
-  | "all"
-  | "today"
-  | "yesterday"
-  | "last7"
-  | "last30"
-  | "thisMonth"
-  | "custom";
 
 interface FilterOption {
   value: string;
@@ -275,122 +237,6 @@ function FilterDropdown({
   );
 }
 
-function localDateFromInput(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31) {
-    return null;
-  }
-
-  // setFullYear avoids JavaScript's special 1900 offset for years 0-99.
-  const date = new Date(0);
-  date.setHours(0, 0, 0, 0);
-  date.setFullYear(year, month - 1, day);
-  if (
-    Number.isNaN(date.getTime()) ||
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day
-  ) {
-    return null;
-  }
-  return date;
-}
-
-function dateInputValue(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function localCalendarContextKey(date: Date): string {
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
-  return `${dateInputValue(date)}|${date.getTimezoneOffset()}|${timeZone}`;
-}
-
-function dateBounds(
-  filter: DateFilter,
-  customStart: string,
-  customEnd: string,
-  now: Date,
-): { start: number | null; end: number | null; valid: boolean } {
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  if (filter === "all") return { start: null, end: null, valid: true };
-  if (filter === "today") return { start: today.getTime(), end: tomorrow.getTime(), valid: true };
-  if (filter === "yesterday") {
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    return { start: yesterday.getTime(), end: today.getTime(), valid: true };
-  }
-  if (filter === "last7" || filter === "last30") {
-    const start = new Date(today);
-    start.setDate(start.getDate() - (filter === "last7" ? 6 : 29));
-    return { start: start.getTime(), end: tomorrow.getTime(), valid: true };
-  }
-  if (filter === "thisMonth") {
-    const start = new Date(today.getFullYear(), today.getMonth(), 1);
-    const end = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-    return { start: start.getTime(), end: end.getTime(), valid: true };
-  }
-  const start = customStart ? localDateFromInput(customStart) : null;
-  const inclusiveEnd = customEnd ? localDateFromInput(customEnd) : null;
-  const end = inclusiveEnd ? new Date(inclusiveEnd) : null;
-  if (end) end.setDate(end.getDate() + 1);
-  const validInputs = (!customStart || start !== null) && (!customEnd || inclusiveEnd !== null);
-  const ordered = !start || !inclusiveEnd || start.getTime() <= inclusiveEnd.getTime();
-  return {
-    start: start?.getTime() ?? null,
-    end: end?.getTime() ?? null,
-    valid: Boolean((customStart || customEnd) && validInputs && ordered),
-  };
-}
-
-/* ── Date grouping ──────────────────────────────────────────────── */
-
-type DateGroup = "today" | "yesterday" | "thisWeek" | "thisMonth" | "older";
-
-function getDateGroup(dateStr: string, now: Date): DateGroup {
-  const d = new Date(dateStr);
-  if (Number.isNaN(d.getTime())) return "older";
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const itemDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-
-  if (itemDate.getTime() === today.getTime()) return "today";
-  if (itemDate.getTime() === yesterday.getTime()) return "yesterday";
-  // Compare local calendar dates through UTC ordinals so DST transitions do
-  // not turn a seven-day boundary into 6.96 or 7.04 elapsed days.
-  const dayOrdinal = (date: Date) =>
-    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) /
-    (1000 * 60 * 60 * 24);
-  const diffDays = dayOrdinal(today) - dayOrdinal(itemDate);
-  if (diffDays <= 7) return "thisWeek";
-  if (diffDays <= 30) return "thisMonth";
-  return "older";
-}
-
-const GROUP_ORDER: DateGroup[] = [
-  "today",
-  "yesterday",
-  "thisWeek",
-  "thisMonth",
-  "older",
-];
-
-const GROUP_LABEL_KEYS: Record<DateGroup, string> = {
-  today: "history.group.today",
-  yesterday: "history.group.yesterday",
-  thisWeek: "history.group.thisWeek",
-  thisMonth: "history.group.thisMonth",
-  older: "history.group.older",
-};
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -497,8 +343,8 @@ export function History() {
   const [hasMoreEntries, setHasMoreEntries] = useState(false);
   const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
   const [migrationDiagnostics, setMigrationDiagnostics] = useState<MigrationDiagnostics | null>(null);
-  const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
-  const thumbnailIds = useRef<Set<number>>(new Set());
+  const { thumbnails, loadThumbnail, clear: clearThumbnails } =
+    useThumbnailCache(MAX_CACHED_THUMBNAILS);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [keyword, setKeyword] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<"all" | HistoryCategory>("all");
@@ -508,42 +354,26 @@ export function History() {
   const [calendarNow, setCalendarNow] = useState(() => new Date());
   const calendarContextKey = useRef(localCalendarContextKey(calendarNow));
   const [page, setPage] = useState(0);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, flashSelectedId, clearSelectedId] = useTransient<number | null>(
+    null,
+    RESTORE_FEEDBACK_DURATION_MS,
+  );
   const [loading, setLoading] = useState(false);
   const [newIds, setNewIds] = useState<Set<number>>(new Set());
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [actionError, setActionError] = useState("");
-  const [syncWarning, setSyncWarning] = useState("");
-  const restoreFeedbackTimer = useRef<number>(0);
-  const actionErrorTimer = useRef<number>(0);
-  const syncWarningTimer = useRef<number>(0);
+  const [actionError, flashActionError] = useTransient("", RESTORE_FEEDBACK_DURATION_MS);
+  const [syncWarning, flashSyncWarning] = useTransient("", 8000);
   const newGlowTimers = useRef<Set<number>>(new Set());
 
   const lastVersion = useRef<number>(0);
   const prevIds = useRef<Set<number>>(new Set());
   const lastQueryKey = useRef("");
   const historyRequests = useRef(new LatestRequest());
-  const [fileProgress, setFileProgress] = useState<{
-    batch_id: string;
-    name: string;
-    sent: number;
-    total: number;
-    active: boolean;
-    direction: "sending" | "receiving";
-    device: string;
-    completed_files: number;
-    total_files: number;
-    speed_bytes_per_second: number;
-    status: string;
-    can_stop: boolean;
-  } | null>(null);
+  const [fileProgress, setFileProgress] = useState<FileProgress | null>(null);
   const [progressBarEnabled, setProgressBarEnabled] = useState(true);
   useEffect(() => () => {
-    window.clearTimeout(restoreFeedbackTimer.current);
-    window.clearTimeout(actionErrorTimer.current);
-    window.clearTimeout(syncWarningTimer.current);
     newGlowTimers.current.forEach(window.clearTimeout);
     newGlowTimers.current.clear();
   }, []);
@@ -585,13 +415,11 @@ export function History() {
   );
   const dateOptions = useMemo<FilterOption[]>(
     () =>
-      (["all", "today", "yesterday", "last7", "last30", "thisMonth", "custom"] as DateFilter[]).map(
-        (filter) => ({
-          value: filter,
-          label: t(`history.date.${filter}`),
-          icon: CalendarDays,
-        }),
-      ),
+      DATE_FILTER_OPTIONS.map((filter) => ({
+        value: filter,
+        label: t(`history.date.${filter}`),
+        icon: CalendarDays,
+      })),
     [t],
   );
   const activeDateBounds = useMemo(
@@ -618,48 +446,17 @@ export function History() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const s = await invoke<{
-        progress_bar_enabled: boolean;
-      }>("get_settings");
+      const s = await getSettings();
       setProgressBarEnabled(s.progress_bar_enabled);
     } catch {}
   }, []);
 
   /* ── History loading ──────────────────────────────────────────── */
 
-  const loadThumbnail = useCallback(async (id: number) => {
-    if (thumbnailIds.current.has(id)) return;
-    thumbnailIds.current.add(id);
-    try {
-      const resp = await invoke<ImageThumbnail>("get_image_data", { id });
-      if (resp.thumbnail_b64) {
-        setThumbnails((current) => {
-          const next = new Map(current);
-          next.delete(id);
-          next.set(id, {
-            b64: resp.thumbnail_b64,
-            width: resp.thumbnail_width,
-            height: resp.thumbnail_height,
-          });
-          while (next.size > MAX_CACHED_THUMBNAILS) {
-            const oldestId = next.keys().next().value;
-            if (oldestId === undefined) break;
-            next.delete(oldestId);
-            thumbnailIds.current.delete(oldestId);
-          }
-          return next;
-        });
-      }
-    } catch (e) {
-      thumbnailIds.current.delete(id);
-      console.error(`Thumbnail load failed for ${id}:`, e);
-    }
-  }, []);
-
   const loadMigrationDiagnostics = useCallback(async () => {
     try {
       setMigrationDiagnostics(
-        await invoke<MigrationDiagnostics>("get_migration_diagnostics"),
+        await getMigrationDiagnostics(),
       );
     } catch (error) {
       console.error("Failed to load migration diagnostics:", error);
@@ -669,7 +466,7 @@ export function History() {
   const loadCapabilities = useCallback(async () => {
     try {
       setCapabilities(
-        await invoke<HistoryCapabilities>("get_history_capabilities"),
+        await getHistoryCapabilities(),
       );
     } catch {
       setCapabilities(null);
@@ -687,23 +484,16 @@ export function History() {
     }
     setLoading(true);
     try {
-      const dateFilteringSupported = capabilities?.date_range_filter ?? true;
-      const startTime = dateFilteringSupported && activeDateBounds.start !== null
-        ? new Date(activeDateBounds.start).toISOString()
-        : null;
-      const endTime = dateFilteringSupported && activeDateBounds.end !== null
-        ? new Date(activeDateBounds.end).toISOString()
-        : null;
-      const query = {
-        keyword: keyword.trim() || null,
-        category: selectedCategory === "all" ? null : selectedCategory,
-        startTime,
-        endTime,
-        limit: PAGE_SIZE,
-        offset: page * PAGE_SIZE,
-      };
+      const query = buildHistoryQuery(
+        keyword,
+        selectedCategory,
+        activeDateBounds,
+        capabilities?.date_range_filter ?? true,
+        PAGE_SIZE,
+        page,
+      );
       const queryKey = JSON.stringify(query);
-      const result = await invoke<HistoryPageResult>("get_history_page", query);
+      const result = await getHistoryPage(query);
       if (!historyRequests.current.isCurrent(requestGeneration)) return;
 
       if (result.total !== null) {
@@ -767,7 +557,7 @@ export function History() {
   useVisiblePolling(loadSettings, SETTINGS_POLL_MS);
   useVisiblePolling(async () => {
     try {
-      const resp = await invoke<{ version: number }>("get_version");
+      const resp = await getVersion();
       if (resp.version !== lastVersion.current) {
         lastVersion.current = resp.version;
         await loadHistory();
@@ -776,11 +566,9 @@ export function History() {
       /* ignore */
     }
     try {
-      const warning = await invoke<SyncWarning | null>("get_sync_warning");
+      const warning = await getSyncWarning();
       if (warning?.kind === "expired_event") {
-        setSyncWarning(t("history.syncExpired").replace("{peer}", warning.peer));
-        window.clearTimeout(syncWarningTimer.current);
-        syncWarningTimer.current = window.setTimeout(() => setSyncWarning(""), 8000);
+        flashSyncWarning(t("history.syncExpired").replace("{peer}", warning.peer));
       }
     } catch {
       /* ignore */
@@ -790,7 +578,7 @@ export function History() {
       return;
     }
     try {
-      const fp = await invoke<NonNullable<typeof fileProgress>>("get_file_progress");
+      const fp = await getFileProgress();
       setFileProgress(fp.active ? fp : null);
     } catch {
       /* ignore */
@@ -818,23 +606,13 @@ export function History() {
   /* ── Actions ──────────────────────────────────────────────────── */
 
   const showActionError = useCallback(() => {
-    setActionError(t("history.actionFailed"));
-    window.clearTimeout(actionErrorTimer.current);
-    actionErrorTimer.current = window.setTimeout(
-      () => setActionError(""),
-      RESTORE_FEEDBACK_DURATION_MS,
-    );
-  }, [t]);
+    flashActionError(t("history.actionFailed"));
+  }, [t, flashActionError]);
 
   const handleRestore = async (id: number) => {
     try {
-      await invoke("restore_entry", { id });
-      setSelectedId(id);
-      window.clearTimeout(restoreFeedbackTimer.current);
-      restoreFeedbackTimer.current = window.setTimeout(
-        () => setSelectedId(null),
-        RESTORE_FEEDBACK_DURATION_MS,
-      );
+      await restoreEntry(id);
+      flashSelectedId(id);
     } catch (e) {
       console.error("Restore failed:", e);
       showActionError();
@@ -843,7 +621,7 @@ export function History() {
 
   const handleDelete = async (id: number) => {
     try {
-      await invoke("delete_entry", { id });
+      await deleteEntry(id);
       lastQueryKey.current = "";
       await Promise.all([loadHistory(), loadMigrationDiagnostics()]);
     } catch (e) {
@@ -855,14 +633,13 @@ export function History() {
   const handleClearHistory = async () => {
     setClearing(true);
     try {
-      await invoke("clear_history");
+      await clearHistory();
       setEntries([]);
       setTotalEntries(0);
       setHasMoreEntries(false);
-      setThumbnails(new Map());
-      thumbnailIds.current.clear();
+      clearThumbnails();
       setPage(0);
-      setSelectedId(null);
+      clearSelectedId();
       setExpandedBatches(new Set());
       setShowClearConfirm(false);
       prevIds.current = new Set();
@@ -878,7 +655,7 @@ export function History() {
 
   const handleRestoreBatch = async (batchId: string) => {
     try {
-      await invoke("restore_file_batch", { batchId });
+      await restoreFileBatch(batchId);
     } catch (error) {
       console.error("Batch restore failed:", error);
       showActionError();
@@ -888,7 +665,7 @@ export function History() {
   const handlePinnedChange = async (entry: HistoryEntry) => {
     const pinned = !entry.pinned;
     try {
-      await invoke("set_history_pinned", { id: entry.id, pinned });
+      await setHistoryPinned(entry.id, pinned);
       setEntries((current) => current.map((item) =>
         item.id === entry.id ? { ...item, pinned } : item
       ));
@@ -900,7 +677,7 @@ export function History() {
 
   const handleCancelFileBatch = async (batchId: string) => {
     try {
-      await invoke("cancel_file_batch", { batchId });
+      await cancelFileBatch(batchId);
     } catch (error) {
       console.error("Cancel file batch failed:", error);
       showActionError();
@@ -1078,56 +855,39 @@ export function History() {
         /* History list with date groups */
         <div className="history-list">
           {(() => {
-            // Group entries by date
-            const groups: Record<string, HistoryEntry[]> = {};
-            entries.forEach((entry) => {
-              const g = getDateGroup(entry.timestamp, calendarNow);
-              if (!groups[g]) groups[g] = [];
-              groups[g].push(entry);
-            });
-
+            const orderedGroups = groupEntriesByDate(entries, calendarNow);
+            const batchInfos = computeBatchInfos(orderedGroups);
             let itemIndex = 0;
-            const batchPositions = new Map<string, number>();
-            return GROUP_ORDER.map((group) => {
-              const groupEntries = groups[group];
-              if (!groupEntries) return null;
-
-              return (
-                <div className="date-group" key={group}>
-                  <div className="date-header">
-                    <span className="date-dot" />
-                    {t(GROUP_LABEL_KEYS[group])}
-                  </div>
-                  {groupEntries.map((entry, groupIndex) => {
-                    const batchId = entry.batch_id ?? null;
-                    const batchPosition = batchId ? (batchPositions.get(batchId) ?? 0) : 0;
-                    if (batchId) batchPositions.set(batchId, batchPosition + 1);
-                    const batchTotal = entry.batch_total ?? 1;
-                    const batchCount = entry.batch_count ?? batchTotal;
-                    const batchExpanded = Boolean(batchId && expandedBatches.has(batchId));
-                    if (
-                      batchId
-                      && batchCount > COLLAPSED_BATCH_FILE_LIMIT
-                      && !batchExpanded
-                      && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT
-                    ) {
-                      return null;
-                    }
-                    const delay = itemIndex * 30;
-                    itemIndex++;
-                    const isNew = newIds.has(entry.id);
-                    const isExpandedBatchReveal = Boolean(
-                      batchId
-                      && batchExpanded
-                      && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT,
-                    );
-                    const categories = resolvedCategories(entry);
-                    const category = categories[0];
-                    const CategoryIcon = CATEGORY_ICONS[category];
-                    const isBatchStart = Boolean(
-                      entry.batch_id && groupEntries[groupIndex - 1]?.batch_id !== entry.batch_id,
-                    );
-                    return (
+            return orderedGroups.map(([group, groupEntries]) => (
+              <div className="date-group" key={group}>
+                <div className="date-header">
+                  <span className="date-dot" />
+                  {t(GROUP_LABEL_KEYS[group])}
+                </div>
+                {groupEntries.map((entry) => {
+                  const { batchId, batchPosition, batchTotal, batchCount, isBatchStart } =
+                    batchInfos.get(entry.id)!;
+                  const batchExpanded = Boolean(batchId && expandedBatches.has(batchId));
+                  if (
+                    batchId
+                    && batchCount > COLLAPSED_BATCH_FILE_LIMIT
+                    && !batchExpanded
+                    && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT
+                  ) {
+                    return null;
+                  }
+                  const delay = itemIndex * 30;
+                  itemIndex++;
+                  const isNew = newIds.has(entry.id);
+                  const isExpandedBatchReveal = Boolean(
+                    batchId
+                    && batchExpanded
+                    && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT,
+                  );
+                  const categories = resolvedCategories(entry);
+                  const category = categories[0];
+                  const CategoryIcon = CATEGORY_ICONS[category];
+                  return (
                       <div
                         className={entry.batch_id ? "history-batch-item" : undefined}
                         key={entry.id}
@@ -1256,8 +1016,7 @@ export function History() {
                     );
                   })}
                 </div>
-              );
-            });
+            ));
           })()}
         </div>
       )}

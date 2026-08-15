@@ -32,7 +32,10 @@ pub use paths::{
     get_file_history_dir, get_history_db_path, get_image_history_dir, get_incoming_dir,
     get_storage_dir, validate_storage_dir, STORAGE_DIRECTORY_NAME,
 };
-pub use storage::delete_old_storage;
+pub use storage::{
+    delete_old_storage, migrate_storage_with_rollback, StorageMigrationFailure,
+    StorageMigrationHooks,
+};
 pub use types::{
     FileEncryptionMigrationBatch, HistoryEntry, HistoryFileInput, HistoryQueryPage,
     MigrationDiagnostics, MigrationIssue, StorageMigrationResult, StorageStatus,
@@ -95,7 +98,7 @@ impl HistoryDB {
         })
     }
 
-    fn open_at(storage_dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) fn open_at(storage_dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(storage_dir)?;
         let db_path = storage_dir.join("history-v2.db");
         info!("Opening database at {}", db_path.display());

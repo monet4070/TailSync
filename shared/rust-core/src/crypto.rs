@@ -56,6 +56,37 @@ pub struct Settings {
     pub paired_peer_endpoints: std::collections::HashMap<String, String>,
 }
 
+/// Settings validation failures (T353 migration). Display strings reach the
+/// UI and wire surfaces verbatim.
+#[derive(Debug, Error)]
+pub enum SettingsValidationError {
+    #[error("history_limit must be between 10 and 500")]
+    HistoryLimit,
+    #[error("storage_quota_bytes must be between 1 GiB and 16 TiB")]
+    StorageQuota,
+    #[error("storage_root cannot be empty")]
+    EmptyStorageRoot,
+    #[error("theme must be 'system', 'light', or 'dark'")]
+    Theme,
+    #[error("color_theme must be 'tailsync', 'ocean', 'forest', 'rose', or 'high-contrast'")]
+    ColorTheme,
+    #[error("connection_mode must be 'auto', 'lan_only', or 'tailscale_only'")]
+    ConnectionMode,
+    #[error("language must be 'en' or 'zh-CN'")]
+    Language,
+}
+
+/// Settings-update orchestration failures (T353 migration).
+#[derive(Debug, Error)]
+pub enum SettingsUpdateError {
+    #[error("{0}")]
+    Validation(SettingsValidationError),
+    #[error("{0}")]
+    Persist(String),
+    #[error("{0}")]
+    Database(String),
+}
+
 #[allow(dead_code)]
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -182,50 +213,48 @@ impl Settings {
         Ok(())
     }
 
-    pub fn validate_user_values(&self) -> Result<(), String> {
+    pub fn validate_user_values(&self) -> Result<(), SettingsValidationError> {
         if !(10..=500).contains(&self.history_limit) {
-            return Err("history_limit must be between 10 and 500".to_string());
+            return Err(SettingsValidationError::HistoryLimit);
         }
         if !(MIN_STORAGE_QUOTA_BYTES..=MAX_STORAGE_QUOTA_BYTES).contains(&self.storage_quota_bytes)
         {
-            return Err("storage_quota_bytes must be between 1 GiB and 16 TiB".to_string());
+            return Err(SettingsValidationError::StorageQuota);
         }
         if self
             .storage_root
             .as_deref()
             .is_some_and(|path| path.trim().is_empty())
         {
-            return Err("storage_root cannot be empty".to_string());
+            return Err(SettingsValidationError::EmptyStorageRoot);
         }
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
-            return Err("theme must be 'system', 'light', or 'dark'".to_string());
+            return Err(SettingsValidationError::Theme);
         }
         if !matches!(
             self.color_theme.as_str(),
             "tailsync" | "ocean" | "forest" | "rose" | "high-contrast"
         ) {
-            return Err(
-                "color_theme must be 'tailsync', 'ocean', 'forest', 'rose', or 'high-contrast'"
-                    .to_string(),
-            );
+            return Err(SettingsValidationError::ColorTheme);
         }
         if !matches!(
             self.connection_mode.as_str(),
             "auto" | "lan_only" | "tailscale_only"
         ) {
-            return Err(
-                "connection_mode must be 'auto', 'lan_only', or 'tailscale_only'".to_string(),
-            );
+            return Err(SettingsValidationError::ConnectionMode);
         }
         if !matches!(self.language.as_str(), "en" | "zh-CN") {
-            return Err("language must be 'en' or 'zh-CN'".to_string());
+            return Err(SettingsValidationError::Language);
         }
         Ok(())
     }
 
     /// Builds a validated user-facing settings update while retaining fields
     /// owned by pairing, peer management, and storage migration workflows.
-    pub fn prepare_user_update(&self, mut requested: Self) -> Result<Self, String> {
+    pub fn prepare_user_update(
+        &self,
+        mut requested: Self,
+    ) -> Result<Self, SettingsValidationError> {
         requested.enabled_peers = self.enabled_peers.clone();
         requested.storage_root = self.storage_root.clone();
         requested.trusted_peer_keys = self.trusted_peer_keys.clone();
@@ -379,6 +408,74 @@ impl Settings {
 
 fn settings_path() -> PathBuf {
     db::get_data_dir().join("config-v2.json")
+}
+
+/// Persist the settings after a user update (T303 extraction). The platform
+/// surfaces pass `Settings::save`; tests inject fakes.
+pub type SettingsPersist<'a> = &'a (dyn Fn(&Settings) -> Result<(), String> + Send + Sync);
+
+/// Optional shortcut transaction used by surfaces that register the global
+/// shortcut (Windows commands): `(new_settings, previous, next)`. Surfaces
+/// without a shortcut plugin pass `None` and a plain save is used instead.
+pub type ShortcutChangeHook<'a> =
+    &'a (dyn Fn(&Settings, &str, &str) -> Result<(), String> + Send + Sync);
+
+/// What changed in a settings update, for the platform reaction.
+#[derive(Debug)]
+pub struct SettingsUpdateOutcome {
+    pub mode_changed: bool,
+    pub connection_mode: String,
+}
+
+/// Merge, validate, persist, and commit a user settings update, then apply
+/// the resulting history/storage limits to the database (T303 extraction
+/// from the Tauri command and API route surfaces).
+///
+/// The settings are only committed after persistence succeeds; database
+/// limit enforcement happens after the commit, matching the command
+/// surface's previous ordering. A changed sync shortcut is routed through
+/// `hooks.apply_shortcut_change` when present (registration + save +
+/// rollback); otherwise a plain save is used.
+pub async fn apply_settings_update(
+    settings: &tokio::sync::Mutex<Settings>,
+    database: &tokio::sync::Mutex<db::HistoryDB>,
+    requested: Settings,
+    persist: SettingsPersist<'_>,
+    apply_shortcut_change: Option<ShortcutChangeHook<'_>>,
+) -> Result<SettingsUpdateOutcome, SettingsUpdateError> {
+    let mut settings_guard = settings.lock().await;
+    let new_settings = settings_guard
+        .prepare_user_update(requested)
+        .map_err(SettingsUpdateError::Validation)?;
+    let history_limit = new_settings.history_limit as i64;
+    let storage_quota_bytes = new_settings.storage_quota_bytes;
+    let mode_changed = settings_guard.connection_mode != new_settings.connection_mode;
+    let shortcut_changed = settings_guard.sync_shortcut != new_settings.sync_shortcut;
+    let previous_shortcut = settings_guard.sync_shortcut.clone();
+    let shortcut = new_settings.sync_shortcut.clone();
+    let connection_mode = new_settings.connection_mode.clone();
+    if shortcut_changed {
+        if let Some(apply_shortcut_change) = apply_shortcut_change {
+            apply_shortcut_change(&new_settings, &previous_shortcut, &shortcut)
+                .map_err(SettingsUpdateError::Persist)?;
+        } else {
+            persist(&new_settings).map_err(SettingsUpdateError::Persist)?;
+        }
+    } else {
+        persist(&new_settings).map_err(SettingsUpdateError::Persist)?;
+    }
+    *settings_guard = new_settings;
+    drop(settings_guard);
+    let mut database_guard = database.lock().await;
+    database_guard.set_max_history(history_limit);
+    database_guard.set_storage_quota(storage_quota_bytes);
+    database_guard
+        .enforce_limits()
+        .map_err(|error| SettingsUpdateError::Database(error.to_string()))?;
+    Ok(SettingsUpdateOutcome {
+        mode_changed,
+        connection_mode,
+    })
 }
 
 // ─── OS Keychain Integration ──────────────────────────────────────
@@ -1073,9 +1170,11 @@ fn move_windows_key_file_create_only(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_hex_key, validate_key_bytes, CreateOutcome, DataKey, DekCache, KeyStore,
-        KeyStoreError, Settings, DEK_SIZE,
+        apply_settings_update, decode_hex_key, validate_key_bytes, CreateOutcome, DataKey,
+        DekCache, KeyStore, KeyStoreError, Settings, SettingsUpdateError, SettingsValidationError,
+        DEK_SIZE,
     };
+    use crate::db;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -1675,5 +1774,242 @@ mod tests {
             current.trusted_peer_addresses
         );
         assert_eq!(updated.paired_peer_endpoints, current.paired_peer_endpoints);
+    }
+
+    #[tokio::test]
+    async fn settings_update_persists_and_applies_db_limits() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-update-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        for index in 0..15 {
+            database
+                .lock()
+                .await
+                .add_text(&format!("entry {index}"), "self")
+                .unwrap();
+        }
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let requested = Settings {
+            history_limit: 10,
+            ..Settings::default()
+        };
+
+        let outcome = apply_settings_update(&settings, &database, requested, &persist, None)
+            .await
+            .unwrap();
+        assert!(!outcome.mode_changed);
+        assert_eq!(settings.lock().await.history_limit, 10);
+        let remaining = database.lock().await.get_all(None, None, 100, 0).unwrap();
+        assert_eq!(
+            remaining.len(),
+            10,
+            "enforce_limits must evict to the limit"
+        );
+        assert_eq!(persisted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_routes_changed_shortcuts_through_the_hook() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-shortcut-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let previous = settings.lock().await.sync_shortcut.clone();
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let hook_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook_counter = hook_calls.clone();
+        let hook =
+            move |_new: &Settings, seen_previous: &str, seen_next: &str| -> Result<(), String> {
+                assert_eq!(seen_previous, previous);
+                assert_eq!(seen_next, "Control+Shift+Z");
+                hook_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            };
+        let requested = Settings {
+            sync_shortcut: "Control+Shift+Z".to_string(),
+            ..Settings::default()
+        };
+
+        let outcome = apply_settings_update(&settings, &database, requested, &persist, Some(&hook))
+            .await
+            .unwrap();
+        assert!(!outcome.mode_changed);
+        assert_eq!(settings.lock().await.sync_shortcut, "Control+Shift+Z");
+        assert_eq!(hook_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            persisted.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the shortcut hook performs its own persistence"
+        );
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_uses_plain_save_without_a_shortcut_hook() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-plain-save-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let requested = Settings {
+            sync_shortcut: "Control+Shift+Z".to_string(),
+            ..Settings::default()
+        };
+
+        apply_settings_update(&settings, &database, requested, &persist, None)
+            .await
+            .unwrap();
+        assert_eq!(settings.lock().await.sync_shortcut, "Control+Shift+Z");
+        assert_eq!(persisted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_rejects_invalid_values_without_persisting() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-invalid-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let requested = Settings {
+            history_limit: 5,
+            ..Settings::default()
+        };
+
+        let error = apply_settings_update(&settings, &database, requested, &persist, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SettingsUpdateError::Validation(SettingsValidationError::HistoryLimit)
+        ));
+        assert_eq!(
+            error.to_string(),
+            "history_limit must be between 10 and 500"
+        );
+        assert_eq!(
+            settings.lock().await.history_limit,
+            Settings::default().history_limit
+        );
+        assert_eq!(persisted.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_does_not_commit_when_persistence_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-save-failed-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let fail_persist = |_settings: &Settings| -> Result<(), String> {
+            Err("simulated save failure".to_string())
+        };
+        let requested = Settings {
+            history_limit: 10,
+            ..Settings::default()
+        };
+
+        let error = apply_settings_update(&settings, &database, requested, &fail_persist, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, SettingsUpdateError::Persist(ref message) if message == "simulated save failure")
+        );
+        assert_eq!(error.to_string(), "simulated save failure");
+        assert_eq!(
+            settings.lock().await.history_limit,
+            Settings::default().history_limit
+        );
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_reports_connection_mode_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-mode-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+        let requested = Settings {
+            connection_mode: "lan_only".to_string(),
+            ..Settings::default()
+        };
+
+        let outcome = apply_settings_update(&settings, &database, requested, &persist, None)
+            .await
+            .unwrap();
+        assert!(outcome.mode_changed);
+        assert_eq!(outcome.connection_mode, "lan_only");
+
+        let outcome =
+            apply_settings_update(&settings, &database, Settings::default(), &persist, None)
+                .await
+                .unwrap();
+        assert!(
+            outcome.mode_changed,
+            "requesting auto after lan_only must report a change"
+        );
+
+        let outcome =
+            apply_settings_update(&settings, &database, Settings::default(), &persist, None)
+                .await
+                .unwrap();
+        assert!(
+            !outcome.mode_changed,
+            "requesting the current mode again must not report a change"
+        );
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

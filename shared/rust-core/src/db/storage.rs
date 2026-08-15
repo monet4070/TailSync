@@ -1,4 +1,5 @@
 use super::*;
+use crate::crypto::Settings;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -7,6 +8,105 @@ use std::io::{BufReader, Read, Write};
 const OWNER_FILE_NAME: &str = "storage-owner-v1";
 const STORAGE_MARKER_NAME: &str = ".tailsync-storage-v1";
 const STORAGE_FREE_SPACE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Platform hooks for [`migrate_storage_with_rollback`]. Everything that
+/// lives outside the core crate (transfer-progress state, notifications,
+/// settings persistence) is injected so the orchestration stays testable.
+/// The hook references must be `Send + Sync` because the orchestration is
+/// awaited from Tauri command futures.
+pub struct StorageMigrationHooks<'a> {
+    /// How long to wait for active transfers to become idle.
+    pub wait_timeout: std::time::Duration,
+    /// Reports whether file transfers are still active; polled until idle.
+    pub has_active_transfers: &'a (dyn Fn() -> bool + Send + Sync),
+    /// Called once transfers are idle, right before the migration starts.
+    pub notify: Option<&'a (dyn Fn() + Send + Sync)>,
+    /// Persists the settings after the new root has been assigned.
+    pub persist_settings: &'a (dyn Fn(&Settings) -> Result<(), String> + Send + Sync),
+}
+
+/// Reasons a storage-parent migration can fail once the platform surfaces
+/// have been peeled away. The platform formats these into user-facing
+/// messages so each surface keeps its exact error strings.
+#[derive(Debug)]
+pub enum StorageMigrationFailure {
+    /// Transfers never became idle within `wait_timeout`.
+    TimedOutWaitingForTransfers,
+    /// The migration itself failed.
+    Migrate(String),
+    /// The new root could not be persisted; storage was rolled back to the
+    /// old root and the partially migrated data was removed.
+    SaveFailedAfterRollback { save_error: String },
+    /// Persisting the new root failed and the rollback also failed.
+    RollbackAlsoFailed {
+        save_error: String,
+        rollback_error: String,
+    },
+}
+
+/// Wait for active transfers to finish, migrate the storage to a new parent
+/// directory, and persist the new root in settings — rolling back to the old
+/// root (and deleting the new one) if persistence fails.
+pub async fn migrate_storage_with_rollback(
+    database: &std::sync::Arc<tokio::sync::Mutex<HistoryDB>>,
+    settings: &std::sync::Arc<tokio::sync::Mutex<Settings>>,
+    parent: &Path,
+    hooks: StorageMigrationHooks<'_>,
+) -> Result<StorageMigrationResult, StorageMigrationFailure> {
+    let wait_deadline = tokio::time::Instant::now() + hooks.wait_timeout;
+    while (hooks.has_active_transfers)() {
+        if tokio::time::Instant::now() >= wait_deadline {
+            return Err(StorageMigrationFailure::TimedOutWaitingForTransfers);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    if let Some(notify) = hooks.notify {
+        notify();
+    }
+    let previous_storage_root = settings.lock().await.storage_root.clone();
+    let parent = parent.to_path_buf();
+    let database_for_migration = database.clone();
+    let migrated = tokio::task::spawn_blocking(move || {
+        database_for_migration
+            .blocking_lock()
+            .migrate_storage_parent(&parent)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    let result = match migrated {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => return Err(StorageMigrationFailure::Migrate(error)),
+        Err(error) => return Err(StorageMigrationFailure::Migrate(error.to_string())),
+    };
+    let mut settings_guard = settings.lock().await;
+    settings_guard.storage_root = Some(result.new_root.clone());
+    if let Err(save_error) = (hooks.persist_settings)(&settings_guard) {
+        settings_guard.storage_root = previous_storage_root;
+        drop(settings_guard);
+        let old_root = std::path::PathBuf::from(&result.old_root);
+        let database_for_rollback = database.clone();
+        let rollback = tokio::task::spawn_blocking(move || {
+            database_for_rollback
+                .blocking_lock()
+                .reopen_storage_at(&old_root)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+        return match rollback {
+            Ok(()) => {
+                let _ = delete_old_storage(std::path::Path::new(&result.new_root));
+                Err(StorageMigrationFailure::SaveFailedAfterRollback { save_error })
+            }
+            Err(rollback_error) => Err(StorageMigrationFailure::RollbackAlsoFailed {
+                save_error,
+                rollback_error,
+            }),
+        };
+    }
+    Ok(result)
+}
 
 #[derive(Serialize, Deserialize)]
 struct StorageMarker {
@@ -469,5 +569,281 @@ mod tests {
         let error = validate_existing_target(&root, "this-owner").unwrap_err();
         assert!(error.to_string().contains("another installation"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn temp_migration_base(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("tailsync-{name}-{:016x}", rand::random::<u64>()))
+    }
+
+    fn test_database(root: &Path) -> std::sync::Arc<tokio::sync::Mutex<HistoryDB>> {
+        std::sync::Arc::new(tokio::sync::Mutex::new(HistoryDB::open_at(root).unwrap()))
+    }
+
+    /// Serializes the tests that reconfigure the process-global storage
+    /// directory so concurrent migration tests cannot steal each other's
+    /// storage root.
+    fn migration_global_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    #[tokio::test]
+    async fn storage_migration_times_out_when_transfers_never_become_idle() {
+        let base = temp_migration_base("migration-timeout");
+        let old_root = base.join("old");
+        let database = test_database(&old_root);
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let busy = || true;
+        let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+
+        let error = migrate_storage_with_rollback(
+            &database,
+            &settings,
+            &base.join("parent"),
+            StorageMigrationHooks {
+                wait_timeout: std::time::Duration::from_millis(20),
+                has_active_transfers: &busy,
+                notify: None,
+                persist_settings: &persist,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StorageMigrationFailure::TimedOutWaitingForTransfers
+        ));
+        drop(database);
+        drop(settings);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn storage_migration_succeeds_and_persists_the_new_root() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("migration-success");
+        let old_root = base.join("old");
+        let parent = base.join("parent");
+        configure_storage_dir(Some(&old_root)).unwrap();
+        let database = test_database(&old_root);
+        database
+            .lock()
+            .await
+            .add_text("before migration", "self")
+            .unwrap();
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let previous_root = settings.lock().await.storage_root.clone();
+        let idle = || false;
+        let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+
+        let result = migrate_storage_with_rollback(
+            &database,
+            &settings,
+            &parent,
+            StorageMigrationHooks {
+                wait_timeout: std::time::Duration::from_secs(60),
+                has_active_transfers: &idle,
+                notify: None,
+                persist_settings: &persist,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            PathBuf::from(&result.new_root),
+            parent.join(STORAGE_DIRECTORY_NAME)
+        );
+        assert_ne!(
+            settings.lock().await.storage_root,
+            previous_root,
+            "the new root must be persisted into settings"
+        );
+        assert_eq!(
+            settings.lock().await.storage_root.as_deref(),
+            Some(result.new_root.as_str())
+        );
+        database
+            .lock()
+            .await
+            .add_text("after migration", "self")
+            .unwrap();
+
+        drop(database);
+        drop(settings);
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn storage_migration_rolls_back_when_persistence_fails() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("migration-rollback");
+        let old_root = base.join("old");
+        let parent = base.join("parent");
+        configure_storage_dir(Some(&old_root)).unwrap();
+        let database = test_database(&old_root);
+        database
+            .lock()
+            .await
+            .add_text("before migration", "self")
+            .unwrap();
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let previous_root = settings.lock().await.storage_root.clone();
+        let idle = || false;
+        let fail_persist = |_settings: &Settings| -> Result<(), String> {
+            Err("simulated save failure".to_string())
+        };
+
+        let error = migrate_storage_with_rollback(
+            &database,
+            &settings,
+            &parent,
+            StorageMigrationHooks {
+                wait_timeout: std::time::Duration::from_secs(60),
+                has_active_transfers: &idle,
+                notify: None,
+                persist_settings: &fail_persist,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StorageMigrationFailure::SaveFailedAfterRollback { ref save_error }
+                if save_error == "simulated save failure"
+        ));
+        assert_eq!(settings.lock().await.storage_root, previous_root);
+        assert_eq!(
+            get_storage_dir(),
+            old_root,
+            "storage must be back at the old root"
+        );
+        assert!(
+            !parent.join(STORAGE_DIRECTORY_NAME).exists(),
+            "the partially migrated data must be deleted"
+        );
+        database
+            .lock()
+            .await
+            .add_text("still works after rollback", "self")
+            .unwrap();
+
+        drop(database);
+        drop(settings);
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn storage_migration_reports_when_rollback_also_fails() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("migration-rollback-failed");
+        let old_root = base.join("old");
+        let parent = base.join("parent");
+        configure_storage_dir(Some(&old_root)).unwrap();
+        let database = test_database(&old_root);
+        database
+            .lock()
+            .await
+            .add_text("before migration", "self")
+            .unwrap();
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let previous_root = settings.lock().await.storage_root.clone();
+        let idle = || false;
+        let old_root_for_hook = old_root.clone();
+        let sabotage_persist = move |_settings: &Settings| -> Result<(), String> {
+            // Replace the old root's database with a directory so the
+            // rollback reopen cannot open it.
+            fs::remove_file(old_root_for_hook.join("history-v2.db")).unwrap();
+            fs::create_dir(old_root_for_hook.join("history-v2.db")).unwrap();
+            Err("simulated save failure".to_string())
+        };
+
+        let error = migrate_storage_with_rollback(
+            &database,
+            &settings,
+            &parent,
+            StorageMigrationHooks {
+                wait_timeout: std::time::Duration::from_secs(60),
+                has_active_transfers: &idle,
+                notify: None,
+                persist_settings: &sabotage_persist,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StorageMigrationFailure::RollbackAlsoFailed { ref save_error, ref rollback_error }
+                if save_error == "simulated save failure" && !rollback_error.is_empty()
+        ));
+        assert_eq!(settings.lock().await.storage_root, previous_root);
+        database
+            .lock()
+            .await
+            .add_text("still at the new root", "self")
+            .unwrap();
+
+        drop(database);
+        drop(settings);
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn storage_migration_calls_the_notify_hook_once_transfers_are_idle() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("migration-notify");
+        let old_root = base.join("old");
+        let parent = base.join("parent");
+        configure_storage_dir(Some(&old_root)).unwrap();
+        let database = test_database(&old_root);
+        database
+            .lock()
+            .await
+            .add_text("before migration", "self")
+            .unwrap();
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let polls = std::sync::Arc::new(AtomicUsize::new(0));
+        let polls_hook = polls.clone();
+        let busy_once = move || {
+            polls_hook.fetch_add(1, Ordering::SeqCst);
+            polls_hook.load(Ordering::SeqCst) <= 1
+        };
+        let notified = std::sync::Arc::new(AtomicUsize::new(0));
+        let notify_hook = notified.clone();
+        let notify = move || {
+            notify_hook.fetch_add(1, Ordering::SeqCst);
+        };
+        let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+
+        migrate_storage_with_rollback(
+            &database,
+            &settings,
+            &parent,
+            StorageMigrationHooks {
+                wait_timeout: std::time::Duration::from_secs(60),
+                has_active_transfers: &busy_once,
+                notify: Some(&notify),
+                persist_settings: &persist,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            notified.load(Ordering::SeqCst),
+            1,
+            "notify must fire exactly once"
+        );
+
+        drop(database);
+        drop(settings);
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
     }
 }

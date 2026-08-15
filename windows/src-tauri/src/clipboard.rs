@@ -405,8 +405,9 @@ async fn send_file_batch_to_peers(
     {
         Ok(Ok(batch)) => Arc::new(batch),
         Ok(Err(error)) => {
-            warn!("File batch rejected: {error}");
-            notify_file_batch_error(&app, &settings, &error).await;
+            let message = error.to_string();
+            warn!("File batch rejected: {message}");
+            notify_file_batch_error(&app, &settings, &message).await;
             return;
         }
         Err(error) => {
@@ -599,7 +600,8 @@ async fn send_batch_to_peer(
         let validation_file = prepared_file.clone();
         tokio::task::spawn_blocking(move || sync::revalidate_prepared_file(&validation_file))
             .await
-            .map_err(|error| error.to_string())??;
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
         let transfer_id = prepared_file.entry.transfer_id;
         let meta = sync::FileMeta {
             transfer_id: Some(transfer_id),

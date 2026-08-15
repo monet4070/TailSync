@@ -2,6 +2,7 @@ use ring::hkdf::{Salt, HKDF_SHA256};
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thiserror::Error;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::Instant;
 
@@ -14,6 +15,31 @@ const PAIRING_CODE_CONTEXT: &[u8] = b"tailsync pairing verification code v1";
 const X25519_PUBLIC_KEY_LENGTH: usize = 32;
 const DEFAULT_PAIRING_WINDOW: Duration = Duration::from_secs(120);
 const DEFAULT_MAX_FAILURES: u8 = 5;
+
+/// Pairing state-machine errors (T351 migration). The `Display` strings are
+/// part of the observable wire contract — Swift localizes by substring
+/// (ApiClient.swift `pairingErrorDescription`) — and must stay stable.
+#[derive(Debug, Error)]
+pub enum PairingError {
+    #[error("Pairing window is closed")]
+    WindowClosed,
+    #[error("Another pairing is already in progress")]
+    AlreadyInProgress,
+    #[error("Cannot pair this device with itself")]
+    SelfPairing,
+    #[error("Invalid pairing interface")]
+    InvalidInterface,
+    #[error("No pairing verification is awaiting confirmation")]
+    NoVerification,
+    #[error("Pairing session is no longer active")]
+    SessionInactive,
+    #[error("Pairing session was closed before confirmation")]
+    SessionClosed,
+    #[error("{0}")]
+    Verification(&'static str),
+    #[error("{0}")]
+    Transport(String),
+}
 
 struct VerificationCodeLength;
 
@@ -190,6 +216,14 @@ impl PairingManager {
             let _ = control.send(PairingAction::Cancel).await;
         }
         self.window_signal.send_replace(true);
+        if crate::diagnostics::is_collected() {
+            crate::diagnostics::record(crate::diagnostics::Record {
+                event: crate::diagnostics::Event::PairingWindowOpened,
+                peer: None,
+                session: None,
+                error: None,
+            });
+        }
 
         let generation = self.state.lock().await.generation;
         self.schedule_expiration(generation);
@@ -236,41 +270,53 @@ impl PairingManager {
         self.window_signal.subscribe()
     }
 
-    pub async fn begin_handshake(&self) -> Result<(), String> {
+    pub async fn begin_handshake(&self) -> Result<(), PairingError> {
         let mut state = self.state.lock().await;
         if !state.enabled {
-            return Err("Pairing window is closed".to_string());
+            return Err(PairingError::WindowClosed);
         }
         if state.control.is_some() {
-            return Err("Another pairing is already in progress".to_string());
+            return Err(PairingError::AlreadyInProgress);
         }
         state.phase = PairingPhase::Handshaking;
         state.error = None;
+        if crate::diagnostics::is_collected() {
+            crate::diagnostics::record(crate::diagnostics::Record {
+                event: crate::diagnostics::Event::PairingHandshakeStarted,
+                peer: None,
+                session: None,
+                error: None,
+            });
+        }
         Ok(())
     }
 
     #[doc(hidden)]
-    pub async fn install_session(self: &Arc<Self>, pending: PendingPairing) -> Result<(), String> {
+    pub async fn install_session(
+        self: &Arc<Self>,
+        pending: PendingPairing,
+    ) -> Result<(), PairingError> {
         if pending.remote_public_key == self.identity.public_key() {
-            return Err("Cannot pair this device with itself".to_string());
+            return Err(PairingError::SelfPairing);
         }
         if !matches!(pending.interface.as_str(), "lan" | "iroh" | "tailscale") {
-            return Err("Invalid pairing interface".to_string());
+            return Err(PairingError::InvalidInterface);
         }
         let verification_code = derive_verification_code(
             &pending.handshake_hash,
             self.identity.public_key(),
             &pending.remote_public_key,
-        )?;
+        )
+        .map_err(PairingError::Verification)?;
         let fingerprint = crate::identity::fingerprint(&pending.remote_public_key);
         let (control, receiver) = mpsc::channel(4);
         let session_id = {
             let mut state = self.state.lock().await;
             if !state.enabled {
-                return Err("Pairing window is closed".to_string());
+                return Err(PairingError::WindowClosed);
             }
             if state.control.is_some() {
-                return Err("Another pairing is already in progress".to_string());
+                return Err(PairingError::AlreadyInProgress);
             }
             state.session_id = state.session_id.wrapping_add(1);
             state.phase = PairingPhase::Verification;
@@ -294,24 +340,21 @@ impl PairingManager {
         Ok(())
     }
 
-    pub async fn confirm(&self) -> Result<PairingStatus, String> {
+    pub async fn confirm(&self) -> Result<PairingStatus, PairingError> {
         let control = {
             let state = self.state.lock().await;
             if !matches!(
                 state.phase,
                 PairingPhase::Verification | PairingPhase::WaitingForPeer
             ) {
-                return Err("No pairing verification is awaiting confirmation".to_string());
+                return Err(PairingError::NoVerification);
             }
-            state
-                .control
-                .clone()
-                .ok_or_else(|| "Pairing session is no longer active".to_string())?
+            state.control.clone().ok_or(PairingError::SessionInactive)?
         };
         control
             .send(PairingAction::Confirm)
             .await
-            .map_err(|_| "Pairing session is no longer active".to_string())?;
+            .map_err(|_| PairingError::SessionInactive)?;
         Ok(self.status().await)
     }
 
@@ -329,6 +372,14 @@ impl PairingManager {
             control
         };
         self.window_signal.send_replace(false);
+        if crate::diagnostics::is_collected() {
+            crate::diagnostics::record(crate::diagnostics::Record {
+                event: crate::diagnostics::Event::PairingWindowClosed,
+                peer: None,
+                session: None,
+                error: None,
+            });
+        }
         if let Some(control) = control {
             let _ = control.send(PairingAction::Cancel).await;
         }
@@ -345,7 +396,16 @@ impl PairingManager {
             state.failed_attempts = state.failed_attempts.saturating_add(1);
             state.peer = None;
             state.control = None;
-            state.error = Some(error.into());
+            let message = error.into();
+            state.error = Some(message.clone());
+            if crate::diagnostics::is_collected() {
+                crate::diagnostics::record(crate::diagnostics::Record {
+                    event: crate::diagnostics::Event::PairingFailed,
+                    peer: None,
+                    session: None,
+                    error: crate::diagnostics::error_ref("PairingError::record_failure", &message),
+                });
+            }
             if state.failed_attempts >= self.max_failures {
                 state.enabled = false;
                 state.phase = PairingPhase::Locked;
@@ -500,7 +560,7 @@ impl PairingManager {
                     )
                     .await
                 {
-                    self.fail_session(session_id, error).await;
+                    self.fail_session(session_id, error.to_string()).await;
                 }
                 return;
             }
@@ -530,11 +590,11 @@ impl PairingManager {
         remote_public_key: &[u8],
         interface: &str,
         address: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), PairingError> {
         {
             let state = self.state.lock().await;
             if !state.enabled || state.session_id != session_id {
-                return Err("Pairing session was closed before confirmation".to_string());
+                return Err(PairingError::SessionClosed);
             }
         }
         let public_key = {
@@ -547,7 +607,9 @@ impl PairingManager {
         } else {
             settings.trust_peer_without_save(hostname, &public_key, interface, Some(address))
         };
-        result.map_err(|error| format!("Could not save paired device: {error}"))?;
+        result.map_err(|error| {
+            PairingError::Transport(format!("Could not save paired device: {error}"))
+        })?;
         drop(settings);
 
         let mut state = self.state.lock().await;
@@ -562,6 +624,14 @@ impl PairingManager {
         state.control = None;
         state.generation = state.generation.wrapping_add(1);
         self.window_signal.send_replace(false);
+        if crate::diagnostics::is_collected() {
+            crate::diagnostics::record(crate::diagnostics::Record {
+                event: crate::diagnostics::Event::PairingConfirmed,
+                peer: Some(hostname.to_string()),
+                session: None,
+                error: None,
+            });
+        }
         Ok(())
     }
 
@@ -595,11 +665,68 @@ fn unix_timestamp_after(duration: Duration) -> u64 {
         .as_secs()
 }
 
+/// Installs an inbound pairing session for an accepted connection (T110
+/// migration). When `pairing` is absent (Iroh transport cannot pair), an
+/// error frame is written to the stream and the call succeeds so the
+/// connection winds down normally.
+pub async fn install_pairing_session(
+    pairing: Option<&Arc<PairingManager>>,
+    mut stream: SecureConnection,
+    hostname: String,
+    remote_public_key: Vec<u8>,
+    handshake_hash: Vec<u8>,
+    address: String,
+    interface: String,
+) -> Result<(), PairingError> {
+    let Some(pairing) = pairing else {
+        crate::secure::write_error(&mut stream, "Pairing over Iroh is not supported")
+            .await
+            .map_err(|error| PairingError::Transport(error.to_string()))?;
+        return Ok(());
+    };
+    crate::secure::write_ready(&mut stream)
+        .await
+        .map_err(|error| PairingError::Transport(error.to_string()))?;
+    pairing
+        .install_session(PendingPairing {
+            connection: stream,
+            hostname,
+            remote_public_key,
+            handshake_hash,
+            address,
+            interface,
+        })
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::secure::{self, HandshakePurpose, PeerIdentity};
     use tokio::net::{TcpListener, TcpStream};
+
+    /// True when `needle` appears inside `haystack` as an ordered
+    /// subsequence: every needle event must be present in the given relative
+    /// order, while unrelated events may appear anywhere between them.
+    ///
+    /// Test-private helper for diagnostics assertions: the collector is
+    /// process-global, so parallel PairingManager tests can interleave
+    /// foreign events into the collected stream.
+    fn contains_ordered_subsequence(
+        haystack: &[crate::diagnostics::Event],
+        needle: &[crate::diagnostics::Event],
+    ) -> bool {
+        let mut rest = needle;
+        for event in haystack {
+            if rest.first() == Some(event) {
+                rest = &rest[1..];
+                if rest.is_empty() {
+                    return true;
+                }
+            }
+        }
+        rest.is_empty()
+    }
 
     #[test]
     fn code_is_six_digits_and_independent_of_key_order() {
@@ -834,6 +961,234 @@ mod tests {
                 .and_then(|routes| routes.get("iroh"))
                 .map(String::as_str),
             Some(IROH_ENDPOINT_ID)
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // install_pairing_session (T110): inbound pairing session install.
+    // ------------------------------------------------------------------
+
+    fn test_peer_identity() -> PeerIdentity {
+        PeerIdentity {
+            hostname: "server".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        }
+    }
+
+    async fn establish_in_memory_pair(
+        server_identity: &Arc<DeviceIdentity>,
+        client_identity: &DeviceIdentity,
+    ) -> (
+        crate::secure::SecureConnection,
+        crate::secure::SecureConnection,
+    ) {
+        let expected_key = server_identity.public_key().to_vec();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_identity = server_identity.clone();
+        let server = tokio::spawn(async move {
+            let accepted = crate::secure::accept(server_io, &server_identity, test_peer_identity())
+                .await
+                .unwrap();
+            let mut connection = accepted.connection;
+            crate::secure::write_ready(&mut connection).await.unwrap();
+            connection
+        });
+        let client = crate::secure::connect(
+            client_io,
+            client_identity,
+            test_peer_identity(),
+            "server",
+            &expected_key,
+        )
+        .await
+        .unwrap();
+        let server = server.await.unwrap();
+        (client, server)
+    }
+
+    fn default_manager() -> Arc<PairingManager> {
+        PairingManager::with_policy(
+            Arc::new(Mutex::new(Settings::default())),
+            Arc::new(DeviceIdentity::generate_for_test()),
+            Duration::from_secs(60),
+            5,
+            false,
+        )
+    }
+
+    #[tokio::test]
+    async fn install_pairing_session_without_manager_writes_error_frame() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, server) =
+            establish_in_memory_pair(&server_identity, &client_identity).await;
+
+        let result = install_pairing_session(
+            None,
+            server,
+            "peer".into(),
+            vec![1; 32],
+            vec![2; 32],
+            "192.168.1.5".into(),
+            "lan".into(),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        let frame = client.read_frame().await.unwrap();
+        assert_eq!(frame.command, crate::protocol::Command::PeerError);
+        assert!(
+            String::from_utf8_lossy(&frame.payload).contains("Pairing over Iroh is not supported")
+        );
+    }
+
+    #[tokio::test]
+    async fn install_pairing_session_rejects_closed_window() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (_client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+
+        let error = install_pairing_session(
+            Some(&default_manager()),
+            server,
+            "peer".into(),
+            vec![1; 32],
+            vec![2; 32],
+            "192.168.1.5".into(),
+            "lan".into(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, PairingError::WindowClosed));
+        assert_eq!(error.to_string(), "Pairing window is closed");
+    }
+
+    #[tokio::test]
+    async fn install_pairing_session_rejects_self_pairing() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (_client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+        let manager_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let manager = PairingManager::with_policy(
+            Arc::new(Mutex::new(Settings::default())),
+            manager_identity.clone(),
+            Duration::from_secs(60),
+            5,
+            false,
+        );
+        let own_key = manager_identity.public_key().to_vec();
+
+        let error = install_pairing_session(
+            Some(&manager),
+            server,
+            "peer".into(),
+            own_key,
+            vec![2; 32],
+            "192.168.1.5".into(),
+            "lan".into(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, PairingError::SelfPairing));
+        assert_eq!(error.to_string(), "Cannot pair this device with itself");
+    }
+
+    #[tokio::test]
+    async fn install_pairing_session_rejects_invalid_interface() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (_client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+
+        let error = install_pairing_session(
+            Some(&default_manager()),
+            server,
+            "peer".into(),
+            vec![1; 32],
+            vec![2; 32],
+            "192.168.1.5".into(),
+            "bogus".into(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, PairingError::InvalidInterface));
+        assert_eq!(error.to_string(), "Invalid pairing interface");
+    }
+
+    #[tokio::test]
+    async fn diagnostics_events_follow_the_pairing_lifecycle() {
+        let _guard = crate::diagnostics::diagnostics_test_lock().lock().await;
+        use crate::diagnostics::{Event, Record};
+        let emitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = emitted.clone();
+        crate::diagnostics::set_collector(Some(Box::new(move |record: &Record| {
+            sink.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(record.event);
+        })));
+
+        let manager = default_manager();
+        let status = manager.enable().await;
+        assert!(status.pairing_enabled);
+        manager.begin_handshake().await.unwrap();
+        let _ = manager.cancel().await;
+        manager.enable().await;
+        let _ = manager.cancel().await;
+
+        crate::diagnostics::set_collector(None);
+        let events = emitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The collector is process-global, so unrelated PairingManager tests
+        // running in parallel may emit their own events into this sink.
+        // Assert the lifecycle as an ordered subsequence: the five events
+        // this test triggers must all be present in their relative order,
+        // while foreign events may appear anywhere between them.
+        let expected = [
+            Event::PairingWindowOpened,
+            Event::PairingHandshakeStarted,
+            Event::PairingWindowClosed,
+            Event::PairingWindowOpened,
+            Event::PairingWindowClosed,
+        ];
+        assert!(
+            contains_ordered_subsequence(&events, &expected),
+            "open/handshake/close/open/close must appear in order, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_pairing_failed_records_the_error() {
+        let _guard = crate::diagnostics::diagnostics_test_lock().lock().await;
+        use crate::diagnostics::{Event, Record};
+        let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = errors.clone();
+        crate::diagnostics::set_collector(Some(Box::new(move |record: &Record| {
+            // The collector is process-global: other PairingManager tests may
+            // emit their own PairingFailed events concurrently (e.g. the
+            // lockout tests). The error message uniquely identifies the
+            // failure this test triggers, so only that event is collected.
+            if let Some(error) = &record.error {
+                if record.event == Event::PairingFailed && error.message == "simulated failure" {
+                    sink.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(error.message.clone());
+                }
+            }
+        })));
+
+        let manager = default_manager();
+        manager.enable().await;
+        manager.record_failure("simulated failure").await;
+
+        crate::diagnostics::set_collector(None);
+        let messages = errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            messages.as_slice(),
+            &["simulated failure".to_string()],
+            "the targeted failure must be recorded exactly once"
         );
     }
 }

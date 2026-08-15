@@ -22,6 +22,7 @@ use crate::crypto::Settings;
 use crate::identity;
 use crate::peer::types::{
     ConnectionInterface, ConnectionMode, LocalInfo, PeerCandidate, PeerInfo, PeerStatus,
+    ResolvedCandidate, ResolvedTarget,
 };
 
 /// Map a connection mode string to the single interface it allows.
@@ -468,6 +469,46 @@ pub fn merge_paired_peers(
     discovered
 }
 
+/// Resolves a peer's discovery candidates into concrete connection targets
+/// (T111 migration). `tcp_port` is the platform peer port (19890). When a
+/// peer has no candidates, one is synthesized from its remembered
+/// address/tailscale IP under the mode-derived or inferred interface.
+pub fn resolve_candidates(
+    peer: &PeerInfo,
+    tcp_port: u16,
+) -> Result<Vec<ResolvedCandidate>, String> {
+    let mut candidates = peer.candidates.clone();
+    if candidates.is_empty() {
+        let address = if peer.address.is_empty() {
+            &peer.tailscale_ip
+        } else {
+            &peer.address
+        };
+        let interface = mode_interface(&peer.connection_mode)
+            .or_else(|| infer_interface(address).ok())
+            .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+        candidates.push(PeerCandidate::new(interface, address));
+    }
+    candidates.sort_by_key(|candidate| candidate.priority);
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            let target = match candidate.interface {
+                ConnectionInterface::Iroh => ResolvedTarget::Iroh(
+                    crate::iroh_transport::canonical_endpoint_id(&candidate.address)?,
+                ),
+                ConnectionInterface::Lan | ConnectionInterface::Tailscale => {
+                    let ip: IpAddr = candidate.address.parse().map_err(|error| {
+                        format!("Invalid peer address {}: {error}", candidate.address)
+                    })?;
+                    ResolvedTarget::Tcp(SocketAddr::new(ip, tcp_port))
+                }
+            };
+            Ok(ResolvedCandidate { candidate, target })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -883,5 +924,109 @@ mod tests {
             validate_pairing_target(&iroh, "lan").unwrap_err(),
             "Iroh pairing is only available in automatic mode"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_candidates (T111): peer candidates -> connection targets.
+    // ------------------------------------------------------------------
+
+    fn peer_with_candidates(hostname: &str, candidates: Vec<PeerCandidate>) -> PeerInfo {
+        PeerInfo {
+            hostname: hostname.into(),
+            tailscale_ip: String::new(),
+            online: true,
+            enabled: true,
+            address: String::new(),
+            connection_mode: "auto".into(),
+            trusted: true,
+            fingerprint: String::new(),
+            candidates,
+            current_interface: None,
+            current_address: None,
+            status: PeerStatus::Online,
+        }
+    }
+
+    #[test]
+    fn resolve_candidates_maps_and_sorts_existing_candidates() {
+        let low = PeerCandidate::new(ConnectionInterface::Tailscale, "100.101.102.103");
+        let high = PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.5");
+        let peer = peer_with_candidates("mac", vec![low, high]);
+
+        let resolved = resolve_candidates(&peer, 19890).unwrap();
+        // LAN has a higher priority and must sort first.
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].candidate.interface, ConnectionInterface::Lan);
+        assert_eq!(
+            resolved[0].target,
+            ResolvedTarget::Tcp("192.168.1.5:19890".parse().unwrap())
+        );
+        assert_eq!(
+            resolved[1].candidate.interface,
+            ConnectionInterface::Tailscale
+        );
+        assert_eq!(
+            resolved[1].target,
+            ResolvedTarget::Tcp("100.101.102.103:19890".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn resolve_candidates_synthesizes_candidate_without_discovery() {
+        let mut peer = peer_with_candidates("mac", vec![]);
+        peer.address = "192.168.1.9".into();
+        peer.connection_mode = "lan_only".into();
+
+        let resolved = resolve_candidates(&peer, 19890).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].candidate.interface, ConnectionInterface::Lan);
+        assert_eq!(resolved[0].candidate.address, "192.168.1.9");
+        assert_eq!(
+            resolved[0].target,
+            ResolvedTarget::Tcp("192.168.1.9:19890".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn resolve_candidates_uses_tailscale_ip_when_address_is_empty() {
+        let mut peer = peer_with_candidates("mac", vec![]);
+        peer.tailscale_ip = "100.64.1.2".into();
+        peer.connection_mode = "tailscale_only".into();
+
+        let resolved = resolve_candidates(&peer, 19890).unwrap();
+        assert_eq!(
+            resolved[0].candidate.interface,
+            ConnectionInterface::Tailscale
+        );
+        assert_eq!(resolved[0].candidate.address, "100.64.1.2");
+    }
+
+    #[test]
+    fn resolve_candidates_fails_without_any_usable_address() {
+        let peer = peer_with_candidates("mac", vec![]);
+        let error = resolve_candidates(&peer, 19890).unwrap_err();
+        assert_eq!(error, "Peer mac has no connection candidates");
+    }
+
+    #[test]
+    fn resolve_candidates_rejects_invalid_tcp_addresses() {
+        let peer = peer_with_candidates(
+            "mac",
+            vec![PeerCandidate::new(ConnectionInterface::Lan, "not-an-ip")],
+        );
+        let error = resolve_candidates(&peer, 19890).unwrap_err();
+        assert!(error.contains("Invalid peer address not-an-ip"));
+    }
+
+    #[test]
+    fn resolve_candidates_rejects_invalid_iroh_endpoints() {
+        let peer = peer_with_candidates(
+            "mac",
+            vec![PeerCandidate::new(
+                ConnectionInterface::Iroh,
+                "not-an-endpoint",
+            )],
+        );
+        assert!(resolve_candidates(&peer, 19890).is_err());
     }
 }

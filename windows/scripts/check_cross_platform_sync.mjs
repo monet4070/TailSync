@@ -132,7 +132,7 @@ function isReExportShim(source, corePath, required) {
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n');
   const statement = new RegExp(
-    `^\\s*pub use ${corePath.replaceAll('.', '\\.')}::\\{[^}]*\\b${required}\\b`,
+    `^\\s*pub use ${corePath.replaceAll('.', '\\.')}::(?:\\{[^}]*\\b${required}\\b|\\b${required}\\b)`,
     'm',
   );
   return statement.test(code);
@@ -149,6 +149,10 @@ for (const [root, label] of [[winRoot, 'Windows'], [macRoot, 'macOS']]) {
   const tailscaleSource = read(root, 'src-tauri/src/network/tailscale.rs');
   if (!isReExportShim(tailscaleSource, 'tailsync_core::peer::types', 'PeerInfo')) {
     fail(`${label} network/tailscale.rs must re-export PeerInfo from tailsync_core.`);
+  }
+  const rateLimitSource = read(root, 'src-tauri/src/network/rate_limit.rs');
+  if (!isReExportShim(rateLimitSource, 'tailsync_core::peer::rate_limit', 'check_peer_event_budget')) {
+    fail(`${label} network/rate_limit.rs must re-export check_peer_event_budget from tailsync_core.`);
   }
 }
 

@@ -6,7 +6,12 @@
 //! stay unchanged; state derivation and delivery policy land here in later
 //! steps of the maintainability refactor.
 
+pub mod admission;
+pub mod connection_limiter;
 pub mod delivery;
 pub mod directory;
+pub mod event_receiver;
 pub mod health;
+pub mod inbound_source;
+pub mod rate_limit;
 pub mod types;

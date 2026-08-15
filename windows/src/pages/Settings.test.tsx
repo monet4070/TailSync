@@ -1,13 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingsData } from "../types/settings.generated";
-import {
-  pairingAddressForPeer,
-  routeSupportsLatencyTest,
-  Settings,
-  type PeerDevice,
-  type PeerRoute,
-} from "./Settings";
+import type { PeerDevice, PeerRoute } from "../tailsyncClient";
+import { pairingAddressForPeer } from "../utils/pairingAddress";
+import { routeSupportsLatencyTest, Settings } from "./Settings";
 
 const {
   hideMock,
