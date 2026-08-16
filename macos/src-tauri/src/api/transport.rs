@@ -163,24 +163,6 @@ fn response_timeout_for_command(command: &str) -> Duration {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preview_response_gets_extended_write_timeout_only() {
-        assert_eq!(
-            response_timeout_for_command("get_preview_data"),
-            Duration::from_secs(30)
-        );
-        assert_eq!(
-            response_timeout_for_command("get_history"),
-            API_WRITE_TIMEOUT
-        );
-        assert_eq!(response_timeout_for_command("quit"), API_WRITE_TIMEOUT);
-    }
-}
-
 async fn graceful_shutdown(state: &ApiState) {
     info!("Graceful shutdown requested via API");
     let _ = state.shutdown.send(true);
@@ -202,4 +184,22 @@ async fn send_json(
     w.write_all(&bytes).await?;
     w.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_response_gets_extended_write_timeout_only() {
+        assert_eq!(
+            response_timeout_for_command("get_preview_data"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            response_timeout_for_command("get_history"),
+            API_WRITE_TIMEOUT
+        );
+        assert_eq!(response_timeout_for_command("quit"), API_WRITE_TIMEOUT);
+    }
 }
