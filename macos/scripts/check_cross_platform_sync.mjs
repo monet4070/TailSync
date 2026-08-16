@@ -105,6 +105,9 @@ assertTreeMatch('src-tauri/src', [
   'network/peer_cache.rs',
   'network/tailscale.rs',
   'tray.rs',
+  // Windows owns the reusable Tauri preview window; macOS implements its
+  // preview surface in SwiftUI instead of this Rust module.
+  'preview_window.rs',
 ]);
 for (const path of [
   'src-tauri/build.rs',
