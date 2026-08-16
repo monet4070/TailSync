@@ -5,6 +5,7 @@
 // names and payload shapes are the wire contract and must not change.
 
 import { invoke } from "@tauri-apps/api/core";
+import type { PreviewResponseInput } from "./utils/historyPreview";
 import type { SettingsData } from "./types/settings.generated";
 
 // ---------------------------------------------------------------------------
@@ -163,6 +164,52 @@ export type HistoryPageQuery = {
 
 export function getImageData(id: number): Promise<ImageThumbnail> {
   return invoke<ImageThumbnail>("get_image_data", { id });
+}
+
+/**
+ * Load a full history preview through Tauri's raw IPC response path.
+ *
+ * The returned ArrayBuffer uses the versioned TSPV envelope decoded by
+ * `utils/historyPreview.ts`; keeping the payload binary avoids the memory and
+ * CPU overhead of base64 for previews up to the shared 64 MiB limit.
+ */
+export function getPreview(id: number, batchId?: string | null): Promise<PreviewResponseInput> {
+  return invoke<PreviewResponseInput>("get_preview", {
+    id,
+    ...(batchId ? { batchId } : {}),
+  });
+}
+
+export interface PreviewWindowRequest {
+  entryId: number;
+  batchId?: string | null;
+}
+
+export interface PreviewWindowSnapshot {
+  revision: number;
+  entryId: number;
+  batchId: string | null;
+}
+
+export function openPreviewWindow(
+  entryId: number,
+  batchId?: string | null,
+): Promise<PreviewWindowSnapshot> {
+  return invoke<PreviewWindowSnapshot>("open_preview_window", {
+    request: { entryId, batchId: batchId ?? null },
+  });
+}
+
+export function getPreviewWindowRequest(): Promise<PreviewWindowSnapshot | null> {
+  return invoke<PreviewWindowSnapshot | null>("get_preview_window_request");
+}
+
+export function closePreviewWindow(): Promise<void> {
+  return invoke<void>("close_preview_window");
+}
+
+export function syncPreviewWindowMinimized(minimized: boolean): Promise<void> {
+  return invoke<void>("sync_preview_window_minimized", { minimized });
 }
 
 export function getMigrationDiagnostics(): Promise<MigrationDiagnostics> {
@@ -352,6 +399,10 @@ export function setSyncEnabled(enabled: boolean): Promise<void> {
 
 export function setSyncShortcut(shortcut: string): Promise<void> {
   return invoke<void>("set_sync_shortcut", { shortcut });
+}
+
+export function setHistoryShortcut(shortcut: string): Promise<void> {
+  return invoke<void>("set_history_shortcut", { shortcut });
 }
 
 export function suspendSyncShortcut(): Promise<void> {

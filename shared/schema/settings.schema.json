@@ -70,6 +70,11 @@
       "minimum": 10.0,
       "type": "integer"
     },
+    "history_shortcut": {
+      "default": "CommandOrControl+Shift+H",
+      "description": "Optional global shortcut used to open the history window. Empty disables it.",
+      "type": "string"
+    },
     "language": {
       "$ref": "#/definitions/LanguageContract",
       "default": "en"
@@ -144,6 +149,7 @@
     "connection_mode",
     "enabled_peers",
     "history_limit",
+    "history_shortcut",
     "language",
     "notifications_enabled",
     "paired_peer_endpoints",

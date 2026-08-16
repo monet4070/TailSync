@@ -49,47 +49,78 @@ pub(crate) async fn toggle_sync_for_app(app: &tauri::AppHandle) -> Result<bool, 
     Ok(enabled)
 }
 
-fn install_sync_shortcut(app: &tauri::AppHandle, shortcut: &str) -> Result<(), String> {
+fn install_global_shortcuts(
+    app: &tauri::AppHandle,
+    sync_shortcut: &str,
+    history_shortcut: &str,
+) -> Result<(), String> {
+    if !sync_shortcut.is_empty() && sync_shortcut == history_shortcut {
+        return Err("The sync and history shortcuts must be different".to_string());
+    }
     app.global_shortcut()
         .unregister_all()
         .map_err(|error| error.to_string())?;
-    if shortcut.is_empty() {
-        return Ok(());
+    if !sync_shortcut.is_empty() {
+        if let Err(error) =
+            app.global_shortcut()
+                .on_shortcut(sync_shortcut, |app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = toggle_sync_for_app(&app).await {
+                            log::warn!("Could not toggle sync from shortcut: {error}");
+                        }
+                    });
+                })
+        {
+            return Err(error.to_string());
+        }
     }
-    app.global_shortcut()
-        .on_shortcut(shortcut, |app, _shortcut, event| {
-            use tauri_plugin_global_shortcut::ShortcutState;
-            if event.state != ShortcutState::Pressed {
-                return;
-            }
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = toggle_sync_for_app(&app).await {
-                    log::warn!("Could not toggle sync from shortcut: {error}");
-                }
-            });
-        })
-        .map_err(|error| error.to_string())
+    if !history_shortcut.is_empty() {
+        if let Err(error) =
+            app.global_shortcut()
+                .on_shortcut(history_shortcut, |app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = open_history_window(app).await {
+                            log::warn!("Could not open history from shortcut: {error}");
+                        }
+                    });
+                })
+        {
+            let _ = app.global_shortcut().unregister_all();
+            return Err(error.to_string());
+        }
+    }
+    Ok(())
 }
 
-pub(crate) fn register_saved_sync_shortcut(
+pub(crate) fn register_saved_shortcuts(
     app: &tauri::AppHandle,
-    shortcut: &str,
+    settings: &crate::crypto::Settings,
 ) -> Result<(), String> {
-    install_sync_shortcut(app, shortcut)
+    install_global_shortcuts(app, &settings.sync_shortcut, &settings.history_shortcut)
 }
 
 /// Apply a shortcut change as a transaction: register the next shortcut first,
 /// then persist it, restoring the previous shortcut if either step fails.
 /// Returns the original failure, with any restore failure appended.
-fn apply_shortcut_change<R, S>(
-    previous: &str,
-    next: &str,
+fn apply_shortcut_change<T, R, S>(
+    previous: &T,
+    next: &T,
     mut register: R,
     mut save: S,
 ) -> Result<(), String>
 where
-    R: FnMut(&str) -> Result<(), String>,
+    T: PartialEq + ?Sized,
+    R: FnMut(&T) -> Result<(), String>,
     S: FnMut() -> Result<(), String>,
 {
     if next == previous {
@@ -104,9 +135,10 @@ where
     Ok(())
 }
 
-fn rollback_shortcut<R>(previous: &str, register: &mut R, original_error: String) -> String
+fn rollback_shortcut<T, R>(previous: &T, register: &mut R, original_error: String) -> String
 where
-    R: FnMut(&str) -> Result<(), String>,
+    T: ?Sized,
+    R: FnMut(&T) -> Result<(), String>,
 {
     match register(previous) {
         Ok(()) => original_error,
@@ -507,6 +539,7 @@ pub async fn get_sync_state(state: State<'_, AppState>) -> Result<serde_json::Va
     Ok(serde_json::json!({
         "enabled": settings.sync_enabled,
         "shortcut": settings.sync_shortcut,
+        "history_shortcut": settings.history_shortcut,
     }))
 }
 
@@ -533,8 +566,8 @@ pub async fn resume_sync_shortcut(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let shortcut = state.settings.lock().await.sync_shortcut.clone();
-    install_sync_shortcut(&app, &shortcut)
+    let settings = state.settings.lock().await.clone();
+    install_global_shortcuts(&app, &settings.sync_shortcut, &settings.history_shortcut)
 }
 
 #[command]
@@ -545,14 +578,38 @@ pub async fn set_sync_shortcut(
 ) -> Result<(), String> {
     let shortcut = shortcut.trim().to_string();
     let mut settings = state.settings.lock().await;
-    let previous = settings.sync_shortcut.clone();
-    let register = |next: &str| install_sync_shortcut(&app, next);
-    let save = || {
-        settings
-            .set_sync_shortcut(&shortcut)
-            .map_err(|error| error.to_string())
+    let previous = settings.clone();
+    let mut next = previous.clone();
+    next.sync_shortcut = shortcut;
+    let register = |candidate: &crate::crypto::Settings| {
+        install_global_shortcuts(&app, &candidate.sync_shortcut, &candidate.history_shortcut)
     };
-    apply_shortcut_change(&previous, &shortcut, register, save)
+    apply_shortcut_change(&previous, &next, register, || {
+        next.save().map_err(|error| error.to_string())
+    })?;
+    *settings = next;
+    Ok(())
+}
+
+#[command]
+pub async fn set_history_shortcut(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    shortcut: String,
+) -> Result<(), String> {
+    let shortcut = shortcut.trim().to_string();
+    let mut settings = state.settings.lock().await;
+    let previous = settings.clone();
+    let mut next = previous.clone();
+    next.history_shortcut = shortcut;
+    let register = |candidate: &crate::crypto::Settings| {
+        install_global_shortcuts(&app, &candidate.sync_shortcut, &candidate.history_shortcut)
+    };
+    apply_shortcut_change(&previous, &next, register, || {
+        next.save().map_err(|error| error.to_string())
+    })?;
+    *settings = next;
+    Ok(())
 }
 
 /// Get current settings
@@ -572,9 +629,15 @@ pub async fn update_settings(
     let requested_settings: crate::crypto::Settings =
         serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
     let apply_shortcut_transaction =
-        |new_settings: &crate::crypto::Settings, previous: &str, next: &str| {
-            let register = |candidate: &str| install_sync_shortcut(&app, candidate);
-            apply_shortcut_change(previous, next, register, || {
+        |previous: &crate::crypto::Settings, new_settings: &crate::crypto::Settings| {
+            let register = |candidate: &crate::crypto::Settings| {
+                install_global_shortcuts(
+                    &app,
+                    &candidate.sync_shortcut,
+                    &candidate.history_shortcut,
+                )
+            };
+            apply_shortcut_change(previous, new_settings, register, || {
                 new_settings.save().map_err(|error| error.to_string())
             })
         };
@@ -671,6 +734,97 @@ pub async fn get_image_data(
         "thumbnail_width": tw,
         "thumbnail_height": th,
     }))
+}
+
+const PREVIEW_RESPONSE_MAGIC: &[u8; 4] = b"TSPV";
+const PREVIEW_RESPONSE_VERSION: u8 = 1;
+
+#[derive(serde::Serialize)]
+struct PreviewResponseMetadata {
+    entry_id: i64,
+    kind: String,
+    name: String,
+    size_bytes: u64,
+    width: Option<u32>,
+    height: Option<u32>,
+    batch: Option<db::PreviewBatchNavigation>,
+}
+
+fn preview_payload_error(entry_id: i64, message: impl Into<String>) -> db::PreviewErrorInfo {
+    db::PreviewErrorInfo::payload_unavailable(entry_id, message)
+}
+
+/// Encode preview metadata and bytes into one raw IPC response.
+///
+/// `tauri::ipc::Response` can return an `ArrayBuffer` without base64, but it
+/// cannot carry a JSON object alongside that buffer. The response therefore
+/// uses a small versioned envelope:
+///
+/// `TSPV | version:u8 | metadata_length:u32(le) | metadata_json | payload`
+///
+/// Image payloads are decoded from the stored `PackedImage` representation to
+/// raw RGBA bytes; their dimensions are included in the metadata.
+fn encode_preview_response(
+    metadata: db::PreviewMetadata,
+    payload: db::PreviewPayload,
+) -> Result<Vec<u8>, db::PreviewErrorInfo> {
+    let entry_id = metadata.entry_id;
+    let (width, height, data) = if payload.kind == "image" {
+        let image = crate::protocol::PackedImage::try_from(payload.data.as_slice())
+            .map_err(|error| preview_payload_error(entry_id, error.to_string()))?;
+        (Some(image.width), Some(image.height), image.rgba.to_vec())
+    } else {
+        (None, None, payload.data)
+    };
+    let metadata = PreviewResponseMetadata {
+        entry_id,
+        kind: payload.kind,
+        name: payload.name,
+        size_bytes: u64::try_from(data.len()).unwrap_or(u64::MAX),
+        width,
+        height,
+        batch: metadata.batch,
+    };
+    let metadata = serde_json::to_vec(&metadata)
+        .map_err(|error| preview_payload_error(entry_id, error.to_string()))?;
+    let metadata_len = u32::try_from(metadata.len())
+        .map_err(|_| preview_payload_error(entry_id, "preview metadata is too large"))?;
+    let capacity = 9_usize
+        .checked_add(metadata.len())
+        .and_then(|length| length.checked_add(data.len()))
+        .ok_or_else(|| preview_payload_error(entry_id, "preview response is too large"))?;
+
+    let mut response = Vec::with_capacity(capacity);
+    response.extend_from_slice(PREVIEW_RESPONSE_MAGIC);
+    response.push(PREVIEW_RESPONSE_VERSION);
+    response.extend_from_slice(&metadata_len.to_le_bytes());
+    response.extend_from_slice(&metadata);
+    response.extend_from_slice(&data);
+    Ok(response)
+}
+
+/// Return a bounded history preview as a raw `ArrayBuffer` to the frontend.
+#[command]
+pub async fn get_preview(
+    state: State<'_, AppState>,
+    id: i64,
+    batch_id: Option<String>,
+) -> Result<tauri::ipc::Response, db::PreviewErrorInfo> {
+    let db = state.db.lock().await;
+    if let Some(batch_id) = batch_id.as_deref() {
+        db.get_preview_batch_navigation(batch_id, id)
+            .map_err(db::PreviewErrorInfo::from)?;
+    }
+    let preview_id = id;
+    let metadata = db
+        .get_preview_metadata(preview_id)
+        .map_err(db::PreviewErrorInfo::from)?;
+    let payload = db
+        .get_preview_payload(preview_id)
+        .map_err(db::PreviewErrorInfo::from)?;
+    Ok(tauri::ipc::Response::new(encode_preview_response(
+        metadata, payload,
+    )?))
 }
 
 /// Get current file transfer progress (for progress bar)
@@ -930,6 +1084,77 @@ fn set_clipboard_dib(dib: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decode_preview_response(response: &[u8]) -> (serde_json::Value, &[u8]) {
+        assert_eq!(&response[..4], PREVIEW_RESPONSE_MAGIC);
+        assert_eq!(response[4], PREVIEW_RESPONSE_VERSION);
+        let metadata_len = u32::from_le_bytes(response[5..9].try_into().unwrap()) as usize;
+        let payload_offset = 9 + metadata_len;
+        let metadata = serde_json::from_slice(&response[9..payload_offset]).unwrap();
+        (metadata, &response[payload_offset..])
+    }
+
+    #[test]
+    fn preview_response_keeps_text_metadata_and_raw_bytes() {
+        let response = encode_preview_response(
+            db::PreviewMetadata {
+                entry_id: 17,
+                kind: db::PreviewKind::Text,
+                name: "text.txt".to_string(),
+                size_bytes: 13,
+                batch: None,
+            },
+            db::PreviewPayload {
+                kind: "text".to_string(),
+                name: "text.txt".to_string(),
+                size_bytes: 13,
+                data: b"preview bytes".to_vec(),
+            },
+        )
+        .unwrap();
+        let (metadata, data) = decode_preview_response(&response);
+
+        assert_eq!(metadata["kind"], "text");
+        assert_eq!(metadata["entry_id"], 17);
+        assert_eq!(metadata["name"], "text.txt");
+        assert_eq!(metadata["size_bytes"], 13);
+        assert!(metadata["width"].is_null());
+        assert!(metadata["height"].is_null());
+        assert!(metadata["batch"].is_null());
+        assert_eq!(data, b"preview bytes");
+    }
+
+    #[test]
+    fn preview_response_decodes_images_to_rgba_with_dimensions() {
+        let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
+        let mut packed = Vec::new();
+        packed.extend_from_slice(&2_u32.to_le_bytes());
+        packed.extend_from_slice(&1_u32.to_le_bytes());
+        packed.extend_from_slice(&rgba);
+        let response = encode_preview_response(
+            db::PreviewMetadata {
+                entry_id: 23,
+                kind: db::PreviewKind::Image,
+                name: "image".to_string(),
+                size_bytes: packed.len() as u64,
+                batch: None,
+            },
+            db::PreviewPayload {
+                kind: "image".to_string(),
+                name: "image".to_string(),
+                size_bytes: packed.len() as u64,
+                data: packed,
+            },
+        )
+        .unwrap();
+        let (metadata, data) = decode_preview_response(&response);
+
+        assert_eq!(metadata["kind"], "image");
+        assert_eq!(metadata["size_bytes"], rgba.len());
+        assert_eq!(metadata["width"], 2);
+        assert_eq!(metadata["height"], 1);
+        assert_eq!(data, rgba);
+    }
 
     #[test]
     fn shortcut_transaction_registers_new_then_persists() {

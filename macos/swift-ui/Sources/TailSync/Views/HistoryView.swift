@@ -31,6 +31,160 @@ private struct HistoryDateBounds {
     let end: Date?
 }
 
+/// A local key monitor is used instead of `.onKeyPress`, which is not
+/// available on the package's macOS 13 deployment target.  The monitor is
+/// attached only while HistoryView is alive and is scoped to its NSWindow, so
+/// typing in Settings or another application is never intercepted.
+private struct HistoryKeyboardMonitor: NSViewRepresentable {
+    @Binding var focusedEntryId: Int64?
+    let entries: [HistoryEntry]
+    let expandedBatchIds: Set<String>
+    let onPreview: (HistoryPreviewRequest) -> Void
+    let onClosePreview: () -> Void
+    let isPreviewVisible: () -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> WindowTrackingView {
+        let view = WindowTrackingView(frame: .zero)
+        view.isHidden = true
+        view.onWindowChange = { [weak coordinator = context.coordinator] window in
+            coordinator?.updateWindow(window)
+        }
+        context.coordinator.update(
+            focusedEntryId: $focusedEntryId,
+            entries: entries,
+            expandedBatchIds: expandedBatchIds,
+            onPreview: onPreview,
+            onClosePreview: onClosePreview,
+            isPreviewVisible: isPreviewVisible,
+            window: view.window
+        )
+        context.coordinator.install()
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowTrackingView, context: Context) {
+        context.coordinator.update(
+            focusedEntryId: $focusedEntryId,
+            entries: entries,
+            expandedBatchIds: expandedBatchIds,
+            onPreview: onPreview,
+            onClosePreview: onClosePreview,
+            isPreviewVisible: isPreviewVisible,
+            window: nsView.window
+        )
+    }
+
+    static func dismantleNSView(_ nsView: WindowTrackingView, coordinator: Coordinator) {
+        nsView.onWindowChange = nil
+        coordinator.uninstall()
+    }
+
+    /// A zero-sized representable is still attached to the hosting NSWindow,
+    /// but its `window` is nil during `makeNSView`. Tracking the AppKit
+    /// lifecycle is deterministic and avoids relying on one delayed run-loop
+    /// sample that can fire before SwiftUI finishes attachment.
+    final class WindowTrackingView: NSView {
+        var onWindowChange: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindowChange?(window)
+        }
+    }
+
+    final class Coordinator {
+        private var monitor: Any?
+        private var historyWindow: NSWindow?
+        private var focusedEntryBinding: Binding<Int64?>?
+        private var entries: [HistoryEntry] = []
+        private var expandedBatchIds: Set<String> = []
+        private var onPreview: ((HistoryPreviewRequest) -> Void)?
+        private var onClosePreview: (() -> Void)?
+        private var isPreviewVisible: (() -> Bool)?
+
+        func update(
+            focusedEntryId: Binding<Int64?>,
+            entries: [HistoryEntry],
+            expandedBatchIds: Set<String>,
+            onPreview: @escaping (HistoryPreviewRequest) -> Void,
+            onClosePreview: @escaping () -> Void,
+            isPreviewVisible: @escaping () -> Bool,
+            window: NSWindow?
+        ) {
+            self.focusedEntryBinding = focusedEntryId
+            self.entries = entries
+            self.expandedBatchIds = expandedBatchIds
+            self.onPreview = onPreview
+            self.onClosePreview = onClosePreview
+            self.isPreviewVisible = isPreviewVisible
+            updateWindow(window)
+        }
+
+        func updateWindow(_ window: NSWindow?) {
+            historyWindow = window
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        func uninstall() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let historyWindow,
+                  event.window === historyWindow else { return event }
+
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if !modifiers.isDisjoint(with: [.command, .control, .option, .shift]) {
+                return event
+            }
+
+            // Escape always closes an active preview, even when the preview's
+            // close button or another control currently owns first responder.
+            if event.keyCode == 53 {
+                guard isPreviewVisible?() == true else { return event }
+                onClosePreview?()
+                return nil
+            }
+            guard event.keyCode == 49, !event.isARepeat else { return event }
+
+            guard !isTextInput(event.window?.firstResponder),
+                  let focusedEntryId = focusedEntryBinding?.wrappedValue,
+                  let request = historyPreviewRequest(
+                      focusedId: focusedEntryId,
+                      entries: entries,
+                      expandedBatchIds: expandedBatchIds
+                  ) else { return event }
+
+            onPreview?(request)
+            return nil
+        }
+
+        private func isTextInput(_ responder: NSResponder?) -> Bool {
+            responder is NSTextView
+                || responder is NSTextField
+                || responder is NSSearchField
+                || responder is NSComboBox
+        }
+
+        deinit {
+            uninstall()
+        }
+    }
+}
+
 struct HistoryView: View {
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
@@ -45,6 +199,10 @@ struct HistoryView: View {
     @State private var hasNext = false
     @State private var isLoading = false
     @State private var restoredId: Int64? = nil
+    // Previewing is independent of restoration: selection chooses a row,
+    // Space opens it in the reusable preview window, and double-click retains
+    // the established clipboard-restore gesture.
+    @State private var focusedEntryId: Int64? = nil
     @State private var errorMsg: String? = nil
     @State private var lastVersion: UInt64 = 0
     @State private var daemonOnline = false
@@ -302,21 +460,27 @@ struct HistoryView: View {
                         HistoryRow(
                             entry: entry,
                             isRestored: restoredId == entry.id,
+                            isFocused: focusedEntryId == entry.id,
                             showsMultipleLabels: multipleLabelsSupported
                         )
                         .contentShape(Rectangle())
+                        // Keep single-click selection simultaneous with the
+                        // established double-click restore gesture.
+                        .simultaneousGesture(
+                            TapGesture(count: 1).onEnded {
+                                focusedEntryId = entry.id
+                            }
+                        )
                         .onTapGesture(count: 2) { restore(entry.id) }
                         .onDirectRightClick { delete(entry.id) }
                         }
                         .listRowBackground(palette.surfaceColor)
                         .listRowSeparatorTint(palette.dividerColor)
-                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .background(palette.windowColor)
-                .animation(.spring(response: 0.35, dampingFraction: 0.9), value: entries.count)
             }
 
             // Pagination + clear
@@ -409,6 +573,8 @@ struct HistoryView: View {
             restoreFeedbackTask = nil
             syncWarningTask?.cancel()
             syncWarningTask = nil
+            focusedEntryId = nil
+            HistoryPreviewWindowController.shared.close()
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
@@ -463,6 +629,23 @@ struct HistoryView: View {
             }
         }
         .background(palette.windowColor)
+        .background(
+            HistoryKeyboardMonitor(
+                focusedEntryId: $focusedEntryId,
+                entries: entries,
+                expandedBatchIds: expandedBatchIds,
+                onPreview: { request in
+                    HistoryPreviewWindowController.shared.present(request)
+                },
+                onClosePreview: {
+                    HistoryPreviewWindowController.shared.close()
+                },
+                isPreviewVisible: {
+                    HistoryPreviewWindowController.shared.isPreviewVisible
+                }
+            )
+            .frame(width: 0, height: 0)
+        )
         .tailSyncThemed()
     }
 
@@ -484,6 +667,7 @@ struct HistoryView: View {
         if clearExisting {
             entries = []
             hasNext = false
+            focusedEntryId = nil
         }
         Task {
             do {
@@ -498,6 +682,7 @@ struct HistoryView: View {
                 entries = Array(result.prefix(pageSize))
                 hasNext = result.count > pageSize
                 page = requestedPage
+                pruneSelection()
             } catch {
                 guard generation == loadGeneration else { return }
                 errorMsg = Loc.t("history.loadError")
@@ -641,6 +826,8 @@ struct HistoryView: View {
             do {
                 try await ApiClient.shared.deleteEntry(id: id)
                 entries.removeAll { $0.id == id }
+                HistoryPreviewWindowController.shared.closeIfShowing(entryId: id)
+                pruneSelection()
                 loadMigrationDiagnostics()
             } catch {
                 errorMsg = Loc.t("history.deleteError")
@@ -655,10 +842,21 @@ struct HistoryView: View {
                 entries = []
                 page = 0
                 hasNext = false
+                focusedEntryId = nil
+                HistoryPreviewWindowController.shared.close()
                 loadMigrationDiagnostics()
             } else {
                 errorMsg = Loc.t("history.deleteError")
             }
+        }
+    }
+
+    /// Remove a selection that no longer refers to a loaded row so a delayed
+    /// key event cannot preview deleted or stale content.
+    private func pruneSelection() {
+        let validIds = Set(entries.map(\.id))
+        if let focusedEntryId, !validIds.contains(focusedEntryId) {
+            self.focusedEntryId = nil
         }
     }
 }
@@ -702,6 +900,7 @@ private final class DirectRightClickNSView: NSView {
 struct HistoryRow: View {
     let entry: HistoryEntry
     let isRestored: Bool
+    let isFocused: Bool
     let showsMultipleLabels: Bool
     @State private var thumbnail: NSImage? = nil
     @Environment(\.tailSyncTheme) private var theme
@@ -756,10 +955,23 @@ struct HistoryRow: View {
         }
         .padding(.vertical, max(2, (theme.metrics.rowPadding - 6) / 2))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isRestored ? palette.accentColor.opacity(0.12) : .clear)
+        .background(
+            isRestored
+                ? palette.accentColor.opacity(0.12)
+                : isFocused ? palette.accentColor.opacity(0.055) : .clear
+        )
         .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous)
+                .stroke(
+                    isFocused ? palette.accentColor.opacity(0.7) : .clear,
+                    lineWidth: isFocused ? 1 : 0
+                )
+        }
+        .accessibilityAddTraits(isFocused ? .isSelected : [])
         .contentShape(Rectangle())
         .animation(.easeOut(duration: 0.4), value: isRestored)
+        .animation(.easeOut(duration: 0.18), value: isFocused)
     }
 }
 

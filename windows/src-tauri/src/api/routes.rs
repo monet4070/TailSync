@@ -519,6 +519,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 data: Some(serde_json::json!({
                     "enabled": settings.sync_enabled,
                     "shortcut": settings.sync_shortcut,
+                    "history_shortcut": settings.history_shortcut,
                 })),
                 error: None,
             }
@@ -571,6 +572,21 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
+        "set_history_shortcut" => {
+            let shortcut = req.shortcut.unwrap_or_default();
+            let result = state
+                .settings
+                .lock()
+                .await
+                .set_history_shortcut(&shortcut)
+                .map_err(|error| error.to_string());
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
         "update_settings" => {
             let Some(settings_json) = req.settings else {
                 return Response {
@@ -586,6 +602,8 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     // generic settings so runtime and persisted state stay aligned.
                     requested_settings.sync_shortcut =
                         state.settings.lock().await.sync_shortcut.clone();
+                    requested_settings.history_shortcut =
+                        state.settings.lock().await.history_shortcut.clone();
                     match crate::crypto::apply_settings_update(
                         &state.settings,
                         &state.db,

@@ -12,9 +12,13 @@ final class GlobalShortcutTests: XCTestCase {
     }
 
     func testParsesTheDefaultCombination() throws {
-        let value = try parsed("CommandOrControl+Shift+S")
-        XCTAssertEqual(value.keyCode, UInt32(kVK_ANSI_S))
-        XCTAssertEqual(value.carbonModifiers, UInt32(cmdKey) | UInt32(shiftKey))
+        let sync = try parsed("CommandOrControl+Shift+S")
+        XCTAssertEqual(sync.keyCode, UInt32(kVK_ANSI_S))
+        XCTAssertEqual(sync.carbonModifiers, UInt32(cmdKey) | UInt32(shiftKey))
+
+        let history = try parsed("CommandOrControl+Shift+H")
+        XCTAssertEqual(history.keyCode, UInt32(kVK_ANSI_H))
+        XCTAssertEqual(history.carbonModifiers, UInt32(cmdKey) | UInt32(shiftKey))
     }
 
     func testParsesDigitAndFunctionKeys() throws {

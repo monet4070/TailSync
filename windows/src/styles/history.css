@@ -560,6 +560,10 @@ html, body {
   background: var(--text-tertiary);
 }
 
+.history-page {
+  position: relative;
+}
+
 /* ── History item ─────────────────────────────────────────────────── */
 .history-item {
   display: flex;
@@ -575,12 +579,27 @@ html, body {
   width: 100%;
   min-width: 0;
   position: relative;
-  animation: item-enter 0.35s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 .history-item:hover {
   background: var(--bg-hover);
   transform: translateX(var(--item-hover-shift));
+}
+
+/* Keyboard-selected row.  This is separate from `.restored`, which is a
+   short-lived acknowledgement after a double-click restore. */
+.history-item.focused {
+  background: var(--brand-soft);
+  box-shadow: inset 0 0 0 1px var(--brand);
+}
+
+.history-item.focused:hover {
+  background: var(--brand-soft);
+}
+
+.history-item:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
 }
 
 .history-item:active {
@@ -666,14 +685,13 @@ html, body {
   z-index: 1;
 }
 
-@keyframes item-enter {
-  from { opacity: 0; transform: translateY(6px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-
 @keyframes batch-item-reveal {
   from { opacity: 0; transform: translateY(2px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+.history-item.batch-expanded-item {
+  animation: batch-item-reveal 0.16s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 /* Restore feedback stays on a paint-only layer so the row never moves. */
@@ -1090,7 +1108,11 @@ html, body {
 .confirm-dialog-actions button.danger { border-color: #d84a4a; background: #d84a4a; color: #fff; }
 .confirm-dialog-actions button:disabled { opacity: 0.55; cursor: default; }
 
-@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @keyframes dialog-in {
   from { opacity: 0; transform: translateY(8px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }

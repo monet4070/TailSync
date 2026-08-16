@@ -66,6 +66,7 @@ const settings: SettingsData = {
   storage_root: null,
   sync_enabled: true,
   sync_shortcut: "CommandOrControl+Shift+S",
+  history_shortcut: "CommandOrControl+Shift+H",
   theme: "system",
   trusted_peer_addresses: {},
   trusted_peer_keys: {},
@@ -195,6 +196,27 @@ describe("Settings updates", () => {
       });
     });
     expect(screen.getByText("/")).toBeInTheDocument();
+  });
+
+  it("records and persists the independent history-window shortcut", async () => {
+    installInvokeMock(false);
+    render(<Settings />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "settings.historyShortcutRecord" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("suspend_sync_shortcut"));
+    fireEvent.keyDown(screen.getByRole("button", { name: "settings.shortcutRecording" }), {
+      code: "KeyJ",
+      key: "j",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "settings.shortcutSave" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_history_shortcut", {
+        shortcut: "Control+Shift+KeyJ",
+      });
+    });
   });
 
   it("keeps the recorder open when a global shortcut is already occupied", async () => {

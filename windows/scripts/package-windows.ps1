@@ -40,19 +40,56 @@ function Resolve-OutputPath {
     return [System.IO.Path]::GetFullPath((Join-Path $BasePath $RequestedPath))
 }
 
+function Get-ArtifactSignatureStatus {
+    param(
+        [Parameter(Mandatory)] [System.IO.FileInfo]$File,
+        [switch]$Required
+    )
+
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $File.FullName
+        $status = $signature.PSObject.Properties['Status']
+        if ($null -eq $status) {
+            throw 'Authenticode status is unavailable in this PowerShell host.'
+        }
+        return $status.Value.ToString()
+    }
+    catch {
+        if ($Required) {
+            throw "Unable to inspect the Authenticode signature for $($File.Name): $($_.Exception.Message)"
+        }
+        return 'Unavailable'
+    }
+}
+
+function Get-ArtifactSha256 {
+    param(
+        [Parameter(Mandatory)] [System.IO.FileInfo]$File
+    )
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash([System.IO.File]::ReadAllBytes($File.FullName))
+        return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
 function New-ArtifactRecord {
     param(
         [Parameter(Mandatory)] [string]$Kind,
         [Parameter(Mandatory)] [System.IO.FileInfo]$File
     )
 
-    $signature = Get-AuthenticodeSignature -LiteralPath $File.FullName
+    $signature = Get-ArtifactSignatureStatus -File $File -Required:($Release -and $ReleaseTier -eq 'trusted')
     [ordered]@{
         kind = $Kind
         file = $File.Name
         bytes = $File.Length
-        sha256 = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        signature = $signature.Status.ToString()
+        sha256 = Get-ArtifactSha256 -File $File
+        signature = $signature
     }
 }
 
@@ -94,8 +131,10 @@ $requiredFiles = @(
     (Join-Path $windowsRoot 'package-lock.json'),
     (Join-Path $windowsRoot 'history.html'),
     (Join-Path $windowsRoot 'settings.html'),
+    (Join-Path $windowsRoot 'preview.html'),
     (Join-Path $windowsRoot 'src\history-main.tsx'),
-    (Join-Path $windowsRoot 'src\settings-main.tsx')
+    (Join-Path $windowsRoot 'src\settings-main.tsx'),
+    (Join-Path $windowsRoot 'src\preview-main.tsx')
 )
 foreach ($requiredFile in $requiredFiles) {
     if (!(Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
@@ -283,14 +322,14 @@ try {
             kind = 'updater'
             file = $updaterFile.Name
             bytes = $updaterFile.Length
-            sha256 = (Get-FileHash -LiteralPath $updaterFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            sha256 = Get-ArtifactSha256 -File $updaterFile
             signature = $updaterSignatureFile.Name
         }
         $artifacts += [ordered]@{
             kind = 'updater-signature'
             file = $updaterSignatureFile.Name
             bytes = $updaterSignatureFile.Length
-            sha256 = (Get-FileHash -LiteralPath $updaterSignatureFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            sha256 = Get-ArtifactSha256 -File $updaterSignatureFile
             signature = $null
         }
         $updaterPlatform = if ($Target.StartsWith('aarch64-')) {

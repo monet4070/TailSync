@@ -74,6 +74,23 @@ private actor SettingsSaveCoordinator {
 }
 
 struct SettingsView: View {
+    private enum ShortcutKind: Equatable {
+        case sync
+        case history
+
+        var titleKey: String {
+            self == .sync ? "settings.syncShortcut" : "settings.historyShortcut"
+        }
+
+        var recordKey: String {
+            self == .sync ? "settings.shortcutRecord" : "settings.historyShortcutRecord"
+        }
+
+        func value(in settings: AppSettings) -> String {
+            self == .sync ? settings.sync_shortcut : settings.history_shortcut
+        }
+    }
+
     private struct PeerRoute: Identifiable {
         let peer: ApiClient.PeerSnapshot
         let address: String
@@ -117,9 +134,10 @@ struct SettingsView: View {
     @State private var storageStatus: ApiClient.StorageStatus?
     @State private var storageBusy = false
     @State private var oldStorage: ApiClient.StorageMigrationResult?
-    @State private var isRecordingShortcut = false
+    @State private var recordingShortcut: ShortcutKind?
     @State private var shortcutDraft = ""
     @State private var shortcutError = ""
+    @State private var shortcutErrorKind: ShortcutKind?
     @State private var shortcutBusy = false
     @State private var shortcutMonitor: Any?
 
@@ -200,8 +218,8 @@ struct SettingsView: View {
             }
         }
         .onDisappear {
-            if isRecordingShortcut {
-                cancelShortcutRecording()
+            if let recordingShortcut {
+                cancelShortcutRecording(recordingShortcut)
             }
         }
         .tailSyncThemed()
@@ -219,7 +237,9 @@ struct SettingsView: View {
                     .onChange(of: settings.sync_enabled) { _ in save() }
             }
             themedDivider.padding(.leading, 16)
-            shortcutRow
+            shortcutRow(.sync)
+            themedDivider.padding(.leading, 16)
+            shortcutRow(.history)
             themedDivider.padding(.leading, 16)
             settingRow {
                 Text(Loc.t("settings.notifications"))
@@ -246,34 +266,34 @@ struct SettingsView: View {
         }
     }
 
-    private var shortcutRow: some View {
+    private func shortcutRow(_ kind: ShortcutKind) -> some View {
         settingRow {
-            Text(Loc.t("settings.syncShortcut"))
+            Text(Loc.t(kind.titleKey))
             Spacer()
-            if isRecordingShortcut {
+            if recordingShortcut == kind {
                 Text(shortcutDraft.isEmpty
                      ? Loc.t("settings.shortcutRecording")
                      : ShortcutDisplayFormatter.string(for: shortcutDraft))
                     .font(.caption2.monospaced())
                     .foregroundColor(palette.accentColor)
-                Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording() }
+                Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording(kind) }
                     .buttonStyle(.borderless)
                     .disabled(shortcutBusy)
-                Button(Loc.t("settings.shortcutSave")) { confirmShortcut() }
+                Button(Loc.t("settings.shortcutSave")) { confirmShortcut(kind) }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .disabled(shortcutDraft.isEmpty || shortcutBusy)
             } else {
-                Text(settings.sync_shortcut.isEmpty
+                Text(kind.value(in: settings).isEmpty
                      ? Loc.t("settings.shortcutNone")
-                     : ShortcutDisplayFormatter.string(for: settings.sync_shortcut))
+                     : ShortcutDisplayFormatter.string(for: kind.value(in: settings)))
                     .font(.caption2.monospaced())
                     .foregroundColor(palette.tertiaryColor)
-                Button(Loc.t("settings.shortcutRecord")) { startShortcutRecording() }
+                Button(Loc.t(kind.recordKey)) { startShortcutRecording(kind) }
                     .buttonStyle(.borderless)
-                    .disabled(shortcutBusy)
+                    .disabled(shortcutBusy || recordingShortcut != nil)
             }
-            if !shortcutError.isEmpty {
+            if !shortcutError.isEmpty, shortcutErrorKind == kind {
                 Text(shortcutError)
                     .font(.caption2)
                     .foregroundColor(.red)
@@ -282,15 +302,16 @@ struct SettingsView: View {
         }
     }
 
-    private func startShortcutRecording() {
-        guard !isRecordingShortcut, !shortcutBusy else { return }
+    private func startShortcutRecording(_ kind: ShortcutKind) {
+        guard recordingShortcut == nil, !shortcutBusy else { return }
         GlobalShortcutController.shared.unregister()
         shortcutDraft = ""
         shortcutError = ""
+        shortcutErrorKind = nil
         shortcutBusy = false
-        isRecordingShortcut = true
+        recordingShortcut = kind
         shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard isRecordingShortcut else { return event }
+            guard recordingShortcut == kind else { return event }
             if let shortcut = Self.capturedShortcut(from: event) {
                 shortcutDraft = shortcut
                 shortcutError = ""
@@ -299,11 +320,15 @@ struct SettingsView: View {
         }
     }
 
-    private func cancelShortcutRecording() {
+    private func cancelShortcutRecording(_ kind: ShortcutKind) {
         finishShortcutRecording()
         if case .failure(let error) =
-            GlobalShortcutController.shared.register(shortcut: settings.sync_shortcut) {
+            GlobalShortcutController.shared.register(
+                syncShortcut: settings.sync_shortcut,
+                historyShortcut: settings.history_shortcut
+            ) {
             shortcutError = error.message
+            shortcutErrorKind = kind
         }
     }
 
@@ -312,24 +337,36 @@ struct SettingsView: View {
             NSEvent.removeMonitor(monitor)
             shortcutMonitor = nil
         }
-        isRecordingShortcut = false
+        recordingShortcut = nil
         shortcutDraft = ""
         shortcutError = ""
+        shortcutErrorKind = nil
     }
 
-    private func confirmShortcut() {
-        guard isRecordingShortcut, !shortcutDraft.isEmpty else { return }
+    private func confirmShortcut(_ kind: ShortcutKind) {
+        guard recordingShortcut == kind, !shortcutDraft.isEmpty else { return }
         let next = shortcutDraft
-        let previous = settings.sync_shortcut
+        let previous = kind.value(in: settings)
         let controller = GlobalShortcutController.shared
         shortcutBusy = true
         shortcutError = ""
+        shortcutErrorKind = kind
         Task { @MainActor in
             let error = await GlobalShortcutController.apply(
                 previous: previous,
                 next: next,
-                register: { controller.register(shortcut: $0) },
-                persist: { await ApiClient.shared.setSyncShortcut($0) }
+                register: { candidate in
+                    controller.register(
+                        syncShortcut: kind == .sync ? candidate : settings.sync_shortcut,
+                        historyShortcut: kind == .history ? candidate : settings.history_shortcut
+                    )
+                },
+                persist: { candidate in
+                    if kind == .sync {
+                        return await ApiClient.shared.setSyncShortcut(candidate)
+                    }
+                    return await ApiClient.shared.setHistoryShortcut(candidate)
+                }
             )
             shortcutBusy = false
             if let error {
@@ -337,8 +374,13 @@ struct SettingsView: View {
                 return
             }
             finishShortcutRecording()
-            settings.sync_shortcut = next
-            persistedSettings.sync_shortcut = next
+            if kind == .sync {
+                settings.sync_shortcut = next
+                persistedSettings.sync_shortcut = next
+            } else {
+                settings.history_shortcut = next
+                persistedSettings.history_shortcut = next
+            }
         }
     }
 

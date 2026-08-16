@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::db;
 
 /// Encrypted settings stored alongside the app
-#[derive(Debug, Clone, schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 #[schemars(deny_unknown_fields)]
 pub struct Settings {
     pub notifications_enabled: bool,
@@ -21,6 +21,9 @@ pub struct Settings {
     /// Optional global shortcut used to toggle sync. Empty disables it.
     #[serde(default = "default_sync_shortcut")]
     pub sync_shortcut: String,
+    /// Optional global shortcut used to open the history window. Empty disables it.
+    #[serde(default = "default_history_shortcut")]
+    pub history_shortcut: String,
     #[schemars(range(min = 10, max = 500))]
     pub history_limit: u32,
     /// Bulk history and transfer storage. None keeps bulk data in the system
@@ -137,6 +140,10 @@ fn default_sync_shortcut() -> String {
     "CommandOrControl+Shift+S".to_string()
 }
 
+fn default_history_shortcut() -> String {
+    "CommandOrControl+Shift+H".to_string()
+}
+
 fn default_color_theme() -> String {
     "tailsync".to_string()
 }
@@ -169,6 +176,7 @@ impl Default for Settings {
             progress_bar_enabled: true,
             sync_enabled: default_sync_enabled(),
             sync_shortcut: default_sync_shortcut(),
+            history_shortcut: default_history_shortcut(),
             history_limit: 100,
             storage_root: None,
             storage_quota_bytes: default_storage_quota_bytes(),
@@ -300,6 +308,17 @@ impl Settings {
         Ok(())
     }
 
+    pub fn set_history_shortcut(
+        &mut self,
+        shortcut: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut updated = self.clone();
+        updated.history_shortcut = shortcut.trim().to_string();
+        updated.save()?;
+        *self = updated;
+        Ok(())
+    }
+
     pub fn trust_peer(
         &mut self,
         hostname: &str,
@@ -414,11 +433,11 @@ fn settings_path() -> PathBuf {
 /// surfaces pass `Settings::save`; tests inject fakes.
 pub type SettingsPersist<'a> = &'a (dyn Fn(&Settings) -> Result<(), String> + Send + Sync);
 
-/// Optional shortcut transaction used by surfaces that register the global
-/// shortcut (Windows commands): `(new_settings, previous, next)`. Surfaces
-/// without a shortcut plugin pass `None` and a plain save is used instead.
+/// Optional shortcut transaction used by surfaces that register global
+/// shortcuts (Windows commands). Surfaces without a shortcut plugin pass
+/// `None` and a plain save is used instead.
 pub type ShortcutChangeHook<'a> =
-    &'a (dyn Fn(&Settings, &str, &str) -> Result<(), String> + Send + Sync);
+    &'a (dyn Fn(&Settings, &Settings) -> Result<(), String> + Send + Sync);
 
 /// What changed in a settings update, for the platform reaction.
 #[derive(Debug)]
@@ -433,7 +452,7 @@ pub struct SettingsUpdateOutcome {
 ///
 /// The settings are only committed after persistence succeeds; database
 /// limit enforcement happens after the commit, matching the command
-/// surface's previous ordering. A changed sync shortcut is routed through
+/// surface's previous ordering. Changed global shortcuts are routed through
 /// `hooks.apply_shortcut_change` when present (registration + save +
 /// rollback); otherwise a plain save is used.
 pub async fn apply_settings_update(
@@ -450,13 +469,12 @@ pub async fn apply_settings_update(
     let history_limit = new_settings.history_limit as i64;
     let storage_quota_bytes = new_settings.storage_quota_bytes;
     let mode_changed = settings_guard.connection_mode != new_settings.connection_mode;
-    let shortcut_changed = settings_guard.sync_shortcut != new_settings.sync_shortcut;
-    let previous_shortcut = settings_guard.sync_shortcut.clone();
-    let shortcut = new_settings.sync_shortcut.clone();
+    let shortcuts_changed = settings_guard.sync_shortcut != new_settings.sync_shortcut
+        || settings_guard.history_shortcut != new_settings.history_shortcut;
     let connection_mode = new_settings.connection_mode.clone();
-    if shortcut_changed {
+    if shortcuts_changed {
         if let Some(apply_shortcut_change) = apply_shortcut_change {
-            apply_shortcut_change(&new_settings, &previous_shortcut, &shortcut)
+            apply_shortcut_change(&settings_guard, &new_settings)
                 .map_err(SettingsUpdateError::Persist)?;
         } else {
             persist(&new_settings).map_err(SettingsUpdateError::Persist)?;
@@ -1593,6 +1611,8 @@ mod tests {
         assert!(settings.trusted_peer_addresses.is_empty());
         assert!(settings.paired_peer_endpoints.is_empty());
         assert_eq!(settings.color_theme, "tailsync");
+        assert_eq!(settings.sync_shortcut, "CommandOrControl+Shift+S");
+        assert_eq!(settings.history_shortcut, "CommandOrControl+Shift+H");
     }
 
     #[test]
@@ -1830,7 +1850,7 @@ mod tests {
             db::HistoryDB::open_at(&root).unwrap(),
         ));
         let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
-        let previous = settings.lock().await.sync_shortcut.clone();
+        let previous = settings.lock().await.clone();
         let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let persist_counter = persisted.clone();
         let persist = move |_settings: &Settings| -> Result<(), String> {
@@ -1839,13 +1859,14 @@ mod tests {
         };
         let hook_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let hook_counter = hook_calls.clone();
-        let hook =
-            move |_new: &Settings, seen_previous: &str, seen_next: &str| -> Result<(), String> {
-                assert_eq!(seen_previous, previous);
-                assert_eq!(seen_next, "Control+Shift+Z");
-                hook_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            };
+        let hook = move |seen_previous: &Settings, seen_next: &Settings| -> Result<(), String> {
+            assert_eq!(seen_previous.sync_shortcut, previous.sync_shortcut);
+            assert_eq!(seen_previous.history_shortcut, previous.history_shortcut);
+            assert_eq!(seen_next.sync_shortcut, "Control+Shift+Z");
+            assert_eq!(seen_next.history_shortcut, previous.history_shortcut);
+            hook_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
         let requested = Settings {
             sync_shortcut: "Control+Shift+Z".to_string(),
             ..Settings::default()

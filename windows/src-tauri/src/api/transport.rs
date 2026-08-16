@@ -47,22 +47,30 @@ pub async fn start(
             let req = match read_request(reader).await {
                 Ok(req) => req,
                 Err(error) => {
-                    let _ = write_response(&mut writer, false, None, &error).await;
+                    let _ =
+                        write_response(&mut writer, false, None, &error, API_WRITE_TIMEOUT).await;
                     return;
                 }
             };
             if !st.token.matches(req.token.as_deref()) {
-                let _ = write_response(&mut writer, false, None, "unauthorized").await;
+                let _ = write_response(&mut writer, false, None, "unauthorized", API_WRITE_TIMEOUT)
+                    .await;
                 return;
             }
 
             let should_shutdown = req.cmd == "quit";
+            // A history preview can contain up to 64 MiB of decrypted bytes,
+            // expanding to roughly 90 MiB when wrapped in Base64/JSON. Keep
+            // the normal five-second API timeout for every other command but
+            // allow this bounded response enough time to drain locally.
+            let response_timeout = response_timeout_for_command(&req.cmd);
             let resp = handle_cmd(req, &st).await;
             let sent = write_response(
                 &mut writer,
                 resp.ok,
                 resp.data,
                 &resp.error.unwrap_or_default(),
+                response_timeout,
             )
             .await;
             if should_shutdown && sent.is_ok() {
@@ -139,11 +147,38 @@ async fn write_response(
     ok: bool,
     data: Option<Value>,
     error: &str,
+    timeout_duration: Duration,
 ) -> Result<(), String> {
-    timeout(API_WRITE_TIMEOUT, send_json(writer, ok, data, error))
+    timeout(timeout_duration, send_json(writer, ok, data, error))
         .await
         .map_err(|_| "response write timed out".to_string())?
         .map_err(|error| error.to_string())
+}
+
+fn response_timeout_for_command(command: &str) -> Duration {
+    if command == "get_preview_data" {
+        Duration::from_secs(30)
+    } else {
+        API_WRITE_TIMEOUT
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_response_gets_extended_write_timeout_only() {
+        assert_eq!(
+            response_timeout_for_command("get_preview_data"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            response_timeout_for_command("get_history"),
+            API_WRITE_TIMEOUT
+        );
+        assert_eq!(response_timeout_for_command("quit"), API_WRITE_TIMEOUT);
+    }
 }
 
 async fn graceful_shutdown(state: &ApiState) {

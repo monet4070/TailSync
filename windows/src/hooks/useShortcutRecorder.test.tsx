@@ -4,7 +4,6 @@ import { useShortcutRecorder } from "./useShortcutRecorder";
 
 vi.mock("../tailsyncClient", () => ({
   resumeSyncShortcut: vi.fn(),
-  setSyncShortcut: vi.fn(),
   suspendSyncShortcut: vi.fn(),
 }));
 
@@ -18,13 +17,11 @@ vi.mock("./useI18n", () => ({
 
 import {
   resumeSyncShortcut,
-  setSyncShortcut,
   suspendSyncShortcut,
 } from "../tailsyncClient";
 import { captureShortcut } from "../utils/shortcut";
 
 const mockedResume = vi.mocked(resumeSyncShortcut);
-const mockedSet = vi.mocked(setSyncShortcut);
 const mockedSuspend = vi.mocked(suspendSyncShortcut);
 const mockedCapture = vi.mocked(captureShortcut);
 
@@ -35,7 +32,9 @@ function makeOptions(overrides: Partial<{
   showError: (m: string) => void;
 }> = {}) {
   return {
+    defaultShortcut: "Control+Shift+Default",
     currentShortcut: () => "Control+Shift+Old",
+    setShortcut: vi.fn<(_shortcut: string) => Promise<void>>().mockResolvedValue(undefined),
     applyShortcut: vi.fn(),
     showSavedToast: vi.fn(),
     showError: vi.fn(),
@@ -46,7 +45,6 @@ function makeOptions(overrides: Partial<{
 describe("useShortcutRecorder", () => {
   beforeEach(() => {
     mockedResume.mockReset().mockResolvedValue(undefined);
-    mockedSet.mockReset().mockResolvedValue(undefined);
     mockedSuspend.mockReset().mockResolvedValue(undefined);
     mockedCapture.mockReset();
   });
@@ -64,7 +62,7 @@ describe("useShortcutRecorder", () => {
       ok = await result.current.commitShortcut("Control+Shift+New", true, false);
     });
     expect(ok!).toBe(true);
-    expect(mockedSet).toHaveBeenCalledWith("Control+Shift+New");
+    expect(opts.setShortcut).toHaveBeenCalledWith("Control+Shift+New");
     expect(opts.applyShortcut).toHaveBeenCalledWith("Control+Shift+New");
     expect(result.current.shortcutDraft).toBe("Control+Shift+New");
     expect(opts.showSavedToast).toHaveBeenCalled();
@@ -72,8 +70,8 @@ describe("useShortcutRecorder", () => {
   });
 
   it("rolls back the draft and resumes the shortcut on registration failure", async () => {
-    mockedSet.mockRejectedValue(new Error("already registered"));
     const opts = makeOptions();
+    vi.mocked(opts.setShortcut).mockRejectedValue(new Error("already registered"));
     const { result } = renderHook(() => useShortcutRecorder(opts));
 
     let ok: boolean;
@@ -88,7 +86,7 @@ describe("useShortcutRecorder", () => {
 
     // reportInline=true suppresses the global error toast on failure.
     vi.mocked(opts.showError).mockClear();
-    mockedSet.mockRejectedValue(new Error("already registered"));
+    vi.mocked(opts.setShortcut).mockRejectedValue(new Error("already registered"));
     await act(async () => {
       await result.current.commitShortcut("Control+Shift+New", true, true);
     });
@@ -104,7 +102,7 @@ describe("useShortcutRecorder", () => {
       ok = await result.current.commitShortcut("Control+Shift+Old", false, false);
     });
     expect(ok!).toBe(true);
-    expect(mockedSet).not.toHaveBeenCalled();
+    expect(opts.setShortcut).not.toHaveBeenCalled();
     expect(opts.applyShortcut).not.toHaveBeenCalled();
     expect(opts.showSavedToast).not.toHaveBeenCalled();
   });
@@ -153,7 +151,7 @@ describe("useShortcutRecorder", () => {
     await act(async () => {
       await result.current.confirmShortcut();
     });
-    expect(mockedSet).toHaveBeenCalledWith("Control+Shift+X");
+    expect(opts.setShortcut).toHaveBeenCalledWith("Control+Shift+X");
     expect(opts.applyShortcut).toHaveBeenCalledWith("Control+Shift+X");
     expect(opts.showSavedToast).toHaveBeenCalled();
     expect(result.current.shortcutRecording).toBe(false);

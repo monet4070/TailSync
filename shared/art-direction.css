@@ -25,7 +25,8 @@
   font-weight: 400;
   line-height: 1.5;
   box-shadow: 0 24px 70px rgba(20, 20, 19, 0.16);
-  animation: art-app-reveal 520ms var(--art-spring) backwards;
+  /* A transform/opacity animation here makes WebView2 rasterize every child,
+     which disables crisp subpixel text rendering for the whole window. */
 }
 
 .app *,
@@ -325,7 +326,6 @@
   padding: 0 12px 0 16px;
   border-bottom: 1px solid var(--art-line);
   background: color-mix(in srgb, var(--bg-window) 92%, transparent);
-  backdrop-filter: blur(18px);
 }
 
 .app .titlebar-brand {
@@ -651,7 +651,6 @@
   font-size: 16px;
   font-weight: 500;
   text-transform: none;
-  backdrop-filter: blur(14px);
 }
 
 .app.theme-ocean .date-header,
@@ -686,7 +685,10 @@
     background var(--art-fast) ease,
     box-shadow 280ms var(--art-spring),
     transform 280ms var(--art-spring);
-  animation: art-row-in 480ms var(--art-spring) backwards;
+}
+
+.app .history-item.page-enter-item {
+  animation: art-row-in 360ms var(--art-spring) backwards;
 }
 
 .app .history-item:hover {
@@ -766,6 +768,7 @@
 .app.theme-forest .item-desc {
   font-family: var(--art-display);
   font-size: 15px;
+  line-height: 22px;
 }
 
 .app.theme-high-contrast .history-item {
@@ -777,7 +780,6 @@
   padding: 8px 16px;
   border-top: 1px solid var(--art-line-strong);
   background: color-mix(in srgb, var(--bg-window) 92%, transparent);
-  backdrop-filter: blur(16px);
 }
 
 .app .page-btn {
@@ -809,7 +811,6 @@
 .app .file-progress {
   border-top: 1px solid var(--art-line);
   background: color-mix(in srgb, var(--bg-window) 94%, transparent);
-  backdrop-filter: blur(16px);
 }
 
 .app .progress-text {
@@ -1637,7 +1638,6 @@
   box-shadow:
     10px 10px 0 color-mix(in srgb, var(--brand) 9%, transparent),
     0 24px 64px rgba(8, 28, 26, 0.18);
-  animation-name: art-flux-app-in;
 }
 
 .app.theme-ocean::before {
@@ -1702,8 +1702,11 @@
 
 .app.theme-ocean .history-item {
   border-left: 1px solid transparent;
+}
+
+.app.theme-ocean .history-item.page-enter-item {
   animation-name: art-flux-row-in;
-  animation-duration: 360ms;
+  animation-duration: 320ms;
 }
 
 .app.theme-ocean .history-item:hover {
@@ -1722,6 +1725,7 @@
 .app.theme-ocean .item-desc {
   font-size: 13px;
   font-weight: 600;
+  line-height: 18px;
 }
 
 .app.theme-ocean .setting-group {
@@ -1763,7 +1767,6 @@
     color-mix(in srgb, var(--art-line) 42%, transparent) 32px
   );
   box-shadow: 0 26px 62px rgba(29, 38, 30, 0.15);
-  animation-name: art-ledger-app-in;
 }
 
 .app.theme-forest::before {
@@ -1799,8 +1802,11 @@
   padding-top: 15px;
   padding-bottom: 15px;
   border-bottom-style: dotted;
+}
+
+.app.theme-forest .history-item.page-enter-item {
   animation-name: art-ledger-row-in;
-  animation-duration: 620ms;
+  animation-duration: 420ms;
 }
 
 .app.theme-forest .history-item:hover {
@@ -1838,7 +1844,7 @@
 
 .app.theme-forest .item-desc {
   font-size: 16px;
-  line-height: 1.52;
+  line-height: 24px;
 }
 
 .app.theme-forest .setting-group {
@@ -1875,7 +1881,6 @@
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 30px 74px rgba(51, 31, 42, 0.18);
-  animation-name: art-aura-app-in;
 }
 
 .app.theme-rose::before {
@@ -1953,8 +1958,11 @@
   padding-left: 11px;
   border: 1px solid transparent;
   border-radius: 8px;
+}
+
+.app.theme-rose .history-item.page-enter-item {
   animation-name: art-aura-row-in;
-  animation-duration: 560ms;
+  animation-duration: 400ms;
 }
 
 .app.theme-rose .history-item:hover {
@@ -1977,8 +1985,8 @@
 }
 
 .app.theme-rose .item-desc {
-  font-size: 14.5px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 22px;
 }
 
 .app.theme-rose .setting-group-header h3 {
@@ -2010,9 +2018,6 @@
     linear-gradient(90deg, color-mix(in srgb, var(--art-line) 16%, transparent) 1px, transparent 1px);
   background-size: 32px 32px;
   font-size: 12px;
-  animation-name: art-mono-app-in;
-  animation-duration: 220ms;
-  animation-timing-function: steps(3, end);
 }
 
 .app.theme-high-contrast::before {
@@ -2125,9 +2130,12 @@
   min-height: 60px;
   padding: 10px 12px;
   border-bottom-color: var(--art-line-strong);
+}
+
+.app.theme-high-contrast .history-item.page-enter-item {
   animation-name: art-mono-row-in;
-  animation-duration: 220ms;
-  animation-timing-function: steps(4, end);
+  animation-duration: 180ms;
+  animation-timing-function: var(--art-spring);
 }
 
 .app.theme-high-contrast .history-item:hover {
@@ -2159,8 +2167,8 @@
 
 .app.theme-high-contrast .item-desc {
   font-family: var(--art-reading);
-  font-size: 12.5px;
-  line-height: 1.4;
+  font-size: 13px;
+  line-height: 18px;
 }
 
 .app.theme-high-contrast .settings-content {
@@ -2275,17 +2283,6 @@
   transform: translate(-2px, -2px);
 }
 
-@keyframes art-app-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.992);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
 @keyframes art-row-in {
   from {
     opacity: 0;
@@ -2294,52 +2291,6 @@
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes art-flux-app-in {
-  from {
-    opacity: 0;
-    transform: translateX(-12px) skewX(-0.8deg);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0) skewX(0);
-  }
-}
-
-@keyframes art-ledger-app-in {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-    filter: contrast(0.92);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-    filter: contrast(1);
-  }
-}
-
-@keyframes art-aura-app-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.975);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes art-mono-app-in {
-  from {
-    opacity: 0;
-    clip-path: inset(0 100% 0 0);
-  }
-  to {
-    opacity: 1;
-    clip-path: inset(0 0 0 0);
   }
 }
 
@@ -2577,12 +2528,17 @@
 .app .history-list .item-meta {
   grid-area: meta;
   gap: 5px;
+  line-height: 16px;
 }
 
 .app .history-list .item-desc {
   grid-area: description;
-  font-size: 13px;
-  line-height: 1.35;
+}
+
+.app .history-list .item-time,
+.app .history-list .item-peer,
+.app .history-list .item-size {
+  line-height: 16px;
 }
 
 .app .history-list .item-footer {

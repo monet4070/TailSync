@@ -18,6 +18,8 @@ final class ThemeTests: XCTestCase {
     func testMissingAndUnknownColorThemesFallBackToCanvas() throws {
         let missing = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
         XCTAssertEqual(missing.color_theme, TailSyncColorTheme.tailsync.rawValue)
+        XCTAssertEqual(missing.sync_shortcut, "CommandOrControl+Shift+S")
+        XCTAssertEqual(missing.history_shortcut, "CommandOrControl+Shift+H")
 
         let unknown = TailSyncColorTheme(storedValue: "not-a-theme")
         XCTAssertEqual(unknown, .tailsync)

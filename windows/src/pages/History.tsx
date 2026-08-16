@@ -10,6 +10,9 @@ import {
   getSettings,
   getSyncWarning,
   getVersion,
+  closePreviewWindow,
+  openPreviewWindow,
+  syncPreviewWindowMinimized,
   restoreEntry,
   restoreFileBatch,
   setHistoryPinned,
@@ -87,6 +90,9 @@ const MAX_CACHED_THUMBNAILS = PAGE_SIZE * 4;
 const NEW_GLOW_DURATION_MS = 3000;
 const RESTORE_FEEDBACK_DURATION_MS = 1500;
 const COLLAPSED_BATCH_FILE_LIMIT = 2;
+// Animate only the rows that can plausibly be visible in the history window.
+// Animating an entire 50-row page creates dozens of WebView compositor layers.
+const MAX_PAGE_ENTER_ITEMS = 12;
 const HISTORY_CATEGORIES: HistoryCategory[] = [
   "text",
   "website",
@@ -255,6 +261,50 @@ function formatSize(bytes: number) {
   return `${bytes} B`;
 }
 
+/**
+ * Keyboard events from an editor belong to that editor, not the history
+ * navigator.  In particular, the search field is auto-focused when this
+ * window opens, so treating every Space key as a preview command would make
+ * normal text entry impossible.
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT" ||
+    target.tagName === "BUTTON" ||
+    target.tagName === "A" ||
+    Boolean(target.closest("[role='button'], [contenteditable]"))
+  );
+}
+
+/**
+ * A collapsed file batch represents the batch as a single logical item for
+ * preview purposes.  Once the batch is expanded, each visible child keeps its
+ * own identity and can be previewed independently.
+ */
+function resolvePreviewEntryId(
+  focusedId: number,
+  entries: HistoryEntry[],
+  expandedBatches: Set<string>,
+): number | null {
+  const focusedEntry = entries.find((entry) => entry.id === focusedId);
+  if (!focusedEntry) return null;
+  const batchId = focusedEntry.batch_id;
+  if (!batchId || expandedBatches.has(batchId)) return focusedEntry.id;
+
+  const firstBatchEntry = entries
+    .filter((entry) => entry.batch_id === batchId)
+    .sort((left, right) => {
+      const leftIndex = left.batch_index ?? Number.MAX_SAFE_INTEGER;
+      const rightIndex = right.batch_index ?? Number.MAX_SAFE_INTEGER;
+      return leftIndex - rightIndex || left.id - right.id;
+    })[0];
+  return firstBatchEntry?.id ?? focusedEntry.id;
+}
+
 /* ── Thumbnail canvas (renders raw RGBA data) ───────────────────── */
 
 function ThumbnailCanvas({ data }: { data: ThumbnailData }) {
@@ -354,6 +404,11 @@ export function History() {
   const [calendarNow, setCalendarNow] = useState(() => new Date());
   const calendarContextKey = useRef(localCalendarContextKey(calendarNow));
   const [page, setPage] = useState(0);
+  const [pageAnimationRevision, setPageAnimationRevision] = useState(0);
+  // `selectedId` is intentionally transient restore feedback.  Keep keyboard
+  // focus independent so a row remains selected while the user navigates or
+  // opens/closes its preview.
+  const [focusedId, setFocusedId] = useState<number | null>(null);
   const [selectedId, flashSelectedId, clearSelectedId] = useTransient<number | null>(
     null,
     RESTORE_FEEDBACK_DURATION_MS,
@@ -400,6 +455,9 @@ export function History() {
 
   const { theme, colorTheme } = useTheme();
   const { t } = useI18n();
+  const showActionError = useCallback(() => {
+    flashActionError(t("history.actionFailed"));
+  }, [t, flashActionError]);
 
   const categoryOptions = useMemo<FilterOption[]>(
     () =>
@@ -473,7 +531,8 @@ export function History() {
     }
   }, []);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (options?: { detectNewEntries?: boolean }) => {
+    const detectNewEntries = options?.detectNewEntries ?? true;
     const requestGeneration = historyRequests.current.begin();
     if (!activeDateBounds.valid) {
       setEntries([]);
@@ -504,12 +563,15 @@ export function History() {
         }
       }
 
+      const queryChanged = lastQueryKey.current !== queryKey;
       setEntries(result.entries);
       setTotalEntries(result.total);
       setHasMoreEntries(result.has_more);
+      if (queryChanged) {
+        setPageAnimationRevision((revision) => revision + 1);
+      }
 
-      const queryChanged = lastQueryKey.current !== queryKey;
-      if (!queryChanged) {
+      if (!queryChanged && detectNewEntries) {
         const incomingIds = new Set(result.entries.map((entry) => entry.id));
         const freshIds = new Set(
           [...incomingIds].filter((id) => !prevIds.current.has(id)),
@@ -603,11 +665,101 @@ export function History() {
     loadHistory();
   }, [loadHistory]);
 
-  /* ── Actions ──────────────────────────────────────────────────── */
+  // Keep a detached preview paired with this history window. Tauri does not
+  // expose a dedicated minimized event on every platform, so resize and focus
+  // changes both trigger a cheap state query. System close requests are
+  // intercepted as well, otherwise Alt+F4 would leave the hidden preview page
+  // holding decrypted data alive.
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    const syncMinimized = () => {
+      void appWindow.isMinimized()
+        .then((minimized) => {
+          if (!disposed) return syncPreviewWindowMinimized(minimized);
+          return undefined;
+        })
+        .catch((error: unknown) => {
+          if (!disposed) console.error("Could not sync preview-window minimization:", error);
+        });
+    };
+    let unlistenResize: (() => void) | undefined;
+    let unlistenFocus: (() => void) | undefined;
+    let unlistenClose: (() => void) | undefined;
+    void appWindow.onResized(syncMinimized).then((stop) => {
+      if (disposed) stop();
+      else unlistenResize = stop;
+    });
+    void appWindow.onFocusChanged(syncMinimized).then((stop) => {
+      if (disposed) stop();
+      else unlistenFocus = stop;
+    });
+    void appWindow.onCloseRequested((event) => {
+      event.preventDefault();
+      void closePreviewWindow().finally(() => appWindow.hide());
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlistenClose = stop;
+    });
+    return () => {
+      disposed = true;
+      unlistenResize?.();
+      unlistenFocus?.();
+      unlistenClose?.();
+    };
+  }, []);
 
-  const showActionError = useCallback(() => {
-    flashActionError(t("history.actionFailed"));
-  }, [t, flashActionError]);
+  // Filters, pagination, and deletions can replace the loaded page. Do not
+  // leave keyboard selection pointing at an entry that is no longer visible.
+  useEffect(() => {
+    const loadedIds = new Set(entries.map((entry) => entry.id));
+    if (focusedId !== null && !loadedIds.has(focusedId)) setFocusedId(null);
+  }, [entries, focusedId]);
+
+  /* ── Keyboard preview navigation ────────────────────────────── */
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Do not steal shortcuts from inputs/editors or from another handler.
+      // Modifier chords and auto-repeat are deliberately ignored as well.
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+
+      if (isEditableTarget(event.target)) return;
+      if (event.code !== "Space") return;
+
+      // Space is only handled when it has a selected history row.  This is
+      // important while the search input is focused and when the list is
+      // empty: the browser should retain its normal Space behaviour then.
+      if (focusedId === null) return;
+
+      const targetId = resolvePreviewEntryId(focusedId, entries, expandedBatches);
+      if (targetId === null) return;
+      const focusedEntry = entries.find((entry) => entry.id === focusedId);
+      const batchId = focusedEntry?.batch_id ?? null;
+      event.preventDefault();
+      void openPreviewWindow(
+        targetId,
+        batchId !== null && !expandedBatches.has(batchId) ? batchId : null,
+      ).catch((error: unknown) => {
+        console.error("Could not open the preview window:", error);
+        showActionError();
+      });
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [entries, expandedBatches, focusedId, showActionError]);
+
+  /* ── Actions ──────────────────────────────────────────────────── */
 
   const handleRestore = async (id: number) => {
     try {
@@ -622,8 +774,13 @@ export function History() {
   const handleDelete = async (id: number) => {
     try {
       await deleteEntry(id);
-      lastQueryKey.current = "";
-      await Promise.all([loadHistory(), loadMigrationDiagnostics()]);
+      if (focusedId === id) setFocusedId(null);
+      // A mutation refresh must preserve the current page animation context.
+      // It must also avoid marking a row pulled up from the next page as new.
+      await Promise.all([
+        loadHistory({ detectNewEntries: false }),
+        loadMigrationDiagnostics(),
+      ]);
     } catch (e) {
       console.error("Delete failed:", e);
       showActionError();
@@ -639,6 +796,7 @@ export function History() {
       setHasMoreEntries(false);
       clearThumbnails();
       setPage(0);
+      setFocusedId(null);
       clearSelectedId();
       setExpandedBatches(new Set());
       setShowClearConfirm(false);
@@ -693,7 +851,10 @@ export function History() {
   /* ── Render ───────────────────────────────────────────────────── */
 
   return (
-    <div className={`app ${theme} theme-${colorTheme}`}>
+    <div
+      className={`app ${theme} theme-${colorTheme}`}
+      data-focused-entry-id={focusedId === null ? undefined : String(focusedId)}
+    >
       {/* ── Title bar ── */}
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-brand">
@@ -703,7 +864,9 @@ export function History() {
         </div>
         <button
           className="titlebar-close"
-          onClick={() => getCurrentWindow().hide()}
+          onClick={() => {
+            void closePreviewWindow().finally(() => getCurrentWindow().hide());
+          }}
           title={t("history.close")}
           aria-label={t("history.close")}
         >
@@ -854,10 +1017,11 @@ export function History() {
       ) : (
         /* History list with date groups */
         <div className="history-list">
+          <div className="history-page" key={pageAnimationRevision}>
           {(() => {
             const orderedGroups = groupEntriesByDate(entries, calendarNow);
             const batchInfos = computeBatchInfos(orderedGroups);
-            let itemIndex = 0;
+            let pageEnterIndex = 0;
             return orderedGroups.map(([group, groupEntries]) => (
               <div className="date-group" key={group}>
                 <div className="date-header">
@@ -876,14 +1040,15 @@ export function History() {
                   ) {
                     return null;
                   }
-                  const delay = itemIndex * 30;
-                  itemIndex++;
                   const isNew = newIds.has(entry.id);
                   const isExpandedBatchReveal = Boolean(
                     batchId
                     && batchExpanded
                     && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT,
                   );
+                  const enterIndex = pageEnterIndex++;
+                  const isPageEnterItem =
+                    !isExpandedBatchReveal && enterIndex < MAX_PAGE_ENTER_ITEMS;
                   const categories = resolvedCategories(entry);
                   const category = categories[0];
                   const CategoryIcon = CATEGORY_ICONS[category];
@@ -939,13 +1104,32 @@ export function History() {
                         </div>
                       )}
                       <article
-                        className={`history-item${isNew ? " is-new" : ""}${selectedId === entry.id ? " restored" : ""}${isExpandedBatchReveal ? " batch-expanded-item" : ""}`}
+                        className={`history-item${isNew ? " is-new" : ""}${selectedId === entry.id ? " restored" : ""}${focusedId === entry.id ? " focused" : ""}${isExpandedBatchReveal ? " batch-expanded-item" : ""}${isPageEnterItem ? " page-enter-item" : ""}`}
                          style={{
                            animationDelay: isExpandedBatchReveal
                              ? `${Math.min(batchPosition - COLLAPSED_BATCH_FILE_LIMIT, 3) * 12}ms`
-                             : `${delay}ms`,
+                             : isPageEnterItem
+                               ? `${enterIndex * 20}ms`
+                               : undefined,
                          }}
                          data-id={entry.id}
+                         data-focused={focusedId === entry.id ? "true" : undefined}
+                         tabIndex={0}
+                         aria-selected={focusedId === entry.id}
+                         onClick={(event) => {
+                           if (
+                             (event.target as HTMLElement).closest(
+                               "button, a, [role='button']",
+                             )
+                           ) {
+                             return;
+                           }
+                           setFocusedId(entry.id);
+                           // Make a click establish real DOM focus as well as
+                           // logical selection, even though the row is an
+                           // otherwise non-interactive article.
+                           event.currentTarget.focus({ preventScroll: true });
+                         }}
                          onDoubleClick={() => handleRestore(entry.id)}
                          onContextMenu={(event) => {
                            event.preventDefault();
@@ -1018,6 +1202,7 @@ export function History() {
                 </div>
             ));
           })()}
+          </div>
         </div>
       )}
 
@@ -1031,7 +1216,7 @@ export function History() {
               setPage((p) => p - 1);
               document
                 .querySelector(".history-list")
-                ?.scrollTo({ top: 0, behavior: "smooth" });
+                ?.scrollTo({ top: 0 });
             }}
           >
             <ArrowLeft size={14} strokeWidth={1.8} aria-hidden="true" />
@@ -1047,7 +1232,7 @@ export function History() {
               setPage((p) => p + 1);
               document
                 .querySelector(".history-list")
-                ?.scrollTo({ top: 0, behavior: "smooth" });
+                ?.scrollTo({ top: 0 });
             }}
           >
             {t("history.next")}
@@ -1128,6 +1313,7 @@ export function History() {
           </div>
         </div>
       )}
+
     </div>
   );
 }

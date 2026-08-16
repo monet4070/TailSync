@@ -12,16 +12,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   resumeSyncShortcut,
-  setSyncShortcut,
   suspendSyncShortcut,
 } from "../tailsyncClient";
 import { captureShortcut } from "../utils/shortcut";
 import { useI18n } from "./useI18n";
 
 export const DEFAULT_SYNC_SHORTCUT = "CommandOrControl+Shift+S";
+export const DEFAULT_HISTORY_SHORTCUT = "CommandOrControl+Shift+H";
 
 export interface ShortcutRecorderOptions {
+  defaultShortcut: string;
   currentShortcut: () => string | null;
+  setShortcut: (shortcut: string) => Promise<void>;
   applyShortcut: (shortcut: string) => void;
   showSavedToast: () => void;
   showError: (message: string) => void;
@@ -31,8 +33,15 @@ export function useShortcutRecorder(
   options: ShortcutRecorderOptions,
 ) {
   const { t } = useI18n();
-  const { currentShortcut, applyShortcut, showSavedToast, showError } = options;
-  const [shortcutDraft, setShortcutDraft] = useState(DEFAULT_SYNC_SHORTCUT);
+  const {
+    defaultShortcut,
+    currentShortcut,
+    setShortcut,
+    applyShortcut,
+    showSavedToast,
+    showError,
+  } = options;
+  const [shortcutDraft, setShortcutDraft] = useState(defaultShortcut);
   const [shortcutBusy, setShortcutBusy] = useState(false);
   const [shortcutRecording, setShortcutRecording] = useState(false);
   const [shortcutCandidate, setShortcutCandidate] = useState("");
@@ -65,7 +74,7 @@ export function useShortcutRecorder(
       setShortcutBusy(true);
       showError("");
       try {
-        await setSyncShortcut(shortcut);
+        await setShortcut(shortcut);
         applyShortcut(shortcut);
         setShortcutDraft(shortcut);
         showSavedToast();
@@ -80,7 +89,7 @@ export function useShortcutRecorder(
         setShortcutBusy(false);
       }
     },
-    [currentShortcut, shortcutDraft, applyShortcut, showSavedToast, showError, t],
+    [currentShortcut, shortcutDraft, setShortcut, applyShortcut, showSavedToast, showError, t],
   );
 
   const startShortcutRecording = async () => {
@@ -111,7 +120,7 @@ export function useShortcutRecorder(
     setShortcutPreviewKeys([]);
     setShortcutDialogError("");
     setShortcutCaptureActive(false);
-    setShortcutDraft(currentShortcut() ?? DEFAULT_SYNC_SHORTCUT);
+    setShortcutDraft(currentShortcut() ?? defaultShortcut);
     try {
       await resumeSyncShortcut();
     } catch (error) {

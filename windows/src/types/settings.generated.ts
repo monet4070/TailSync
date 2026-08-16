@@ -5,6 +5,7 @@ export interface SettingsData {
   connection_mode: "auto" | "lan_only" | "tailscale_only";
   enabled_peers: Record<string, boolean>;
   history_limit: number;
+  history_shortcut: string;
   language: "en" | "zh-CN";
   notifications_enabled: boolean;
   paired_peer_endpoints: Record<string, string>;

@@ -86,6 +86,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.forceAccessory()
         NSApp.setActivationPolicy(.accessory)
+        // Remove plaintext Quick Look files left by a previous crash before
+        // any history window can create a new preview session.
+        _ = HistoryPreviewSession.cleanupAtStartup()
 
         // Set app icon explicitly so notifications show the correct icon
         if let icon = NSImage(contentsOf: Bundle.main.bundleURL
@@ -101,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerSleepWakeNotifications()
         scheduleUpdateCheck()
 
-        GlobalShortcutController.shared.onActivate = { [weak self] in
+        GlobalShortcutController.shared.onSyncActivate = { [weak self] in
             Task { @MainActor in
                 guard let self, self.daemonActivityAllowed else { return }
                 guard let enabled = await ApiClient.shared.toggleSync(), self.daemonActivityAllowed else { return }
@@ -113,6 +116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     userInfo: ["enabled": enabled]
                 )
             }
+        }
+        GlobalShortcutController.shared.onHistoryActivate = {
+            Self.showHistory()
         }
     }
 
@@ -216,6 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         stopBackgroundActivity()
+        HistoryPreviewWindowController.shared.shutdown()
         // Remove the status item before the process exits to prevent ghost icons.
         if let item = statusItem {
             NSStatusBar.system.removeStatusItem(item)
@@ -240,7 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notificationTimer = nil
         watchdogTimer?.invalidate()
         watchdogTimer = nil
-        GlobalShortcutController.shared.onActivate = nil
+        GlobalShortcutController.shared.onSyncActivate = nil
+        GlobalShortcutController.shared.onHistoryActivate = nil
+        GlobalShortcutController.shared.unregister()
     }
 
     // ── Status Item ─────────────────────────────────────────────
@@ -597,9 +606,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if !self.shortcutRegistered {
                         self.shortcutRegistered = true
                         if case .failure(let error) =
-                            GlobalShortcutController.shared.register(shortcut: settings.sync_shortcut)
+                            GlobalShortcutController.shared.register(
+                                syncShortcut: settings.sync_shortcut,
+                                historyShortcut: settings.history_shortcut
+                            )
                         {
-                            print("[TailSync] could not register sync shortcut: \(error)")
+                            print("[TailSync] could not register global shortcuts: \(error)")
                         }
                     }
                 }
@@ -649,6 +661,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 minSize: NSSize(width: 300, height: 360))
             historyWC = wc
         }
+        HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
         NSApp.activate(ignoringOtherApps: true)
         Self.forceAccessory()
     }

@@ -19,7 +19,9 @@ import {
   forgetPeer,
   getSettings,
   getStorageStatus,
+  setHistoryShortcut,
   setSyncEnabled,
+  setSyncShortcut,
   updateSettings,
   type PeerDevice,
   type PeerRoute,
@@ -30,6 +32,7 @@ import { useConnectionTests } from "../hooks/useConnectionTests";
 import { useDevices } from "../hooks/useDevices";
 import { usePairing } from "../hooks/usePairing";
 import {
+  DEFAULT_HISTORY_SHORTCUT,
   DEFAULT_SYNC_SHORTCUT,
   useShortcutRecorder,
 } from "../hooks/useShortcutRecorder";
@@ -84,6 +87,174 @@ function formatStorageSize(bytes: number) {
   return `${(bytes / GIB).toFixed(bytes >= GIB ? 1 : 2)} GiB`;
 }
 
+type ShortcutRecorder = ReturnType<typeof useShortcutRecorder>;
+
+function ShortcutSettingRow({
+  recorder,
+  currentShortcut,
+  defaultShortcut,
+  title,
+  description,
+  recordLabel,
+  t,
+  disabled = false,
+}: {
+  recorder: ShortcutRecorder;
+  currentShortcut: string;
+  defaultShortcut: string;
+  title: string;
+  description: string;
+  recordLabel: string;
+  t: (key: string) => string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="setting-row shortcut-row">
+      <div className="setting-row-info">
+        <span>{title}</span>
+        <small>{description}</small>
+      </div>
+      <div className="shortcut-control">
+        <button
+          ref={recorder.shortcutTriggerRef}
+          type="button"
+          className="shortcut-recorder"
+          disabled={disabled || recorder.shortcutBusy}
+          onClick={() => void recorder.startShortcutRecording()}
+          aria-haspopup="dialog"
+          aria-expanded={recorder.shortcutRecording}
+          aria-label={recordLabel}
+        >
+          <Keyboard size={16} strokeWidth={1.7} aria-hidden="true" />
+          {shortcutKeycaps(recorder.shortcutDraft).length > 0 ? (
+            <span className="shortcut-keycaps" aria-label={recorder.shortcutDraft}>
+              {shortcutKeycaps(recorder.shortcutDraft).map((key, index) => (
+                <kbd key={`${key}-${index}`}>{key}</kbd>
+              ))}
+            </span>
+          ) : (
+            <span className="shortcut-empty">{t("settings.shortcutDisabled")}</span>
+          )}
+          <Pencil className="shortcut-edit-icon" size={13} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="shortcut-icon-button"
+          disabled={disabled || recorder.shortcutBusy || recorder.shortcutRecording || recorder.shortcutDraft === defaultShortcut}
+          onClick={() => {
+            recorder.setShortcutDraft(defaultShortcut);
+            void recorder.commitShortcut(defaultShortcut);
+          }}
+          title={t("settings.shortcutReset")}
+          aria-label={t("settings.shortcutReset")}
+        >
+          <RotateCcw size={15} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="shortcut-icon-button"
+          disabled={disabled || recorder.shortcutBusy || recorder.shortcutRecording || !currentShortcut}
+          onClick={() => {
+            recorder.setShortcutDraft("");
+            void recorder.commitShortcut("");
+          }}
+          title={t("settings.shortcutClear")}
+          aria-label={t("settings.shortcutClear")}
+        >
+          <X size={15} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ShortcutRecorderDialog({
+  recorder,
+  title,
+  prompt,
+  t,
+}: {
+  recorder: ShortcutRecorder;
+  title: string;
+  prompt: string;
+  t: (key: string) => string;
+}) {
+  if (!recorder.shortcutRecording) return null;
+  const titleId = `shortcut-dialog-title-${title.replace(/\s+/g, "-")}`;
+  return (
+    <div className="dialog-backdrop" onMouseDown={() => void recorder.cancelShortcutRecording()}>
+      <div
+        className="shortcut-dialog"
+        ref={recorder.shortcutDialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="shortcut-dialog-header">
+          <div className="shortcut-dialog-icon">
+            <Keyboard size={20} strokeWidth={1.7} aria-hidden="true" />
+          </div>
+          <div>
+            <h2 id={titleId}>{title}</h2>
+            <p>{prompt}</p>
+          </div>
+        </div>
+        <button
+          ref={recorder.shortcutCaptureRef}
+          type="button"
+          className={`shortcut-capture-target${recorder.shortcutCaptureActive ? " active" : " captured"}`}
+          onClick={recorder.restartShortcutCapture}
+          onKeyDown={recorder.handleShortcutCaptureEvent}
+          disabled={recorder.shortcutBusy}
+          aria-label={recorder.shortcutCaptureActive
+            ? t("settings.shortcutRecording")
+            : t("settings.shortcutRecordAgain")}
+        >
+          {recorder.shortcutPreviewKeys.length > 0 ? (
+            <span className="shortcut-keycaps shortcut-dialog-keycaps">
+              {recorder.shortcutPreviewKeys.map((key, index) => (
+                <kbd key={`${key}-${index}`}>{key}</kbd>
+              ))}
+            </span>
+          ) : (
+            <span className="shortcut-capture-placeholder">{t("settings.shortcutRecording")}</span>
+          )}
+          {!recorder.shortcutCaptureActive && (
+            <span className="shortcut-capture-again">{t("settings.shortcutRecordAgain")}</span>
+          )}
+        </button>
+        <div className="shortcut-dialog-message" aria-live="polite">
+          {recorder.shortcutDialogError && (
+            <span className="error" role="alert">{recorder.shortcutDialogError}</span>
+          )}
+          {!recorder.shortcutDialogError && recorder.shortcutCandidate && (
+            <span className="ready">{t("settings.shortcutCaptured")}</span>
+          )}
+        </div>
+        <div className="shortcut-dialog-actions">
+          <button
+            type="button"
+            onClick={() => void recorder.cancelShortcutRecording()}
+            disabled={recorder.shortcutBusy}
+          >
+            {t("settings.shortcutCancel")}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => void recorder.confirmShortcut()}
+            disabled={!recorder.shortcutCandidate || recorder.shortcutBusy}
+          >
+            {t("settings.shortcutSave")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Component ──────────────────────────────────────────────────── */
 
 export function Settings() {
@@ -111,10 +282,20 @@ export function Settings() {
     () => settingsRef.current?.sync_shortcut ?? null,
     [],
   );
+  const currentHistoryShortcut = useCallback(
+    () => settingsRef.current?.history_shortcut ?? null,
+    [],
+  );
   const applyShortcut = useCallback((shortcut: string) => {
     const current = settingsRef.current;
     if (!current) return;
     settingsRef.current = { ...current, sync_shortcut: shortcut };
+    setSettings(settingsRef.current);
+  }, []);
+  const applyHistoryShortcut = useCallback((shortcut: string) => {
+    const current = settingsRef.current;
+    if (!current) return;
+    settingsRef.current = { ...current, history_shortcut: shortcut };
     setSettings(settingsRef.current);
   }, []);
   const showSavedToast = useCallback(() => {
@@ -123,25 +304,24 @@ export function Settings() {
     toastTimer.current = window.setTimeout(() => setSaved(false), 1500);
   }, []);
   const showError = useCallback((message: string) => setErrorMessage(message), []);
-  const {
-    shortcutDraft,
-    setShortcutDraft,
-    shortcutBusy,
-    shortcutRecording,
-    shortcutCandidate,
-    shortcutPreviewKeys,
-    shortcutCaptureActive,
-    shortcutDialogError,
-    shortcutTriggerRef,
-    shortcutDialogRef,
-    shortcutCaptureRef,
-    commitShortcut,
-    startShortcutRecording,
-    cancelShortcutRecording,
-    restartShortcutCapture,
-    confirmShortcut,
-    handleShortcutCaptureEvent,
-  } = useShortcutRecorder({ currentShortcut, applyShortcut, showSavedToast, showError });
+  const syncShortcutRecorder = useShortcutRecorder({
+    defaultShortcut: DEFAULT_SYNC_SHORTCUT,
+    currentShortcut,
+    setShortcut: setSyncShortcut,
+    applyShortcut,
+    showSavedToast,
+    showError,
+  });
+  const historyShortcutRecorder = useShortcutRecorder({
+    defaultShortcut: DEFAULT_HISTORY_SHORTCUT,
+    currentShortcut: currentHistoryShortcut,
+    setShortcut: setHistoryShortcut,
+    applyShortcut: applyHistoryShortcut,
+    showSavedToast,
+    showError,
+  });
+  const setSyncShortcutDraft = syncShortcutRecorder.setShortcutDraft;
+  const setHistoryShortcutDraft = historyShortcutRecorder.setShortcutDraft;
   const applyPeerEnabled = useCallback((hostname: string, enabled: boolean) => {
     setSettings((current) => current ? {
       ...current,
@@ -178,14 +358,21 @@ export function Settings() {
         setSettings(s);
         setHistoryLimitDraft(s.history_limit);
         setStorageQuotaDraft(String(Math.round(s.storage_quota_bytes / GIB)));
-        setShortcutDraft(s.sync_shortcut);
+        setSyncShortcutDraft(s.sync_shortcut);
+        setHistoryShortcutDraft(s.history_shortcut);
         if (isThemePreference(s.theme)) setTheme(s.theme);
         if (isColorTheme(s.color_theme)) setColorTheme(s.color_theme);
         setLocale(s.language);
       })
       .catch(console.error);
     getStorageStatus().then(setStorageStatus).catch(console.error);
-  }, [setColorTheme, setLocale, setShortcutDraft, setTheme]);
+  }, [
+    setColorTheme,
+    setLocale,
+    setTheme,
+    setSyncShortcutDraft,
+    setHistoryShortcutDraft,
+  ]);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
   useEffect(() => {
@@ -714,62 +901,27 @@ export function Settings() {
             </label>
           </div>
 
-          <div className="setting-row shortcut-row">
-            <div className="setting-row-info">
-              <span>{t("settings.syncShortcut")}</span>
-              <small>{t("settings.syncShortcutDescription")}</small>
-            </div>
-            <div className="shortcut-control">
-              <button
-                ref={shortcutTriggerRef}
-                type="button"
-                className="shortcut-recorder"
-                disabled={shortcutBusy}
-                onClick={() => void startShortcutRecording()}
-                aria-haspopup="dialog"
-                aria-expanded={shortcutRecording}
-                aria-label={t("settings.shortcutRecord")}
-              >
-                <Keyboard size={16} strokeWidth={1.7} aria-hidden="true" />
-                {shortcutKeycaps(shortcutDraft).length > 0 ? (
-                  <span className="shortcut-keycaps" aria-label={shortcutDraft}>
-                    {shortcutKeycaps(shortcutDraft).map((key, index) => (
-                      <kbd key={`${key}-${index}`}>{key}</kbd>
-                    ))}
-                  </span>
-                ) : (
-                  <span className="shortcut-empty">{t("settings.shortcutDisabled")}</span>
-                )}
-                <Pencil className="shortcut-edit-icon" size={13} strokeWidth={1.8} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="shortcut-icon-button"
-                disabled={shortcutBusy || shortcutRecording || shortcutDraft === DEFAULT_SYNC_SHORTCUT}
-                onClick={() => {
-                  setShortcutDraft(DEFAULT_SYNC_SHORTCUT);
-                  void commitShortcut(DEFAULT_SYNC_SHORTCUT);
-                }}
-                title={t("settings.shortcutReset")}
-                aria-label={t("settings.shortcutReset")}
-              >
-                <RotateCcw size={15} strokeWidth={1.8} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="shortcut-icon-button"
-                disabled={shortcutBusy || shortcutRecording || !settings.sync_shortcut}
-                onClick={() => {
-                  setShortcutDraft("");
-                  void commitShortcut("");
-                }}
-                title={t("settings.shortcutClear")}
-                aria-label={t("settings.shortcutClear")}
-              >
-                <X size={15} strokeWidth={1.8} aria-hidden="true" />
-              </button>
-            </div>
-          </div>
+          <ShortcutSettingRow
+            recorder={syncShortcutRecorder}
+            currentShortcut={settings.sync_shortcut}
+            defaultShortcut={DEFAULT_SYNC_SHORTCUT}
+            title={t("settings.syncShortcut")}
+            description={t("settings.syncShortcutDescription")}
+            recordLabel={t("settings.shortcutRecord")}
+            t={t}
+            disabled={historyShortcutRecorder.shortcutRecording}
+          />
+
+          <ShortcutSettingRow
+            recorder={historyShortcutRecorder}
+            currentShortcut={settings.history_shortcut}
+            defaultShortcut={DEFAULT_HISTORY_SHORTCUT}
+            title={t("settings.historyShortcut")}
+            description={t("settings.historyShortcutDescription")}
+            recordLabel={t("settings.historyShortcutRecord")}
+            t={t}
+            disabled={syncShortcutRecorder.shortcutRecording}
+          />
 
           <div
             className="setting-row"
@@ -1042,83 +1194,18 @@ export function Settings() {
         </section>
       </div>
 
-      {shortcutRecording && (
-        <div className="dialog-backdrop" onMouseDown={() => void cancelShortcutRecording()}>
-          <div
-            className="shortcut-dialog"
-            ref={shortcutDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="shortcut-dialog-title"
-            tabIndex={-1}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="shortcut-dialog-header">
-              <div className="shortcut-dialog-icon">
-                <Keyboard size={20} strokeWidth={1.7} aria-hidden="true" />
-              </div>
-              <div>
-                <h2 id="shortcut-dialog-title">{t("settings.shortcutDialogTitle")}</h2>
-                <p>{t("settings.shortcutDialogPrompt")}</p>
-              </div>
-            </div>
-
-            <button
-              ref={shortcutCaptureRef}
-              type="button"
-              className={`shortcut-capture-target${shortcutCaptureActive ? " active" : " captured"}`}
-              onClick={restartShortcutCapture}
-              onKeyDown={handleShortcutCaptureEvent}
-              disabled={shortcutBusy}
-              aria-label={shortcutCaptureActive
-                ? t("settings.shortcutRecording")
-                : t("settings.shortcutRecordAgain")}
-            >
-              {shortcutPreviewKeys.length > 0 ? (
-                <span className="shortcut-keycaps shortcut-dialog-keycaps">
-                  {shortcutPreviewKeys.map((key, index) => (
-                    <kbd key={`${key}-${index}`}>{key}</kbd>
-                  ))}
-                </span>
-              ) : (
-                <span className="shortcut-capture-placeholder">
-                  {t("settings.shortcutRecording")}
-                </span>
-              )}
-              {!shortcutCaptureActive && (
-                <span className="shortcut-capture-again">{t("settings.shortcutRecordAgain")}</span>
-              )}
-            </button>
-
-            <div className="shortcut-dialog-message" aria-live="polite">
-              {shortcutDialogError && (
-                <span className="error" role="alert">{shortcutDialogError}</span>
-              )}
-              {!shortcutDialogError && shortcutCandidate && (
-                <span className="ready">{t("settings.shortcutCaptured")}</span>
-              )}
-            </div>
-
-            <div className="shortcut-dialog-actions">
-              <button
-                type="button"
-                onClick={() => void cancelShortcutRecording()}
-                disabled={shortcutBusy}
-              >
-                {t("settings.shortcutCancel")}
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={() => void confirmShortcut()}
-                disabled={!shortcutCandidate || shortcutBusy}
-              >
-                {t("settings.shortcutSave")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ShortcutRecorderDialog
+        recorder={syncShortcutRecorder}
+        title={t("settings.shortcutDialogTitle")}
+        prompt={t("settings.shortcutDialogPrompt")}
+        t={t}
+      />
+      <ShortcutRecorderDialog
+        recorder={historyShortcutRecorder}
+        title={t("settings.historyShortcutDialogTitle")}
+        prompt={t("settings.historyShortcutDialogPrompt")}
+        t={t}
+      />
 
       {pairingOpen && (
         <div className="dialog-backdrop" onMouseDown={() => void closePairing()}>

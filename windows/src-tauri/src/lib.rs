@@ -4,6 +4,7 @@ mod clipboard_change;
 mod clipboard_file;
 mod commands;
 mod network;
+mod preview_window;
 mod sync_adapter;
 mod tray;
 mod updates;
@@ -468,12 +469,11 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 pairing: pairing.clone(),
                 shutdown: shutdown_for_state,
             };
-            let initial_sync_shortcut = state.settings.blocking_lock().sync_shortcut.clone();
+            let initial_shortcuts = state.settings.blocking_lock().clone();
             app.manage(state);
-            if let Err(error) =
-                commands::register_saved_sync_shortcut(&handle, &initial_sync_shortcut)
-            {
-                log::warn!("Could not register saved sync shortcut: {error}");
+            app.manage(preview_window::PreviewWindowController::default());
+            if let Err(error) = commands::register_saved_shortcuts(&handle, &initial_shortcuts) {
+                log::warn!("Could not register saved global shortcuts: {error}");
             }
             #[cfg(all(not(target_os = "macos"), not(test)))]
             tray::start_tray(handle.clone());
@@ -482,6 +482,14 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 tauri::async_runtime::spawn(async move {
                     if let Err(error) = commands::open_settings_window(settings_handle).await {
                         log::warn!("Could not open settings test window: {error}");
+                    }
+                });
+            }
+            if std::env::var_os("TAILSYNC_OPEN_HISTORY_ON_START").is_some() {
+                let history_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::open_history_window(history_handle).await {
+                        log::warn!("Could not open history test window: {error}");
                     }
                 });
             }
@@ -595,6 +603,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::suspend_sync_shortcut,
             commands::resume_sync_shortcut,
             commands::set_sync_shortcut,
+            commands::set_history_shortcut,
             commands::trust_peer,
             commands::forget_peer,
             commands::enable_pairing,
@@ -606,7 +615,12 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::update_settings,
             commands::open_history_window,
             commands::open_settings_window,
+            preview_window::open_preview_window,
+            preview_window::get_preview_window_request,
+            preview_window::close_preview_window,
+            preview_window::sync_preview_window_minimized,
             commands::get_image_data,
+            commands::get_preview,
             commands::get_file_progress,
             commands::cancel_file_batch,
             commands::get_storage_status,

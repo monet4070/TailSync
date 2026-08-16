@@ -363,6 +363,65 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
+        "get_preview_data" => {
+            let Some(id) = req.id else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing id".into()),
+                };
+            };
+
+            // Keep the decrypted payload in memory only.  The core preview
+            // accessor deliberately avoids materialising file entries to a
+            // plaintext path, which is important for the macOS Quick Look
+            // caller and for text/image previews alike.
+            let db = state.db.lock().await;
+            let preview_id = match req.batch_id.as_deref() {
+                Some(batch_id) => db
+                    .get_preview_batch_navigation(batch_id, id)
+                    .map(|navigation| navigation.first_entry_id),
+                None => Ok(id),
+            };
+            let result = preview_id.and_then(|preview_id| {
+                let metadata = db.get_preview_metadata(preview_id)?;
+                let payload = db.get_preview_payload(preview_id)?;
+                Ok((metadata, payload))
+            });
+            drop(db);
+
+            let result = result.map(|(metadata, payload)| {
+                use base64::Engine;
+                serde_json::json!({
+                    "entry_id": metadata.entry_id,
+                    "kind": payload.kind,
+                    "name": payload.name,
+                    "size_bytes": payload.size_bytes,
+                    "batch": metadata.batch,
+                    "data_b64": base64::engine::general_purpose::STANDARD
+                        .encode(payload.data),
+                })
+            });
+
+            match result {
+                Ok(data) => Response {
+                    ok: true,
+                    data: Some(data),
+                    error: None,
+                },
+                Err(error) => {
+                    let failure = db::PreviewErrorInfo::from(error);
+                    let encoded =
+                        serde_json::to_string(&failure).unwrap_or_else(|_| failure.message.clone());
+                    Response {
+                        ok: false,
+                        data: None,
+                        error: Some(encoded),
+                    }
+                }
+            }
+        }
+
         "delete_entry" => {
             let Some(id) = req.id else {
                 return Response {
@@ -522,6 +581,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 data: Some(serde_json::json!({
                     "enabled": settings.sync_enabled,
                     "shortcut": settings.sync_shortcut,
+                    "history_shortcut": settings.history_shortcut,
                 })),
                 error: None,
             }
@@ -574,6 +634,21 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
+        "set_history_shortcut" => {
+            let shortcut = req.shortcut.unwrap_or_default();
+            let result = state
+                .settings
+                .lock()
+                .await
+                .set_history_shortcut(&shortcut)
+                .map_err(|error| error.to_string());
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
         "update_settings" => {
             let Some(settings_json) = req.settings else {
                 return Response {
@@ -589,6 +664,8 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     // route; ignore any value coming from generic settings.
                     requested_settings.sync_shortcut =
                         state.settings.lock().await.sync_shortcut.clone();
+                    requested_settings.history_shortcut =
+                        state.settings.lock().await.history_shortcut.clone();
                     match crate::crypto::apply_settings_update(
                         &state.settings,
                         &state.db,
