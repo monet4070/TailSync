@@ -455,6 +455,10 @@ struct Request {
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
+    theme_id: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
     pinned: Option<bool>,
 }
 
@@ -467,12 +471,51 @@ struct Response {
     error: Option<String>,
 }
 
+/// The `list_themes` response payload: the five built-in theme ids, every
+/// validated custom theme, and error markers for skipped files.
+pub(crate) fn themes_listing_payload(listing: &tailsync_core::themes::ThemeListing) -> Value {
+    serde_json::json!({
+        "builtin": tailsync_core::themes::BUILTIN_THEME_IDS
+            .iter()
+            .map(|id| serde_json::json!({ "id": id }))
+            .collect::<Vec<_>>(),
+        "custom": listing.entries,
+        "errors": listing.errors,
+    })
+}
+
+/// Open the themes directory in the platform file manager. The path comes
+/// from the server-side constant (`tailsync_core::themes::themes_dir`), never
+/// from frontend input, and is passed as a single argument (no shell), so
+/// nothing user-controlled can reach a command line.
+pub(crate) fn reveal_themes_dir() -> Result<(), String> {
+    let directory = tailsync_core::themes::themes_dir();
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("explorer")
+        .arg(&directory)
+        .status();
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(&directory).status();
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let status = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "unsupported platform",
+    ));
+    status.map_err(|error| {
+        format!(
+            "Could not open themes directory {}: {error}",
+            directory.display()
+        )
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         bind_api_listener, clear_file_progress, clear_file_progress_scope, get_file_progress,
         history_capabilities_data, peer_snapshot_data, read_request_with_limits,
-        set_file_batch_progress, ApiToken, FileProgress, Request,
+        set_file_batch_progress, themes_listing_payload, ApiToken, FileProgress, Request,
     };
     use crate::crypto::Settings;
     use crate::identity::DeviceIdentity;
@@ -597,6 +640,64 @@ mod tests {
             capabilities["categories"].as_array().map(Vec::len),
             Some(crate::history_classifier::CATEGORIES.len())
         );
+    }
+
+    #[test]
+    fn themes_listing_payload_has_contract_shape() {
+        let listing = tailsync_core::themes::ThemeListing {
+            entries: Vec::new(),
+            errors: vec![tailsync_core::themes::ThemeLoadError::new(
+                "broken.json",
+                "Invalid theme JSON",
+            )],
+        };
+        let payload = themes_listing_payload(&listing);
+        let builtin = payload["builtin"]
+            .as_array()
+            .expect("builtin must be an array");
+        assert_eq!(builtin.len(), 5, "there are exactly five built-in themes");
+        for (index, id) in ["tailsync", "ocean", "forest", "rose", "high-contrast"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(builtin[index]["id"], serde_json::json!(id));
+        }
+        assert_eq!(payload["custom"], serde_json::json!([]));
+        assert_eq!(
+            payload["errors"][0]["file"],
+            serde_json::json!("broken.json")
+        );
+        assert_eq!(
+            payload["errors"][0]["reason"],
+            serde_json::json!("Invalid theme JSON")
+        );
+    }
+
+    #[test]
+    fn themes_request_carries_path_and_theme_id() {
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "import_theme",
+            "path": "/tmp/my-theme.json",
+            "theme_id": "studio",
+        }))
+        .unwrap();
+        assert_eq!(request.path.as_deref(), Some("/tmp/my-theme.json"));
+        assert_eq!(request.theme_id.as_deref(), Some("studio"));
+        let themed: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "get_theme_background",
+            "theme_id": "studio",
+            "mode": "dark",
+        }))
+        .unwrap();
+        assert_eq!(themed.theme_id.as_deref(), Some("studio"));
+        assert_eq!(themed.mode.as_deref(), Some("dark"));
+        let minimal: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "list_themes",
+        }))
+        .unwrap();
+        assert_eq!(minimal.path, None);
+        assert_eq!(minimal.theme_id, None);
+        assert_eq!(minimal.mode, None);
     }
 
     #[test]

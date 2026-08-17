@@ -122,11 +122,12 @@ final class HistoryPreviewViewModelTests: XCTestCase {
             .appendingPathComponent("tailsync-preview-model-test-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let session = HistoryPreviewSession(store: HistoryPreviewStore(directory: directory))
+        let docx = Self.docxFixture()
         let payload = HistoryPreviewData(
             kind: "file",
             name: "private.docx",
-            sizeBytes: 4,
-            data: Data([80, 75, 3, 4]),
+            sizeBytes: Int64(docx.count),
+            data: docx,
             entryId: 31
         )
         let model = HistoryPreviewViewModel(
@@ -223,6 +224,12 @@ final class HistoryPreviewViewModelTests: XCTestCase {
             previousEntryId: previous,
             nextEntryId: next
         )
+    }
+
+    nonisolated private static func docxFixture() -> Data {
+        Data([0x50, 0x4B, 0x03, 0x04])
+            + Data("[Content_Types].xml word/document.xml".utf8)
+            + Data([0x50, 0x4B, 0x05, 0x06])
     }
 }
 

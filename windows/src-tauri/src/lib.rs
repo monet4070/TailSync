@@ -155,12 +155,9 @@ fn start_parent_monitor(
     shutdown: tokio::sync::watch::Sender<bool>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Option<tauri::async_runtime::JoinHandle<()>> {
-    let Some(parent_pid) = std::env::var("TAILSYNC_PARENT_PID")
+    let parent_pid = std::env::var("TAILSYNC_PARENT_PID")
         .ok()
-        .and_then(|value| value.parse::<libc::pid_t>().ok())
-    else {
-        return None;
-    };
+        .and_then(|value| value.parse::<libc::pid_t>().ok())?;
     Some(tauri::async_runtime::spawn(async move {
         loop {
             tokio::select! {
@@ -395,6 +392,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
     let settings_for_monitor = settings.clone();
+    #[cfg(target_os = "windows")]
     let settings_for_notifications = settings.clone();
     let settings_for_server = settings.clone();
     let settings_for_iroh = settings.clone();
@@ -621,6 +619,11 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             preview_window::sync_preview_window_minimized,
             commands::get_image_data,
             commands::get_preview,
+            commands::list_themes,
+            commands::import_theme,
+            commands::delete_theme,
+            commands::reveal_themes_dir,
+            commands::get_theme_background,
             commands::get_file_progress,
             commands::cancel_file_batch,
             commands::get_storage_status,

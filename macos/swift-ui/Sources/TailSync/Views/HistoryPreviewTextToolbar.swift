@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct HistoryPreviewTextToolbar: View {
+    @Environment(\.tailSyncPalette) private var palette
+
     @Binding var mode: HistoryPreviewTextMode
     @Binding var query: String
     @Binding var wrapsLines: Bool
@@ -10,7 +12,7 @@ struct HistoryPreviewTextToolbar: View {
     let copyAll: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Picker("", selection: $mode) {
                 Text(Loc.t("history.preview.plainText"))
                     .tag(HistoryPreviewTextMode.plain)
@@ -19,66 +21,100 @@ struct HistoryPreviewTextToolbar: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 150)
+            .frame(
+                width: HistoryPreviewLayoutMetrics.segmentedControlWidth,
+                height: HistoryPreviewLayoutMetrics.regularControlSize
+            )
 
             searchControls
-            Spacer(minLength: 8)
+                .layoutPriority(1)
+            Spacer(minLength: 4)
 
-            Button { wrapsLines.toggle() } label: {
-                Image(systemName: wrapsLines
+            HistoryPreviewToolbarIconButton(
+                systemName: wrapsLines
                     ? "text.word.spacing"
-                    : "arrow.left.and.right.text.vertical")
-            }
+                    : "arrow.left.and.right.text.vertical",
+                selected: wrapsLines,
+                action: { wrapsLines.toggle() }
+            )
             .help(Loc.t("history.preview.wrapLines"))
-            Button {
-                fontSize = HistoryPreviewPreferences.clampedTextFontSize(fontSize - 1)
-            } label: {
-                Image(systemName: "textformat.size.smaller")
+
+            HStack(spacing: 0) {
+                HistoryPreviewToolbarIconButton(systemName: "minus", action: {
+                    fontSize = HistoryPreviewPreferences.clampedTextFontSize(fontSize - 1)
+                })
+                .disabled(fontSize <= HistoryPreviewPreferences.minimumTextFontSize)
+                .help(Loc.t("history.preview.decreaseFont"))
+
+                Text("\(Int(fontSize))")
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    .foregroundColor(palette.primaryColor)
+                    .frame(width: 34)
+
+                HistoryPreviewToolbarIconButton(systemName: "plus", action: {
+                    fontSize = HistoryPreviewPreferences.clampedTextFontSize(fontSize + 1)
+                })
+                .disabled(fontSize >= HistoryPreviewPreferences.maximumTextFontSize)
+                .help(Loc.t("history.preview.increaseFont"))
             }
-            .disabled(fontSize <= HistoryPreviewPreferences.minimumTextFontSize)
-            .help(Loc.t("history.preview.decreaseFont"))
-            Text("\(Int(fontSize))")
-                .font(.caption.monospacedDigit())
-                .frame(minWidth: 24)
-            Button {
-                fontSize = HistoryPreviewPreferences.clampedTextFontSize(fontSize + 1)
-            } label: {
-                Image(systemName: "textformat.size.larger")
+            .padding(2)
+            .background(palette.softSurfaceColor)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(palette.borderColor, lineWidth: 1)
             }
-            .disabled(fontSize >= HistoryPreviewPreferences.maximumTextFontSize)
-            .help(Loc.t("history.preview.increaseFont"))
+
             Button(action: copyAll) {
-                Image(systemName: "doc.on.doc")
+                Label(Loc.t("history.preview.copyAll"), systemImage: "doc.on.doc")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(minHeight: 30)
             }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
             .help(Loc.t("history.preview.copyAll"))
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, 10)
-        .frame(height: 42)
+        .historyPreviewToolbarStyle()
     }
 
     private var searchControls: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(palette.tertiaryColor)
             TextField(Loc.t("history.preview.search"), text: $query)
                 .textFieldStyle(.plain)
+                .font(.system(size: 13))
                 .onSubmit { find(true) }
-            Button { find(false) } label: {
-                Image(systemName: "chevron.up")
-            }
+            HistoryPreviewToolbarIconButton(
+                systemName: "chevron.up",
+                compact: true,
+                action: { find(false) }
+            )
             .disabled(query.isEmpty)
             .help(Loc.t("history.preview.previousMatch"))
-            Button { find(true) } label: {
-                Image(systemName: "chevron.down")
-            }
+            HistoryPreviewToolbarIconButton(
+                systemName: "chevron.down",
+                compact: true,
+                action: { find(true) }
+            )
             .disabled(query.isEmpty)
             .help(Loc.t("history.preview.nextMatch"))
         }
-        .padding(.horizontal, 8)
-        .frame(width: 260, height: 28)
-        .background(.quaternary.opacity(0.45))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+        .frame(
+            minWidth: 160,
+            maxWidth: 300,
+            minHeight: HistoryPreviewLayoutMetrics.regularControlSize,
+            maxHeight: HistoryPreviewLayoutMetrics.regularControlSize
+        )
+        .background(palette.softSurfaceColor)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(palette.borderColor, lineWidth: 1)
+        }
     }
+
 }

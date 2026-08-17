@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 
 enum HistoryImageViewport {
+    struct Layout: Equatable {
+        let fittedScale: CGFloat
+        let imageSize: CGSize
+        let center: CGPoint
+    }
+
     static func fittedScale(
         imageSize: CGSize,
         containerSize: CGSize,
@@ -28,54 +34,84 @@ enum HistoryImageViewport {
             height: offset.height + translation.height
         )
     }
+
+    static func layout(
+        imageSize: CGSize,
+        containerSize: CGSize,
+        rotation: Angle
+    ) -> Layout {
+        let scale = fittedScale(
+            imageSize: imageSize,
+            containerSize: containerSize,
+            rotation: rotation
+        )
+        return Layout(
+            fittedScale: scale,
+            imageSize: CGSize(
+                width: max(1, imageSize.width * scale),
+                height: max(1, imageSize.height * scale)
+            ),
+            center: CGPoint(x: containerSize.width / 2, y: containerSize.height / 2)
+        )
+    }
 }
 
 struct HistoryImagePreviewView: View {
-    let data: Data
+    let material: HistoryPreviewImageMaterial
 
-    @State private var fittedScale: CGFloat = 1
+    @Environment(\.tailSyncPalette) private var palette
+
     @State private var zoom: CGFloat = 1
     @State private var rotation = Angle.zero
     @State private var offset = CGSize.zero
-    @State private var containerSize = CGSize.zero
     @State private var showsTransparency = true
     @GestureState private var dragTranslation = CGSize.zero
 
-    private var image: NSImage? { NSImage(data: data) }
+    private var image: NSImage { material.image }
 
     var body: some View {
         VStack(spacing: 0) {
             imageToolbar
-            Divider()
-            if let image {
-                GeometryReader { proxy in
-                    ZStack {
-                        if showsTransparency { HistoryPreviewCheckerboard() }
-                        Color(nsColor: .textBackgroundColor)
-                            .opacity(showsTransparency ? 0 : 1)
-                        Image(nsImage: image)
-                            .resizable()
-                            .frame(width: image.size.width, height: image.size.height)
-                            .scaleEffect(fittedScale * zoom)
-                            .rotationEffect(rotation)
-                            .offset(HistoryImageViewport.adding(
-                                dragTranslation,
-                                to: offset
-                            ))
-                            .gesture(dragGesture)
+            GeometryReader { proxy in
+                let layout = HistoryImageViewport.layout(
+                    imageSize: image.size,
+                    containerSize: proxy.size,
+                    rotation: rotation
+                )
+                let translation = HistoryImageViewport.adding(dragTranslation, to: offset)
+                ZStack(alignment: .topLeading) {
+                    if showsTransparency {
+                        HistoryPreviewCheckerboard()
+                            .allowsHitTesting(false)
                     }
-                    .clipped()
-                    .onAppear { updateContainer(proxy.size, image: image) }
-                    .onChange(of: proxy.size) { size in
-                        updateContainer(size, image: image)
-                    }
-                    .background(HistoryPreviewModifierScrollMonitor { delta in
-                        setZoom(zoom * (delta > 0 ? 1.1 : 1 / 1.1))
-                    })
+                    palette.surfaceColor
+                        .opacity(showsTransparency ? 0 : 1)
+                        .allowsHitTesting(false)
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(
+                            width: layout.imageSize.width * zoom,
+                            height: layout.imageSize.height * zoom
+                        )
+                        .rotationEffect(rotation)
+                        .position(
+                            x: layout.center.x + translation.width,
+                            y: layout.center.y + translation.height
+                        )
+                        .allowsHitTesting(false)
                 }
-                imageMetadata(image)
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+                .clipped()
+                .contentShape(Rectangle())
+                .gesture(dragGesture)
+                .background(HistoryPreviewModifierScrollMonitor { delta in
+                    setZoom(zoom * (delta > 0 ? 1.1 : 1 / 1.1))
+                })
             }
+            imageMetadata(image)
         }
+        .background(palette.surfaceColor)
     }
 
     private var dragGesture: some Gesture {
@@ -90,38 +126,39 @@ struct HistoryImagePreviewView: View {
 
     private var imageToolbar: some View {
         HStack(spacing: 8) {
-            Button(action: fitCurrentImage) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-            }
+            HistoryPreviewToolbarIconButton(
+                systemName: "arrow.up.left.and.arrow.down.right",
+                action: fitCurrentImage
+            )
             .help(Loc.t("history.preview.fit"))
             Divider().frame(height: 18)
-            Button { setZoom(zoom / 1.2) } label: {
-                Image(systemName: "minus.magnifyingglass")
-            }
+            HistoryPreviewToolbarIconButton(
+                systemName: "minus.magnifyingglass",
+                action: { setZoom(zoom / 1.2) }
+            )
             Text("\(Int((zoom * 100).rounded()))%")
                 .font(.caption.monospacedDigit())
                 .frame(width: 52)
-            Button { setZoom(zoom * 1.2) } label: {
-                Image(systemName: "plus.magnifyingglass")
-            }
+            HistoryPreviewToolbarIconButton(
+                systemName: "plus.magnifyingglass",
+                action: { setZoom(zoom * 1.2) }
+            )
             Spacer()
-            Button(action: rotateClockwise) {
-                Image(systemName: "rotate.right")
-            }
+            HistoryPreviewToolbarIconButton(
+                systemName: "rotate.right",
+                action: rotateClockwise
+            )
             .help(Loc.t("history.preview.rotate"))
-            Button {
-                showsTransparency.toggle()
-            } label: {
-                Image(systemName: showsTransparency
+            HistoryPreviewToolbarIconButton(
+                systemName: showsTransparency
                     ? "checkerboard.rectangle"
-                    : "rectangle.fill")
-            }
+                    : "rectangle.fill",
+                selected: showsTransparency,
+                action: { showsTransparency.toggle() }
+            )
             .help(Loc.t("history.preview.transparency"))
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .frame(height: 42)
+        .historyPreviewToolbarStyle()
     }
 
     private func imageMetadata(_ image: NSImage) -> some View {
@@ -134,42 +171,29 @@ struct HistoryImagePreviewView: View {
             Text("\(width) × \(height)")
             Spacer()
             Text(ByteCountFormatter.string(
-                fromByteCount: Int64(data.count),
+                fromByteCount: Int64(material.data.count),
                 countStyle: .file
             ))
         }
         .font(.caption2)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .frame(height: 26)
-    }
-
-    private func updateContainer(_ size: CGSize, image: NSImage) {
-        containerSize = size
-        updateFittedScale(image, rotation: rotation)
+        .foregroundColor(palette.tertiaryColor)
+        .padding(.horizontal, 16)
+        .frame(height: 30)
+        .background(palette.raisedColor)
+        .overlay(alignment: .top) {
+            Rectangle().fill(palette.dividerColor).frame(height: 1)
+        }
     }
 
     private func fitCurrentImage() {
-        guard let image else { return }
         zoom = 1
         offset = .zero
-        updateFittedScale(image, rotation: rotation)
-    }
-
-    private func updateFittedScale(_ image: NSImage, rotation: Angle) {
-        fittedScale = HistoryImageViewport.fittedScale(
-            imageSize: image.size,
-            containerSize: containerSize,
-            rotation: rotation
-        )
     }
 
     private func rotateClockwise() {
         let nextRotation = rotation + .degrees(90)
         rotation = nextRotation
-        if let image {
-            updateFittedScale(image, rotation: nextRotation)
-        }
+        offset = .zero
     }
 
     private func setZoom(_ newZoom: CGFloat) {

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PDFKit
 import SwiftUI
 import XCTest
 @testable import TailSync
@@ -11,6 +12,56 @@ final class HistoryPreviewModelTests: XCTestCase {
         XCTAssertEqual(HistoryPreviewPreferences.clampedTextFontSize(4), 12)
         XCTAssertEqual(HistoryPreviewPreferences.clampedTextFontSize(99), 32)
         XCTAssertEqual(HistoryPreviewPreferences.clampedTextFontSize(19.6), 20)
+        XCTAssertEqual(
+            HistoryPreviewPreferences.textFontSize(afterModifierScroll: 2, current: 18),
+            19
+        )
+        XCTAssertEqual(
+            HistoryPreviewPreferences.textFontSize(afterModifierScroll: -2, current: 18),
+            17
+        )
+    }
+
+    func testModifierScrollPolicyConsumesOnlyLocalCommandOrControlWheelEvents() {
+        XCTAssertEqual(
+            HistoryPreviewModifierScrollPolicy.zoomDelta(
+                scrollingDeltaY: 4,
+                modifiers: [.control],
+                isInsidePreview: true
+            ),
+            4
+        )
+        XCTAssertEqual(
+            HistoryPreviewModifierScrollPolicy.zoomDelta(
+                scrollingDeltaY: -3,
+                modifiers: [.command, .shift],
+                isInsidePreview: true
+            ),
+            -3
+        )
+        XCTAssertNil(HistoryPreviewModifierScrollPolicy.zoomDelta(
+            scrollingDeltaY: 4,
+            modifiers: [],
+            isInsidePreview: true
+        ))
+        XCTAssertNil(HistoryPreviewModifierScrollPolicy.zoomDelta(
+            scrollingDeltaY: 4,
+            modifiers: [.control],
+            isInsidePreview: false
+        ))
+    }
+
+    @MainActor
+    func testInteractivePDFAndSearchControlsKeepTheirSpaceKey() {
+        let editable = NSTextView()
+        editable.isEditable = true
+        let readOnly = NSTextView()
+        readOnly.isEditable = false
+
+        XCTAssertTrue(HistoryPreviewWindowKeyPolicy.keepsSpaceKey(editable))
+        XCTAssertFalse(HistoryPreviewWindowKeyPolicy.keepsSpaceKey(readOnly))
+        XCTAssertTrue(HistoryPreviewWindowKeyPolicy.keepsSpaceKey(PDFView()))
+        XCTAssertFalse(HistoryPreviewWindowKeyPolicy.keepsSpaceKey(nil))
     }
 
     func testCodeStylerProducesDistinctSemanticColours() {
@@ -43,6 +94,8 @@ final class HistoryPreviewModelTests: XCTestCase {
             ("file", "README.md", nil, .markdown),
             ("file", "manual.pdf", nil, .pdf),
             ("file", "report.docx", nil, .docx),
+            ("file", "slides.ppt", nil, .presentation),
+            ("file", "slides.pptx", nil, .presentation),
             ("file", "photo.webp", nil, .image),
             ("file", "main.swift", nil, .code),
             ("text", "text.txt", "code", .code),
@@ -65,6 +118,23 @@ final class HistoryPreviewModelTests: XCTestCase {
         }
     }
 
+    func testPresentationFilesUseTheDocumentPreviewWindow() {
+        for name in ["slides.ppt", "slides.pptx", "SLIDES.PPTX"] {
+            let payload = HistoryPreviewData(
+                kind: "file",
+                name: name,
+                sizeBytes: 0,
+                data: Data()
+            )
+
+            XCTAssertEqual(
+                HistoryPreviewFormat.detect(payload: payload).windowKind,
+                .document,
+                "\(name) should be routed to the native document preview"
+            )
+        }
+    }
+
     func testMarkdownRemovesResourcesAndUnsafeLinkSchemes() {
         let source = """
         # Article
@@ -79,7 +149,11 @@ final class HistoryPreviewModelTests: XCTestCase {
         let sanitized = HistoryMarkdownRenderer.sanitizedSource(source)
         XCTAssertTrue(sanitized.contains("remote image"))
         XCTAssertFalse(sanitized.contains("image.png"))
-        XCTAssertFalse(sanitized.localizedCaseInsensitiveContains("script"))
+        // Script tags are removed entirely. ("script" as a substring of the
+        // harmless plain text "javascript:alert(1)" stays in the raw source;
+        // the javascript: link itself is de-linked below by isAllowedLink.)
+        XCTAssertFalse(sanitized.localizedCaseInsensitiveContains("<script"))
+        XCTAssertFalse(sanitized.localizedCaseInsensitiveContains("</script>"))
 
         let article = HistoryMarkdownRenderer.attributedArticle(source)
         let links = article.runs.compactMap(\.link).map(\.absoluteString)
@@ -90,6 +164,12 @@ final class HistoryPreviewModelTests: XCTestCase {
         XCTAssertFalse(HistoryMarkdownRenderer.isAllowedLink(
             URL(string: "mailto:test@example.com")!
         ))
+
+        let oversized = String(
+            repeating: "x",
+            count: HistoryMarkdownRenderer.maximumRichTextBytes + 1
+        )
+        XCTAssertEqual(String(HistoryMarkdownRenderer.attributedArticle(oversized).characters), oversized)
     }
 
     func testLogicalLineIndexUsesTextKitUtf16Offsets() {
@@ -113,6 +193,15 @@ final class HistoryPreviewModelTests: XCTestCase {
             0.5,
             accuracy: 0.0001
         )
+        let initialLayout = HistoryImageViewport.layout(
+            imageSize: CGSize(width: 300, height: 1_200),
+            containerSize: CGSize(width: 640, height: 394),
+            rotation: .zero
+        )
+        XCTAssertEqual(initialLayout.fittedScale, 394 / 1_200, accuracy: 0.0001)
+        XCTAssertEqual(initialLayout.imageSize.width, 98.5, accuracy: 0.0001)
+        XCTAssertEqual(initialLayout.imageSize.height, 394, accuracy: 0.0001)
+        XCTAssertEqual(initialLayout.center, CGPoint(x: 320, y: 197))
         XCTAssertEqual(
             HistoryImageViewport.fittedScale(
                 imageSize: CGSize(width: 1_000, height: 500),
@@ -129,6 +218,75 @@ final class HistoryPreviewModelTests: XCTestCase {
             ),
             CGSize(width: 9, height: 12)
         )
+        XCTAssertTrue(HistoryPreviewImageLimits.accepts(
+            frameDimensions: [(width: 4_096, height: 4_096)]
+        ))
+        XCTAssertFalse(HistoryPreviewImageLimits.accepts(
+            frameDimensions: [(width: 10_000, height: 10_000)]
+        ))
+        XCTAssertFalse(HistoryPreviewImageLimits.accepts(
+            frameDimensions: Array(repeating: (width: 1_024, height: 1_024), count: 65)
+        ))
+    }
+
+    func testMarkdownDocumentPreservesCommonBlockStructure() {
+        let document = HistoryMarkdownRenderer.document("""
+        # Release notes
+
+        Paragraph with **bold text** and `inline code`.
+
+        > Quoted guidance
+
+        - First item
+          - Nested item
+        - [x] Completed task
+
+        3. Numbered item
+
+        ```swift
+        let answer = 42
+        ```
+
+        | Name | Value |
+        | ---- | ----: |
+        | Mode | Safe  |
+
+        ---
+        """)
+
+        XCTAssertTrue(document.parsesInlineMarkdown)
+        XCTAssertEqual(document.blocks.count, 8)
+        guard case .heading(level: 1, text: "Release notes") = document.blocks[0] else {
+            return XCTFail("ATX heading should remain a heading")
+        }
+        guard case .paragraph(let paragraph) = document.blocks[1] else {
+            return XCTFail("prose should remain a paragraph")
+        }
+        XCTAssertTrue(paragraph.contains("**bold text**"))
+        guard case .blockQuote(let quote) = document.blocks[2],
+              case .paragraph("Quoted guidance") = quote.first else {
+            return XCTFail("blockquote structure should be preserved")
+        }
+        guard case .list(let bullets) = document.blocks[3] else {
+            return XCTFail("bullet/task list should remain a list")
+        }
+        XCTAssertEqual(bullets.map(\.depth), [0, 1, 0])
+        XCTAssertEqual(bullets.last?.marker, .task(true))
+        guard case .list(let numbered) = document.blocks[4] else {
+            return XCTFail("ordered list should remain a list")
+        }
+        XCTAssertEqual(numbered.first?.marker, .number(3))
+        guard case .code(language: "swift", text: "let answer = 42") = document.blocks[5] else {
+            return XCTFail("fenced code language and source should be preserved")
+        }
+        guard case .table(let headers, let rows) = document.blocks[6] else {
+            return XCTFail("pipe table should remain a table")
+        }
+        XCTAssertEqual(headers, ["Name", "Value"])
+        XCTAssertEqual(rows, [["Mode", "Safe"]])
+        guard case .thematicBreak = document.blocks[7] else {
+            return XCTFail("horizontal rule should remain a separator")
+        }
     }
 
     func testWindowSizePolicyMatchesRendererNeeds() {
@@ -162,5 +320,10 @@ final class HistoryPreviewModelTests: XCTestCase {
             let error = HistoryPreviewRemoteError(code: code, message: "ignored wording")
             XCTAssertEqual(HistoryPreviewFailure.classify(error), expected, code.rawValue)
         }
+
+        XCTAssertEqual(
+            HistoryPreviewFailure.classify(HistoryPreviewStoreError.invalidDocument),
+            HistoryPreviewFailure(kind: .corrupt, canRetry: false)
+        )
     }
 }

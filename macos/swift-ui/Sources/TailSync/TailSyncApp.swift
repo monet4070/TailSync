@@ -661,7 +661,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 minSize: NSSize(width: 300, height: 360))
             historyWC = wc
         }
-        HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
+        Task { @MainActor in
+            HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
+        }
         NSApp.activate(ignoringOtherApps: true)
         Self.forceAccessory()
     }

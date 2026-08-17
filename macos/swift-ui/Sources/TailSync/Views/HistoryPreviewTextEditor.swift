@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct HistoryPreviewTextEditor: NSViewRepresentable {
+    @Environment(\.tailSyncPalette) private var palette
+
     let text: String
     let isCode: Bool
     let wrapsLines: Bool
@@ -18,7 +20,7 @@ struct HistoryPreviewTextEditor: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.backgroundColor = editorBackgroundColor
         scrollView.contentView.postsBoundsChangedNotifications = true
 
         let textView = NSTextView(frame: .zero)
@@ -27,7 +29,7 @@ struct HistoryPreviewTextEditor: NSViewRepresentable {
         textView.isRichText = true
         textView.importsGraphics = false
         textView.drawsBackground = true
-        textView.backgroundColor = .textBackgroundColor
+        textView.backgroundColor = editorBackgroundColor
         textView.isVerticallyResizable = true
         textView.minSize = .zero
         scrollView.documentView = textView
@@ -63,6 +65,9 @@ struct HistoryPreviewTextEditor: NSViewRepresentable {
         textView: NSTextView,
         coordinator: Coordinator
     ) {
+        scrollView.backgroundColor = editorBackgroundColor
+        textView.backgroundColor = editorBackgroundColor
+        coordinator.ruler?.backgroundColor = editorBackgroundColor
         let signature = Coordinator.Signature(
             text: text,
             isCode: isCode,
@@ -93,7 +98,12 @@ struct HistoryPreviewTextEditor: NSViewRepresentable {
         }
     }
 
+    private var editorBackgroundColor: NSColor {
+        NSColor(palette.surfaceColor)
+    }
+
     private func configureLayout(_ scrollView: NSScrollView, textView: NSTextView) {
+        let viewportSize = scrollView.contentSize
         scrollView.hasHorizontalScroller = !wrapsLines
         scrollView.hasVerticalRuler = isCode
         scrollView.rulersVisible = isCode
@@ -101,9 +111,20 @@ struct HistoryPreviewTextEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = !wrapsLines
         textView.autoresizingMask = wrapsLines ? [.width] : []
         textView.textContainer?.widthTracksTextView = wrapsLines
+        if wrapsLines {
+            // A text view that was previously laid out horizontally keeps its
+            // expanded document width. Reset it to the viewport before asking
+            // TextKit to track the view again, otherwise enabling wrapping has
+            // no visible effect.
+            textView.setFrameSize(NSSize(
+                width: max(1, viewportSize.width),
+                height: max(viewportSize.height, textView.frame.height)
+            ))
+        }
+        textView.minSize = NSSize(width: 0, height: viewportSize.height)
         textView.textContainer?.containerSize = NSSize(
             width: wrapsLines
-                ? max(0, scrollView.contentSize.width)
+                ? max(1, viewportSize.width)
                 : CGFloat.greatestFiniteMagnitude,
             height: CGFloat.greatestFiniteMagnitude
         )

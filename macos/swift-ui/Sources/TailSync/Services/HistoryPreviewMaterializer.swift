@@ -1,9 +1,52 @@
 import AppKit
 import Foundation
+import ImageIO
 import PDFKit
 
+enum HistoryPreviewImageLimits {
+    static let maximumDecodedPixels = 64 * 1024 * 1024
+
+    static func accepts(frameDimensions: [(width: Int, height: Int)]) -> Bool {
+        guard !frameDimensions.isEmpty else { return false }
+        var totalPixels = 0
+        for frame in frameDimensions {
+            guard frame.width > 0, frame.height > 0 else { return false }
+            let framePixels = frame.width.multipliedReportingOverflow(by: frame.height)
+            guard !framePixels.overflow else { return false }
+            let accumulated = totalPixels.addingReportingOverflow(framePixels.partialValue)
+            guard !accumulated.overflow,
+                  accumulated.partialValue <= maximumDecodedPixels else { return false }
+            totalPixels = accumulated.partialValue
+        }
+        return true
+    }
+}
+
+enum HistoryPreviewDocumentSignatures {
+    static func isLikelyDOCX(_ data: Data) -> Bool {
+        isLikelyOpenXML(data, requiredEntry: "word/document.xml")
+    }
+
+    static func isLikelyPPTX(_ data: Data) -> Bool {
+        isLikelyOpenXML(data, requiredEntry: "ppt/presentation.xml")
+    }
+
+    static func isLikelyLegacyPPT(_ data: Data) -> Bool {
+        data.starts(with: [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1])
+    }
+
+    private static func isLikelyOpenXML(_ data: Data, requiredEntry: String) -> Bool {
+        guard data.starts(with: [0x50, 0x4B, 0x03, 0x04]) else { return false }
+        let requiredEntries = ["[Content_Types].xml", requiredEntry]
+        guard requiredEntries.allSatisfy({ data.range(of: Data($0.utf8)) != nil }) else {
+            return false
+        }
+        return data.range(of: Data([0x50, 0x4B, 0x05, 0x06])) != nil
+    }
+}
+
 /// Converts decrypted bytes into a renderer-specific material without writing
-/// plaintext unless Quick Look requires a file URL (currently DOCX only).
+/// plaintext unless Quick Look requires a file URL (Office documents only).
 extension HistoryPreviewStore {
     func materialize(_ preview: HistoryPreviewData) throws -> HistoryPreviewMaterial {
         guard preview.sizeBytes >= 0,
@@ -22,32 +65,68 @@ extension HistoryPreviewStore {
 
         if preview.kind == "image" {
             let png = try pngData(fromPackedRGBA: preview.data)
-            guard NSImage(data: png) != nil else {
-                throw HistoryPreviewStoreError.invalidImage
-            }
-            return .image(png)
+            let image = try validatedImage(from: png)
+            return .image(HistoryPreviewImageMaterial(data: png, image: image))
         }
         if HistoryPreviewFileTypes.imageExtensions.contains(fileExtension) {
-            guard NSImage(data: preview.data) != nil else {
-                throw HistoryPreviewStoreError.invalidImage
-            }
-            return .image(preview.data)
+            let image = try validatedImage(from: preview.data)
+            return .image(HistoryPreviewImageMaterial(data: preview.data, image: image))
         }
         if fileExtension == "pdf" {
-            guard PDFDocument(data: preview.data) != nil else {
+            guard let document = PDFDocument(data: preview.data),
+                  !document.isLocked,
+                  document.pageCount > 0 else {
                 throw HistoryPreviewStoreError.invalidDocument
             }
-            return .pdf(preview.data)
+            return .pdf(HistoryPreviewPDFMaterial(data: preview.data, document: document))
         }
         if fileExtension == "docx" {
-            guard preview.data.count >= 4,
-                  preview.data.prefix(4).elementsEqual([0x50, 0x4B, 0x03, 0x04]) else {
+            guard HistoryPreviewDocumentSignatures.isLikelyDOCX(preview.data) else {
                 throw HistoryPreviewStoreError.invalidDocument
             }
             let fileName = HistoryPreviewStore.sanitizedFileName(preview.name, fallback: "preview.docx")
             return .quickLook(try write(preview.data, named: fileName))
         }
+        if fileExtension == "pptx" {
+            guard HistoryPreviewDocumentSignatures.isLikelyPPTX(preview.data) else {
+                throw HistoryPreviewStoreError.invalidDocument
+            }
+            let fileName = HistoryPreviewStore.sanitizedFileName(
+                preview.name,
+                fallback: "preview.pptx"
+            )
+            return .quickLook(try write(preview.data, named: fileName))
+        }
+        if fileExtension == "ppt" {
+            guard HistoryPreviewDocumentSignatures.isLikelyLegacyPPT(preview.data) else {
+                throw HistoryPreviewStoreError.invalidDocument
+            }
+            let fileName = HistoryPreviewStore.sanitizedFileName(
+                preview.name,
+                fallback: "preview.ppt"
+            )
+            return .quickLook(try write(preview.data, named: fileName))
+        }
         return .unsupported
+    }
+
+    private func validatedImage(from data: Data) throws -> NSImage {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw HistoryPreviewStoreError.invalidImage
+        }
+        let dimensions = (0..<CGImageSourceGetCount(source)).compactMap { index
+            -> (width: Int, height: Int)? in
+            guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil)
+                    as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let height = properties[kCGImagePropertyPixelHeight] as? Int else { return nil }
+            return (width, height)
+        }
+        guard HistoryPreviewImageLimits.accepts(frameDimensions: dimensions),
+              let image = NSImage(data: data) else {
+            throw HistoryPreviewStoreError.invalidImage
+        }
+        return image
     }
 
     private func pngData(fromPackedRGBA packed: Data) throws -> Data {

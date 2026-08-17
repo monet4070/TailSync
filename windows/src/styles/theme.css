@@ -48,6 +48,9 @@
   --font-size-content: 13px;
   --font-size-setting: 13px;
   --font-size-section: 11px;
+  --search-font-size: 13px;
+  --search-font-family: var(--font-ui);
+  --section-title-transform: uppercase;
   --font-weight-body: 400;
   --font-weight-content: 500;
   --font-weight-strong: 600;

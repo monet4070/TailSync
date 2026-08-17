@@ -304,20 +304,20 @@ fn create_private_temporary_file(parent: &Path) -> Result<(PathBuf, std::fs::Fil
 }
 
 #[cfg(unix)]
-fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
         .map_err(|error| IdentityError::io("restricting the identity directory", error))
 }
 
 #[cfg(windows)]
-fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
     set_private_windows_acl(path, true)
         .map_err(|error| IdentityError::io("restricting the identity directory", error))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn restrict_private_directory(_path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn restrict_private_directory(_path: &Path) -> Result<(), IdentityError> {
     Ok(())
 }
 

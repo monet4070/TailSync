@@ -190,7 +190,8 @@ html, body {
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   color: var(--text-primary);
-  font-size: 13px;
+  font-family: var(--search-font-family);
+  font-size: var(--search-font-size);
   outline: none;
   transition: background 0.2s ease, box-shadow 0.2s ease;
 }
@@ -510,7 +511,7 @@ html, body {
   font-size: 11px;
   font-weight: var(--font-weight-strong);
   color: var(--text-tertiary);
-  text-transform: uppercase;
+  text-transform: var(--section-title-transform);
   letter-spacing: 0;
   position: sticky;
   top: 0;

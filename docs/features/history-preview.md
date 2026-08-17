@@ -13,8 +13,9 @@ filters, pagination, restore, and delete are never covered by preview content.
 - double click restores the entry to the clipboard;
 - right click deletes the entry;
 - Alt+Left and Alt+Right navigate files in the same batch.
-- Control+wheel on Windows or Command/Control+wheel on macOS zooms the
-  document under the pointer without replacing ordinary scrolling.
+- Control+wheel on Windows or Command/Control+wheel on macOS changes the text
+  font size or zooms the image/PDF under the pointer without replacing ordinary
+  scrolling.
 
 The preview window is non-modal and not globally always-on-top. It closes with
 the history window and follows it when minimized. Its frame is remembered by
@@ -26,14 +27,19 @@ renderer family, bounded to the current display's usable work area.
   font size, copy-all, and line/character counts;
 - conservatively detected source code with line numbers and bundled syntax
   highlighting, plus a manual text/code mode switch;
-- rendered Markdown article view (no source or split view);
-- clipboard images and PNG, JPEG, GIF, and WebP files with fit-relative zoom,
-  stable pan, view-only rotation, transparency, and dimensions;
-- PDF with pagination, search, modifier-wheel zoom, selectable text, and
-  thumbnail navigation;
+- rendered Markdown article view with distinct headings, paragraphs, nested
+  lists/tasks, block quotes, fenced and indented code, horizontal rules, and
+  pipe tables (no source or split view);
+- clipboard images and PNG, JPEG, GIF, and WebP files centered and fitted on
+  the first frame, with fit-relative zoom, bounded pan hit-testing, view-only
+  rotation, transparency, and dimensions;
+- PDF with pagination, asynchronous search, modifier-wheel zoom, selectable
+  text, and on-demand thumbnail navigation;
 - DOCX with a local renderer on Windows and the native preview path on macOS;
+- PPT and PPTX through the native macOS Quick Look preview path after signature
+  validation;
 - SVG as source text only;
-- metadata and restore controls for unsupported formats such as XLSX and PPTX.
+- metadata and restore controls for unsupported formats such as XLSX.
 
 ## Batch navigation
 
@@ -59,5 +65,6 @@ an explicit click. SVG markup is never executed.
 
 Windows keeps decrypted preview bytes in memory and revokes Blob URLs on item
 replacement and window close. macOS creates a plaintext temporary file only
-when a native Quick Look fallback requires it. Its preview directory uses mode
-0700, files use mode 0600, and cleanup runs on replacement, close, and startup.
+when a native Quick Look Office preview requires it. Its preview directory uses
+mode 0700, files use mode 0600, and cleanup runs on replacement, close, and
+startup.

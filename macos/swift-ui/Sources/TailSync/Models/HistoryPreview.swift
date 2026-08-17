@@ -8,12 +8,13 @@ enum HistoryPreviewFormat: String, CaseIterable, Equatable, Sendable {
     case image
     case pdf
     case docx
+    case presentation
     case unsupported
 
     var windowKind: HistoryPreviewWindowKind {
         switch self {
         case .text, .code: return .text
-        case .markdown, .docx: return .document
+        case .markdown, .docx, .presentation: return .document
         case .image: return .image
         case .pdf: return .pdf
         case .unsupported: return .text
@@ -32,6 +33,7 @@ enum HistoryPreviewFormat: String, CaseIterable, Equatable, Sendable {
         case "md", "markdown": return .markdown
         case "pdf": return .pdf
         case "docx": return .docx
+        case "ppt", "pptx": return .presentation
         default: break
         }
         guard payload.kind == "text"
@@ -286,7 +288,10 @@ struct HistoryPreviewFailure: Equatable, Sendable {
             case .tooLarge:
                 return HistoryPreviewFailure(kind: .tooLarge, canRetry: false)
             case .invalidText, .invalidImage, .invalidDocument:
-                return HistoryPreviewFailure(kind: .corrupt, canRetry: true)
+                // These errors are deterministic validation failures for bytes
+                // already loaded successfully; retrying the same payload cannot
+                // repair it.
+                return HistoryPreviewFailure(kind: .corrupt, canRetry: false)
             case .invalidPath, .writeFailed:
                 return HistoryPreviewFailure(kind: .unavailable, canRetry: true)
             }

@@ -21,6 +21,31 @@ final class Loc: ObservableObject {
     @Published var theme: String = "system"
     @Published var colorTheme: String = TailSyncColorTheme.tailsync.rawValue
     @Published var notificationsEnabled: Bool = true
+    /// Custom-theme catalogue from the daemon (validated entries only).
+    @Published var customThemes: [TailSyncThemeDefinition] = []
+    /// Error markers for theme files the daemon skipped.
+    @Published var themeErrors: [ApiClient.ThemeListing.ErrorItem] = []
+    /// Background image + scrim of the active custom theme, loaded on demand
+    /// (nil when the selection has no background).
+    @Published var themeBackgroundImage: NSImage? = nil
+    @Published var themeBackgroundScrim: Color? = nil
+    /// Injectable background fetch (tests substitute deterministic closures;
+    /// production hits the daemon). Input: (theme id, mode).
+    var backgroundFetch: (String, String) async -> ApiClient.ThemeBackgroundPayload? = {
+        (themeId, mode) in
+        await ApiClient.shared.getThemeBackground(themeId: themeId, mode: mode)
+    }
+    /// Monotonic request identity: only the latest request may publish the
+    /// background state. Incremented on the main actor before any await, so
+    /// late results of cancelled or superseded requests are dropped.
+    private var backgroundRequestGeneration = 0
+
+    /// Keep `custom:{id}` preferences as-is (resolved at apply time against
+    /// the catalogue); everything else falls back through the built-in enum.
+    static func normalizeColorTheme(_ value: String) -> String {
+        if value.hasPrefix("custom:") { return value }
+        return TailSyncColorTheme(storedValue: value).rawValue
+    }
 
     private static let configURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -30,6 +55,7 @@ final class Loc: ObservableObject {
 
     private init() {
         reload()
+        Task { await refreshCustomThemes() }
     }
 
     func reload() {
@@ -37,9 +63,7 @@ final class Loc: ObservableObject {
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             lang = obj["language"] as? String ?? fallbackLang()
             theme = obj["theme"] as? String ?? "system"
-            colorTheme = TailSyncColorTheme(
-                storedValue: obj["color_theme"] as? String ?? "tailsync"
-            ).rawValue
+            colorTheme = Self.normalizeColorTheme(obj["color_theme"] as? String ?? "tailsync")
             notificationsEnabled = obj["notifications_enabled"] as? Bool ?? true
         } else {
             lang = fallbackLang()
@@ -48,6 +72,76 @@ final class Loc: ObservableObject {
             notificationsEnabled = true
         }
         applyTheme()
+    }
+
+    /// (Re)load the custom-theme catalogue from the daemon. Called at start
+    /// and after every import/delete so the settings page stays current.
+    func refreshCustomThemes() async {
+        guard let listing = await ApiClient.shared.listThemes() else { return }
+        await MainActor.run {
+            customThemes = listing.custom
+            themeErrors = listing.errors
+        }
+    }
+
+    /// Load (or clear) the background of the active selection for one mode.
+    /// Called by the themed modifier whenever the selection or the effective
+    /// colour scheme changes. Race rules (R002):
+    /// - a monotonic generation marks the request identity; only the latest
+    ///   request may publish image/scrim (or clear them);
+    /// - switching to a selection without a background clears immediately,
+    ///   and any in-flight older request is dropped by the generation check;
+    /// - a failed fetch or failed decode of the *latest* request clears the
+    ///   background so a stale image never lingers.
+    @MainActor
+    func loadThemeBackground(for selection: TailSyncThemeSelection, light: Bool) async {
+        backgroundRequestGeneration += 1
+        let generation = backgroundRequestGeneration
+
+        guard let definition = selection.definition else {
+            themeBackgroundImage = nil
+            themeBackgroundScrim = nil
+            return
+        }
+        let meta = light ? definition.background?.light : definition.background?.dark
+        guard let meta, meta.hasImage, let scrim = meta.scrim, let scrimColor = scrim.uiColor else {
+            themeBackgroundImage = nil
+            themeBackgroundScrim = nil
+            return
+        }
+
+        let mode = light ? "light" : "dark"
+        guard let payload = await backgroundFetch(definition.id, mode) else {
+            guard backgroundRequestGeneration == generation else { return }
+            themeBackgroundImage = nil
+            themeBackgroundScrim = nil
+            return
+        }
+        let image = Self.safelyDecodeBackgroundImage(data: payload.data)
+        guard backgroundRequestGeneration == generation else { return }
+        themeBackgroundImage = image
+        themeBackgroundScrim = image == nil ? nil : scrimColor
+    }
+
+    /// Second line of defence behind the daemon's validation: read the image
+    /// dimensions from the container metadata BEFORE any pixel decode and
+    /// refuse anything outside the server-side limits. Never full-decodes
+    /// first and asks questions later.
+    /// Internal for testability (second line of defence behind the daemon's
+    /// validation).
+    static func safelyDecodeBackgroundImage(data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width >= 1, height >= 1,
+              width <= 6000, height <= 6000,
+              width * height <= 24_000_000,
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return nil
+        }
+        return NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
     }
 
     private func fallbackLang() -> String {
@@ -123,6 +217,7 @@ final class Loc: ObservableObject {
             "history.preview.lines": "lines",
             "history.preview.characters": "characters",
             "history.preview.fit": "Fit to window",
+            "history.preview.actualSize": "Actual size",
             "history.preview.rotate": "Rotate view",
             "history.preview.transparency": "Toggle transparency background",
             "history.preview.thumbnails": "Toggle page thumbnails",
@@ -171,6 +266,16 @@ final class Loc: ObservableObject {
             "settings.colorTheme.forest": "Ledger",
             "settings.colorTheme.rose": "Aura",
             "settings.colorTheme.high-contrast": "Mono",
+            "settings.customThemes": "Custom themes",
+            "settings.customThemesDescription": "JSON theme files from the themes folder, alongside the built-in set",
+            "settings.customThemeImport": "Import theme",
+            "settings.customThemeImportTitle": "Select a theme file",
+            "settings.customThemeOpenFolder": "Open themes folder",
+            "settings.customThemeDelete": "Delete",
+            "settings.customThemeDeleteTitle": "Delete this theme?",
+            "settings.customThemeInvalid": "Invalid",
+            "settings.customThemeHasBackground": "Background image",
+            "settings.customThemeFallback": "This theme file is not available on this device; using the default theme",
             "settings.selected": "Selected",
             "settings.language": "Language",
             "settings.saved": "Settings saved",
@@ -304,6 +409,7 @@ final class Loc: ObservableObject {
             "history.preview.lines": "行",
             "history.preview.characters": "字符",
             "history.preview.fit": "适应窗口",
+            "history.preview.actualSize": "实际大小",
             "history.preview.rotate": "旋转查看",
             "history.preview.transparency": "切换透明背景",
             "history.preview.thumbnails": "切换页面缩略图",
@@ -352,6 +458,16 @@ final class Loc: ObservableObject {
             "settings.colorTheme.forest": "书页 Ledger",
             "settings.colorTheme.rose": "柔光 Aura",
             "settings.colorTheme.high-contrast": "单色 Mono",
+            "settings.customThemes": "自定义主题",
+            "settings.customThemesDescription": "主题文件夹中的 JSON 主题文件，与内置主题并列展示",
+            "settings.customThemeImport": "导入主题",
+            "settings.customThemeImportTitle": "选择主题文件",
+            "settings.customThemeOpenFolder": "打开主题文件夹",
+            "settings.customThemeDelete": "删除",
+            "settings.customThemeDeleteTitle": "确定删除此主题？",
+            "settings.customThemeInvalid": "无效",
+            "settings.customThemeHasBackground": "含背景图",
+            "settings.customThemeFallback": "此主题文件在本设备不可用，已使用默认主题",
             "settings.selected": "已选择",
             "settings.language": "语言",
             "settings.saved": "设置已保存",
@@ -429,10 +545,13 @@ final class Loc: ObservableObject {
 
     func applyTheme() {
         DispatchQueue.main.async {
+            // Headless contexts (tests, early launch) may have no
+            // NSApplication yet; the appearance is irrelevant there.
+            guard let app = NSApp else { return }
             switch self.theme {
-            case "dark":  NSApp.appearance = NSAppearance(named: .darkAqua)
-            case "light": NSApp.appearance = NSAppearance(named: .aqua)
-            default:      NSApp.appearance = nil
+            case "dark":  app.appearance = NSAppearance(named: .darkAqua)
+            case "light": app.appearance = NSAppearance(named: .aqua)
+            default:      app.appearance = nil
             }
         }
     }

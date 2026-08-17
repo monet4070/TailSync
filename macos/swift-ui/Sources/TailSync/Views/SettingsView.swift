@@ -141,8 +141,8 @@ struct SettingsView: View {
     @State private var shortcutBusy = false
     @State private var shortcutMonitor: Any?
 
-    private var activeTheme: TailSyncColorTheme {
-        TailSyncColorTheme(storedValue: loc.colorTheme)
+    private var activeTheme: TailSyncThemeSelection {
+        TailSyncThemeSelection(storedValue: loc.colorTheme, catalogue: loc.customThemes)
     }
 
     private var palette: TailSyncThemePalette {
@@ -930,7 +930,7 @@ struct SettingsView: View {
                 storageStatus = await ApiClient.shared.getStorageStatus()
                 loc.lang = settings.language
                 loc.theme = settings.theme
-                loc.colorTheme = TailSyncColorTheme(storedValue: settings.color_theme).rawValue
+                loc.colorTheme = Loc.normalizeColorTheme(settings.color_theme)
                 loc.notificationsEnabled = settings.notifications_enabled
                 loc.applyTheme()
                 isLoading = false
@@ -1078,7 +1078,7 @@ struct SettingsView: View {
         settings = value
         loc.lang = value.language
         loc.theme = value.theme
-        loc.colorTheme = TailSyncColorTheme(storedValue: value.color_theme).rawValue
+        loc.colorTheme = Loc.normalizeColorTheme(value.color_theme)
         loc.notificationsEnabled = value.notifications_enabled
         loc.applyTheme()
         Task { @MainActor in
@@ -1286,7 +1286,7 @@ struct SettingsView: View {
             Text(title)
                 .font(activeTheme.displayFont(
                     size: activeTheme.typography.sectionTitleSize,
-                    weight: activeTheme == .tailsync ? .regular : .semibold
+                    weight: activeTheme.builtin == .tailsync ? .regular : .semibold
                 ))
                 .textCase(activeTheme.typography.uppercasesSectionTitles ? .uppercase : nil)
                 .foregroundColor(palette.secondaryColor)
@@ -1297,7 +1297,7 @@ struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous)
-                        .stroke(palette.borderColor, lineWidth: activeTheme == .highContrast ? 2 : 1)
+                        .stroke(palette.borderColor, lineWidth: activeTheme.builtin == .highContrast ? 2 : 1)
                 }
                 .shadow(
                     color: palette.primaryColor.opacity(activeTheme.metrics.shadowRadius == 0 ? 0 : 0.08),
@@ -1319,7 +1319,7 @@ struct SettingsView: View {
     private var themedDivider: some View {
         Rectangle()
             .fill(palette.dividerColor)
-            .frame(height: activeTheme == .highContrast ? 2 : 1)
+            .frame(height: activeTheme.builtin == .highContrast ? 2 : 1)
     }
 
     private var colorThemePicker: some View {
@@ -1346,9 +1346,275 @@ struct SettingsView: View {
                         .gridCellColumns(2)
                 }
             }
+
+            // ── Custom themes (runtime JSON themes) ──
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Loc.t("settings.customThemes"))
+                    .font(activeTheme.readingFont(size: 13, weight: .medium))
+                Text(Loc.t("settings.customThemesDescription"))
+                    .font(activeTheme.readingFont(size: 10))
+                    .foregroundColor(palette.tertiaryColor)
+            }
+            .padding(.top, 6)
+
+            if !loc.themeErrors.isEmpty || !loc.customThemes.isEmpty {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 8),
+                        GridItem(.flexible(), spacing: 8),
+                    ],
+                    spacing: 8
+                ) {
+                    ForEach(loc.themeErrors, id: \.file) { error in
+                        themeErrorCard(error)
+                    }
+                    ForEach(loc.customThemes, id: \.id) { definition in
+                        customThemeCard(definition)
+                    }
+                }
+            }
+
+            // The stored preference may point at a theme the daemon does not
+            // have (missing file / other device): the apply-time fallback is
+            // the default theme, marked here.
+            if settings.color_theme.hasPrefix("custom:"),
+               !loc.customThemes.contains(where: { "custom:\($0.id)" == settings.color_theme }) {
+                Label(Loc.t("settings.customThemeFallback"), systemImage: "exclamationmark.triangle")
+                    .font(activeTheme.readingFont(size: 10))
+                    .foregroundColor(palette.warningColor)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    importCustomTheme()
+                } label: {
+                    Label(Loc.t("settings.customThemeImport"), systemImage: "square.and.arrow.down")
+                }
+                Button {
+                    revealCustomThemesFolder()
+                } label: {
+                    Label(Loc.t("settings.customThemeOpenFolder"), systemImage: "folder")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private func customThemeCard(_ definition: TailSyncThemeDefinition) -> some View {
+        let selection = TailSyncThemeSelection(builtin: .tailsync, definition: definition)
+        let optionPalette = selection.palette(for: colorScheme)
+        let selected = settings.color_theme == "custom:\(definition.id)"
+        let displayName = definition.localizedName(preferred: loc.lang)
+        let radius = selection.metrics.cardRadius
+        let backgroundScrim = definition.backgroundIndicatorScrim
+
+        return ZStack(alignment: .topTrailing) {
+            Button {
+                selectCustomTheme(definition)
+            } label: {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(optionPalette.accentColor)
+                            .frame(width: 6)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("TailSync")
+                                .font(selection.displayFont(size: 12, weight: .semibold))
+                                .foregroundColor(optionPalette.primaryColor)
+                            Capsule()
+                                .fill(optionPalette.textTertiary == optionPalette.textPrimary
+                                      ? optionPalette.primaryColor
+                                      : optionPalette.tertiaryColor)
+                                .frame(maxWidth: 68, minHeight: 3, maxHeight: 3)
+                            Capsule()
+                                .fill(optionPalette.dividerColor)
+                                .frame(maxWidth: 96, minHeight: 3, maxHeight: 3)
+                        }
+                        .padding(9)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+                    .background(optionPalette.windowColor)
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "paintpalette")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(displayName)
+                            .font(selection.readingFont(size: 11, weight: .medium))
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if selected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                    }
+                    .foregroundColor(selected ? palette.accentColor : palette.secondaryColor)
+                    .padding(.horizontal, 9)
+                    .frame(height: 30)
+                    .background(palette.raisedColor)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .stroke(selected ? palette.accentColor : palette.borderColor,
+                                lineWidth: selected ? 2 : 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(displayName)
+            .accessibilityValue(selected ? Loc.t("settings.selected") : "")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+
+            Button {
+                deleteCustomTheme(definition)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(palette.secondaryColor)
+                    .padding(5)
+                    .background(palette.raisedColor.opacity(0.95))
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(palette.borderColor, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .padding(5)
+            .accessibilityLabel("\(Loc.t("settings.customThemeDelete")) \(displayName)")
+
+            if let backgroundScrim {
+                // Background indicator (R008): badge + scrim-coloured strip.
+                // Metadata only — no image fetch. Mirrors the Windows card.
+                VStack(spacing: 0) {
+                    HStack {
+                        Text(Loc.t("settings.customThemeHasBackground"))
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(palette.secondaryColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(palette.raisedColor.opacity(0.92))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(palette.borderColor, lineWidth: 1))
+                        Spacer(minLength: 0)
+                    }
+                    Spacer(minLength: 0)
+                    Rectangle()
+                        .fill(backgroundScrim.uiColor ?? .clear)
+                        .frame(height: 4)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(5)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        }
+    }
+
+    private func themeErrorCard(_ error: ApiClient.ThemeListing.ErrorItem) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(palette.borderColor)
+                    .frame(width: 6)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("!")
+                        .font(activeTheme.readingFont(size: 13, weight: .bold))
+                        .foregroundColor(palette.tertiaryColor)
+                    Capsule()
+                        .fill(palette.borderColor)
+                        .frame(maxWidth: 68, minHeight: 3, maxHeight: 3)
+                    Capsule()
+                        .fill(palette.borderColor)
+                        .frame(maxWidth: 96, minHeight: 3, maxHeight: 3)
+                }
+                .padding(9)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+            .background(palette.softSurfaceColor)
+
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 11, weight: .medium))
+                Text(error.file)
+                    .font(activeTheme.readingFont(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(Loc.t("settings.customThemeInvalid"))
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundColor(palette.tertiaryColor)
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(palette.raisedColor)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous)
+                .stroke(palette.borderColor, lineWidth: 1)
+        }
+        .opacity(0.7)
+        .accessibilityLabel("\(error.file): \(error.reason)")
+    }
+
+    private func selectCustomTheme(_ definition: TailSyncThemeDefinition) {
+        let value = "custom:\(definition.id)"
+        guard settings.color_theme != value else { return }
+        settings.color_theme = value
+        loc.colorTheme = value
+        save()
+    }
+
+    private func importCustomTheme() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = Loc.t("settings.customThemeImportTitle")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { @MainActor in
+            do {
+                try await ApiClient.shared.importTheme(path: url.path)
+                await loc.refreshCustomThemes()
+                saved = true
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                saved = false
+            } catch {
+                actionErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteCustomTheme(_ definition: TailSyncThemeDefinition) {
+        let alert = NSAlert()
+        alert.messageText = Loc.t("settings.customThemeDeleteTitle")
+        alert.informativeText = definition.localizedName(preferred: loc.lang)
+        alert.addButton(withTitle: Loc.t("settings.customThemeDelete"))
+        alert.addButton(withTitle: Loc.t("common.cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { @MainActor in
+            do {
+                try await ApiClient.shared.deleteTheme(themeId: definition.id)
+                await loc.refreshCustomThemes()
+                // A deleted active theme falls back to the default theme.
+                if settings.color_theme == "custom:\(definition.id)" {
+                    selectColorTheme(.tailsync)
+                }
+            } catch {
+                actionErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func revealCustomThemesFolder() {
+        Task { @MainActor in
+            do {
+                try await ApiClient.shared.revealThemesDir()
+            } catch {
+                actionErrorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func colorThemeButton(_ theme: TailSyncColorTheme) -> some View {
@@ -1404,7 +1670,7 @@ struct SettingsView: View {
             .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .stroke(selected ? palette.accentColor : palette.borderColor,
-                            lineWidth: selected || activeTheme == .highContrast ? 2 : 1)
+                            lineWidth: selected || activeTheme.builtin == .highContrast ? 2 : 1)
             }
         }
         .buttonStyle(.plain)

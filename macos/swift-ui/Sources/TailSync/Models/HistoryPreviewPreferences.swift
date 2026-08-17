@@ -10,4 +10,9 @@ enum HistoryPreviewPreferences {
         guard value.isFinite else { return defaultTextFontSize }
         return min(maximumTextFontSize, max(minimumTextFontSize, value.rounded()))
     }
+
+    static func textFontSize(afterModifierScroll delta: CGFloat, current: Double) -> Double {
+        guard delta != 0 else { return clampedTextFontSize(current) }
+        return clampedTextFontSize(current + (delta > 0 ? 1 : -1))
+    }
 }

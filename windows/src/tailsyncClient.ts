@@ -412,3 +412,135 @@ export function suspendSyncShortcut(): Promise<void> {
 export function resumeSyncShortcut(): Promise<void> {
   return invoke<void>("resume_sync_shortcut");
 }
+
+// ---------------------------------------------------------------------------
+// Custom themes (T005)
+// ---------------------------------------------------------------------------
+
+/** One palette colour: a `#rrggbb` hex plus an optional opacity. */
+export interface ThemeColorSpec {
+  hex: string;
+  opacity?: number | null;
+}
+
+/** The 24 colour tokens of THEMING.md §2.2 (camelCase field names). */
+export interface ThemePalette {
+  brand: ThemeColorSpec;
+  brandHover: ThemeColorSpec;
+  brandSoft: ThemeColorSpec;
+  brandText: ThemeColorSpec;
+  bgWindow: ThemeColorSpec;
+  bgCard: ThemeColorSpec;
+  bgInput: ThemeColorSpec;
+  bgHover: ThemeColorSpec;
+  bgActive: ThemeColorSpec;
+  bgRaised: ThemeColorSpec;
+  bgToast: ThemeColorSpec;
+  textPrimary: ThemeColorSpec;
+  textSecondary: ThemeColorSpec;
+  textTertiary: ThemeColorSpec;
+  textToast: ThemeColorSpec;
+  border: ThemeColorSpec;
+  borderStrong: ThemeColorSpec;
+  divider: ThemeColorSpec;
+  green: ThemeColorSpec;
+  greenSoft: ThemeColorSpec;
+  orange: ThemeColorSpec;
+  orangeSoft: ThemeColorSpec;
+  purple: ThemeColorSpec;
+  purpleSoft: ThemeColorSpec;
+}
+
+export interface ThemeMetrics {
+  cardRadius: number;
+  controlRadius: number;
+  rowPadding: number;
+  shadowRadius: number;
+}
+
+export interface ThemeTypography {
+  sectionTitleSize: number;
+  uppercasesSectionTitles: boolean;
+  searchSize: number;
+  searchUsesDisplayFont: boolean;
+  historyContentSize: number;
+}
+
+export interface ThemeFonts {
+  display?: string | null;
+  reading?: string | null;
+}
+
+export interface ThemeStructural {
+  borderRadius?: number | null;
+  shadow?: boolean | null;
+  [key: string]: unknown;
+}
+
+/** One validated custom theme as returned by the daemon. */
+export interface ThemeEntry {
+  id: string;
+  name: Record<string, string>;
+  file: string;
+  palette: { light: ThemePalette; dark: ThemePalette };
+  metrics: ThemeMetrics;
+  typography: ThemeTypography;
+  fonts: ThemeFonts;
+  structural?: ThemeStructural | null;
+  background?: ThemeEntryBackground | null;
+}
+
+/** Background metadata per theme entry: presence/scrim/MIME only — never
+ * image bytes (the payload is fetched on demand via getThemeBackground). */
+export interface ThemeEntryBackground {
+  light?: ThemeBackgroundMeta | null;
+  dark?: ThemeBackgroundMeta | null;
+}
+
+export interface ThemeBackgroundMeta {
+  hasImage: boolean;
+  scrim?: ThemeColorSpec | null;
+  mimeType?: string | null;
+}
+
+/** Decoded background image payload as returned by the daemon (validated
+ * bytes + validated MIME type). */
+export interface ThemeBackgroundPayload {
+  mimeType: string;
+  dataB64: string;
+}
+
+/** Error marker for a theme file that was skipped by the daemon. */
+export interface ThemeErrorItem {
+  file: string;
+  reason: string;
+}
+
+export interface ThemesListing {
+  builtin: { id: string }[];
+  custom: ThemeEntry[];
+  errors: ThemeErrorItem[];
+}
+
+export function listThemes(): Promise<ThemesListing> {
+  return invoke<ThemesListing>("list_themes");
+}
+
+export function getThemeBackground(
+  themeId: string,
+  mode: "light" | "dark",
+): Promise<ThemeBackgroundPayload | null> {
+  return invoke<ThemeBackgroundPayload | null>("get_theme_background", { themeId, mode });
+}
+
+export function importTheme(path: string): Promise<ThemeEntry> {
+  return invoke<ThemeEntry>("import_theme", { path });
+}
+
+export function deleteTheme(themeId: string): Promise<void> {
+  return invoke<void>("delete_theme", { themeId });
+}
+
+export function revealThemesDir(): Promise<void> {
+  return invoke<void>("reveal_themes_dir");
+}

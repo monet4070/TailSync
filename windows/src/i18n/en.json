@@ -79,7 +79,6 @@
   "history.preview.retry": "Retry",
   "history.preview.batch": "Batch item",
   "history.preview.restoring": "Restoring...",
-
   "settings.title": "Settings",
   "settings.loading": "Loading...",
   "settings.saved": "Settings saved",
@@ -125,6 +124,15 @@
   "settings.colorTheme.forest": "Ledger",
   "settings.colorTheme.rose": "Aura",
   "settings.colorTheme.high-contrast": "Mono",
+  "settings.customThemes": "Custom themes",
+  "settings.customThemesDescription": "JSON theme files from the themes folder, alongside the built-in set",
+  "settings.customThemeImport": "Import theme",
+  "settings.customThemeImportTitle": "Select a theme file",
+  "settings.customThemeImportFilter": "Theme files",
+  "settings.customThemeOpenFolder": "Open themes folder",
+  "settings.customThemeDelete": "Delete theme",
+  "settings.customThemeInvalid": "Invalid",
+  "settings.customThemeHasBackground": "Background image",
   "settings.language": "Language",
   "settings.connectionsTitle": "Connections & devices",
   "settings.connectionsDescription": "Choose how TailSync finds devices and manage secure pairing",
@@ -187,7 +195,6 @@
   "settings.cancel": "Cancel",
   "settings.confirmed": "Confirmed",
   "settings.codesMatch": "Codes match",
-
   "settings.storage": "Storage",
   "settings.storageDescription": "History and file transfer data",
   "settings.storageChoose": "Choose a parent folder",
@@ -211,7 +218,6 @@
   "settings.updateFailed": "Could not check for updates",
   "settings.updateCheck": "Check for updates",
   "settings.updateInstall": "Install update",
-
   "history.stopTransfer": "Stop",
   "history.files": "files",
   "history.copyAll": "Copy all",
@@ -223,5 +229,6 @@
   "tray.history": "History",
   "tray.settings": "Settings",
   "tray.quit": "Quit",
-  "tray.tooltip": "TailSync"
+  "tray.tooltip": "TailSync",
+  "settings.colorThemeMissing": "The selected custom theme is missing from the themes folder. The default theme is applied instead."
 }

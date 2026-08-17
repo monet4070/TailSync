@@ -104,6 +104,7 @@ assertTreeMatch('src-tauri/src', [
   'network/health.rs',
   'network/peer_cache.rs',
   'network/tailscale.rs',
+  'preview_window.rs',
   'tray.rs',
 ]);
 for (const path of [

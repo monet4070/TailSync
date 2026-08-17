@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 vi.mock("../hooks/useTheme", () => ({
-  useTheme: () => ({ theme: "light", colorTheme: "tailsync" }),
+  useTheme: () => ({ theme: "light", colorTheme: "tailsync", resolvedColorTheme: "tailsync" }),
 }));
 vi.mock("../hooks/useI18n", () => ({
   useI18n: () => ({ t: (key: string) => key }),

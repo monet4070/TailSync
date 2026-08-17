@@ -79,7 +79,6 @@
   "history.preview.retry": "重试",
   "history.preview.batch": "批次项目",
   "history.preview.restoring": "正在恢复...",
-
   "settings.title": "设置",
   "settings.loading": "加载中...",
   "settings.saved": "设置已保存",
@@ -125,6 +124,15 @@
   "settings.colorTheme.forest": "书页 Ledger",
   "settings.colorTheme.rose": "柔光 Aura",
   "settings.colorTheme.high-contrast": "单色 Mono",
+  "settings.customThemes": "自定义主题",
+  "settings.customThemesDescription": "主题文件夹中的 JSON 主题文件，与内置主题并列展示",
+  "settings.customThemeImport": "导入主题",
+  "settings.customThemeImportTitle": "选择主题文件",
+  "settings.customThemeImportFilter": "主题文件",
+  "settings.customThemeOpenFolder": "打开主题文件夹",
+  "settings.customThemeDelete": "删除主题",
+  "settings.customThemeInvalid": "无效",
+  "settings.customThemeHasBackground": "含背景图",
   "settings.language": "语言",
   "settings.connectionsTitle": "连接与设备",
   "settings.connectionsDescription": "选择 TailSync 发现设备的方式并管理安全配对",
@@ -187,7 +195,6 @@
   "settings.cancel": "取消",
   "settings.confirmed": "已确认",
   "settings.codesMatch": "验证码一致",
-
   "settings.storage": "存储",
   "settings.storageDescription": "历史记录和文件传输数据",
   "settings.storageChoose": "选择父目录",
@@ -211,7 +218,6 @@
   "settings.updateFailed": "无法检查更新",
   "settings.updateCheck": "检查更新",
   "settings.updateInstall": "安装更新",
-
   "history.stopTransfer": "停止",
   "history.files": "个文件",
   "history.copyAll": "全部复制",
@@ -223,5 +229,6 @@
   "tray.history": "历史记录",
   "tray.settings": "设置",
   "tray.quit": "退出",
-  "tray.tooltip": "TailSync"
+  "tray.tooltip": "TailSync",
+  "settings.colorThemeMissing": "所选自定义主题在主题文件夹中不存在，已改用默认主题。"
 }

@@ -421,6 +421,63 @@ pub async fn get_image_data(
     }))
 }
 
+/// List the five built-in themes plus every validated custom theme, with
+/// error markers for skipped files (thin wrapper over `tailsync_core`).
+#[command]
+pub async fn list_themes() -> Result<serde_json::Value, String> {
+    Ok(crate::api::themes_listing_payload(
+        &tailsync_core::themes::list_themes(),
+    ))
+}
+
+/// Import a theme file: validate and copy it into the themes directory.
+#[command]
+pub async fn import_theme(path: String) -> Result<tailsync_core::themes::ThemeEntry, String> {
+    tailsync_core::themes::import_theme_file(std::path::Path::new(&path))
+}
+
+/// Delete a custom theme by id.
+#[command]
+pub async fn delete_theme(theme_id: String) -> Result<(), String> {
+    tailsync_core::themes::delete_theme(&theme_id)
+}
+
+/// Fetch the decoded background image of one theme mode (base64 JSON; no
+/// raw-byte IPC channel exists yet — see the preview precedent in
+/// `get_image_data`).
+#[command]
+pub async fn get_theme_background(
+    theme_id: String,
+    mode: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let light = match mode.as_str() {
+        "light" => true,
+        "dark" => false,
+        _ => {
+            return Err(format!(
+                "invalid mode {mode:?} (expected \"light\" or \"dark\")"
+            ))
+        }
+    };
+    match tailsync_core::themes::theme_background(&theme_id, light) {
+        Ok(Some(image)) => {
+            use base64::Engine;
+            Ok(Some(serde_json::json!({
+                "mimeType": image.mime_type.mime_type(),
+                "dataB64": base64::engine::general_purpose::STANDARD.encode(&image.data),
+            })))
+        }
+        Ok(None) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Reveal the themes directory in the platform file manager.
+#[command]
+pub async fn reveal_themes_dir() -> Result<(), String> {
+    crate::api::reveal_themes_dir()
+}
+
 /// Get current file transfer progress (for progress bar)
 #[command]
 pub async fn get_file_progress() -> Result<serde_json::Value, String> {

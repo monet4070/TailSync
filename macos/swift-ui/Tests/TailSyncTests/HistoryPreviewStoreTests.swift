@@ -12,6 +12,23 @@ final class HistoryPreviewStoreTests: XCTestCase {
         return url
     }
 
+    private func docxFixture() -> Data {
+        Data([0x50, 0x4B, 0x03, 0x04])
+            + Data("[Content_Types].xml word/document.xml".utf8)
+            + Data([0x50, 0x4B, 0x05, 0x06])
+    }
+
+    private func pptxFixture() -> Data {
+        Data([0x50, 0x4B, 0x03, 0x04])
+            + Data("[Content_Types].xml ppt/presentation.xml".utf8)
+            + Data([0x50, 0x4B, 0x05, 0x06])
+    }
+
+    private func legacyPptFixture() -> Data {
+        Data([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1])
+            + Data(repeating: 0, count: 32)
+    }
+
     func testSanitizedNameCannotEscapeAsPathOrControlCharacter() {
         let unsafe = "../absolute/path\u{00}\u{1F}\\secret.txt"
         let sanitized = HistoryPreviewStore.sanitizedFileName(unsafe)
@@ -152,11 +169,12 @@ final class HistoryPreviewStoreTests: XCTestCase {
         let store = HistoryPreviewStore(directory: directory)
         let session = HistoryPreviewSession(store: store)
 
+        let docx = docxFixture()
         let filePreview = HistoryPreviewData(
             kind: "file",
             name: "document.docx",
-            sizeBytes: 4,
-            data: Data([80, 75, 3, 4])
+            sizeBytes: Int64(docx.count),
+            data: docx
         )
         try session.open(filePreview)
         let fileURL = try XCTUnwrap(session.fileURL)
@@ -198,10 +216,11 @@ final class HistoryPreviewStoreTests: XCTestCase {
             data: packed
         )
 
-        guard case .image(let png) = try store.materialize(preview) else {
+        guard case .image(let imageMaterial) = try store.materialize(preview) else {
             return XCTFail("image previews must remain in memory")
         }
-        XCTAssertEqual(Array(png.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10])
+        XCTAssertEqual(Array(imageMaterial.data.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10])
+        XCTAssertFalse(imageMaterial.image.representations.isEmpty)
         XCTAssertEqual(
             try FileManager.default.contentsOfDirectory(
                 at: directory,
@@ -217,7 +236,13 @@ final class HistoryPreviewStoreTests: XCTestCase {
         let store = HistoryPreviewStore(directory: directory)
 
         let pdf = PDFDocument()
+        // PDFPage(image:) requires actual pixels — a bare NSImage(size:)
+        // has no representation and yields nil.
         let image = NSImage(size: NSSize(width: 2, height: 2))
+        image.lockFocus()
+        NSColor.black.setFill()
+        NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+        image.unlockFocus()
         pdf.insert(try XCTUnwrap(PDFPage(image: image)), at: 0)
         let pdfData = try XCTUnwrap(pdf.dataRepresentation())
         let pdfPreview = HistoryPreviewData(
@@ -229,14 +254,18 @@ final class HistoryPreviewStoreTests: XCTestCase {
         guard case .pdf(let materializedPdf) = try store.materialize(pdfPreview) else {
             return XCTFail("PDF previews must remain in memory")
         }
-        XCTAssertEqual(materializedPdf, pdfData)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(materializedPdf.data, pdfData)
+        XCTAssertEqual(materializedPdf.document.pageCount, 1)
+        // The PDF never touched disk: the store directory (created by the
+        // fixture) still contains no files.
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
 
+        let docx = docxFixture()
         let docxPreview = HistoryPreviewData(
             kind: "file",
             name: "document.docx",
-            sizeBytes: 4,
-            data: Data([80, 75, 3, 4])
+            sizeBytes: Int64(docx.count),
+            data: docx
         )
         guard case .quickLook(let url) = try store.materialize(docxPreview) else {
             return XCTFail("DOCX previews need the Quick Look fallback")
@@ -247,6 +276,57 @@ final class HistoryPreviewStoreTests: XCTestCase {
             0o600
         )
         try store.remove(url)
+
+        let malformedDocx = HistoryPreviewData(
+            kind: "file",
+            name: "malformed.docx",
+            sizeBytes: 4,
+            data: Data([80, 75, 3, 4])
+        )
+        XCTAssertThrowsError(try store.materialize(malformedDocx)) { error in
+            XCTAssertEqual(error as? HistoryPreviewStoreError, .invalidDocument)
+        }
+    }
+
+    func testPowerPointMaterializesToPrivateQuickLookFilesAndRejectsWrongSignatures() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HistoryPreviewStore(directory: directory)
+        let fixtures = [
+            ("slides.pptx", pptxFixture()),
+            ("slides.ppt", legacyPptFixture())
+        ]
+
+        for (name, data) in fixtures {
+            let preview = HistoryPreviewData(
+                kind: "file",
+                name: name,
+                sizeBytes: Int64(data.count),
+                data: data
+            )
+            guard case .quickLook(let url) = try store.materialize(preview) else {
+                return XCTFail("\(name) should use the native Quick Look renderer")
+            }
+            XCTAssertEqual(url.pathExtension.lowercased(), (name as NSString).pathExtension)
+            XCTAssertEqual(
+                (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]
+                    as? NSNumber)?.intValue,
+                0o600
+            )
+            try store.remove(url)
+        }
+
+        for name in ["malformed.ppt", "malformed.pptx"] {
+            let malformed = HistoryPreviewData(
+                kind: "file",
+                name: name,
+                sizeBytes: 4,
+                data: Data([0x50, 0x4B, 0x03, 0x04])
+            )
+            XCTAssertThrowsError(try store.materialize(malformed)) { error in
+                XCTAssertEqual(error as? HistoryPreviewStoreError, .invalidDocument)
+            }
+        }
     }
 
     func testRejectsOversizedAndOutsideDeletionTargets() throws {

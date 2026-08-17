@@ -71,7 +71,7 @@ pub enum SettingsValidationError {
     EmptyStorageRoot,
     #[error("theme must be 'system', 'light', or 'dark'")]
     Theme,
-    #[error("color_theme must be 'tailsync', 'ocean', 'forest', 'rose', or 'high-contrast'")]
+    #[error("color_theme must be 'tailsync', 'ocean', 'forest', 'rose', 'high-contrast', or 'custom:<id>'")]
     ColorTheme,
     #[error("connection_mode must be 'auto', 'lan_only', or 'tailscale_only'")]
     ConnectionMode,
@@ -99,15 +99,30 @@ enum ThemeContract {
     Dark,
 }
 
+/// JSON-schema contract for `color_theme`: one of the five built-in ids or
+/// a `custom:{id}` preference whose id follows the theme-id rule.
 #[allow(dead_code)]
-#[derive(schemars::JsonSchema, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum ColorThemeContract {
-    Tailsync,
-    Ocean,
-    Forest,
-    Rose,
-    HighContrast,
+struct ColorThemeContract;
+
+impl schemars::JsonSchema for ColorThemeContract {
+    fn schema_name() -> String {
+        "ColorThemeContract".into()
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            string: Some(Box::new(schemars::schema::StringValidation {
+                pattern: Some(
+                    r"^(tailsync|ocean|forest|rose|high-contrast|custom:[a-z0-9][a-z0-9-]{0,31})$"
+                        .into(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
 }
 
 #[allow(dead_code)]
@@ -242,7 +257,8 @@ impl Settings {
         if !matches!(
             self.color_theme.as_str(),
             "tailsync" | "ocean" | "forest" | "rose" | "high-contrast"
-        ) {
+        ) && !crate::themes::is_custom_theme_preference(&self.color_theme)
+        {
             return Err(SettingsValidationError::ColorTheme);
         }
         if !matches!(
@@ -1737,6 +1753,33 @@ mod tests {
         settings.color_theme = "tailsync".into();
         settings.theme = "sepia".into();
         assert!(settings.validate_user_values().is_err());
+    }
+
+    #[test]
+    fn custom_theme_preferences_are_validated() {
+        let mut settings = Settings {
+            theme: "dark".into(),
+            color_theme: "custom:studio".into(),
+            ..Settings::default()
+        };
+        assert!(settings.validate_user_values().is_ok());
+        settings.color_theme = "custom:0abc".into();
+        assert!(settings.validate_user_values().is_ok());
+        for bad in [
+            "custom:",
+            "custom:Studio",
+            "custom:studio/evil",
+            "custom:",
+            "custom:a".repeat(34).as_str(),
+        ] {
+            settings.color_theme = bad.into();
+            assert!(
+                settings.validate_user_values().is_err(),
+                "value {bad:?} must be rejected"
+            );
+        }
+        settings.color_theme = "tailsync".into();
+        assert!(settings.validate_user_values().is_ok());
     }
 
     #[test]

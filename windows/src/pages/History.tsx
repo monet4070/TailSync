@@ -453,7 +453,7 @@ export function History() {
     };
   }, []);
 
-  const { theme, colorTheme } = useTheme();
+  const { theme, resolvedColorTheme } = useTheme();
   const { t } = useI18n();
   const showActionError = useCallback(() => {
     flashActionError(t("history.actionFailed"));
@@ -852,7 +852,7 @@ export function History() {
 
   return (
     <div
-      className={`app ${theme} theme-${colorTheme}`}
+      className={`app ${theme} theme-${resolvedColorTheme}`}
       data-focused-entry-id={focusedId === null ? undefined : String(focusedId)}
     >
       {/* ── Title bar ── */}

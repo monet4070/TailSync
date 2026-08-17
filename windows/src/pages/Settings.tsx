@@ -1,9 +1,10 @@
-import { useCallback, useState, useEffect, useRef } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   COLOR_THEMES,
+  customThemeId,
   isColorTheme,
   isThemePreference,
   useTheme,
@@ -16,10 +17,13 @@ import type { SettingsData } from "../types/settings.generated";
 import {
   changeStorageLocation,
   deleteOldStorage,
+  deleteTheme,
   forgetPeer,
   getSettings,
   getStorageStatus,
   setHistoryShortcut,
+  importTheme,
+  revealThemesDir,
   setSyncEnabled,
   setSyncShortcut,
   updateSettings,
@@ -27,6 +31,7 @@ import {
   type PeerRoute,
   type StorageMigrationResult,
   type StorageStatus,
+  type ThemeEntry,
 } from "../tailsyncClient";
 import { useConnectionTests } from "../hooks/useConnectionTests";
 import { useDevices } from "../hooks/useDevices";
@@ -53,12 +58,21 @@ import {
   Settings2,
   Sun,
   Trash2,
+  TriangleAlert,
+  Upload,
   Wifi,
   X,
 } from "lucide-react";
 import { ThemeLogo } from "../ThemeLogo";
 import { shortcutKeycaps } from "../utils/shortcut";
 import { pairingAddressForPeer } from "../utils/pairingAddress";
+import { routeSupportsLatencyTest } from "../utils/peerRoute";
+import {
+  backgroundIndicator,
+  colorSpecCssValue,
+  customPreviewStyle,
+  themeDisplayName,
+} from "../utils/themeCss";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -67,10 +81,6 @@ const routeInterfaceLabel = (routeInterface: PeerRoute["interface"]) => {
   if (routeInterface === "iroh") return "Iroh";
   return "Tailscale";
 };
-
-export const routeSupportsLatencyTest = (route: PeerRoute) => (
-  route.interface !== "iroh" || route.rtt_capable === true
-);
 
 const peerCanSync = (peer: PeerDevice) =>
   peer.trusted && peer.enabled && (
@@ -272,8 +282,12 @@ export function Settings() {
     themePreference,
     colorTheme,
     setColorTheme,
+    resolvedColorTheme,
+    customThemes,
+    themeLoadErrors,
+    refreshCustomThemes,
   } = useTheme();
-  const { t, setLocale } = useI18n();
+  const { t, setLocale, locale } = useI18n();
   const toastTimer = useRef<number>(0);
   const settingsRef = useRef<SettingsData | null>(null);
   const saveQueue = useRef(new SerialTaskQueue());
@@ -538,6 +552,61 @@ export function Settings() {
     if (!(await update({ color_theme: value }))) setColorTheme(previous);
   };
 
+  // R003: a stored `custom:{id}` selection whose theme file is missing from
+  // the catalogue falls back to the default theme at apply time
+  // (resolveColorTheme) and the stored value is never rewritten. Surface a
+  // localized warning naming the missing id so the state is not silent.
+  const missingThemeId = useMemo(() => {
+    const custom = customThemeId(colorTheme);
+    if (custom === null) return null;
+    return customThemes.some((entry) => entry.id === custom) ? null : custom;
+  }, [colorTheme, customThemes]);
+
+  const handleImportTheme = async () => {
+    const path = await open({
+      multiple: false,
+      directory: false,
+      title: t("settings.customThemeImportTitle"),
+      filters: [{ name: t("settings.customThemeImportFilter"), extensions: ["json"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      setErrorMessage("");
+      await importTheme(path);
+      refreshCustomThemes();
+      showSavedToast();
+    } catch (error) {
+      setErrorMessage(String(error));
+    }
+  };
+
+  const handleDeleteCustomTheme = async (entry: ThemeEntry) => {
+    const displayName = themeDisplayName(entry, locale);
+    const confirmed = window.confirm(
+      `${t("settings.customThemeDelete")} "${displayName}"?`,
+    );
+    if (!confirmed) return;
+    try {
+      setErrorMessage("");
+      await deleteTheme(entry.id);
+      refreshCustomThemes();
+      // A deleted active theme falls back to the default theme.
+      if (colorTheme === `custom:${entry.id}`) {
+        await handleColorThemeChange("tailsync");
+      }
+    } catch (error) {
+      setErrorMessage(String(error));
+    }
+  };
+
+  const handleRevealThemesDir = async () => {
+    try {
+      await revealThemesDir();
+    } catch (error) {
+      setErrorMessage(String(error));
+    }
+  };
+
   const setGlobalSync = async (enabled: boolean) => {
     const current = settingsRef.current;
     if (!current) return;
@@ -554,7 +623,9 @@ export function Settings() {
     }
   };
 
-  const appClassName = `app ${theme} theme-${colorTheme}`;
+  // Unknown custom theme ids fall back to the default theme at apply time;
+  // the stored value itself is never rewritten (see useTheme).
+  const appClassName = `app ${theme} theme-${resolvedColorTheme}`;
 
   if (!settings) {
     return (
@@ -1132,6 +1203,119 @@ export function Settings() {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="setting-row palette-setting-row custom-themes-row">
+            <div className="setting-row-info">
+              <span>{t("settings.customThemes")}</span>
+              <small>{t("settings.customThemesDescription")}</small>
+            </div>
+            <div
+              className="theme-cards palette-cards custom-palette-cards"
+              role="group"
+              aria-label={t("settings.customThemes")}
+            >
+              {themeLoadErrors.map((error) => (
+                <div
+                  key={error.file}
+                  className="theme-card palette-card custom-theme-card is-invalid"
+                  title={error.reason}
+                >
+                  <div className="palette-card-preview custom-theme-preview invalid" aria-hidden="true">
+                    <span className="palette-preview-rail" />
+                    <span className="palette-preview-title">!</span>
+                    <span className="palette-preview-row row-one" />
+                    <span className="palette-preview-row row-two" />
+                  </div>
+                  <span className="palette-card-label">{error.file}</span>
+                  <span className="custom-theme-invalid-mark">{t("settings.customThemeInvalid")}</span>
+                </div>
+              ))}
+              {customThemes.map((entry) => {
+                const active = colorTheme === `custom:${entry.id}`;
+                const displayName = themeDisplayName(entry, locale);
+                const displayFont = entry.fonts.display ?? undefined;
+                const backgroundScrim = backgroundIndicator(entry);
+                return (
+                  <div
+                    key={entry.id}
+                    className={`theme-card palette-card custom-theme-card${active ? " active" : ""}`}
+                    title={displayName}
+                  >
+                    <button
+                      type="button"
+                      className="custom-theme-select"
+                      onClick={() => void handleColorThemeChange(`custom:${entry.id}`)}
+                      aria-pressed={active}
+                    >
+                      <div
+                        className="palette-card-preview custom-theme-preview"
+                        style={customPreviewStyle(entry)}
+                        aria-hidden="true"
+                      >
+                        <span className="palette-preview-rail" />
+                        <span className="palette-preview-title" style={displayFont ? { fontFamily: displayFont } : undefined}>
+                          {displayName}
+                        </span>
+                        <span className="palette-preview-row row-one" />
+                        <span className="palette-preview-row row-two" />
+                      </div>
+                      <span className="palette-card-label">{displayName}</span>
+                      {backgroundScrim && (
+                        <>
+                          <span className="custom-theme-bg-badge">
+                            {t("settings.customThemeHasBackground")}
+                          </span>
+                          <span
+                            className="custom-theme-bg-strip"
+                            style={{
+                              backgroundColor: colorSpecCssValue(
+                                backgroundScrim.hex,
+                                backgroundScrim.opacity,
+                              ),
+                            }}
+                            aria-hidden="true"
+                          />
+                        </>
+                      )}
+                      {active && (
+                        <Check className="palette-card-check" size={13} strokeWidth={2} aria-hidden="true" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="custom-theme-delete"
+                      onClick={() => void handleDeleteCustomTheme(entry)}
+                      aria-label={`${t("settings.customThemeDelete")} ${displayName}`}
+                      title={`${t("settings.customThemeDelete")} ${displayName}`}
+                    >
+                      <Trash2 size={12} strokeWidth={1.8} aria-hidden="true" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="custom-themes-actions">
+              <button type="button" className="custom-theme-action" onClick={() => void handleImportTheme()}>
+                <Upload size={13} strokeWidth={1.8} aria-hidden="true" />
+                {t("settings.customThemeImport")}
+              </button>
+              <button
+                type="button"
+                className="custom-theme-action"
+                onClick={() => void handleRevealThemesDir()}
+              >
+                <FolderOpen size={13} strokeWidth={1.8} aria-hidden="true" />
+                {t("settings.customThemeOpenFolder")}
+              </button>
+            </div>
+            {missingThemeId !== null && (
+              <div className="custom-theme-missing" role="alert">
+                <TriangleAlert size={13} strokeWidth={1.8} aria-hidden="true" />
+                <span>{t("settings.colorThemeMissing")}</span>
+                <code>{missingThemeId}</code>
+              </div>
+            )}
           </div>
 
           <div className="setting-row">

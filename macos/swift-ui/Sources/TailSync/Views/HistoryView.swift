@@ -2,187 +2,9 @@ import AppKit
 import Foundation
 import SwiftUI
 
-private enum HistoryDateFilter: String, CaseIterable, Identifiable {
-    case all
-    case today
-    case yesterday
-    case last7
-    case last30
-    case thisMonth
-    case custom
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .all: return Loc.t("history.date.all")
-        case .today: return Loc.t("history.date.today")
-        case .yesterday: return Loc.t("history.date.yesterday")
-        case .last7: return Loc.t("history.date.last7")
-        case .last30: return Loc.t("history.date.last30")
-        case .thisMonth: return Loc.t("history.date.thisMonth")
-        case .custom: return Loc.t("history.date.custom")
-        }
-    }
-}
-
 private struct HistoryDateBounds {
     let start: Date?
     let end: Date?
-}
-
-/// A local key monitor is used instead of `.onKeyPress`, which is not
-/// available on the package's macOS 13 deployment target.  The monitor is
-/// attached only while HistoryView is alive and is scoped to its NSWindow, so
-/// typing in Settings or another application is never intercepted.
-private struct HistoryKeyboardMonitor: NSViewRepresentable {
-    @Binding var focusedEntryId: Int64?
-    let entries: [HistoryEntry]
-    let expandedBatchIds: Set<String>
-    let onPreview: (HistoryPreviewRequest) -> Void
-    let onClosePreview: () -> Void
-    let isPreviewVisible: () -> Bool
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> WindowTrackingView {
-        let view = WindowTrackingView(frame: .zero)
-        view.isHidden = true
-        view.onWindowChange = { [weak coordinator = context.coordinator] window in
-            coordinator?.updateWindow(window)
-        }
-        context.coordinator.update(
-            focusedEntryId: $focusedEntryId,
-            entries: entries,
-            expandedBatchIds: expandedBatchIds,
-            onPreview: onPreview,
-            onClosePreview: onClosePreview,
-            isPreviewVisible: isPreviewVisible,
-            window: view.window
-        )
-        context.coordinator.install()
-        return view
-    }
-
-    func updateNSView(_ nsView: WindowTrackingView, context: Context) {
-        context.coordinator.update(
-            focusedEntryId: $focusedEntryId,
-            entries: entries,
-            expandedBatchIds: expandedBatchIds,
-            onPreview: onPreview,
-            onClosePreview: onClosePreview,
-            isPreviewVisible: isPreviewVisible,
-            window: nsView.window
-        )
-    }
-
-    static func dismantleNSView(_ nsView: WindowTrackingView, coordinator: Coordinator) {
-        nsView.onWindowChange = nil
-        coordinator.uninstall()
-    }
-
-    /// A zero-sized representable is still attached to the hosting NSWindow,
-    /// but its `window` is nil during `makeNSView`. Tracking the AppKit
-    /// lifecycle is deterministic and avoids relying on one delayed run-loop
-    /// sample that can fire before SwiftUI finishes attachment.
-    final class WindowTrackingView: NSView {
-        var onWindowChange: ((NSWindow?) -> Void)?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            onWindowChange?(window)
-        }
-    }
-
-    final class Coordinator {
-        private var monitor: Any?
-        private var historyWindow: NSWindow?
-        private var focusedEntryBinding: Binding<Int64?>?
-        private var entries: [HistoryEntry] = []
-        private var expandedBatchIds: Set<String> = []
-        private var onPreview: ((HistoryPreviewRequest) -> Void)?
-        private var onClosePreview: (() -> Void)?
-        private var isPreviewVisible: (() -> Bool)?
-
-        func update(
-            focusedEntryId: Binding<Int64?>,
-            entries: [HistoryEntry],
-            expandedBatchIds: Set<String>,
-            onPreview: @escaping (HistoryPreviewRequest) -> Void,
-            onClosePreview: @escaping () -> Void,
-            isPreviewVisible: @escaping () -> Bool,
-            window: NSWindow?
-        ) {
-            self.focusedEntryBinding = focusedEntryId
-            self.entries = entries
-            self.expandedBatchIds = expandedBatchIds
-            self.onPreview = onPreview
-            self.onClosePreview = onClosePreview
-            self.isPreviewVisible = isPreviewVisible
-            updateWindow(window)
-        }
-
-        func updateWindow(_ window: NSWindow?) {
-            historyWindow = window
-        }
-
-        func install() {
-            guard monitor == nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.handle(event) ?? event
-            }
-        }
-
-        func uninstall() {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-                self.monitor = nil
-            }
-        }
-
-        private func handle(_ event: NSEvent) -> NSEvent? {
-            guard let historyWindow,
-                  event.window === historyWindow else { return event }
-
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            if !modifiers.isDisjoint(with: [.command, .control, .option, .shift]) {
-                return event
-            }
-
-            // Escape always closes an active preview, even when the preview's
-            // close button or another control currently owns first responder.
-            if event.keyCode == 53 {
-                guard isPreviewVisible?() == true else { return event }
-                onClosePreview?()
-                return nil
-            }
-            guard event.keyCode == 49, !event.isARepeat else { return event }
-
-            guard !isTextInput(event.window?.firstResponder),
-                  let focusedEntryId = focusedEntryBinding?.wrappedValue,
-                  let request = historyPreviewRequest(
-                      focusedId: focusedEntryId,
-                      entries: entries,
-                      expandedBatchIds: expandedBatchIds
-                  ) else { return event }
-
-            onPreview?(request)
-            return nil
-        }
-
-        private func isTextInput(_ responder: NSResponder?) -> Bool {
-            responder is NSTextView
-                || responder is NSTextField
-                || responder is NSSearchField
-                || responder is NSComboBox
-        }
-
-        deinit {
-            uninstall()
-        }
-    }
 }
 
 struct HistoryView: View {
@@ -226,8 +48,8 @@ struct HistoryView: View {
     private let collapsedBatchFileLimit = 2
     private let knownCategories = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]
 
-    private var activeTheme: TailSyncColorTheme {
-        TailSyncColorTheme(storedValue: loc.colorTheme)
+    private var activeTheme: TailSyncThemeSelection {
+        TailSyncThemeSelection(storedValue: loc.colorTheme, catalogue: loc.customThemes)
     }
 
     private var palette: TailSyncThemePalette {
@@ -242,10 +64,6 @@ struct HistoryView: View {
         !supportedCategories.isEmpty
     }
 
-    private var dateFilterTitle: String {
-        Loc.t("history.dateFilter")
-    }
-
     private var displayedEntries: [HistoryEntry] {
         var batchPositions: [String: Int] = [:]
         return entries.filter { entry in
@@ -256,14 +74,6 @@ struct HistoryView: View {
             batchPositions[batchId] = position + 1
             return position < collapsedBatchFileLimit
         }
-    }
-
-    private var customStartTitle: String {
-        Loc.t("history.date.start")
-    }
-
-    private var customEndTitle: String {
-        Loc.t("history.date.end")
     }
 
     private func batchCount(_ entry: HistoryEntry) -> Int {
@@ -281,86 +91,19 @@ struct HistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 6) {
-                HStack {
-                    Image(systemName: "magnifyingglass").foregroundColor(palette.tertiaryColor)
-                    TextField(Loc.t("history.search"), text: $keyword)
-                        .textFieldStyle(.plain)
-                        .font(activeTheme.typography.searchUsesDisplayFont
-                              ? activeTheme.displayFont(size: activeTheme.typography.searchSize)
-                              : activeTheme.readingFont(size: activeTheme.typography.searchSize))
-                        .onSubmit { page = 0; load(targetPage: 0) }
-                    if !keyword.isEmpty {
-                        Button { keyword = ""; page = 0; load(targetPage: 0) } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundColor(palette.tertiaryColor)
-                        }.buttonStyle(.plain)
-                    }
-                    Circle()
-                        .fill(daemonOnline ? palette.positiveColor : palette.warningColor)
-                        .frame(width: 7, height: 7)
-                }
-
-                HStack(spacing: 8) {
-                    Picker(Loc.t("history.categoryFilter"), selection: $selectedCategory) {
-                        ForEach(categories, id: \.self) { category in
-                            Text(Loc.t("history.category.\(category)")).tag(category)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                    .disabled(!categoryFilteringSupported)
-                    .onChange(of: selectedCategory) { _ in page = 0; load(targetPage: 0) }
-
-                    Picker(dateFilterTitle, selection: $selectedDateFilter) {
-                        ForEach(HistoryDateFilter.allCases) { filter in
-                            Text(filter.label).tag(filter)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                    .disabled(!dateRangeFilteringSupported)
-                    .onChange(of: selectedDateFilter) { _ in page = 0; load(targetPage: 0) }
-                }
-
-                if dateRangeFilteringSupported && selectedDateFilter == .custom {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(customStartTitle).font(.caption2).foregroundColor(palette.tertiaryColor)
-                            DatePicker(
-                                customStartTitle,
-                                selection: $customStartDate,
-                                in: ...customEndDate,
-                                displayedComponents: .date
-                            )
-                            .labelsHidden()
-                            .onChange(of: customStartDate) { _ in page = 0; load(targetPage: 0) }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(customEndTitle).font(.caption2).foregroundColor(palette.tertiaryColor)
-                            DatePicker(
-                                customEndTitle,
-                                selection: $customEndDate,
-                                in: customStartDate...,
-                                displayedComponents: .date
-                            )
-                            .labelsHidden()
-                            .onChange(of: customEndDate) { _ in page = 0; load(targetPage: 0) }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-            .padding(8)
-            .background(palette.softSurfaceColor)
-            .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous)
-                    .stroke(palette.borderColor, lineWidth: activeTheme == .highContrast ? 2 : 1)
-            }
+            HistoryFilterBar(
+                keyword: $keyword,
+                selectedCategory: $selectedCategory,
+                selectedDateFilter: $selectedDateFilter,
+                customStartDate: $customStartDate,
+                customEndDate: $customEndDate,
+                categories: categories,
+                categoryFilteringSupported: categoryFilteringSupported,
+                dateRangeFilteringSupported: dateRangeFilteringSupported,
+                daemonOnline: daemonOnline,
+                onSubmit: { page = 0; load(targetPage: 0) },
+                onFilterChanged: { page = 0; load(targetPage: 0) }
+            )
             .padding(.horizontal, 12).padding(.top, 8)
 
             if unresolvedMigrationCount > 0 {
@@ -464,15 +207,33 @@ struct HistoryView: View {
                             showsMultipleLabels: multipleLabelsSupported
                         )
                         .contentShape(Rectangle())
-                        // Keep single-click selection simultaneous with the
-                        // established double-click restore gesture.
-                        .simultaneousGesture(
-                            TapGesture(count: 1).onEnded {
-                                focusedEntryId = entry.id
-                            }
-                        )
-                        .onTapGesture(count: 2) { restore(entry.id) }
-                        .onDirectRightClick { delete(entry.id) }
+                        .overlay {
+                            HistoryRowInteraction(
+                                previewRequest: historyPreviewRequest(
+                                    focusedId: entry.id,
+                                    entries: entries,
+                                    expandedBatchIds: expandedBatchIds
+                                ),
+                                onSelect: {
+                                    focusedEntryId = entry.id
+                                },
+                                onRestore: {
+                                    restore(entry.id)
+                                },
+                                onDelete: {
+                                    delete(entry.id)
+                                },
+                                onPreview: { request in
+                                    HistoryPreviewWindowController.shared.present(request)
+                                },
+                                onClosePreview: {
+                                    HistoryPreviewWindowController.shared.close()
+                                },
+                                isPreviewVisible: {
+                                    HistoryPreviewWindowController.shared.isPreviewVisible
+                                }
+                            )
+                        }
                         }
                         .listRowBackground(palette.surfaceColor)
                         .listRowSeparatorTint(palette.dividerColor)
@@ -480,7 +241,7 @@ struct HistoryView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
-                .background(palette.windowColor)
+                .animation(.spring(response: 0.35, dampingFraction: 0.9), value: entries.count)
             }
 
             // Pagination + clear
@@ -506,7 +267,7 @@ struct HistoryView: View {
             .padding(.horizontal, 12)
             .background(palette.surfaceColor)
             .overlay(alignment: .top) {
-                Rectangle().fill(palette.dividerColor).frame(height: activeTheme == .highContrast ? 2 : 1)
+                Rectangle().fill(palette.dividerColor).frame(height: activeTheme.builtin == .highContrast ? 2 : 1)
             }
             .alert(Loc.t("history.confirmClear"), isPresented: $showingClearAlert) {
                 Button(Loc.t("common.cancel"), role: .cancel) {}
@@ -628,24 +389,9 @@ struct HistoryView: View {
                 }
             }
         }
-        .background(palette.windowColor)
-        .background(
-            HistoryKeyboardMonitor(
-                focusedEntryId: $focusedEntryId,
-                entries: entries,
-                expandedBatchIds: expandedBatchIds,
-                onPreview: { request in
-                    HistoryPreviewWindowController.shared.present(request)
-                },
-                onClosePreview: {
-                    HistoryPreviewWindowController.shared.close()
-                },
-                isPreviewVisible: {
-                    HistoryPreviewWindowController.shared.isPreviewVisible
-                }
-            )
-            .frame(width: 0, height: 0)
-        )
+        // The window background (window colour + custom background image +
+        // scrim) is owned by tailSyncThemed(); painting an opaque root
+        // background here would cover it.
         .tailSyncThemed()
     }
 
@@ -861,40 +607,6 @@ struct HistoryView: View {
     }
 }
 
-private extension View {
-    func onDirectRightClick(perform action: @escaping () -> Void) -> some View {
-        overlay(DirectRightClickView(action: action))
-    }
-}
-
-private struct DirectRightClickView: NSViewRepresentable {
-    let action: () -> Void
-
-    func makeNSView(context: Context) -> DirectRightClickNSView {
-        let view = DirectRightClickNSView()
-        view.action = action
-        return view
-    }
-
-    func updateNSView(_ nsView: DirectRightClickNSView, context: Context) {
-        nsView.action = action
-    }
-}
-
-private final class DirectRightClickNSView: NSView {
-    var action: (() -> Void)?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let event = NSApp.currentEvent,
-              event.type == .rightMouseDown || event.type == .rightMouseUp else { return nil }
-        return self
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        action?()
-    }
-}
-
 // ── Row ──────────────────────────────────────────────────────────
 
 struct HistoryRow: View {
@@ -903,7 +615,7 @@ struct HistoryRow: View {
     let isFocused: Bool
     let showsMultipleLabels: Bool
     @State private var thumbnail: NSImage? = nil
-    @Environment(\.tailSyncTheme) private var theme
+    @Environment(\.tailSyncSelection) private var selection
     @Environment(\.tailSyncPalette) private var palette
 
     private var visibleCategoryLabels: [String] {
@@ -916,12 +628,12 @@ struct HistoryRow: View {
                 if entry.type == "image", let thumb = thumbnail {
                     Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
                         .frame(width: 32, height: 32)
-                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
                 } else {
                     Image(systemName: entry.icon).frame(width: 24, height: 24)
                         .foregroundColor(palette.accentColor)
                         .background(palette.accentColor.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
                 }
             }
             .frame(width: 32, height: 32)
@@ -930,20 +642,20 @@ struct HistoryRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(visibleCategoryLabels.map { $0.uppercased() }.joined(separator: "  \u{00B7}  "))
-                        .font(theme.readingFont(size: 10, weight: .semibold))
+                        .font(selection.readingFont(size: 10, weight: .semibold))
                         .foregroundColor(palette.accentColor).padding(.horizontal, 4).padding(.vertical, 1)
                         .background(palette.accentColor.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
                         .fixedSize(horizontal: false, vertical: true)
                         .layoutPriority(1)
                     Text(entry.formattedTime).font(.caption).foregroundColor(palette.tertiaryColor)
                 }
                 Text(entry.description)
-                    .font(theme == .tailsync
-                          ? theme.displayFont(size: theme.typography.historyContentSize)
-                          : theme == .forest
-                              ? theme.displayFont(size: theme.typography.historyContentSize, weight: .medium)
-                              : theme.readingFont(size: theme.typography.historyContentSize, weight: .medium))
+                    .font(selection.builtin == .tailsync
+                          ? selection.displayFont(size: selection.typography.historyContentSize)
+                          : selection.builtin == .forest
+                              ? selection.displayFont(size: selection.typography.historyContentSize, weight: .medium)
+                              : selection.readingFont(size: selection.typography.historyContentSize, weight: .medium))
                     .foregroundColor(palette.primaryColor)
                     .lineLimit(1)
                 HStack(spacing: 6) {
@@ -953,16 +665,16 @@ struct HistoryRow: View {
                 }
             }
         }
-        .padding(.vertical, max(2, (theme.metrics.rowPadding - 6) / 2))
+        .padding(.vertical, max(2, (selection.metrics.rowPadding - 6) / 2))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             isRestored
                 ? palette.accentColor.opacity(0.12)
                 : isFocused ? palette.accentColor.opacity(0.055) : .clear
         )
-        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous)
                 .stroke(
                     isFocused ? palette.accentColor.opacity(0.7) : .clear,
                     lineWidth: isFocused ? 1 : 0

@@ -19,7 +19,16 @@
   position: relative;
   border: 1px solid var(--art-line-strong);
   border-radius: 10px;
-  background: var(--bg-window);
+  /* Layered background: a custom theme may inject an image layer plus a
+     solid scrim (same-colour gradient) on top of it. With neither variable
+     set both layers resolve to `none`/`transparent`, so this renders exactly
+     like the previous `background: var(--bg-window)` shorthand. */
+  background-color: var(--bg-window);
+  background-image:
+    linear-gradient(180deg, var(--art-bg-scrim, transparent) 0%, var(--art-bg-scrim, transparent) 100%),
+    var(--art-bg-image, none);
+  background-size: cover;
+  background-position: center;
   font-family: var(--art-reading);
   font-size: 13px;
   font-weight: 400;

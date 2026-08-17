@@ -2,13 +2,12 @@ import SwiftUI
 
 struct HistoryPreviewView: View {
     @ObservedObject var model: HistoryPreviewViewModel
-    let close: () -> Void
 
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
 
-    private var theme: TailSyncColorTheme {
-        TailSyncColorTheme(storedValue: loc.colorTheme)
+    private var theme: TailSyncThemeSelection {
+        TailSyncThemeSelection(storedValue: loc.colorTheme, catalogue: loc.customThemes)
     }
 
     private var palette: TailSyncThemePalette {
@@ -18,32 +17,44 @@ struct HistoryPreviewView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(palette.dividerColor)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(palette.windowColor)
         .tailSyncThemed()
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if model.batchPositionText != nil {
-                Button(action: model.navigateBackward) {
-                    Image(systemName: "chevron.left")
+                HStack(spacing: 6) {
+                    headerIconButton(
+                        "chevron.left",
+                        help: Loc.t("history.preview.previousItem"),
+                        action: model.navigateBackward
+                    )
+                    .disabled(!model.canNavigateBackward)
+                    headerIconButton(
+                        "chevron.right",
+                        help: Loc.t("history.preview.nextItem"),
+                        action: model.navigateForward
+                    )
+                    .disabled(!model.canNavigateForward)
                 }
-                .disabled(!model.canNavigateBackward)
-                .help(Loc.t("history.preview.previousItem"))
-                Button(action: model.navigateForward) {
-                    Image(systemName: "chevron.right")
-                }
-                .disabled(!model.canNavigateForward)
-                .help(Loc.t("history.preview.nextItem"))
             }
+
+            Image(systemName: "doc.text")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(palette.accentColor)
+                .frame(
+                    width: HistoryPreviewLayoutMetrics.regularControlSize,
+                    height: HistoryPreviewLayoutMetrics.regularControlSize
+                )
+                .background(palette.accentColor.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.currentName)
-                    .font(theme.displayFont(size: 14, weight: .semibold))
+                    .font(theme.displayFont(size: 15, weight: .semibold))
                     .foregroundColor(palette.primaryColor)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -65,20 +76,39 @@ struct HistoryPreviewView: View {
 
             restoreFeedback
             Button(action: model.restoreCurrent) {
-                Image(systemName: "doc.on.clipboard")
+                Label(Loc.t("history.preview.restore"), systemImage: "doc.on.clipboard")
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 2)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
             .disabled(model.restoreState == .restoring)
             .help(Loc.t("history.preview.restore"))
-            Button(action: close) {
-                Image(systemName: "xmark")
-            }
-            .help(Loc.t("history.preview.close"))
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .frame(height: 52)
-        .background(palette.raisedColor)
+        .padding(.horizontal, 16)
+        .frame(height: HistoryPreviewLayoutMetrics.headerHeight)
+        .background(palette.surfaceColor)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(palette.dividerColor).frame(height: 1)
+        }
+    }
+
+    private func headerIconButton(
+        _ systemName: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(
+                    width: HistoryPreviewLayoutMetrics.regularControlSize,
+                    height: HistoryPreviewLayoutMetrics.regularControlSize
+                )
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .help(help)
     }
 
     @ViewBuilder
@@ -135,10 +165,10 @@ struct HistoryPreviewView: View {
             } else {
                 HistoryPreviewTextView(text: text, initiallyCode: format == .code)
             }
-        case .image(let data):
-            HistoryImagePreviewView(data: data)
-        case .pdf(let data):
-            HistoryPDFPreviewView(data: data)
+        case .image(let image):
+            HistoryImagePreviewView(material: image)
+        case .pdf(let pdf):
+            HistoryPDFPreviewView(material: pdf)
         case .quickLook(let url):
             HistoryQuickLookPreviewView(url: url)
         case .unsupported:

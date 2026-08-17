@@ -1,4 +1,6 @@
 import AppKit
+import PDFKit
+import QuickLookUI
 import SwiftUI
 
 /// Sole owner of the independent preview window and its sensitive content.
@@ -19,7 +21,11 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
     private var isApplyingFrame = false
     private var restoreAfterHistoryMiniaturizes = false
 
-    init(viewModel: HistoryPreviewViewModel = HistoryPreviewViewModel()) {
+    // The default is resolved inside the (isolated) initializer body:
+    // `HistoryPreviewViewModel()` is main-actor-isolated and cannot be
+    // evaluated as a default argument from a synchronous nonisolated call.
+    init(viewModel: HistoryPreviewViewModel? = nil) {
+        let viewModel = viewModel ?? HistoryPreviewViewModel()
         self.viewModel = viewModel
         super.init()
         viewModel.onFormatChange = { [weak self] kind in
@@ -105,10 +111,7 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
 
     private func previewWindow() -> HistoryPreviewWindow {
         if let window { return window }
-        let rootView = HistoryPreviewView(
-            model: viewModel,
-            close: { [weak self] in self?.close() }
-        )
+        let rootView = HistoryPreviewView(model: viewModel)
         let hosting = NSHostingController(rootView: rootView)
         let window = HistoryPreviewWindow(contentViewController: hosting)
         window.title = Loc.t("history.preview.title")
@@ -215,7 +218,28 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
     }
 
     deinit {
-        removeHistoryObservers()
+        // deinit is nonisolated; remove the observers inline instead of
+        // calling the actor-isolated helper.
+        let center = NotificationCenter.default
+        historyObservers.forEach(center.removeObserver)
+    }
+}
+
+enum HistoryPreviewWindowKeyPolicy {
+    static func keepsSpaceKey(_ responder: NSResponder?) -> Bool {
+        if let textView = responder as? NSTextView {
+            // Search fields use an editable field editor; the read-only
+            // source viewer intentionally retains Space-to-close.
+            return textView.isEditable
+        }
+        return responder is NSTextField
+            || responder is NSSearchField
+            || responder is NSButton
+            || responder is NSSlider
+            || responder is NSStepper
+            || responder is NSPopUpButton
+            || responder is PDFView
+            || responder is QLPreviewView
     }
 }
 
@@ -241,7 +265,7 @@ private final class HistoryPreviewWindow: NSWindow {
         if event.keyCode == 49,
            modifiers.isDisjoint(with: [.command, .control, .option, .shift]),
            !event.isARepeat,
-           !Self.keepsSpaceKey(firstResponder)
+           !HistoryPreviewWindowKeyPolicy.keepsSpaceKey(firstResponder)
         {
             onClosePreview?()
             return
@@ -249,17 +273,4 @@ private final class HistoryPreviewWindow: NSWindow {
         super.keyDown(with: event)
     }
 
-    private static func keepsSpaceKey(_ responder: NSResponder?) -> Bool {
-        if let textView = responder as? NSTextView {
-            // Search fields use an editable field editor; the read-only
-            // preview text view should still follow Space-to-close.
-            return textView.isEditable
-        }
-        return responder is NSTextField
-            || responder is NSSearchField
-            || responder is NSButton
-            || responder is NSSlider
-            || responder is NSStepper
-            || responder is NSPopUpButton
-    }
 }

@@ -1,6 +1,27 @@
 import AppKit
 import SwiftUI
 
+enum HistoryPreviewModifierScrollPolicy {
+    static func zoomDelta(
+        scrollingDeltaY: CGFloat,
+        modifiers: NSEvent.ModifierFlags,
+        isInsidePreview: Bool
+    ) -> CGFloat? {
+        let deviceModifiers = modifiers.intersection(.deviceIndependentFlagsMask)
+        guard isInsidePreview,
+              !deviceModifiers.isDisjoint(with: [.command, .control]),
+              scrollingDeltaY != 0 else { return nil }
+        return scrollingDeltaY
+    }
+}
+
+/// A local event monitor needs a view only as a geometry/window anchor. It
+/// must never become the hit-test result itself, otherwise a representable
+/// placed behind preview content can swallow button clicks.
+final class HistoryPreviewModifierScrollView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 /// Converts Command/Control + wheel into a local zoom action without
 /// interfering with ordinary document scrolling elsewhere in the window.
 struct HistoryPreviewModifierScrollMonitor: NSViewRepresentable {
@@ -10,18 +31,18 @@ struct HistoryPreviewModifierScrollMonitor: NSViewRepresentable {
         Coordinator(onScroll: onScroll)
     }
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
+    func makeNSView(context: Context) -> HistoryPreviewModifierScrollView {
+        let view = HistoryPreviewModifierScrollView(frame: .zero)
         context.coordinator.attach(to: view)
         return view
     }
 
-    func updateNSView(_ view: NSView, context: Context) {
+    func updateNSView(_ view: HistoryPreviewModifierScrollView, context: Context) {
         context.coordinator.onScroll = onScroll
         context.coordinator.attach(to: view)
     }
 
-    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+    static func dismantleNSView(_ view: HistoryPreviewModifierScrollView, coordinator: Coordinator) {
         coordinator.stop()
     }
 
@@ -45,13 +66,12 @@ struct HistoryPreviewModifierScrollMonitor: NSViewRepresentable {
                       let window = view.window,
                       event.window === window else { return event }
 
-                let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                guard !modifiers.isDisjoint(with: [.command, .control]) else { return event }
                 let localPoint = view.convert(event.locationInWindow, from: nil)
-                guard view.bounds.contains(localPoint) else { return event }
-
-                let delta = event.scrollingDeltaY
-                guard delta != 0 else { return event }
+                guard let delta = HistoryPreviewModifierScrollPolicy.zoomDelta(
+                    scrollingDeltaY: event.scrollingDeltaY,
+                    modifiers: event.modifierFlags,
+                    isInsidePreview: view.bounds.contains(localPoint)
+                ) else { return event }
                 self.onScroll(delta)
                 return nil
             }

@@ -11,6 +11,7 @@ enum HistoryPreviewTextMode: String, CaseIterable, Identifiable {
 struct HistoryPreviewTextView: View {
     let text: String
 
+    @Environment(\.tailSyncPalette) private var palette
     @State private var mode: HistoryPreviewTextMode
     @State private var query = ""
     @State private var wrapsLines = true
@@ -39,7 +40,6 @@ struct HistoryPreviewTextView: View {
                 find: find,
                 copyAll: copyAll
             )
-            Divider()
             HistoryPreviewTextEditor(
                 text: text,
                 isCode: mode == .code,
@@ -49,16 +49,26 @@ struct HistoryPreviewTextView: View {
                 searchRevision: searchRevision,
                 searchDirection: searchDirection
             )
+            .clipped()
+            Divider().overlay(palette.dividerColor)
             HStack(spacing: 12) {
-                Text("\(lineCount) \(Loc.t(\"history.preview.lines\"))")
-                Text("\(characterCount) \(Loc.t(\"history.preview.characters\"))")
+                Text("\(lineCount) \(Loc.t("history.preview.lines"))")
+                Text("\(characterCount) \(Loc.t("history.preview.characters"))")
                 Spacer()
             }
             .font(.caption2)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .frame(height: 26)
+            .foregroundColor(palette.tertiaryColor)
+            .padding(.horizontal, 16)
+            .frame(height: 30)
+            .background(palette.raisedColor)
         }
+        .background(palette.surfaceColor)
+        .background(HistoryPreviewModifierScrollMonitor { delta in
+            fontSize = HistoryPreviewPreferences.textFontSize(
+                afterModifierScroll: delta,
+                current: fontSize
+            )
+        })
     }
 
     private var normalizedFontSizeBinding: Binding<Double> {

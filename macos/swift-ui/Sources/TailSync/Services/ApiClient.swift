@@ -385,8 +385,111 @@ final class ApiClient: @unchecked Sendable {
         _ = try? await request(["cmd": "cancel_file_batch", "batch_id": batchId])
     }
 
+    // ── Custom themes ──────────────────────────────────────────────────
+
+    struct ThemeListing {
+        struct BuiltinItem {
+            let id: String
+        }
+
+        struct ErrorItem {
+            let file: String
+            let reason: String
+        }
+
+        let builtin: [BuiltinItem]
+        let custom: [TailSyncThemeDefinition]
+        let errors: [ErrorItem]
+    }
+
+    /// Fetch the custom-theme catalogue: the five built-in ids, every
+    /// validated custom theme, and error markers for skipped files. A single
+    /// entry that fails to decode drops only itself.
+    func listThemes() async -> ThemeListing? {
+        guard let response = try? await request(["cmd": "list_themes"]),
+              response["ok"] as? Bool == true,
+              let data = response["data"] as? [String: Any],
+              let builtin = data["builtin"] as? [[String: Any]],
+              let custom = data["custom"] as? [[String: Any]],
+              let errors = data["errors"] as? [[String: Any]] else {
+            return nil
+        }
+        var definitions: [TailSyncThemeDefinition] = []
+        for entry in custom {
+            guard let json = try? JSONSerialization.data(withJSONObject: entry),
+                  let definition = try? JSONDecoder().decode(
+                    TailSyncThemeDefinition.self, from: json) else {
+                continue
+            }
+            definitions.append(definition)
+        }
+        var builtinItems: [ThemeListing.BuiltinItem] = []
+        for item in builtin {
+            if let id = item["id"] as? String {
+                builtinItems.append(ThemeListing.BuiltinItem(id: id))
+            }
+        }
+        var errorItems: [ThemeListing.ErrorItem] = []
+        for error in errors {
+            if let file = error["file"] as? String,
+               let reason = error["reason"] as? String {
+                errorItems.append(ThemeListing.ErrorItem(file: file, reason: reason))
+            }
+        }
+        return ThemeListing(builtin: builtinItems, custom: definitions, errors: errorItems)
+    }
+
+    /// Decoded background image payload for one theme mode, fetched on
+    /// demand (never part of the listing). Base64 is decoded here so the
+    /// renderer receives bytes only.
+    struct ThemeBackgroundPayload {
+        let mimeType: String
+        let data: Data
+    }
+
+    func getThemeBackground(themeId: String, mode: String) async -> ThemeBackgroundPayload? {
+        guard let response = try? await request([
+            "cmd": "get_theme_background",
+            "theme_id": themeId,
+            "mode": mode,
+        ]),
+        response["ok"] as? Bool == true,
+        let data = response["data"] as? [String: Any],
+        let mimeType = data["mimeType"] as? String,
+        let dataB64 = data["dataB64"] as? String,
+        let bytes = Data(base64Encoded: dataB64) else {
+            return nil
+        }
+        return ThemeBackgroundPayload(mimeType: mimeType, data: bytes)
+    }
+
     func restoreFileBatch(_ batchId: String) async throws {
         let response = try await request(["cmd": "restore_file_batch", "batch_id": batchId])
+        guard response["ok"] as? Bool == true else {
+            throw ApiError.serverError(response["error"] as? String ?? "unknown")
+        }
+    }
+
+    /// Import a theme file: validate and copy it into the themes directory.
+    /// Throws the daemon's reason on failure.
+    func importTheme(path: String) async throws {
+        let response = try await request(["cmd": "import_theme", "path": path])
+        guard response["ok"] as? Bool == true else {
+            throw ApiError.serverError(response["error"] as? String ?? "unknown")
+        }
+    }
+
+    /// Delete a custom theme by id.
+    func deleteTheme(themeId: String) async throws {
+        let response = try await request(["cmd": "delete_theme", "theme_id": themeId])
+        guard response["ok"] as? Bool == true else {
+            throw ApiError.serverError(response["error"] as? String ?? "unknown")
+        }
+    }
+
+    /// Reveal the themes directory in Finder.
+    func revealThemesDir() async throws {
+        let response = try await request(["cmd": "reveal_themes_dir"])
         guard response["ok"] as? Bool == true else {
             throw ApiError.serverError(response["error"] as? String ?? "unknown")
         }

@@ -110,6 +110,7 @@ struct HistoryPreviewLogicalLineIndex: Equatable {
 final class HistoryPreviewLineNumberRulerView: NSRulerView {
     weak var textView: NSTextView?
     var lineIndex = HistoryPreviewLogicalLineIndex(text: "")
+    var backgroundColor = NSColor.textBackgroundColor
 
     init(textView: NSTextView) {
         self.textView = textView
@@ -129,8 +130,15 @@ final class HistoryPreviewLineNumberRulerView: NSRulerView {
         guard let textView,
               let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer else { return }
-        NSColor.textBackgroundColor.setFill()
-        rect.fill()
+
+        // AppKit can pass a dirty rect that extends beyond the ruler's visible
+        // bounds. Without an explicit clip, filling that rect paints over the
+        // editor and SwiftUI toolbar when the ruler is installed.
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
+        backgroundColor.setFill()
+        bounds.fill()
 
         let visible = scrollView?.contentView.bounds ?? .zero
         let glyphRange = layoutManager.glyphRange(
