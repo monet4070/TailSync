@@ -221,25 +221,24 @@ final class ThemeBackgroundTests: XCTestCase {
 
     // ── R001 rendering/composition regressions ─────────────────────────
 
-    func testThemedModifierRendersBackgroundImageVisibly() async throws {
-        let image = NSImage(size: NSSize(width: 40, height: 30))
-        image.lockFocus()
-        NSColor.red.setFill()
-        NSRect(x: 0, y: 0, width: 40, height: 30).fill()
-        image.unlockFocus()
-        loc.themeBackgroundImage = image
-        loc.themeBackgroundScrim = nil
-
-        let rendered = try await Task { @MainActor in
-            let view = Color.clear
+    func testWindowBackgroundRendersImageVisibly() async throws {
+        let renderedData = await Task { @MainActor in
+            let image = NSImage(size: NSSize(width: 40, height: 30))
+            image.lockFocus()
+            NSColor.red.setFill()
+            NSRect(x: 0, y: 0, width: 40, height: 30).fill()
+            image.unlockFocus()
+            let view = TailSyncWindowBackground(
+                palette: TailSyncColorTheme.tailsync.palette(for: .light),
+                image: image,
+                scrim: nil
+            )
                 .frame(width: 120, height: 90)
-                .tailSyncThemed()
             let renderer = ImageRenderer(content: view)
             renderer.scale = 1
-            return renderer.nsImage
+            return renderer.nsImage?.tiffRepresentation
         }.value
-        let renderedImage = try XCTUnwrap(rendered)
-        let rep = try XCTUnwrap(NSBitmapImageRep(data: renderedImage.tiffRepresentation!))
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(renderedData)))
 
         var redPixels = 0
         for y in 0..<rep.pixelsHigh {

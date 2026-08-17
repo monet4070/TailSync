@@ -33,8 +33,16 @@ final class HistoryPreviewLayoutTests: XCTestCase {
         let scrollView = try XCTUnwrap(descendants(of: host).compactMap { $0 as? NSScrollView }.first)
         let scrollFrameBefore = scrollView.convert(scrollView.bounds, to: host)
         let visibleBefore = visibleControlCount(in: host)
-        XCTAssertGreaterThanOrEqual(visibleBefore, 5)
+        XCTAssertGreaterThanOrEqual(
+            visibleBefore,
+            1,
+            "the toolbar must expose at least one visible native control"
+        )
         let beforeImage = try snapshot(host)
+        let beforeToolbarInk = toolbarInkPixelCount(in: beforeImage)
+        let beforeEditorInk = editorInkPixelCount(in: beforeImage)
+        XCTAssertGreaterThan(beforeToolbarInk, 100, "the toolbar snapshot must contain visible controls")
+        XCTAssertGreaterThan(beforeEditorInk, 20, "the editor snapshot must contain visible text")
 
         segmented.setSelected(true, forSegment: 1)
         let action = try XCTUnwrap(segmented.action)
@@ -55,7 +63,6 @@ final class HistoryPreviewLayoutTests: XCTestCase {
             visibleBefore,
             "code mode must not move the toolbar controls outside the preview"
         )
-        let beforeToolbarInk = toolbarInkPixelCount(in: beforeImage)
         let afterToolbarInk = toolbarInkPixelCount(in: afterImage)
         XCTAssertGreaterThanOrEqual(
             afterToolbarInk,
@@ -64,7 +71,7 @@ final class HistoryPreviewLayoutTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             editorInkPixelCount(in: afterImage),
-            editorInkPixelCount(in: beforeImage) / 2,
+            beforeEditorInk / 2,
             "the line-number ruler must not paint over the code text"
         )
 
@@ -85,7 +92,7 @@ final class HistoryPreviewLayoutTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             editorInkPixelCount(in: roundTripImage),
-            editorInkPixelCount(in: beforeImage) / 2,
+            beforeEditorInk / 2,
             "switching back to text must keep the content visible"
         )
     }

@@ -673,6 +673,29 @@ private struct TailSyncSelectionKey: EnvironmentKey {
     static let defaultValue = TailSyncThemeSelection(builtin: .tailsync)
 }
 
+struct TailSyncWindowBackground: View {
+    let palette: TailSyncThemePalette
+    let image: NSImage?
+    let scrim: Color?
+
+    var body: some View {
+        ZStack {
+            palette.windowColor
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+            }
+            if let scrim {
+                scrim
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
 extension EnvironmentValues {
     var tailSyncTheme: TailSyncColorTheme {
         get { self[TailSyncThemeKey.self] }
@@ -715,20 +738,11 @@ private struct TailSyncThemeModifier: ViewModifier {
                 // then the custom theme's image (cover) and its scrim on
                 // top. With no image loaded this is exactly the previous
                 // `palette.windowColor` background.
-                ZStack {
-                    palette.windowColor
-                    if let image = loc.themeBackgroundImage {
-                        Image(nsImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .clipped()
-                    }
-                    if let scrim = loc.themeBackgroundScrim {
-                        scrim
-                    }
-                }
-                .ignoresSafeArea()
+                TailSyncWindowBackground(
+                    palette: palette,
+                    image: loc.themeBackgroundImage,
+                    scrim: loc.themeBackgroundScrim
+                )
             )
             .task(id: "\(selection.id):\(backgroundMode)") {
                 await loc.loadThemeBackground(for: selection, light: light)
