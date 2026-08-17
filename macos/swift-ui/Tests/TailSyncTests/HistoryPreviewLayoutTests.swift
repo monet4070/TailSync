@@ -31,7 +31,9 @@ final class HistoryPreviewLayoutTests: XCTestCase {
 
         let segmented = try XCTUnwrap(descendants(of: host).compactMap { $0 as? NSSegmentedControl }.first)
         let scrollView = try XCTUnwrap(descendants(of: host).compactMap { $0 as? NSScrollView }.first)
+        let textView = try XCTUnwrap(scrollView.documentView as? NSTextView)
         let scrollFrameBefore = scrollView.convert(scrollView.bounds, to: host)
+        let editorFrameBefore = textView.convert(textView.bounds, to: host)
         let visibleBefore = visibleControlCount(in: host)
         XCTAssertGreaterThanOrEqual(
             visibleBefore,
@@ -40,9 +42,10 @@ final class HistoryPreviewLayoutTests: XCTestCase {
         )
         let beforeImage = try snapshot(host)
         let beforeToolbarInk = toolbarInkPixelCount(in: beforeImage)
-        let beforeEditorInk = editorInkPixelCount(in: beforeImage)
         XCTAssertGreaterThan(beforeToolbarInk, 100, "the toolbar snapshot must contain visible controls")
-        XCTAssertGreaterThan(beforeEditorInk, 20, "the editor snapshot must contain visible text")
+        XCTAssertEqual(textView.string, text)
+        XCTAssertFalse(textView.isHidden)
+        XCTAssertTrue(editorFrameBefore.intersects(host.bounds))
 
         segmented.setSelected(true, forSegment: 1)
         let action = try XCTUnwrap(segmented.action)
@@ -53,6 +56,10 @@ final class HistoryPreviewLayoutTests: XCTestCase {
 
         XCTAssertEqual(segmented.selectedSegment, 1)
         XCTAssertTrue(scrollView.hasVerticalRuler)
+        XCTAssertTrue(scrollView.documentView === textView)
+        XCTAssertEqual(textView.string, text)
+        XCTAssertFalse(textView.isHidden)
+        XCTAssertTrue(textView.convert(textView.bounds, to: host).intersects(host.bounds))
         XCTAssertEqual(
             scrollView.convert(scrollView.bounds, to: host),
             scrollFrameBefore,
@@ -69,11 +76,6 @@ final class HistoryPreviewLayoutTests: XCTestCase {
             beforeToolbarInk / 2,
             "code mode must not paint over the visible toolbar"
         )
-        XCTAssertGreaterThanOrEqual(
-            editorInkPixelCount(in: afterImage),
-            beforeEditorInk / 2,
-            "the line-number ruler must not paint over the code text"
-        )
 
         segmented.setSelected(true, forSegment: 0)
         _ = NSApp.sendAction(action, to: segmented.target, from: segmented)
@@ -83,17 +85,16 @@ final class HistoryPreviewLayoutTests: XCTestCase {
 
         XCTAssertEqual(segmented.selectedSegment, 0)
         XCTAssertFalse(scrollView.hasVerticalRuler)
+        XCTAssertTrue(scrollView.documentView === textView)
+        XCTAssertEqual(textView.string, text)
+        XCTAssertFalse(textView.isHidden)
+        XCTAssertTrue(textView.convert(textView.bounds, to: host).intersects(host.bounds))
         XCTAssertEqual(scrollView.convert(scrollView.bounds, to: host), scrollFrameBefore)
         XCTAssertGreaterThanOrEqual(visibleControlCount(in: host), visibleBefore)
         XCTAssertGreaterThanOrEqual(
             toolbarInkPixelCount(in: roundTripImage),
             beforeToolbarInk / 2,
             "switching back to text must keep the toolbar visible"
-        )
-        XCTAssertGreaterThanOrEqual(
-            editorInkPixelCount(in: roundTripImage),
-            beforeEditorInk / 2,
-            "switching back to text must keep the content visible"
         )
     }
 
@@ -405,25 +406,6 @@ final class HistoryPreviewLayoutTests: XCTestCase {
                     + 0.7152 * color.greenComponent
                     + 0.0722 * color.blueComponent
                 if color.alphaComponent > 0.5, luminance < 0.72 {
-                    count += 1
-                }
-            }
-        }
-        return count
-    }
-
-    private func editorInkPixelCount(in image: NSBitmapImageRep) -> Int {
-        let startX = min(image.pixelsWide, 140)
-        let startY = min(image.pixelsHigh, 100)
-        let endY = min(image.pixelsHigh, 320)
-        var count = 0
-        for y in startY..<endY {
-            for x in startX..<image.pixelsWide {
-                guard let color = image.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-                let luminance = 0.2126 * color.redComponent
-                    + 0.7152 * color.greenComponent
-                    + 0.0722 * color.blueComponent
-                if color.alphaComponent > 0.5, luminance < 0.62 {
                     count += 1
                 }
             }

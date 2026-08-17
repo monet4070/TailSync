@@ -15,13 +15,20 @@ import XCTest
 final class ThemeBackgroundTests: XCTestCase {
     /// Deterministic fetch gate: each call parks on a continuation the test
     /// resumes in the order it chooses.
-    private final class FetchGate {
+    private actor FetchGate {
         var calls: [(id: String, mode: String)] = []
         private var pending: [CheckedContinuation<ApiClient.ThemeBackgroundPayload?, Never>] = []
+        private var waiters: [(
+            count: Int,
+            continuation: CheckedContinuation<Void, Never>
+        )] = []
 
         func fetch(_ id: String, _ mode: String) async -> ApiClient.ThemeBackgroundPayload? {
             calls.append((id, mode))
-            return await withCheckedContinuation { pending.append($0) }
+            return await withCheckedContinuation { continuation in
+                pending.append(continuation)
+                resumeReadyWaiters()
+            }
         }
 
         func resume(_ payload: ApiClient.ThemeBackgroundPayload?) {
@@ -34,7 +41,18 @@ final class ThemeBackgroundTests: XCTestCase {
             pending.removeLast().resume(returning: payload)
         }
 
-        var pendingCount: Int { pending.count }
+        func waitForPending(_ count: Int) async {
+            guard pending.count < count else { return }
+            await withCheckedContinuation { continuation in
+                waiters.append((count, continuation))
+            }
+        }
+
+        private func resumeReadyWaiters() {
+            let ready = waiters.filter { pending.count >= $0.count }
+            waiters.removeAll { pending.count >= $0.count }
+            ready.forEach { $0.continuation.resume() }
+        }
     }
 
     /// Computed (not stored) so Loc.shared is only touched inside test
@@ -47,9 +65,9 @@ final class ThemeBackgroundTests: XCTestCase {
 
     override func setUp() {
         _ = NSApplication.shared  // Loc.reload() -> applyTheme() touches NSApp
-        gate = FetchGate()
-        loc.backgroundFetch = { [weak self] id, mode in
-            guard let self, let gate = self.gate else { return nil }
+        let gate = FetchGate()
+        self.gate = gate
+        loc.backgroundFetch = { id, mode in
             return await gate.fetch(id, mode)
         }
         loc.themeBackgroundImage = nil
@@ -64,15 +82,9 @@ final class ThemeBackgroundTests: XCTestCase {
         loc.themeBackgroundScrim = nil
     }
 
-    /// Deterministically wait until `count` fetch calls are parked on the
-    /// gate (no sleeps).
+    /// Wait until `count` fetch calls are parked on the actor-backed gate.
     private func waitForPending(_ count: Int) async {
-        var spins = 0
-        while gate.pendingCount < count {
-            spins += 1
-            if spins > 10_000 { fatalError("gate never parked (got \(gate.pendingCount))") }
-            await Task.yield()
-        }
+        await gate.waitForPending(count)
     }
 
     /// Compare a scrim colour numerically (the published scrim is built from
@@ -146,7 +158,7 @@ final class ThemeBackgroundTests: XCTestCase {
         XCTAssertNil(loc.themeBackgroundScrim)
 
         // A's result arrives late — it must not resurrect the background.
-        gate.resume(payload())
+        await gate.resume(payload())
         await taskA.value
         XCTAssertNil(loc.themeBackgroundImage, "late A result must not publish")
         XCTAssertNil(loc.themeBackgroundScrim)
@@ -161,13 +173,13 @@ final class ThemeBackgroundTests: XCTestCase {
         await waitForPending(2)
 
         // B (the latest request) completes first and publishes.
-        gate.resumeLatest(payload())
+        await gate.resumeLatest(payload())
         await taskB.value
         XCTAssertNotNil(loc.themeBackgroundImage)
         assertScrim(loc.themeBackgroundScrim, hex: 0x0000AA, opacity: 0.8)
 
         // A completes late — must be dropped.
-        gate.resume(payload())
+        await gate.resume(payload())
         await taskA.value
         XCTAssertNotNil(loc.themeBackgroundImage)
         assertScrim(loc.themeBackgroundScrim, hex: 0x0000AA, opacity: 0.8)
@@ -179,14 +191,14 @@ final class ThemeBackgroundTests: XCTestCase {
 
         let taskA = Task { await loc.loadThemeBackground(for: selectionA, light: true) }
         await waitForPending(1)
-        gate.resume(payload())
+        await gate.resume(payload())
         await taskA.value
         XCTAssertNotNil(loc.themeBackgroundImage, "A published its background")
 
         // B starts and fails (nil payload) — A's image must be cleared.
         let taskB = Task { await loc.loadThemeBackground(for: selectionB, light: true) }
         await waitForPending(1)
-        gate.resume(nil)
+        await gate.resume(nil)
         await taskB.value
         XCTAssertNil(loc.themeBackgroundImage, "failed latest request must clear the stale image")
         XCTAssertNil(loc.themeBackgroundScrim)
@@ -194,7 +206,9 @@ final class ThemeBackgroundTests: XCTestCase {
         // Decode failure of the latest request also clears.
         let taskC = Task { await loc.loadThemeBackground(for: selectionA, light: true) }
         await waitForPending(1)
-        gate.resume(ApiClient.ThemeBackgroundPayload(mimeType: "image/png", data: Data("garbage".utf8)))
+        await gate.resume(
+            ApiClient.ThemeBackgroundPayload(mimeType: "image/png", data: Data("garbage".utf8))
+        )
         await taskC.value
         XCTAssertNil(loc.themeBackgroundImage, "decode failure must clear the stale image")
         XCTAssertNil(loc.themeBackgroundScrim)
@@ -209,12 +223,12 @@ final class ThemeBackgroundTests: XCTestCase {
 
         // The dark request (the latest) completes first and publishes its
         // own scrim.
-        gate.resumeLatest(payload())
+        await gate.resumeLatest(payload())
         await taskDark.value
         assertScrim(loc.themeBackgroundScrim, hex: 0x0000AA, opacity: 0.8)
 
         // The stale light-mode request completes late — must be dropped.
-        gate.resume(payload())
+        await gate.resume(payload())
         await taskLight.value
         assertScrim(loc.themeBackgroundScrim, hex: 0x0000AA, opacity: 0.8)
     }
