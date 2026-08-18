@@ -80,6 +80,28 @@ describe("useThumbnailCache", () => {
     expect(mockedGetImageData).toHaveBeenCalledTimes(2);
   });
 
+  it("retains only thumbnails used by the current page", async () => {
+    mockedGetImageData.mockImplementation(async (id: number) => thumbnail(id));
+    const { result } = renderHook(() => useThumbnailCache(4));
+
+    await act(async () => {
+      result.current.loadThumbnail(1);
+      result.current.loadThumbnail(2);
+      result.current.loadThumbnail(3);
+    });
+    await waitFor(() => expect(result.current.thumbnails.size).toBe(3));
+
+    act(() => result.current.retain(new Set([2])));
+    expect([...result.current.thumbnails.keys()]).toEqual([2]);
+
+    act(() => result.current.retain(new Set([1, 2])));
+    await act(async () => {
+      result.current.loadThumbnail(1);
+    });
+    await waitFor(() => expect(result.current.thumbnails.has(1)).toBe(true));
+    expect(mockedGetImageData).toHaveBeenCalledTimes(4);
+  });
+
   it("releases the in-flight marker on failure so retries work", async () => {
     mockedGetImageData.mockRejectedValueOnce(new Error("boom"));
     mockedGetImageData.mockResolvedValue(thumbnail(1));

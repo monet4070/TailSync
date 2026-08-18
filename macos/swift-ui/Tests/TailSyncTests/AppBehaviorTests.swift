@@ -41,6 +41,24 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertLessThanOrEqual(DaemonShutdownPolicy.pollInterval, 0.05)
     }
 
+    func testNotificationPollerOnlyRefreshesHistoryForHistoryChanges() {
+        XCTAssertTrue(RuntimeNotificationPolicy.shouldRefreshHistory(
+            previousHistoryVersion: nil,
+            currentHistoryVersion: 0,
+            isFirstPoll: true
+        ))
+        XCTAssertFalse(RuntimeNotificationPolicy.shouldRefreshHistory(
+            previousHistoryVersion: 12,
+            currentHistoryVersion: 12,
+            isFirstPoll: false
+        ))
+        XCTAssertTrue(RuntimeNotificationPolicy.shouldRefreshHistory(
+            previousHistoryVersion: 12,
+            currentHistoryVersion: 13,
+            isFirstPoll: false
+        ))
+    }
+
     func testTerminationPreventsAllDaemonActivity() {
         XCTAssertTrue(
             DaemonLifecyclePolicy.allowsDaemonActivity(terminationInProgress: false)
@@ -256,6 +274,24 @@ final class AppBehaviorTests: XCTestCase {
             loc.lang = language
             for key in keys {
                 XCTAssertFalse(Loc.t(key).isEmpty)
+                XCTAssertNotEqual(Loc.t(key), key)
+            }
+        }
+    }
+
+    func testThemeVersionConfirmationStringsExistInBothSupportedLanguages() {
+        let loc = Loc.shared
+        let originalLanguage = loc.lang
+        defer { loc.lang = originalLanguage }
+        let keys = [
+            "settings.themePackageCandidateVersion",
+            "settings.themePackageReplaceTitle",
+            "settings.themePackageDowngradeTitle"
+        ]
+
+        for language in ["en", "zh-CN"] {
+            loc.lang = language
+            for key in keys {
                 XCTAssertNotEqual(Loc.t(key), key)
             }
         }

@@ -17,13 +17,23 @@ export interface ThumbnailData {
 export function useThumbnailCache(maxEntries: number) {
   const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
   const inFlight = useRef<Set<number>>(new Set());
+  const retainedIds = useRef<Set<number> | null>(null);
+  const generation = useRef(0);
 
   const loadThumbnail = useCallback(
     async (id: number) => {
       if (inFlight.current.has(id)) return;
       inFlight.current.add(id);
+      const requestGeneration = generation.current;
       try {
         const resp = await getImageData(id);
+        if (
+          requestGeneration !== generation.current ||
+          (retainedIds.current !== null && !retainedIds.current.has(id))
+        ) {
+          inFlight.current.delete(id);
+          return;
+        }
         if (resp.thumbnail_b64) {
           setThumbnails((current) => {
             const next = new Map(current);
@@ -50,10 +60,23 @@ export function useThumbnailCache(maxEntries: number) {
     [maxEntries],
   );
 
+  const retain = useCallback((ids: Set<number>) => {
+    retainedIds.current = new Set(ids);
+    for (const id of inFlight.current) {
+      if (!ids.has(id)) inFlight.current.delete(id);
+    }
+    setThumbnails((current) => {
+      if ([...current.keys()].every((id) => ids.has(id))) return current;
+      return new Map([...current].filter(([id]) => ids.has(id)));
+    });
+  }, []);
+
   const clear = useCallback(() => {
+    generation.current += 1;
+    retainedIds.current = null;
     inFlight.current.clear();
     setThumbnails(new Map());
   }, []);
 
-  return { thumbnails, loadThumbnail, clear };
+  return { thumbnails, loadThumbnail, retain, clear };
 }

@@ -36,7 +36,7 @@ function validSnapshot(snapshot: PreviewWindowSnapshot | null): snapshot is Prev
 }
 
 export function Preview() {
-  const { theme, colorTheme } = useTheme();
+  const { theme } = useTheme();
   const { t } = useI18n();
   const [target, setTarget] = useState<PreviewTarget | null>(null);
   const [renderFailure, setRenderFailure] = useState<PreviewFailure | null>(null);
@@ -183,8 +183,8 @@ export function Preview() {
   }, [restoreId]);
 
   const appClassName = useMemo(
-    () => `app preview-app ${theme} theme-${colorTheme}`,
-    [colorTheme, theme],
+    () => `app preview-app ${theme}`,
+    [theme],
   );
 
   return (

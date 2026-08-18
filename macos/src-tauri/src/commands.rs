@@ -421,61 +421,156 @@ pub async fn get_image_data(
     }))
 }
 
-/// List the five built-in themes plus every validated custom theme, with
-/// error markers for skipped files (thin wrapper over `tailsync_core`).
-#[command]
-pub async fn list_themes() -> Result<serde_json::Value, String> {
-    Ok(crate::api::themes_listing_payload(
-        &tailsync_core::themes::list_themes(),
-    ))
+fn v2_package(path: &str) -> Result<Vec<u8>, Box<tailsync_core::themes_v2::ThemeError>> {
+    if !path.ends_with(".tailsync-theme") {
+        return Err(Box::new(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_EXTENSION".into(),
+            message: "theme package must end in .tailsync-theme".into(),
+            json_pointer: "/path".into(),
+            platforms: vec!["windows".into(), "macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        }));
+    }
+    std::fs::read(path).map_err(|e| {
+        Box::new(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_IO".into(),
+            message: e.to_string(),
+            json_pointer: "/path".into(),
+            platforms: vec!["windows".into(), "macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        })
+    })
 }
-
-/// Import a theme file: validate and copy it into the themes directory.
 #[command]
-pub async fn import_theme(path: String) -> Result<tailsync_core::themes::ThemeEntry, String> {
-    tailsync_core::themes::import_theme_file(std::path::Path::new(&path))
-}
-
-/// Delete a custom theme by id.
-#[command]
-pub async fn delete_theme(theme_id: String) -> Result<(), String> {
-    tailsync_core::themes::delete_theme(&theme_id)
-}
-
-/// Fetch the decoded background image of one theme mode (base64 JSON; no
-/// raw-byte IPC channel exists yet — see the preview precedent in
-/// `get_image_data`).
-#[command]
-pub async fn get_theme_background(
-    theme_id: String,
+pub async fn validate_theme(
+    path: String,
     mode: String,
-) -> Result<Option<serde_json::Value>, String> {
-    let light = match mode.as_str() {
-        "light" => true,
-        "dark" => false,
-        _ => {
-            return Err(format!(
-                "invalid mode {mode:?} (expected \"light\" or \"dark\")"
-            ))
-        }
-    };
-    match tailsync_core::themes::theme_background(&theme_id, light) {
-        Ok(Some(image)) => {
-            use base64::Engine;
-            Ok(Some(serde_json::json!({
-                "mimeType": image.mime_type.mime_type(),
-                "dataB64": base64::engine::general_purpose::STANDARD.encode(&image.data),
-            })))
-        }
-        Ok(None) => Ok(None),
-        Err(error) => Err(error),
+    high_contrast: bool,
+) -> tailsync_core::themes_v2::ThemeValidation {
+    match v2_package(&path) {
+        Ok(bytes) => tailsync_core::themes_v2::validate_theme_for_platform(
+            &bytes,
+            &mode,
+            "macos",
+            high_contrast,
+        ),
+        Err(error) => tailsync_core::themes_v2::ThemeValidation {
+            valid: false,
+            digest: None,
+            candidate_version: None,
+            preview: None,
+            diagnostics: vec![*error],
+            assets: vec![],
+            compatible: false,
+        },
     }
 }
-
-/// Reveal the themes directory in the platform file manager.
 #[command]
-pub async fn reveal_themes_dir() -> Result<(), String> {
-    crate::api::reveal_themes_dir()
+pub async fn install_theme(
+    path: String,
+    expected_digest: String,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    let package = v2_package(&path).map_err(|error| *error)?;
+    tailsync_core::themes_v2::install_theme(&package, &expected_digest)
+}
+#[command]
+pub async fn update_theme(
+    path: String,
+    expected_digest: String,
+    options: tailsync_core::themes_v2::UpdateThemeOptions,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    let package = v2_package(&path).map_err(|error| *error)?;
+    tailsync_core::themes_v2::update_theme(&package, &expected_digest, options)
+}
+#[command]
+pub async fn rollback_theme(
+    theme_id: String,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::rollback_theme(&theme_id)
+}
+#[command]
+pub async fn delete_theme_v2(
+    theme_id: Option<String>,
+    storage_handle: Option<String>,
+) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+    if let Some(handle) = storage_handle {
+        tailsync_core::themes_v2::delete_theme_by_handle_for_theme(
+            &handle,
+            theme_id.as_deref().unwrap_or(""),
+        )
+    } else if let Some(id) = theme_id {
+        tailsync_core::themes_v2::delete_theme(&id)
+    } else {
+        Err(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_ID".into(),
+            message: "missing theme_id or storage_handle".into(),
+            json_pointer: "".into(),
+            platforms: vec!["macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        })
+    }
+}
+#[command]
+pub async fn list_themes_v2() -> Vec<tailsync_core::themes_v2::ThemeDescriptor> {
+    tailsync_core::themes_v2::list_themes_v2()
+}
+#[command]
+pub async fn get_local_theme_settings() -> tailsync_core::themes_v2::LocalThemeSettings {
+    tailsync_core::themes_v2::get_local_theme_settings()
+}
+#[command]
+pub async fn set_local_theme_settings(
+    settings: tailsync_core::themes_v2::LocalThemeSettings,
+) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::set_local_theme_settings(settings)
+}
+#[command]
+pub async fn resolve_theme(
+    theme_id: String,
+    mode: String,
+    platform: String,
+    high_contrast: bool,
+) -> Result<tailsync_core::themes_v2::ResolvedTheme, tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::resolve_theme(&theme_id, &mode, &platform, high_contrast)
+}
+
+#[command]
+pub async fn get_theme_asset(
+    theme_id: String,
+    digest: String,
+    asset_key: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let (_mime, bytes) = tailsync_core::themes_v2::get_theme_asset(&theme_id, &digest, &asset_key)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[command]
+pub async fn get_theme_asset_slot(
+    theme_id: String,
+    digest: String,
+    slot: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let (_descriptor, bytes) =
+        tailsync_core::themes_v2::get_theme_asset_slot(&theme_id, &digest, &slot)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[command]
+pub async fn preview_theme_asset_slot(
+    path: String,
+    digest: String,
+    slot: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let bytes = v2_package(&path).map_err(|error| *error)?;
+    let (_descriptor, asset) =
+        tailsync_core::themes_v2::get_theme_asset_slot_from_package(&bytes, &digest, &slot)?;
+    Ok(tauri::ipc::Response::new(asset))
 }
 
 /// Get current file transfer progress (for progress bar)

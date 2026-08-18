@@ -1,4 +1,10 @@
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
+#[cfg(target_os = "macos")]
+use std::io::Write;
 use std::io::{Cursor, Read};
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 use std::sync::OnceLock;
 
 use tauri::AppHandle;
@@ -20,7 +26,7 @@ struct PackageMetadata {
     version: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct UpdateInfo {
     pub current_version: String,
     pub version: String,
@@ -84,6 +90,126 @@ pub async fn install_available_update(app: &AppHandle) -> Result<bool, String> {
     validate_update_package(&bytes, &update.version)?;
     update.install(&bytes).map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct HelperResponse {
+    ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn helper_response(result: Result<serde_json::Value, String>) -> HelperResponse {
+    match result {
+        Ok(data) => HelperResponse {
+            ok: true,
+            data: Some(data),
+            error: None,
+        },
+        Err(error) => HelperResponse {
+            ok: false,
+            data: None,
+            error: Some(error),
+        },
+    }
+}
+
+/// Run the updater plugin in a short-lived Tauri process. The normal macOS
+/// daemon deliberately has no WebView/AppHandle, while the updater plugin
+/// still requires one to perform its signed download and installation.
+#[cfg(target_os = "macos")]
+pub fn run_macos_updater_helper(operation: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let operation = operation.to_string();
+    tauri::Builder::default()
+        .plugin(plugin_builder().build())
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let result = match operation.as_str() {
+                    "check" => check_for_update(&handle)
+                        .await
+                        .and_then(|update| serde_json::to_value(update).map_err(|e| e.to_string())),
+                    "install" => install_available_update(&handle)
+                        .await
+                        .and_then(|installed| {
+                            serde_json::to_value(installed).map_err(|e| e.to_string())
+                        }),
+                    _ => Err(format!("Unknown updater operation: {operation}")),
+                };
+                let response = helper_response(result);
+                if let Ok(encoded) = serde_json::to_string(&response) {
+                    println!("{encoded}");
+                    let _ = std::io::stdout().flush();
+                }
+                handle.exit(0);
+            });
+            Ok(())
+        })
+        .run(tauri::generate_context!())?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn invoke_macos_updater_helper(operation: &str) -> Result<HelperResponse, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .arg("--tailsync-updater-helper")
+        .arg(operation)
+        .env_remove("TAILSYNC_PARENT_PID")
+        .env_remove("TAILSYNC_API_TOKEN")
+        .env_remove("TAILSYNC_API_TOKEN_STDIN")
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let timeout = if operation == "install" {
+        std::time::Duration::from_secs(600)
+    } else {
+        std::time::Duration::from_secs(30)
+    };
+    let output = tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| format!("Signed updater helper timed out during {operation}"))?
+        .map_err(|error| format!("Could not start signed updater helper: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let encoded = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            format!("Updater helper returned no response: {}", stderr.trim())
+        })?;
+    let response: HelperResponse = serde_json::from_str(encoded)
+        .map_err(|error| format!("Invalid updater helper response: {error}"))?;
+    if !response.ok {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "Updater helper failed".to_string()));
+    }
+    Ok(response)
+}
+
+#[cfg(target_os = "macos")]
+pub async fn check_for_update_headless() -> Result<Option<UpdateInfo>, String> {
+    let response = invoke_macos_updater_helper("check").await?;
+    response
+        .data
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("Invalid update metadata: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+pub async fn install_available_update_headless() -> Result<bool, String> {
+    let response = invoke_macos_updater_helper("install").await?;
+    response
+        .data
+        .and_then(|value| value.as_bool())
+        .ok_or_else(|| "Updater helper returned no installation result".to_string())
 }
 
 fn validate_metadata(metadata: &[u8], expected_version: &str) -> Result<(), String> {

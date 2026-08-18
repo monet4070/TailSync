@@ -153,6 +153,13 @@ export interface FileProgress {
   can_stop: boolean;
 }
 
+export interface RuntimeSnapshot {
+  revision: number;
+  history_version: number;
+  progress: FileProgress | null;
+  sync_warning: SyncWarning | null;
+}
+
 export type HistoryPageQuery = {
   keyword: string | null;
   category: HistoryCategory | null;
@@ -208,6 +215,14 @@ export function closePreviewWindow(): Promise<void> {
   return invoke<void>("close_preview_window");
 }
 
+export function closeHistoryWindow(): Promise<void> {
+  return invoke<void>("close_history_window");
+}
+
+export function closeSettingsWindow(): Promise<void> {
+  return invoke<void>("close_settings_window");
+}
+
 export function syncPreviewWindowMinimized(minimized: boolean): Promise<void> {
   return invoke<void>("sync_preview_window_minimized", { minimized });
 }
@@ -226,6 +241,13 @@ export function getHistoryPage(query: HistoryPageQuery): Promise<HistoryPageResu
 
 export function getVersion(): Promise<{ version: number }> {
   return invoke<{ version: number }>("get_version");
+}
+
+export function waitRuntimeSnapshot(
+  sinceRevision: number,
+  waitMs = 2_500,
+): Promise<RuntimeSnapshot> {
+  return invoke<RuntimeSnapshot>("wait_runtime_snapshot", { sinceRevision, waitMs });
 }
 
 export function getSyncWarning(): Promise<SyncWarning | null> {
@@ -413,134 +435,96 @@ export function resumeSyncShortcut(): Promise<void> {
   return invoke<void>("resume_sync_shortcut");
 }
 
-// ---------------------------------------------------------------------------
-// Custom themes (T005)
-// ---------------------------------------------------------------------------
-
-/** One palette colour: a `#rrggbb` hex plus an optional opacity. */
-export interface ThemeColorSpec {
-  hex: string;
-  opacity?: number | null;
-}
-
-/** The 24 colour tokens of THEMING.md §2.2 (camelCase field names). */
-export interface ThemePalette {
-  brand: ThemeColorSpec;
-  brandHover: ThemeColorSpec;
-  brandSoft: ThemeColorSpec;
-  brandText: ThemeColorSpec;
-  bgWindow: ThemeColorSpec;
-  bgCard: ThemeColorSpec;
-  bgInput: ThemeColorSpec;
-  bgHover: ThemeColorSpec;
-  bgActive: ThemeColorSpec;
-  bgRaised: ThemeColorSpec;
-  bgToast: ThemeColorSpec;
-  textPrimary: ThemeColorSpec;
-  textSecondary: ThemeColorSpec;
-  textTertiary: ThemeColorSpec;
-  textToast: ThemeColorSpec;
-  border: ThemeColorSpec;
-  borderStrong: ThemeColorSpec;
-  divider: ThemeColorSpec;
-  green: ThemeColorSpec;
-  greenSoft: ThemeColorSpec;
-  orange: ThemeColorSpec;
-  orangeSoft: ThemeColorSpec;
-  purple: ThemeColorSpec;
-  purpleSoft: ThemeColorSpec;
-}
-
-export interface ThemeMetrics {
-  cardRadius: number;
-  controlRadius: number;
-  rowPadding: number;
-  shadowRadius: number;
-}
-
-export interface ThemeTypography {
-  sectionTitleSize: number;
-  uppercasesSectionTitles: boolean;
-  searchSize: number;
-  searchUsesDisplayFont: boolean;
-  historyContentSize: number;
-}
-
-export interface ThemeFonts {
-  display?: string | null;
-  reading?: string | null;
-}
-
-export interface ThemeStructural {
-  borderRadius?: number | null;
-  shadow?: boolean | null;
-  [key: string]: unknown;
-}
-
-/** One validated custom theme as returned by the daemon. */
-export interface ThemeEntry {
+// V2 resolved model. Tokens stay structured until this boundary; renderers
+// receive no theme-supplied CSS or executable text.
+export interface ResolvedThemeV2 {
   id: string;
-  name: Record<string, string>;
-  file: string;
-  palette: { light: ThemePalette; dark: ThemePalette };
-  metrics: ThemeMetrics;
-  typography: ThemeTypography;
-  fonts: ThemeFonts;
-  structural?: ThemeStructural | null;
-  background?: ThemeEntryBackground | null;
+  digest: string;
+  mode: "light" | "dark";
+  highContrast: boolean;
+  tokens: Record<string, unknown>;
+  provenance: Record<string, string>;
+  assetSlots: Record<string, { slot: string; key: string; digest: string; mimeType: string; bytes: number; width: number; height: number }>;
 }
 
-/** Background metadata per theme entry: presence/scrim/MIME only — never
- * image bytes (the payload is fetched on demand via getThemeBackground). */
-export interface ThemeEntryBackground {
-  light?: ThemeBackgroundMeta | null;
-  dark?: ThemeBackgroundMeta | null;
-}
-
-export interface ThemeBackgroundMeta {
-  hasImage: boolean;
-  scrim?: ThemeColorSpec | null;
-  mimeType?: string | null;
-}
-
-/** Decoded background image payload as returned by the daemon (validated
- * bytes + validated MIME type). */
-export interface ThemeBackgroundPayload {
-  mimeType: string;
-  dataB64: string;
-}
-
-/** Error marker for a theme file that was skipped by the daemon. */
-export interface ThemeErrorItem {
-  file: string;
-  reason: string;
-}
-
-export interface ThemesListing {
-  builtin: { id: string }[];
-  custom: ThemeEntry[];
-  errors: ThemeErrorItem[];
-}
-
-export function listThemes(): Promise<ThemesListing> {
-  return invoke<ThemesListing>("list_themes");
-}
-
-export function getThemeBackground(
+export function resolveThemeV2(
   themeId: string,
   mode: "light" | "dark",
-): Promise<ThemeBackgroundPayload | null> {
-  return invoke<ThemeBackgroundPayload | null>("get_theme_background", { themeId, mode });
+  highContrast = false,
+): Promise<ResolvedThemeV2> {
+  return invoke<ResolvedThemeV2>("resolve_theme", { themeId, mode, platform: "windows", highContrast });
 }
 
-export function importTheme(path: string): Promise<ThemeEntry> {
-  return invoke<ThemeEntry>("import_theme", { path });
+export interface ThemeDiagnosticV2 { code: string; message: string; jsonPointer: string; severity: "error" | "warning"; platforms: string[]; recoverable: boolean; fallbackApplied: boolean; }
+
+function themeErrorObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === "string") {
+    try { return themeErrorObject(JSON.parse(value)); } catch { return undefined; }
+  }
+  if (!value || typeof value !== "object") return undefined;
+  return value as Record<string, unknown>;
 }
 
-export function deleteTheme(themeId: string): Promise<void> {
-  return invoke<void>("delete_theme", { themeId });
+/** Retains the complete Core diagnostic when a Tauri command rejects. */
+export function decodeThemeDiagnostic(error: unknown): ThemeDiagnosticV2 | undefined {
+  const queue: unknown[] = [error];
+  const seen = new Set<object>();
+  while (queue.length > 0) {
+    const value = queue.shift();
+    const object = themeErrorObject(value);
+    if (object) {
+      if (seen.has(object)) continue;
+      seen.add(object);
+      if (typeof object.code === "string" && typeof object.message === "string") {
+        return {
+          code: object.code,
+          message: object.message,
+          jsonPointer: typeof object.jsonPointer === "string" ? object.jsonPointer : "",
+          severity: object.severity === "warning" ? "warning" : "error",
+          platforms: Array.isArray(object.platforms)
+            ? object.platforms.filter((platform): platform is string => typeof platform === "string")
+            : [],
+          recoverable: object.recoverable === true,
+          fallbackApplied: object.fallbackApplied === true,
+        };
+      }
+      queue.push(object.data, object.error, object.cause, object.message);
+    }
+  }
+  return undefined;
 }
 
-export function revealThemesDir(): Promise<void> {
-  return invoke<void>("reveal_themes_dir");
+export function formatThemeError(error: unknown): string {
+  const diagnostic = decodeThemeDiagnostic(error);
+  if (diagnostic) {
+    const context = [
+      diagnostic.jsonPointer,
+      diagnostic.platforms.join(", "),
+      diagnostic.recoverable ? "recoverable" : "not recoverable",
+      diagnostic.fallbackApplied ? "fallback applied" : "fallback not applied",
+    ].filter(Boolean).join("; ");
+    return `[${diagnostic.severity}] ${diagnostic.code}: ${diagnostic.message}${context ? ` (${context})` : ""}`;
+  }
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try { return JSON.stringify(error) || "Unknown theme error"; } catch { return "Unknown theme error"; }
+}
+
+export interface ThemeV2Descriptor { id: string; storageHandle: string; source: "builtin" | "custom"; version: string; digest: string; name: Record<string, string>; status: "valid" | "invalid"; resolvedLight?: ResolvedThemeV2; resolvedDark?: ResolvedThemeV2; diagnostics: ThemeDiagnosticV2[]; }
+export interface LocalThemeSettingsV2 { activeThemeId: string; appearance: "light" | "dark" | "system"; highContrast: boolean; }
+export interface UpdateThemeOptions { allowSameVersion?: boolean; allowDowngrade?: boolean; }
+export function listThemesV2(): Promise<ThemeV2Descriptor[]> { return invoke<ThemeV2Descriptor[]>("list_themes_v2"); }
+export interface ThemeValidationV2 { valid: boolean; digest?: string; candidateVersion?: string; preview?: ResolvedThemeV2; diagnostics: ThemeDiagnosticV2[]; }
+export function validateThemeV2(path: string, mode: "light" | "dark" = "light", highContrast = false): Promise<ThemeValidationV2> { return invoke("validate_theme", { path, mode, highContrast }); }
+export function installThemeV2(path: string, expectedDigest: string): Promise<ThemeV2Descriptor> { return invoke("install_theme", { path, expectedDigest }); }
+export function updateThemeV2(path: string, expectedDigest: string, options: UpdateThemeOptions = {}): Promise<ThemeV2Descriptor> { return invoke("update_theme", { path, expectedDigest, options }); }
+export function rollbackThemeV2(themeId: string): Promise<ThemeV2Descriptor> { return invoke("rollback_theme", { themeId }); }
+export function deleteThemeV2(themeId: string, storageHandle?: string): Promise<void> { return invoke("delete_theme_v2", { themeId, storageHandle }); }
+export function getLocalThemeSettingsV2(): Promise<LocalThemeSettingsV2> { return invoke("get_local_theme_settings"); }
+export function setLocalThemeSettingsV2(settings: LocalThemeSettingsV2): Promise<void> { return invoke("set_local_theme_settings", { settings }); }
+export function getThemeAssetSlot(themeId: string, digest: string, slot: string): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("get_theme_asset_slot", { themeId, digest, slot });
+}
+export function previewThemeAssetSlot(path: string, digest: string, slot: string): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("preview_theme_asset_slot", { path, digest, slot });
 }

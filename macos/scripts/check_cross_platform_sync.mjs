@@ -98,6 +98,7 @@ assertTreeMatch('src-tauri/src', [
   'clipboard_file.rs',
   'commands.rs',
   'lib.rs',
+  'sync_adapter.rs',
   'network/lan.rs',
   'network/mdns.rs',
   'network/mod.rs',
@@ -106,6 +107,7 @@ assertTreeMatch('src-tauri/src', [
   'network/tailscale.rs',
   'preview_window.rs',
   'tray.rs',
+  'window_lifecycle.rs',
 ]);
 for (const path of [
   'src-tauri/build.rs',

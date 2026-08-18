@@ -755,6 +755,11 @@ body,
   color: var(--text-tertiary);
   font-size: 20px;
 }
+.preview-empty-icon.has-theme-image {
+  border-color: transparent;
+  color: transparent;
+  background: var(--theme-preview-placeholder-image) center / contain no-repeat;
+}
 
 @keyframes preview-spin { to { transform: rotate(360deg); } }
 

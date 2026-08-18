@@ -31,25 +31,24 @@ enum HistoryDateFilter: String, CaseIterable, Identifiable {
 /// Accent colour is intentionally not used here — emphasis is reserved for
 /// selection, hover and focus (handled by the controls themselves).
 struct FilterChip<Content: View>: View {
+    @ObservedObject private var loc = Loc.shared
     var height: CGFloat = FilterBarMetrics.controlHeight
     var disabled = false
+    var focused = false
     @ViewBuilder var content: () -> Content
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.tailSyncPalette) private var palette
+    @Environment(\.tailSyncSelection) private var selection
     @State private var hovering = false
 
-    private var palette: TailSyncThemePalette {
-        TailSyncThemeSelection(
-            storedValue: Loc.shared.colorTheme,
-            catalogue: Loc.shared.customThemes
-        ).palette(for: colorScheme)
+    private var searchTokens: TailSyncThemeComponentTokens? {
+        let state = disabled ? "disabled" : (focused ? "focus" : (hovering ? "hover" : "default"))
+        return selection.component("search", state: state, scheme: colorScheme)
     }
 
     private var lineWidth: CGFloat {
-        TailSyncThemeSelection(
-            storedValue: Loc.shared.colorTheme,
-            catalogue: Loc.shared.customThemes
-        ).builtin == .highContrast ? 2 : 1
+        focused || selection.builtin == .highContrast ? 2 : 1
     }
 
     var body: some View {
@@ -58,16 +57,21 @@ struct FilterChip<Content: View>: View {
             .padding(.horizontal, 10)
             .background(
                 RoundedRectangle(cornerRadius: FilterBarMetrics.controlRadius, style: .continuous)
-                    .fill(hovering && !disabled ? palette.accentColor.opacity(0.08) : palette.windowColor)
+                    .fill(searchTokens?.backgroundColor ?? (hovering && !disabled ? palette.hoverColor : palette.inputColor))
             )
             .overlay {
                 RoundedRectangle(cornerRadius: FilterBarMetrics.controlRadius, style: .continuous)
-                    .stroke(palette.borderColor, lineWidth: lineWidth)
+                    .stroke(
+                        focused
+                            ? (searchTokens?.focusRingColor ?? palette.accentColor)
+                            : (searchTokens?.borderColor ?? (lineWidth > 1 ? palette.borderStrongColor : palette.borderColor)),
+                        lineWidth: lineWidth
+                    )
             }
             .opacity(disabled ? 0.55 : 1)
             .onHover { hovering = $0 }
-            .animation(.easeOut(duration: 0.12), value: hovering)
-            .animation(.easeOut(duration: 0.12), value: disabled)
+            .animation(loc.reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+            .animation(loc.reduceMotion ? nil : .easeOut(duration: 0.12), value: disabled)
     }
 }
 
@@ -76,6 +80,97 @@ enum FilterBarMetrics {
     static let controlHeight: CGFloat = 28
     static let controlRadius: CGFloat = 7
     static let rowSpacing: CGFloat = 8
+}
+
+enum HistorySearchLayoutPolicy {
+    static let minimumControlHeight: CGFloat = 36
+    static let maximumControlHeight: CGFloat = 56
+
+    static func controlHeight(
+        searchPointSize: CGFloat,
+        interfaceScale: CGFloat
+    ) -> CGFloat {
+        let lineAndCaretHeight = ceil(searchPointSize * interfaceScale * 1.45)
+        return min(maximumControlHeight, max(minimumControlHeight, lineAndCaretHeight))
+    }
+}
+
+struct HistorySearchControl: View {
+    @Binding var keyword: String
+    let onSubmit: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.tailSyncSelection) private var selection
+    @Environment(\.tailSyncPalette) private var palette
+    @FocusState private var focused: Bool
+
+    private var inputTokens: TailSyncThemeComponentTokens? {
+        selection.component("input", state: focused ? "focus" : "default", scheme: colorScheme)
+    }
+
+    private var searchFont: Font {
+        selection.typography.searchUsesDisplayFont
+            ? selection.displayFont(size: selection.typography.searchSize)
+            : selection.readingFont(size: selection.typography.searchSize)
+    }
+
+    private var controlHeight: CGFloat {
+        HistorySearchLayoutPolicy.controlHeight(
+            searchPointSize: selection.typography.searchSize,
+            interfaceScale: selection.interfaceScale
+        )
+    }
+
+    var body: some View {
+        FilterChip(height: controlHeight, focused: focused) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(inputTokens?.iconColor ?? palette.tertiaryColor)
+                    .frame(width: 15, height: 18)
+
+                ZStack(alignment: .leading) {
+                    if keyword.isEmpty {
+                        Text(Loc.t("history.search"))
+                            .font(searchFont)
+                            .foregroundColor(inputTokens?.secondaryTextColor ?? palette.tertiaryColor)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
+                            .allowsTightening(true)
+                            .allowsHitTesting(false)
+                    }
+                    TextField("", text: $keyword)
+                        .textFieldStyle(.plain)
+                        .font(searchFont)
+                        .foregroundColor(inputTokens?.foregroundColor ?? palette.primaryColor)
+                        .lineLimit(1)
+                        .focused($focused)
+                        .onSubmit(onSubmit)
+                        .accessibilityLabel(Loc.t("history.search"))
+                }
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: controlHeight)
+                .clipped()
+                .layoutPriority(1)
+
+                if !keyword.isEmpty {
+                    Button {
+                        keyword = ""
+                        onSubmit()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(inputTokens?.iconColor ?? palette.tertiaryColor)
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Loc.t("history.search"))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: controlHeight)
+            .contentShape(Rectangle())
+        }
+        .frame(maxWidth: .infinity)
+    }
 }
 
 /// A compact, anchored popover body for the filter menus. Each option is a
@@ -89,21 +184,10 @@ struct FilterMenuList: View {
     let onSelect: (String) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.tailSyncPalette) private var palette
+    @Environment(\.tailSyncSelection) private var selection
 
-    private var palette: TailSyncThemePalette {
-        TailSyncThemeSelection(
-            storedValue: Loc.shared.colorTheme,
-            catalogue: Loc.shared.customThemes
-        ).palette(for: colorScheme)
-    }
-
-    private var font: Font {
-        let theme = TailSyncThemeSelection(
-            storedValue: Loc.shared.colorTheme,
-            catalogue: Loc.shared.customThemes
-        )
-        return theme.readingFont(size: 13)
-    }
+    private var font: Font { selection.readingFont(size: 13) }
 
     var body: some View {
         VStack(spacing: 2) {
@@ -130,6 +214,7 @@ private struct FilterMenuRow: View {
     let onSelect: () -> Void
 
     @State private var hovering = false
+    @ObservedObject private var loc = Loc.shared
 
     var body: some View {
         Button(action: onSelect) {
@@ -155,12 +240,12 @@ private struct FilterMenuRow: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isSelected ? palette.accentColor.opacity(0.12) : (hovering ? palette.accentColor.opacity(0.08) : .clear))
+                    .fill(isSelected ? palette.activeColor : (hovering ? palette.hoverColor : .clear))
             )
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.1), value: hovering)
+        .animation(loc.reduceMotion ? nil : .easeOut(duration: 0.1), value: hovering)
     }
 }
 
@@ -192,22 +277,10 @@ struct HistoryFilterBar: View {
     let onFilterChanged: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.tailSyncSelection) private var activeTheme
+    @Environment(\.tailSyncPalette) private var palette
     @State private var dateMenuOpen = false
     @State private var categoryMenuOpen = false
-
-    private var activeTheme: TailSyncThemeSelection {
-        TailSyncThemeSelection(storedValue: Loc.shared.colorTheme, catalogue: Loc.shared.customThemes)
-    }
-
-    private var palette: TailSyncThemePalette {
-        activeTheme.palette(for: colorScheme)
-    }
-
-    private var searchFont: Font {
-        activeTheme.typography.searchUsesDisplayFont
-            ? activeTheme.displayFont(size: 13)
-            : activeTheme.readingFont(size: 13)
-    }
 
     private var selectedCategoryLabel: String {
         Loc.t("history.category.\(selectedCategory)")
@@ -217,30 +290,7 @@ struct HistoryFilterBar: View {
         VStack(spacing: FilterBarMetrics.rowSpacing) {
             // Row 1 — search
             HStack(spacing: 8) {
-                FilterChip {
-                    HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(palette.tertiaryColor)
-                        TextField(Loc.t("history.search"), text: $keyword)
-                            .textFieldStyle(.plain)
-                            .font(searchFont)
-                            .lineLimit(1)
-                            .onSubmit(onSubmit)
-                        if !keyword.isEmpty {
-                            Button {
-                                keyword = ""
-                                onSubmit()
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(palette.tertiaryColor)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(Loc.t("history.search"))
-                        }
-                    }
-                }
+                HistorySearchControl(keyword: $keyword, onSubmit: onSubmit)
                 .frame(maxWidth: .infinity)
 
                 Circle()
@@ -375,11 +425,11 @@ struct HistoryFilterBar: View {
             }
         }
         .padding(8)
-        .background(palette.softSurfaceColor)
+        .background(palette.inputColor)
         .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous)
-                .stroke(palette.borderColor, lineWidth: activeTheme.builtin == .highContrast ? 2 : 1)
+                .stroke(activeTheme.builtin == .highContrast ? palette.borderStrongColor : palette.borderColor, lineWidth: activeTheme.builtin == .highContrast ? 2 : 1)
         }
     }
 }

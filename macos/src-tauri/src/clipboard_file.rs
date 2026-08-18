@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::fs::{self, File};
 #[cfg(target_os = "macos")]
-use std::io::Read;
+use std::io::{Read, Write};
 #[cfg(target_os = "macos")]
 use std::process::{Child, Command, ExitStatus, Stdio};
 #[cfg(target_os = "macos")]
@@ -17,6 +17,80 @@ use std::time::{Duration, Instant};
 const CLIPBOARD_HELPER_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(target_os = "macos")]
 const CLIPBOARD_IMAGE_HELPER_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[cfg(target_os = "macos")]
+pub fn read_clipboard_text() -> Result<String, String> {
+    let bin = resolve_clipboard_helper()
+        .ok_or_else(|| "Bundled clipboard helper was not found".to_string())?;
+    let child = Command::new(bin)
+        .arg("--read-text")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Could not run clipboard text helper: {error}"))?;
+    let (status, output) = wait_for_child(child, CLIPBOARD_HELPER_TIMEOUT)?;
+    if !status.success() {
+        return Err(format!("Clipboard text helper exited with status {status}"));
+    }
+    String::from_utf8(output).map_err(|error| format!("Clipboard text was not UTF-8: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+pub fn write_clipboard_text(text: &str) -> Result<(), String> {
+    let bin = resolve_clipboard_helper()
+        .ok_or_else(|| "Bundled clipboard helper was not found".to_string())?;
+    let mut child = Command::new(bin)
+        .arg("--write-text")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Could not run clipboard text helper: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "Clipboard text helper stdin was unavailable".to_string())?
+        .write_all(text.as_bytes())
+        .map_err(|error| format!("Could not write clipboard text: {error}"))?;
+    let (status, _) = wait_for_child(child, CLIPBOARD_HELPER_TIMEOUT)?;
+    if !status.success() {
+        return Err(format!("Clipboard text helper exited with status {status}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn write_clipboard_image(width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "Clipboard image dimensions overflowed".to_string())?;
+    if width == 0 || height == 0 || rgba.len() != expected {
+        return Err("Clipboard image payload dimensions are invalid".to_string());
+    }
+    let bin = resolve_clipboard_helper()
+        .ok_or_else(|| "Bundled clipboard helper was not found".to_string())?;
+    let mut child = Command::new(bin)
+        .args(["--write-image", &width.to_string(), &height.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Could not run clipboard image helper: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "Clipboard image helper stdin was unavailable".to_string())?
+        .write_all(rgba)
+        .map_err(|error| format!("Could not write clipboard image: {error}"))?;
+    let (status, _) = wait_for_child(child, CLIPBOARD_IMAGE_HELPER_TIMEOUT)?;
+    if !status.success() {
+        return Err(format!(
+            "Clipboard image helper exited with status {status}"
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct ClipboardImageData {

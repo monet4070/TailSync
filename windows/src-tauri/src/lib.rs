@@ -8,6 +8,7 @@ mod preview_window;
 mod sync_adapter;
 mod tray;
 mod updates;
+mod window_lifecycle;
 
 pub use tailsync_core::{
     crypto, db, history_classifier, identity, pairing, protocol, secure, sync,
@@ -201,10 +202,16 @@ fn start_background_notifications(
             .and_then(|entries| entries.first().map(|entry| entry.id))
             .unwrap_or_default();
         let mut last_version = api::get_clipboard_version();
+        let mut last_revision = api::get_runtime_revision();
 
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                revision = api::wait_for_runtime_revision(
+                    last_revision,
+                    std::time::Duration::from_secs(15),
+                ) => {
+                    last_revision = revision;
+                }
                 _ = wait_for_shutdown(&mut shutdown) => return,
             }
             let version = api::get_clipboard_version();
@@ -470,6 +477,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             let initial_shortcuts = state.settings.blocking_lock().clone();
             app.manage(state);
             app.manage(preview_window::PreviewWindowController::default());
+            app.manage(window_lifecycle::TransientWindowController::default());
             if let Err(error) = commands::register_saved_shortcuts(&handle, &initial_shortcuts) {
                 log::warn!("Could not register saved global shortcuts: {error}");
             }
@@ -613,17 +621,26 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::update_settings,
             commands::open_history_window,
             commands::open_settings_window,
+            commands::close_history_window,
+            commands::close_settings_window,
             preview_window::open_preview_window,
             preview_window::get_preview_window_request,
             preview_window::close_preview_window,
             preview_window::sync_preview_window_minimized,
             commands::get_image_data,
             commands::get_preview,
-            commands::list_themes,
-            commands::import_theme,
-            commands::delete_theme,
-            commands::reveal_themes_dir,
-            commands::get_theme_background,
+            commands::validate_theme,
+            commands::install_theme,
+            commands::update_theme,
+            commands::rollback_theme,
+            commands::delete_theme_v2,
+            commands::list_themes_v2,
+            commands::get_local_theme_settings,
+            commands::set_local_theme_settings,
+            commands::resolve_theme,
+            commands::get_theme_asset,
+            commands::get_theme_asset_slot,
+            commands::preview_theme_asset_slot,
             commands::get_file_progress,
             commands::cancel_file_batch,
             commands::get_storage_status,
@@ -632,6 +649,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::delete_old_storage,
             commands::restore_file_batch,
             commands::get_version,
+            commands::wait_runtime_snapshot,
             commands::get_sync_warning,
             commands::get_update_status,
             commands::check_for_update,

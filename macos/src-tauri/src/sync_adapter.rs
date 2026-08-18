@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
+use crate::clipboard::{self, ClipboardRuntime};
 use crate::{api, clipboard_file, crypto, db};
 use tailsync_core::protocol::TransferId;
 use tailsync_core::sync::{FileBatchProgress, ReceivedFile, SyncPlatform};
-use tauri_plugin_notification::NotificationExt;
 
 pub struct TauriSyncPlatform {
-    app: AppHandle,
+    runtime: ClipboardRuntime,
     db: Arc<Mutex<db::HistoryDB>>,
     settings: Arc<Mutex<crypto::Settings>>,
 }
@@ -39,34 +38,26 @@ impl Drop for FileProgressCleanup {
 
 impl TauriSyncPlatform {
     pub fn new(
-        app: AppHandle,
+        runtime: ClipboardRuntime,
         db: Arc<Mutex<db::HistoryDB>>,
         settings: Arc<Mutex<crypto::Settings>>,
     ) -> Self {
-        Self { app, db, settings }
-    }
-
-    fn clipboard(
-        &self,
-    ) -> Result<tauri::State<'_, tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>, String>
-    {
-        self.app
-            .try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
-            .ok_or_else(|| "Clipboard plugin state is unavailable".to_string())
+        Self {
+            runtime,
+            db,
+            settings,
+        }
     }
 }
 
 impl SyncPlatform for TauriSyncPlatform {
     fn write_text(&self, text: &str) -> Result<(), String> {
-        self.clipboard()?
-            .write_text(text.to_string())
+        clipboard::write_clipboard_text(&self.runtime, text)
             .map_err(|error| format!("write_text failed: {error}"))
     }
 
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
-        let image = tauri::image::Image::new(rgba, width, height);
-        self.clipboard()?
-            .write_image(&image)
+        clipboard::write_clipboard_image(&self.runtime, width, height, rgba)
             .map_err(|error| format!("write_image failed: {error}"))
     }
 
@@ -106,7 +97,7 @@ impl SyncPlatform for TauriSyncPlatform {
         device: String,
     ) {
         let db = self.db.clone();
-        let app = self.app.clone();
+        let runtime = self.runtime.clone();
         let settings = self.settings.clone();
         let activation_version = api::get_clipboard_version();
         tauri::async_runtime::spawn(async move {
@@ -147,12 +138,7 @@ impl SyncPlatform for TauriSyncPlatform {
                 Ok(Err(error)) => {
                     log::error!("DB save file batch failed: {error}");
                     if notifications_enabled {
-                        let _ = app
-                            .notification()
-                            .builder()
-                            .title("TailSync")
-                            .body(format!("File batch failed: {error}"))
-                            .show();
+                        notify(&runtime, &format!("File batch failed: {error}"), true);
                     }
                     return;
                 }
@@ -171,14 +157,13 @@ impl SyncPlatform for TauriSyncPlatform {
                         Err(error) => {
                             log::error!("Could not prepare received batch for clipboard: {error}");
                             if notifications_enabled {
-                                let _ = app
-                                    .notification()
-                                    .builder()
-                                    .title("TailSync")
-                                    .body(format!(
+                                notify(
+                                    &runtime,
+                                    &format!(
                                         "Could not place received files on the clipboard: {error}"
-                                    ))
-                                    .show();
+                                    ),
+                                    true,
+                                );
                             }
                             return;
                         }
@@ -189,42 +174,48 @@ impl SyncPlatform for TauriSyncPlatform {
                 } else if let Err(error) = clipboard_file::write_clipboard_files(&clipboard_paths) {
                     log::error!("Could not restore file batch clipboard: {error}");
                     if notifications_enabled {
-                        let _ = app
-                            .notification()
-                            .builder()
-                            .title("TailSync")
-                            .body(format!("Could not update the clipboard: {error}"))
-                            .show();
+                        notify(
+                            &runtime,
+                            &format!("Could not update the clipboard: {error}"),
+                            true,
+                        );
                     }
                     return;
                 }
             }
             if batch_complete && notifications_enabled {
                 let body = format!("Received {} file(s)", names.len());
-                let _ = app
-                    .notification()
-                    .builder()
-                    .title("TailSync")
-                    .body(body)
-                    .show();
+                notify(&runtime, &body, false);
             }
         });
     }
 
     fn file_batch_failed(&self, _batch_id: Option<TransferId>, message: &str) {
         log::error!("File batch failed: {message}");
-        let app = self.app.clone();
+        let runtime = self.runtime.clone();
         let settings = self.settings.clone();
         let message = message.to_string();
         tauri::async_runtime::spawn(async move {
             if settings.lock().await.notifications_enabled {
-                let _ = app
-                    .notification()
-                    .builder()
-                    .title("TailSync")
-                    .body(message)
-                    .show();
+                notify(&runtime, &message, true);
             }
         });
+    }
+}
+
+fn notify(runtime: &ClipboardRuntime, body: &str, is_error: bool) {
+    if let ClipboardRuntime::Tauri(app) = runtime {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app
+            .notification()
+            .builder()
+            .title("TailSync")
+            .body(body)
+            .show();
+    } else if is_error {
+        crate::api::push_runtime_notification("error", body);
+        log::warn!("TailSync notification: {body}");
+    } else {
+        log::info!("TailSync notification: {body}");
     }
 }

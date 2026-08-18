@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct HistoryPreviewView: View {
@@ -5,9 +6,15 @@ struct HistoryPreviewView: View {
 
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var theme: TailSyncThemeSelection {
-        TailSyncThemeSelection(storedValue: loc.colorTheme, catalogue: loc.customThemes)
+        TailSyncThemeSelection(
+            storedValue: loc.colorTheme,
+            catalogue: loc.resolvedV2Themes,
+            reduceTransparency: loc.reduceTransparency,
+            interfaceScale: TailSyncThemeAccessibilityPolicy.interfaceScale(for: dynamicTypeSize)
+        )
     }
 
     private var palette: TailSyncThemePalette {
@@ -124,7 +131,7 @@ struct HistoryPreviewView: View {
                 .foregroundColor(palette.positiveColor)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(palette.positiveColor.opacity(0.1))
+                .background(palette.positiveSoftColor)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         case .failed:
             Text(Loc.t("history.preview.restoreFailed"))
@@ -223,6 +230,8 @@ struct HistoryPreviewView: View {
         VStack(spacing: 12) {
             if showsProgress {
                 ProgressView().controlSize(.regular)
+            } else if let image = loc.themeAssetImages["previewPlaceholder"] {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(width: 72, height: 72)
             } else if let icon {
                 Image(systemName: icon)
                     .font(.system(size: 34))

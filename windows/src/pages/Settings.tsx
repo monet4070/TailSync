@@ -1,29 +1,25 @@
-import { useCallback, useMemo, useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  COLOR_THEMES,
-  customThemeId,
-  isColorTheme,
-  isThemePreference,
-  useTheme,
-  type ColorTheme,
-  type ThemePreference,
-} from "../hooks/useTheme";
+import { useTheme, type ThemePreference } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
 import { LatestRequest, SerialTaskQueue } from "../utils/asyncControl";
 import type { SettingsData } from "../types/settings.generated";
 import {
   changeStorageLocation,
+  closeSettingsWindow,
   deleteOldStorage,
-  deleteTheme,
+  deleteThemeV2,
+  formatThemeError,
   forgetPeer,
   getSettings,
   getStorageStatus,
   setHistoryShortcut,
-  importTheme,
-  revealThemesDir,
+  installThemeV2,
+  listThemesV2,
+  getLocalThemeSettingsV2,
+  setLocalThemeSettingsV2,
+  rollbackThemeV2,
   setSyncEnabled,
   setSyncShortcut,
   updateSettings,
@@ -31,8 +27,15 @@ import {
   type PeerRoute,
   type StorageMigrationResult,
   type StorageStatus,
-  type ThemeEntry,
+  type ThemeV2Descriptor,
 } from "../tailsyncClient";
+import { ThemePackagePreview } from "../components/ThemePackagePreview";
+import {
+  applyThemePackageOperation,
+  validateThemePackageForPreview,
+  type PendingThemePackage,
+  type ThemePackageOperation,
+} from "../utils/themePackageWorkflow";
 import { useConnectionTests } from "../hooks/useConnectionTests";
 import { useDevices } from "../hooks/useDevices";
 import { usePairing } from "../hooks/usePairing";
@@ -46,8 +49,8 @@ import {
   Activity,
   Check,
   ChevronDown,
-  Grid2X2,
   FolderOpen,
+  Grid2X2,
   HardDrive,
   Keyboard,
   Monitor,
@@ -58,7 +61,6 @@ import {
   Settings2,
   Sun,
   Trash2,
-  TriangleAlert,
   Upload,
   Wifi,
   X,
@@ -67,12 +69,6 @@ import { ThemeLogo } from "../ThemeLogo";
 import { shortcutKeycaps } from "../utils/shortcut";
 import { pairingAddressForPeer } from "../utils/pairingAddress";
 import { routeSupportsLatencyTest } from "../utils/peerRoute";
-import {
-  backgroundIndicator,
-  colorSpecCssValue,
-  customPreviewStyle,
-  themeDisplayName,
-} from "../utils/themeCss";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -268,6 +264,10 @@ function ShortcutRecorderDialog({
 /* ── Component ──────────────────────────────────────────────────── */
 
 export function Settings() {
+  const [v2Themes, setV2Themes] = useState<ThemeV2Descriptor[]>([]);
+  const [v2Active, setV2Active] = useState("builtin:canvas@1");
+  const [v2HighContrast, setV2HighContrast] = useState(false);
+  const [pendingThemeImport, setPendingThemeImport] = useState<PendingThemePackage | null>(null);
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [historyLimitDraft, setHistoryLimitDraft] = useState(100);
   const [storageQuotaDraft, setStorageQuotaDraft] = useState("10");
@@ -280,12 +280,6 @@ export function Settings() {
     theme,
     setTheme,
     themePreference,
-    colorTheme,
-    setColorTheme,
-    resolvedColorTheme,
-    customThemes,
-    themeLoadErrors,
-    refreshCustomThemes,
   } = useTheme();
   const { t, setLocale, locale } = useI18n();
   const toastTimer = useRef<number>(0);
@@ -296,6 +290,15 @@ export function Settings() {
     () => settingsRef.current?.sync_shortcut ?? null,
     [],
   );
+  const refreshV2Themes = useCallback(async () => {
+    try {
+      const [themes, local] = await Promise.all([listThemesV2(), getLocalThemeSettingsV2()]);
+      setV2Themes(themes); setV2Active(local.activeThemeId); setV2HighContrast(local.highContrast);
+    } catch {
+      setV2Themes([]);
+    }
+  }, []);
+  useEffect(() => { void refreshV2Themes(); }, [refreshV2Themes]);
   const currentHistoryShortcut = useCallback(
     () => settingsRef.current?.history_shortcut ?? null,
     [],
@@ -374,16 +377,14 @@ export function Settings() {
         setStorageQuotaDraft(String(Math.round(s.storage_quota_bytes / GIB)));
         setSyncShortcutDraft(s.sync_shortcut);
         setHistoryShortcutDraft(s.history_shortcut);
-        if (isThemePreference(s.theme)) setTheme(s.theme);
-        if (isColorTheme(s.color_theme)) setColorTheme(s.color_theme);
+        // Theme selection is intentionally not hydrated from synchronised
+        // AppSettings. useTheme reads Core local-settings.json instead.
         setLocale(s.language);
       })
       .catch(console.error);
     getStorageStatus().then(setStorageStatus).catch(console.error);
   }, [
-    setColorTheme,
     setLocale,
-    setTheme,
     setSyncShortcutDraft,
     setHistoryShortcutDraft,
   ]);
@@ -540,70 +541,77 @@ export function Settings() {
 
   const handleThemeChange = async (value: ThemePreference) => {
     if (value === themePreference) return;
-    const previous = themePreference;
     setTheme(value);
-    if (!(await update({ theme: value }))) setTheme(previous);
   };
 
-  const handleColorThemeChange = async (value: ColorTheme) => {
-    if (value === colorTheme) return;
-    const previous = colorTheme;
-    setColorTheme(value);
-    if (!(await update({ color_theme: value }))) setColorTheme(previous);
-  };
-
-  // R003: a stored `custom:{id}` selection whose theme file is missing from
-  // the catalogue falls back to the default theme at apply time
-  // (resolveColorTheme) and the stored value is never rewritten. Surface a
-  // localized warning naming the missing id so the state is not silent.
-  const missingThemeId = useMemo(() => {
-    const custom = customThemeId(colorTheme);
-    if (custom === null) return null;
-    return customThemes.some((entry) => entry.id === custom) ? null : custom;
-  }, [colorTheme, customThemes]);
-
-  const handleImportTheme = async () => {
+  const chooseThemePackage = async (operation: ThemePackageOperation) => {
     const path = await open({
       multiple: false,
       directory: false,
-      title: t("settings.customThemeImportTitle"),
-      filters: [{ name: t("settings.customThemeImportFilter"), extensions: ["json"] }],
+      title: t(operation.kind === "install" ? "settings.customThemeImportTitle" : "settings.customThemeUpdateTitle"),
+      filters: [{ name: "TailSync V2 theme", extensions: ["tailsync-theme"] }],
     });
     if (typeof path !== "string") return;
     try {
       setErrorMessage("");
-      await importTheme(path);
-      refreshCustomThemes();
+      setPendingThemeImport(await validateThemePackageForPreview(path, operation));
+    } catch (error) {
+      setErrorMessage(formatThemeError(error));
+    }
+  };
+
+  const handleImportTheme = () => chooseThemePackage({ kind: "install" });
+
+  const handleUpdateTheme = (entry: ThemeV2Descriptor) => (
+    chooseThemePackage({ kind: "update", themeId: entry.id, installedVersion: entry.version })
+  );
+
+  const confirmThemeImport = async () => {
+    if (!pendingThemeImport) return;
+    if (pendingThemeImport.operation.kind === "update" && pendingThemeImport.versionRelation !== "upgrade") {
+      const key = pendingThemeImport.versionRelation === "same"
+        ? "settings.customThemeReplaceConfirm"
+        : "settings.customThemeDowngradeConfirm";
+      const versions = `${pendingThemeImport.operation.installedVersion} → ${pendingThemeImport.candidateVersion}`;
+      if (!window.confirm(`${t(key)}\n${versions}`)) return;
+    }
+    try {
+      await applyThemePackageOperation(pendingThemeImport, {
+        install: installThemeV2,
+        refresh: refreshV2Themes,
+      });
+      setPendingThemeImport(null);
       showSavedToast();
     } catch (error) {
-      setErrorMessage(String(error));
+      setErrorMessage(formatThemeError(error));
     }
   };
 
-  const handleDeleteCustomTheme = async (entry: ThemeEntry) => {
-    const displayName = themeDisplayName(entry, locale);
-    const confirmed = window.confirm(
-      `${t("settings.customThemeDelete")} "${displayName}"?`,
-    );
-    if (!confirmed) return;
-    try {
-      setErrorMessage("");
-      await deleteTheme(entry.id);
-      refreshCustomThemes();
-      // A deleted active theme falls back to the default theme.
-      if (colorTheme === `custom:${entry.id}`) {
-        await handleColorThemeChange("tailsync");
-      }
-    } catch (error) {
-      setErrorMessage(String(error));
-    }
+  const selectV2Theme = async (id: string) => {
+    const previous = v2Active;
+    setV2Active(id);
+    try { await setLocalThemeSettingsV2({ activeThemeId: id, appearance: themePreference, highContrast: v2HighContrast }); }
+    catch (error) { setV2Active(previous); setErrorMessage(formatThemeError(error)); }
   };
 
-  const handleRevealThemesDir = async () => {
+  const deleteV2Theme = async (entry: ThemeV2Descriptor) => {
+    if (entry.source !== "custom" && entry.status === "valid") return;
+    if (!window.confirm(`${t("settings.customThemeDelete")} "${entry.name[locale] ?? entry.name.en ?? entry.id}"?`)) return;
     try {
-      await revealThemesDir();
+      await deleteThemeV2(entry.id, entry.storageHandle);
+      await refreshV2Themes();
+    } catch (error) { setErrorMessage(formatThemeError(error)); }
+  };
+
+  const rollbackV2Theme = async (entry: ThemeV2Descriptor) => {
+    if (entry.source !== "custom") return;
+    if (!window.confirm(`${t("settings.customThemeRollbackConfirm")} "${entry.name[locale] ?? entry.name.en ?? entry.id}"?`)) return;
+    try {
+      await rollbackThemeV2(entry.id);
+      await refreshV2Themes();
+      showSavedToast();
     } catch (error) {
-      setErrorMessage(String(error));
+      setErrorMessage(formatThemeError(error));
     }
   };
 
@@ -623,9 +631,7 @@ export function Settings() {
     }
   };
 
-  // Unknown custom theme ids fall back to the default theme at apply time;
-  // the stored value itself is never rewritten (see useTheme).
-  const appClassName = `app ${theme} theme-${resolvedColorTheme}`;
+  const appClassName = `app ${theme}`;
 
   if (!settings) {
     return (
@@ -639,7 +645,7 @@ export function Settings() {
           </div>
           <button
             className="titlebar-close"
-            onClick={() => getCurrentWindow().hide()}
+            onClick={() => void closeSettingsWindow()}
             title={t("settings.closePairing")}
             aria-label={t("settings.closePairing")}
           >
@@ -662,7 +668,7 @@ export function Settings() {
         </div>
         <button
           className="titlebar-close"
-          onClick={() => getCurrentWindow().hide()}
+          onClick={() => void closeSettingsWindow()}
           title={t("settings.closePairing")}
           aria-label={t("settings.closePairing")}
         >
@@ -1181,141 +1187,25 @@ export function Settings() {
               <small>{t("settings.colorThemeDescription")}</small>
             </div>
             <div className="theme-cards palette-cards" role="group" aria-label={t("settings.colorTheme")}>
-              {COLOR_THEMES.map((option) => (
-                <button
-                  type="button"
-                  key={option}
-                  className={`theme-card palette-card${colorTheme === option ? " active" : ""}`}
-                  onClick={() => void handleColorThemeChange(option)}
-                  aria-pressed={colorTheme === option}
-                  title={t(`settings.colorTheme.${option}`)}
-                >
-                  <div className={`palette-card-preview ${option}`} aria-hidden="true">
-                    <span className="palette-preview-rail" />
-                    <span className="palette-preview-title">TailSync</span>
-                    <span className="palette-preview-row row-one" />
-                    <span className="palette-preview-row row-two" />
-                  </div>
-                  <span className="palette-card-label">{t(`settings.colorTheme.${option}`)}</span>
-                  {colorTheme === option && (
-                    <Check className="palette-card-check" size={13} strokeWidth={2} aria-hidden="true" />
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="setting-row palette-setting-row custom-themes-row">
-            <div className="setting-row-info">
-              <span>{t("settings.customThemes")}</span>
-              <small>{t("settings.customThemesDescription")}</small>
-            </div>
-            <div
-              className="theme-cards palette-cards custom-palette-cards"
-              role="group"
-              aria-label={t("settings.customThemes")}
-            >
-              {themeLoadErrors.map((error) => (
-                <div
-                  key={error.file}
-                  className="theme-card palette-card custom-theme-card is-invalid"
-                  title={error.reason}
-                >
-                  <div className="palette-card-preview custom-theme-preview invalid" aria-hidden="true">
-                    <span className="palette-preview-rail" />
-                    <span className="palette-preview-title">!</span>
-                    <span className="palette-preview-row row-one" />
-                    <span className="palette-preview-row row-two" />
-                  </div>
-                  <span className="palette-card-label">{error.file}</span>
-                  <span className="custom-theme-invalid-mark">{t("settings.customThemeInvalid")}</span>
-                </div>
-              ))}
-              {customThemes.map((entry) => {
-                const active = colorTheme === `custom:${entry.id}`;
-                const displayName = themeDisplayName(entry, locale);
-                const displayFont = entry.fonts.display ?? undefined;
-                const backgroundScrim = backgroundIndicator(entry);
-                return (
-                  <div
-                    key={entry.id}
-                    className={`theme-card palette-card custom-theme-card${active ? " active" : ""}`}
-                    title={displayName}
-                  >
-                    <button
-                      type="button"
-                      className="custom-theme-select"
-                      onClick={() => void handleColorThemeChange(`custom:${entry.id}`)}
-                      aria-pressed={active}
-                    >
-                      <div
-                        className="palette-card-preview custom-theme-preview"
-                        style={customPreviewStyle(entry)}
-                        aria-hidden="true"
-                      >
-                        <span className="palette-preview-rail" />
-                        <span className="palette-preview-title" style={displayFont ? { fontFamily: displayFont } : undefined}>
-                          {displayName}
-                        </span>
-                        <span className="palette-preview-row row-one" />
-                        <span className="palette-preview-row row-two" />
-                      </div>
-                      <span className="palette-card-label">{displayName}</span>
-                      {backgroundScrim && (
-                        <>
-                          <span className="custom-theme-bg-badge">
-                            {t("settings.customThemeHasBackground")}
-                          </span>
-                          <span
-                            className="custom-theme-bg-strip"
-                            style={{
-                              backgroundColor: colorSpecCssValue(
-                                backgroundScrim.hex,
-                                backgroundScrim.opacity,
-                              ),
-                            }}
-                            aria-hidden="true"
-                          />
-                        </>
-                      )}
-                      {active && (
-                        <Check className="palette-card-check" size={13} strokeWidth={2} aria-hidden="true" />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      className="custom-theme-delete"
-                      onClick={() => void handleDeleteCustomTheme(entry)}
-                      aria-label={`${t("settings.customThemeDelete")} ${displayName}`}
-                      title={`${t("settings.customThemeDelete")} ${displayName}`}
-                    >
-                      <Trash2 size={12} strokeWidth={1.8} aria-hidden="true" />
-                    </button>
-                  </div>
-                );
+              {v2Themes.map((entry) => {
+                const active = entry.id === v2Active;
+                const label = entry.name[locale] ?? entry.name.en ?? entry.id;
+                return <button type="button" key={entry.id} aria-disabled={entry.status !== "valid"}
+                  className={`theme-card palette-card${active ? " active" : ""}${entry.status !== "valid" ? " is-invalid" : ""}`}
+                  onClick={() => { if (entry.status === "valid") void selectV2Theme(entry.id); }} aria-pressed={active} title={entry.diagnostics.map((x) => x.message).join("\n") || label}>
+                  <div className="palette-card-preview tailsync" aria-hidden="true"><span className="palette-preview-rail" /><span className="palette-preview-title">{entry.status === "valid" ? "V2" : "!"}</span><span className="palette-preview-row row-one" /><span className="palette-preview-row row-two" /></div>
+                  <span className="palette-card-label">{label}</span>{active && <Check className="palette-card-check" size={13} strokeWidth={2} aria-hidden="true" />}
+                  {(entry.source === "custom" || entry.status === "invalid") && <span className="theme-card-tools">
+                    {entry.source === "custom" && entry.status === "valid" && <>
+                      <span role="button" tabIndex={0} className="theme-card-tool" onClick={(event) => { event.stopPropagation(); void handleUpdateTheme(entry); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); void handleUpdateTheme(entry); } }} title={t("settings.customThemeUpdate")} aria-label={`${t("settings.customThemeUpdate")} ${label}`}><RefreshCw size={12} strokeWidth={1.8} aria-hidden="true" /></span>
+                      <span role="button" tabIndex={0} className="theme-card-tool" onClick={(event) => { event.stopPropagation(); void rollbackV2Theme(entry); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); void rollbackV2Theme(entry); } }} title={t("settings.customThemeRollback")} aria-label={`${t("settings.customThemeRollback")} ${label}`}><RotateCcw size={12} strokeWidth={1.8} aria-hidden="true" /></span>
+                    </>}
+                    <span role="button" tabIndex={0} className="theme-card-tool custom-theme-delete" onClick={(event) => { event.stopPropagation(); void deleteV2Theme(entry); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); void deleteV2Theme(entry); } }} title={t("settings.customThemeDelete")} aria-label={`${t("settings.customThemeDelete")} ${label}`}><Trash2 size={12} strokeWidth={1.8} aria-hidden="true" /></span>
+                  </span>}
+                </button>;
               })}
             </div>
-            <div className="custom-themes-actions">
-              <button type="button" className="custom-theme-action" onClick={() => void handleImportTheme()}>
-                <Upload size={13} strokeWidth={1.8} aria-hidden="true" />
-                {t("settings.customThemeImport")}
-              </button>
-              <button
-                type="button"
-                className="custom-theme-action"
-                onClick={() => void handleRevealThemesDir()}
-              >
-                <FolderOpen size={13} strokeWidth={1.8} aria-hidden="true" />
-                {t("settings.customThemeOpenFolder")}
-              </button>
-            </div>
-            {missingThemeId !== null && (
-              <div className="custom-theme-missing" role="alert">
-                <TriangleAlert size={13} strokeWidth={1.8} aria-hidden="true" />
-                <span>{t("settings.colorThemeMissing")}</span>
-                <code>{missingThemeId}</code>
-              </div>
-            )}
+            <div className="custom-themes-actions"><button type="button" className="custom-theme-action" onClick={() => void handleImportTheme()}><Upload size={13} strokeWidth={1.8} aria-hidden="true" />{t("settings.customThemeImport")}</button></div>
           </div>
 
           <div className="setting-row">
@@ -1460,6 +1350,52 @@ export function Settings() {
                   : "settings.codesMatch")}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {pendingThemeImport && (
+        <div className="dialog-backdrop" onMouseDown={() => setPendingThemeImport(null)}>
+          <div className="shortcut-dialog" role="dialog" aria-modal="true" aria-label={t("settings.themePreviewTitle")} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="shortcut-dialog-header"><div><h2>{t("settings.themePreviewTitle")}</h2></div></div>
+             <div className="theme-package-preview-modes">
+               {[{
+                 label: t("settings.themePreviewLight"),
+                 resolved: pendingThemeImport.previews.light,
+               }, {
+                 label: t("settings.themePreviewDark"),
+                 resolved: pendingThemeImport.previews.dark,
+               }, {
+                 label: t("settings.themePreviewHighContrastLight"),
+                 resolved: pendingThemeImport.previews.highContrastLight,
+               }, {
+                 label: t("settings.themePreviewHighContrastDark"),
+                 resolved: pendingThemeImport.previews.highContrastDark,
+               }].map(({ label, resolved }) => (
+                 <ThemePackagePreview
+                   key={label}
+                   label={label}
+                   resolved={resolved}
+                   path={pendingThemeImport.path}
+                   digest={pendingThemeImport.digest}
+                   stateLabels={{
+                     default: t("settings.themePreviewStateDefault"),
+                     hover: t("settings.themePreviewStateHover"),
+                     active: t("settings.themePreviewStateActive"),
+                     selected: t("settings.themePreviewStateSelected"),
+                     disabled: t("settings.themePreviewStateDisabled"),
+                     focus: t("settings.themePreviewStateFocus"),
+                   }}
+                 />
+               ))}
+             </div>
+            <div className="shortcut-dialog-message" role="status">
+              {pendingThemeImport.operation.kind === "update"
+                ? `${pendingThemeImport.operation.installedVersion} → ${pendingThemeImport.candidateVersion}`
+                : `${t("settings.customThemeCandidateVersion")}: ${pendingThemeImport.candidateVersion}`}
+            </div>
+            {pendingThemeImport.diagnostics.length > 0 && <div className="shortcut-dialog-message" role="status">{pendingThemeImport.diagnostics.map((diagnostic) => <div key={`${diagnostic.code}-${diagnostic.message}`}>{diagnostic.message}</div>)}</div>}
+            <div className="confirm-dialog-actions"><button type="button" onClick={() => setPendingThemeImport(null)}>{t("settings.cancel")}</button><button type="button" className="pair-submit" onClick={() => void confirmThemeImport()}>{t(pendingThemeImport.operation.kind === "install" ? "settings.customThemeInstall" : "settings.customThemeUpdate")}</button></div>
           </div>
         </div>
       )}

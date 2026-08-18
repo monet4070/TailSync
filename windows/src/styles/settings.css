@@ -599,6 +599,52 @@
   height: 54px;
 }
 
+.palette-card > .theme-card-tools {
+  position: absolute;
+  z-index: 6;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 2px;
+  max-width: none;
+  padding: 2px;
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-raised);
+  opacity: 0;
+  transition: opacity var(--art-fast) ease;
+}
+
+.palette-card:hover > .theme-card-tools,
+.palette-card:focus-within > .theme-card-tools {
+  opacity: 1;
+}
+
+.palette-card .theme-card-tool,
+.palette-card .theme-card-tools .custom-theme-delete {
+  position: static;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 1;
+}
+
+.palette-card .theme-card-tool:hover,
+.palette-card .theme-card-tool:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  outline: 1px solid var(--brand);
+}
+
 .palette-card > span {
   max-width: calc(100% - 8px);
   overflow: hidden;

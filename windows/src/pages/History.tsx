@@ -3,13 +3,11 @@ import {
   cancelFileBatch,
   clearHistory,
   deleteEntry,
-  getFileProgress,
   getHistoryCapabilities,
   getHistoryPage,
   getMigrationDiagnostics,
   getSettings,
-  getSyncWarning,
-  getVersion,
+  closeHistoryWindow,
   closePreviewWindow,
   openPreviewWindow,
   syncPreviewWindowMinimized,
@@ -37,6 +35,7 @@ import {
   groupEntriesByDate,
 } from "../utils/historyGrouping";
 import { useVisiblePolling } from "../hooks/useVisiblePolling";
+import { useRuntimeSnapshots } from "../hooks/useRuntimeSnapshots";
 import {
   DATE_FILTER_OPTIONS,
   dateBounds,
@@ -83,10 +82,10 @@ import { ThemeLogo } from "../ThemeLogo";
 /* ── Constants ──────────────────────────────────────────────────── */
 
 const PAGE_SIZE = HISTORY_PAGE_SIZE;
-const VERSION_POLL_MS = 800;
+const RUNTIME_WAIT_MS = 2_500;
 const SETTINGS_POLL_MS = 5000;
 const SEARCH_DEBOUNCE_MS = 250;
-const MAX_CACHED_THUMBNAILS = PAGE_SIZE * 4;
+const MAX_CACHED_THUMBNAILS = PAGE_SIZE;
 const NEW_GLOW_DURATION_MS = 3000;
 const RESTORE_FEEDBACK_DURATION_MS = 1500;
 const COLLAPSED_BATCH_FILE_LIMIT = 2;
@@ -393,7 +392,7 @@ export function History() {
   const [hasMoreEntries, setHasMoreEntries] = useState(false);
   const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
   const [migrationDiagnostics, setMigrationDiagnostics] = useState<MigrationDiagnostics | null>(null);
-  const { thumbnails, loadThumbnail, clear: clearThumbnails } =
+  const { thumbnails, loadThumbnail, retain: retainThumbnails, clear: clearThumbnails } =
     useThumbnailCache(MAX_CACHED_THUMBNAILS);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -428,10 +427,25 @@ export function History() {
   const historyRequests = useRef(new LatestRequest());
   const [fileProgress, setFileProgress] = useState<FileProgress | null>(null);
   const [progressBarEnabled, setProgressBarEnabled] = useState(true);
+  const closeHistory = useCallback(async () => {
+    try {
+      await closePreviewWindow();
+    } catch (error) {
+      console.error("Could not close the preview window:", error);
+    }
+    try {
+      await closeHistoryWindow();
+    } catch (error) {
+      console.error("Could not release the history window:", error);
+    }
+  }, []);
   useEffect(() => () => {
     newGlowTimers.current.forEach(window.clearTimeout);
     newGlowTimers.current.clear();
   }, []);
+  useEffect(() => {
+    retainThumbnails(new Set(entries.map((entry) => entry.id)));
+  }, [entries, retainThumbnails]);
   useEffect(() => {
     const refreshCalendar = () => {
       const nextNow = new Date();
@@ -453,7 +467,7 @@ export function History() {
     };
   }, []);
 
-  const { theme, resolvedColorTheme } = useTheme();
+  const { theme, themeAssetSlots } = useTheme();
   const { t } = useI18n();
   const showActionError = useCallback(() => {
     flashActionError(t("history.actionFailed"));
@@ -617,35 +631,20 @@ export function History() {
   }, [loadCapabilities, loadMigrationDiagnostics]);
 
   useVisiblePolling(loadSettings, SETTINGS_POLL_MS);
-  useVisiblePolling(async () => {
-    try {
-      const resp = await getVersion();
-      if (resp.version !== lastVersion.current) {
-        lastVersion.current = resp.version;
-        await loadHistory();
-      }
-    } catch {
-      /* ignore */
+  useRuntimeSnapshots(async (snapshot) => {
+    if (snapshot.history_version !== lastVersion.current) {
+      lastVersion.current = snapshot.history_version;
+      await loadHistory();
     }
-    try {
-      const warning = await getSyncWarning();
-      if (warning?.kind === "expired_event") {
-        flashSyncWarning(t("history.syncExpired").replace("{peer}", warning.peer));
-      }
-    } catch {
-      /* ignore */
+    if (snapshot.sync_warning?.kind === "expired_event") {
+      flashSyncWarning(t("history.syncExpired").replace("{peer}", snapshot.sync_warning.peer));
     }
     if (!progressBarEnabled) {
       setFileProgress(null);
       return;
     }
-    try {
-      const fp = await getFileProgress();
-      setFileProgress(fp.active ? fp : null);
-    } catch {
-      /* ignore */
-    }
-  }, VERSION_POLL_MS);
+    setFileProgress(snapshot.progress?.active ? snapshot.progress : null);
+  }, RUNTIME_WAIT_MS);
 
   /* ── Search reset ─────────────────────────────────────────────── */
 
@@ -696,7 +695,7 @@ export function History() {
     });
     void appWindow.onCloseRequested((event) => {
       event.preventDefault();
-      void closePreviewWindow().finally(() => appWindow.hide());
+      void closeHistory();
     }).then((stop) => {
       if (disposed) stop();
       else unlistenClose = stop;
@@ -707,7 +706,7 @@ export function History() {
       unlistenFocus?.();
       unlistenClose?.();
     };
-  }, []);
+  }, [closeHistory]);
 
   // Filters, pagination, and deletions can replace the loaded page. Do not
   // leave keyboard selection pointing at an entry that is no longer visible.
@@ -852,7 +851,7 @@ export function History() {
 
   return (
     <div
-      className={`app ${theme} theme-${resolvedColorTheme}`}
+      className={`app ${theme}`}
       data-focused-entry-id={focusedId === null ? undefined : String(focusedId)}
     >
       {/* ── Title bar ── */}
@@ -864,9 +863,7 @@ export function History() {
         </div>
         <button
           className="titlebar-close"
-          onClick={() => {
-            void closePreviewWindow().finally(() => getCurrentWindow().hide());
-          }}
+          onClick={() => void closeHistory()}
           title={t("history.close")}
           aria-label={t("history.close")}
         >
@@ -1002,8 +999,8 @@ export function History() {
             </>
           ) : (
             <>
-              <div className="empty-state-illustration">
-                <Clipboard size={30} strokeWidth={1.35} aria-hidden="true" />
+              <div className={`empty-state-illustration${themeAssetSlots?.emptyState ? " has-theme-image" : ""}`}>
+                {!themeAssetSlots?.emptyState && <Clipboard size={30} strokeWidth={1.35} aria-hidden="true" />}
               </div>
               <div className="empty-state-title">
                 {t("history.emptyTitle")}

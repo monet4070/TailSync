@@ -11,6 +11,7 @@ use crate::db;
 
 /// Encrypted settings stored alongside the app
 #[derive(Debug, Clone, PartialEq, schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct Settings {
     pub notifications_enabled: bool,
@@ -34,11 +35,6 @@ pub struct Settings {
     #[schemars(range(min = 1073741824_u64, max = 17592186044416_u64))]
     pub storage_quota_bytes: u64,
     pub enabled_peers: std::collections::HashMap<String, bool>,
-    #[schemars(with = "ThemeContract")]
-    pub theme: String, // "light" | "dark" | "system"
-    #[serde(default = "default_color_theme")]
-    #[schemars(with = "ColorThemeContract")]
-    pub color_theme: String,
     #[schemars(with = "LanguageContract")]
     pub language: String, // "en" | "zh-CN"
     /// Transport policy used for peer discovery and delivery.
@@ -69,10 +65,6 @@ pub enum SettingsValidationError {
     StorageQuota,
     #[error("storage_root cannot be empty")]
     EmptyStorageRoot,
-    #[error("theme must be 'system', 'light', or 'dark'")]
-    Theme,
-    #[error("color_theme must be 'tailsync', 'ocean', 'forest', 'rose', 'high-contrast', or 'custom:<id>'")]
-    ColorTheme,
     #[error("connection_mode must be 'auto', 'lan_only', or 'tailscale_only'")]
     ConnectionMode,
     #[error("language must be 'en' or 'zh-CN'")]
@@ -88,41 +80,6 @@ pub enum SettingsUpdateError {
     Persist(String),
     #[error("{0}")]
     Database(String),
-}
-
-#[allow(dead_code)]
-#[derive(schemars::JsonSchema, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ThemeContract {
-    System,
-    Light,
-    Dark,
-}
-
-/// JSON-schema contract for `color_theme`: one of the five built-in ids or
-/// a `custom:{id}` preference whose id follows the theme-id rule.
-#[allow(dead_code)]
-struct ColorThemeContract;
-
-impl schemars::JsonSchema for ColorThemeContract {
-    fn schema_name() -> String {
-        "ColorThemeContract".into()
-    }
-
-    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        schemars::schema::SchemaObject {
-            instance_type: Some(schemars::schema::InstanceType::String.into()),
-            string: Some(Box::new(schemars::schema::StringValidation {
-                pattern: Some(
-                    r"^(tailsync|ocean|forest|rose|high-contrast|custom:[a-z0-9][a-z0-9-]{0,31})$"
-                        .into(),
-                ),
-                ..Default::default()
-            })),
-            ..Default::default()
-        }
-        .into()
-    }
 }
 
 #[allow(dead_code)]
@@ -159,10 +116,6 @@ fn default_history_shortcut() -> String {
     "CommandOrControl+Shift+H".to_string()
 }
 
-fn default_color_theme() -> String {
-    "tailsync".to_string()
-}
-
 pub const DEFAULT_STORAGE_QUOTA_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 pub const MIN_STORAGE_QUOTA_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_STORAGE_QUOTA_BYTES: u64 = 16 * 1024 * 1024 * 1024 * 1024;
@@ -196,8 +149,6 @@ impl Default for Settings {
             storage_root: None,
             storage_quota_bytes: default_storage_quota_bytes(),
             enabled_peers: std::collections::HashMap::new(),
-            theme: "system".to_string(),
-            color_theme: default_color_theme(),
             language: "en".to_string(),
             connection_mode: default_connection_mode(),
             trusted_peer_keys: std::collections::HashMap::new(),
@@ -251,16 +202,6 @@ impl Settings {
         {
             return Err(SettingsValidationError::EmptyStorageRoot);
         }
-        if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
-            return Err(SettingsValidationError::Theme);
-        }
-        if !matches!(
-            self.color_theme.as_str(),
-            "tailsync" | "ocean" | "forest" | "rose" | "high-contrast"
-        ) && !crate::themes::is_custom_theme_preference(&self.color_theme)
-        {
-            return Err(SettingsValidationError::ColorTheme);
-        }
         if !matches!(
             self.connection_mode.as_str(),
             "auto" | "lan_only" | "tailscale_only"
@@ -286,14 +227,6 @@ impl Settings {
         requested.paired_peer_endpoints = self.paired_peer_endpoints.clone();
         requested.validate_user_values()?;
         Ok(requested)
-    }
-
-    pub fn set_theme(&mut self, theme: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let mut updated = self.clone();
-        updated.theme = theme.to_string();
-        updated.save()?;
-        *self = updated;
-        Ok(())
     }
 
     pub fn toggle_peer(
@@ -1617,7 +1550,6 @@ mod tests {
                 "progress_bar_enabled": true,
                 "history_limit": 100,
                 "enabled_peers": {},
-                "theme": "system",
                 "language": "en",
                 "connection_mode": "lan"
             }"#,
@@ -1626,7 +1558,6 @@ mod tests {
         assert!(settings.trusted_peer_keys.is_empty());
         assert!(settings.trusted_peer_addresses.is_empty());
         assert!(settings.paired_peer_endpoints.is_empty());
-        assert_eq!(settings.color_theme, "tailsync");
         assert_eq!(settings.sync_shortcut, "CommandOrControl+Shift+S");
         assert_eq!(settings.history_shortcut, "CommandOrControl+Shift+H");
     }
@@ -1729,57 +1660,20 @@ mod tests {
                 "progress_bar_enabled": true,
                 "history_limit": 100,
                 "enabled_peers": {},
-                "theme": "system",
                 "language": "en"
             }"#,
         )
         .unwrap();
 
         assert_eq!(settings.connection_mode, "auto");
-        assert_eq!(settings.color_theme, "tailsync");
     }
 
     #[test]
-    fn appearance_values_are_validated() {
-        let mut settings = Settings {
-            theme: "dark".into(),
-            color_theme: "forest".into(),
-            ..Settings::default()
-        };
-        assert!(settings.validate_user_values().is_ok());
-
-        settings.color_theme = "unknown".into();
-        assert!(settings.validate_user_values().is_err());
-        settings.color_theme = "tailsync".into();
-        settings.theme = "sepia".into();
-        assert!(settings.validate_user_values().is_err());
-    }
-
-    #[test]
-    fn custom_theme_preferences_are_validated() {
-        let mut settings = Settings {
-            theme: "dark".into(),
-            color_theme: "custom:studio".into(),
-            ..Settings::default()
-        };
-        assert!(settings.validate_user_values().is_ok());
-        settings.color_theme = "custom:0abc".into();
-        assert!(settings.validate_user_values().is_ok());
-        for bad in [
-            "custom:",
-            "custom:Studio",
-            "custom:studio/evil",
-            "custom:",
-            "custom:a".repeat(34).as_str(),
-        ] {
-            settings.color_theme = bad.into();
-            assert!(
-                settings.validate_user_values().is_err(),
-                "value {bad:?} must be rejected"
-            );
-        }
-        settings.color_theme = "tailsync".into();
-        assert!(settings.validate_user_values().is_ok());
+    fn obsolete_theme_fields_are_rejected() {
+        let error = serde_json::from_str::<Settings>(r#"{"theme":"dark"}"#).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+        let error = serde_json::from_str::<Settings>(r#"{"color_theme":"forest"}"#).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
@@ -1816,7 +1710,6 @@ mod tests {
 
         let mut requested = Settings {
             history_limit: 250,
-            theme: "dark".into(),
             ..Settings::default()
         };
         requested.enabled_peers.insert("stale".into(), false);
@@ -1828,7 +1721,6 @@ mod tests {
         let updated = current.prepare_user_update(requested).unwrap();
 
         assert_eq!(updated.history_limit, 250);
-        assert_eq!(updated.theme, "dark");
         assert_eq!(updated.enabled_peers, current.enabled_peers);
         assert_eq!(updated.storage_root, current.storage_root);
         assert_eq!(updated.trusted_peer_keys, current.trusted_peer_keys);

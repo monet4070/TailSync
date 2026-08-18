@@ -1,4 +1,5 @@
 import { lazy, Suspense, useMemo } from "react";
+import { useTheme } from "../hooks/useTheme";
 import { previewRendererFor, type PreviewPayload } from "../utils/historyPreview";
 
 // Keep PDF, DOCX and syntax-highlighting code out of the history window's
@@ -18,6 +19,7 @@ export function PreviewContent({
   t: (key: string) => string;
   onCorrupt: () => void;
 }) {
+  const { themeAssetSlots } = useTheme();
   const renderer = useMemo(() => previewRendererFor(payload), [payload]);
   const content = (() => {
     switch (renderer) {
@@ -36,7 +38,9 @@ export function PreviewContent({
       default:
         return (
           <div className="preview-unsupported" data-testid="preview-unsupported">
-            <div className="preview-empty-icon">?</div>
+            <div className={`preview-empty-icon${themeAssetSlots.previewPlaceholder ? " has-theme-image" : ""}`}>
+              {!themeAssetSlots.previewPlaceholder && "?"}
+            </div>
             <h2>{t("history.preview.unsupported")}</h2>
             <p>{payload.name}</p>
           </div>

@@ -114,6 +114,7 @@ pub async fn open_preview_window(
         request.entry_id = navigation.first_entry_id;
     }
     let snapshot = controller.replace(request);
+    crate::window_lifecycle::mark_window_open(&app, PREVIEW_WINDOW_LABEL);
 
     if let Some(window) = app.get_webview_window(PREVIEW_WINDOW_LABEL) {
         window
@@ -149,21 +150,19 @@ pub fn get_preview_window_request(
     controller.current()
 }
 
-/// Hide the reusable preview window without discarding its WebView. Blob URLs
-/// and decrypted buffers are released by the preview page before this command
-/// is invoked.
+/// Hide the reusable preview immediately, then destroy its WebView after a
+/// short idle grace period. Reopening during the grace period cancels release.
 #[command]
 pub fn close_preview_window(app: AppHandle) -> Result<(), String> {
     if let Some(controller) = app.try_state::<PreviewWindowController>() {
         controller.set_minimized_with_history(false);
     }
     if let Some(window) = app.get_webview_window(PREVIEW_WINDOW_LABEL) {
-        window
-            .emit(PREVIEW_CLOSE_EVENT, ())
-            .map_err(|error| error.to_string())?;
-        window.hide().map_err(|error| error.to_string())?;
+        if let Err(error) = window.emit(PREVIEW_CLOSE_EVENT, ()) {
+            log::debug!("Could not notify preview renderer before release: {error}");
+        }
     }
-    Ok(())
+    crate::window_lifecycle::hide_then_release_window(app, PREVIEW_WINDOW_LABEL)
 }
 
 /// Keep the reusable preview window paired with the history window's

@@ -110,6 +110,34 @@ pub(crate) fn peer_snapshot_data(
     })
 }
 
+fn daemon_status_data() -> Value {
+    serde_json::json!({
+        "tcp_server_healthy": network::TCP_SERVER_HEALTHY.load(Ordering::Acquire),
+        "clipboard_monitor_healthy": crate::clipboard::monitor_is_healthy(),
+        "clipboard_monitor_failures": crate::clipboard::monitor_failure_count(),
+        "active_routes": network::active_routes_snapshot(),
+    })
+}
+
+async fn runtime_snapshot_data(state: &ApiState, since_notification_id: Option<u64>) -> Value {
+    // A change during snapshot assembly remains observable: the response keeps
+    // the starting revision, so the client's next wait returns immediately.
+    let revision = get_runtime_revision();
+    let sync_enabled = state.settings.lock().await.sync_enabled;
+    let storage = state.db.lock().await.storage_status();
+    serde_json::json!({
+        "revision": revision,
+        "history_version": get_clipboard_version(),
+        "progress": get_file_progress(),
+        "storage": storage,
+        "sync_enabled": sync_enabled,
+        "status": daemon_status_data(),
+        "notifications": since_notification_id
+            .map(get_runtime_notifications_since)
+            .unwrap_or_default(),
+    })
+}
+
 pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
     match req.cmd.as_str() {
         "ping" => Response {
@@ -118,11 +146,19 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             error: None,
         },
 
+        "wait_runtime_snapshot" => {
+            let since = req.since_revision.unwrap_or_default();
+            let wait_ms = req.wait_ms.unwrap_or(2_500).clamp(50, 15_000);
+            let _ = wait_for_runtime_revision(since, Duration::from_millis(wait_ms)).await;
+            Response {
+                ok: true,
+                data: Some(runtime_snapshot_data(state, req.since_notification_id).await),
+                error: None,
+            }
+        }
+
         "check_for_update" => {
-            let result = match crate::updates::app_handle() {
-                Ok(handle) => crate::updates::check_for_update(handle).await,
-                Err(error) => Err(error),
-            };
+            let result = crate::updates::check_for_update_headless().await;
             match result {
                 Ok(update) => Response {
                     ok: true,
@@ -138,10 +174,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
         }
 
         "install_update" => {
-            let result = match crate::updates::app_handle() {
-                Ok(handle) => crate::updates::install_available_update(handle).await,
-                Err(error) => Err(error),
-            };
+            let result = crate::updates::install_available_update_headless().await;
             match result {
                 Ok(installed) => Response {
                     ok: true,
@@ -256,12 +289,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         "get_status" => Response {
             ok: true,
-            data: Some(serde_json::json!({
-                "tcp_server_healthy": network::TCP_SERVER_HEALTHY.load(Ordering::Acquire),
-                "clipboard_monitor_healthy": crate::clipboard::monitor_is_healthy(),
-                "clipboard_monitor_failures": crate::clipboard::monitor_failure_count(),
-                "active_routes": network::active_routes_snapshot(),
-            })),
+            data: Some(daemon_status_data()),
             error: None,
         },
 
@@ -595,6 +623,9 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .await
                 .set_sync_enabled(enabled)
                 .map_err(|error| error.to_string());
+            if result.is_ok() {
+                bump_runtime_revision();
+            }
             Response {
                 ok: result.is_ok(),
                 data: None,
@@ -606,11 +637,15 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             let mut settings = state.settings.lock().await;
             let enabled = !settings.sync_enabled;
             match settings.set_sync_enabled(enabled) {
-                Ok(()) => Response {
-                    ok: true,
-                    data: Some(serde_json::json!({ "enabled": enabled })),
-                    error: None,
-                },
+                Ok(()) => {
+                    drop(settings);
+                    bump_runtime_revision();
+                    Response {
+                        ok: true,
+                        data: Some(serde_json::json!({ "enabled": enabled })),
+                        error: None,
+                    }
+                }
                 Err(error) => Response {
                     ok: false,
                     data: None,
@@ -627,6 +662,9 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .await
                 .set_sync_shortcut(&shortcut)
                 .map_err(|error| error.to_string());
+            if result.is_ok() {
+                bump_runtime_revision();
+            }
             Response {
                 ok: result.is_ok(),
                 data: None,
@@ -642,6 +680,9 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .await
                 .set_history_shortcut(&shortcut)
                 .map_err(|error| error.to_string());
+            if result.is_ok() {
+                bump_runtime_revision();
+            }
             Response {
                 ok: result.is_ok(),
                 data: None,
@@ -683,6 +724,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                                 network::clear_peer_cache().await;
                                 network::refresh_iroh_for_mode(&outcome.connection_mode).await;
                             }
+                            bump_runtime_revision();
                             Response {
                                 ok: true,
                                 data: None,
@@ -728,11 +770,14 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             )
             .await
             {
-                Ok(result) => Response {
-                    ok: true,
-                    data: serde_json::to_value(result).ok(),
-                    error: None,
-                },
+                Ok(result) => {
+                    bump_runtime_revision();
+                    Response {
+                        ok: true,
+                        data: serde_json::to_value(result).ok(),
+                        error: None,
+                    }
+                }
                 Err(failure) => Response {
                     ok: false,
                     data: None,
@@ -1096,45 +1141,45 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "list_themes" => Response {
+        "list_themes_v2" => Response {
             ok: true,
-            data: Some(crate::api::themes_listing_payload(
-                &tailsync_core::themes::list_themes(),
-            )),
+            data: serde_json::to_value(tailsync_core::themes_v2::list_themes_v2()).ok(),
             error: None,
         },
 
-        "import_theme" => {
-            let Some(path) = req.path else {
-                return Response {
-                    ok: false,
-                    data: None,
-                    error: Some("missing path".into()),
-                };
-            };
-            match tailsync_core::themes::import_theme_file(std::path::Path::new(&path)) {
-                Ok(entry) => Response {
-                    ok: true,
-                    data: Some(serde_json::to_value(entry).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Err(error) => Response {
-                    ok: false,
-                    data: None,
-                    error: Some(error),
-                },
-            }
-        }
+        "get_local_theme_settings" => Response {
+            ok: true,
+            data: serde_json::to_value(tailsync_core::themes_v2::get_local_theme_settings()).ok(),
+            error: None,
+        },
 
-        "delete_theme" => {
-            let Some(theme_id) = req.theme_id else {
-                return Response {
-                    ok: false,
-                    data: None,
-                    error: Some("missing theme_id".into()),
-                };
-            };
-            match tailsync_core::themes::delete_theme(&theme_id) {
+        "set_local_theme_settings" => {
+            let result = req
+                .settings
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_SETTINGS".into(),
+                    message: "missing settings".into(),
+                    json_pointer: "/settings".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(|value| {
+                    serde_json::from_value(value).map_err(|error| {
+                        tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_SETTINGS".into(),
+                            message: error.to_string(),
+                            json_pointer: "/settings".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        }
+                    })
+                })
+                .and_then(tailsync_core::themes_v2::set_local_theme_settings);
+            match result {
                 Ok(()) => Response {
                     ok: true,
                     data: None,
@@ -1142,68 +1187,335 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 },
                 Err(error) => Response {
                     ok: false,
-                    data: None,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "validate_theme" => {
+            let result = req
+                .path
+                .as_deref()
+                .ok_or_else(|| "missing path".to_string())
+                .and_then(|path| std::fs::read(path).map_err(|error| error.to_string()))
+                .map(|bytes| {
+                    tailsync_core::themes_v2::validate_theme_for_platform(
+                        &bytes,
+                        req.mode.as_deref().unwrap_or("light"),
+                        "macos",
+                        req.high_contrast.unwrap_or(false),
+                    )
+                });
+            match result {
+                Ok(value) => Response {
+                    ok: true,
+                    data: serde_json::to_value(value).ok(),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(
+                        serde_json::to_value(tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_IO".into(),
+                            message: error.clone(),
+                            json_pointer: "/path".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })
+                        .unwrap_or(Value::Null),
+                    ),
                     error: Some(error),
                 },
             }
         }
 
-        "reveal_themes_dir" => match crate::api::reveal_themes_dir() {
-            Ok(()) => Response {
-                ok: true,
-                data: None,
-                error: None,
-            },
-            Err(error) => Response {
-                ok: false,
-                data: None,
-                error: Some(error),
-            },
-        },
-
-        "get_theme_background" => {
-            let (Some(theme_id), Some(mode)) = (&req.theme_id, &req.mode) else {
-                return Response {
+        "install_theme" | "update_theme" => {
+            let result: Result<
+                tailsync_core::themes_v2::ThemeDescriptor,
+                tailsync_core::themes_v2::ThemeError,
+            > = (|| {
+                let path =
+                    req.path
+                        .as_deref()
+                        .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_IO".into(),
+                            message: "missing path".into(),
+                            json_pointer: "/path".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })?;
+                let digest = req.expected_digest.as_deref().ok_or_else(|| {
+                    tailsync_core::themes_v2::ThemeError {
+                        code: "THEME_DIGEST".into(),
+                        message: "missing expected digest".into(),
+                        json_pointer: "/expectedDigest".into(),
+                        platforms: vec!["macos".into()],
+                        severity: "error".into(),
+                        recoverable: true,
+                        fallback_applied: false,
+                    }
+                })?;
+                let bytes =
+                    std::fs::read(path).map_err(|e| tailsync_core::themes_v2::ThemeError {
+                        code: "THEME_IO".into(),
+                        message: e.to_string(),
+                        json_pointer: "/path".into(),
+                        platforms: vec!["macos".into()],
+                        severity: "error".into(),
+                        recoverable: true,
+                        fallback_applied: false,
+                    })?;
+                if req.cmd == "install_theme" {
+                    tailsync_core::themes_v2::install_theme(&bytes, digest)
+                } else {
+                    let options = req
+                        .options
+                        .clone()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|e| tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_OPTIONS".into(),
+                            message: e.to_string(),
+                            json_pointer: "/options".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })?
+                        .unwrap_or_default();
+                    tailsync_core::themes_v2::update_theme(&bytes, digest, options)
+                }
+            })();
+            match result {
+                Ok(value) => Response {
+                    ok: true,
+                    data: serde_json::to_value(value).ok(),
+                    error: None,
+                },
+                Err(error) => Response {
                     ok: false,
-                    data: None,
-                    error: Some("missing theme_id or mode".into()),
-                };
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "rollback_theme" => {
+            let result = req
+                .theme_id
+                .as_deref()
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_ID".into(),
+                    message: "missing theme id".into(),
+                    json_pointer: "/themeId".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(tailsync_core::themes_v2::rollback_theme);
+            match result {
+                Ok(value) => Response {
+                    ok: true,
+                    data: serde_json::to_value(value).ok(),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "delete_theme_v2" => {
+            let result = if let Some(handle) = req.storage_handle.as_deref() {
+                tailsync_core::themes_v2::delete_theme_by_handle_for_theme(
+                    handle,
+                    req.theme_id.as_deref().unwrap_or(""),
+                )
+            } else if let Some(id) = req.theme_id.as_deref() {
+                tailsync_core::themes_v2::delete_theme(id)
+            } else {
+                Err(tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_ID".into(),
+                    message: "missing theme_id or storage_handle".into(),
+                    json_pointer: "".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
             };
-            let light = match mode.as_str() {
-                "light" => true,
-                "dark" => false,
-                _ => {
-                    return Response {
-                        ok: false,
-                        data: None,
-                        error: Some(format!(
-                            "invalid mode {mode:?} (expected \"light\" or \"dark\")"
-                        )),
-                    }
-                }
-            };
-            match tailsync_core::themes::theme_background(theme_id, light) {
-                Ok(Some(image)) => {
-                    use base64::Engine;
-                    Response {
-                        ok: true,
-                        data: Some(serde_json::json!({
-                            "mimeType": image.mime_type.mime_type(),
-                            "dataB64": base64::engine::general_purpose::STANDARD
-                                .encode(&image.data),
-                        })),
-                        error: None,
-                    }
-                }
-                Ok(None) => Response {
+            match result {
+                Ok(()) => Response {
                     ok: true,
                     data: None,
                     error: None,
                 },
                 Err(error) => Response {
                     ok: false,
-                    data: None,
-                    error: Some(error),
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "resolve_theme" => {
+            let theme_id = req
+                .theme_id
+                .as_deref()
+                .unwrap_or(tailsync_core::themes_v2::CANVAS_ID);
+            let mode = req.mode.as_deref().unwrap_or("light");
+            match tailsync_core::themes_v2::resolve_theme(
+                theme_id,
+                mode,
+                "macos",
+                req.high_contrast.unwrap_or(false),
+            ) {
+                Ok(theme) => Response {
+                    ok: true,
+                    data: serde_json::to_value(theme).ok(),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "get_theme_asset_slot" => {
+            use base64::Engine;
+            let result = req
+                .theme_id
+                .as_deref()
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_ID".into(),
+                    message: "missing theme id".into(),
+                    json_pointer: "/themeId".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(|id| {
+                    req.expected_digest
+                        .as_deref()
+                        .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_DIGEST".into(),
+                            message: "missing theme digest".into(),
+                            json_pointer: "/digest".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })
+                        .map(|digest| (id, digest))
+                })
+                .and_then(|(id, digest)| {
+                    req.asset_slot
+                        .as_deref()
+                        .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_ASSET_SLOT".into(),
+                            message: "missing asset slot".into(),
+                            json_pointer: "/slot".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })
+                        .and_then(|slot| {
+                            tailsync_core::themes_v2::get_theme_asset_slot(id, digest, slot)
+                        })
+                });
+            match result {
+                Ok((descriptor, bytes)) => Response {
+                    ok: true,
+                    data: Some(
+                        serde_json::json!({"descriptor": descriptor, "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes)}),
+                    ),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "preview_theme_asset_slot" => {
+            use base64::Engine;
+            let result: Result<Vec<u8>, tailsync_core::themes_v2::ThemeError> = req
+                .path
+                .as_deref()
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_PATH".into(),
+                    message: "missing path".into(),
+                    json_pointer: "/path".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(|path| {
+                    std::fs::read(path).map_err(|error| tailsync_core::themes_v2::ThemeError {
+                        code: "THEME_IO".into(),
+                        message: error.to_string(),
+                        json_pointer: "/path".into(),
+                        platforms: vec!["macos".into()],
+                        severity: "error".into(),
+                        recoverable: true,
+                        fallback_applied: false,
+                    })
+                })
+                .and_then(|bytes| {
+                    let digest = req.expected_digest.as_deref().ok_or_else(|| {
+                        tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_DIGEST".into(),
+                            message: "missing digest".into(),
+                            json_pointer: "/digest".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        }
+                    })?;
+                    let slot = req.asset_slot.as_deref().ok_or_else(|| {
+                        tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_ASSET_SLOT".into(),
+                            message: "missing asset slot".into(),
+                            json_pointer: "/slot".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        }
+                    })?;
+                    tailsync_core::themes_v2::get_theme_asset_slot_from_package(
+                        &bytes, digest, slot,
+                    )
+                    .map(|(_descriptor, asset)| asset)
+                });
+            match result {
+                Ok(bytes) => Response {
+                    ok: true,
+                    data: Some(
+                        serde_json::json!({"data_b64": base64::engine::general_purpose::STANDARD.encode(bytes)}),
+                    ),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
                 },
             }
         }

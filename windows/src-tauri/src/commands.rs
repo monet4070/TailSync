@@ -663,8 +663,10 @@ pub async fn update_settings(
 pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
 
+    crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::HISTORY_WINDOW_LABEL);
+
     // Check if window already exists
-    if let Some(window) = app.get_webview_window("history") {
+    if let Some(window) = app.get_webview_window(crate::window_lifecycle::HISTORY_WINDOW_LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
@@ -673,7 +675,7 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     // Create new history window
     let _window = tauri::WebviewWindowBuilder::new(
         &app,
-        "history",
+        crate::window_lifecycle::HISTORY_WINDOW_LABEL,
         tauri::WebviewUrl::App("history.html".into()),
     )
     .title("TailSync - History")
@@ -692,7 +694,9 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
 pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
 
-    if let Some(window) = app.get_webview_window("settings") {
+    crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::SETTINGS_WINDOW_LABEL);
+
+    if let Some(window) = app.get_webview_window(crate::window_lifecycle::SETTINGS_WINDOW_LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
@@ -700,7 +704,7 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 
     let _window = tauri::WebviewWindowBuilder::new(
         &app,
-        "settings",
+        crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
         tauri::WebviewUrl::App("settings.html".into()),
     )
     .title("TailSync - Settings")
@@ -713,6 +717,22 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[command]
+pub fn close_history_window(app: tauri::AppHandle) -> Result<(), String> {
+    crate::window_lifecycle::hide_then_release_window(
+        app,
+        crate::window_lifecycle::HISTORY_WINDOW_LABEL,
+    )
+}
+
+#[command]
+pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    crate::window_lifecycle::hide_then_release_window(
+        app,
+        crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
+    )
 }
 
 /// Get image data as base64 thumbnail for frontend display
@@ -827,61 +847,159 @@ pub async fn get_preview(
     )?))
 }
 
-/// List the five built-in themes plus every validated custom theme, with
-/// error markers for skipped files (thin wrapper over `tailsync_core`).
-#[command]
-pub async fn list_themes() -> Result<serde_json::Value, String> {
-    Ok(crate::api::themes_listing_payload(
-        &tailsync_core::themes::list_themes(),
-    ))
+// V2 package boundary. These commands deliberately use the shared Core model
+// rather than re-validating JSON in a platform renderer.
+fn v2_package(path: &str) -> Result<Vec<u8>, Box<tailsync_core::themes_v2::ThemeError>> {
+    if !path.ends_with(".tailsync-theme") {
+        return Err(Box::new(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_EXTENSION".into(),
+            message: "theme package must end in .tailsync-theme".into(),
+            json_pointer: "/path".into(),
+            platforms: vec!["windows".into(), "macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        }));
+    }
+    std::fs::read(path).map_err(|e| {
+        Box::new(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_IO".into(),
+            message: e.to_string(),
+            json_pointer: "/path".into(),
+            platforms: vec!["windows".into(), "macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        })
+    })
 }
 
-/// Import a theme file: validate and copy it into the themes directory.
 #[command]
-pub async fn import_theme(path: String) -> Result<tailsync_core::themes::ThemeEntry, String> {
-    tailsync_core::themes::import_theme_file(std::path::Path::new(&path))
-}
-
-/// Delete a custom theme by id.
-#[command]
-pub async fn delete_theme(theme_id: String) -> Result<(), String> {
-    tailsync_core::themes::delete_theme(&theme_id)
-}
-
-/// Fetch the decoded background image of one theme mode (base64 JSON; no
-/// raw-byte IPC channel exists yet — see the preview precedent in
-/// `get_image_data`).
-#[command]
-pub async fn get_theme_background(
-    theme_id: String,
+pub async fn validate_theme(
+    path: String,
     mode: String,
-) -> Result<Option<serde_json::Value>, String> {
-    let light = match mode.as_str() {
-        "light" => true,
-        "dark" => false,
-        _ => {
-            return Err(format!(
-                "invalid mode {mode:?} (expected \"light\" or \"dark\")"
-            ))
-        }
-    };
-    match tailsync_core::themes::theme_background(&theme_id, light) {
-        Ok(Some(image)) => {
-            use base64::Engine;
-            Ok(Some(serde_json::json!({
-                "mimeType": image.mime_type.mime_type(),
-                "dataB64": base64::engine::general_purpose::STANDARD.encode(&image.data),
-            })))
-        }
-        Ok(None) => Ok(None),
-        Err(error) => Err(error),
+    high_contrast: bool,
+) -> tailsync_core::themes_v2::ThemeValidation {
+    match v2_package(&path) {
+        Ok(bytes) => tailsync_core::themes_v2::validate_theme_for_platform(
+            &bytes,
+            &mode,
+            "windows",
+            high_contrast,
+        ),
+        Err(error) => tailsync_core::themes_v2::ThemeValidation {
+            valid: false,
+            digest: None,
+            candidate_version: None,
+            preview: None,
+            diagnostics: vec![*error],
+            assets: vec![],
+            compatible: false,
+        },
     }
 }
-
-/// Reveal the themes directory in the platform file manager.
 #[command]
-pub async fn reveal_themes_dir() -> Result<(), String> {
-    crate::api::reveal_themes_dir()
+pub async fn install_theme(
+    path: String,
+    expected_digest: String,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    let package = v2_package(&path).map_err(|error| *error)?;
+    tailsync_core::themes_v2::install_theme(&package, &expected_digest)
+}
+#[command]
+pub async fn update_theme(
+    path: String,
+    expected_digest: String,
+    options: tailsync_core::themes_v2::UpdateThemeOptions,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    let package = v2_package(&path).map_err(|error| *error)?;
+    tailsync_core::themes_v2::update_theme(&package, &expected_digest, options)
+}
+#[command]
+pub async fn rollback_theme(
+    theme_id: String,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::rollback_theme(&theme_id)
+}
+#[command]
+pub async fn delete_theme_v2(
+    app: AppHandle,
+    theme_id: String,
+    storage_handle: Option<String>,
+) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+    if let Some(handle) = storage_handle {
+        tailsync_core::themes_v2::delete_theme_by_handle_for_theme(&handle, &theme_id)?;
+    } else {
+        tailsync_core::themes_v2::delete_theme(&theme_id)?;
+    }
+    let _ = app.emit(
+        "theme_changed",
+        tailsync_core::themes_v2::get_local_theme_settings(),
+    );
+    Ok(())
+}
+#[command]
+pub async fn list_themes_v2() -> Vec<tailsync_core::themes_v2::ThemeDescriptor> {
+    tailsync_core::themes_v2::list_themes_v2()
+}
+#[command]
+pub async fn get_local_theme_settings() -> tailsync_core::themes_v2::LocalThemeSettings {
+    tailsync_core::themes_v2::get_local_theme_settings()
+}
+#[command]
+pub async fn set_local_theme_settings(
+    app: AppHandle,
+    settings: tailsync_core::themes_v2::LocalThemeSettings,
+) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::set_local_theme_settings(settings.clone())?;
+    // Theme selection is deliberately local, but every open webview must see
+    // it immediately.  Do not use the synchronised AppSettings channel here.
+    let _ = app.emit("theme_changed", settings);
+    Ok(())
+}
+#[command]
+pub async fn resolve_theme(
+    theme_id: String,
+    mode: String,
+    platform: String,
+    high_contrast: bool,
+) -> Result<tailsync_core::themes_v2::ResolvedTheme, tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::resolve_theme(&theme_id, &mode, &platform, high_contrast)
+}
+
+/// Raw binary IPC; MIME and dimensions are supplied by the descriptor's asset
+/// metadata, so no image is ever expanded into a Base64 JSON listing.
+#[command]
+pub async fn get_theme_asset(
+    theme_id: String,
+    digest: String,
+    asset_key: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let (_mime, bytes) = tailsync_core::themes_v2::get_theme_asset(&theme_id, &digest, &asset_key)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[command]
+pub async fn get_theme_asset_slot(
+    theme_id: String,
+    digest: String,
+    slot: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let (_descriptor, bytes) =
+        tailsync_core::themes_v2::get_theme_asset_slot(&theme_id, &digest, &slot)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[command]
+pub async fn preview_theme_asset_slot(
+    path: String,
+    digest: String,
+    slot: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let bytes = v2_package(&path).map_err(|error| *error)?;
+    let (_descriptor, asset) =
+        tailsync_core::themes_v2::get_theme_asset_slot_from_package(&bytes, &digest, &slot)?;
+    Ok(tauri::ipc::Response::new(asset))
 }
 
 /// Get current file transfer progress (for progress bar)
@@ -1035,6 +1153,37 @@ pub async fn get_version() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "version": crate::api::get_clipboard_version()
     }))
+}
+
+#[derive(serde::Serialize)]
+pub struct RuntimeSnapshot {
+    revision: u64,
+    history_version: u64,
+    progress: Option<crate::api::FileProgress>,
+    sync_warning: Option<tailsync_core::sync_warning::SyncWarning>,
+}
+
+/// Wait until history or transfer state changes, then return one coherent
+/// snapshot. The bounded timeout lets the UI recover if a notification is
+/// missed without reverting to high-frequency polling.
+#[command]
+pub async fn wait_runtime_snapshot(
+    since_revision: u64,
+    wait_ms: Option<u64>,
+) -> Result<RuntimeSnapshot, String> {
+    let wait_ms = wait_ms.unwrap_or(2_500).clamp(50, 15_000);
+    let _ = crate::api::wait_for_runtime_revision(
+        since_revision,
+        std::time::Duration::from_millis(wait_ms),
+    )
+    .await;
+    let revision = crate::api::get_runtime_revision();
+    Ok(RuntimeSnapshot {
+        revision,
+        history_version: crate::api::get_clipboard_version(),
+        progress: crate::api::get_file_progress(),
+        sync_warning: tailsync_core::sync_warning::take(),
+    })
 }
 
 #[command]

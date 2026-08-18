@@ -3,10 +3,6 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
-    "ColorThemeContract": {
-      "pattern": "^(tailsync|ocean|forest|rose|high-contrast|custom:[a-z0-9][a-z0-9-]{0,31})$",
-      "type": "string"
-    },
     "ConnectionModeContract": {
       "enum": [
         "auto",
@@ -21,26 +17,10 @@
         "zh-CN"
       ],
       "type": "string"
-    },
-    "ThemeContract": {
-      "enum": [
-        "system",
-        "light",
-        "dark"
-      ],
-      "type": "string"
     }
   },
   "description": "Encrypted settings stored alongside the app",
   "properties": {
-    "color_theme": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/ColorThemeContract"
-        }
-      ],
-      "default": "tailsync"
-    },
     "connection_mode": {
       "allOf": [
         {
@@ -114,10 +94,6 @@
       "description": "Optional global shortcut used to toggle sync. Empty disables it.",
       "type": "string"
     },
-    "theme": {
-      "$ref": "#/definitions/ThemeContract",
-      "default": "system"
-    },
     "trusted_peer_addresses": {
       "additionalProperties": {
         "additionalProperties": {
@@ -139,7 +115,6 @@
     }
   },
   "required": [
-    "color_theme",
     "connection_mode",
     "enabled_peers",
     "history_limit",
@@ -152,7 +127,6 @@
     "storage_root",
     "sync_enabled",
     "sync_shortcut",
-    "theme",
     "trusted_peer_addresses",
     "trusted_peer_keys"
   ],

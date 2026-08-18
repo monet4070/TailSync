@@ -2,9 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { History } from "./History";
 
-const { invokeMock, hideMock, stopListening, onCloseRequestedMock } = vi.hoisted(() => ({
+const { invokeMock, stopListening, onCloseRequestedMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
-  hideMock: vi.fn(),
   stopListening: vi.fn(),
   onCloseRequestedMock: vi.fn(),
 }));
@@ -12,7 +11,6 @@ const { invokeMock, hideMock, stopListening, onCloseRequestedMock } = vi.hoisted
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
-    hide: hideMock,
     isMinimized: vi.fn(() => Promise.resolve(false)),
     onResized: vi.fn(() => Promise.resolve(stopListening)),
     onFocusChanged: vi.fn(() => Promise.resolve(stopListening)),
@@ -103,8 +101,21 @@ describe("History item actions", () => {
     expect(preventDefault).toHaveBeenCalledOnce();
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("close_preview_window");
-      expect(hideMock).toHaveBeenCalled();
+      expect(invokeMock).toHaveBeenCalledWith("close_history_window");
     });
+  });
+
+  it("uses one blocking runtime snapshot instead of legacy high-frequency polls", async () => {
+    render(<History />);
+    await screen.findByText(entry.description);
+
+    expect(invokeMock).toHaveBeenCalledWith("wait_runtime_snapshot", {
+      sinceRevision: 0,
+      waitMs: 2500,
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("get_version");
+    expect(invokeMock).not.toHaveBeenCalledWith("get_file_progress");
+    expect(invokeMock).not.toHaveBeenCalledWith("get_sync_warning");
   });
 
   it("selects a row and opens the independent preview window with Space", async () => {

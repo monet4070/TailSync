@@ -11,4 +11,4 @@ pub mod protocol;
 pub mod secure;
 pub mod sync;
 pub mod sync_warning;
-pub mod themes;
+pub mod themes_v2;

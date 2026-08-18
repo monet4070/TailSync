@@ -89,3 +89,74 @@
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-tertiary);
 }
+
+/* Theme V2 component states are applied after the page-specific styles so a
+   resolved package remains the source of truth for real controls. */
+.app .search-bar input:focus {
+  color: var(--theme-input-focus-foreground, var(--text-primary));
+  outline-color: var(--theme-input-focus-focus-ring, var(--brand));
+}
+.app .search-bar:focus-within .clear-history-btn {
+  color: var(--theme-button-focus-icon, var(--brand));
+}
+.app .history-item[aria-selected="true"] {
+  background: var(--theme-history-selected-background, var(--brand-soft));
+  color: var(--theme-history-selected-foreground, var(--text-primary));
+  border-color: var(--theme-history-selected-border, transparent);
+}
+.app .history-item.restored {
+  background: var(--theme-history-active-background, var(--bg-active));
+  color: var(--theme-history-active-foreground, var(--text-primary));
+}
+.app .history-item:active {
+  background: var(--theme-history-active-background, var(--bg-active));
+  color: var(--theme-history-active-foreground, var(--text-primary));
+  box-shadow: var(--theme-history-active-shadow, none);
+}
+.app .setting-group-header:active,
+.app .setting-group-header[data-state="active"] {
+  color: var(--theme-section-active-foreground, var(--text-primary));
+}
+.app .setting-group[data-state="active"],
+.app .setting-group[aria-selected="true"] {
+  background: var(--theme-panel-active-background, var(--bg-card));
+  border-color: var(--theme-panel-active-border, var(--border));
+}
+.app .custom-theme-action:active,
+.app .custom-theme-action[aria-pressed="true"] {
+  background: var(--theme-button-active-background, var(--bg-active));
+  color: var(--theme-button-active-foreground, var(--text-primary));
+  border-color: var(--theme-button-active-border, var(--border-strong));
+  box-shadow: var(--theme-button-active-shadow, none);
+}
+.app .custom-theme-action:disabled,
+.app .custom-theme-action[aria-disabled="true"] {
+  background: var(--theme-button-disabled-background, var(--bg-card));
+  color: var(--theme-button-disabled-foreground, var(--text-tertiary));
+  border-color: var(--theme-button-disabled-border, var(--border));
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.app .theme-package-preview-states {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  border-top: 1px solid var(--divider);
+  padding-top: 7px;
+}
+.app .theme-package-preview-state {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+.app .theme-package-preview-state-sample {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  text-align: center;
+}

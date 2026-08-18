@@ -247,94 +247,85 @@ enum TailSyncColorTheme: String, CaseIterable, Identifiable {
 /// One colour token in a theme file: a `#rrggbb` hex string, optionally with
 /// an opacity in [0, 1]. JSON accepts either a bare string or an object
 /// `{ "hex": "...", "opacity": 0.11 }`.
-struct ThemeColorSpec: Equatable {
-    let hex: String
-    let opacity: Double?
+/// Swift-native adapter for already-resolved V2 tokens. Core is the sole
+/// parser for theme packages; this type intentionally has no V1 decoder.
+struct TailSyncThemeComponentTokens: Equatable {
+    let background: UInt32?
+    let backgroundOpacity: Double?
+    let foreground: UInt32?
+    let foregroundOpacity: Double?
+    let secondaryText: UInt32?
+    let secondaryTextOpacity: Double?
+    let border: UInt32?
+    let borderOpacity: Double?
+    let focusRing: UInt32?
+    let focusRingOpacity: Double?
+    let icon: UInt32?
+    let iconOpacity: Double?
+    let accent: UInt32?
+    let accentOpacity: Double?
+    let radius: CGFloat?
+    let padding: CGFloat?
+    let spacing: CGFloat?
+    let fontSize: CGFloat?
+    let fontWeight: CGFloat?
+    let shadowRadius: CGFloat?
+    let shadowY: CGFloat?
+    let shadowOpacity: CGFloat?
 
-    init(hex: String, opacity: Double? = nil) {
-        self.hex = hex
-        self.opacity = opacity
-    }
+    var backgroundColor: Color? { background.map { Color(rgb: $0).opacity(backgroundOpacity ?? 1) } }
+    var foregroundColor: Color? { foreground.map { Color(rgb: $0).opacity(foregroundOpacity ?? 1) } }
+    var secondaryTextColor: Color? { secondaryText.map { Color(rgb: $0).opacity(secondaryTextOpacity ?? 1) } }
+    var borderColor: Color? { border.map { Color(rgb: $0).opacity(borderOpacity ?? 1) } }
+    var focusRingColor: Color? { focusRing.map { Color(rgb: $0).opacity(focusRingOpacity ?? 1) } }
+    var iconColor: Color? { icon.map { Color(rgb: $0).opacity(iconOpacity ?? 1) } }
+    var accentColor: Color? { accent.map { Color(rgb: $0).opacity(accentOpacity ?? 1) } }
 
-    private struct ObjectShape: Decodable {
-        let hex: String
-        let opacity: Double?
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let hex = try? container.decode(String.self) {
-            self.init(hex: hex)
-            return
-        }
-        let object = try container.decode(ObjectShape.self)
-        self.init(hex: object.hex, opacity: object.opacity)
-    }
-
-    /// The palette colour as a UInt32 RGB value, or nil for a malformed hex.
-    var rgb: UInt32? {
-        let body = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
-        guard body.count == 6, let value = UInt32(body, radix: 16) else { return nil }
-        return value
-    }
-
-    /// SwiftUI colour for this validated spec, or nil for a malformed hex.
-    var uiColor: Color? {
-        guard let rgb else { return nil }
-        return Color(rgb: rgb).opacity(opacity ?? 1)
-    }
-}
-
-extension ThemeColorSpec: Decodable {}
-
-/// A complete theme definition shared by built-in and custom themes:
-/// palettes for both modes, metrics, typography, fonts, and localised names.
-/// Decodes directly from the daemon's `list_themes` entry JSON (THEMING.md
-/// §2.2 token names; palette colours as hex strings or `{hex, opacity}`).
-/// Background metadata for one theme mode: image presence, the validated
-/// scrim colour, and the payload MIME type. Deliberately carries no image
-/// bytes — the decoded payload is fetched on demand.
-struct TailSyncThemeBackgroundMeta: Equatable, Decodable {
-    let hasImage: Bool
-    let scrim: ThemeColorSpec?
-    let mimeType: String?
-}
-
-/// Per-mode background metadata for a theme definition. Either mode may be
-/// absent; the two sides are independent.
-struct TailSyncThemeBackground: Equatable, Decodable {
-    let light: TailSyncThemeBackgroundMeta?
-    let dark: TailSyncThemeBackgroundMeta?
-
-    enum CodingKeys: String, CodingKey {
-        case light, dark
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        light = try container.decodeIfPresent(TailSyncThemeBackgroundMeta.self, forKey: .light)
-        dark = try container.decodeIfPresent(TailSyncThemeBackgroundMeta.self, forKey: .dark)
-    }
-
-    init(light: TailSyncThemeBackgroundMeta?, dark: TailSyncThemeBackgroundMeta?) {
-        self.light = light
-        self.dark = dark
+    var withReducedTransparency: TailSyncThemeComponentTokens {
+        TailSyncThemeComponentTokens(
+            background: background,
+            backgroundOpacity: background == nil ? nil : 1,
+            foreground: foreground,
+            foregroundOpacity: foreground == nil ? nil : 1,
+            secondaryText: secondaryText,
+            secondaryTextOpacity: secondaryText == nil ? nil : 1,
+            border: border,
+            borderOpacity: border == nil ? nil : 1,
+            focusRing: focusRing,
+            focusRingOpacity: focusRing == nil ? nil : 1,
+            icon: icon,
+            iconOpacity: icon == nil ? nil : 1,
+            accent: accent,
+            accentOpacity: accent == nil ? nil : 1,
+            radius: radius,
+            padding: padding,
+            spacing: spacing,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            shadowRadius: 0,
+            shadowY: 0,
+            shadowOpacity: 0
+        )
     }
 }
 
-struct TailSyncThemeDefinition: Equatable, Decodable {
+struct TailSyncThemeDefinition: Equatable {
     let id: String
+    let packageDigest: String?
     let name: [String: String]
     let lightPalette: TailSyncThemePalette
     let darkPalette: TailSyncThemePalette
     let metrics: TailSyncThemeMetrics
+    let darkMetrics: TailSyncThemeMetrics
     let typography: TailSyncThemeTypography
+    let darkTypography: TailSyncThemeTypography
     let displayFontName: String?
+    let darkDisplayFontName: String?
     let readingFontName: String?
-    /// Background metadata per mode (presence/scrim/MIME only — never image
-    /// bytes; the payload arrives via ApiClient.getThemeBackground).
-    let background: TailSyncThemeBackground?
-
+    let darkReadingFontName: String?
+    let components: [String: [String: TailSyncThemeComponentTokens]]
+    let darkComponents: [String: [String: TailSyncThemeComponentTokens]]
+    let assetSlots: [String: TailSyncThemeAssetDescriptor]
     func localizedName(preferred: String) -> String {
         name[preferred] ?? name["en"] ?? id
     }
@@ -342,134 +333,172 @@ struct TailSyncThemeDefinition: Equatable, Decodable {
     init(
         id: String,
         name: [String: String],
+        packageDigest: String? = nil,
         lightPalette: TailSyncThemePalette,
         darkPalette: TailSyncThemePalette,
         metrics: TailSyncThemeMetrics,
+        darkMetrics: TailSyncThemeMetrics? = nil,
         typography: TailSyncThemeTypography,
+        darkTypography: TailSyncThemeTypography? = nil,
         displayFontName: String?,
+        darkDisplayFontName: String? = nil,
         readingFontName: String?,
-        background: TailSyncThemeBackground? = nil
+        darkReadingFontName: String? = nil,
+        components: [String: [String: TailSyncThemeComponentTokens]] = [:],
+        darkComponents: [String: [String: TailSyncThemeComponentTokens]] = [:],
+        assetSlots: [String: TailSyncThemeAssetDescriptor] = [:]
     ) {
         self.id = id
         self.name = name
+        self.packageDigest = packageDigest
         self.lightPalette = lightPalette
         self.darkPalette = darkPalette
         self.metrics = metrics
+        self.darkMetrics = darkMetrics ?? metrics
         self.typography = typography
+        self.darkTypography = darkTypography ?? typography
         self.displayFontName = displayFontName
+        self.darkDisplayFontName = darkDisplayFontName ?? displayFontName
         self.readingFontName = readingFontName
-        self.background = background
+        self.darkReadingFontName = darkReadingFontName ?? readingFontName
+        self.components = components
+        self.darkComponents = darkComponents
+        self.assetSlots = assetSlots
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case id, name, palette, metrics, typography, fonts, background
-    }
+}
 
-    private enum PaletteKeys: String, CodingKey {
-        case light, dark
-    }
-
-    private enum FontKeys: String, CodingKey {
-        case display, reading
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        name = try container.decode([String: String].self, forKey: .name)
-        let paletteContainer = try container.nestedContainer(keyedBy: PaletteKeys.self, forKey: .palette)
-        lightPalette = try Self.decodePalette(from: paletteContainer, key: .light)
-        darkPalette = try Self.decodePalette(from: paletteContainer, key: .dark)
-        metrics = try container.decode(TailSyncThemeMetrics.self, forKey: .metrics)
-        typography = try container.decode(TailSyncThemeTypography.self, forKey: .typography)
-        let fonts = try container.nestedContainer(keyedBy: FontKeys.self, forKey: .fonts)
-        displayFontName = try fonts.decodeIfPresent(String.self, forKey: .display)
-        readingFontName = try fonts.decodeIfPresent(String.self, forKey: .reading)
-        background = try container.decodeIfPresent(
-            TailSyncThemeBackground.self, forKey: .background)
-    }
-
-    /// Map the CSS token names (THEMING.md §2.2) onto the Swift palette.
-    /// Missing or malformed required tokens reject the whole definition so a
-    /// broken entry can never render as a half-applied theme.
-    private static func decodePalette(
-        from container: KeyedDecodingContainer<PaletteKeys>,
-        key: PaletteKeys
-    ) throws -> TailSyncThemePalette {
-        let tokens = try container.decode([String: ThemeColorSpec].self, forKey: key)
-        func required(_ token: String) throws -> ThemeColorSpec {
-            guard let spec = tokens[token] else {
-                throw DecodingError.keyNotFound(
-                    DynamicKey(token),
-                    DecodingError.Context(
-                        codingPath: container.codingPath,
-                        debugDescription: "Palette is missing token \(token)"
-                    )
-                )
-            }
-            guard spec.rgb != nil else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: container.codingPath,
-                        debugDescription: "Palette token \(token) has invalid hex \(spec.hex)"
-                    )
-                )
-            }
-            return spec
-        }
-        func color(_ token: String) throws -> UInt32 {
-            try required(token).rgb!
-        }
-        func opacity(_ token: String) throws -> Double {
-            try required(token).opacity ?? 1
-        }
-        return TailSyncThemePalette(
-            accent: try color("brand"),
-            accentContrast: try color("brandText"),
-            window: try color("bgWindow"),
-            surface: try color("bgCard"),
-            softSurface: try color("bgInput"),
-            raised: try color("bgRaised"),
-            textPrimary: try color("textPrimary"),
-            textSecondary: try color("textSecondary"),
-            textTertiary: try color("textTertiary"),
-            border: try color("borderStrong"),
-            divider: try color("divider"),
-            positive: try color("green"),
-            warning: try color("orange"),
-            toast: try color("bgToast"),
-            toastText: try color("textToast"),
-            softSurfaceOpacity: try opacity("bgInput"),
-            textPrimaryOpacity: try opacity("textPrimary"),
-            textSecondaryOpacity: try opacity("textSecondary"),
-            textTertiaryOpacity: try opacity("textTertiary"),
-            borderOpacity: try opacity("borderStrong"),
-            dividerOpacity: try opacity("divider"),
-            toastOpacity: try opacity("bgToast")
-        )
-    }
-
-    private struct DynamicKey: CodingKey {
-        let stringValue: String
-        init(_ string: String) { self.stringValue = string }
-        init?(stringValue: String) { self.stringValue = stringValue }
-        init?(intValue: Int) { nil }
-        var intValue: Int? { nil }
-    }
+struct TailSyncThemeAssetDescriptor: Equatable {
+    let slot: String
+    let key: String
+    let digest: String
+    let mimeType: String
+    let bytes: Int
+    let width: Int
+    let height: Int
 }
 
 extension TailSyncThemeDefinition {
-    /// Scrim of any mode that carries an image (light preferred), for the
-    /// settings-page background indicator. Metadata only — never triggers an
-    /// image fetch. Mirrors the Windows-side `backgroundIndicator` semantics.
-    var backgroundIndicatorScrim: ThemeColorSpec? {
-        if let light = background?.light, light.hasImage, light.scrim != nil {
-            return light.scrim
+    static func resolvedV2(id: String, packageDigest: String? = nil, light: [String: Any], dark: [String: Any], assetSlots: [String: TailSyncThemeAssetDescriptor] = [:]) -> TailSyncThemeDefinition {
+        func palette(_ tokens: [String: Any], fallback: TailSyncThemePalette) -> TailSyncThemePalette {
+            func parsed(_ value: Any?) -> (UInt32, Double)? {
+                guard let text = value as? String else { return nil }
+                if text == "system", let accent = NSColor.controlAccentColor.usingColorSpace(.deviceRGB) {
+                    return ((UInt32((accent.redComponent * 255).rounded()) << 16) | (UInt32((accent.greenComponent * 255).rounded()) << 8) | UInt32((accent.blueComponent * 255).rounded()), Double(accent.alphaComponent))
+                }
+                if text.hasPrefix("#") {
+                    let hex = String(text.dropFirst())
+                    guard hex.count == 6 || hex.count == 8, let value = UInt32(hex, radix: 16) else { return nil }
+                    return hex.count == 8 ? (value >> 8, Double(value & 0xFF) / 255) : (value, 1)
+                }
+                guard text.hasPrefix("rgba("), text.hasSuffix(")") else { return nil }
+                let parts = text.dropFirst(5).dropLast().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                guard parts.count == 4, let r = Double(parts[0]), let g = Double(parts[1]), let b = Double(parts[2]), let alpha = Double(parts[3]), (0...255).contains(r), (0...255).contains(g), (0...255).contains(b), (0...1).contains(alpha) else { return nil }
+                return ((UInt32(r.rounded()) << 16) | (UInt32(g.rounded()) << 8) | UInt32(b.rounded()), alpha)
+            }
+            func value(_ path: [String]) -> (UInt32, Double)? { var raw: Any = tokens; for key in path { guard let map = raw as? [String: Any], let next = map[key] else { return nil }; raw = next }; return parsed(raw) }
+            func color(_ path: [String], _ fallback: UInt32) -> UInt32 { value(path)?.0 ?? fallback }
+            func opacity(_ path: [String], _ fallback: Double) -> Double { value(path)?.1 ?? fallback }
+            return TailSyncThemePalette(
+                accent: color(["colors", "accent", "default"], fallback.accent),
+                accentContrast: color(["colors", "accent", "onAccent"], fallback.accentContrast),
+                window: color(["colors", "background", "canvas"], fallback.window),
+                surface: color(["colors", "background", "surface"], fallback.surface),
+                softSurface: color(["colors", "background", "input"], fallback.softSurface),
+                raised: color(["colors", "background", "raised"], fallback.raised),
+                textPrimary: color(["colors", "text", "primary"], fallback.textPrimary),
+                textSecondary: color(["colors", "text", "secondary"], fallback.textSecondary),
+                textTertiary: color(["colors", "text", "tertiary"], fallback.textTertiary),
+                border: color(["colors", "border", "default"], fallback.border),
+                divider: color(["colors", "border", "divider"], fallback.divider),
+                positive: color(["colors", "status", "positive"], fallback.positive),
+                warning: color(["colors", "status", "warning"], fallback.warning),
+                toast: color(["colors", "background", "toast"], fallback.toast),
+                toastText: color(["colors", "text", "toast"], fallback.toastText),
+                accentOpacity: opacity(["colors", "accent", "default"], fallback.accentOpacity),
+                accentContrastOpacity: opacity(["colors", "accent", "onAccent"], fallback.accentContrastOpacity),
+                windowOpacity: opacity(["colors", "background", "canvas"], fallback.windowOpacity),
+                surfaceOpacity: opacity(["colors", "background", "surface"], fallback.surfaceOpacity),
+                softSurfaceOpacity: opacity(["colors", "background", "input"], fallback.softSurfaceOpacity),
+                raisedOpacity: opacity(["colors", "background", "raised"], fallback.raisedOpacity),
+                textPrimaryOpacity: opacity(["colors", "text", "primary"], fallback.textPrimaryOpacity),
+                textSecondaryOpacity: opacity(["colors", "text", "secondary"], fallback.textSecondaryOpacity),
+                textTertiaryOpacity: opacity(["colors", "text", "tertiary"], fallback.textTertiaryOpacity),
+                borderOpacity: opacity(["colors", "border", "default"], fallback.borderOpacity),
+                dividerOpacity: opacity(["colors", "border", "divider"], fallback.dividerOpacity),
+                positiveOpacity: opacity(["colors", "status", "positive"], fallback.positiveOpacity),
+                warningOpacity: opacity(["colors", "status", "warning"], fallback.warningOpacity),
+                toastOpacity: opacity(["colors", "background", "toast"], fallback.toastOpacity),
+                toastTextOpacity: opacity(["colors", "text", "toast"], fallback.toastTextOpacity),
+                accentHover: color(["colors", "accent", "hover"], fallback.accentHover),
+                accentSoft: color(["colors", "accent", "soft"], fallback.accentSoft),
+                borderStrong: color(["colors", "border", "strong"], fallback.borderStrong),
+                positiveSoft: color(["colors", "status", "positiveSoft"], fallback.positiveSoft),
+                warningSoft: color(["colors", "status", "warningSoft"], fallback.warningSoft),
+                info: color(["colors", "status", "info"], fallback.info),
+                infoSoft: color(["colors", "status", "infoSoft"], fallback.infoSoft),
+                hover: color(["colors", "background", "hover"], fallback.hover),
+                active: color(["colors", "background", "active"], fallback.active),
+                accentHoverOpacity: opacity(["colors", "accent", "hover"], fallback.accentHoverOpacity),
+                accentSoftOpacity: opacity(["colors", "accent", "soft"], fallback.accentSoftOpacity),
+                borderStrongOpacity: opacity(["colors", "border", "strong"], fallback.borderStrongOpacity),
+                positiveSoftOpacity: opacity(["colors", "status", "positiveSoft"], fallback.positiveSoftOpacity),
+                warningSoftOpacity: opacity(["colors", "status", "warningSoft"], fallback.warningSoftOpacity),
+                infoOpacity: opacity(["colors", "status", "info"], fallback.infoOpacity),
+                infoSoftOpacity: opacity(["colors", "status", "infoSoft"], fallback.infoSoftOpacity),
+                hoverOpacity: opacity(["colors", "background", "hover"], fallback.hoverOpacity),
+                activeOpacity: opacity(["colors", "background", "active"], fallback.activeOpacity)
+            )
         }
-        if let dark = background?.dark, dark.hasImage, dark.scrim != nil {
-            return dark.scrim
+        func number(_ tokens: [String: Any], _ path: [String], _ fallback: CGFloat) -> CGFloat { var value: Any = tokens; for key in path { guard let map = value as? [String: Any], let next = map[key] else { return fallback }; value = next }; return (value as? NSNumber).map { CGFloat($0.doubleValue) } ?? fallback }
+        let base = TailSyncColorTheme.tailsync
+        func families(_ tokens: [String: Any], _ path: [String]) -> String? { var value: Any = tokens; for key in path { guard let map=value as? [String: Any], let next=map[key] else { return nil }; value=next }; guard let list=value as? [String], !list.isEmpty else { return nil }; return list.joined(separator: ", ") }
+        func bool(_ tokens: [String: Any], _ path: [String], _ fallback: Bool) -> Bool { var value: Any=tokens; for key in path { guard let map=value as? [String: Any], let next=map[key] else { return fallback }; value=next }; return value as? Bool ?? fallback }
+        func components(_ tokens: [String: Any]) -> [String: [String: TailSyncThemeComponentTokens]] {
+            guard let raw = tokens["components"] as? [String: Any] else { return [:] }
+            func color(_ value: Any?) -> (UInt32, Double)? { guard let text = value as? String else { return nil }; if text == "system", let accent = NSColor.controlAccentColor.usingColorSpace(.deviceRGB) { return ((UInt32((accent.redComponent * 255).rounded()) << 16) | (UInt32((accent.greenComponent * 255).rounded()) << 8) | UInt32((accent.blueComponent * 255).rounded()), Double(accent.alphaComponent)) }; if text.hasPrefix("#") { let hex = String(text.dropFirst()); guard (hex.count == 6 || hex.count == 8), let value = UInt32(hex, radix: 16) else { return nil }; return hex.count == 8 ? (value >> 8, Double(value & 0xFF) / 255) : (value, 1) }; guard text.hasPrefix("rgba("), text.hasSuffix(")") else { return nil }; let parts = text.dropFirst(5).dropLast().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }; guard parts.count == 4, let r = Double(parts[0]), let g = Double(parts[1]), let b = Double(parts[2]), let alpha = Double(parts[3]), (0...255).contains(r), (0...255).contains(g), (0...255).contains(b), (0...1).contains(alpha) else { return nil }; return ((UInt32(r.rounded()) << 16) | (UInt32(g.rounded()) << 8) | UInt32(b.rounded()), alpha) }
+            var result: [String: [String: TailSyncThemeComponentTokens]] = [:]
+            for (name, statesValue) in raw {
+                guard let states = statesValue as? [String: Any] else { continue }
+                var mapped: [String: TailSyncThemeComponentTokens] = [:]
+                for (state, fieldsValue) in states {
+                    guard let fields = fieldsValue as? [String: Any] else { continue }
+                    let number: (String) -> CGFloat? = { key in (fields[key] as? NSNumber).map { CGFloat($0.doubleValue) } }
+                    let typography = fields["typography"] as? [String: Any]
+                    let shadow = fields["shadow"] as? [String: Any]
+                    let nestedNumber: ([String: Any]?, String) -> CGFloat? = { values, key in
+                        (values?[key] as? NSNumber).map { CGFloat($0.doubleValue) }
+                    }
+                    let background = color(fields["background"]), foreground = color(fields["foreground"]), secondaryText = color(fields["secondaryText"]), border = color(fields["border"]), focusRing = color(fields["focusRing"]), icon = color(fields["icon"]), accent = color(fields["accent"])
+                    mapped[state] = TailSyncThemeComponentTokens(
+                        background: background?.0, backgroundOpacity: background?.1,
+                        foreground: foreground?.0, foregroundOpacity: foreground?.1,
+                        secondaryText: secondaryText?.0, secondaryTextOpacity: secondaryText?.1,
+                        border: border?.0, borderOpacity: border?.1,
+                        focusRing: focusRing?.0, focusRingOpacity: focusRing?.1,
+                        icon: icon?.0, iconOpacity: icon?.1,
+                        accent: accent?.0, accentOpacity: accent?.1,
+                        radius: number("radius"),
+                        padding: number("padding"),
+                        spacing: number("spacing"),
+                        fontSize: nestedNumber(typography, "size"),
+                        fontWeight: nestedNumber(typography, "weight"),
+                        shadowRadius: nestedNumber(shadow, "radius"),
+                        shadowY: nestedNumber(shadow, "y"),
+                        shadowOpacity: nestedNumber(shadow, "opacity")
+                    )
+                }
+                result[name] = mapped
+            }
+            return result
         }
-        return nil
+        func metrics(_ tokens: [String: Any]) -> TailSyncThemeMetrics {
+            TailSyncThemeMetrics(cardRadius: number(tokens, ["shape","surfaceRadius"], base.metrics.cardRadius), controlRadius: number(tokens, ["shape","controlRadius"], base.metrics.controlRadius), rowPadding: number(tokens, ["density","row"], base.metrics.rowPadding), shadowRadius: number(tokens, ["effects","shadow","radius"], base.metrics.shadowRadius))
+        }
+        func typography(_ tokens: [String: Any]) -> TailSyncThemeTypography {
+            TailSyncThemeTypography(sectionTitleSize: number(tokens, ["typography","section","size"], base.typography.sectionTitleSize), uppercasesSectionTitles: bool(tokens, ["typography","section","uppercase"], base.typography.uppercasesSectionTitles), searchSize: number(tokens, ["typography","search","size"], base.typography.searchSize), searchUsesDisplayFont: bool(tokens, ["typography","search","useDisplayFont"], false), historyContentSize: number(tokens, ["typography","history","size"], base.typography.historyContentSize))
+        }
+        return TailSyncThemeDefinition(id: id, name: ["en": id], packageDigest: packageDigest, lightPalette: palette(light, fallback: base.palette(for: .light)), darkPalette: palette(dark, fallback: base.palette(for: .dark)), metrics: metrics(light), darkMetrics: metrics(dark), typography: typography(light), darkTypography: typography(dark), displayFontName: families(light, ["typography","display","families"]), darkDisplayFontName: families(dark, ["typography","display","families"]), readingFontName: families(light, ["typography","reading","families"]), darkReadingFontName: families(dark, ["typography","reading","families"]), components: components(light), darkComponents: components(dark), assetSlots: assetSlots)
     }
 }
 
@@ -480,25 +509,39 @@ extension TailSyncThemeDefinition {
 struct TailSyncThemeSelection: Equatable {
     let builtin: TailSyncColorTheme
     let definition: TailSyncThemeDefinition?
+    let reduceTransparency: Bool
+    let interfaceScale: CGFloat
 
-    init(builtin: TailSyncColorTheme, definition: TailSyncThemeDefinition? = nil) {
+    init(
+        builtin: TailSyncColorTheme,
+        definition: TailSyncThemeDefinition? = nil,
+        reduceTransparency: Bool = false,
+        interfaceScale: CGFloat = 1
+    ) {
         self.builtin = builtin
         self.definition = definition
+        self.reduceTransparency = reduceTransparency
+        self.interfaceScale = interfaceScale
     }
 
-    init(storedValue: String, catalogue: [TailSyncThemeDefinition]) {
-        if let definition = catalogue.first(where: { "custom:\($0.id)" == storedValue }) {
-            self.init(builtin: .tailsync, definition: definition)
+    init(
+        storedValue: String,
+        catalogue: [TailSyncThemeDefinition],
+        reduceTransparency: Bool = false,
+        interfaceScale: CGFloat = 1
+    ) {
+        if let definition = catalogue.first(where: { "custom:\($0.id)" == storedValue || $0.id == storedValue }) {
+            self.init(builtin: .tailsync, definition: definition, reduceTransparency: reduceTransparency, interfaceScale: interfaceScale)
         } else if let builtin = TailSyncColorTheme(rawValue: storedValue) {
-            self.init(builtin: builtin)
+            self.init(builtin: builtin, reduceTransparency: reduceTransparency, interfaceScale: interfaceScale)
         } else {
-            self.init(builtin: .tailsync)
+            self.init(builtin: .tailsync, reduceTransparency: reduceTransparency, interfaceScale: interfaceScale)
         }
     }
 
     /// Storage namespace value (`custom:{id}` for custom themes).
     var id: String {
-        definition.map { "custom:\($0.id)" } ?? builtin.rawValue
+        definition.map { $0.id.hasPrefix("custom:") ? $0.id : "custom:\($0.id)" } ?? builtin.rawValue
     }
 
     var localizationKey: String {
@@ -510,31 +553,74 @@ struct TailSyncThemeSelection: Equatable {
     }
 
     var metrics: TailSyncThemeMetrics {
-        definition?.metrics ?? builtin.metrics
+        metrics(for: currentColorScheme)
     }
 
     var typography: TailSyncThemeTypography {
-        definition?.typography ?? builtin.typography
+        typography(for: currentColorScheme)
     }
 
     var displayFontName: String? {
-        definition?.displayFontName ?? builtin.displayFontName
+        displayFontName(for: currentColorScheme)
     }
 
     var readingFontName: String? {
-        definition?.readingFontName ?? builtin.readingFontName
+        readingFontName(for: currentColorScheme)
+    }
+
+    func metrics(for scheme: ColorScheme) -> TailSyncThemeMetrics {
+        let metrics: TailSyncThemeMetrics
+        if let definition {
+            metrics = scheme == .dark ? definition.darkMetrics : definition.metrics
+        } else {
+            metrics = builtin.metrics
+        }
+        return metrics.scaled(by: interfaceScale, removeShadow: reduceTransparency)
+    }
+
+    func typography(for scheme: ColorScheme) -> TailSyncThemeTypography {
+        let typography: TailSyncThemeTypography
+        if let definition {
+            typography = scheme == .dark ? definition.darkTypography : definition.typography
+        } else {
+            typography = builtin.typography
+        }
+        return typography
+    }
+
+    func displayFontName(for scheme: ColorScheme) -> String? {
+        guard let definition else { return builtin.displayFontName }
+        return scheme == .dark ? definition.darkDisplayFontName : definition.displayFontName
+    }
+
+    func readingFontName(for scheme: ColorScheme) -> String? {
+        guard let definition else { return builtin.readingFontName }
+        return scheme == .dark ? definition.darkReadingFontName : definition.readingFontName
+    }
+
+    private var currentColorScheme: ColorScheme {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
+    }
+
+    func component(_ name: String, state: String = "default", scheme: ColorScheme = .light) -> TailSyncThemeComponentTokens? {
+        let values = scheme == .light ? definition?.components : definition?.darkComponents
+        let component = values?[name]?[state]
+        return reduceTransparency ? component?.withReducedTransparency : component
     }
 
     func palette(for scheme: ColorScheme) -> TailSyncThemePalette {
-        if let definition {
-            return scheme == .light ? definition.lightPalette : definition.darkPalette
+        let palette = if let definition {
+            scheme == .light ? definition.lightPalette : definition.darkPalette
+        } else {
+            builtin.palette(for: scheme)
         }
-        return builtin.palette(for: scheme)
+        return reduceTransparency ? palette.withReducedTransparency : palette
     }
 
     func displayFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        if let displayFontName {
-            return .custom(displayFontName, size: size).weight(weight)
+        let size = size * interfaceScale
+        if let resolved = FontCandidates.resolve(displayFontName) {
+            return .custom(resolved, size: size).weight(weight)
         }
         if definition == nil && builtin == .rose {
             return .system(size: size, weight: weight, design: .rounded)
@@ -543,8 +629,9 @@ struct TailSyncThemeSelection: Equatable {
     }
 
     func readingFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        if let readingFontName {
-            return .custom(readingFontName, size: size).weight(weight)
+        let size = size * interfaceScale
+        if let resolved = FontCandidates.resolve(readingFontName) {
+            return .custom(resolved, size: size).weight(weight)
         }
         if definition == nil && builtin == .rose {
             return .system(size: size, weight: weight, design: .rounded)
@@ -553,23 +640,44 @@ struct TailSyncThemeSelection: Equatable {
     }
 }
 
-struct TailSyncThemeMetrics: Equatable, Decodable {
+struct TailSyncThemeMetrics: Equatable {
     let cardRadius: CGFloat
     let controlRadius: CGFloat
     let rowPadding: CGFloat
     let shadowRadius: CGFloat
+
+    func scaled(by scale: CGFloat, removeShadow: Bool) -> TailSyncThemeMetrics {
+        TailSyncThemeMetrics(
+            cardRadius: cardRadius * scale,
+            controlRadius: controlRadius * scale,
+            rowPadding: rowPadding * scale,
+            shadowRadius: removeShadow ? 0 : shadowRadius * scale
+        )
+    }
 }
 
-struct TailSyncThemeTypography: Equatable, Decodable {
+struct TailSyncThemeTypography: Equatable {
     let sectionTitleSize: CGFloat
     let uppercasesSectionTitles: Bool
     let searchSize: CGFloat
     let searchUsesDisplayFont: Bool
     let historyContentSize: CGFloat
+
+    func scaled(by scale: CGFloat) -> TailSyncThemeTypography {
+        TailSyncThemeTypography(
+            sectionTitleSize: sectionTitleSize * scale,
+            uppercasesSectionTitles: uppercasesSectionTitles,
+            searchSize: searchSize * scale,
+            searchUsesDisplayFont: searchUsesDisplayFont,
+            historyContentSize: historyContentSize * scale
+        )
+    }
 }
 
 struct TailSyncThemePalette: Equatable {
     let accent: UInt32
+    let accentHover: UInt32
+    let accentSoft: UInt32
     let accentContrast: UInt32
     let window: UInt32
     let surface: UInt32
@@ -579,18 +687,42 @@ struct TailSyncThemePalette: Equatable {
     let textSecondary: UInt32
     let textTertiary: UInt32
     let border: UInt32
+    let borderStrong: UInt32
     let divider: UInt32
     let positive: UInt32
+    let positiveSoft: UInt32
     let warning: UInt32
+    let warningSoft: UInt32
+    let info: UInt32
+    let infoSoft: UInt32
+    let hover: UInt32
+    let active: UInt32
     let toast: UInt32
     let toastText: UInt32
+    let accentOpacity: Double
+    let accentHoverOpacity: Double
+    let accentSoftOpacity: Double
+    let accentContrastOpacity: Double
+    let windowOpacity: Double
+    let surfaceOpacity: Double
     let softSurfaceOpacity: Double
+    let raisedOpacity: Double
     let textPrimaryOpacity: Double
     let textSecondaryOpacity: Double
     let textTertiaryOpacity: Double
     let borderOpacity: Double
+    let borderStrongOpacity: Double
     let dividerOpacity: Double
+    let positiveOpacity: Double
+    let positiveSoftOpacity: Double
+    let warningOpacity: Double
+    let warningSoftOpacity: Double
+    let infoOpacity: Double
+    let infoSoftOpacity: Double
+    let hoverOpacity: Double
+    let activeOpacity: Double
     let toastOpacity: Double
+    let toastTextOpacity: Double
 
     init(
         accent: UInt32,
@@ -608,15 +740,43 @@ struct TailSyncThemePalette: Equatable {
         warning: UInt32,
         toast: UInt32,
         toastText: UInt32,
+        accentOpacity: Double = 1,
+        accentContrastOpacity: Double = 1,
+        windowOpacity: Double = 1,
+        surfaceOpacity: Double = 1,
         softSurfaceOpacity: Double = 1,
+        raisedOpacity: Double = 1,
         textPrimaryOpacity: Double = 1,
         textSecondaryOpacity: Double = 1,
         textTertiaryOpacity: Double = 1,
         borderOpacity: Double = 1,
         dividerOpacity: Double = 1,
-        toastOpacity: Double = 1
+        positiveOpacity: Double = 1,
+        warningOpacity: Double = 1,
+        toastOpacity: Double = 1,
+        toastTextOpacity: Double = 1,
+        accentHover: UInt32? = nil,
+        accentSoft: UInt32? = nil,
+        borderStrong: UInt32? = nil,
+        positiveSoft: UInt32? = nil,
+        warningSoft: UInt32? = nil,
+        info: UInt32? = nil,
+        infoSoft: UInt32? = nil,
+        hover: UInt32? = nil,
+        active: UInt32? = nil,
+        accentHoverOpacity: Double? = nil,
+        accentSoftOpacity: Double? = nil,
+        borderStrongOpacity: Double? = nil,
+        positiveSoftOpacity: Double? = nil,
+        warningSoftOpacity: Double? = nil,
+        infoOpacity: Double? = nil,
+        infoSoftOpacity: Double? = nil,
+        hoverOpacity: Double? = nil,
+        activeOpacity: Double? = nil
     ) {
         self.accent = accent
+        self.accentHover = accentHover ?? accent
+        self.accentSoft = accentSoft ?? accent
         self.accentContrast = accentContrast
         self.window = window
         self.surface = surface
@@ -626,39 +786,106 @@ struct TailSyncThemePalette: Equatable {
         self.textSecondary = textSecondary
         self.textTertiary = textTertiary
         self.border = border
+        self.borderStrong = borderStrong ?? border
         self.divider = divider
         self.positive = positive
+        self.positiveSoft = positiveSoft ?? positive
         self.warning = warning
+        self.warningSoft = warningSoft ?? warning
+        self.info = info ?? accent
+        self.infoSoft = infoSoft ?? info ?? accent
+        self.hover = hover ?? softSurface
+        self.active = active ?? hover ?? softSurface
         self.toast = toast
         self.toastText = toastText
+        self.accentOpacity = accentOpacity
+        self.accentHoverOpacity = accentHoverOpacity ?? accentOpacity
+        self.accentSoftOpacity = accentSoftOpacity ?? accentOpacity
+        self.accentContrastOpacity = accentContrastOpacity
+        self.windowOpacity = windowOpacity
+        self.surfaceOpacity = surfaceOpacity
         self.softSurfaceOpacity = softSurfaceOpacity
+        self.raisedOpacity = raisedOpacity
         self.textPrimaryOpacity = textPrimaryOpacity
         self.textSecondaryOpacity = textSecondaryOpacity
         self.textTertiaryOpacity = textTertiaryOpacity
         self.borderOpacity = borderOpacity
+        self.borderStrongOpacity = borderStrongOpacity ?? borderOpacity
         self.dividerOpacity = dividerOpacity
+        self.positiveOpacity = positiveOpacity
+        self.positiveSoftOpacity = positiveSoftOpacity ?? positiveOpacity
+        self.warningOpacity = warningOpacity
+        self.warningSoftOpacity = warningSoftOpacity ?? warningOpacity
+        self.infoOpacity = infoOpacity ?? accentOpacity
+        self.infoSoftOpacity = infoSoftOpacity ?? infoOpacity ?? accentOpacity
+        self.hoverOpacity = hoverOpacity ?? softSurfaceOpacity
+        self.activeOpacity = activeOpacity ?? hoverOpacity ?? softSurfaceOpacity
         self.toastOpacity = toastOpacity
+        self.toastTextOpacity = toastTextOpacity
     }
 
     var signature: String {
-        [accent, window, surface, textPrimary, border].map { String($0, radix: 16) }.joined(separator: ":")
+        [accent, accentHover, accentSoft, window, surface, softSurface, hover, active,
+         textPrimary, textSecondary, textTertiary, border, borderStrong, divider,
+         positive, positiveSoft, warning, warningSoft, info, infoSoft, toast, toastText]
+            .map { String($0, radix: 16) }
+            .joined(separator: ":") + ":\(accentOpacity):\(accentHoverOpacity):\(accentSoftOpacity):\(windowOpacity):\(surfaceOpacity):\(softSurfaceOpacity):\(hoverOpacity):\(activeOpacity)"
     }
 
-    var accentColor: Color { Color(rgb: accent) }
-    var accentContrastColor: Color { Color(rgb: accentContrast) }
-    var windowColor: Color { Color(rgb: window) }
-    var surfaceColor: Color { Color(rgb: surface) }
+    var accentColor: Color { Color(rgb: accent).opacity(accentOpacity) }
+    var accentHoverColor: Color { Color(rgb: accentHover).opacity(accentHoverOpacity) }
+    var accentSoftColor: Color { Color(rgb: accentSoft).opacity(accentSoftOpacity) }
+    var accentContrastColor: Color { Color(rgb: accentContrast).opacity(accentContrastOpacity) }
+    var windowColor: Color { Color(rgb: window).opacity(windowOpacity) }
+    var surfaceColor: Color { Color(rgb: surface).opacity(surfaceOpacity) }
     var softSurfaceColor: Color { Color(rgb: softSurface).opacity(softSurfaceOpacity) }
-    var raisedColor: Color { Color(rgb: raised) }
+    var inputColor: Color { softSurfaceColor }
+    var hoverColor: Color { Color(rgb: hover).opacity(hoverOpacity) }
+    var activeColor: Color { Color(rgb: active).opacity(activeOpacity) }
+    var raisedColor: Color { Color(rgb: raised).opacity(raisedOpacity) }
     var primaryColor: Color { Color(rgb: textPrimary).opacity(textPrimaryOpacity) }
     var secondaryColor: Color { Color(rgb: textSecondary).opacity(textSecondaryOpacity) }
     var tertiaryColor: Color { Color(rgb: textTertiary).opacity(textTertiaryOpacity) }
     var borderColor: Color { Color(rgb: border).opacity(borderOpacity) }
+    var borderStrongColor: Color { Color(rgb: borderStrong).opacity(borderStrongOpacity) }
     var dividerColor: Color { Color(rgb: divider).opacity(dividerOpacity) }
-    var positiveColor: Color { Color(rgb: positive) }
-    var warningColor: Color { Color(rgb: warning) }
+    var positiveColor: Color { Color(rgb: positive).opacity(positiveOpacity) }
+    var positiveSoftColor: Color { Color(rgb: positiveSoft).opacity(positiveSoftOpacity) }
+    var warningColor: Color { Color(rgb: warning).opacity(warningOpacity) }
+    var warningSoftColor: Color { Color(rgb: warningSoft).opacity(warningSoftOpacity) }
+    var infoColor: Color { Color(rgb: info).opacity(infoOpacity) }
+    var infoSoftColor: Color { Color(rgb: infoSoft).opacity(infoSoftOpacity) }
     var toastColor: Color { Color(rgb: toast).opacity(toastOpacity) }
-    var toastTextColor: Color { Color(rgb: toastText) }
+    var toastTextColor: Color { Color(rgb: toastText).opacity(toastTextOpacity) }
+
+    var withReducedTransparency: TailSyncThemePalette {
+        TailSyncThemePalette(
+            accent: accent,
+            accentContrast: accentContrast,
+            window: window,
+            surface: surface,
+            softSurface: softSurface,
+            raised: raised,
+            textPrimary: textPrimary,
+            textSecondary: textSecondary,
+            textTertiary: textTertiary,
+            border: border,
+            divider: divider,
+            positive: positive,
+            warning: warning,
+            toast: toast,
+            toastText: toastText,
+            accentHover: accentHover,
+            accentSoft: accentSoft,
+            borderStrong: borderStrong,
+            positiveSoft: positiveSoft,
+            warningSoft: warningSoft,
+            info: info,
+            infoSoft: infoSoft,
+            hover: hover,
+            active: active
+        )
+    }
 }
 
 private struct TailSyncThemeKey: EnvironmentKey {
@@ -671,29 +898,6 @@ private struct TailSyncPaletteKey: EnvironmentKey {
 
 private struct TailSyncSelectionKey: EnvironmentKey {
     static let defaultValue = TailSyncThemeSelection(builtin: .tailsync)
-}
-
-struct TailSyncWindowBackground: View {
-    let palette: TailSyncThemePalette
-    let image: NSImage?
-    let scrim: Color?
-
-    var body: some View {
-        ZStack {
-            palette.windowColor
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            }
-            if let scrim {
-                scrim
-            }
-        }
-        .ignoresSafeArea()
-    }
 }
 
 extension EnvironmentValues {
@@ -713,39 +917,50 @@ extension EnvironmentValues {
     }
 }
 
+enum TailSyncThemeAccessibilityPolicy {
+    static func interfaceScale(for size: DynamicTypeSize) -> CGFloat {
+        switch size {
+        case .xSmall: return 0.82
+        case .small: return 0.90
+        case .medium: return 0.95
+        case .large: return 1
+        case .xLarge: return 1.12
+        case .xxLarge: return 1.24
+        case .xxxLarge: return 1.36
+        case .accessibility1: return 1.5
+        case .accessibility2: return 1.65
+        case .accessibility3: return 1.8
+        case .accessibility4: return 2
+        case .accessibility5: return 2.2
+        @unknown default: return 1
+        }
+    }
+}
+
 private struct TailSyncThemeModifier: ViewModifier {
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     func body(content: Content) -> some View {
         // Resolve the stored value against the custom-theme catalogue;
         // unknown custom ids fall back to the default theme at apply time.
         let selection = TailSyncThemeSelection(
             storedValue: loc.colorTheme,
-            catalogue: loc.customThemes
+            catalogue: loc.resolvedV2Themes,
+            reduceTransparency: loc.reduceTransparency,
+            interfaceScale: TailSyncThemeAccessibilityPolicy.interfaceScale(for: dynamicTypeSize)
         )
         let palette = selection.palette(for: colorScheme)
-        let light = colorScheme == .light
-        let backgroundMode = light ? "light" : "dark"
         return content
             .environment(\.tailSyncTheme, selection.builtin)
             .environment(\.tailSyncPalette, palette)
             .environment(\.tailSyncSelection, selection)
             .tint(palette.accentColor)
             .foregroundStyle(palette.primaryColor)
-            .background(
-                // Layered window background: window colour at the bottom,
-                // then the custom theme's image (cover) and its scrim on
-                // top. With no image loaded this is exactly the previous
-                // `palette.windowColor` background.
-                TailSyncWindowBackground(
-                    palette: palette,
-                    image: loc.themeBackgroundImage,
-                    scrim: loc.themeBackgroundScrim
-                )
-            )
-            .task(id: "\(selection.id):\(backgroundMode)") {
-                await loc.loadThemeBackground(for: selection, light: light)
+            .background(palette.windowColor.ignoresSafeArea())
+            .task(id: selection.id) {
+                await loc.loadResolvedV2Theme(loc.colorTheme)
             }
     }
 }

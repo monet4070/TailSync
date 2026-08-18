@@ -1,10 +1,176 @@
 import Foundation
 import AppKit
+import ImageIO
 import SwiftUI
 
 extension Notification.Name {
     static let tailSyncLocaleChanged = Notification.Name("TailSyncLocaleChanged")
     static let tailSyncSettingsChanged = Notification.Name("TailSyncSettingsChanged")
+    static let tailSyncThemeAssetsChanged = Notification.Name("TailSyncThemeAssetsChanged")
+}
+
+struct ThemeResolutionCacheIdentity: Equatable {
+    let themeId: String
+    let packageDigest: String
+    let highContrast: Bool
+
+    static func canReuse(
+        _ cached: Self?,
+        themeId: String,
+        packageDigest: String,
+        highContrast: Bool
+    ) -> Bool {
+        cached == Self(
+            themeId: themeId,
+            packageDigest: packageDigest,
+            highContrast: highContrast
+        )
+    }
+}
+
+enum ThemeAssetImageDecoder {
+    static func pixelLimit(for slot: String) -> Int {
+        switch slot {
+        case "logo": return 96
+        case "emptyState": return 160
+        case "previewPlaceholder": return 192
+        default: return 192
+        }
+    }
+
+    static func decode(_ data: Data, slot: String) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: pixelLimit(for: slot),
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        return NSImage(
+            cgImage: image,
+            size: NSSize(width: image.width, height: image.height)
+        )
+    }
+}
+
+struct ThemeResolutionRequest: Equatable {
+    let identity: ThemeResolutionCacheIdentity
+    let generation: UInt64
+}
+
+struct ThemeAssetLoadRequest: Equatable {
+    let themeId: String
+    let packageDigest: String
+    let generation: UInt64
+}
+
+enum ThemeLoadCommitPolicy {
+    static func canCommitCanvasFallback(
+        selectionGeneration: UInt64,
+        latestSelectionGeneration: UInt64,
+        colorTheme: String,
+        intendedThemeId: String,
+        canvasThemeId: String = "builtin:canvas@1"
+    ) -> Bool {
+        selectionGeneration == latestSelectionGeneration
+            && colorTheme == canvasThemeId
+            && intendedThemeId == canvasThemeId
+    }
+
+    static func canCommitThemeRefresh(
+        requestGeneration: UInt64,
+        latestGeneration: UInt64
+    ) -> Bool {
+        requestGeneration == latestGeneration
+    }
+
+    static func canCommitResolution(
+        _ request: ThemeResolutionRequest,
+        latestGeneration: UInt64?,
+        currentPackageDigest: String?,
+        effectiveHighContrast: Bool
+    ) -> Bool {
+        latestGeneration == request.generation
+            && currentPackageDigest == request.identity.packageDigest
+            && effectiveHighContrast == request.identity.highContrast
+    }
+
+    static func shouldFallbackAfterResolutionFailure(
+        _ request: ThemeResolutionRequest,
+        latestGeneration: UInt64?,
+        activeThemeId: String
+    ) -> Bool {
+        latestGeneration == request.generation
+            && activeThemeId == request.identity.themeId
+    }
+
+    static func canCommitAssets(
+        _ request: ThemeAssetLoadRequest,
+        latestGeneration: UInt64,
+        activeThemeId: String,
+        currentDefinitionDigest: String?,
+        currentDescriptorDigest: String?
+    ) -> Bool {
+        latestGeneration == request.generation
+            && activeThemeId == request.themeId
+            && currentDefinitionDigest == request.packageDigest
+            && currentDescriptorDigest == request.packageDigest
+    }
+}
+
+enum ThemeStartupRetryPolicy {
+    static let maximumAttempts = 20
+    static let delayNanoseconds: UInt64 = 250_000_000
+
+    static func run(
+        maximumAttempts: Int = maximumAttempts,
+        delayNanoseconds: UInt64 = delayNanoseconds,
+        operation: () async -> Bool
+    ) async -> Bool {
+        let attempts = max(1, maximumAttempts)
+        for attempt in 1...attempts {
+            guard !Task.isCancelled else { return false }
+            if await operation() { return true }
+            guard attempt < attempts else { break }
+            do {
+                try await Task.sleep(nanoseconds: delayNanoseconds)
+            } catch {
+                return false
+            }
+        }
+        return false
+    }
+}
+
+enum ThemeCatalogueDisplayPolicy {
+    static func shouldShowFallback(
+        catalogueLoaded: Bool,
+        activeThemeId: String,
+        validThemeIds: [String]
+    ) -> Bool {
+        catalogueLoaded && !validThemeIds.contains(activeThemeId)
+    }
+}
+
+private actor ThemeSettingsWriteCoordinator {
+    private var tail: Task<Bool, Never>?
+
+    func write(_ settings: ApiClient.LocalThemeSettings) async -> Bool {
+        let predecessor = tail
+        let job = Task<Bool, Never> {
+            _ = await predecessor?.value
+            do {
+                try await ApiClient.shared.setLocalThemeSettings(settings)
+                return true
+            } catch {
+                return false
+            }
+        }
+        tail = job
+        return await job.value
+    }
 }
 
 /// Observable localization service.  Reads/watches the language and theme
@@ -21,31 +187,25 @@ final class Loc: ObservableObject {
     @Published var theme: String = "system"
     @Published var colorTheme: String = TailSyncColorTheme.tailsync.rawValue
     @Published var notificationsEnabled: Bool = true
-    /// Custom-theme catalogue from the daemon (validated entries only).
-    @Published var customThemes: [TailSyncThemeDefinition] = []
-    /// Error markers for theme files the daemon skipped.
-    @Published var themeErrors: [ApiClient.ThemeListing.ErrorItem] = []
-    /// Background image + scrim of the active custom theme, loaded on demand
-    /// (nil when the selection has no background).
-    @Published var themeBackgroundImage: NSImage? = nil
-    @Published var themeBackgroundScrim: Color? = nil
-    /// Injectable background fetch (tests substitute deterministic closures;
-    /// production hits the daemon). Input: (theme id, mode).
-    var backgroundFetch: (String, String) async -> ApiClient.ThemeBackgroundPayload? = {
-        (themeId, mode) in
-        await ApiClient.shared.getThemeBackground(themeId: themeId, mode: mode)
-    }
-    /// Monotonic request identity: only the latest request may publish the
-    /// background state. Incremented on the main actor before any await, so
-    /// late results of cancelled or superseded requests are dropped.
-    private var backgroundRequestGeneration = 0
-
-    /// Keep `custom:{id}` preferences as-is (resolved at apply time against
-    /// the catalogue); everything else falls back through the built-in enum.
-    static func normalizeColorTheme(_ value: String) -> String {
-        if value.hasPrefix("custom:") { return value }
-        return TailSyncColorTheme(storedValue: value).rawValue
-    }
+    /// V2 descriptors, including built-in, custom, and invalid packages.
+    @Published var themeDescriptors: [ApiClient.ThemeV2Descriptor] = []
+    @Published var resolvedV2Themes: [TailSyncThemeDefinition] = []
+    @Published var themeAssetImages: [String: NSImage] = [:]
+    @Published var localThemeSettings = ApiClient.LocalThemeSettings(activeThemeId: "builtin:canvas@1", appearance: "system", highContrast: false)
+    @Published private(set) var themeCatalogueLoaded = false
+    @Published private(set) var themeCatalogueLoadFailed = false
+    @Published private(set) var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    @Published private(set) var reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+    private var resolvedV2ThemeCacheIdentities: [String: ThemeResolutionCacheIdentity] = [:]
+    private var nextThemeResolutionGeneration: UInt64 = 0
+    private var latestThemeResolutionGenerations: [String: UInt64] = [:]
+    private var latestThemeAssetGeneration: UInt64 = 0
+    private var nextThemeRefreshGeneration: UInt64 = 0
+    private var latestThemeRefreshGeneration: UInt64 = 0
+    private var nextThemeSelectionGeneration: UInt64 = 0
+    private var latestThemeSelectionGeneration: UInt64 = 0
+    private var intendedThemeId = "builtin:canvas@1"
+    private let themeSettingsWriter = ThemeSettingsWriteCoordinator()
 
     private static let configURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -55,93 +215,316 @@ final class Loc: ObservableObject {
 
     private init() {
         reload()
-        Task { await refreshCustomThemes() }
+        NotificationCenter.default.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshAccessibilityPreferences()
+                await self?.reloadActiveResolvedTheme()
+            }
+        }
+        Task { @MainActor [weak self] in
+            await self?.loadThemeStateWithRetry()
+        }
     }
 
     func reload() {
         if let data = try? Data(contentsOf: Self.configURL),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             lang = obj["language"] as? String ?? fallbackLang()
-            theme = obj["theme"] as? String ?? "system"
-            colorTheme = Self.normalizeColorTheme(obj["color_theme"] as? String ?? "tailsync")
+            // Theme selection is V2 local state and is loaded from core.
+            theme = "system"
+            colorTheme = "builtin:canvas@1"
             notificationsEnabled = obj["notifications_enabled"] as? Bool ?? true
         } else {
             lang = fallbackLang()
             theme = "system"
-            colorTheme = TailSyncColorTheme.tailsync.rawValue
+            colorTheme = "builtin:canvas@1"
             notificationsEnabled = true
         }
         applyTheme()
     }
 
-    /// (Re)load the custom-theme catalogue from the daemon. Called at start
-    /// and after every import/delete so the settings page stays current.
-    func refreshCustomThemes() async {
-        guard let listing = await ApiClient.shared.listThemes() else { return }
-        await MainActor.run {
-            customThemes = listing.custom
-            themeErrors = listing.errors
-        }
-    }
-
-    /// Load (or clear) the background of the active selection for one mode.
-    /// Called by the themed modifier whenever the selection or the effective
-    /// colour scheme changes. Race rules (R002):
-    /// - a monotonic generation marks the request identity; only the latest
-    ///   request may publish image/scrim (or clear them);
-    /// - switching to a selection without a background clears immediately,
-    ///   and any in-flight older request is dropped by the generation check;
-    /// - a failed fetch or failed decode of the *latest* request clears the
-    ///   background so a stale image never lingers.
     @MainActor
-    func loadThemeBackground(for selection: TailSyncThemeSelection, light: Bool) async {
-        backgroundRequestGeneration += 1
-        let generation = backgroundRequestGeneration
-
-        guard let definition = selection.definition else {
-            themeBackgroundImage = nil
-            themeBackgroundScrim = nil
-            return
-        }
-        let meta = light ? definition.background?.light : definition.background?.dark
-        guard let meta, meta.hasImage, let scrim = meta.scrim, let scrimColor = scrim.uiColor else {
-            themeBackgroundImage = nil
-            themeBackgroundScrim = nil
-            return
-        }
-
-        let mode = light ? "light" : "dark"
-        guard let payload = await backgroundFetch(definition.id, mode) else {
-            guard backgroundRequestGeneration == generation else { return }
-            themeBackgroundImage = nil
-            themeBackgroundScrim = nil
-            return
-        }
-        let image = Self.safelyDecodeBackgroundImage(data: payload.data)
-        guard backgroundRequestGeneration == generation else { return }
-        themeBackgroundImage = image
-        themeBackgroundScrim = image == nil ? nil : scrimColor
+    func retryThemeCatalogueLoading() async {
+        themeCatalogueLoadFailed = false
+        await loadThemeStateWithRetry()
     }
 
-    /// Second line of defence behind the daemon's validation: read the image
-    /// dimensions from the container metadata BEFORE any pixel decode and
-    /// refuse anything outside the server-side limits. Never full-decodes
-    /// first and asks questions later.
-    /// Internal for testability (second line of defence behind the daemon's
-    /// validation).
-    static func safelyDecodeBackgroundImage(data: Data) -> NSImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
-                as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? Int,
-              let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              width >= 1, height >= 1,
-              width <= 6000, height <= 6000,
-              width * height <= 24_000_000,
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            return nil
+    @MainActor
+    private func loadThemeStateWithRetry() async {
+        let loaded = await ThemeStartupRetryPolicy.run {
+            guard await self.refreshThemesV2() else { return false }
+            do {
+                let local = try await ApiClient.shared.getLocalThemeSettings()
+                _ = self.beginThemeSelectionIntent(local.activeThemeId)
+                self.localThemeSettings = local
+                self.colorTheme = local.activeThemeId
+                self.theme = local.appearance
+                self.applyTheme()
+                await self.loadResolvedV2Theme(local.activeThemeId)
+                await self.loadThemeAssets(local.activeThemeId)
+                return true
+            } catch {
+                return false
+            }
         }
-        return NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
+        themeCatalogueLoadFailed = !loaded
+    }
+
+    /// Refresh the V2 descriptor list and resolve all selectable entries.
+    @discardableResult
+    @MainActor
+    func refreshThemesV2() async -> Bool {
+        nextThemeRefreshGeneration &+= 1
+        let refreshGeneration = nextThemeRefreshGeneration
+        latestThemeRefreshGeneration = refreshGeneration
+        guard let descriptors = try? await ApiClient.shared.listThemesV2() else { return false }
+        guard ThemeLoadCommitPolicy.canCommitThemeRefresh(
+            requestGeneration: refreshGeneration,
+            latestGeneration: latestThemeRefreshGeneration
+        ) else { return themeCatalogueLoaded }
+        let validIds = Set(descriptors.filter { $0.status == "valid" }.map(\.id))
+        themeDescriptors = descriptors
+        themeCatalogueLoaded = true
+        themeCatalogueLoadFailed = false
+        resolvedV2Themes.removeAll { !validIds.contains($0.id) }
+        resolvedV2ThemeCacheIdentities = resolvedV2ThemeCacheIdentities.filter {
+            validIds.contains($0.key)
+        }
+        latestThemeResolutionGenerations = latestThemeResolutionGenerations.filter {
+            validIds.contains($0.key)
+        }
+        for descriptor in descriptors where descriptor.status == "valid" {
+            guard ThemeLoadCommitPolicy.canCommitThemeRefresh(
+                requestGeneration: refreshGeneration,
+                latestGeneration: latestThemeRefreshGeneration
+            ) else { return themeCatalogueLoaded }
+            let hasStaleDefinition = resolvedV2Themes.contains {
+                $0.id == descriptor.id && $0.packageDigest != descriptor.digest
+            }
+            if hasStaleDefinition {
+                resolvedV2Themes.removeAll { $0.id == descriptor.id }
+                resolvedV2ThemeCacheIdentities.removeValue(forKey: descriptor.id)
+                if descriptor.id == colorTheme {
+                    invalidateThemeAssetLoads()
+                }
+            }
+            await loadResolvedV2Theme(descriptor.id)
+        }
+        return true
+    }
+
+    @MainActor
+    func loadResolvedV2Theme(_ id: String) async {
+        let requestedHighContrast = effectiveHighContrast
+        guard let descriptor = themeDescriptors.first(where: { $0.id == id }) else { return }
+        guard descriptor.status == "valid" else {
+            if id == colorTheme,
+               id == intendedThemeId,
+               id != "builtin:canvas@1" {
+                await persistCanvasFallback()
+            }
+            return
+        }
+        if resolvedV2Themes.contains(where: { $0.id == id && $0.packageDigest == descriptor.digest }),
+           ThemeResolutionCacheIdentity.canReuse(
+               resolvedV2ThemeCacheIdentities[id],
+               themeId: id,
+               packageDigest: descriptor.digest,
+               highContrast: requestedHighContrast
+           ) { return }
+        let request = beginThemeResolution(
+            themeId: id,
+            packageDigest: descriptor.digest,
+            highContrast: requestedHighContrast
+        )
+        guard let definition = await ApiClient.shared.resolveThemeV2(themeId: id, highContrast: requestedHighContrast) else {
+            if id != "builtin:canvas@1",
+               ThemeLoadCommitPolicy.shouldFallbackAfterResolutionFailure(
+                   request,
+                   latestGeneration: latestThemeResolutionGenerations[id],
+                   activeThemeId: intendedThemeId
+               ) {
+                await persistCanvasFallback()
+            }
+            return
+        }
+        let currentDigest = themeDescriptors.first {
+            $0.id == id && $0.status == "valid"
+        }?.digest
+        guard definition.id == id,
+              definition.packageDigest == request.identity.packageDigest,
+              ThemeLoadCommitPolicy.canCommitResolution(
+                  request,
+                  latestGeneration: latestThemeResolutionGenerations[id],
+                  currentPackageDigest: currentDigest,
+                  effectiveHighContrast: effectiveHighContrast
+              ) else { return }
+        resolvedV2Themes.removeAll { $0.id == id }
+        resolvedV2Themes.append(definition)
+        resolvedV2ThemeCacheIdentities[id] = request.identity
+    }
+
+    @MainActor
+    func syncLocalThemeSettings() async {
+        let selectionGeneration = latestThemeSelectionGeneration
+        guard let settings = try? await ApiClient.shared.getLocalThemeSettings() else { return }
+        guard latestThemeSelectionGeneration == selectionGeneration else { return }
+        _ = beginThemeSelectionIntent(settings.activeThemeId)
+        localThemeSettings = settings
+        colorTheme = settings.activeThemeId
+        theme = settings.appearance
+        applyTheme()
+        await loadResolvedV2Theme(settings.activeThemeId)
+        await loadThemeAssets(settings.activeThemeId)
+    }
+
+    @MainActor
+    private var effectiveHighContrast: Bool {
+        localThemeSettings.highContrast || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+    }
+
+    @MainActor
+    private func refreshAccessibilityPreferences() {
+        reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+    }
+
+    @MainActor
+    private func reloadActiveResolvedTheme() async {
+        let activeId = colorTheme
+        resolvedV2Themes.removeAll { $0.id == activeId }
+        resolvedV2ThemeCacheIdentities.removeValue(forKey: activeId)
+        invalidateThemeAssetLoads()
+        await loadResolvedV2Theme(activeId)
+        await loadThemeAssets(activeId)
+    }
+
+    @MainActor
+    func reloadActiveThemeAfterPackageChange() async {
+        await reloadActiveResolvedTheme()
+    }
+
+    @MainActor
+    func selectLocalTheme(id: String, appearance: String? = nil) async {
+        let next = ApiClient.LocalThemeSettings(activeThemeId: id, appearance: appearance ?? localThemeSettings.appearance, highContrast: localThemeSettings.highContrast)
+        let selectionGeneration = beginThemeSelectionIntent(id)
+        let persisted = await themeSettingsWriter.write(next)
+        guard latestThemeSelectionGeneration == selectionGeneration else { return }
+        guard persisted else {
+            await persistCanvasFallback()
+            return
+        }
+        localThemeSettings = next; colorTheme = id; theme = next.appearance; applyTheme()
+        await loadResolvedV2Theme(id)
+        await loadThemeAssets(id)
+    }
+
+    @MainActor
+    private func persistCanvasFallback() async {
+        let canvas = ApiClient.LocalThemeSettings(activeThemeId: "builtin:canvas@1", appearance: localThemeSettings.appearance, highContrast: localThemeSettings.highContrast)
+        let selectionGeneration = beginThemeSelectionIntent(canvas.activeThemeId)
+        _ = await themeSettingsWriter.write(canvas)
+        guard latestThemeSelectionGeneration == selectionGeneration else { return }
+        localThemeSettings = canvas; colorTheme = canvas.activeThemeId
+        await loadResolvedV2Theme(canvas.activeThemeId)
+        guard ThemeLoadCommitPolicy.canCommitCanvasFallback(
+            selectionGeneration: selectionGeneration,
+            latestSelectionGeneration: latestThemeSelectionGeneration,
+            colorTheme: colorTheme,
+            intendedThemeId: intendedThemeId
+        ) else { return }
+        themeAssetImages = [:]
+        NotificationCenter.default.post(name: .tailSyncThemeAssetsChanged, object: nil)
+    }
+
+    @MainActor
+    private func loadThemeAssets(_ id: String) async {
+        guard id == colorTheme, id == intendedThemeId else { return }
+        latestThemeAssetGeneration &+= 1
+        let generation = latestThemeAssetGeneration
+        guard let definition = resolvedV2Themes.first(where: { $0.id == id }) else {
+            clearThemeAssetsIfCurrent(themeId: id, generation: generation)
+            return
+        }
+        var loaded: [String: NSImage] = [:]
+        guard let packageDigest = definition.packageDigest else {
+            clearThemeAssetsIfCurrent(themeId: id, generation: generation)
+            return
+        }
+        let request = ThemeAssetLoadRequest(
+            themeId: id,
+            packageDigest: packageDigest,
+            generation: generation
+        )
+        for (slot, descriptor) in definition.assetSlots {
+            guard ["logo", "emptyState", "previewPlaceholder"].contains(slot), descriptor.bytes <= 10 * 1024 * 1024 else { continue }
+            if let data = try? await ApiClient.shared.getThemeAssetSlot(themeId: id, digest: packageDigest, slot: slot),
+               data.count == descriptor.bytes,
+               let image = ThemeAssetImageDecoder.decode(data, slot: slot) {
+                loaded[slot] = image
+            }
+            guard latestThemeAssetGeneration == generation, colorTheme == id else { return }
+        }
+        let currentDefinitionDigest = resolvedV2Themes.first { $0.id == id }?.packageDigest
+        let currentDescriptorDigest = themeDescriptors.first {
+            $0.id == id && $0.status == "valid"
+        }?.digest
+        guard ThemeLoadCommitPolicy.canCommitAssets(
+            request,
+            latestGeneration: latestThemeAssetGeneration,
+            activeThemeId: intendedThemeId,
+            currentDefinitionDigest: currentDefinitionDigest,
+            currentDescriptorDigest: currentDescriptorDigest
+        ) else { return }
+        themeAssetImages = loaded
+        NotificationCenter.default.post(name: .tailSyncThemeAssetsChanged, object: nil)
+    }
+
+    @MainActor
+    private func beginThemeResolution(
+        themeId: String,
+        packageDigest: String,
+        highContrast: Bool
+    ) -> ThemeResolutionRequest {
+        nextThemeResolutionGeneration &+= 1
+        latestThemeResolutionGenerations[themeId] = nextThemeResolutionGeneration
+        return ThemeResolutionRequest(
+            identity: ThemeResolutionCacheIdentity(
+                themeId: themeId,
+                packageDigest: packageDigest,
+                highContrast: highContrast
+            ),
+            generation: nextThemeResolutionGeneration
+        )
+    }
+
+    @MainActor
+    private func invalidateThemeAssetLoads() {
+        latestThemeAssetGeneration &+= 1
+    }
+
+    @MainActor
+    private func beginThemeSelectionIntent(_ themeId: String) -> UInt64 {
+        nextThemeSelectionGeneration &+= 1
+        latestThemeSelectionGeneration = nextThemeSelectionGeneration
+        intendedThemeId = themeId
+        latestThemeResolutionGenerations.removeValue(forKey: colorTheme)
+        latestThemeResolutionGenerations.removeValue(forKey: themeId)
+        invalidateThemeAssetLoads()
+        return nextThemeSelectionGeneration
+    }
+
+    @MainActor
+    private func clearThemeAssetsIfCurrent(themeId: String, generation: UInt64) {
+        guard latestThemeAssetGeneration == generation,
+              colorTheme == themeId,
+              intendedThemeId == themeId else { return }
+        themeAssetImages = [:]
+        NotificationCenter.default.post(name: .tailSyncThemeAssetsChanged, object: nil)
     }
 
     private func fallbackLang() -> String {
@@ -266,16 +649,37 @@ final class Loc: ObservableObject {
             "settings.colorTheme.forest": "Ledger",
             "settings.colorTheme.rose": "Aura",
             "settings.colorTheme.high-contrast": "Mono",
-            "settings.customThemes": "Custom themes",
-            "settings.customThemesDescription": "JSON theme files from the themes folder, alongside the built-in set",
-            "settings.customThemeImport": "Import theme",
-            "settings.customThemeImportTitle": "Select a theme file",
-            "settings.customThemeOpenFolder": "Open themes folder",
-            "settings.customThemeDelete": "Delete",
-            "settings.customThemeDeleteTitle": "Delete this theme?",
-            "settings.customThemeInvalid": "Invalid",
-            "settings.customThemeHasBackground": "Background image",
-            "settings.customThemeFallback": "This theme file is not available on this device; using the default theme",
+            "settings.themePackages": "Theme packages",
+            "settings.themePackagesDescription": "Built-in and installed Theme V2 packages",
+            "settings.themePackageImport": "Import theme",
+            "settings.themePackageImportTitle": "Select a theme package",
+            "settings.themePackageInstall": "Install",
+            "settings.themePackageUpdate": "Update",
+            "settings.themePackageUpdateTitle": "Select an updated theme package",
+            "settings.themePackageCandidateVersion": "Candidate version",
+            "settings.themePackageReplaceTitle": "Replace the installed theme with the same version?",
+            "settings.themePackageDowngradeTitle": "Install an older version of this theme?",
+            "settings.themePackageRollback": "Roll back",
+            "settings.themePackageRollbackTitle": "Roll back this theme?",
+            "settings.themePackagePreview": "Theme package preview",
+            "settings.themePreviewLight": "Light",
+            "settings.themePreviewDark": "Dark",
+            "settings.themePreviewHighLight": "High contrast light",
+            "settings.themePreviewHighDark": "High contrast dark",
+            "settings.themePreviewSearch": "Focused search",
+            "settings.themePreviewHover": "Hovered history row",
+            "settings.themePreviewSelected": "Selected history row",
+            "settings.themePreviewStateDefault": "Default",
+            "settings.themePreviewStateHover": "Hover",
+            "settings.themePreviewStateActive": "Active",
+            "settings.themePreviewStateSelected": "Selected",
+            "settings.themePreviewStateDisabled": "Disabled",
+            "settings.themePreviewStateFocus": "Focus",
+            "settings.themePackageIdMismatch": "The update package belongs to a different theme.",
+            "settings.themePackageDelete": "Delete",
+            "settings.themePackageDeleteTitle": "Delete this theme?",
+            "settings.themePackageBuiltIn": "Built-in",
+            "settings.themePackageFallback": "This theme package is not available on this device; using the default theme",
             "settings.selected": "Selected",
             "settings.language": "Language",
             "settings.saved": "Settings saved",
@@ -458,16 +862,37 @@ final class Loc: ObservableObject {
             "settings.colorTheme.forest": "书页 Ledger",
             "settings.colorTheme.rose": "柔光 Aura",
             "settings.colorTheme.high-contrast": "单色 Mono",
-            "settings.customThemes": "自定义主题",
-            "settings.customThemesDescription": "主题文件夹中的 JSON 主题文件，与内置主题并列展示",
-            "settings.customThemeImport": "导入主题",
-            "settings.customThemeImportTitle": "选择主题文件",
-            "settings.customThemeOpenFolder": "打开主题文件夹",
-            "settings.customThemeDelete": "删除",
-            "settings.customThemeDeleteTitle": "确定删除此主题？",
-            "settings.customThemeInvalid": "无效",
-            "settings.customThemeHasBackground": "含背景图",
-            "settings.customThemeFallback": "此主题文件在本设备不可用，已使用默认主题",
+            "settings.themePackages": "主题包",
+            "settings.themePackagesDescription": "内置与已安装的 Theme V2 主题包",
+            "settings.themePackageImport": "导入主题",
+            "settings.themePackageImportTitle": "选择主题包",
+            "settings.themePackageInstall": "安装",
+            "settings.themePackageUpdate": "更新",
+            "settings.themePackageUpdateTitle": "选择更新后的主题包",
+            "settings.themePackageCandidateVersion": "候选版本",
+            "settings.themePackageReplaceTitle": "确认使用同版本主题包替换当前版本？",
+            "settings.themePackageDowngradeTitle": "确认安装此主题的较旧版本？",
+            "settings.themePackageRollback": "回滚",
+            "settings.themePackageRollbackTitle": "确定回滚此主题？",
+            "settings.themePackagePreview": "主题包预览",
+            "settings.themePreviewLight": "浅色",
+            "settings.themePreviewDark": "深色",
+            "settings.themePreviewHighLight": "高对比度浅色",
+            "settings.themePreviewHighDark": "高对比度深色",
+            "settings.themePreviewSearch": "搜索框聚焦",
+            "settings.themePreviewHover": "历史记录悬停",
+            "settings.themePreviewSelected": "历史记录选中",
+            "settings.themePreviewStateDefault": "默认",
+            "settings.themePreviewStateHover": "悬停",
+            "settings.themePreviewStateActive": "按下",
+            "settings.themePreviewStateSelected": "选中",
+            "settings.themePreviewStateDisabled": "禁用",
+            "settings.themePreviewStateFocus": "聚焦",
+            "settings.themePackageIdMismatch": "更新包属于另一个主题。",
+            "settings.themePackageDelete": "删除",
+            "settings.themePackageDeleteTitle": "确定删除此主题？",
+            "settings.themePackageBuiltIn": "内置",
+            "settings.themePackageFallback": "此主题包在本设备不可用，已使用默认主题",
             "settings.selected": "已选择",
             "settings.language": "语言",
             "settings.saved": "设置已保存",

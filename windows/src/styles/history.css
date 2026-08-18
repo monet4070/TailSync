@@ -1155,6 +1155,14 @@ html, body {
   fill: none;
 }
 
+.empty-state-illustration.has-theme-image {
+  background-color: transparent;
+  background-image: var(--theme-empty-state-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
 .empty-state-title {
   font-family: var(--font-display);
   font-size: 14px;

@@ -1,299 +1,86 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  getThemeBackground,
-  listThemes,
-  type ThemeBackgroundPayload,
-  type ThemeEntry,
-  type ThemeErrorItem,
-} from "../tailsyncClient";
-import {
-  allCustomThemeProperties,
-  backgroundCssPairs,
-  buildThemeCss,
-} from "../utils/themeCss";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getLocalThemeSettingsV2, getThemeAssetSlot, resolveThemeV2, setLocalThemeSettingsV2 } from "../tailsyncClient";
+import { themeV2CssPairs, themeV2CssProperties } from "../utils/themeV2Css";
 
 export type ThemePreference = "light" | "dark" | "system";
-export const COLOR_THEMES = [
-  "tailsync",
-  "ocean",
-  "forest",
-  "rose",
-  "high-contrast",
-] as const;
-export type BuiltinColorTheme = (typeof COLOR_THEMES)[number];
+export type ColorTheme = string;
 
-/** Namespace prefix for custom themes stored in settings/localStorage. */
-export const CUSTOM_THEME_PREFIX = "custom:";
-
-const CUSTOM_THEME_PATTERN = /^custom:[a-z0-9][a-z0-9-]{0,31}$/;
-export type CustomColorTheme = `${typeof CUSTOM_THEME_PREFIX}${string}`;
-export type ColorTheme = BuiltinColorTheme | CustomColorTheme;
-
-const STORAGE_KEY = "tailsync-theme";
-const COLOR_THEME_STORAGE_KEY = "tailsync-color-theme";
-
-export function isThemePreference(value: string): value is ThemePreference {
-  return value === "light" || value === "dark" || value === "system";
-}
-
-export function isCustomColorTheme(value: string): value is CustomColorTheme {
-  return CUSTOM_THEME_PATTERN.test(value);
-}
-
-export function isColorTheme(value: string): value is ColorTheme {
-  return COLOR_THEMES.some((theme) => theme === value) || isCustomColorTheme(value);
-}
-
-/** The bare id of a `custom:` value, or null when it is not custom. */
-export function customThemeId(value: string): string | null {
-  return value.startsWith(CUSTOM_THEME_PREFIX)
-    ? value.slice(CUSTOM_THEME_PREFIX.length)
-    : null;
-}
-
-/**
- * Resolve the theme id to apply: built-ins pass through, custom ids that are
- * present in the loaded catalogue pass through, anything else (unknown custom
- * ids, invalid values) falls back to the default theme. The stored value is
- * never rewritten — fallback happens only at apply time.
- */
-export function resolveColorTheme(
-  value: string,
-  availableCustomIds: ReadonlySet<string>,
-): ColorTheme {
-  if (isColorTheme(value)) {
-    const custom = customThemeId(value);
-    if (custom === null || availableCustomIds.has(custom)) return value;
-  }
-  return "tailsync";
-}
-
-function readStoredTheme(): ThemePreference | null {
-  try {
-    if (typeof localStorage === "undefined") return null;
-    const stored = localStorage.getItem(STORAGE_KEY);
-    return stored && isThemePreference(stored) ? stored : null;
-  } catch {
-    return null;
-  }
-}
-
-function readStoredColorTheme(): ColorTheme {
-  try {
-    if (typeof localStorage === "undefined") return "tailsync";
-    const stored = localStorage.getItem(COLOR_THEME_STORAGE_KEY);
-    if (!stored) return "tailsync";
-    if (COLOR_THEMES.some((theme) => theme === stored)) return stored as BuiltinColorTheme;
-    // Unknown custom ids keep their stored value here; the fallback to the
-    // default theme happens when the value is applied (resolveColorTheme).
-    if (isCustomColorTheme(stored)) return stored;
-    return "tailsync";
-  } catch {
-    return "tailsync";
-  }
-}
-
-function storeValue(key: string, value: string) {
-  try {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(key, value);
-    }
-  } catch {
-    // Storage can be unavailable in hardened or private webviews.
-  }
-}
+function isThemePreference(value: string): value is ThemePreference { return value === "light" || value === "dark" || value === "system"; }
 
 export function useTheme() {
-  const [themePreference, setThemeState] = useState<ThemePreference>(
-    () => readStoredTheme() || "system",
-  );
-  const [colorTheme, setColorThemeState] = useState<ColorTheme>(readStoredColorTheme);
-  const [customThemes, setCustomThemes] = useState<ThemeEntry[]>([]);
-  const [themeLoadErrors, setThemeLoadErrors] = useState<ThemeErrorItem[]>([]);
-
-  // Reload the custom-theme catalogue after import/delete operations.
-  const refreshCustomThemes = useCallback(() => {
-    listThemes()
-      .then((listing) => {
-        setCustomThemes(listing.custom);
-        setThemeLoadErrors(listing.errors);
-      })
-      .catch(() => {
-        setCustomThemes([]);
-        setThemeLoadErrors([]);
-      });
-  }, []);
-
-  // Load the custom-theme catalogue from the daemon once per window. A
-  // failing daemon leaves the catalogue empty (fallback behaviour).
+  const [themePreference, setThemeState] = useState<ThemePreference>("system");
+  const [colorTheme, setColorThemeState] = useState<ColorTheme>("builtin:canvas@1");
+  const [highContrastPreference, setHighContrastPreference] = useState(false);
+  const [systemHighContrast, setSystemHighContrast] = useState(() => window.matchMedia("(forced-colors: active)").matches);
+  const [systemReduceTransparency, setSystemReduceTransparency] = useState(() => window.matchMedia("(prefers-reduced-transparency: reduce)").matches);
+  const [themeAssetSlots, setThemeAssetSlots] = useState<Record<string, boolean>>({});
   useEffect(() => {
-    refreshCustomThemes();
-  }, [refreshCustomThemes]);
-
-  const customThemeIds = useMemo(
-    () => new Set(customThemes.map((entry) => entry.id)),
-    [customThemes],
-  );
-
-  // The id actually applied: unknown custom ids fall back to the default.
-  const resolvedColorTheme = useMemo(
-    () => resolveColorTheme(colorTheme, customThemeIds),
-    [colorTheme, customThemeIds],
-  );
-
-  const getEffectiveTheme = useCallback((): "light" | "dark" => {
-    if (themePreference === "system") {
-      return window.matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light";
-    }
-    return themePreference;
-  }, [themePreference]);
-
+    let active = true; let unlisten: (() => void) | undefined;
+    void getLocalThemeSettingsV2().then((settings) => { if (active) { setColorThemeState(settings.activeThemeId); setThemeState(settings.appearance); setHighContrastPreference(Boolean(settings.highContrast)); } }).catch(() => { if (active) setColorThemeState("builtin:canvas@1"); });
+    void listen<{ activeThemeId: string; appearance: ThemePreference; highContrast: boolean }>("theme_changed", ({ payload }) => { if (!active) return; setColorThemeState(payload.activeThemeId || "builtin:canvas@1"); if (isThemePreference(payload.appearance)) setThemeState(payload.appearance); setHighContrastPreference(Boolean(payload.highContrast)); }).then((stop) => { if (active) unlisten = stop; else stop(); });
+    return () => { active = false; unlisten?.(); };
+  }, []);
+  const getEffectiveTheme = useCallback((): "light" | "dark" => themePreference === "system" ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : themePreference, [themePreference]);
   const [effective, setEffective] = useState(getEffectiveTheme);
-
-  // R006: inject the custom theme's CSS variables when a custom theme is
-  // active. Runs before the background effect below so computed styles see
-  // the injected palette. Switching back to a built-in theme (or to an
-  // unknown custom id) removes exactly the injected properties.
+  const highContrast = systemHighContrast || highContrastPreference;
   useLayoutEffect(() => {
-    const app = document.querySelector<HTMLElement>(".app");
-    if (!app) return;
-    const custom = customThemeId(colorTheme);
-    const entry = custom
-      ? customThemes.find((candidate) => candidate.id === custom)
-      : undefined;
-    for (const name of allCustomThemeProperties()) {
-      app.style.removeProperty(name);
-    }
-    if (!entry) return;
-    const { pairs, warnings } = buildThemeCss(entry, effective);
-    for (const warning of warnings) {
-      console.warn(`TailSync: ${warning}`);
-    }
-    for (const [name, value] of pairs) {
-      app.style.setProperty(name, value);
-    }
-  }, [colorTheme, customThemes, effective]);
-
-  // R005: fetch and inject the custom theme's background image + scrim for
-  // the current light/dark mode. The payload comes from the daemon's
-  // validated `get_theme_background`; the data URL is assembled here from
-  // the validated MIME type and bytes only. The palette effect above clears
-  // these variables when the theme or mode changes; an in-flight fetch for
-  // a stale selection is dropped via the cancellation flag. Fetches are
-  // cached for the session and discarded when the theme selection changes.
-  const backgroundCache = useRef(new Map<string, ThemeBackgroundPayload>());
-  useEffect(() => {
-    backgroundCache.current.clear();
-  }, [colorTheme]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const app = document.querySelector<HTMLElement>(".app");
-    if (!app) return;
-    const custom = customThemeId(colorTheme);
-    const entry = custom
-      ? customThemes.find((candidate) => candidate.id === custom)
-      : undefined;
-    const meta = entry?.background
-      ? effective === "light"
-        ? entry.background.light
-        : entry.background.dark
-      : undefined;
-    if (!entry || !meta?.hasImage || !meta.scrim) return;
-    const key = `${entry.id}:${effective}`;
-    const cached = backgroundCache.current.get(key);
-    const apply = (payload: ThemeBackgroundPayload) => {
+    let cancelled = false; const app = document.querySelector<HTMLElement>(".app"); if (!app) return;
+    const assetUrls: string[] = [];
+    const apply = async () => {
+      const resolved = highContrast
+        ? await resolveThemeV2(colorTheme, effective, true)
+        : await resolveThemeV2(colorTheme, effective);
       if (cancelled) return;
-      for (const [name, value] of backgroundCssPairs(meta.scrim!, payload)) {
-        app.style.setProperty(name, value);
-      }
+      themeV2CssProperties.forEach(name => app.style.removeProperty(name));
+      for (const [name, value] of themeV2CssPairs(resolved.tokens as Record<string, any>, { reduceTransparency: systemReduceTransparency, mode: effective })) app.style.setProperty(name, value);
+      app.toggleAttribute("data-theme-high-contrast", highContrast);
+      const slotProperties: Record<string, string> = { logo: "--theme-logo-image", emptyState: "--theme-empty-state-image", previewPlaceholder: "--theme-preview-placeholder-image" };
+      const available: Record<string, boolean> = {};
+      await Promise.all(Object.entries(slotProperties).map(async ([slot, property]) => {
+        const asset = resolved.assetSlots?.[slot];
+        if (!asset) return;
+        try {
+          const bytes = await getThemeAssetSlot(colorTheme, resolved.digest, slot);
+          if (cancelled) return;
+          const url = URL.createObjectURL(new Blob([bytes], { type: asset.mimeType }));
+          assetUrls.push(url);
+          app.style.setProperty(property, `url("${url}")`);
+          available[slot] = true;
+        } catch {
+          // A missing or stale image only falls back to the built-in glyph.
+        }
+      }));
+      if (!cancelled) setThemeAssetSlots(available);
     };
-    if (cached) {
-      apply(cached);
-      return;
-    }
-    getThemeBackground(entry.id, effective)
-      .then((payload) => {
-        if (cancelled || !payload) return;
-        backgroundCache.current.set(key, payload);
-        apply(payload);
-      })
-      .catch(() => {
-        // Daemon unavailable: keep the default flat background.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [colorTheme, customThemes, effective]);
-
-  useLayoutEffect(() => {
-    const app = document.querySelector<HTMLElement>(".app");
-    if (!app) return;
-
-    const styles = getComputedStyle(app);
-    const background =
-      styles.getPropertyValue("--bg-window").trim() || styles.backgroundColor;
-    document.documentElement.style.backgroundColor = background;
-    document.body.style.backgroundColor = background;
-    document.getElementById("root")?.style.setProperty("background-color", background);
-  }, [effective, colorTheme, resolvedColorTheme]);
-
+    void apply().catch(() => { void setLocalThemeSettingsV2({ activeThemeId: "builtin:canvas@1", appearance: themePreference, highContrast: highContrastPreference }); setColorThemeState("builtin:canvas@1"); });
+    return () => { cancelled = true; setThemeAssetSlots({}); app.removeAttribute("data-theme-high-contrast"); assetUrls.forEach(url => URL.revokeObjectURL(url)); };
+  }, [colorTheme, effective, highContrast, highContrastPreference, systemReduceTransparency, themePreference]);
   useEffect(() => {
-    setEffective(getEffectiveTheme());
-  }, [themePreference, getEffectiveTheme]);
-
-  // Listen for system theme changes
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => {
-      if (themePreference === "system") {
-        setEffective(mq.matches ? "dark" : "light");
-      }
-    };
-    mq.addEventListener("change", handler);
+    const mq = window.matchMedia("(forced-colors: active)");
+    const handler = () => setSystemHighContrast(mq.matches);
+    handler(); mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
-  }, [themePreference]);
-
-  // Listen for localStorage changes from *other* windows (e.g. Settings
-  // window changes the theme → History window picks it up).
+  }, []);
   useEffect(() => {
-    const handler = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY && e.newValue && isThemePreference(e.newValue)) {
-        setThemeState(e.newValue);
-      }
-      if (
-        e.key === COLOR_THEME_STORAGE_KEY &&
-        e.newValue &&
-        isColorTheme(e.newValue)
-      ) {
-        setColorThemeState(e.newValue);
-      }
-    };
-    window.addEventListener("storage", handler);
-    return () => window.removeEventListener("storage", handler);
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const app = document.querySelector<HTMLElement>(".app"); if (!app) return;
+    const handler = () => app.toggleAttribute("data-reduced-motion", mq.matches);
+    handler(); mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
   }, []);
-
-  const setTheme = useCallback((t: ThemePreference) => {
-    setThemeState(t);
-    storeValue(STORAGE_KEY, t);
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-transparency: reduce)");
+    const app = document.querySelector<HTMLElement>(".app"); if (!app) return;
+    const handler = () => { setSystemReduceTransparency(mq.matches); app.toggleAttribute("data-reduced-transparency", mq.matches); };
+    handler(); mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
   }, []);
-
-  const setColorTheme = useCallback((value: ColorTheme) => {
-    setColorThemeState(value);
-    storeValue(COLOR_THEME_STORAGE_KEY, value);
-  }, []);
-
-  return {
-    theme: effective,
-    setTheme,
-    themePreference,
-    colorTheme,
-    setColorTheme,
-    resolvedColorTheme,
-    customThemes,
-    themeLoadErrors,
-    refreshCustomThemes,
-  };
+  useLayoutEffect(() => { const app = document.querySelector<HTMLElement>(".app"); if (!app) return; const background = getComputedStyle(app).getPropertyValue("--bg-window").trim() || getComputedStyle(app).backgroundColor; document.documentElement.style.backgroundColor = background; document.body.style.backgroundColor = background; document.getElementById("root")?.style.setProperty("background-color", background); }, [effective, colorTheme]);
+  useEffect(() => { setEffective(getEffectiveTheme()); }, [themePreference, getEffectiveTheme]);
+  useEffect(() => { const mq = window.matchMedia("(prefers-color-scheme: dark)"); const handler = () => { if (themePreference === "system") setEffective(mq.matches ? "dark" : "light"); }; mq.addEventListener("change", handler); return () => mq.removeEventListener("change", handler); }, [themePreference]);
+  const persist = useCallback((activeThemeId: string, appearance: ThemePreference) => { void setLocalThemeSettingsV2({ activeThemeId, appearance, highContrast: highContrastPreference }).catch(() => { setThemeState("system"); setColorThemeState("builtin:canvas@1"); }); }, [highContrastPreference]);
+  const setTheme = useCallback((appearance: ThemePreference) => { setThemeState(appearance); persist(colorTheme, appearance); }, [colorTheme, persist]);
+  const setColorTheme = useCallback((activeThemeId: ColorTheme) => { setColorThemeState(activeThemeId); persist(activeThemeId, themePreference); }, [persist, themePreference]);
+  return { theme: effective, setTheme, themePreference, colorTheme, setColorTheme, resolvedColorTheme: colorTheme, highContrast, themeAssetSlots };
 }

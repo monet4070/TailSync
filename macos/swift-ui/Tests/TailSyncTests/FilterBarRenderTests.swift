@@ -3,6 +3,54 @@ import SwiftUI
 import XCTest
 @testable import TailSync
 
+private struct BuiltinThemeCardGallery: View {
+    private struct Fixture: Identifiable {
+        let id: String
+        let name: String
+        let builtin: TailSyncColorTheme
+    }
+
+    private let fixtures = [
+        Fixture(id: "builtin:canvas@1", name: "画布 Canvas", builtin: .tailsync),
+        Fixture(id: "builtin:flux@1", name: "流光 Flux", builtin: .ocean),
+        Fixture(id: "builtin:ledger@1", name: "书页 Ledger", builtin: .forest),
+        Fixture(id: "builtin:aura@1", name: "柔光 Aura", builtin: .rose),
+        Fixture(id: "builtin:mono@1", name: "单色 Mono", builtin: .highContrast),
+    ]
+
+    let colorScheme: ColorScheme
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 8)], spacing: 8) {
+            ForEach(fixtures) { fixture in
+                ThemeV2CardView(
+                    descriptor: ApiClient.ThemeV2Descriptor(
+                        id: fixture.id,
+                        storageHandle: fixture.id,
+                        source: "builtin",
+                        version: "1.0.0",
+                        digest: fixture.id,
+                        name: ["en": fixture.name],
+                        status: "valid",
+                        diagnostics: []
+                    ),
+                    name: fixture.name,
+                    selected: fixture.id == "builtin:aura@1",
+                    selection: TailSyncThemeSelection(builtin: fixture.builtin),
+                    colorScheme: colorScheme,
+                    onSelect: {},
+                    onUpdate: {},
+                    onRollback: {},
+                    onDelete: {}
+                )
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .environment(\.colorScheme, colorScheme)
+    }
+}
+
 /// Renders the reworked filter bar and the filter menu bodies to PNG files so
 /// the layout can be inspected directly (AC8). Files land in
 /// /tmp/tailsync-filter-render/ — this is a visual self-check, not a pixel
@@ -88,6 +136,62 @@ final class FilterBarRenderTests: XCTestCase {
         }
     }
 
+    func testSearchLayoutExpandsForDisplayTypographyAndAccessibilityScale() {
+        let normal = HistorySearchLayoutPolicy.controlHeight(
+            searchPointSize: 18,
+            interfaceScale: 1
+        )
+        let accessibility = HistorySearchLayoutPolicy.controlHeight(
+            searchPointSize: 18,
+            interfaceScale: 2.2
+        )
+
+        XCTAssertGreaterThan(normal, FilterBarMetrics.controlHeight)
+        XCTAssertGreaterThan(accessibility, normal)
+        XCTAssertLessThanOrEqual(accessibility, HistorySearchLayoutPolicy.maximumControlHeight)
+    }
+
+    @MainActor
+    func testSearchTextFieldStaysInsideItsControlAtMaximumAccessibilityScale() throws {
+        _ = NSApplication.shared
+        let selection = TailSyncThemeSelection(
+            builtin: .tailsync,
+            interfaceScale: 2.2
+        )
+        let size = NSSize(width: 260, height: 72)
+        let control = HistorySearchControl(
+            keyword: .constant(""),
+            onSubmit: {}
+        )
+        .environment(\.colorScheme, .light)
+        .environment(\.tailSyncSelection, selection)
+        .environment(\.tailSyncPalette, selection.palette(for: .light))
+        .frame(width: size.width, height: size.height)
+
+        let host = NSHostingView(rootView: control)
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+
+        let textField = try XCTUnwrap(firstDescendant(of: NSTextField.self, in: host))
+        let frame = textField.convert(textField.bounds, to: host)
+        XCTAssertGreaterThanOrEqual(frame.minX, host.bounds.minX)
+        XCTAssertLessThanOrEqual(frame.maxX, host.bounds.maxX)
+        XCTAssertGreaterThanOrEqual(frame.minY, host.bounds.minY)
+        XCTAssertLessThanOrEqual(frame.maxY, host.bounds.maxY)
+    }
+
+    @MainActor
+    func testRenderBuiltinThemeCardsWithDistinctPresentations() throws {
+        _ = NSApplication.shared
+        for scheme in [ColorScheme.light, ColorScheme.dark] {
+            try renderImageRenderer(
+                BuiltinThemeCardGallery(colorScheme: scheme),
+                name: "theme-cards-\(scheme == .light ? "light" : "dark")",
+                width: 480
+            )
+        }
+    }
+
     @MainActor
     func testRenderCustomDateRangeRow() throws {
         _ = NSApplication.shared
@@ -142,5 +246,13 @@ final class FilterBarRenderTests: XCTestCase {
                 width: 220
             )
         }
+    }
+
+    private func firstDescendant<T: NSView>(of type: T.Type, in root: NSView) -> T? {
+        if let match = root as? T { return match }
+        for child in root.subviews {
+            if let match = firstDescendant(of: type, in: child) { return match }
+        }
+        return nil
     }
 }

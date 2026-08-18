@@ -13,6 +13,7 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
     let viewModel: HistoryPreviewViewModel
 
     var isPreviewVisible: Bool { window?.isVisible == true }
+    var hasAllocatedWindow: Bool { window != nil }
 
     private weak var historyWindow: NSWindow?
     private var window: HistoryPreviewWindow?
@@ -81,7 +82,14 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
     func close() {
         viewModel.close()
         restoreAfterHistoryMiniaturizes = false
-        window?.orderOut(nil)
+        guard let window else { return }
+        if window.isVisible { saveFrameIfNeeded() }
+        window.delegate = nil
+        window.onClosePreview = nil
+        window.onNavigate = nil
+        window.contentViewController = nil
+        self.window = nil
+        window.close()
     }
 
     func closeIfShowing(entryId: Int64) {
@@ -91,14 +99,22 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
     func shutdown() {
         close()
         removeHistoryObservers()
-        window?.delegate = nil
-        window?.close()
-        window = nil
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        close()
-        return false
+        if sender.isVisible { saveFrameIfNeeded() }
+        viewModel.close()
+        restoreAfterHistoryMiniaturizes = false
+        return true
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closingWindow = notification.object as? HistoryPreviewWindow,
+              closingWindow === window else { return }
+        closingWindow.onClosePreview = nil
+        closingWindow.onNavigate = nil
+        closingWindow.contentViewController = nil
+        window = nil
     }
 
     func windowDidMove(_ notification: Notification) {
