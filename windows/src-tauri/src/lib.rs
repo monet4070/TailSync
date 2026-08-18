@@ -302,12 +302,44 @@ fn start_storage_monitor(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> i32 {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    if let Err(error) = run_app() {
-        log::error!("TailSync failed to start: {error}");
-        eprintln!("TailSync failed to start: {error}");
+    match run_app() {
+        Ok(()) => 0,
+        Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
     }
+}
+
+/// Record a fatal startup failure and return the process exit code.
+///
+/// The message goes to the logger and stderr (visible in `tauri:dev`), and
+/// is appended to `{data dir}/startup-error.log` so release builds — which
+/// have no console — still leave a reliable, documented failure trace.
+fn report_startup_failure(data_dir: &std::path::Path, error: &dyn std::error::Error) -> i32 {
+    let message = format!("TailSync failed to start: {error}");
+    log::error!("{message}");
+    eprintln!("{message}");
+    if let Err(log_error) = write_startup_error_log(data_dir, &message) {
+        eprintln!("Could not write startup error log: {log_error}");
+    }
+    1
+}
+
+/// Append one startup-failure line to `{data dir}/startup-error.log`,
+/// creating the data directory when needed.
+fn write_startup_error_log(data_dir: &std::path::Path, message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(data_dir)?;
+    let path = data_dir.join("startup-error.log");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(
+        file,
+        "[{}] {message}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
 }
 
 fn run_app() -> Result<(), Box<dyn std::error::Error>> {
@@ -657,6 +689,42 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         ])
         .run(tauri::generate_context!())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_failure_tests {
+    use super::{report_startup_failure, write_startup_error_log};
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "tailsync-win-{label}-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ))
+    }
+
+    #[test]
+    fn startup_failure_returns_nonzero_and_records_log() {
+        let dir = temp_dir("startup-failure");
+        let error = std::io::Error::other("legacy theme field");
+        let code = report_startup_failure(&dir, &error);
+        assert_eq!(code, 1, "a failed startup must exit with a non-zero code");
+        let log = std::fs::read_to_string(dir.join("startup-error.log")).unwrap();
+        assert!(log.contains("TailSync failed to start: legacy theme field"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_error_log_appends_repeated_failures() {
+        let dir = temp_dir("startup-append");
+        write_startup_error_log(&dir, "first failure").unwrap();
+        write_startup_error_log(&dir, "second failure").unwrap();
+        let log = std::fs::read_to_string(dir.join("startup-error.log")).unwrap();
+        assert!(log.contains("first failure"));
+        assert!(log.contains("second failure"));
+        assert_eq!(log.lines().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[cfg(test)]

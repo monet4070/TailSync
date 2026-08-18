@@ -172,18 +172,25 @@ impl Settings {
             }
             Err(error) => return Err(error.into()),
         };
-        let mut settings: Settings = serde_json::from_str(&data)?;
+        let mut value: serde_json::Value = serde_json::from_str(&data)?;
+        // Pre-V2 builds persisted `theme` and `color_theme` inside
+        // config-v2.json. The struct deliberately rejects them
+        // (deny_unknown_fields), so they are recognized and removed here
+        // before the remaining fields are parsed strictly: any *other*
+        // unknown field still fails the load.
+        let legacy = take_legacy_theme_fields(&mut value);
+        let mut settings: Settings = serde_json::from_value(value.clone())?;
         settings.connection_mode = normalize_connection_mode(settings.connection_mode);
+        if let Some((theme, color_theme)) = legacy {
+            migrate_legacy_theme_fields(path, theme.as_deref(), color_theme.as_deref(), &value)?;
+        }
         Ok(settings)
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = settings_path();
-        // Atomic write: temp file then rename
-        let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, &path)?;
+        write_atomic(&path, &json)?;
         Ok(())
     }
 
@@ -376,6 +383,69 @@ impl Settings {
 
 fn settings_path() -> PathBuf {
     db::get_data_dir().join("config-v2.json")
+}
+
+/// Remove the pre-V2 `theme` and `color_theme` keys from a parsed settings
+/// object, returning them for migration. Only these two fields are ever
+/// tolerated: every other unknown field still fails the strict parse that
+/// runs afterwards.
+fn take_legacy_theme_fields(
+    value: &mut serde_json::Value,
+) -> Option<(Option<String>, Option<String>)> {
+    let serde_json::Value::Object(map) = value else {
+        return None;
+    };
+    let mut take = |key: &str| {
+        map.remove(key).and_then(|removed| match removed {
+            serde_json::Value::String(text) => Some(text),
+            other => {
+                warn!("Legacy {key} field is not a string ({other}); ignoring it");
+                None
+            }
+        })
+    };
+    let theme = take("theme");
+    let color_theme = take("color_theme");
+    (theme.is_some() || color_theme.is_some()).then_some((theme, color_theme))
+}
+
+/// Persist the legacy theme selection into the Theme V2 local settings and,
+/// only once that V2 state is safely on disk, atomically strip the obsolete
+/// fields from `config-v2.json`. The V2 write happens strictly before the
+/// config cleanup, so a failure can never lose the user's theme choice.
+fn migrate_legacy_theme_fields(
+    config_path: &std::path::Path,
+    theme: Option<&str>,
+    color_theme: Option<&str>,
+    cleaned_value: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let base = config_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let outcome = crate::themes_v2::migrate_legacy_theme_selection_at(base, theme, color_theme)?;
+    if matches!(
+        outcome,
+        crate::themes_v2::LegacyThemeMigration::Migrated
+            | crate::themes_v2::LegacyThemeMigration::AlreadyPresent
+    ) {
+        // The V2 selection is on disk (written just now, or already present):
+        // atomically drop the obsolete fields from the config file. A failed
+        // rewrite leaves the original file untouched and is retried on the
+        // next start.
+        write_atomic(config_path, &serde_json::to_string_pretty(cleaned_value)?)?;
+        log::info!("Migrated legacy theme fields to Theme V2 local settings");
+    }
+    Ok(())
+}
+
+/// Atomic write: temp file then rename, so a crash or error never leaves a
+/// truncated config file behind.
+fn write_atomic(path: &std::path::Path, json: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 /// Persist the settings after a user update (T303 extraction). The platform
@@ -1674,6 +1744,268 @@ mod tests {
         assert!(error.to_string().contains("unknown field"));
         let error = serde_json::from_str::<Settings>(r#"{"color_theme":"forest"}"#).unwrap_err();
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    // ─── Legacy theme migration (config-v2.json theme/color_theme → V2) ───
+
+    fn temp_data_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "tailsync-{label}-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ))
+    }
+
+    fn write_config(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("config-v2.json");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn read_v2_local_settings(dir: &std::path::Path) -> crate::themes_v2::LocalThemeSettings {
+        let bytes = std::fs::read(dir.join("themes-v2/local-settings.json")).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// A realistic pre-V2 config carrying every current field plus the two
+    /// obsolete theme fields, exactly as an upgraded user would have it.
+    fn full_legacy_config() -> &'static str {
+        r#"{
+            "notifications_enabled": true,
+            "progress_bar_enabled": false,
+            "sync_enabled": true,
+            "sync_shortcut": "CommandOrControl+Shift+S",
+            "history_shortcut": "CommandOrControl+Shift+H",
+            "history_limit": 250,
+            "storage_root": null,
+            "storage_quota_bytes": 10737418240,
+            "enabled_peers": { "desktop": true, "laptop": false },
+            "language": "zh-CN",
+            "connection_mode": "lan",
+            "trusted_peer_keys": { "desktop": "public-key" },
+            "trusted_peer_addresses": { "desktop": { "lan": "192.168.1.20" } },
+            "paired_peer_endpoints": { "desktop": "192.168.1.20" },
+            "theme": "dark",
+            "color_theme": "forest"
+        }"#
+    }
+
+    #[test]
+    fn legacy_config_with_all_old_fields_loads_and_migrates() {
+        let dir = temp_data_dir("legacy-full");
+        let path = write_config(&dir, full_legacy_config());
+
+        let settings = Settings::load_from_path(&path).unwrap();
+
+        // Every remaining field parses with its original value.
+        assert_eq!(settings.history_limit, 250);
+        assert_eq!(settings.language, "zh-CN");
+        assert_eq!(settings.connection_mode, "lan_only"); // legacy "lan" normalization
+        assert!(!settings.progress_bar_enabled);
+        assert!(settings
+            .enabled_peers
+            .get("desktop")
+            .copied()
+            .unwrap_or(false));
+        assert_eq!(
+            settings
+                .trusted_peer_keys
+                .get("desktop")
+                .map(String::as_str),
+            Some("public-key")
+        );
+
+        // The V2 local selection was created from the legacy fields.
+        let local = read_v2_local_settings(&dir);
+        assert_eq!(local.active_theme_id, "builtin:ledger@1"); // forest -> ledger
+        assert_eq!(local.appearance, "dark");
+        assert!(!local.high_contrast);
+
+        // The config file no longer carries the obsolete fields.
+        let cleaned = std::fs::read_to_string(&path).unwrap();
+        assert!(!cleaned.contains("\"theme\""));
+        assert!(!cleaned.contains("\"color_theme\""));
+        assert!(cleaned.contains("\"history_limit\": 250"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_builtin_theme_mapping_is_exact() {
+        for (legacy, expected) in [
+            ("tailsync", "builtin:canvas@1"),
+            ("ocean", "builtin:flux@1"),
+            ("forest", "builtin:ledger@1"),
+            ("rose", "builtin:aura@1"),
+            ("high-contrast", "builtin:mono@1"),
+        ] {
+            let dir = temp_data_dir("legacy-map");
+            let path = write_config(
+                &dir,
+                &format!(
+                    r#"{{"notifications_enabled": true, "progress_bar_enabled": true,
+                         "history_limit": 100, "enabled_peers": {{}}, "language": "en",
+                         "color_theme": "{legacy}" }}"#
+                ),
+            );
+            Settings::load_from_path(&path).unwrap();
+            assert_eq!(
+                read_v2_local_settings(&dir).active_theme_id,
+                expected,
+                "legacy color_theme {legacy:?} must map to {expected}"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn existing_v2_local_selection_is_not_overwritten() {
+        let dir = temp_data_dir("v2-present");
+        std::fs::create_dir_all(dir.join("themes-v2")).unwrap();
+        let local_path = dir.join("themes-v2/local-settings.json");
+        std::fs::write(
+            &local_path,
+            r#"{"activeThemeId":"builtin:mono@1","appearance":"light","highContrast":true}"#,
+        )
+        .unwrap();
+        let path = write_config(&dir, full_legacy_config());
+
+        let settings = Settings::load_from_path(&path).unwrap();
+        assert_eq!(settings.history_limit, 250);
+
+        let local = read_v2_local_settings(&dir);
+        assert_eq!(local.active_theme_id, "builtin:mono@1");
+        assert_eq!(local.appearance, "light");
+        assert!(local.high_contrast);
+
+        // The config file is still cleaned: the V2 state is authoritative.
+        let cleaned = std::fs::read_to_string(&path).unwrap();
+        assert!(!cleaned.contains("\"theme\""));
+        assert!(!cleaned.contains("\"color_theme\""));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn repeated_migration_is_idempotent() {
+        let dir = temp_data_dir("idempotent");
+        let path = write_config(&dir, full_legacy_config());
+
+        Settings::load_from_path(&path).unwrap();
+        let local_after_first = std::fs::read(dir.join("themes-v2/local-settings.json")).unwrap();
+        let config_after_first = std::fs::read(&path).unwrap();
+
+        // A second load must not rewrite anything or change the outcome.
+        let settings = Settings::load_from_path(&path).unwrap();
+        assert_eq!(settings.history_limit, 250);
+        assert_eq!(
+            std::fs::read(dir.join("themes-v2/local-settings.json")).unwrap(),
+            local_after_first
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), config_after_first);
+        assert_eq!(
+            read_v2_local_settings(&dir).active_theme_id,
+            "builtin:ledger@1"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_custom_theme_falls_back_to_canvas_and_keeps_old_files() {
+        let dir = temp_data_dir("legacy-custom");
+        // A pre-V2 custom theme file, in the old themes directory.
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        let old_theme = dir.join("themes/studio.json");
+        std::fs::write(&old_theme, br#"{"format":1,"id":"studio"}"#).unwrap();
+        let path = write_config(
+            &dir,
+            r#"{"notifications_enabled": true, "progress_bar_enabled": true,
+                "history_limit": 100, "enabled_peers": {}, "language": "en",
+                "theme": "system", "color_theme": "custom:studio"}"#,
+        );
+
+        Settings::load_from_path(&path).unwrap();
+
+        assert_eq!(
+            read_v2_local_settings(&dir).active_theme_id,
+            "builtin:canvas@1"
+        );
+        // The old theme file is preserved byte-for-byte.
+        assert_eq!(
+            std::fs::read(&old_theme).unwrap(),
+            br#"{"format":1,"id":"studio"}"#
+        );
+        // And the legacy directory itself is untouched (no auto-conversion).
+        assert!(!dir.join("themes-v2/studio").exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_legacy_theme_values_fall_back_without_failing() {
+        let dir = temp_data_dir("legacy-lenient");
+        let path = write_config(
+            &dir,
+            r#"{"notifications_enabled": true, "progress_bar_enabled": true,
+                "history_limit": 100, "enabled_peers": {}, "language": "en",
+                "theme": "sepia", "color_theme": "chartreuse"}"#,
+        );
+
+        Settings::load_from_path(&path).unwrap();
+        let local = read_v2_local_settings(&dir);
+        assert_eq!(local.appearance, "system");
+        assert_eq!(local.active_theme_id, "builtin:canvas@1");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn non_theme_unknown_fields_still_error_and_preserve_config() {
+        let dir = temp_data_dir("unknown-field");
+        let original = br#"{"notifications_enabled": true, "progress_bar_enabled": true,
+            "history_limit": 100, "enabled_peers": {}, "language": "en",
+            "theme": "dark", "color_theme": "forest", "bogus_field": true}"#;
+        let path = write_config(&dir, std::str::from_utf8(original).unwrap());
+
+        let error = Settings::load_from_path(&path).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+
+        // Original file preserved; nothing was migrated.
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!dir.join("themes-v2/local-settings.json").exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_config_errors_and_preserves_file() {
+        let dir = temp_data_dir("corrupt");
+        let original = b"{ not valid json";
+        let path = write_config(&dir, std::str::from_utf8(original).unwrap());
+
+        assert!(Settings::load_from_path(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!dir.join("themes-v2").exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn v2_write_failure_errors_and_preserves_config() {
+        let dir = temp_data_dir("write-fail");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A plain file at the themes-v2 path blocks create_dir_all, so the
+        // V2 write cannot succeed — and the config must not be rewritten.
+        std::fs::write(dir.join("themes-v2"), b"not a directory").unwrap();
+        let original = full_legacy_config().as_bytes().to_vec();
+        let path = write_config(&dir, full_legacy_config());
+
+        assert!(Settings::load_from_path(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -248,7 +248,7 @@ fn start_storage_monitor(
 }
 
 #[cfg(target_os = "macos")]
-pub fn run() {
+pub fn run() -> i32 {
     if let Some(operation) = std::env::args()
         .skip(1)
         .collect::<Vec<_>>()
@@ -258,24 +258,57 @@ pub fn run() {
         if let Err(error) = updates::run_macos_updater_helper(&operation) {
             log::error!("TailSync updater helper failed: {error}");
             eprintln!("TailSync updater helper failed: {error}");
+            return 1;
         }
-        return;
+        return 0;
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    if let Err(error) = tauri::async_runtime::block_on(run_headless_app()) {
-        log::error!("TailSync failed to start: {error}");
-        eprintln!("TailSync failed to start: {error}");
+    match tauri::async_runtime::block_on(run_headless_app()) {
+        Ok(()) => 0,
+        Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> i32 {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    if let Err(error) = run_app() {
-        log::error!("TailSync failed to start: {error}");
-        eprintln!("TailSync failed to start: {error}");
+    match run_app() {
+        Ok(()) => 0,
+        Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
     }
+}
+
+/// Record a fatal startup failure and return the process exit code.
+///
+/// The message goes to the logger and stderr, and is appended to
+/// `{data dir}/startup-error.log` so headless or release launches still
+/// leave a reliable, documented failure trace.
+fn report_startup_failure(data_dir: &std::path::Path, error: &dyn std::error::Error) -> i32 {
+    let message = format!("TailSync failed to start: {error}");
+    log::error!("{message}");
+    eprintln!("{message}");
+    if let Err(log_error) = write_startup_error_log(data_dir, &message) {
+        eprintln!("Could not write startup error log: {log_error}");
+    }
+    1
+}
+
+/// Append one startup-failure line to `{data dir}/startup-error.log`,
+/// creating the data directory when needed.
+fn write_startup_error_log(data_dir: &std::path::Path, message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(data_dir)?;
+    let path = data_dir.join("startup-error.log");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(
+        file,
+        "[{}] {message}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
 }
 
 #[cfg(target_os = "macos")]

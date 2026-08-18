@@ -2549,6 +2549,109 @@ pub fn set_local_theme_settings_at(base: &Path, s: LocalThemeSettings) -> Result
     let _lock = lock_root(base)?;
     set_local_theme_settings_at_unlocked(base, s)
 }
+/// Outcome of attempting to migrate a legacy (pre-V2) theme selection from
+/// `config-v2.json` into `themes-v2/local-settings.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyThemeMigration {
+    /// V2 local settings were written from the legacy fields just now.
+    Migrated,
+    /// A readable `local-settings.json` already existed; it was left untouched.
+    AlreadyPresent,
+    /// `local-settings.json` exists but is unreadable, so the legacy fields
+    /// are kept in `config-v2.json` as the only surviving copy of the choice.
+    Preserved,
+}
+
+/// Mapping from the pre-V2 built-in `color_theme` values to Theme V2 ids.
+/// This table is the single source of truth for the upgrade migration.
+pub const LEGACY_BUILTIN_THEME_MAPPING: &[(&str, &str)] = &[
+    ("tailsync", CANVAS_ID),
+    ("ocean", FLUX_ID),
+    ("forest", LEDGER_ID),
+    ("rose", AURA_ID),
+    ("high-contrast", MONO_ID),
+];
+
+fn legacy_builtin_id(color_theme: &str) -> Option<&'static str> {
+    LEGACY_BUILTIN_THEME_MAPPING
+        .iter()
+        .find_map(|(legacy, id)| (*legacy == color_theme).then_some(*id))
+}
+
+/// Migrate a legacy theme selection (pre-V2 `theme` / `color_theme` settings
+/// fields) into `themes-v2/local-settings.json`.
+///
+/// Rules:
+/// - A readable existing `local-settings.json` is never overwritten: the
+///   on-disk V2 selection is authoritative and the config file is simply
+///   cleaned of the obsolete fields (caller's job).
+/// - A `local-settings.json` that exists but cannot be read is left in place
+///   and the legacy fields are kept in the config file, so the user's choice
+///   is never lost and the migration is retried on the next start.
+/// - Legacy built-in themes map onto their V2 equivalents via
+///   [`LEGACY_BUILTIN_THEME_MAPPING`]; legacy custom selections
+///   (`custom:<id>`) are **not** converted — they fall back to Canvas with a
+///   warning and the old theme files stay untouched in the legacy themes
+///   directory.
+pub fn migrate_legacy_theme_selection_at(
+    base: &Path,
+    theme: Option<&str>,
+    color_theme: Option<&str>,
+) -> Result<LegacyThemeMigration, ThemeError> {
+    let local = settings_path(base);
+    if local.exists() {
+        let readable = fs::read(&local)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<LocalThemeSettings>(&bytes).ok());
+        return if readable.is_some() {
+            Ok(LegacyThemeMigration::AlreadyPresent)
+        } else {
+            log::warn!(
+                "{} exists but could not be read; keeping the legacy theme fields in config-v2.json and retrying on the next start",
+                local.display()
+            );
+            Ok(LegacyThemeMigration::Preserved)
+        };
+    }
+    let appearance = match theme {
+        Some(value @ ("system" | "light" | "dark")) => value.to_string(),
+        Some(other) => {
+            log::warn!("Unknown legacy theme value {other:?}; falling back to \"system\"");
+            "system".to_string()
+        }
+        None => "system".to_string(),
+    };
+    let active_theme_id = match color_theme.and_then(legacy_builtin_id) {
+        Some(id) => id.to_string(),
+        None => match color_theme {
+            Some(value) if value.starts_with("custom:") => {
+                log::warn!(
+                    "Legacy custom theme selection {value:?} cannot be converted to Theme V2; \
+                     falling back to {CANVAS_ID}. The old theme file stays in the legacy themes \
+                     directory and is not converted automatically."
+                );
+                CANVAS_ID.to_string()
+            }
+            Some(value) => {
+                log::warn!(
+                    "Unknown legacy color_theme value {value:?}; falling back to {CANVAS_ID}"
+                );
+                CANVAS_ID.to_string()
+            }
+            None => CANVAS_ID.to_string(),
+        },
+    };
+    set_local_theme_settings_at(
+        base,
+        LocalThemeSettings {
+            active_theme_id,
+            appearance,
+            high_contrast: false,
+        },
+    )?;
+    Ok(LegacyThemeMigration::Migrated)
+}
+
 fn set_local_theme_settings_at_unlocked(
     base: &Path,
     s: LocalThemeSettings,
