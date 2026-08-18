@@ -6,7 +6,6 @@ mod clipboard_file;
 mod commands;
 mod network;
 mod sync_adapter;
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod updates;
 
 pub use tailsync_core::{

@@ -158,34 +158,56 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
         }
 
         "check_for_update" => {
-            let result = crate::updates::check_for_update_headless().await;
-            match result {
-                Ok(update) => Response {
-                    ok: true,
-                    data: Some(serde_json::to_value(update).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Err(error) => Response {
+            #[cfg(target_os = "macos")]
+            {
+                let result = crate::updates::check_for_update_headless().await;
+                match result {
+                    Ok(update) => Response {
+                        ok: true,
+                        data: Some(serde_json::to_value(update).unwrap_or(Value::Null)),
+                        error: None,
+                    },
+                    Err(error) => Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error),
+                    },
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
-                },
+                    error: Some("Headless updates are only available on macOS".to_string()),
+                }
             }
         }
 
         "install_update" => {
-            let result = crate::updates::install_available_update_headless().await;
-            match result {
-                Ok(installed) => Response {
-                    ok: true,
-                    data: Some(serde_json::json!({ "installed": installed })),
-                    error: None,
-                },
-                Err(error) => Response {
+            #[cfg(target_os = "macos")]
+            {
+                let result = crate::updates::install_available_update_headless().await;
+                match result {
+                    Ok(installed) => Response {
+                        ok: true,
+                        data: Some(serde_json::json!({ "installed": installed })),
+                        error: None,
+                    },
+                    Err(error) => Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error),
+                    },
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
-                },
+                    error: Some("Headless updates are only available on macOS".to_string()),
+                }
             }
         }
 
