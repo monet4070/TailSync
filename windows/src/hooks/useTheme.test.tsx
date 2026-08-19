@@ -43,4 +43,46 @@ describe("useTheme V2 local settings", () => {
     renderHook(() => useTheme());
     await waitFor(() => expect(state.resolve).toHaveBeenCalledWith("custom:midnight", "dark", true));
   });
+
+  it("updates the history font variable when the active theme changes", async () => {
+    state.get.mockResolvedValue({ activeThemeId: "builtin:canvas@1", appearance: "light", highContrast: false });
+    state.resolve.mockImplementation((themeId: string) => Promise.resolve({
+      tokens: {
+        typography: {
+          display: { families: [themeId === "builtin:flux@1" ? "Flux Display" : "Canvas Display"] },
+          reading: { families: ["Reading"] },
+        },
+      },
+    }));
+
+    renderHook(() => useTheme());
+    await waitFor(() => expect(document.querySelector<HTMLElement>(".app")?.style.getPropertyValue("--font-history"))
+      .toBe("var(--font-display)"));
+
+    act(() => state.handlers.get("theme_changed")!({
+      payload: { activeThemeId: "builtin:flux@1", appearance: "light", highContrast: false },
+    }));
+    await waitFor(() => expect(document.querySelector<HTMLElement>(".app")?.style.getPropertyValue("--font-history"))
+      .toBe("var(--font-content)"));
+  });
+
+  it("keeps the transparent document backing surface across theme changes", async () => {
+    state.resolve.mockImplementation((themeId: string) => Promise.resolve({
+      tokens: { colors: { background: { canvas: themeId === "builtin:canvas@1" ? "#faf4f8" : "#111111" } } },
+    }));
+
+    renderHook(() => useTheme());
+    await waitFor(() => expect(document.body.style.backgroundColor).toBe("transparent"));
+    expect(document.documentElement.style.backgroundColor).toBe("transparent");
+    expect(document.getElementById("root")?.style.backgroundColor).toBe("transparent");
+    expect(document.querySelector<HTMLElement>(".app")?.style.getPropertyValue("--bg-window")).toBe("#111111");
+
+    act(() => state.handlers.get("theme_changed")!({
+      payload: { activeThemeId: "builtin:canvas@1", appearance: "light", highContrast: false },
+    }));
+    await waitFor(() => expect(document.body.style.backgroundColor).toBe("transparent"));
+    expect(document.documentElement.style.backgroundColor).toBe("transparent");
+    expect(document.getElementById("root")?.style.backgroundColor).toBe("transparent");
+    expect(document.querySelector<HTMLElement>(".app")?.style.getPropertyValue("--bg-window")).toBe("#faf4f8");
+  });
 });

@@ -455,7 +455,7 @@
 
 .app .item-desc {
   color: var(--text-primary);
-  font-family: var(--art-reading);
+  font-family: var(--font-history, var(--art-reading));
   font-size: 14px;
   font-weight: 400;
   line-height: 1.45;

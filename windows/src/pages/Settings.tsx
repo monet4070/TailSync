@@ -631,7 +631,7 @@ export function Settings() {
     }
   };
 
-  const appClassName = `app ${theme}`;
+  const appClassName = `app settings-window ${theme}`;
 
   if (!settings) {
     return (
@@ -961,7 +961,7 @@ export function Settings() {
           </div>
 
           <div
-            className="setting-row"
+            className="setting-row setting-row--toggle"
             onClick={() => void setGlobalSync(!settings.sync_enabled)}
           >
             <div className="setting-row-info">
@@ -1001,7 +1001,7 @@ export function Settings() {
           />
 
           <div
-            className="setting-row"
+            className="setting-row setting-row--toggle"
             onClick={() =>
               update({
                 notifications_enabled: !settings.notifications_enabled,
@@ -1025,7 +1025,7 @@ export function Settings() {
           </div>
 
           <div
-            className="setting-row"
+            className="setting-row setting-row--toggle"
             onClick={() =>
               update({
                 progress_bar_enabled: !settings.progress_bar_enabled,
@@ -1356,7 +1356,7 @@ export function Settings() {
 
       {pendingThemeImport && (
         <div className="dialog-backdrop" onMouseDown={() => setPendingThemeImport(null)}>
-          <div className="shortcut-dialog" role="dialog" aria-modal="true" aria-label={t("settings.themePreviewTitle")} onMouseDown={(event) => event.stopPropagation()}>
+          <div className="shortcut-dialog theme-import-dialog" role="dialog" aria-modal="true" aria-label={t("settings.themePreviewTitle")} onMouseDown={(event) => event.stopPropagation()}>
             <div className="shortcut-dialog-header"><div><h2>{t("settings.themePreviewTitle")}</h2></div></div>
              <div className="theme-package-preview-modes">
                {[{

@@ -200,3 +200,12 @@ Windows（Tauri invoke）与 macOS（本地 API，SwiftUI `ApiClient`）同名�
 - `minCoreVersion` 应写你测试过的最低版本；声明不支持的 `requiredCapabilities` 会被拒绝。
 - 分享方式：把 `.tailsync-theme` 文件发给对端，对端在设置页导入。选择不随设置同步，对端需
   自行选择该主题；缺包时自动回退默认主题，不会崩溃。
+
+### 9.1 官方增强主题集
+
+`themes/` 收录五套内置主题的官方增强版（纸上工坊 / 流电矩阵 / 绿档账房 / 绮光绽放 /
+白纸黑律），是完整的 V2 清单范例：`foundation` 承载跨模式的结构令牌（字体、形状、动效、
+密度），顶层 `components` 用 `ref:` 引用颜色做跨模式组件覆盖，`light` / `dark` 只放调色板。
+打包产物（`.tailsync-theme`）在 `themes/packages/`，可用
+`cargo run --example theme_package_tool -- <theme.json> [输出路径]` 复核校验并重新打包；
+在线效果预览见官网 `themes.html`（主题工坊页）。

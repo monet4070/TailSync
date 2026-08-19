@@ -1,0 +1,163 @@
+{
+  "formatVersion": 2,
+  "id": "custom:tailsync.aura-bloom",
+  "version": "2.0.1",
+  "minCoreVersion": "2.1.0",
+  "name": {
+    "en": "Aura Bloom",
+    "zh-CN": "绮光绽放"
+  },
+  "extends": "builtin:canvas@1",
+  "requiredCapabilities": ["theme-v2"],
+  "foundation": {
+    "typography": {
+      "display": {
+        "families": ["Candara", "YouYuan", "Microsoft YaHei UI", "Hiragino Maru Gothic ProN", "PingFang SC", "sans-serif"]
+      },
+      "search": { "size": 18, "useDisplayFont": true },
+      "section": { "size": 24, "uppercase": false },
+      "history": { "size": 13 }
+    },
+    "density": { "control": 14, "row": 14 },
+    "shape": { "controlRadius": 12, "surfaceRadius": 14, "windowRadius": 16 },
+    "effects": {
+      "opacity": 1,
+      "shadow": { "radius": 40, "y": 14, "opacity": 0.14 },
+      "motion": { "fast": 180, "slow": 360, "easing": "easeOut" }
+    }
+  },
+  "components": {
+    "search": {
+      "default": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 16, "padding": 14, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 12, "y": 5, "opacity": 0.08 } },
+      "hover": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/hover", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/hover", "radius": 16, "padding": 14, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 12, "y": 5, "opacity": 0.08 } },
+      "active": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/primary", "accent": "ref:/colors/accent/default", "radius": 16, "padding": 14, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 12, "y": 5, "opacity": 0.08 } },
+      "selected": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 16, "padding": 14, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 12, "y": 5, "opacity": 0.08 } },
+      "disabled": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/tertiary", "secondaryText": "ref:/colors/text/tertiary", "focusRing": "ref:/colors/text/tertiary", "icon": "ref:/colors/text/tertiary", "accent": "ref:/colors/text/tertiary", "radius": 16, "padding": 14, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "focus": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 16, "padding": 14, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 16, "y": 6, "opacity": 0.1 } }
+    },
+    "history": {
+      "default": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 14, "padding": 14, "spacing": 10, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 12, "y": 5, "opacity": 0.08 } },
+      "hover": { "background": "ref:/colors/background/hover", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/hover", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/hover", "radius": 14, "padding": 14, "spacing": 10, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 18, "y": 8, "opacity": 0.12 } },
+      "active": { "background": "ref:/colors/background/active", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/primary", "accent": "ref:/colors/accent/default", "radius": 14, "padding": 14, "spacing": 10, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 12, "y": 5, "opacity": 0.08 } },
+      "selected": { "background": "ref:/colors/accent/soft", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 14, "padding": 14, "spacing": 10, "typography": { "size": 13, "weight": 500 }, "shadow": { "radius": 12, "y": 5, "opacity": 0.08 } },
+      "disabled": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/tertiary", "secondaryText": "ref:/colors/text/tertiary", "focusRing": "ref:/colors/text/tertiary", "icon": "ref:/colors/text/tertiary", "accent": "ref:/colors/text/tertiary", "radius": 14, "padding": 14, "spacing": 10, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "focus": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 14, "padding": 14, "spacing": 10, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 18, "y": 8, "opacity": 0.12 } }
+    },
+    "section": {
+      "default": { "background": "ref:/colors/background/canvas", "foreground": "ref:/colors/text/primary", "focusRing": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 0, "padding": 4, "spacing": 12, "typography": { "size": 13, "weight": 700 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "hover": { "background": "ref:/colors/background/canvas", "foreground": "ref:/colors/text/primary", "focusRing": "ref:/colors/accent/hover", "accent": "ref:/colors/accent/hover", "radius": 0, "padding": 4, "spacing": 12, "typography": { "size": 13, "weight": 700 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "active": { "background": "ref:/colors/background/canvas", "foreground": "ref:/colors/text/primary", "focusRing": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 0, "padding": 4, "spacing": 12, "typography": { "size": 13, "weight": 700 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "selected": { "background": "ref:/colors/background/canvas", "foreground": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 0, "padding": 4, "spacing": 12, "typography": { "size": 13, "weight": 700 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "disabled": { "background": "ref:/colors/background/canvas", "foreground": "ref:/colors/text/tertiary", "focusRing": "ref:/colors/text/tertiary", "accent": "ref:/colors/text/tertiary", "radius": 0, "padding": 4, "spacing": 12, "typography": { "size": 13, "weight": 700 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "focus": { "background": "ref:/colors/background/canvas", "foreground": "ref:/colors/text/primary", "focusRing": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 0, "padding": 4, "spacing": 12, "typography": { "size": 13, "weight": 700 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } }
+    },
+    "panel": {
+      "default": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 14, "padding": 16, "spacing": 12, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 20, "y": 9, "opacity": 0.11 } },
+      "hover": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/hover", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/hover", "radius": 14, "padding": 16, "spacing": 12, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 26, "y": 12, "opacity": 0.13 } },
+      "active": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 14, "padding": 16, "spacing": 12, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 20, "y": 9, "opacity": 0.11 } },
+      "selected": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 14, "padding": 16, "spacing": 12, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 20, "y": 9, "opacity": 0.11 } },
+      "disabled": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/tertiary", "secondaryText": "ref:/colors/text/tertiary", "focusRing": "ref:/colors/text/tertiary", "icon": "ref:/colors/text/tertiary", "accent": "ref:/colors/text/tertiary", "radius": 14, "padding": 16, "spacing": 12, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "focus": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 14, "padding": 16, "spacing": 12, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 26, "y": 12, "opacity": 0.13 } }
+    },
+    "button": {
+      "default": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 12, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 600 }, "shadow": { "radius": 10, "y": 4, "opacity": 0.1 } },
+      "hover": { "background": "ref:/colors/background/hover", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/hover", "icon": "ref:/colors/text/primary", "accent": "ref:/colors/accent/hover", "radius": 12, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 600 }, "shadow": { "radius": 16, "y": 7, "opacity": 0.13 } },
+      "active": { "background": "ref:/colors/background/active", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/primary", "accent": "ref:/colors/accent/default", "radius": 12, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 600 }, "shadow": { "radius": 10, "y": 4, "opacity": 0.1 } },
+      "selected": { "background": "ref:/colors/accent/default", "foreground": "ref:/colors/accent/onAccent", "secondaryText": "ref:/colors/accent/onAccent", "border": "ref:/colors/accent/onAccent", "focusRing": "ref:/colors/accent/onAccent", "icon": "ref:/colors/accent/onAccent", "accent": "ref:/colors/accent/onAccent", "radius": 12, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 600 }, "shadow": { "radius": 16, "y": 7, "opacity": 0.14 } },
+      "disabled": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/tertiary", "secondaryText": "ref:/colors/text/tertiary", "focusRing": "ref:/colors/text/tertiary", "icon": "ref:/colors/text/tertiary", "accent": "ref:/colors/text/tertiary", "radius": 12, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 600 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "focus": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 12, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 600 }, "shadow": { "radius": 10, "y": 4, "opacity": 0.1 } }
+    },
+    "input": {
+      "default": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/default", "radius": 12, "padding": 10, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "hover": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/hover", "icon": "ref:/colors/text/secondary", "accent": "ref:/colors/accent/hover", "radius": 12, "padding": 10, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "active": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/text/primary", "accent": "ref:/colors/accent/default", "radius": 12, "padding": 10, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "selected": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 12, "padding": 10, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "disabled": { "background": "ref:/colors/background/surface", "foreground": "ref:/colors/text/tertiary", "secondaryText": "ref:/colors/text/tertiary", "focusRing": "ref:/colors/text/tertiary", "icon": "ref:/colors/text/tertiary", "accent": "ref:/colors/text/tertiary", "radius": 12, "padding": 10, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "focus": { "background": "ref:/colors/background/input", "foreground": "ref:/colors/text/primary", "secondaryText": "ref:/colors/text/secondary", "border": "ref:/colors/accent/default", "focusRing": "ref:/colors/accent/default", "icon": "ref:/colors/accent/default", "accent": "ref:/colors/accent/default", "radius": 12, "padding": 10, "spacing": 8, "typography": { "size": 13, "weight": 400 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } }
+    },
+    "toast": {
+      "default": { "background": "ref:/colors/background/toast", "foreground": "ref:/colors/text/toast", "secondaryText": "ref:/colors/text/toast", "focusRing": "ref:/colors/text/toast", "icon": "ref:/colors/text/toast", "accent": "ref:/colors/text/toast", "radius": 14, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 500 }, "shadow": { "radius": 26, "y": 12, "opacity": 0.2 } },
+      "hover": { "background": "ref:/colors/background/toast", "foreground": "ref:/colors/text/toast", "secondaryText": "ref:/colors/text/toast", "focusRing": "ref:/colors/text/toast", "icon": "ref:/colors/text/toast", "accent": "ref:/colors/text/toast", "radius": 14, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 500 }, "shadow": { "radius": 30, "y": 14, "opacity": 0.22 } },
+      "active": { "background": "ref:/colors/background/toast", "foreground": "ref:/colors/text/toast", "secondaryText": "ref:/colors/text/toast", "focusRing": "ref:/colors/text/toast", "icon": "ref:/colors/text/toast", "accent": "ref:/colors/text/toast", "radius": 14, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 500 }, "shadow": { "radius": 26, "y": 12, "opacity": 0.2 } },
+      "selected": { "background": "ref:/colors/background/toast", "foreground": "ref:/colors/text/toast", "secondaryText": "ref:/colors/text/toast", "focusRing": "ref:/colors/text/toast", "icon": "ref:/colors/text/toast", "accent": "ref:/colors/text/toast", "radius": 14, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 500 }, "shadow": { "radius": 26, "y": 12, "opacity": 0.2 } },
+      "disabled": { "background": "ref:/colors/background/toast", "foreground": "ref:/colors/text/toast", "secondaryText": "ref:/colors/text/toast", "focusRing": "ref:/colors/text/toast", "icon": "ref:/colors/text/toast", "accent": "ref:/colors/text/toast", "radius": 14, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 500 }, "shadow": { "radius": 0, "y": 0, "opacity": 0 } },
+      "focus": { "background": "ref:/colors/background/toast", "foreground": "ref:/colors/text/toast", "secondaryText": "ref:/colors/text/toast", "focusRing": "ref:/colors/text/toast", "icon": "ref:/colors/text/toast", "accent": "ref:/colors/text/toast", "radius": 14, "padding": 12, "spacing": 8, "typography": { "size": 13, "weight": 500 }, "shadow": { "radius": 26, "y": 12, "opacity": 0.2 } }
+    }
+  },
+  "light": {
+    "colors": {
+      "accent": {
+        "default": "#b84a7d",
+        "hover": "#9c3868",
+        "soft": "rgba(184, 74, 125, 0.12)",
+        "onAccent": "#fff5fa"
+      },
+      "background": {
+        "canvas": "#faf4f8",
+        "surface": "#fffdfe",
+        "input": "rgba(88, 38, 66, 0.05)",
+        "hover": "#f3e6ee",
+        "active": "#ecd6e3",
+        "raised": "#ffffff",
+        "toast": "#331726"
+      },
+      "text": {
+        "primary": "#2c1a24",
+        "secondary": "#6a4f5d",
+        "tertiary": "#78616d",
+        "toast": "#ffeef7"
+      },
+      "border": {
+        "default": "#ecd9e3",
+        "strong": "#d3b7c7",
+        "divider": "#f1e2ea"
+      },
+      "status": {
+        "positive": "#3d6a4a",
+        "positiveSoft": "rgba(61, 106, 74, 0.12)",
+        "warning": "#8f5a12",
+        "warningSoft": "rgba(143, 90, 18, 0.12)",
+        "info": "#6a5187",
+        "infoSoft": "rgba(106, 81, 135, 0.12)"
+      }
+    }
+  },
+  "dark": {
+    "colors": {
+      "accent": {
+        "default": "#f0a0c6",
+        "hover": "#f7bcd8",
+        "soft": "rgba(240, 160, 198, 0.16)",
+        "onAccent": "#2b0f1e"
+      },
+      "background": {
+        "canvas": "#1e141b",
+        "surface": "#2a1e26",
+        "input": "rgba(255, 230, 244, 0.06)",
+        "hover": "#372833",
+        "active": "#463241",
+        "raised": "#30242c",
+        "toast": "#ffe9f4"
+      },
+      "text": {
+        "primary": "#faedf3",
+        "secondary": "#c5a3b5",
+        "tertiary": "#b093a3",
+        "toast": "#2e1120"
+      },
+      "border": {
+        "default": "#3c2c37",
+        "strong": "#5c4354",
+        "divider": "#33262f"
+      },
+      "status": {
+        "positive": "#93c99b",
+        "positiveSoft": "rgba(147, 201, 155, 0.16)",
+        "warning": "#e5ab72",
+        "warningSoft": "rgba(229, 171, 114, 0.16)",
+        "info": "#c2a5e0",
+        "infoSoft": "rgba(194, 165, 224, 0.16)"
+      }
+    }
+  }
+}

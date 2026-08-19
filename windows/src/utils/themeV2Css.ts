@@ -3,6 +3,24 @@ export type CssPair = readonly [string, string];
 export interface ThemeV2CssOptions {
   reduceTransparency?: boolean;
   mode?: "light" | "dark";
+  /** The persisted V2 colour-theme id, used for semantic history typography. */
+  themeId?: string;
+}
+
+export type HistoryFontRole = "display" | "reading";
+
+/**
+ * Keep the history-row font selection aligned with macOS HistoryRow.
+ * Canvas/Ledger and custom themes use their expressive display face; the
+ * denser Flux/Aura/Mono themes keep history content in the reading face.
+ * Unknown ids fall back to the default Canvas behavior.
+ */
+export function historyFontRole(themeId?: string): HistoryFontRole {
+  return themeId === "builtin:flux@1"
+    || themeId === "builtin:aura@1"
+    || themeId === "builtin:mono@1"
+    ? "reading"
+    : "display";
 }
 
 interface ParsedColor { red: number; green: number; blue: number; alpha: number }
@@ -98,6 +116,7 @@ export function themeV2CssPairs(tokens: Record<string, any>, options: ThemeV2Css
   const number = (name: string, path: string[], suffix = "px") => { const n = value(tokens, path); if (typeof n === "number") pairs.push([name, `${n}${suffix}`]); };
   const families = (name: string, path: string[]) => { const x=value(tokens,path); if (Array.isArray(x) && x.every(v => typeof v === "string")) pairs.push([name, x.join(", ")]); };
   families("--font-ui", ["typography","ui","families"]); families("--font-display", ["typography","display","families"]); families("--font-content", ["typography","reading","families"]);
+  pairs.push(["--font-history", historyFontRole(options.themeId) === "display" ? "var(--font-display)" : "var(--font-content)"]);
   number("--font-size-ui", ["typography","ui","size"]); number("--line-height-ui", ["typography","ui","lineHeight"], "px"); number("--font-weight-body", ["typography","ui","weight"], "");
   number("--search-font-size", ["typography","search","size"]); number("--font-size-section", ["typography","section","size"]); number("--font-size-content", ["typography","history","size"]);
   if (typeof value(tokens,["typography","search","useDisplayFont"]) === "boolean") pairs.push(["--search-font-family", value(tokens,["typography","search","useDisplayFont"]) ? "var(--font-display)" : "var(--font-ui)"]);
@@ -112,7 +131,7 @@ export function themeV2CssPairs(tokens: Record<string, any>, options: ThemeV2Css
 }
 
 export const themeV2CssProperties = [
-  "--brand","--brand-hover","--brand-soft","--brand-text","--bg-window","--bg-card","--bg-input","--bg-hover","--bg-active","--bg-raised","--bg-toast","--text-primary","--text-secondary","--text-tertiary","--text-toast","--border","--border-strong","--divider","--green","--green-soft","--orange","--orange-soft","--purple","--purple-soft","--font-ui","--font-display","--font-content","--font-size-ui","--line-height-ui","--font-weight-body","--search-font-size","--font-size-section","--font-size-content","--search-font-family","--section-title-transform","--radius-sm","--radius-md","--window-radius","--history-row-padding-y","--setting-row-padding-y","--shadow-md","--motion-fast","--motion-slow","--motion-easing","--art-fast","--art-slow","--art-spring","--theme-logo-image","--theme-empty-state-image","--theme-preview-placeholder-image",
+  "--brand","--brand-hover","--brand-soft","--brand-text","--bg-window","--bg-card","--bg-input","--bg-hover","--bg-active","--bg-raised","--bg-toast","--text-primary","--text-secondary","--text-tertiary","--text-toast","--border","--border-strong","--divider","--green","--green-soft","--orange","--orange-soft","--purple","--purple-soft","--font-ui","--font-display","--font-content","--font-history","--font-size-ui","--line-height-ui","--font-weight-body","--search-font-size","--font-size-section","--font-size-content","--search-font-family","--section-title-transform","--radius-sm","--radius-md","--window-radius","--history-row-padding-y","--setting-row-padding-y","--shadow-md","--motion-fast","--motion-slow","--motion-easing","--art-fast","--art-slow","--art-spring","--theme-logo-image","--theme-empty-state-image","--theme-preview-placeholder-image",
   ...componentNames.flatMap(component => componentStates.flatMap(state => [
     ...componentColorFields.map(field => componentProperty(component, state, field)),
     componentProperty(component, state, "radius"), componentProperty(component, state, "padding"), componentProperty(component, state, "spacing"),

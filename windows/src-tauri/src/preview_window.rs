@@ -132,6 +132,8 @@ pub async fn open_preview_window(
     .inner_size(900.0, 680.0)
     .min_inner_size(520.0, 360.0)
     .decorations(false)
+    .transparent(true)
+    .shadow(false)
     .resizable(true)
     .visible(false)
     .center()

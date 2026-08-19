@@ -18,8 +18,8 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
     const pointer = { x: -1000, y: -1000, active: false };
     const lightTheme = theme === "light";
     const colors = lightTheme
-      ? ["#789600", "#16858c", "#df4f3b", "#191b17"]
-      : ["#d8ff54", "#58dfe5", "#ff7158", "#f3f0e8"];
+      ? ["#0071e3", "#7d5aff", "#ff5e8a", "#1d1d1f"]
+      : ["#2997ff", "#bf5af2", "#ff6482", "#f5f5f7"];
     const particles = Array.from({ length: 52 }, (_, index) => ({
       offset: index / 52,
       lane: (index % 7) - 3,
@@ -85,18 +85,25 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
       context.save();
       context.translate(x, y);
       context.strokeStyle = reverse
-        ? lightTheme ? "rgba(22,133,140,.76)" : "rgba(88,223,229,.78)"
-        : lightTheme ? "rgba(120,150,0,.8)" : "rgba(216,255,84,.82)";
-      context.lineWidth = 1;
-      context.strokeRect(-34 - pulse, -34 - pulse, 68 + pulse * 2, 68 + pulse * 2);
+        ? lightTheme ? "rgba(125,90,255,.7)" : "rgba(191,90,242,.75)"
+        : lightTheme ? "rgba(0,113,227,.72)" : "rgba(41,151,255,.78)";
+      context.lineWidth = 1.2;
+      context.beginPath();
+      context.arc(0, 0, 30 + pulse, 0, Math.PI * 2);
+      context.stroke();
       context.strokeStyle = lightTheme
-        ? "rgba(17,18,15,.16)"
-        : "rgba(243,240,232,.16)";
-      context.strokeRect(-50 + pulse, -50 + pulse, 100 - pulse * 2, 100 - pulse * 2);
+        ? "rgba(29,29,31,.12)"
+        : "rgba(245,245,247,.12)";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.arc(0, 0, 46 - pulse, 0, Math.PI * 2);
+      context.stroke();
       context.fillStyle = reverse
-        ? lightTheme ? "#16858c" : "#58dfe5"
-        : lightTheme ? "#789600" : "#d8ff54";
-      context.fillRect(-3, -3, 6, 6);
+        ? lightTheme ? "#7d5aff" : "#bf5af2"
+        : lightTheme ? "#0071e3" : "#2997ff";
+      context.beginPath();
+      context.arc(0, 0, 3.5, 0, Math.PI * 2);
+      context.fill();
       context.restore();
     };
 
@@ -109,8 +116,8 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
 
       context.save();
       context.strokeStyle = lightTheme
-        ? "rgba(17,18,15,.065)"
-        : "rgba(243,240,232,.055)";
+        ? "rgba(29,29,31,.045)"
+        : "rgba(245,245,247,.04)";
       context.lineWidth = 1;
       for (let x = 0; x < width; x += 72) {
         context.beginPath();
@@ -139,14 +146,14 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
           centerY - lane * 8,
         );
         context.strokeStyle = lane === 0
-          ? lightTheme ? "rgba(120,150,0,.3)" : "rgba(216,255,84,.26)"
-          : lightTheme ? "rgba(17,18,15,.12)" : "rgba(243,240,232,.10)";
+          ? lightTheme ? "rgba(0,113,227,.26)" : "rgba(41,151,255,.24)"
+          : lightTheme ? "rgba(29,29,31,.08)" : "rgba(245,245,247,.08)";
         context.lineWidth = lane === 0 ? 1.4 : 0.8;
         context.stroke();
       }
 
       context.globalCompositeOperation = "lighter";
-      particles.forEach((particle, index) => {
+      particles.forEach((particle) => {
         const progress = reducedMotion
           ? particle.offset
           : (particle.offset + elapsed * particle.speed) % 1;
@@ -179,18 +186,9 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
         const alpha = Math.sin(progress * Math.PI) * 0.92;
         context.globalAlpha = Math.max(0.12, alpha);
         context.fillStyle = particle.color;
-        if (index % 3 === 0) {
-          context.fillRect(
-            drawX - particle.size * 1.6,
-            drawY - particle.size,
-            particle.size * 3.2,
-            particle.size * 2,
-          );
-        } else {
-          context.beginPath();
-          context.arc(drawX, drawY, particle.size, 0, Math.PI * 2);
-          context.fill();
-        }
+        context.beginPath();
+        context.arc(drawX, drawY, particle.size, 0, Math.PI * 2);
+        context.fill();
       });
       context.globalAlpha = 1;
       context.globalCompositeOperation = "source-over";
@@ -202,8 +200,8 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
         context.beginPath();
         context.arc(pointer.x, pointer.y, 18, 0, Math.PI * 2);
         context.strokeStyle = lightTheme
-          ? "rgba(17,18,15,.28)"
-          : "rgba(243,240,232,.28)";
+          ? "rgba(29,29,31,.2)"
+          : "rgba(245,245,247,.22)";
         context.stroke();
       }
 

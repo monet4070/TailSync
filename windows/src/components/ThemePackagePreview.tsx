@@ -47,7 +47,7 @@ export function ThemePackagePreview({
   }, [digest, loadAsset, path, resolved.assetSlots]);
 
   const style = Object.fromEntries(
-    themeV2CssPairs(resolved.tokens as Record<string, unknown>),
+    themeV2CssPairs(resolved.tokens as Record<string, unknown>, { themeId: resolved.id }),
   ) as CSSProperties;
   const stateStyle = (state: ComponentState) => ({
     background: `var(--theme-button-${state}-background, var(--bg-card))`,

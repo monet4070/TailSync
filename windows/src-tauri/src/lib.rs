@@ -38,6 +38,12 @@ fn track_task(tasks: &BackgroundTasks, task: tauri::async_runtime::JoinHandle<()
         .push(task);
 }
 
+fn should_prevent_implicit_exit(code: Option<i32>) -> bool {
+    // Tauri uses no exit code when destroying the last window, and Some(code)
+    // for explicit AppHandle::exit/restart requests.
+    code.is_none()
+}
+
 async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
     if *shutdown.borrow() {
         return;
@@ -467,7 +473,17 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_for_setup = shutdown_rx.clone();
     let shutdown_for_state = shutdown_tx.clone();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // This must remain the first plugin so secondary launches are rejected
+        // before app setup creates another tray or registers global shortcuts.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = commands::open_history_window(handle).await {
+                    log::warn!("Could not focus TailSync after a repeated launch: {error}");
+                }
+            });
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -687,7 +703,16 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::check_for_update,
             commands::install_update,
         ])
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?;
+
+    app.run(|_handle, event| {
+        if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+            if should_prevent_implicit_exit(code) {
+                log::debug!("Keeping TailSync resident after the last window was released");
+                api.prevent_exit();
+            }
+        }
+    });
     Ok(())
 }
 
@@ -729,7 +754,7 @@ mod startup_failure_tests {
 
 #[cfg(test)]
 mod shutdown_tests {
-    use super::{stop_background_tasks, track_task, BackgroundTasks};
+    use super::{should_prevent_implicit_exit, stop_background_tasks, track_task, BackgroundTasks};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex as StdMutex,
@@ -745,6 +770,16 @@ mod shutdown_tests {
 
     fn tasks() -> BackgroundTasks {
         Arc::new(StdMutex::new(Vec::new()))
+    }
+
+    #[test]
+    fn only_implicit_last_window_exit_is_prevented() {
+        assert!(should_prevent_implicit_exit(None));
+        assert!(!should_prevent_implicit_exit(Some(0)));
+        assert!(!should_prevent_implicit_exit(Some(1)));
+        assert!(!should_prevent_implicit_exit(Some(
+            tauri::RESTART_EXIT_CODE
+        )));
     }
 
     #[tokio::test]

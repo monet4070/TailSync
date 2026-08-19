@@ -681,6 +681,11 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     .title("TailSync - History")
     .inner_size(400.0, 600.0)
     .decorations(false) // Borderless, per user preference
+    // Let the rounded `.app` surface own the window shape. Tauri otherwise
+    // keeps the Windows undecorated shadow, which paints a square/white edge
+    // around transparent corners.
+    .transparent(true)
+    .shadow(false)
     .resizable(true)
     .center()
     .build()
@@ -710,6 +715,8 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     .title("TailSync - Settings")
     .inner_size(520.0, 700.0)
     .decorations(false)
+    .transparent(true)
+    .shadow(false)
     .min_inner_size(440.0, 560.0)
     .resizable(true)
     .center()

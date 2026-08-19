@@ -41,6 +41,7 @@
   --font-ui: var(--font-system-ui);
   --font-display: var(--font-ui);
   --font-content: var(--font-ui);
+  --font-history: var(--font-content);
   --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
 
   --font-size-ui: 13px;
@@ -407,7 +408,7 @@
 .app .history-item.focused, .app .history-item:focus-visible { outline-color: var(--theme-history-focus-focus-ring, var(--brand)); }
 .app .setting-group-header { color: var(--theme-section-default-foreground, var(--text-primary)); }
 .app .setting-group-header:hover { color: var(--theme-section-hover-foreground, var(--text-primary)); }
-.app .setting-group { background: var(--theme-panel-default-background, transparent); border-color: var(--theme-panel-default-border, transparent); border-radius: var(--theme-panel-default-radius, var(--radius-md)); box-shadow: var(--theme-panel-default-shadow, none); }
+.app .setting-group { padding-inline: var(--theme-panel-default-padding, 0px); background: var(--theme-panel-default-background, transparent); border-color: var(--theme-panel-default-border, transparent); border-radius: var(--theme-panel-default-radius, var(--radius-md)); box-shadow: var(--theme-panel-default-shadow, none); }
 .app .custom-theme-action { background: var(--theme-button-default-background, var(--bg-card)); color: var(--theme-button-default-foreground, var(--text-primary)); border-color: var(--theme-button-default-border, var(--border)); border-radius: var(--theme-button-default-radius, var(--radius-sm)); }
 .app .custom-theme-action:hover { background: var(--theme-button-hover-background, var(--bg-hover)); color: var(--theme-button-hover-foreground, var(--text-primary)); }
 .app .custom-theme-action:focus-visible { outline-color: var(--theme-button-focus-focus-ring, var(--brand)); }

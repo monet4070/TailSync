@@ -12,7 +12,8 @@ html, body {
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-primary);
-  background: var(--bg-window);
+  /* The Tauri host is transparent; `.app` supplies the visible surface. */
+  background: transparent;
   user-select: none;
 }
 
@@ -942,7 +943,7 @@ html, body {
 }
 
 .item-desc {
-  font-family: var(--font-content);
+  font-family: var(--font-history, var(--font-content));
   font-size: var(--font-size-content);
   font-weight: var(--font-weight-content);
   color: var(--text-primary);
