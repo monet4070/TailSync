@@ -57,6 +57,7 @@ struct TrayMenuState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 struct TrayMenuStructure {
     language: String,
     sync_enabled: bool,
@@ -93,6 +94,7 @@ impl TrayMenuState {
         }
     }
 
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn structure(&self) -> TrayMenuStructure {
         TrayMenuStructure {
             language: self.language.clone(),
@@ -103,6 +105,7 @@ impl TrayMenuState {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 struct BuiltTrayMenu<R: Runtime> {
     menu: Menu<R>,
     state: TrayMenuState,
@@ -246,6 +249,7 @@ fn build_tray_menu<R: Runtime>(
     })
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn refresh_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     built: &mut BuiltTrayMenu<R>,

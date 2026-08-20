@@ -17,6 +17,13 @@ use crate::network;
 use crate::protocol::{Command, FileChunkPayload, TransferId, FILE_CHUNK_SIZE};
 use crate::sync;
 
+#[derive(Clone)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub enum ClipboardRuntime {
+    Tauri(AppHandle),
+    Headless,
+}
+
 static CLIPBOARD_RECOVERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_FAILURES: AtomicU64 = AtomicU64::new(0);
@@ -90,7 +97,7 @@ fn files_to_broadcast(paths: &[PathBuf], managed_directory: &Path) -> Vec<PathBu
 /// changes.  Saves to local history and broadcasts to enabled Tailscale peers
 /// via the connection pool.
 pub fn start_monitor(
-    handle: AppHandle,
+    runtime: ClipboardRuntime,
     database: Arc<Mutex<db::HistoryDB>>,
     sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pool: Arc<Mutex<network::ConnectionPool>>,
@@ -108,7 +115,7 @@ pub fn start_monitor(
         loop {
             let worker_started = tokio::time::Instant::now();
             let mut worker = tokio::spawn(clipboard_loop(
-                handle.clone(),
+                runtime.clone(),
                 database.clone(),
                 sync_engine.clone(),
                 pool.clone(),
@@ -149,7 +156,7 @@ pub fn start_monitor(
 }
 
 async fn clipboard_loop(
-    handle: AppHandle,
+    runtime: ClipboardRuntime,
     database: Arc<Mutex<db::HistoryDB>>,
     sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pool: Arc<Mutex<network::ConnectionPool>>,
@@ -206,18 +213,6 @@ async fn clipboard_loop(
         // still delivered.
         let clipboard_changed = true;
         let clipboard_event_at = Instant::now();
-
-        let clipboard =
-            match handle.try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>() {
-                Some(c) => c,
-                None => {
-                    if tick == 1 {
-                        error!("Clipboard plugin state NOT FOUND! Monitor will do nothing.");
-                    }
-                    continue;
-                }
-            };
-        let clipboard = &*clipboard;
 
         // ── 1. Try files FIRST (macOS: text check also matches filenames) ──
         #[cfg(target_os = "macos")]
@@ -279,7 +274,7 @@ async fn clipboard_loop(
                             tokio::spawn(send_file_batch_to_peers(
                                 outbound_paths,
                                 generation,
-                                handle.clone(),
+                                runtime.clone(),
                                 pool.clone(),
                                 database.clone(),
                                 settings.clone(),
@@ -295,7 +290,7 @@ async fn clipboard_loop(
         }
 
         // ── 2. Try text ────────────────────────────────────────────
-        match clipboard.read_text() {
+        match read_clipboard_text(&runtime) {
             Ok(t) if !t.is_empty() => {
                 let hash = blake3::hash(t.as_bytes()).to_hex().to_string();
                 if text_event_gate.should_process(
@@ -344,14 +339,7 @@ async fn clipboard_loop(
             Err(error) => Err(format!("Clipboard image helper task failed: {error}")),
         };
         #[cfg(not(target_os = "macos"))]
-        let image = clipboard
-            .read_image()
-            .map(|image| clipboard_file::ClipboardImageData {
-                width: image.width(),
-                height: image.height(),
-                rgba: image.rgba().to_vec(),
-            })
-            .map_err(|error| error.to_string());
+        let image = read_clipboard_image(&runtime);
         match image {
             Ok(image) => {
                 let w = image.width;
@@ -413,12 +401,101 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
     }
 }
 
+fn read_clipboard_text(runtime: &ClipboardRuntime) -> Result<String, String> {
+    match runtime {
+        ClipboardRuntime::Tauri(handle) => handle
+            .try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
+            .ok_or_else(|| "Clipboard plugin state is unavailable".to_string())?
+            .read_text()
+            .map_err(|error| error.to_string()),
+        ClipboardRuntime::Headless => {
+            #[cfg(target_os = "macos")]
+            {
+                clipboard_file::read_clipboard_text()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("Headless clipboard access is only available on macOS".to_string())
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_clipboard_image(
+    runtime: &ClipboardRuntime,
+) -> Result<clipboard_file::ClipboardImageData, String> {
+    match runtime {
+        ClipboardRuntime::Tauri(handle) => handle
+            .try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
+            .ok_or_else(|| "Clipboard plugin state is unavailable".to_string())?
+            .read_image()
+            .map(|image| clipboard_file::ClipboardImageData {
+                width: image.width(),
+                height: image.height(),
+                rgba: image.rgba().to_vec(),
+            })
+            .map_err(|error| error.to_string()),
+        ClipboardRuntime::Headless => {
+            Err("Headless clipboard access is only available on macOS".to_string())
+        }
+    }
+}
+
+pub fn write_clipboard_text(runtime: &ClipboardRuntime, text: &str) -> Result<(), String> {
+    match runtime {
+        ClipboardRuntime::Tauri(handle) => handle
+            .try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
+            .ok_or_else(|| "Clipboard plugin state is unavailable".to_string())?
+            .write_text(text.to_string())
+            .map_err(|error| error.to_string()),
+        ClipboardRuntime::Headless => {
+            #[cfg(target_os = "macos")]
+            {
+                clipboard_file::write_clipboard_text(text)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("Headless clipboard access is only available on macOS".to_string())
+            }
+        }
+    }
+}
+
+pub fn write_clipboard_image(
+    runtime: &ClipboardRuntime,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<(), String> {
+    match runtime {
+        ClipboardRuntime::Tauri(handle) => {
+            let image = tauri::image::Image::new(rgba, width, height);
+            handle
+                .try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
+                .ok_or_else(|| "Clipboard plugin state is unavailable".to_string())?
+                .write_image(&image)
+                .map_err(|error| error.to_string())
+        }
+        ClipboardRuntime::Headless => {
+            #[cfg(target_os = "macos")]
+            {
+                clipboard_file::write_clipboard_image(width, height, rgba)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err("Headless clipboard access is only available on macOS".to_string())
+            }
+        }
+    }
+}
+
 // ── Pack / unpack helpers ────────────────────────────────────────────
 
 async fn send_file_batch_to_peers(
     paths: Vec<PathBuf>,
     generation: u64,
-    app: AppHandle,
+    runtime: ClipboardRuntime,
     pool: Arc<Mutex<network::ConnectionPool>>,
     database: Arc<Mutex<db::HistoryDB>>,
     settings: Arc<Mutex<crypto::Settings>>,
@@ -434,13 +511,14 @@ async fn send_file_batch_to_peers(
     {
         Ok(Ok(batch)) => Arc::new(batch),
         Ok(Err(error)) => {
-            warn!("File batch rejected: {error}");
-            notify_file_batch_error(&app, &settings, &error).await;
+            let message = error.to_string();
+            warn!("File batch rejected: {message}");
+            notify_file_batch_error(&runtime, &settings, &message).await;
             return;
         }
         Err(error) => {
             error!("File batch preparation task failed: {error}");
-            notify_file_batch_error(&app, &settings, &error.to_string()).await;
+            notify_file_batch_error(&runtime, &settings, &error.to_string()).await;
             return;
         }
     };
@@ -449,7 +527,7 @@ async fn send_file_batch_to_peers(
         let message = storage_status
             .error
             .unwrap_or_else(|| "Configured storage is unavailable; file transfer is paused".into());
-        notify_file_batch_error(&app, &settings, &message).await;
+        notify_file_batch_error(&runtime, &settings, &message).await;
         return;
     }
     let batch_id = prepared.manifest.batch_id;
@@ -517,7 +595,7 @@ async fn send_file_batch_to_peers(
     }
     if !failures.is_empty() {
         let message = summarize_file_batch_failures(&failures);
-        notify_file_batch_error(&app, &settings, &message).await;
+        notify_file_batch_error(&runtime, &settings, &message).await;
     }
 
     let history_files = prepared
@@ -548,22 +626,27 @@ async fn send_file_batch_to_peers(
 }
 
 async fn notify_file_batch_error(
-    app: &AppHandle,
+    runtime: &ClipboardRuntime,
     settings: &Arc<Mutex<crypto::Settings>>,
     message: &str,
 ) {
     if !settings.lock().await.notifications_enabled {
         return;
     }
-    use tauri_plugin_notification::NotificationExt;
-    if let Err(error) = app
-        .notification()
-        .builder()
-        .title("TailSync")
-        .body(message)
-        .show()
-    {
-        log::warn!("Could not show file transfer notification: {error}");
+    if let ClipboardRuntime::Tauri(app) = runtime {
+        use tauri_plugin_notification::NotificationExt;
+        if let Err(error) = app
+            .notification()
+            .builder()
+            .title("TailSync")
+            .body(message)
+            .show()
+        {
+            log::warn!("Could not show file transfer notification: {error}");
+        }
+    } else {
+        crate::api::push_runtime_notification("error", message);
+        log::warn!("File transfer failed: {message}");
     }
 }
 
@@ -628,7 +711,8 @@ async fn send_batch_to_peer(
         let validation_file = prepared_file.clone();
         tokio::task::spawn_blocking(move || sync::revalidate_prepared_file(&validation_file))
             .await
-            .map_err(|error| error.to_string())??;
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
         let transfer_id = prepared_file.entry.transfer_id;
         let meta = sync::FileMeta {
             transfer_id: Some(transfer_id),

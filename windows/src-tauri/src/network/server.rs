@@ -1,80 +1,9 @@
 use super::*;
+use tailsync_core::peer::admission::peer_is_allowed;
+use tailsync_core::peer::event_receiver::process_reliable_event;
+use tailsync_core::peer::inbound_source::InboundSource;
 
-pub(super) struct ConnectionLimiter {
-    total: Arc<Semaphore>,
-    per_source: StdMutex<HashMap<String, usize>>,
-    max_per_source: usize,
-}
-
-pub(super) struct ConnectionPermit {
-    limiter: Arc<ConnectionLimiter>,
-    source: String,
-    _total: OwnedSemaphorePermit,
-}
-
-impl ConnectionLimiter {
-    pub(super) fn new(max_total: usize, max_per_source: usize) -> Arc<Self> {
-        Arc::new(Self {
-            total: Arc::new(Semaphore::new(max_total)),
-            per_source: StdMutex::new(HashMap::new()),
-            max_per_source,
-        })
-    }
-
-    pub(super) fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionPermit> {
-        self.try_acquire_source(ip.to_string())
-    }
-
-    pub(super) fn try_acquire_source(self: &Arc<Self>, source: String) -> Option<ConnectionPermit> {
-        let total = self.total.clone().try_acquire_owned().ok()?;
-        let mut counts = self
-            .per_source
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let count = counts.entry(source.clone()).or_default();
-        if *count >= self.max_per_source {
-            return None;
-        }
-        *count += 1;
-        drop(counts);
-        Some(ConnectionPermit {
-            limiter: self.clone(),
-            source,
-            _total: total,
-        })
-    }
-}
-
-impl Drop for ConnectionPermit {
-    fn drop(&mut self) {
-        let mut counts = self
-            .limiter
-            .per_source
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(count) = counts.get_mut(&self.source) {
-            *count -= 1;
-            if *count == 0 {
-                counts.remove(&self.source);
-            }
-        }
-    }
-}
-
-struct ReceiveSuspendGuard {
-    sync_engine: Arc<Mutex<sync::SyncEngine>>,
-    source: String,
-}
-
-impl Drop for ReceiveSuspendGuard {
-    fn drop(&mut self) {
-        let sync_engine = self.sync_engine.clone();
-        let source = self.source.clone();
-        tokio::spawn(async move {
-            sync_engine.lock().await.suspend_receive(&source);
-        });
-    }
-}
+pub(super) use tailsync_core::peer::connection_limiter::ConnectionLimiter;
 
 /// Start the async TCP server.  Runs until the app shuts down.
 pub async fn start_server(
@@ -267,41 +196,6 @@ pub(super) async fn handle_iroh_connection(
     .await
 }
 
-enum InboundSource {
-    Tcp(SocketAddr),
-    Iroh(String),
-}
-
-impl InboundSource {
-    fn interface(&self) -> Result<ConnectionInterface, String> {
-        match self {
-            Self::Tcp(address) => infer_interface(&address.ip().to_string()),
-            Self::Iroh(_) => Ok(ConnectionInterface::Iroh),
-        }
-    }
-
-    fn address(&self) -> String {
-        match self {
-            Self::Tcp(address) => address.ip().to_string(),
-            Self::Iroh(endpoint_id) => endpoint_id.clone(),
-        }
-    }
-
-    fn description(&self) -> String {
-        match self {
-            Self::Tcp(address) => address.to_string(),
-            Self::Iroh(endpoint_id) => format!("iroh:{endpoint_id}"),
-        }
-    }
-
-    fn is_allowed(&self, mode: &str) -> bool {
-        match self {
-            Self::Tcp(address) => source_matches_mode(address.ip(), mode),
-            Self::Iroh(_) => mode == "auto",
-        }
-    }
-}
-
 async fn handle_accepted_connection(
     accepted: secure::AcceptedConnection,
     source: InboundSource,
@@ -320,43 +214,24 @@ async fn handle_accepted_connection(
     let source_interface = source.interface()?;
 
     if purpose == secure::HandshakePurpose::Pairing {
-        let Some(pairing) = pairing else {
-            secure::write_error(&mut stream, "Pairing over Iroh is not supported").await?;
-            return Ok(());
-        };
-        secure::write_ready(&mut stream).await?;
-        return pairing
-            .install_session(PendingPairing {
-                connection: stream,
-                hostname: peer_info.hostname,
-                remote_public_key: peer_public_key,
-                handshake_hash,
-                address: source_address,
-                interface: source_interface.as_str().to_string(),
-            })
-            .await
-            .map_err(Into::into);
+        return crate::pairing::install_pairing_session(
+            pairing.as_ref(),
+            stream,
+            peer_info.hostname,
+            peer_public_key,
+            handshake_hash,
+            source_address,
+            source_interface.as_str().to_string(),
+        )
+        .await
+        .map_err(Into::into);
     }
 
-    let (trusted_key, peer_enabled, source_allowed) = {
+    let source_allowed = {
         let settings = settings.lock().await;
-        (
-            settings
-                .trusted_peer_keys
-                .get(&peer_info.hostname)
-                .and_then(|key| secure::decode_trusted_key(key).ok()),
-            settings
-                .enabled_peers
-                .get(&peer_info.hostname)
-                .copied()
-                .unwrap_or(true),
-            source.is_allowed(&settings.connection_mode),
-        )
+        peer_is_allowed(&settings, &peer_info.hostname, &peer_public_key, &source)
     };
-    if !source_allowed
-        || !peer_enabled
-        || trusted_key.as_deref() != Some(peer_public_key.as_slice())
-    {
+    if !source_allowed {
         secure::write_error(&mut stream, "Peer is not paired or is disabled").await?;
         return Ok(());
     }
@@ -396,10 +271,8 @@ async fn handle_accepted_connection(
     secure::write_ready(&mut stream).await?;
     let _active_guard =
         register_active_session(&peer_info.hostname, source_interface, &source_address, 0);
-    let _receive_guard = ReceiveSuspendGuard {
-        sync_engine: sync_engine.clone(),
-        source: peer_info.hostname.clone(),
-    };
+    let _receive_guard =
+        sync::ReceiveSuspendGuard::new(sync_engine.clone(), peer_info.hostname.clone());
 
     // ── Receive loop ─────────────────────────────────────────────
     let mut last_activity = tokio::time::Instant::now();
@@ -438,18 +311,7 @@ async fn handle_accepted_connection(
 
         let still_authorized = {
             let settings = settings.lock().await;
-            settings
-                .trusted_peer_keys
-                .get(&peer_info.hostname)
-                .and_then(|key| secure::decode_trusted_key(key).ok())
-                .as_deref()
-                == Some(peer_public_key.as_slice())
-                && settings
-                    .enabled_peers
-                    .get(&peer_info.hostname)
-                    .copied()
-                    .unwrap_or(true)
-                && source.is_allowed(&settings.connection_mode)
+            peer_is_allowed(&settings, &peer_info.hostname, &peer_public_key, &source)
         };
         if !still_authorized {
             secure::write_error(&mut stream, "Peer authorization was revoked").await?;
@@ -462,13 +324,14 @@ async fn handle_accepted_connection(
                 stream.write_frame(&ack).await?;
             }
             Command::TextPayload => {
-                if let Err(error) = receive_reliable_event(
+                if let Err(error) = process_reliable_event(
                     &mut stream,
-                    frame,
+                    &frame,
                     &peer_info.hostname,
                     &sync_engine,
                     &database,
                     &mut last_reliable_sequence,
+                    crate::api::bump_clipboard_version,
                 )
                 .await
                 {
@@ -478,13 +341,14 @@ async fn handle_accepted_connection(
                 }
             }
             Command::ImagePayload => {
-                if let Err(error) = receive_reliable_event(
+                if let Err(error) = process_reliable_event(
                     &mut stream,
-                    frame,
+                    &frame,
                     &peer_info.hostname,
                     &sync_engine,
                     &database,
                     &mut last_reliable_sequence,
+                    crate::api::bump_clipboard_version,
                 )
                 .await
                 {
@@ -498,7 +362,7 @@ async fn handle_accepted_connection(
                 let result = {
                     let _admission_guard = sync::file_batch_admission_lock().lock().await;
                     match manifest.validate() {
-                        Err(error) => Err(error),
+                        Err(error) => Err(error.to_string()),
                         Ok(()) => {
                             let (already_active, pending_bytes) = {
                                 let engine = sync_engine.lock().await;
@@ -601,33 +465,9 @@ async fn handle_accepted_connection(
             }
             Command::FileMeta => {
                 let mut meta: sync::FileMeta = serde_json::from_slice(&frame.payload)?;
-                if meta.batch.is_none() {
-                    secure::write_error(
-                        &mut stream,
-                        "This TailSync version requires the file_batch_v1 protocol",
-                    )
-                    .await?;
-                    continue;
-                }
-                if meta.size > MAX_FILE_SIZE {
-                    secure::write_error(&mut stream, "File exceeds the 1 GiB receive limit")
-                        .await?;
-                    continue;
-                }
-                let Some(file_name) = std::path::Path::new(&meta.name).file_name() else {
-                    secure::write_error(&mut stream, "Invalid file name").await?;
-                    continue;
-                };
-                meta.name = file_name.to_string_lossy().to_string();
-                meta.name = sync::normalize_transferred_file_name(&meta.name, &meta.hash);
-                if meta.name.is_empty() {
-                    secure::write_error(&mut stream, "Invalid file name").await?;
-                    continue;
-                }
-                if meta.transfer_id.is_some()
-                    && (meta.chunk_size == 0 || meta.chunk_size as usize > FILE_CHUNK_SIZE)
-                {
-                    secure::write_error(&mut stream, "Invalid file chunk size").await?;
+                if let Err(error) = sync::validate_incoming_file_meta(&mut meta) {
+                    let message = error.to_string();
+                    secure::write_error(&mut stream, &message).await?;
                     continue;
                 }
                 let resumable = meta.transfer_id.is_some();
@@ -648,7 +488,7 @@ async fn handle_accepted_connection(
                 let result = match result {
                     Ok(mut progress) => {
                         if let Some(pending) = progress.completed.take() {
-                            verify_and_commit_received_file(
+                            sync::verify_and_commit_received_file(
                                 &sync_engine,
                                 &peer_info.hostname,
                                 pending,
@@ -704,7 +544,7 @@ async fn handle_accepted_connection(
                             let result = match result {
                                 Ok(mut progress) => {
                                     if let Some(pending) = progress.completed.take() {
-                                        verify_and_commit_received_file(
+                                        sync::verify_and_commit_received_file(
                                             &sync_engine,
                                             &peer_info.hostname,
                                             pending,
@@ -781,167 +621,6 @@ async fn handle_accepted_connection(
 
     debug!("Connection {peer_addr} closed");
     Ok(())
-}
-
-async fn receive_reliable_event(
-    stream: &mut secure::SecureConnection,
-    frame: Frame,
-    source: &str,
-    sync_engine: &Arc<Mutex<sync::SyncEngine>>,
-    database: &Arc<Mutex<db::HistoryDB>>,
-    last_sequence: &mut Option<u32>,
-) -> Result<(), String> {
-    let envelope = EventEnvelope::decode(&frame.payload).map_err(|error| error.to_string())?;
-    envelope
-        .validate_timestamp(unix_timestamp_ms())
-        .map_err(|error| error.to_string())?;
-
-    let duplicate = sync_engine
-        .lock()
-        .await
-        .has_seen_message(source, envelope.message_id);
-    if last_sequence.is_some_and(|last| frame.sequence <= last) && !duplicate {
-        return Err(format!(
-            "replayed or out-of-order event sequence {}",
-            frame.sequence
-        ));
-    }
-
-    if !duplicate {
-        let kind = match frame.command {
-            Command::TextPayload => "text",
-            Command::ImagePayload => "image",
-            _ => {
-                return Err(format!(
-                    "{:?} is not a reliable event command",
-                    frame.command
-                ))
-            }
-        };
-        process_event_content(
-            frame.command,
-            &envelope.content,
-            source,
-            sync_engine,
-            database,
-        )
-        .await?;
-        info!("{kind} event from {source} applied");
-        sync_engine
-            .lock()
-            .await
-            .record_message(source, envelope.message_id);
-        crate::api::bump_clipboard_version();
-    } else {
-        debug!("Reliable event from {source} was already applied; acknowledging again");
-    }
-
-    if last_sequence.is_none_or(|last| frame.sequence > last) {
-        *last_sequence = Some(frame.sequence);
-    }
-    let ack = Frame::try_new(
-        Command::EventAck,
-        0,
-        frame.sequence,
-        envelope.message_id.ack_payload(),
-    )
-    .map_err(|error| error.to_string())?;
-    stream
-        .write_frame(&ack)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-async fn process_event_content(
-    command: Command,
-    content: &[u8],
-    source: &str,
-    sync_engine: &Arc<Mutex<sync::SyncEngine>>,
-    database: &Arc<Mutex<db::HistoryDB>>,
-) -> Result<(), String> {
-    match command {
-        Command::TextPayload => {
-            let text = String::from_utf8(content.to_vec())
-                .map_err(|_| "text event is not valid UTF-8".to_string())?;
-            let db = database.clone();
-            let db_text = text.clone();
-            let db_source = source.to_string();
-            tokio::task::spawn_blocking(move || {
-                db.blocking_lock()
-                    .add_text(&db_text, &db_source)
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .map_err(|error| error.to_string())??;
-
-            info!("Received text from {}: {} chars", source, text.len());
-            sync_engine
-                .lock()
-                .await
-                .handle_incoming_text(&text, source.to_string())
-                .await?;
-        }
-        Command::ImagePayload => {
-            validate_packed_image(content)?;
-            let db = database.clone();
-            let image = content.to_vec();
-            let db_source = source.to_string();
-            tokio::task::spawn_blocking(move || {
-                db.blocking_lock()
-                    .add_image(&image, &db_source)
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .map_err(|error| error.to_string())??;
-
-            info!("Received image from {}: {} bytes", source, content.len());
-            sync_engine
-                .lock()
-                .await
-                .handle_incoming_image(content, source.to_string())
-                .await?;
-        }
-        _ => return Err(format!("{:?} is not a reliable event command", command)),
-    }
-    Ok(())
-}
-
-async fn verify_and_commit_received_file(
-    sync_engine: &Arc<Mutex<sync::SyncEngine>>,
-    source: &str,
-    pending: sync::PendingReceivedFile,
-) -> Result<(), String> {
-    let path = pending.path().to_path_buf();
-    let batch_id = pending.batch_id();
-    let verification = tokio::task::spawn_blocking(move || pending.verify_hash())
-        .await
-        .map_err(|error| format!("File verification task failed: {error}"))?;
-    match verification {
-        Ok(verified) => {
-            let result = sync_engine
-                .lock()
-                .await
-                .commit_received_file(source, verified);
-            if result.is_err() {
-                let _ = std::fs::remove_file(&path);
-            }
-            result
-        }
-        Err(error) => {
-            let _ = std::fs::remove_file(&path);
-            sync_engine
-                .lock()
-                .await
-                .discard_received_file(source, batch_id);
-            Err(error)
-        }
-    }
-}
-
-fn validate_packed_image(content: &[u8]) -> Result<(), String> {
-    crate::protocol::PackedImage::try_from(content)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
 }
 
 pub(super) use tailsync_core::peer::directory::source_matches_mode;

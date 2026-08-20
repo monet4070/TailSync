@@ -23,6 +23,7 @@ export default defineConfig({
       input: {
         history: 'history.html',
         settings: 'settings.html',
+        preview: 'preview.html',
       },
     },
   },

@@ -1,6 +1,7 @@
 use log::{info, warn};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 
 use crate::crypto;
 use crate::history_classifier::{self, Classification};
@@ -32,19 +33,134 @@ pub use paths::{
     get_file_history_dir, get_history_db_path, get_image_history_dir, get_incoming_dir,
     get_storage_dir, validate_storage_dir, STORAGE_DIRECTORY_NAME,
 };
-pub use storage::delete_old_storage;
+pub use storage::{
+    delete_old_storage, migrate_storage_with_rollback, StorageMigrationFailure,
+    StorageMigrationHooks,
+};
 pub use types::{
     FileEncryptionMigrationBatch, HistoryEntry, HistoryFileInput, HistoryQueryPage,
-    MigrationDiagnostics, MigrationIssue, StorageMigrationResult, StorageStatus,
+    MigrationDiagnostics, MigrationIssue, PreviewBatchNavigation, PreviewErrorCode,
+    PreviewErrorInfo, PreviewKind, PreviewMetadata, PreviewPayload, StorageMigrationResult,
+    StorageStatus,
 };
 
 /// Database schema version
 const SCHEMA_VERSION: i64 = 9;
 
+/// Maximum amount of decrypted data a preview request may materialise.
+pub const PREVIEW_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PreviewError {
+    #[error("history entry {entry_id} is unavailable")]
+    EntryNotFound { entry_id: i64 },
+    #[error("history batch {batch_id} is unavailable")]
+    BatchNotFound { batch_id: String },
+    #[error("history entry {entry_id} does not belong to batch {batch_id}")]
+    EntryNotInBatch { entry_id: i64, batch_id: String },
+    #[error("preview metadata for history entry {entry_id} is unavailable: {reason}")]
+    MetadataUnavailable { entry_id: i64, reason: String },
+    #[error("preview payload for history entry {entry_id} is unavailable: {reason}")]
+    PayloadUnavailable { entry_id: i64, reason: String },
+    #[error("preview payload is too large: {size} bytes (limit {limit} bytes)")]
+    PreviewTooLarge { size: u64, limit: u64 },
+    #[error("unsupported history preview type: {kind}")]
+    UnsupportedType { kind: String },
+    #[error("history entry has an invalid size: {size}")]
+    InvalidSize { size: i64 },
+}
+
+impl PreviewError {
+    pub const fn code(&self) -> PreviewErrorCode {
+        match self {
+            Self::EntryNotFound { .. } => PreviewErrorCode::EntryNotFound,
+            Self::BatchNotFound { .. } => PreviewErrorCode::BatchNotFound,
+            Self::EntryNotInBatch { .. } => PreviewErrorCode::EntryNotInBatch,
+            Self::MetadataUnavailable { .. } => PreviewErrorCode::MetadataUnavailable,
+            Self::PayloadUnavailable { .. } => PreviewErrorCode::PayloadUnavailable,
+            Self::PreviewTooLarge { .. } => PreviewErrorCode::PreviewTooLarge,
+            Self::UnsupportedType { .. } => PreviewErrorCode::UnsupportedType,
+            Self::InvalidSize { .. } => PreviewErrorCode::InvalidSize,
+        }
+    }
+}
+
+impl From<PreviewError> for PreviewErrorInfo {
+    fn from(error: PreviewError) -> Self {
+        let (entry_id, size_bytes, limit_bytes, retryable) = match &error {
+            PreviewError::EntryNotFound { entry_id }
+            | PreviewError::MetadataUnavailable { entry_id, .. }
+            | PreviewError::PayloadUnavailable { entry_id, .. }
+            | PreviewError::EntryNotInBatch { entry_id, .. } => (
+                Some(*entry_id),
+                None,
+                None,
+                matches!(
+                    &error,
+                    PreviewError::MetadataUnavailable { .. }
+                        | PreviewError::PayloadUnavailable { .. }
+                ),
+            ),
+            PreviewError::PreviewTooLarge { size, limit } => {
+                (None, Some(*size), Some(*limit), false)
+            }
+            PreviewError::BatchNotFound { .. }
+            | PreviewError::UnsupportedType { .. }
+            | PreviewError::InvalidSize { .. } => (None, None, None, false),
+        };
+        Self {
+            code: error.code(),
+            message: error.to_string(),
+            entry_id,
+            size_bytes,
+            limit_bytes,
+            retryable,
+        }
+    }
+}
+
+impl PreviewErrorInfo {
+    pub fn payload_unavailable(entry_id: i64, message: impl Into<String>) -> Self {
+        Self {
+            code: PreviewErrorCode::PayloadUnavailable,
+            message: message.into(),
+            entry_id: Some(entry_id),
+            size_bytes: None,
+            limit_bytes: None,
+            retryable: false,
+        }
+    }
+}
+
 const TEXT_DESCRIPTION_PLACEHOLDER: &str = "Encrypted text";
 
 fn text_preview(text: &str) -> String {
     text.chars().take(100).collect()
+}
+
+fn preview_kind_and_name(
+    entry_type: &str,
+    description: &str,
+) -> Result<(PreviewKind, String), PreviewError> {
+    match entry_type {
+        "text" => Ok((PreviewKind::Text, "text.txt".to_string())),
+        "image" => Ok((PreviewKind::Image, "image".to_string())),
+        "file" => Ok((PreviewKind::File, description.to_string())),
+        other => Err(PreviewError::UnsupportedType {
+            kind: other.to_string(),
+        }),
+    }
+}
+
+fn checked_preview_size(size: i64) -> Result<u64, PreviewError> {
+    let size = u64::try_from(size).map_err(|_| PreviewError::InvalidSize { size })?;
+    if size > PREVIEW_MAX_BYTES {
+        return Err(PreviewError::PreviewTooLarge {
+            size,
+            limit: PREVIEW_MAX_BYTES,
+        });
+    }
+    Ok(size)
 }
 
 fn remove_unreferenced_persisted_files(conn: &Connection, persisted: &[(Vec<u8>, PathBuf)]) {
@@ -95,7 +211,7 @@ impl HistoryDB {
         })
     }
 
-    fn open_at(storage_dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) fn open_at(storage_dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(storage_dir)?;
         let db_path = storage_dir.join("history-v2.db");
         info!("Opening database at {}", db_path.display());
@@ -275,6 +391,124 @@ impl HistoryDB {
             }
         }
         crypto::decrypt(&stored)
+    }
+
+    /// Read the renderer and navigation metadata without decrypting or
+    /// materialising the entry payload.
+    pub fn get_preview_metadata(&self, id: i64) -> Result<PreviewMetadata, PreviewError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT type, description, size_bytes, batch_id
+                 FROM history WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| PreviewError::MetadataUnavailable {
+                entry_id: id,
+                reason: error.to_string(),
+            })?
+            .ok_or(PreviewError::EntryNotFound { entry_id: id })?;
+
+        let (entry_type, description, declared_size, batch_id) = row;
+        let size_bytes = checked_preview_size(declared_size)?;
+        let (kind, name) = preview_kind_and_name(&entry_type, &description)?;
+        let batch = batch_id
+            .as_deref()
+            .map(|batch_id| self.get_preview_batch_navigation(batch_id, id))
+            .transpose()?;
+
+        Ok(PreviewMetadata {
+            entry_id: id,
+            kind,
+            name,
+            size_bytes,
+            batch,
+        })
+    }
+
+    /// Return navigation for one file in a batch without loading any payload.
+    pub fn get_preview_batch_navigation(
+        &self,
+        batch_id: &str,
+        entry_id: i64,
+    ) -> Result<PreviewBatchNavigation, PreviewError> {
+        let load_ids = || -> rusqlite::Result<Vec<i64>> {
+            self.conn
+                .prepare(
+                    "SELECT id FROM history
+                     WHERE batch_id = ?1 AND type = 'file'
+                     ORDER BY batch_index ASC, id ASC",
+                )?
+                .query_map(params![batch_id], |row| row.get(0))?
+                .collect()
+        };
+        let entry_ids = load_ids().map_err(|error| PreviewError::MetadataUnavailable {
+            entry_id,
+            reason: error.to_string(),
+        })?;
+        if entry_ids.is_empty() {
+            return Err(PreviewError::BatchNotFound {
+                batch_id: batch_id.to_string(),
+            });
+        }
+        let item_index = entry_ids
+            .iter()
+            .position(|candidate| *candidate == entry_id)
+            .ok_or_else(|| PreviewError::EntryNotInBatch {
+                entry_id,
+                batch_id: batch_id.to_string(),
+            })?;
+
+        Ok(PreviewBatchNavigation {
+            batch_id: batch_id.to_string(),
+            item_index,
+            item_count: entry_ids.len(),
+            first_entry_id: entry_ids[0],
+            last_entry_id: entry_ids[entry_ids.len() - 1],
+            previous_entry_id: item_index
+                .checked_sub(1)
+                .and_then(|index| entry_ids.get(index).copied()),
+            next_entry_id: entry_ids.get(item_index + 1).copied(),
+        })
+    }
+
+    /// Load a bounded, decrypted payload for an in-memory history preview.
+    ///
+    /// This deliberately does not call `get_file_path` or any materialisation
+    /// helper: preview callers must never create a plaintext file on disk.
+    /// The typed error is part of the platform IPC contract; callers should
+    /// never have to infer retryability from an error string.
+    pub fn get_preview_payload(&self, id: i64) -> Result<PreviewPayload, PreviewError> {
+        let metadata = self.get_preview_metadata(id)?;
+        let data = self
+            .get_data(id)
+            .map_err(|error| PreviewError::PayloadUnavailable {
+                entry_id: id,
+                reason: error.to_string(),
+            })?;
+        let size_bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        if size_bytes > PREVIEW_MAX_BYTES {
+            return Err(PreviewError::PreviewTooLarge {
+                size: size_bytes,
+                limit: PREVIEW_MAX_BYTES,
+            });
+        }
+
+        Ok(PreviewPayload {
+            kind: metadata.kind.as_str().to_string(),
+            name: metadata.name,
+            size_bytes,
+            data,
+        })
     }
 
     /// Reads current encrypted text and the short-lived v3 format that stored
@@ -960,6 +1194,285 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn preview_payload_loads_text_image_and_file_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-payload-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+
+        let text = "preview text payload";
+        db.add_text(text, "self").unwrap();
+        let text_id = db.conn.last_insert_rowid();
+
+        let image = packed_test_image(2, 1, 0x7b);
+        db.add_image(&image, "self").unwrap();
+        let image_id = db.conn.last_insert_rowid();
+
+        let file = b"preview file payload";
+        db.add_file("notes.md", file, "self").unwrap();
+        let file_id = db.conn.last_insert_rowid();
+
+        let text_preview = db.get_preview_payload(text_id).unwrap();
+        assert_eq!(
+            text_preview,
+            PreviewPayload {
+                kind: "text".to_string(),
+                name: "text.txt".to_string(),
+                size_bytes: text.len() as u64,
+                data: text.as_bytes().to_vec(),
+            }
+        );
+
+        let image_preview = db.get_preview_payload(image_id).unwrap();
+        assert_eq!(image_preview.kind, "image");
+        assert_eq!(image_preview.name, "image");
+        assert_eq!(image_preview.size_bytes, image.len() as u64);
+        assert_eq!(image_preview.data, image);
+
+        let file_preview = db.get_preview_payload(file_id).unwrap();
+        assert_eq!(file_preview.kind, "file");
+        assert_eq!(file_preview.name, "notes.md");
+        assert_eq!(file_preview.size_bytes, file.len() as u64);
+        assert_eq!(file_preview.data, file);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_metadata_describes_text_image_and_file_without_payloads() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-metadata-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut db = test_database(&root);
+
+        db.add_text("metadata text", "self").unwrap();
+        let text_id = db.conn.last_insert_rowid();
+        let image = packed_test_image(3, 2, 0x51);
+        db.add_image(&image, "self").unwrap();
+        let image_id = db.conn.last_insert_rowid();
+        db.add_file("metadata.pdf", b"metadata file", "self")
+            .unwrap();
+        let file_id = db.conn.last_insert_rowid();
+
+        assert_eq!(
+            db.get_preview_metadata(text_id).unwrap(),
+            PreviewMetadata {
+                entry_id: text_id,
+                kind: PreviewKind::Text,
+                name: "text.txt".to_string(),
+                size_bytes: 13,
+                batch: None,
+            }
+        );
+        assert_eq!(
+            db.get_preview_metadata(image_id).unwrap(),
+            PreviewMetadata {
+                entry_id: image_id,
+                kind: PreviewKind::Image,
+                name: "image".to_string(),
+                size_bytes: image.len() as u64,
+                batch: None,
+            }
+        );
+        assert_eq!(
+            db.get_preview_metadata(file_id).unwrap(),
+            PreviewMetadata {
+                entry_id: file_id,
+                kind: PreviewKind::File,
+                name: "metadata.pdf".to_string(),
+                size_bytes: 13,
+                batch: None,
+            }
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_metadata_does_not_decrypt_payload_data() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-metadata-only-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = test_database(&root);
+        db.conn
+            .execute(
+                "INSERT INTO history
+                    (timestamp, type, description, data, size_bytes, source_peer, data_hash)
+                 VALUES ('2026-01-01T00:00:00Z', 'text', 'Encrypted text', X'00', 1,
+                         'self', 'corrupt-text')",
+                [],
+            )
+            .unwrap();
+        let id = db.conn.last_insert_rowid();
+
+        let metadata = db.get_preview_metadata(id).unwrap();
+        assert_eq!(metadata.kind, PreviewKind::Text);
+        assert_eq!(metadata.size_bytes, 1);
+        assert!(matches!(
+            db.get_preview_payload(id),
+            Err(PreviewError::PayloadUnavailable { entry_id, .. }) if entry_id == id
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_batch_navigation_uses_actual_order_and_count() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-navigation-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = test_database(&root);
+        for (id, index) in [(41_i64, 2_i64), (42, 0), (43, 1)] {
+            db.conn
+                .execute(
+                    "INSERT INTO history
+                        (id, timestamp, type, description, data, size_bytes, source_peer,
+                         data_hash, category, categories, category_confidence,
+                         classifier_version, batch_id, batch_index, batch_total, batch_status)
+                     VALUES (?1, '2026-01-01T00:00:00Z', 'file', ?2, X'00', 1, 'self',
+                             ?3, 'file', '[\"file\"]', 100, 1, 'batch-nav', ?4, 99,
+                             'receiving')",
+                    params![id, format!("file-{id}"), format!("hash-{id}"), index],
+                )
+                .unwrap();
+        }
+
+        let navigation = db.get_preview_batch_navigation("batch-nav", 43).unwrap();
+        assert_eq!(
+            navigation,
+            PreviewBatchNavigation {
+                batch_id: "batch-nav".to_string(),
+                item_index: 1,
+                item_count: 3,
+                first_entry_id: 42,
+                last_entry_id: 41,
+                previous_entry_id: Some(42),
+                next_entry_id: Some(41),
+            }
+        );
+        assert_eq!(db.get_preview_metadata(43).unwrap().batch, Some(navigation));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_batch_navigation_reports_typed_membership_errors() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-navigation-errors-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = test_database(&root);
+        db.conn
+            .execute(
+                "INSERT INTO history
+                    (id, timestamp, type, description, data, size_bytes, source_peer,
+                     data_hash, batch_id, batch_index, batch_total)
+                 VALUES (7, '2026-01-01T00:00:00Z', 'file', 'one.txt', X'00', 1,
+                         'self', 'one', 'existing-batch', 0, 1)",
+                [],
+            )
+            .unwrap();
+
+        let missing = db
+            .get_preview_batch_navigation("missing-batch", 7)
+            .unwrap_err();
+        assert_eq!(
+            missing,
+            PreviewError::BatchNotFound {
+                batch_id: "missing-batch".to_string(),
+            }
+        );
+        assert_eq!(missing.code(), PreviewErrorCode::BatchNotFound);
+
+        let wrong_entry = db
+            .get_preview_batch_navigation("existing-batch", 8)
+            .unwrap_err();
+        assert_eq!(
+            wrong_entry,
+            PreviewError::EntryNotInBatch {
+                entry_id: 8,
+                batch_id: "existing-batch".to_string(),
+            }
+        );
+        assert_eq!(wrong_entry.code(), PreviewErrorCode::EntryNotInBatch);
+        assert_eq!(
+            serde_json::to_string(&wrong_entry.code()).unwrap(),
+            "\"entry_not_in_batch\""
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_preview_payload_reports_missing_entry() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-typed-missing-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = test_database(&root);
+
+        let error = db.get_preview_payload(404).unwrap_err();
+        assert_eq!(error, PreviewError::EntryNotFound { entry_id: 404 });
+        assert_eq!(error.code(), PreviewErrorCode::EntryNotFound);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_payload_rejects_oversized_metadata_before_decryption() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-too-large-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = test_database(&root);
+        let declared_size = PREVIEW_MAX_BYTES + 1;
+        db.conn
+            .execute(
+                "INSERT INTO history
+                    (timestamp, type, description, data, size_bytes, source_peer, data_hash)
+                 VALUES ('2026-01-01T00:00:00Z', 'file', 'large.bin', X'00', ?1, 'self', 'large')",
+                params![declared_size as i64],
+            )
+            .unwrap();
+        let id = db.conn.last_insert_rowid();
+
+        let error = db.get_preview_payload(id).unwrap_err();
+        assert!(matches!(
+            error,
+            PreviewError::PreviewTooLarge { size, limit }
+                if size == declared_size && limit == PREVIEW_MAX_BYTES
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_payload_reports_missing_history_id() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-preview-missing-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = test_database(&root);
+
+        let error = db.get_preview_payload(404).unwrap_err();
+        assert_eq!(error, PreviewError::EntryNotFound { entry_id: 404 });
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

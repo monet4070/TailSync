@@ -4,9 +4,11 @@ mod clipboard_change;
 mod clipboard_file;
 mod commands;
 mod network;
+mod preview_window;
 mod sync_adapter;
 mod tray;
 mod updates;
+mod window_lifecycle;
 
 pub use tailsync_core::{
     crypto, db, history_classifier, identity, pairing, protocol, secure, sync,
@@ -34,6 +36,12 @@ fn track_task(tasks: &BackgroundTasks, task: tauri::async_runtime::JoinHandle<()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(task);
+}
+
+fn should_prevent_implicit_exit(code: Option<i32>) -> bool {
+    // Tauri uses no exit code when destroying the last window, and Some(code)
+    // for explicit AppHandle::exit/restart requests.
+    code.is_none()
 }
 
 async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
@@ -154,12 +162,9 @@ fn start_parent_monitor(
     shutdown: tokio::sync::watch::Sender<bool>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Option<tauri::async_runtime::JoinHandle<()>> {
-    let Some(parent_pid) = std::env::var("TAILSYNC_PARENT_PID")
+    let parent_pid = std::env::var("TAILSYNC_PARENT_PID")
         .ok()
-        .and_then(|value| value.parse::<libc::pid_t>().ok())
-    else {
-        return None;
-    };
+        .and_then(|value| value.parse::<libc::pid_t>().ok())?;
     Some(tauri::async_runtime::spawn(async move {
         loop {
             tokio::select! {
@@ -203,10 +208,16 @@ fn start_background_notifications(
             .and_then(|entries| entries.first().map(|entry| entry.id))
             .unwrap_or_default();
         let mut last_version = api::get_clipboard_version();
+        let mut last_revision = api::get_runtime_revision();
 
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                revision = api::wait_for_runtime_revision(
+                    last_revision,
+                    std::time::Duration::from_secs(15),
+                ) => {
+                    last_revision = revision;
+                }
                 _ = wait_for_shutdown(&mut shutdown) => return,
             }
             let version = api::get_clipboard_version();
@@ -297,12 +308,44 @@ fn start_storage_monitor(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> i32 {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    if let Err(error) = run_app() {
-        log::error!("TailSync failed to start: {error}");
-        eprintln!("TailSync failed to start: {error}");
+    match run_app() {
+        Ok(()) => 0,
+        Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
     }
+}
+
+/// Record a fatal startup failure and return the process exit code.
+///
+/// The message goes to the logger and stderr (visible in `tauri:dev`), and
+/// is appended to `{data dir}/startup-error.log` so release builds — which
+/// have no console — still leave a reliable, documented failure trace.
+fn report_startup_failure(data_dir: &std::path::Path, error: &dyn std::error::Error) -> i32 {
+    let message = format!("TailSync failed to start: {error}");
+    log::error!("{message}");
+    eprintln!("{message}");
+    if let Err(log_error) = write_startup_error_log(data_dir, &message) {
+        eprintln!("Could not write startup error log: {log_error}");
+    }
+    1
+}
+
+/// Append one startup-failure line to `{data dir}/startup-error.log`,
+/// creating the data directory when needed.
+fn write_startup_error_log(data_dir: &std::path::Path, message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(data_dir)?;
+    let path = data_dir.join("startup-error.log");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(
+        file,
+        "[{}] {message}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
 }
 
 fn run_app() -> Result<(), Box<dyn std::error::Error>> {
@@ -394,6 +437,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
     let settings_for_monitor = settings.clone();
+    #[cfg(target_os = "windows")]
     let settings_for_notifications = settings.clone();
     let settings_for_server = settings.clone();
     let settings_for_iroh = settings.clone();
@@ -429,7 +473,17 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_for_setup = shutdown_rx.clone();
     let shutdown_for_state = shutdown_tx.clone();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // This must remain the first plugin so secondary launches are rejected
+        // before app setup creates another tray or registers global shortcuts.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = commands::open_history_window(handle).await {
+                    log::warn!("Could not focus TailSync after a repeated launch: {error}");
+                }
+            });
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -468,12 +522,12 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 pairing: pairing.clone(),
                 shutdown: shutdown_for_state,
             };
-            let initial_sync_shortcut = state.settings.blocking_lock().sync_shortcut.clone();
+            let initial_shortcuts = state.settings.blocking_lock().clone();
             app.manage(state);
-            if let Err(error) =
-                commands::register_saved_sync_shortcut(&handle, &initial_sync_shortcut)
-            {
-                log::warn!("Could not register saved sync shortcut: {error}");
+            app.manage(preview_window::PreviewWindowController::default());
+            app.manage(window_lifecycle::TransientWindowController::default());
+            if let Err(error) = commands::register_saved_shortcuts(&handle, &initial_shortcuts) {
+                log::warn!("Could not register saved global shortcuts: {error}");
             }
             #[cfg(all(not(target_os = "macos"), not(test)))]
             tray::start_tray(handle.clone());
@@ -482,6 +536,14 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 tauri::async_runtime::spawn(async move {
                     if let Err(error) = commands::open_settings_window(settings_handle).await {
                         log::warn!("Could not open settings test window: {error}");
+                    }
+                });
+            }
+            if std::env::var_os("TAILSYNC_OPEN_HISTORY_ON_START").is_some() {
+                let history_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::open_history_window(history_handle).await {
+                        log::warn!("Could not open history test window: {error}");
                     }
                 });
             }
@@ -595,6 +657,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::suspend_sync_shortcut,
             commands::resume_sync_shortcut,
             commands::set_sync_shortcut,
+            commands::set_history_shortcut,
             commands::trust_peer,
             commands::forget_peer,
             commands::enable_pairing,
@@ -606,7 +669,26 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::update_settings,
             commands::open_history_window,
             commands::open_settings_window,
+            commands::close_history_window,
+            commands::close_settings_window,
+            preview_window::open_preview_window,
+            preview_window::get_preview_window_request,
+            preview_window::close_preview_window,
+            preview_window::sync_preview_window_minimized,
             commands::get_image_data,
+            commands::get_preview,
+            commands::validate_theme,
+            commands::install_theme,
+            commands::update_theme,
+            commands::rollback_theme,
+            commands::delete_theme_v2,
+            commands::list_themes_v2,
+            commands::get_local_theme_settings,
+            commands::set_local_theme_settings,
+            commands::resolve_theme,
+            commands::get_theme_asset,
+            commands::get_theme_asset_slot,
+            commands::preview_theme_asset_slot,
             commands::get_file_progress,
             commands::cancel_file_batch,
             commands::get_storage_status,
@@ -615,18 +697,64 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::delete_old_storage,
             commands::restore_file_batch,
             commands::get_version,
+            commands::wait_runtime_snapshot,
             commands::get_sync_warning,
             commands::get_update_status,
             commands::check_for_update,
             commands::install_update,
         ])
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?;
+
+    app.run(|_handle, event| {
+        if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+            if should_prevent_implicit_exit(code) {
+                log::debug!("Keeping TailSync resident after the last window was released");
+                api.prevent_exit();
+            }
+        }
+    });
     Ok(())
 }
 
 #[cfg(test)]
+mod startup_failure_tests {
+    use super::{report_startup_failure, write_startup_error_log};
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "tailsync-win-{label}-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ))
+    }
+
+    #[test]
+    fn startup_failure_returns_nonzero_and_records_log() {
+        let dir = temp_dir("startup-failure");
+        let error = std::io::Error::other("legacy theme field");
+        let code = report_startup_failure(&dir, &error);
+        assert_eq!(code, 1, "a failed startup must exit with a non-zero code");
+        let log = std::fs::read_to_string(dir.join("startup-error.log")).unwrap();
+        assert!(log.contains("TailSync failed to start: legacy theme field"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_error_log_appends_repeated_failures() {
+        let dir = temp_dir("startup-append");
+        write_startup_error_log(&dir, "first failure").unwrap();
+        write_startup_error_log(&dir, "second failure").unwrap();
+        let log = std::fs::read_to_string(dir.join("startup-error.log")).unwrap();
+        assert!(log.contains("first failure"));
+        assert!(log.contains("second failure"));
+        assert_eq!(log.lines().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod shutdown_tests {
-    use super::{stop_background_tasks, track_task, BackgroundTasks};
+    use super::{should_prevent_implicit_exit, stop_background_tasks, track_task, BackgroundTasks};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex as StdMutex,
@@ -642,6 +770,16 @@ mod shutdown_tests {
 
     fn tasks() -> BackgroundTasks {
         Arc::new(StdMutex::new(Vec::new()))
+    }
+
+    #[test]
+    fn only_implicit_last_window_exit_is_prevented() {
+        assert!(should_prevent_implicit_exit(None));
+        assert!(!should_prevent_implicit_exit(Some(0)));
+        assert!(!should_prevent_implicit_exit(Some(1)));
+        assert!(!should_prevent_implicit_exit(Some(
+            tauri::RESTART_EXIT_CODE
+        )));
     }
 
     #[tokio::test]

@@ -5,17 +5,14 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
 use tokio::time::{timeout, Duration};
 
 use crate::crypto;
 use crate::db;
 use crate::identity::DeviceIdentity;
 use crate::pairing::{PairingManager, PendingPairing};
-use crate::protocol::{
-    unix_timestamp_ms, Command, EventEnvelope, FileChunkPayload, FileOffset, Frame, ProtocolError,
-    TransferId, FILE_CHUNK_SIZE,
-};
+use crate::protocol::{Command, FileChunkPayload, FileOffset, Frame, ProtocolError, TransferId};
 use crate::sync;
 
 /// Default TCP port for TailSync
@@ -29,7 +26,7 @@ const POOL_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const FILE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Reconnect back-off
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
-pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
+pub(crate) use tailsync_core::sync::MAX_FILE_SIZE;
 const PEER_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Used by the macOS SwiftUI shell to verify that the peer listener survived
@@ -327,7 +324,10 @@ pub async fn start_pairing(
         pairing.record_failure(message.clone()).await;
         return Err(message);
     }
-    pairing.begin_handshake().await?;
+    pairing
+        .begin_handshake()
+        .await
+        .map_err(|error| error.to_string())?;
 
     let mut window = pairing.subscribe_window();
     let operation = timeout(HANDSHAKE_TIMEOUT, async {
@@ -398,6 +398,7 @@ pub async fn start_pairing(
             interface: pairing_interface.as_str().to_string(),
         })
         .await
+        .map_err(|error| error.to_string())
 }
 
 pub use tailsync_core::peer::types::RouteLatency;

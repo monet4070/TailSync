@@ -2,6 +2,7 @@ mod api;
 mod clipboard;
 mod clipboard_change;
 mod clipboard_file;
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod commands;
 mod network;
 mod sync_adapter;
@@ -13,6 +14,7 @@ pub use tailsync_core::{
 
 use log::info;
 use std::sync::{Arc, Mutex as StdMutex};
+#[cfg(not(target_os = "macos"))]
 use tauri::Manager;
 use tokio::sync::{watch, Mutex};
 
@@ -99,6 +101,7 @@ fn start_file_history_encryption_migration(
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 async fn coordinate_shutdown(
     handle: tauri::AppHandle,
     pool: Arc<Mutex<network::ConnectionPool>>,
@@ -182,30 +185,12 @@ fn start_parent_monitor(
     None
 }
 
-#[cfg(target_os = "macos")]
-fn hide_bundled_daemon_from_dock() {
-    if std::env::var_os("TAILSYNC_PARENT_PID").is_none() {
-        return;
-    }
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-
-    let Some(marker) = MainThreadMarker::new() else {
-        eprintln!("TailSync could not initialize AppKit because it is not on the main thread");
-        return;
-    };
-    let app = NSApplication::sharedApplication(marker);
-    if !app.setActivationPolicy(NSApplicationActivationPolicy::Accessory) {
-        eprintln!("TailSync daemon could not switch to accessory activation policy");
-    }
-}
-
 #[cfg(not(target_os = "macos"))]
 fn hide_bundled_daemon_from_dock() {}
 
 fn start_storage_monitor(
     database: Arc<Mutex<db::HistoryDB>>,
-    app: tauri::AppHandle,
+    app: Option<tauri::AppHandle>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tauri::async_runtime::JoinHandle<()> {
     use tauri_plugin_notification::NotificationExt;
@@ -228,22 +213,33 @@ fn start_storage_monitor(
             match history.reopen_configured_storage() {
                 Ok(()) => {
                     warned = false;
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("TailSync")
-                        .body("TailSync storage is available again. File transfer resumed.")
-                        .show();
+                    api::bump_runtime_revision();
+                    if let Some(app) = &app {
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title("TailSync")
+                            .body("TailSync storage is available again. File transfer resumed.")
+                            .show();
+                    }
                 }
                 Err(error) if !warned => {
                     warned = true;
+                    api::bump_runtime_revision();
                     log::warn!("TailSync storage unavailable: {error}");
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("TailSync")
-                        .body("TailSync storage is unavailable. File transfer is paused.")
-                        .show();
+                    if let Some(app) = &app {
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title("TailSync")
+                            .body("TailSync storage is unavailable. File transfer is paused.")
+                            .show();
+                    } else {
+                        api::push_runtime_notification(
+                            "error",
+                            "TailSync storage is unavailable. File transfer is paused.",
+                        );
+                    }
                 }
                 Err(_) => {}
             }
@@ -251,15 +247,270 @@ fn start_storage_monitor(
     })
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+#[cfg(target_os = "macos")]
+pub fn run() -> i32 {
+    if let Some(operation) = std::env::args()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find_map(|args| (args[0] == "--tailsync-updater-helper").then(|| args[1].clone()))
+    {
+        if let Err(error) = updates::run_macos_updater_helper(&operation) {
+            log::error!("TailSync updater helper failed: {error}");
+            eprintln!("TailSync updater helper failed: {error}");
+            return 1;
+        }
+        return 0;
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    if let Err(error) = run_app() {
-        log::error!("TailSync failed to start: {error}");
-        eprintln!("TailSync failed to start: {error}");
+    match tauri::async_runtime::block_on(run_headless_app()) {
+        Ok(()) => 0,
+        Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() -> i32 {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    match run_app() {
+        Ok(()) => 0,
+        Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
+    }
+}
+
+/// Record a fatal startup failure and return the process exit code.
+///
+/// The message goes to the logger and stderr, and is appended to
+/// `{data dir}/startup-error.log` so headless or release launches still
+/// leave a reliable, documented failure trace.
+fn report_startup_failure(data_dir: &std::path::Path, error: &dyn std::error::Error) -> i32 {
+    let message = format!("TailSync failed to start: {error}");
+    log::error!("{message}");
+    eprintln!("{message}");
+    if let Err(log_error) = write_startup_error_log(data_dir, &message) {
+        eprintln!("Could not write startup error log: {log_error}");
+    }
+    1
+}
+
+/// Append one startup-failure line to `{data dir}/startup-error.log`,
+/// creating the data directory when needed.
+fn write_startup_error_log(data_dir: &std::path::Path, message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(data_dir)?;
+    let path = data_dir.join("startup-error.log");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(
+        file,
+        "[{}] {message}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
+}
+
+#[cfg(target_os = "macos")]
+async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
+    info!("TailSync v2 headless daemon starting...");
+    crypto::initialize()?;
+    let loaded_settings = crypto::Settings::load()?;
+    let storage_available = db::configure_storage_dir(
+        loaded_settings
+            .storage_root
+            .as_deref()
+            .map(std::path::Path::new),
+    )
+    .map(|_| true)
+    .unwrap_or_else(|error| {
+        log::error!("Configured storage is unavailable: {error}");
+        false
+    });
+    sync::cleanup_expired_transfers();
+
+    let mut history_db = if storage_available {
+        db::HistoryDB::new()?
+    } else {
+        db::HistoryDB::new_unavailable()?
+    };
+    history_db.set_storage_quota(loaded_settings.storage_quota_bytes);
+    history_db.set_max_history(loaded_settings.history_limit as i64);
+    let db = Arc::new(Mutex::new(history_db));
+    let sync_engine = Arc::new(Mutex::new(sync::SyncEngine::new()));
+    let settings = Arc::new(Mutex::new(loaded_settings));
+    let identity = Arc::new(identity::DeviceIdentity::load_or_create()?);
+    let api_token = api::load_api_token().map_err(std::io::Error::other)?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let background_tasks: BackgroundTasks = Arc::new(StdMutex::new(Vec::new()));
+
+    let db_for_classification = db.clone();
+    track_task(
+        &background_tasks,
+        tauri::async_runtime::spawn(async move {
+            const MAX_BACKFILL_RETRIES: u8 = 3;
+            let mut total = 0_usize;
+            let mut consecutive_failures = 0_u8;
+            loop {
+                let result = {
+                    let mut db = db_for_classification.lock().await;
+                    db.backfill_classifications(50)
+                        .map_err(|error| error.to_string())
+                };
+                let processed = match result {
+                    Ok(processed) => {
+                        consecutive_failures = 0;
+                        processed
+                    }
+                    Err(error) if consecutive_failures < MAX_BACKFILL_RETRIES => {
+                        consecutive_failures += 1;
+                        let delay_ms = 250 * u64::from(consecutive_failures);
+                        log::warn!(
+                            "History classification backfill failed; retrying {consecutive_failures}/{MAX_BACKFILL_RETRIES} in {delay_ms} ms: {error}"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+                    Err(error) => {
+                        log::error!("History classification backfill failed: {error}");
+                        break;
+                    }
+                };
+                if processed == 0 {
+                    break;
+                }
+                total += processed;
+                tokio::task::yield_now().await;
+            }
+            if total > 0 {
+                api::bump_clipboard_version();
+                log::info!("Classified {total} existing history entries");
+            }
+        }),
+    );
+    track_task(
+        &background_tasks,
+        start_file_history_encryption_migration(shutdown_rx.clone()),
+    );
+
+    let pool = Arc::new(Mutex::new(network::ConnectionPool::new(
+        identity.clone(),
+        settings.clone(),
+    )));
+    let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
+    let runtime = clipboard::ClipboardRuntime::Headless;
+    sync_engine
+        .lock()
+        .await
+        .set_platform(Arc::new(sync_adapter::TauriSyncPlatform::new(
+            runtime.clone(),
+            db.clone(),
+            settings.clone(),
+        )));
+
+    let api_state = Arc::new(api::ApiState {
+        db: db.clone(),
+        sync_engine: sync_engine.clone(),
+        settings: settings.clone(),
+        identity: identity.clone(),
+        pool: pool.clone(),
+        pairing: pairing.clone(),
+        token: api_token,
+        shutdown: shutdown_tx.clone(),
+        imports: Mutex::new(api::ImportRegistry::default()),
+    });
+    let api_shutdown = shutdown_rx.clone();
+    track_task(
+        &background_tasks,
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = api::start(api_state, api_shutdown).await {
+                log::error!("API server error: {error}");
+            }
+        }),
+    );
+    if let Some(task) = start_parent_monitor(shutdown_tx, shutdown_rx.clone()) {
+        track_task(&background_tasks, task);
+    }
+    track_task(
+        &background_tasks,
+        clipboard::start_monitor(
+            runtime,
+            db.clone(),
+            sync_engine.clone(),
+            pool.clone(),
+            settings.clone(),
+            shutdown_rx.clone(),
+        ),
+    );
+
+    let server_task = tauri::async_runtime::spawn({
+        let sync_engine = sync_engine.clone();
+        let db = db.clone();
+        let settings = settings.clone();
+        let identity = identity.clone();
+        let pairing = pairing.clone();
+        let shutdown = shutdown_rx.clone();
+        async move {
+            if let Err(error) =
+                network::start_server(sync_engine, db, settings, identity, pairing, shutdown).await
+            {
+                log::error!("Network server error: {error}");
+            }
+        }
+    });
+    track_task(&background_tasks, server_task);
+    let iroh_task = tauri::async_runtime::spawn({
+        let db = db.clone();
+        let settings = settings.clone();
+        let identity = identity.clone();
+        let shutdown = shutdown_rx.clone();
+        async move {
+            if let Err(error) =
+                network::start_iroh_server(sync_engine, db, settings, identity, pairing, shutdown)
+                    .await
+            {
+                log::error!("Iroh server error: {error}");
+            }
+        }
+    });
+    track_task(&background_tasks, iroh_task);
+    track_task(
+        &background_tasks,
+        tauri::async_runtime::spawn(network::start_discovery_responder(
+            identity,
+            shutdown_rx.clone(),
+        )),
+    );
+    track_task(
+        &background_tasks,
+        tauri::async_runtime::spawn(network::peer_cache_refresh_loop(
+            settings,
+            None,
+            shutdown_rx.clone(),
+        )),
+    );
+    track_task(
+        &background_tasks,
+        start_storage_monitor(db, None, shutdown_rx.clone()),
+    );
+
+    info!("TailSync v2 headless daemon initialized successfully");
+    let mut shutdown_wait = shutdown_rx;
+    wait_for_shutdown(&mut shutdown_wait).await;
+    if tokio::time::timeout(PEER_DISCONNECT_TIMEOUT, async {
+        pool.lock().await.disconnect_all();
+    })
+    .await
+    .is_err()
+    {
+        log::warn!("Timed out while closing peer connections");
+    }
+    stop_background_tasks(background_tasks, BACKGROUND_TASK_SHUTDOWN_TIMEOUT).await;
+    info!("TailSync headless daemon stopped");
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
 fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     hide_bundled_daemon_from_dock();
     info!("TailSync v2 starting...");
@@ -404,7 +655,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let mut sync = sync_for_setup.blocking_lock();
                 sync.set_platform(Arc::new(sync_adapter::TauriSyncPlatform::new(
-                    handle.clone(),
+                    clipboard::ClipboardRuntime::Tauri(handle.clone()),
                     db_for_setup.clone(),
                     settings.clone(),
                 )));
@@ -423,7 +674,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
             // Start clipboard monitor (file → text → image)
             let clipboard_task = clipboard::start_monitor(
-                handle.clone(),
+                clipboard::ClipboardRuntime::Tauri(handle.clone()),
                 db_for_setup.clone(),
                 sync_for_setup.clone(),
                 pool_for_setup.clone(),
@@ -477,7 +728,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             track_task(&tasks_for_setup, discovery_task);
             let health_task = tauri::async_runtime::spawn(network::peer_cache_refresh_loop(
                 settings_for_discovery,
-                handle.clone(),
+                Some(handle.clone()),
                 shutdown_for_setup.clone(),
             ));
             track_task(&tasks_for_setup, health_task);
@@ -485,7 +736,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 &tasks_for_setup,
                 start_storage_monitor(
                     db_for_storage_monitor,
-                    handle.clone(),
+                    Some(handle.clone()),
                     shutdown_for_setup.clone(),
                 ),
             );
@@ -522,6 +773,18 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::get_settings,
             commands::update_settings,
             commands::get_image_data,
+            commands::validate_theme,
+            commands::install_theme,
+            commands::update_theme,
+            commands::rollback_theme,
+            commands::delete_theme_v2,
+            commands::list_themes_v2,
+            commands::get_local_theme_settings,
+            commands::set_local_theme_settings,
+            commands::resolve_theme,
+            commands::get_theme_asset,
+            commands::get_theme_asset_slot,
+            commands::preview_theme_asset_slot,
             commands::get_file_progress,
             commands::cancel_file_batch,
             commands::get_storage_status,

@@ -1,9 +1,48 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  cancelFileBatch,
+  clearHistory,
+  deleteEntry,
+  getHistoryCapabilities,
+  getHistoryPage,
+  getMigrationDiagnostics,
+  getSettings,
+  closeHistoryWindow,
+  closePreviewWindow,
+  openPreviewWindow,
+  syncPreviewWindowMinimized,
+  restoreEntry,
+  restoreFileBatch,
+  setHistoryPinned,
+  type FileProgress,
+  type HistoryCapabilities,
+  type HistoryCategory,
+  type HistoryEntry,
+  type MigrationDiagnostics,
+} from "../tailsyncClient";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
+import { useTransient } from "../hooks/useTransient";
+import {
+  useThumbnailCache,
+  type ThumbnailData,
+} from "../hooks/useThumbnailCache";
+import { buildHistoryQuery } from "../utils/historyQuery";
+import {
+  GROUP_LABEL_KEYS,
+  computeBatchInfos,
+  groupEntriesByDate,
+} from "../utils/historyGrouping";
 import { useVisiblePolling } from "../hooks/useVisiblePolling";
+import { useRuntimeSnapshots } from "../hooks/useRuntimeSnapshots";
+import {
+  DATE_FILTER_OPTIONS,
+  dateBounds,
+  dateInputValue,
+  localCalendarContextKey,
+  type DateFilter,
+} from "../utils/historyFilters";
 import { LatestRequest } from "../utils/asyncControl";
 import {
   HISTORY_PAGE_SIZE,
@@ -40,82 +79,19 @@ import { ThemeLogo } from "../ThemeLogo";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
-type HistoryCategory =
-  | "text"
-  | "website"
-  | "code"
-  | "command"
-  | "structured_data"
-  | "path"
-  | "image"
-  | "file";
-
-interface HistoryEntry {
-  id: number;
-  timestamp: string;
-  type: "text" | "image" | "file";
-  description: string;
-  data_hash: string;
-  size_bytes: number;
-  source_peer: string;
-  category?: HistoryCategory;
-  categories?: HistoryCategory[];
-  category_confidence?: number;
-  classifier_version?: number;
-  pinned?: boolean;
-  batch_id?: string | null;
-  batch_index?: number | null;
-  batch_total?: number | null;
-  batch_count?: number | null;
-  batch_status?: "complete" | "incomplete";
-}
-
-interface ThumbnailData {
-  b64: string;
-  width: number;
-  height: number;
-}
-
-interface ImageThumbnail {
-  id: number;
-  thumbnail_b64: string;
-  thumbnail_width: number;
-  thumbnail_height: number;
-}
-
-interface HistoryPageResult {
-  entries: HistoryEntry[];
-  total: number | null;
-  has_more: boolean;
-}
-
-interface HistoryCapabilities {
-  classifier_version: number;
-  categories: HistoryCategory[];
-  multiple_labels: boolean;
-  date_range_filter: boolean;
-}
-
-interface MigrationDiagnostics {
-  unresolved_count: number;
-}
-
-interface SyncWarning {
-  kind: "expired_event";
-  peer: string;
-  occurred_at_ms: number;
-}
-
 /* ── Constants ──────────────────────────────────────────────────── */
 
 const PAGE_SIZE = HISTORY_PAGE_SIZE;
-const VERSION_POLL_MS = 800;
+const RUNTIME_WAIT_MS = 2_500;
 const SETTINGS_POLL_MS = 5000;
 const SEARCH_DEBOUNCE_MS = 250;
-const MAX_CACHED_THUMBNAILS = PAGE_SIZE * 4;
+const MAX_CACHED_THUMBNAILS = PAGE_SIZE;
 const NEW_GLOW_DURATION_MS = 3000;
 const RESTORE_FEEDBACK_DURATION_MS = 1500;
 const COLLAPSED_BATCH_FILE_LIMIT = 2;
+// Animate only the rows that can plausibly be visible in the history window.
+// Animating an entire 50-row page creates dozens of WebView compositor layers.
+const MAX_PAGE_ENTER_ITEMS = 12;
 const HISTORY_CATEGORIES: HistoryCategory[] = [
   "text",
   "website",
@@ -157,15 +133,6 @@ function resolvedCategories(entry: HistoryEntry): HistoryCategory[] {
     (category, index, values) => values.indexOf(category) === index,
   );
 }
-
-type DateFilter =
-  | "all"
-  | "today"
-  | "yesterday"
-  | "last7"
-  | "last30"
-  | "thisMonth"
-  | "custom";
 
 interface FilterOption {
   value: string;
@@ -275,122 +242,6 @@ function FilterDropdown({
   );
 }
 
-function localDateFromInput(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31) {
-    return null;
-  }
-
-  // setFullYear avoids JavaScript's special 1900 offset for years 0-99.
-  const date = new Date(0);
-  date.setHours(0, 0, 0, 0);
-  date.setFullYear(year, month - 1, day);
-  if (
-    Number.isNaN(date.getTime()) ||
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day
-  ) {
-    return null;
-  }
-  return date;
-}
-
-function dateInputValue(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function localCalendarContextKey(date: Date): string {
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
-  return `${dateInputValue(date)}|${date.getTimezoneOffset()}|${timeZone}`;
-}
-
-function dateBounds(
-  filter: DateFilter,
-  customStart: string,
-  customEnd: string,
-  now: Date,
-): { start: number | null; end: number | null; valid: boolean } {
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  if (filter === "all") return { start: null, end: null, valid: true };
-  if (filter === "today") return { start: today.getTime(), end: tomorrow.getTime(), valid: true };
-  if (filter === "yesterday") {
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    return { start: yesterday.getTime(), end: today.getTime(), valid: true };
-  }
-  if (filter === "last7" || filter === "last30") {
-    const start = new Date(today);
-    start.setDate(start.getDate() - (filter === "last7" ? 6 : 29));
-    return { start: start.getTime(), end: tomorrow.getTime(), valid: true };
-  }
-  if (filter === "thisMonth") {
-    const start = new Date(today.getFullYear(), today.getMonth(), 1);
-    const end = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-    return { start: start.getTime(), end: end.getTime(), valid: true };
-  }
-  const start = customStart ? localDateFromInput(customStart) : null;
-  const inclusiveEnd = customEnd ? localDateFromInput(customEnd) : null;
-  const end = inclusiveEnd ? new Date(inclusiveEnd) : null;
-  if (end) end.setDate(end.getDate() + 1);
-  const validInputs = (!customStart || start !== null) && (!customEnd || inclusiveEnd !== null);
-  const ordered = !start || !inclusiveEnd || start.getTime() <= inclusiveEnd.getTime();
-  return {
-    start: start?.getTime() ?? null,
-    end: end?.getTime() ?? null,
-    valid: Boolean((customStart || customEnd) && validInputs && ordered),
-  };
-}
-
-/* ── Date grouping ──────────────────────────────────────────────── */
-
-type DateGroup = "today" | "yesterday" | "thisWeek" | "thisMonth" | "older";
-
-function getDateGroup(dateStr: string, now: Date): DateGroup {
-  const d = new Date(dateStr);
-  if (Number.isNaN(d.getTime())) return "older";
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const itemDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-
-  if (itemDate.getTime() === today.getTime()) return "today";
-  if (itemDate.getTime() === yesterday.getTime()) return "yesterday";
-  // Compare local calendar dates through UTC ordinals so DST transitions do
-  // not turn a seven-day boundary into 6.96 or 7.04 elapsed days.
-  const dayOrdinal = (date: Date) =>
-    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) /
-    (1000 * 60 * 60 * 24);
-  const diffDays = dayOrdinal(today) - dayOrdinal(itemDate);
-  if (diffDays <= 7) return "thisWeek";
-  if (diffDays <= 30) return "thisMonth";
-  return "older";
-}
-
-const GROUP_ORDER: DateGroup[] = [
-  "today",
-  "yesterday",
-  "thisWeek",
-  "thisMonth",
-  "older",
-];
-
-const GROUP_LABEL_KEYS: Record<DateGroup, string> = {
-  today: "history.group.today",
-  yesterday: "history.group.yesterday",
-  thisWeek: "history.group.thisWeek",
-  thisMonth: "history.group.thisMonth",
-  older: "history.group.older",
-};
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -407,6 +258,50 @@ function formatSize(bytes: number) {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
+}
+
+/**
+ * Keyboard events from an editor belong to that editor, not the history
+ * navigator.  In particular, the search field is auto-focused when this
+ * window opens, so treating every Space key as a preview command would make
+ * normal text entry impossible.
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT" ||
+    target.tagName === "BUTTON" ||
+    target.tagName === "A" ||
+    Boolean(target.closest("[role='button'], [contenteditable]"))
+  );
+}
+
+/**
+ * A collapsed file batch represents the batch as a single logical item for
+ * preview purposes.  Once the batch is expanded, each visible child keeps its
+ * own identity and can be previewed independently.
+ */
+function resolvePreviewEntryId(
+  focusedId: number,
+  entries: HistoryEntry[],
+  expandedBatches: Set<string>,
+): number | null {
+  const focusedEntry = entries.find((entry) => entry.id === focusedId);
+  if (!focusedEntry) return null;
+  const batchId = focusedEntry.batch_id;
+  if (!batchId || expandedBatches.has(batchId)) return focusedEntry.id;
+
+  const firstBatchEntry = entries
+    .filter((entry) => entry.batch_id === batchId)
+    .sort((left, right) => {
+      const leftIndex = left.batch_index ?? Number.MAX_SAFE_INTEGER;
+      const rightIndex = right.batch_index ?? Number.MAX_SAFE_INTEGER;
+      return leftIndex - rightIndex || left.id - right.id;
+    })[0];
+  return firstBatchEntry?.id ?? focusedEntry.id;
 }
 
 /* ── Thumbnail canvas (renders raw RGBA data) ───────────────────── */
@@ -497,8 +392,8 @@ export function History() {
   const [hasMoreEntries, setHasMoreEntries] = useState(false);
   const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
   const [migrationDiagnostics, setMigrationDiagnostics] = useState<MigrationDiagnostics | null>(null);
-  const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
-  const thumbnailIds = useRef<Set<number>>(new Set());
+  const { thumbnails, loadThumbnail, retain: retainThumbnails, clear: clearThumbnails } =
+    useThumbnailCache(MAX_CACHED_THUMBNAILS);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [keyword, setKeyword] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<"all" | HistoryCategory>("all");
@@ -508,45 +403,49 @@ export function History() {
   const [calendarNow, setCalendarNow] = useState(() => new Date());
   const calendarContextKey = useRef(localCalendarContextKey(calendarNow));
   const [page, setPage] = useState(0);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [pageAnimationRevision, setPageAnimationRevision] = useState(0);
+  // `selectedId` is intentionally transient restore feedback.  Keep keyboard
+  // focus independent so a row remains selected while the user navigates or
+  // opens/closes its preview.
+  const [focusedId, setFocusedId] = useState<number | null>(null);
+  const [selectedId, flashSelectedId, clearSelectedId] = useTransient<number | null>(
+    null,
+    RESTORE_FEEDBACK_DURATION_MS,
+  );
   const [loading, setLoading] = useState(false);
   const [newIds, setNewIds] = useState<Set<number>>(new Set());
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [actionError, setActionError] = useState("");
-  const [syncWarning, setSyncWarning] = useState("");
-  const restoreFeedbackTimer = useRef<number>(0);
-  const actionErrorTimer = useRef<number>(0);
-  const syncWarningTimer = useRef<number>(0);
+  const [actionError, flashActionError] = useTransient("", RESTORE_FEEDBACK_DURATION_MS);
+  const [syncWarning, flashSyncWarning] = useTransient("", 8000);
   const newGlowTimers = useRef<Set<number>>(new Set());
 
   const lastVersion = useRef<number>(0);
   const prevIds = useRef<Set<number>>(new Set());
   const lastQueryKey = useRef("");
   const historyRequests = useRef(new LatestRequest());
-  const [fileProgress, setFileProgress] = useState<{
-    batch_id: string;
-    name: string;
-    sent: number;
-    total: number;
-    active: boolean;
-    direction: "sending" | "receiving";
-    device: string;
-    completed_files: number;
-    total_files: number;
-    speed_bytes_per_second: number;
-    status: string;
-    can_stop: boolean;
-  } | null>(null);
+  const [fileProgress, setFileProgress] = useState<FileProgress | null>(null);
   const [progressBarEnabled, setProgressBarEnabled] = useState(true);
+  const closeHistory = useCallback(async () => {
+    try {
+      await closePreviewWindow();
+    } catch (error) {
+      console.error("Could not close the preview window:", error);
+    }
+    try {
+      await closeHistoryWindow();
+    } catch (error) {
+      console.error("Could not release the history window:", error);
+    }
+  }, []);
   useEffect(() => () => {
-    window.clearTimeout(restoreFeedbackTimer.current);
-    window.clearTimeout(actionErrorTimer.current);
-    window.clearTimeout(syncWarningTimer.current);
     newGlowTimers.current.forEach(window.clearTimeout);
     newGlowTimers.current.clear();
   }, []);
+  useEffect(() => {
+    retainThumbnails(new Set(entries.map((entry) => entry.id)));
+  }, [entries, retainThumbnails]);
   useEffect(() => {
     const refreshCalendar = () => {
       const nextNow = new Date();
@@ -568,8 +467,11 @@ export function History() {
     };
   }, []);
 
-  const { theme, colorTheme } = useTheme();
+  const { theme, themeAssetSlots } = useTheme();
   const { t } = useI18n();
+  const showActionError = useCallback(() => {
+    flashActionError(t("history.actionFailed"));
+  }, [t, flashActionError]);
 
   const categoryOptions = useMemo<FilterOption[]>(
     () =>
@@ -585,13 +487,11 @@ export function History() {
   );
   const dateOptions = useMemo<FilterOption[]>(
     () =>
-      (["all", "today", "yesterday", "last7", "last30", "thisMonth", "custom"] as DateFilter[]).map(
-        (filter) => ({
-          value: filter,
-          label: t(`history.date.${filter}`),
-          icon: CalendarDays,
-        }),
-      ),
+      DATE_FILTER_OPTIONS.map((filter) => ({
+        value: filter,
+        label: t(`history.date.${filter}`),
+        icon: CalendarDays,
+      })),
     [t],
   );
   const activeDateBounds = useMemo(
@@ -618,48 +518,17 @@ export function History() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const s = await invoke<{
-        progress_bar_enabled: boolean;
-      }>("get_settings");
+      const s = await getSettings();
       setProgressBarEnabled(s.progress_bar_enabled);
     } catch {}
   }, []);
 
   /* ── History loading ──────────────────────────────────────────── */
 
-  const loadThumbnail = useCallback(async (id: number) => {
-    if (thumbnailIds.current.has(id)) return;
-    thumbnailIds.current.add(id);
-    try {
-      const resp = await invoke<ImageThumbnail>("get_image_data", { id });
-      if (resp.thumbnail_b64) {
-        setThumbnails((current) => {
-          const next = new Map(current);
-          next.delete(id);
-          next.set(id, {
-            b64: resp.thumbnail_b64,
-            width: resp.thumbnail_width,
-            height: resp.thumbnail_height,
-          });
-          while (next.size > MAX_CACHED_THUMBNAILS) {
-            const oldestId = next.keys().next().value;
-            if (oldestId === undefined) break;
-            next.delete(oldestId);
-            thumbnailIds.current.delete(oldestId);
-          }
-          return next;
-        });
-      }
-    } catch (e) {
-      thumbnailIds.current.delete(id);
-      console.error(`Thumbnail load failed for ${id}:`, e);
-    }
-  }, []);
-
   const loadMigrationDiagnostics = useCallback(async () => {
     try {
       setMigrationDiagnostics(
-        await invoke<MigrationDiagnostics>("get_migration_diagnostics"),
+        await getMigrationDiagnostics(),
       );
     } catch (error) {
       console.error("Failed to load migration diagnostics:", error);
@@ -669,14 +538,15 @@ export function History() {
   const loadCapabilities = useCallback(async () => {
     try {
       setCapabilities(
-        await invoke<HistoryCapabilities>("get_history_capabilities"),
+        await getHistoryCapabilities(),
       );
     } catch {
       setCapabilities(null);
     }
   }, []);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (options?: { detectNewEntries?: boolean }) => {
+    const detectNewEntries = options?.detectNewEntries ?? true;
     const requestGeneration = historyRequests.current.begin();
     if (!activeDateBounds.valid) {
       setEntries([]);
@@ -687,23 +557,16 @@ export function History() {
     }
     setLoading(true);
     try {
-      const dateFilteringSupported = capabilities?.date_range_filter ?? true;
-      const startTime = dateFilteringSupported && activeDateBounds.start !== null
-        ? new Date(activeDateBounds.start).toISOString()
-        : null;
-      const endTime = dateFilteringSupported && activeDateBounds.end !== null
-        ? new Date(activeDateBounds.end).toISOString()
-        : null;
-      const query = {
-        keyword: keyword.trim() || null,
-        category: selectedCategory === "all" ? null : selectedCategory,
-        startTime,
-        endTime,
-        limit: PAGE_SIZE,
-        offset: page * PAGE_SIZE,
-      };
+      const query = buildHistoryQuery(
+        keyword,
+        selectedCategory,
+        activeDateBounds,
+        capabilities?.date_range_filter ?? true,
+        PAGE_SIZE,
+        page,
+      );
       const queryKey = JSON.stringify(query);
-      const result = await invoke<HistoryPageResult>("get_history_page", query);
+      const result = await getHistoryPage(query);
       if (!historyRequests.current.isCurrent(requestGeneration)) return;
 
       if (result.total !== null) {
@@ -714,12 +577,15 @@ export function History() {
         }
       }
 
+      const queryChanged = lastQueryKey.current !== queryKey;
       setEntries(result.entries);
       setTotalEntries(result.total);
       setHasMoreEntries(result.has_more);
+      if (queryChanged) {
+        setPageAnimationRevision((revision) => revision + 1);
+      }
 
-      const queryChanged = lastQueryKey.current !== queryKey;
-      if (!queryChanged) {
+      if (!queryChanged && detectNewEntries) {
         const incomingIds = new Set(result.entries.map((entry) => entry.id));
         const freshIds = new Set(
           [...incomingIds].filter((id) => !prevIds.current.has(id)),
@@ -765,37 +631,20 @@ export function History() {
   }, [loadCapabilities, loadMigrationDiagnostics]);
 
   useVisiblePolling(loadSettings, SETTINGS_POLL_MS);
-  useVisiblePolling(async () => {
-    try {
-      const resp = await invoke<{ version: number }>("get_version");
-      if (resp.version !== lastVersion.current) {
-        lastVersion.current = resp.version;
-        await loadHistory();
-      }
-    } catch {
-      /* ignore */
+  useRuntimeSnapshots(async (snapshot) => {
+    if (snapshot.history_version !== lastVersion.current) {
+      lastVersion.current = snapshot.history_version;
+      await loadHistory();
     }
-    try {
-      const warning = await invoke<SyncWarning | null>("get_sync_warning");
-      if (warning?.kind === "expired_event") {
-        setSyncWarning(t("history.syncExpired").replace("{peer}", warning.peer));
-        window.clearTimeout(syncWarningTimer.current);
-        syncWarningTimer.current = window.setTimeout(() => setSyncWarning(""), 8000);
-      }
-    } catch {
-      /* ignore */
+    if (snapshot.sync_warning?.kind === "expired_event") {
+      flashSyncWarning(t("history.syncExpired").replace("{peer}", snapshot.sync_warning.peer));
     }
     if (!progressBarEnabled) {
       setFileProgress(null);
       return;
     }
-    try {
-      const fp = await invoke<NonNullable<typeof fileProgress>>("get_file_progress");
-      setFileProgress(fp.active ? fp : null);
-    } catch {
-      /* ignore */
-    }
-  }, VERSION_POLL_MS);
+    setFileProgress(snapshot.progress?.active ? snapshot.progress : null);
+  }, RUNTIME_WAIT_MS);
 
   /* ── Search reset ─────────────────────────────────────────────── */
 
@@ -815,26 +664,106 @@ export function History() {
     loadHistory();
   }, [loadHistory]);
 
-  /* ── Actions ──────────────────────────────────────────────────── */
+  // Keep a detached preview paired with this history window. Tauri does not
+  // expose a dedicated minimized event on every platform, so resize and focus
+  // changes both trigger a cheap state query. System close requests are
+  // intercepted as well, otherwise Alt+F4 would leave the hidden preview page
+  // holding decrypted data alive.
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    const syncMinimized = () => {
+      void appWindow.isMinimized()
+        .then((minimized) => {
+          if (!disposed) return syncPreviewWindowMinimized(minimized);
+          return undefined;
+        })
+        .catch((error: unknown) => {
+          if (!disposed) console.error("Could not sync preview-window minimization:", error);
+        });
+    };
+    let unlistenResize: (() => void) | undefined;
+    let unlistenFocus: (() => void) | undefined;
+    let unlistenClose: (() => void) | undefined;
+    void appWindow.onResized(syncMinimized).then((stop) => {
+      if (disposed) stop();
+      else unlistenResize = stop;
+    });
+    void appWindow.onFocusChanged(syncMinimized).then((stop) => {
+      if (disposed) stop();
+      else unlistenFocus = stop;
+    });
+    void appWindow.onCloseRequested((event) => {
+      event.preventDefault();
+      void closeHistory();
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlistenClose = stop;
+    });
+    return () => {
+      disposed = true;
+      unlistenResize?.();
+      unlistenFocus?.();
+      unlistenClose?.();
+    };
+  }, [closeHistory]);
 
-  const showActionError = useCallback(() => {
-    setActionError(t("history.actionFailed"));
-    window.clearTimeout(actionErrorTimer.current);
-    actionErrorTimer.current = window.setTimeout(
-      () => setActionError(""),
-      RESTORE_FEEDBACK_DURATION_MS,
-    );
-  }, [t]);
+  // Filters, pagination, and deletions can replace the loaded page. Do not
+  // leave keyboard selection pointing at an entry that is no longer visible.
+  useEffect(() => {
+    const loadedIds = new Set(entries.map((entry) => entry.id));
+    if (focusedId !== null && !loadedIds.has(focusedId)) setFocusedId(null);
+  }, [entries, focusedId]);
+
+  /* ── Keyboard preview navigation ────────────────────────────── */
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Do not steal shortcuts from inputs/editors or from another handler.
+      // Modifier chords and auto-repeat are deliberately ignored as well.
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+
+      if (isEditableTarget(event.target)) return;
+      if (event.code !== "Space") return;
+
+      // Space is only handled when it has a selected history row.  This is
+      // important while the search input is focused and when the list is
+      // empty: the browser should retain its normal Space behaviour then.
+      if (focusedId === null) return;
+
+      const targetId = resolvePreviewEntryId(focusedId, entries, expandedBatches);
+      if (targetId === null) return;
+      const focusedEntry = entries.find((entry) => entry.id === focusedId);
+      const batchId = focusedEntry?.batch_id ?? null;
+      event.preventDefault();
+      void openPreviewWindow(
+        targetId,
+        batchId !== null && !expandedBatches.has(batchId) ? batchId : null,
+      ).catch((error: unknown) => {
+        console.error("Could not open the preview window:", error);
+        showActionError();
+      });
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [entries, expandedBatches, focusedId, showActionError]);
+
+  /* ── Actions ──────────────────────────────────────────────────── */
 
   const handleRestore = async (id: number) => {
     try {
-      await invoke("restore_entry", { id });
-      setSelectedId(id);
-      window.clearTimeout(restoreFeedbackTimer.current);
-      restoreFeedbackTimer.current = window.setTimeout(
-        () => setSelectedId(null),
-        RESTORE_FEEDBACK_DURATION_MS,
-      );
+      await restoreEntry(id);
+      flashSelectedId(id);
     } catch (e) {
       console.error("Restore failed:", e);
       showActionError();
@@ -843,9 +772,14 @@ export function History() {
 
   const handleDelete = async (id: number) => {
     try {
-      await invoke("delete_entry", { id });
-      lastQueryKey.current = "";
-      await Promise.all([loadHistory(), loadMigrationDiagnostics()]);
+      await deleteEntry(id);
+      if (focusedId === id) setFocusedId(null);
+      // A mutation refresh must preserve the current page animation context.
+      // It must also avoid marking a row pulled up from the next page as new.
+      await Promise.all([
+        loadHistory({ detectNewEntries: false }),
+        loadMigrationDiagnostics(),
+      ]);
     } catch (e) {
       console.error("Delete failed:", e);
       showActionError();
@@ -855,14 +789,14 @@ export function History() {
   const handleClearHistory = async () => {
     setClearing(true);
     try {
-      await invoke("clear_history");
+      await clearHistory();
       setEntries([]);
       setTotalEntries(0);
       setHasMoreEntries(false);
-      setThumbnails(new Map());
-      thumbnailIds.current.clear();
+      clearThumbnails();
       setPage(0);
-      setSelectedId(null);
+      setFocusedId(null);
+      clearSelectedId();
       setExpandedBatches(new Set());
       setShowClearConfirm(false);
       prevIds.current = new Set();
@@ -878,7 +812,7 @@ export function History() {
 
   const handleRestoreBatch = async (batchId: string) => {
     try {
-      await invoke("restore_file_batch", { batchId });
+      await restoreFileBatch(batchId);
     } catch (error) {
       console.error("Batch restore failed:", error);
       showActionError();
@@ -888,7 +822,7 @@ export function History() {
   const handlePinnedChange = async (entry: HistoryEntry) => {
     const pinned = !entry.pinned;
     try {
-      await invoke("set_history_pinned", { id: entry.id, pinned });
+      await setHistoryPinned(entry.id, pinned);
       setEntries((current) => current.map((item) =>
         item.id === entry.id ? { ...item, pinned } : item
       ));
@@ -900,7 +834,7 @@ export function History() {
 
   const handleCancelFileBatch = async (batchId: string) => {
     try {
-      await invoke("cancel_file_batch", { batchId });
+      await cancelFileBatch(batchId);
     } catch (error) {
       console.error("Cancel file batch failed:", error);
       showActionError();
@@ -916,7 +850,10 @@ export function History() {
   /* ── Render ───────────────────────────────────────────────────── */
 
   return (
-    <div className={`app ${theme} theme-${colorTheme}`}>
+    <div
+      className={`app ${theme}`}
+      data-focused-entry-id={focusedId === null ? undefined : String(focusedId)}
+    >
       {/* ── Title bar ── */}
       <div className="titlebar" data-tauri-drag-region>
         <div className="titlebar-brand">
@@ -926,7 +863,7 @@ export function History() {
         </div>
         <button
           className="titlebar-close"
-          onClick={() => getCurrentWindow().hide()}
+          onClick={() => void closeHistory()}
           title={t("history.close")}
           aria-label={t("history.close")}
         >
@@ -1062,8 +999,8 @@ export function History() {
             </>
           ) : (
             <>
-              <div className="empty-state-illustration">
-                <Clipboard size={30} strokeWidth={1.35} aria-hidden="true" />
+              <div className={`empty-state-illustration${themeAssetSlots?.emptyState ? " has-theme-image" : ""}`}>
+                {!themeAssetSlots?.emptyState && <Clipboard size={30} strokeWidth={1.35} aria-hidden="true" />}
               </div>
               <div className="empty-state-title">
                 {t("history.emptyTitle")}
@@ -1077,57 +1014,42 @@ export function History() {
       ) : (
         /* History list with date groups */
         <div className="history-list">
+          <div className="history-page" key={pageAnimationRevision}>
           {(() => {
-            // Group entries by date
-            const groups: Record<string, HistoryEntry[]> = {};
-            entries.forEach((entry) => {
-              const g = getDateGroup(entry.timestamp, calendarNow);
-              if (!groups[g]) groups[g] = [];
-              groups[g].push(entry);
-            });
-
-            let itemIndex = 0;
-            const batchPositions = new Map<string, number>();
-            return GROUP_ORDER.map((group) => {
-              const groupEntries = groups[group];
-              if (!groupEntries) return null;
-
-              return (
-                <div className="date-group" key={group}>
-                  <div className="date-header">
-                    <span className="date-dot" />
-                    {t(GROUP_LABEL_KEYS[group])}
-                  </div>
-                  {groupEntries.map((entry, groupIndex) => {
-                    const batchId = entry.batch_id ?? null;
-                    const batchPosition = batchId ? (batchPositions.get(batchId) ?? 0) : 0;
-                    if (batchId) batchPositions.set(batchId, batchPosition + 1);
-                    const batchTotal = entry.batch_total ?? 1;
-                    const batchCount = entry.batch_count ?? batchTotal;
-                    const batchExpanded = Boolean(batchId && expandedBatches.has(batchId));
-                    if (
-                      batchId
-                      && batchCount > COLLAPSED_BATCH_FILE_LIMIT
-                      && !batchExpanded
-                      && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT
-                    ) {
-                      return null;
-                    }
-                    const delay = itemIndex * 30;
-                    itemIndex++;
-                    const isNew = newIds.has(entry.id);
-                    const isExpandedBatchReveal = Boolean(
-                      batchId
-                      && batchExpanded
-                      && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT,
-                    );
-                    const categories = resolvedCategories(entry);
-                    const category = categories[0];
-                    const CategoryIcon = CATEGORY_ICONS[category];
-                    const isBatchStart = Boolean(
-                      entry.batch_id && groupEntries[groupIndex - 1]?.batch_id !== entry.batch_id,
-                    );
-                    return (
+            const orderedGroups = groupEntriesByDate(entries, calendarNow);
+            const batchInfos = computeBatchInfos(orderedGroups);
+            let pageEnterIndex = 0;
+            return orderedGroups.map(([group, groupEntries]) => (
+              <div className="date-group" key={group}>
+                <div className="date-header">
+                  <span className="date-dot" />
+                  {t(GROUP_LABEL_KEYS[group])}
+                </div>
+                {groupEntries.map((entry) => {
+                  const { batchId, batchPosition, batchTotal, batchCount, isBatchStart } =
+                    batchInfos.get(entry.id)!;
+                  const batchExpanded = Boolean(batchId && expandedBatches.has(batchId));
+                  if (
+                    batchId
+                    && batchCount > COLLAPSED_BATCH_FILE_LIMIT
+                    && !batchExpanded
+                    && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT
+                  ) {
+                    return null;
+                  }
+                  const isNew = newIds.has(entry.id);
+                  const isExpandedBatchReveal = Boolean(
+                    batchId
+                    && batchExpanded
+                    && batchPosition >= COLLAPSED_BATCH_FILE_LIMIT,
+                  );
+                  const enterIndex = pageEnterIndex++;
+                  const isPageEnterItem =
+                    !isExpandedBatchReveal && enterIndex < MAX_PAGE_ENTER_ITEMS;
+                  const categories = resolvedCategories(entry);
+                  const category = categories[0];
+                  const CategoryIcon = CATEGORY_ICONS[category];
+                  return (
                       <div
                         className={entry.batch_id ? "history-batch-item" : undefined}
                         key={entry.id}
@@ -1179,13 +1101,32 @@ export function History() {
                         </div>
                       )}
                       <article
-                        className={`history-item${isNew ? " is-new" : ""}${selectedId === entry.id ? " restored" : ""}${isExpandedBatchReveal ? " batch-expanded-item" : ""}`}
+                        className={`history-item${isNew ? " is-new" : ""}${selectedId === entry.id ? " restored" : ""}${focusedId === entry.id ? " focused" : ""}${isExpandedBatchReveal ? " batch-expanded-item" : ""}${isPageEnterItem ? " page-enter-item" : ""}`}
                          style={{
                            animationDelay: isExpandedBatchReveal
                              ? `${Math.min(batchPosition - COLLAPSED_BATCH_FILE_LIMIT, 3) * 12}ms`
-                             : `${delay}ms`,
+                             : isPageEnterItem
+                               ? `${enterIndex * 20}ms`
+                               : undefined,
                          }}
                          data-id={entry.id}
+                         data-focused={focusedId === entry.id ? "true" : undefined}
+                         tabIndex={0}
+                         aria-selected={focusedId === entry.id}
+                         onClick={(event) => {
+                           if (
+                             (event.target as HTMLElement).closest(
+                               "button, a, [role='button']",
+                             )
+                           ) {
+                             return;
+                           }
+                           setFocusedId(entry.id);
+                           // Make a click establish real DOM focus as well as
+                           // logical selection, even though the row is an
+                           // otherwise non-interactive article.
+                           event.currentTarget.focus({ preventScroll: true });
+                         }}
                          onDoubleClick={() => handleRestore(entry.id)}
                          onContextMenu={(event) => {
                            event.preventDefault();
@@ -1256,9 +1197,9 @@ export function History() {
                     );
                   })}
                 </div>
-              );
-            });
+            ));
           })()}
+          </div>
         </div>
       )}
 
@@ -1272,7 +1213,7 @@ export function History() {
               setPage((p) => p - 1);
               document
                 .querySelector(".history-list")
-                ?.scrollTo({ top: 0, behavior: "smooth" });
+                ?.scrollTo({ top: 0 });
             }}
           >
             <ArrowLeft size={14} strokeWidth={1.8} aria-hidden="true" />
@@ -1288,7 +1229,7 @@ export function History() {
               setPage((p) => p + 1);
               document
                 .querySelector(".history-list")
-                ?.scrollTo({ top: 0, behavior: "smooth" });
+                ?.scrollTo({ top: 0 });
             }}
           >
             {t("history.next")}
@@ -1369,6 +1310,7 @@ export function History() {
           </div>
         </div>
       )}
+
     </div>
   );
 }

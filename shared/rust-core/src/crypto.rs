@@ -10,7 +10,8 @@ use thiserror::Error;
 use crate::db;
 
 /// Encrypted settings stored alongside the app
-#[derive(Debug, Clone, schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct Settings {
     pub notifications_enabled: bool,
@@ -21,6 +22,9 @@ pub struct Settings {
     /// Optional global shortcut used to toggle sync. Empty disables it.
     #[serde(default = "default_sync_shortcut")]
     pub sync_shortcut: String,
+    /// Optional global shortcut used to open the history window. Empty disables it.
+    #[serde(default = "default_history_shortcut")]
+    pub history_shortcut: String,
     #[schemars(range(min = 10, max = 500))]
     pub history_limit: u32,
     /// Bulk history and transfer storage. None keeps bulk data in the system
@@ -31,11 +35,6 @@ pub struct Settings {
     #[schemars(range(min = 1073741824_u64, max = 17592186044416_u64))]
     pub storage_quota_bytes: u64,
     pub enabled_peers: std::collections::HashMap<String, bool>,
-    #[schemars(with = "ThemeContract")]
-    pub theme: String, // "light" | "dark" | "system"
-    #[serde(default = "default_color_theme")]
-    #[schemars(with = "ColorThemeContract")]
-    pub color_theme: String,
     #[schemars(with = "LanguageContract")]
     pub language: String, // "en" | "zh-CN"
     /// Transport policy used for peer discovery and delivery.
@@ -56,24 +55,31 @@ pub struct Settings {
     pub paired_peer_endpoints: std::collections::HashMap<String, String>,
 }
 
-#[allow(dead_code)]
-#[derive(schemars::JsonSchema, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ThemeContract {
-    System,
-    Light,
-    Dark,
+/// Settings validation failures (T353 migration). Display strings reach the
+/// UI and wire surfaces verbatim.
+#[derive(Debug, Error)]
+pub enum SettingsValidationError {
+    #[error("history_limit must be between 10 and 500")]
+    HistoryLimit,
+    #[error("storage_quota_bytes must be between 1 GiB and 16 TiB")]
+    StorageQuota,
+    #[error("storage_root cannot be empty")]
+    EmptyStorageRoot,
+    #[error("connection_mode must be 'auto', 'lan_only', or 'tailscale_only'")]
+    ConnectionMode,
+    #[error("language must be 'en' or 'zh-CN'")]
+    Language,
 }
 
-#[allow(dead_code)]
-#[derive(schemars::JsonSchema, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum ColorThemeContract {
-    Tailsync,
-    Ocean,
-    Forest,
-    Rose,
-    HighContrast,
+/// Settings-update orchestration failures (T353 migration).
+#[derive(Debug, Error)]
+pub enum SettingsUpdateError {
+    #[error("{0}")]
+    Validation(SettingsValidationError),
+    #[error("{0}")]
+    Persist(String),
+    #[error("{0}")]
+    Database(String),
 }
 
 #[allow(dead_code)]
@@ -106,8 +112,8 @@ fn default_sync_shortcut() -> String {
     "CommandOrControl+Shift+S".to_string()
 }
 
-fn default_color_theme() -> String {
-    "tailsync".to_string()
+fn default_history_shortcut() -> String {
+    "CommandOrControl+Shift+H".to_string()
 }
 
 pub const DEFAULT_STORAGE_QUOTA_BYTES: u64 = 10 * 1024 * 1024 * 1024;
@@ -138,12 +144,11 @@ impl Default for Settings {
             progress_bar_enabled: true,
             sync_enabled: default_sync_enabled(),
             sync_shortcut: default_sync_shortcut(),
+            history_shortcut: default_history_shortcut(),
             history_limit: 100,
             storage_root: None,
             storage_quota_bytes: default_storage_quota_bytes(),
             enabled_peers: std::collections::HashMap::new(),
-            theme: "system".to_string(),
-            color_theme: default_color_theme(),
             language: "en".to_string(),
             connection_mode: default_connection_mode(),
             trusted_peer_keys: std::collections::HashMap::new(),
@@ -167,65 +172,61 @@ impl Settings {
             }
             Err(error) => return Err(error.into()),
         };
-        let mut settings: Settings = serde_json::from_str(&data)?;
+        let mut value: serde_json::Value = serde_json::from_str(&data)?;
+        // Pre-V2 builds persisted `theme` and `color_theme` inside
+        // config-v2.json. The struct deliberately rejects them
+        // (deny_unknown_fields), so they are recognized and removed here
+        // before the remaining fields are parsed strictly: any *other*
+        // unknown field still fails the load.
+        let legacy = take_legacy_theme_fields(&mut value);
+        let mut settings: Settings = serde_json::from_value(value.clone())?;
         settings.connection_mode = normalize_connection_mode(settings.connection_mode);
+        if let Some((theme, color_theme)) = legacy {
+            migrate_legacy_theme_fields(path, theme.as_deref(), color_theme.as_deref(), &value)?;
+        }
         Ok(settings)
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = settings_path();
-        // Atomic write: temp file then rename
-        let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, &path)?;
+        write_atomic(&path, &json)?;
         Ok(())
     }
 
-    pub fn validate_user_values(&self) -> Result<(), String> {
+    pub fn validate_user_values(&self) -> Result<(), SettingsValidationError> {
         if !(10..=500).contains(&self.history_limit) {
-            return Err("history_limit must be between 10 and 500".to_string());
+            return Err(SettingsValidationError::HistoryLimit);
         }
         if !(MIN_STORAGE_QUOTA_BYTES..=MAX_STORAGE_QUOTA_BYTES).contains(&self.storage_quota_bytes)
         {
-            return Err("storage_quota_bytes must be between 1 GiB and 16 TiB".to_string());
+            return Err(SettingsValidationError::StorageQuota);
         }
         if self
             .storage_root
             .as_deref()
             .is_some_and(|path| path.trim().is_empty())
         {
-            return Err("storage_root cannot be empty".to_string());
-        }
-        if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
-            return Err("theme must be 'system', 'light', or 'dark'".to_string());
-        }
-        if !matches!(
-            self.color_theme.as_str(),
-            "tailsync" | "ocean" | "forest" | "rose" | "high-contrast"
-        ) {
-            return Err(
-                "color_theme must be 'tailsync', 'ocean', 'forest', 'rose', or 'high-contrast'"
-                    .to_string(),
-            );
+            return Err(SettingsValidationError::EmptyStorageRoot);
         }
         if !matches!(
             self.connection_mode.as_str(),
             "auto" | "lan_only" | "tailscale_only"
         ) {
-            return Err(
-                "connection_mode must be 'auto', 'lan_only', or 'tailscale_only'".to_string(),
-            );
+            return Err(SettingsValidationError::ConnectionMode);
         }
         if !matches!(self.language.as_str(), "en" | "zh-CN") {
-            return Err("language must be 'en' or 'zh-CN'".to_string());
+            return Err(SettingsValidationError::Language);
         }
         Ok(())
     }
 
     /// Builds a validated user-facing settings update while retaining fields
     /// owned by pairing, peer management, and storage migration workflows.
-    pub fn prepare_user_update(&self, mut requested: Self) -> Result<Self, String> {
+    pub fn prepare_user_update(
+        &self,
+        mut requested: Self,
+    ) -> Result<Self, SettingsValidationError> {
         requested.enabled_peers = self.enabled_peers.clone();
         requested.storage_root = self.storage_root.clone();
         requested.trusted_peer_keys = self.trusted_peer_keys.clone();
@@ -233,14 +234,6 @@ impl Settings {
         requested.paired_peer_endpoints = self.paired_peer_endpoints.clone();
         requested.validate_user_values()?;
         Ok(requested)
-    }
-
-    pub fn set_theme(&mut self, theme: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let mut updated = self.clone();
-        updated.theme = theme.to_string();
-        updated.save()?;
-        *self = updated;
-        Ok(())
     }
 
     pub fn toggle_peer(
@@ -266,6 +259,17 @@ impl Settings {
     pub fn set_sync_shortcut(&mut self, shortcut: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut updated = self.clone();
         updated.sync_shortcut = shortcut.trim().to_string();
+        updated.save()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub fn set_history_shortcut(
+        &mut self,
+        shortcut: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut updated = self.clone();
+        updated.history_shortcut = shortcut.trim().to_string();
         updated.save()?;
         *self = updated;
         Ok(())
@@ -379,6 +383,136 @@ impl Settings {
 
 fn settings_path() -> PathBuf {
     db::get_data_dir().join("config-v2.json")
+}
+
+/// Remove the pre-V2 `theme` and `color_theme` keys from a parsed settings
+/// object, returning them for migration. Only these two fields are ever
+/// tolerated: every other unknown field still fails the strict parse that
+/// runs afterwards.
+fn take_legacy_theme_fields(
+    value: &mut serde_json::Value,
+) -> Option<(Option<String>, Option<String>)> {
+    let serde_json::Value::Object(map) = value else {
+        return None;
+    };
+    let mut take = |key: &str| {
+        map.remove(key).and_then(|removed| match removed {
+            serde_json::Value::String(text) => Some(text),
+            other => {
+                warn!("Legacy {key} field is not a string ({other}); ignoring it");
+                None
+            }
+        })
+    };
+    let theme = take("theme");
+    let color_theme = take("color_theme");
+    (theme.is_some() || color_theme.is_some()).then_some((theme, color_theme))
+}
+
+/// Persist the legacy theme selection into the Theme V2 local settings and,
+/// only once that V2 state is safely on disk, atomically strip the obsolete
+/// fields from `config-v2.json`. The V2 write happens strictly before the
+/// config cleanup, so a failure can never lose the user's theme choice.
+fn migrate_legacy_theme_fields(
+    config_path: &std::path::Path,
+    theme: Option<&str>,
+    color_theme: Option<&str>,
+    cleaned_value: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let base = config_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let outcome = crate::themes_v2::migrate_legacy_theme_selection_at(base, theme, color_theme)?;
+    if matches!(
+        outcome,
+        crate::themes_v2::LegacyThemeMigration::Migrated
+            | crate::themes_v2::LegacyThemeMigration::AlreadyPresent
+    ) {
+        // The V2 selection is on disk (written just now, or already present):
+        // atomically drop the obsolete fields from the config file. A failed
+        // rewrite leaves the original file untouched and is retried on the
+        // next start.
+        write_atomic(config_path, &serde_json::to_string_pretty(cleaned_value)?)?;
+        log::info!("Migrated legacy theme fields to Theme V2 local settings");
+    }
+    Ok(())
+}
+
+/// Atomic write: temp file then rename, so a crash or error never leaves a
+/// truncated config file behind.
+fn write_atomic(path: &std::path::Path, json: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Persist the settings after a user update (T303 extraction). The platform
+/// surfaces pass `Settings::save`; tests inject fakes.
+pub type SettingsPersist<'a> = &'a (dyn Fn(&Settings) -> Result<(), String> + Send + Sync);
+
+/// Optional shortcut transaction used by surfaces that register global
+/// shortcuts (Windows commands). Surfaces without a shortcut plugin pass
+/// `None` and a plain save is used instead.
+pub type ShortcutChangeHook<'a> =
+    &'a (dyn Fn(&Settings, &Settings) -> Result<(), String> + Send + Sync);
+
+/// What changed in a settings update, for the platform reaction.
+#[derive(Debug)]
+pub struct SettingsUpdateOutcome {
+    pub mode_changed: bool,
+    pub connection_mode: String,
+}
+
+/// Merge, validate, persist, and commit a user settings update, then apply
+/// the resulting history/storage limits to the database (T303 extraction
+/// from the Tauri command and API route surfaces).
+///
+/// The settings are only committed after persistence succeeds; database
+/// limit enforcement happens after the commit, matching the command
+/// surface's previous ordering. Changed global shortcuts are routed through
+/// `hooks.apply_shortcut_change` when present (registration + save +
+/// rollback); otherwise a plain save is used.
+pub async fn apply_settings_update(
+    settings: &tokio::sync::Mutex<Settings>,
+    database: &tokio::sync::Mutex<db::HistoryDB>,
+    requested: Settings,
+    persist: SettingsPersist<'_>,
+    apply_shortcut_change: Option<ShortcutChangeHook<'_>>,
+) -> Result<SettingsUpdateOutcome, SettingsUpdateError> {
+    let mut settings_guard = settings.lock().await;
+    let new_settings = settings_guard
+        .prepare_user_update(requested)
+        .map_err(SettingsUpdateError::Validation)?;
+    let history_limit = new_settings.history_limit as i64;
+    let storage_quota_bytes = new_settings.storage_quota_bytes;
+    let mode_changed = settings_guard.connection_mode != new_settings.connection_mode;
+    let shortcuts_changed = settings_guard.sync_shortcut != new_settings.sync_shortcut
+        || settings_guard.history_shortcut != new_settings.history_shortcut;
+    let connection_mode = new_settings.connection_mode.clone();
+    if shortcuts_changed {
+        if let Some(apply_shortcut_change) = apply_shortcut_change {
+            apply_shortcut_change(&settings_guard, &new_settings)
+                .map_err(SettingsUpdateError::Persist)?;
+        } else {
+            persist(&new_settings).map_err(SettingsUpdateError::Persist)?;
+        }
+    } else {
+        persist(&new_settings).map_err(SettingsUpdateError::Persist)?;
+    }
+    *settings_guard = new_settings;
+    drop(settings_guard);
+    let mut database_guard = database.lock().await;
+    database_guard.set_max_history(history_limit);
+    database_guard.set_storage_quota(storage_quota_bytes);
+    database_guard
+        .enforce_limits()
+        .map_err(|error| SettingsUpdateError::Database(error.to_string()))?;
+    Ok(SettingsUpdateOutcome {
+        mode_changed,
+        connection_mode,
+    })
 }
 
 // ─── OS Keychain Integration ──────────────────────────────────────
@@ -1073,9 +1207,11 @@ fn move_windows_key_file_create_only(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_hex_key, validate_key_bytes, CreateOutcome, DataKey, DekCache, KeyStore,
-        KeyStoreError, Settings, DEK_SIZE,
+        apply_settings_update, decode_hex_key, validate_key_bytes, CreateOutcome, DataKey,
+        DekCache, KeyStore, KeyStoreError, Settings, SettingsUpdateError, SettingsValidationError,
+        DEK_SIZE,
     };
+    use crate::db;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -1484,7 +1620,6 @@ mod tests {
                 "progress_bar_enabled": true,
                 "history_limit": 100,
                 "enabled_peers": {},
-                "theme": "system",
                 "language": "en",
                 "connection_mode": "lan"
             }"#,
@@ -1493,7 +1628,8 @@ mod tests {
         assert!(settings.trusted_peer_keys.is_empty());
         assert!(settings.trusted_peer_addresses.is_empty());
         assert!(settings.paired_peer_endpoints.is_empty());
-        assert_eq!(settings.color_theme, "tailsync");
+        assert_eq!(settings.sync_shortcut, "CommandOrControl+Shift+S");
+        assert_eq!(settings.history_shortcut, "CommandOrControl+Shift+H");
     }
 
     #[test]
@@ -1594,30 +1730,282 @@ mod tests {
                 "progress_bar_enabled": true,
                 "history_limit": 100,
                 "enabled_peers": {},
-                "theme": "system",
                 "language": "en"
             }"#,
         )
         .unwrap();
 
         assert_eq!(settings.connection_mode, "auto");
-        assert_eq!(settings.color_theme, "tailsync");
     }
 
     #[test]
-    fn appearance_values_are_validated() {
-        let mut settings = Settings {
-            theme: "dark".into(),
-            color_theme: "forest".into(),
-            ..Settings::default()
-        };
-        assert!(settings.validate_user_values().is_ok());
+    fn obsolete_theme_fields_are_rejected() {
+        let error = serde_json::from_str::<Settings>(r#"{"theme":"dark"}"#).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+        let error = serde_json::from_str::<Settings>(r#"{"color_theme":"forest"}"#).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+    }
 
-        settings.color_theme = "unknown".into();
-        assert!(settings.validate_user_values().is_err());
-        settings.color_theme = "tailsync".into();
-        settings.theme = "sepia".into();
-        assert!(settings.validate_user_values().is_err());
+    // ─── Legacy theme migration (config-v2.json theme/color_theme → V2) ───
+
+    fn temp_data_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "tailsync-{label}-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ))
+    }
+
+    fn write_config(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("config-v2.json");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn read_v2_local_settings(dir: &std::path::Path) -> crate::themes_v2::LocalThemeSettings {
+        let bytes = std::fs::read(dir.join("themes-v2/local-settings.json")).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// A realistic pre-V2 config carrying every current field plus the two
+    /// obsolete theme fields, exactly as an upgraded user would have it.
+    fn full_legacy_config() -> &'static str {
+        r#"{
+            "notifications_enabled": true,
+            "progress_bar_enabled": false,
+            "sync_enabled": true,
+            "sync_shortcut": "CommandOrControl+Shift+S",
+            "history_shortcut": "CommandOrControl+Shift+H",
+            "history_limit": 250,
+            "storage_root": null,
+            "storage_quota_bytes": 10737418240,
+            "enabled_peers": { "desktop": true, "laptop": false },
+            "language": "zh-CN",
+            "connection_mode": "lan",
+            "trusted_peer_keys": { "desktop": "public-key" },
+            "trusted_peer_addresses": { "desktop": { "lan": "192.168.1.20" } },
+            "paired_peer_endpoints": { "desktop": "192.168.1.20" },
+            "theme": "dark",
+            "color_theme": "forest"
+        }"#
+    }
+
+    #[test]
+    fn legacy_config_with_all_old_fields_loads_and_migrates() {
+        let dir = temp_data_dir("legacy-full");
+        let path = write_config(&dir, full_legacy_config());
+
+        let settings = Settings::load_from_path(&path).unwrap();
+
+        // Every remaining field parses with its original value.
+        assert_eq!(settings.history_limit, 250);
+        assert_eq!(settings.language, "zh-CN");
+        assert_eq!(settings.connection_mode, "lan_only"); // legacy "lan" normalization
+        assert!(!settings.progress_bar_enabled);
+        assert!(settings
+            .enabled_peers
+            .get("desktop")
+            .copied()
+            .unwrap_or(false));
+        assert_eq!(
+            settings
+                .trusted_peer_keys
+                .get("desktop")
+                .map(String::as_str),
+            Some("public-key")
+        );
+
+        // The V2 local selection was created from the legacy fields.
+        let local = read_v2_local_settings(&dir);
+        assert_eq!(local.active_theme_id, "builtin:ledger@1"); // forest -> ledger
+        assert_eq!(local.appearance, "dark");
+        assert!(!local.high_contrast);
+
+        // The config file no longer carries the obsolete fields.
+        let cleaned = std::fs::read_to_string(&path).unwrap();
+        assert!(!cleaned.contains("\"theme\""));
+        assert!(!cleaned.contains("\"color_theme\""));
+        assert!(cleaned.contains("\"history_limit\": 250"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_builtin_theme_mapping_is_exact() {
+        for (legacy, expected) in [
+            ("tailsync", "builtin:canvas@1"),
+            ("ocean", "builtin:flux@1"),
+            ("forest", "builtin:ledger@1"),
+            ("rose", "builtin:aura@1"),
+            ("high-contrast", "builtin:mono@1"),
+        ] {
+            let dir = temp_data_dir("legacy-map");
+            let path = write_config(
+                &dir,
+                &format!(
+                    r#"{{"notifications_enabled": true, "progress_bar_enabled": true,
+                         "history_limit": 100, "enabled_peers": {{}}, "language": "en",
+                         "color_theme": "{legacy}" }}"#
+                ),
+            );
+            Settings::load_from_path(&path).unwrap();
+            assert_eq!(
+                read_v2_local_settings(&dir).active_theme_id,
+                expected,
+                "legacy color_theme {legacy:?} must map to {expected}"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn existing_v2_local_selection_is_not_overwritten() {
+        let dir = temp_data_dir("v2-present");
+        std::fs::create_dir_all(dir.join("themes-v2")).unwrap();
+        let local_path = dir.join("themes-v2/local-settings.json");
+        std::fs::write(
+            &local_path,
+            r#"{"activeThemeId":"builtin:mono@1","appearance":"light","highContrast":true}"#,
+        )
+        .unwrap();
+        let path = write_config(&dir, full_legacy_config());
+
+        let settings = Settings::load_from_path(&path).unwrap();
+        assert_eq!(settings.history_limit, 250);
+
+        let local = read_v2_local_settings(&dir);
+        assert_eq!(local.active_theme_id, "builtin:mono@1");
+        assert_eq!(local.appearance, "light");
+        assert!(local.high_contrast);
+
+        // The config file is still cleaned: the V2 state is authoritative.
+        let cleaned = std::fs::read_to_string(&path).unwrap();
+        assert!(!cleaned.contains("\"theme\""));
+        assert!(!cleaned.contains("\"color_theme\""));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn repeated_migration_is_idempotent() {
+        let dir = temp_data_dir("idempotent");
+        let path = write_config(&dir, full_legacy_config());
+
+        Settings::load_from_path(&path).unwrap();
+        let local_after_first = std::fs::read(dir.join("themes-v2/local-settings.json")).unwrap();
+        let config_after_first = std::fs::read(&path).unwrap();
+
+        // A second load must not rewrite anything or change the outcome.
+        let settings = Settings::load_from_path(&path).unwrap();
+        assert_eq!(settings.history_limit, 250);
+        assert_eq!(
+            std::fs::read(dir.join("themes-v2/local-settings.json")).unwrap(),
+            local_after_first
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), config_after_first);
+        assert_eq!(
+            read_v2_local_settings(&dir).active_theme_id,
+            "builtin:ledger@1"
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_custom_theme_falls_back_to_canvas_and_keeps_old_files() {
+        let dir = temp_data_dir("legacy-custom");
+        // A pre-V2 custom theme file, in the old themes directory.
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        let old_theme = dir.join("themes/studio.json");
+        std::fs::write(&old_theme, br#"{"format":1,"id":"studio"}"#).unwrap();
+        let path = write_config(
+            &dir,
+            r#"{"notifications_enabled": true, "progress_bar_enabled": true,
+                "history_limit": 100, "enabled_peers": {}, "language": "en",
+                "theme": "system", "color_theme": "custom:studio"}"#,
+        );
+
+        Settings::load_from_path(&path).unwrap();
+
+        assert_eq!(
+            read_v2_local_settings(&dir).active_theme_id,
+            "builtin:canvas@1"
+        );
+        // The old theme file is preserved byte-for-byte.
+        assert_eq!(
+            std::fs::read(&old_theme).unwrap(),
+            br#"{"format":1,"id":"studio"}"#
+        );
+        // And the legacy directory itself is untouched (no auto-conversion).
+        assert!(!dir.join("themes-v2/studio").exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_legacy_theme_values_fall_back_without_failing() {
+        let dir = temp_data_dir("legacy-lenient");
+        let path = write_config(
+            &dir,
+            r#"{"notifications_enabled": true, "progress_bar_enabled": true,
+                "history_limit": 100, "enabled_peers": {}, "language": "en",
+                "theme": "sepia", "color_theme": "chartreuse"}"#,
+        );
+
+        Settings::load_from_path(&path).unwrap();
+        let local = read_v2_local_settings(&dir);
+        assert_eq!(local.appearance, "system");
+        assert_eq!(local.active_theme_id, "builtin:canvas@1");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn non_theme_unknown_fields_still_error_and_preserve_config() {
+        let dir = temp_data_dir("unknown-field");
+        let original = br#"{"notifications_enabled": true, "progress_bar_enabled": true,
+            "history_limit": 100, "enabled_peers": {}, "language": "en",
+            "theme": "dark", "color_theme": "forest", "bogus_field": true}"#;
+        let path = write_config(&dir, std::str::from_utf8(original).unwrap());
+
+        let error = Settings::load_from_path(&path).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+
+        // Original file preserved; nothing was migrated.
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!dir.join("themes-v2/local-settings.json").exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_config_errors_and_preserves_file() {
+        let dir = temp_data_dir("corrupt");
+        let original = b"{ not valid json";
+        let path = write_config(&dir, std::str::from_utf8(original).unwrap());
+
+        assert!(Settings::load_from_path(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!dir.join("themes-v2").exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn v2_write_failure_errors_and_preserves_config() {
+        let dir = temp_data_dir("write-fail");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A plain file at the themes-v2 path blocks create_dir_all, so the
+        // V2 write cannot succeed — and the config must not be rewritten.
+        std::fs::write(dir.join("themes-v2"), b"not a directory").unwrap();
+        let original = full_legacy_config().as_bytes().to_vec();
+        let path = write_config(&dir, full_legacy_config());
+
+        assert!(Settings::load_from_path(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1654,7 +2042,6 @@ mod tests {
 
         let mut requested = Settings {
             history_limit: 250,
-            theme: "dark".into(),
             ..Settings::default()
         };
         requested.enabled_peers.insert("stale".into(), false);
@@ -1666,7 +2053,6 @@ mod tests {
         let updated = current.prepare_user_update(requested).unwrap();
 
         assert_eq!(updated.history_limit, 250);
-        assert_eq!(updated.theme, "dark");
         assert_eq!(updated.enabled_peers, current.enabled_peers);
         assert_eq!(updated.storage_root, current.storage_root);
         assert_eq!(updated.trusted_peer_keys, current.trusted_peer_keys);
@@ -1675,5 +2061,243 @@ mod tests {
             current.trusted_peer_addresses
         );
         assert_eq!(updated.paired_peer_endpoints, current.paired_peer_endpoints);
+    }
+
+    #[tokio::test]
+    async fn settings_update_persists_and_applies_db_limits() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-update-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        for index in 0..15 {
+            database
+                .lock()
+                .await
+                .add_text(&format!("entry {index}"), "self")
+                .unwrap();
+        }
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let requested = Settings {
+            history_limit: 10,
+            ..Settings::default()
+        };
+
+        let outcome = apply_settings_update(&settings, &database, requested, &persist, None)
+            .await
+            .unwrap();
+        assert!(!outcome.mode_changed);
+        assert_eq!(settings.lock().await.history_limit, 10);
+        let remaining = database.lock().await.get_all(None, None, 100, 0).unwrap();
+        assert_eq!(
+            remaining.len(),
+            10,
+            "enforce_limits must evict to the limit"
+        );
+        assert_eq!(persisted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_routes_changed_shortcuts_through_the_hook() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-shortcut-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let previous = settings.lock().await.clone();
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let hook_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook_counter = hook_calls.clone();
+        let hook = move |seen_previous: &Settings, seen_next: &Settings| -> Result<(), String> {
+            assert_eq!(seen_previous.sync_shortcut, previous.sync_shortcut);
+            assert_eq!(seen_previous.history_shortcut, previous.history_shortcut);
+            assert_eq!(seen_next.sync_shortcut, "Control+Shift+Z");
+            assert_eq!(seen_next.history_shortcut, previous.history_shortcut);
+            hook_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let requested = Settings {
+            sync_shortcut: "Control+Shift+Z".to_string(),
+            ..Settings::default()
+        };
+
+        let outcome = apply_settings_update(&settings, &database, requested, &persist, Some(&hook))
+            .await
+            .unwrap();
+        assert!(!outcome.mode_changed);
+        assert_eq!(settings.lock().await.sync_shortcut, "Control+Shift+Z");
+        assert_eq!(hook_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            persisted.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the shortcut hook performs its own persistence"
+        );
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_uses_plain_save_without_a_shortcut_hook() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-plain-save-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let requested = Settings {
+            sync_shortcut: "Control+Shift+Z".to_string(),
+            ..Settings::default()
+        };
+
+        apply_settings_update(&settings, &database, requested, &persist, None)
+            .await
+            .unwrap();
+        assert_eq!(settings.lock().await.sync_shortcut, "Control+Shift+Z");
+        assert_eq!(persisted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_rejects_invalid_values_without_persisting() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-invalid-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        let requested = Settings {
+            history_limit: 5,
+            ..Settings::default()
+        };
+
+        let error = apply_settings_update(&settings, &database, requested, &persist, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SettingsUpdateError::Validation(SettingsValidationError::HistoryLimit)
+        ));
+        assert_eq!(
+            error.to_string(),
+            "history_limit must be between 10 and 500"
+        );
+        assert_eq!(
+            settings.lock().await.history_limit,
+            Settings::default().history_limit
+        );
+        assert_eq!(persisted.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_does_not_commit_when_persistence_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-save-failed-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let fail_persist = |_settings: &Settings| -> Result<(), String> {
+            Err("simulated save failure".to_string())
+        };
+        let requested = Settings {
+            history_limit: 10,
+            ..Settings::default()
+        };
+
+        let error = apply_settings_update(&settings, &database, requested, &fail_persist, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, SettingsUpdateError::Persist(ref message) if message == "simulated save failure")
+        );
+        assert_eq!(error.to_string(), "simulated save failure");
+        assert_eq!(
+            settings.lock().await.history_limit,
+            Settings::default().history_limit
+        );
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_update_reports_connection_mode_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-settings-mode-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+            db::HistoryDB::open_at(&root).unwrap(),
+        ));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+        let requested = Settings {
+            connection_mode: "lan_only".to_string(),
+            ..Settings::default()
+        };
+
+        let outcome = apply_settings_update(&settings, &database, requested, &persist, None)
+            .await
+            .unwrap();
+        assert!(outcome.mode_changed);
+        assert_eq!(outcome.connection_mode, "lan_only");
+
+        let outcome =
+            apply_settings_update(&settings, &database, Settings::default(), &persist, None)
+                .await
+                .unwrap();
+        assert!(
+            outcome.mode_changed,
+            "requesting auto after lan_only must report a change"
+        );
+
+        let outcome =
+            apply_settings_update(&settings, &database, Settings::default(), &persist, None)
+                .await
+                .unwrap();
+        assert!(
+            !outcome.mode_changed,
+            "requesting the current mode again must not report a change"
+        );
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

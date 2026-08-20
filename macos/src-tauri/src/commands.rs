@@ -265,35 +265,26 @@ pub async fn trust_peer(
     public_key: String,
     address: Option<String>,
 ) -> Result<String, String> {
-    let hostname = hostname.trim();
-    if hostname.is_empty() || hostname.len() > 255 {
-        return Err("Invalid peer hostname".to_string());
-    }
-    let public_key = crate::identity::canonical_public_key(&public_key)?;
-    if public_key == state.identity.public_key_base64() {
-        return Err("Cannot pair this device with itself".to_string());
-    }
-    let decoded = crate::identity::decode_public_key(&public_key)?;
-    let fingerprint = crate::identity::fingerprint(&decoded);
-    {
-        let mut settings = state.settings.lock().await;
-        let mode = match (settings.connection_mode.as_str(), address.as_deref()) {
-            ("auto", Some(address)) => network::infer_interface(address)?.as_str().to_string(),
-            (mode, _) => network::mode_interface(mode)
-                .map(|interface| interface.as_str().to_string())
-                .unwrap_or_else(|| "lan".to_string()),
-        };
-        settings
-            .trust_peer(
-                hostname,
-                &public_key,
-                &mode,
-                address.as_deref().filter(|value| !value.trim().is_empty()),
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    state.pool.lock().await.disconnect_hostname(hostname);
-    crate::network::clear_protocol_compatibility_error(hostname);
+    let fingerprint = crate::identity::trust_peer(
+        &state.identity,
+        &state.settings,
+        &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
+        &hostname,
+        &public_key,
+        address.as_deref(),
+    )
+    .await
+    .map_err(|failure| match failure {
+        crate::identity::TrustPeerFailure::InvalidHostname => "Invalid peer hostname".to_string(),
+        crate::identity::TrustPeerFailure::SelfPairing => {
+            "Cannot pair this device with itself".to_string()
+        }
+        crate::identity::TrustPeerFailure::Key(error)
+        | crate::identity::TrustPeerFailure::Interface(error)
+        | crate::identity::TrustPeerFailure::Trust(error) => error,
+    })?;
+    state.pool.lock().await.disconnect_hostname(hostname.trim());
+    crate::network::clear_protocol_compatibility_error(hostname.trim());
     Ok(fingerprint)
 }
 
@@ -345,7 +336,11 @@ pub async fn start_pairing(
 pub async fn confirm_pairing(
     state: State<'_, AppState>,
 ) -> Result<crate::pairing::PairingStatus, String> {
-    state.pairing.confirm().await
+    state
+        .pairing
+        .confirm()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[command]
@@ -388,25 +383,19 @@ pub async fn update_settings(
 ) -> Result<(), String> {
     let requested_settings: crate::crypto::Settings =
         serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
-    let mut settings = state.settings.lock().await;
-    let new_settings = settings.prepare_user_update(requested_settings)?;
-    let history_limit = new_settings.history_limit as i64;
-    let storage_quota_bytes = new_settings.storage_quota_bytes;
-    let mode_changed = settings.connection_mode != new_settings.connection_mode;
-    let connection_mode = new_settings.connection_mode.clone();
-    new_settings.save().map_err(|e| e.to_string())?;
-    *settings = new_settings;
-    drop(settings);
-    {
-        let mut db = state.db.lock().await;
-        db.set_max_history(history_limit);
-        db.set_storage_quota(storage_quota_bytes);
-        db.enforce_limits().map_err(|error| error.to_string())?;
-    }
-    if mode_changed {
+    let outcome = crate::crypto::apply_settings_update(
+        &state.settings,
+        &state.db,
+        requested_settings,
+        &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if outcome.mode_changed {
         state.pool.lock().await.disconnect_all();
         network::clear_peer_cache().await;
-        network::refresh_iroh_for_mode(&connection_mode).await;
+        network::refresh_iroh_for_mode(&outcome.connection_mode).await;
     }
     Ok(())
 }
@@ -430,6 +419,158 @@ pub async fn get_image_data(
         "thumbnail_width": tw,
         "thumbnail_height": th,
     }))
+}
+
+fn v2_package(path: &str) -> Result<Vec<u8>, Box<tailsync_core::themes_v2::ThemeError>> {
+    if !path.ends_with(".tailsync-theme") {
+        return Err(Box::new(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_EXTENSION".into(),
+            message: "theme package must end in .tailsync-theme".into(),
+            json_pointer: "/path".into(),
+            platforms: vec!["windows".into(), "macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        }));
+    }
+    std::fs::read(path).map_err(|e| {
+        Box::new(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_IO".into(),
+            message: e.to_string(),
+            json_pointer: "/path".into(),
+            platforms: vec!["windows".into(), "macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        })
+    })
+}
+#[command]
+pub async fn validate_theme(
+    path: String,
+    mode: String,
+    high_contrast: bool,
+) -> tailsync_core::themes_v2::ThemeValidation {
+    match v2_package(&path) {
+        Ok(bytes) => tailsync_core::themes_v2::validate_theme_for_platform(
+            &bytes,
+            &mode,
+            "macos",
+            high_contrast,
+        ),
+        Err(error) => tailsync_core::themes_v2::ThemeValidation {
+            valid: false,
+            digest: None,
+            candidate_version: None,
+            preview: None,
+            diagnostics: vec![*error],
+            assets: vec![],
+            compatible: false,
+        },
+    }
+}
+#[command]
+pub async fn install_theme(
+    path: String,
+    expected_digest: String,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    let package = v2_package(&path).map_err(|error| *error)?;
+    tailsync_core::themes_v2::install_theme(&package, &expected_digest)
+}
+#[command]
+pub async fn update_theme(
+    path: String,
+    expected_digest: String,
+    options: tailsync_core::themes_v2::UpdateThemeOptions,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    let package = v2_package(&path).map_err(|error| *error)?;
+    tailsync_core::themes_v2::update_theme(&package, &expected_digest, options)
+}
+#[command]
+pub async fn rollback_theme(
+    theme_id: String,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::rollback_theme(&theme_id)
+}
+#[command]
+pub async fn delete_theme_v2(
+    theme_id: Option<String>,
+    storage_handle: Option<String>,
+) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+    if let Some(handle) = storage_handle {
+        tailsync_core::themes_v2::delete_theme_by_handle_for_theme(
+            &handle,
+            theme_id.as_deref().unwrap_or(""),
+        )
+    } else if let Some(id) = theme_id {
+        tailsync_core::themes_v2::delete_theme(&id)
+    } else {
+        Err(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_ID".into(),
+            message: "missing theme_id or storage_handle".into(),
+            json_pointer: "".into(),
+            platforms: vec!["macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        })
+    }
+}
+#[command]
+pub async fn list_themes_v2() -> Vec<tailsync_core::themes_v2::ThemeDescriptor> {
+    tailsync_core::themes_v2::list_themes_v2()
+}
+#[command]
+pub async fn get_local_theme_settings() -> tailsync_core::themes_v2::LocalThemeSettings {
+    tailsync_core::themes_v2::get_local_theme_settings()
+}
+#[command]
+pub async fn set_local_theme_settings(
+    settings: tailsync_core::themes_v2::LocalThemeSettings,
+) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::set_local_theme_settings(settings)
+}
+#[command]
+pub async fn resolve_theme(
+    theme_id: String,
+    mode: String,
+    platform: String,
+    high_contrast: bool,
+) -> Result<tailsync_core::themes_v2::ResolvedTheme, tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::resolve_theme(&theme_id, &mode, &platform, high_contrast)
+}
+
+#[command]
+pub async fn get_theme_asset(
+    theme_id: String,
+    digest: String,
+    asset_key: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let (_mime, bytes) = tailsync_core::themes_v2::get_theme_asset(&theme_id, &digest, &asset_key)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[command]
+pub async fn get_theme_asset_slot(
+    theme_id: String,
+    digest: String,
+    slot: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let (_descriptor, bytes) =
+        tailsync_core::themes_v2::get_theme_asset_slot(&theme_id, &digest, &slot)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[command]
+pub async fn preview_theme_asset_slot(
+    path: String,
+    digest: String,
+    slot: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let bytes = v2_package(&path).map_err(|error| *error)?;
+    let (_descriptor, asset) =
+        tailsync_core::themes_v2::get_theme_asset_slot_from_package(&bytes, &digest, &slot)?;
+    Ok(tauri::ipc::Response::new(asset))
 }
 
 /// Get current file transfer progress (for progress bar)
@@ -485,63 +626,46 @@ pub async fn change_storage_location(
 ) -> Result<db::StorageMigrationResult, String> {
     use tauri_plugin_notification::NotificationExt;
     let parent = std::path::PathBuf::from(parent);
-    let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let active = crate::api::has_active_file_progress();
-        if !active {
-            break;
+    let notifications_enabled = state.settings.lock().await.notifications_enabled;
+    let show = || {
+        if notifications_enabled {
+            let _ = app
+                .notification()
+                .builder()
+                .title("TailSync")
+                .body("File transfers finished. Moving TailSync data now.")
+                .show();
         }
-        if tokio::time::Instant::now() >= wait_deadline {
-            return Err("Timed out waiting for active file transfers to finish".to_string());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    if state.settings.lock().await.notifications_enabled {
-        let _ = app
-            .notification()
-            .builder()
-            .title("TailSync")
-            .body("File transfers finished. Moving TailSync data now.")
-            .show();
-    }
-    let previous_storage_root = state.settings.lock().await.storage_root.clone();
-    let database = state.db.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        database
-            .blocking_lock()
-            .migrate_storage_parent(&parent)
-            .map_err(|error| error.to_string())
-    })
+    };
+    let notify: Option<&(dyn Fn() + Send + Sync)> = Some(&show);
+    db::migrate_storage_with_rollback(
+        &state.db,
+        &state.settings,
+        &parent,
+        db::StorageMigrationHooks {
+            wait_timeout: std::time::Duration::from_secs(60),
+            has_active_transfers: &crate::api::has_active_file_progress,
+            notify,
+            persist_settings: &|settings: &crate::crypto::Settings| {
+                settings.save().map_err(|error| error.to_string())
+            },
+        },
+    )
     .await
-    .map_err(|error| error.to_string())??;
-    let mut settings = state.settings.lock().await;
-    settings.storage_root = Some(result.new_root.clone());
-    if let Err(error) = settings.save().map_err(|error| error.to_string()) {
-        settings.storage_root = previous_storage_root;
-        drop(settings);
-        let old_root = std::path::PathBuf::from(&result.old_root);
-        let database = state.db.clone();
-        let rollback = tokio::task::spawn_blocking(move || {
-            database
-                .blocking_lock()
-                .reopen_storage_at(&old_root)
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|join_error| join_error.to_string())?;
-        return match rollback {
-            Ok(()) => {
-                let _ = db::delete_old_storage(std::path::Path::new(&result.new_root));
-                Err(format!(
-                    "Could not save the new storage location; TailSync returned to the old location: {error}"
-                ))
-            }
-            Err(rollback_error) => Err(format!(
-                "Could not save the new storage location ({error}); rollback also failed: {rollback_error}"
-            )),
-        };
-    }
-    Ok(result)
+    .map_err(|failure| match failure {
+        db::StorageMigrationFailure::TimedOutWaitingForTransfers => {
+            "Timed out waiting for active file transfers to finish".to_string()
+        }
+        db::StorageMigrationFailure::Migrate(error) => error,
+        db::StorageMigrationFailure::SaveFailedAfterRollback { save_error } => format!(
+            "Could not save the new storage location; TailSync returned to the old location: {save_error}"
+        ),
+        db::StorageMigrationFailure::RollbackAlsoFailed { save_error, rollback_error } => {
+            format!(
+                "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
+            )
+        }
+    })
 }
 
 #[command]

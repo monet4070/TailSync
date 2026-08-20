@@ -144,8 +144,12 @@ jobs:
       - name: Run manual v1 recovery functional tests
         run: python -m unittest shared/scripts/test_migrate_v1.py
       - name: Test signed updater manifest generation
-        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs
       - name: Validate checked-in application versions
         run: |
           RELEASE_VERSION="$(node -p "require('./windows/src-tauri/tauri.conf.json').version")"
           node scripts/validate-release-version.mjs --root . --tag "v$RELEASE_VERSION"
+      - name: Validate version-file and lockfile consistency (bump-version --check)
+        run: |
+          RELEASE_VERSION="$(node -p "require('./windows/src-tauri/tauri.conf.json').version")"
+          node scripts/bump-version.mjs --root . --target "$RELEASE_VERSION" --check

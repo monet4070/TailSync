@@ -62,4 +62,21 @@ describe("useI18n", () => {
     expect(zhCN["settings.protocolUpgradeRequired"].replace("{version}", "3"))
       .toContain("协议 v3");
   });
+
+  it("keeps both locale catalogs complete for history preview", () => {
+    expect(Object.keys(zhCN).sort()).toEqual(Object.keys(en).sort());
+    for (const key of [
+      "history.preview.title",
+      "history.preview.loading",
+      "history.preview.error",
+      "history.preview.docxDescription",
+      "history.preview.unsupported",
+      "history.preview.restoreError",
+    ] as const) {
+      expect(en[key]).not.toBe(key);
+      expect(zhCN[key]).not.toBe(key);
+      expect(en[key].trim()).not.toBe("");
+      expect(zhCN[key].trim()).not.toBe("");
+    }
+  });
 });

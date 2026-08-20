@@ -1,4 +1,5 @@
 use super::*;
+use tailsync_core::peer::directory::resolve_candidates;
 
 #[derive(Clone)]
 pub(super) struct PoolSender {
@@ -38,39 +39,6 @@ pub struct ConnectionPool {
 
 pub(super) use tailsync_core::peer::types::{ResolvedCandidate, ResolvedTarget};
 
-fn resolve_candidates(peer: &tailscale::PeerInfo) -> Result<Vec<ResolvedCandidate>, String> {
-    let mut candidates = peer.candidates.clone();
-    if candidates.is_empty() {
-        let address = if peer.address.is_empty() {
-            &peer.tailscale_ip
-        } else {
-            &peer.address
-        };
-        let interface = mode_interface(&peer.connection_mode)
-            .or_else(|| infer_interface(address).ok())
-            .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
-        candidates.push(PeerCandidate::new(interface, address));
-    }
-    candidates.sort_by_key(|candidate| candidate.priority);
-    candidates
-        .into_iter()
-        .map(|candidate| {
-            let target = match candidate.interface {
-                ConnectionInterface::Iroh => ResolvedTarget::Iroh(
-                    tailsync_core::iroh_transport::canonical_endpoint_id(&candidate.address)?,
-                ),
-                ConnectionInterface::Lan | ConnectionInterface::Tailscale => {
-                    let ip: IpAddr = candidate.address.parse().map_err(|error| {
-                        format!("Invalid peer address {}: {error}", candidate.address)
-                    })?;
-                    ResolvedTarget::Tcp(SocketAddr::new(ip, TCP_PORT))
-                }
-            };
-            Ok(ResolvedCandidate { candidate, target })
-        })
-        .collect()
-}
-
 impl ConnectionPool {
     pub fn new(identity: Arc<DeviceIdentity>, settings: Arc<Mutex<crypto::Settings>>) -> Self {
         ConnectionPool {
@@ -97,7 +65,7 @@ impl ConnectionPool {
     }
 
     fn sender_for_peer(&mut self, peer: &tailscale::PeerInfo) -> Result<PoolSender, String> {
-        self.sender_for_candidates(peer.hostname.clone(), resolve_candidates(peer)?)
+        self.sender_for_candidates(peer.hostname.clone(), resolve_candidates(peer, TCP_PORT)?)
     }
 
     fn sender_for_candidates(
@@ -233,7 +201,7 @@ pub async fn queue_peer_frame(
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
 
     let tx = { pool.lock().await.sender_for_peer(peer)? };
-    let preferred = resolve_candidates(peer)?
+    let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
@@ -259,7 +227,7 @@ pub async fn queue_peer_file_frame(
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
 
     let tx = { pool.lock().await.sender_for_peer(peer)? };
-    let preferred = resolve_candidates(peer)?
+    let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
@@ -291,7 +259,7 @@ pub async fn queue_peer_batch_frame(
     secure::decode_trusted_key(&trusted_key)
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
     let tx = { pool.lock().await.sender_for_peer(peer)? };
-    let preferred = resolve_candidates(peer)?
+    let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;

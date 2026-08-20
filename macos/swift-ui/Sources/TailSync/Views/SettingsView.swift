@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UserNotifications
+import UniformTypeIdentifiers
 
 private func routeInterfaceLabel(_ interface: String) -> String {
     switch interface {
@@ -73,7 +74,367 @@ private actor SettingsSaveCoordinator {
     }
 }
 
+enum ThemeV2CardLayout {
+    static let previewHeight: CGFloat = 68
+    static let minimumCardHeight: CGFloat = 108
+    static let minimumActionHitSize: CGFloat = 28
+}
+
+enum ThemeV2CardPreviewPolicy {
+    static func selection(
+        themeId: String,
+        catalogue: [TailSyncThemeDefinition],
+        reduceTransparency: Bool,
+        interfaceScale: CGFloat
+    ) -> TailSyncThemeSelection {
+        TailSyncThemeSelection(
+            storedValue: themeId,
+            catalogue: catalogue,
+            reduceTransparency: reduceTransparency,
+            interfaceScale: interfaceScale
+        )
+    }
+}
+
+struct ThemeV2CardView: View {
+    let descriptor: ApiClient.ThemeV2Descriptor
+    let name: String
+    let selected: Bool
+    let selection: TailSyncThemeSelection
+    let colorScheme: ColorScheme
+    let onSelect: () -> Void
+    let onUpdate: () -> Void
+    let onRollback: () -> Void
+    let onDelete: () -> Void
+
+    @State private var hovering = false
+
+    private var palette: TailSyncThemePalette {
+        selection.palette(for: colorScheme)
+    }
+
+    private var metrics: TailSyncThemeMetrics {
+        selection.metrics(for: colorScheme)
+    }
+
+    private var typography: TailSyncThemeTypography {
+        selection.typography(for: colorScheme)
+    }
+
+    private var cardRadius: CGFloat {
+        min(14, max(3, metrics.cardRadius))
+    }
+
+    private var sourceLabel: String {
+        if descriptor.status != "valid" {
+            return descriptor.diagnostics.map(\.message).joined(separator: " ")
+        }
+        return descriptor.source == "builtin"
+            ? Loc.t("settings.themePackageBuiltIn")
+            : descriptor.version
+    }
+
+    private var cardBackground: Color {
+        if selected { return palette.activeColor }
+        if hovering { return palette.hoverColor }
+        return palette.surfaceColor
+    }
+
+    private var previewTitle: String {
+        typography.uppercasesSectionTitles ? "TAILSYNC" : "TailSync"
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Button(action: onSelect) {
+                VStack(alignment: .leading, spacing: 0) {
+                    previewBand
+                        .frame(height: ThemeV2CardLayout.previewHeight)
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(name)
+                                .font(selection.displayFont(size: 11, weight: .semibold))
+                                .foregroundColor(palette.primaryColor)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                            Text(sourceLabel)
+                                .font(selection.readingFont(size: 9))
+                                .foregroundColor(palette.tertiaryColor)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        Spacer(minLength: 4)
+                        if selected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(palette.accentContrastColor)
+                                .frame(width: 20, height: 20)
+                                .background(palette.accentColor)
+                                .clipShape(RoundedRectangle(cornerRadius: min(7, cardRadius), style: .continuous))
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                }
+                .frame(maxWidth: .infinity, minHeight: ThemeV2CardLayout.minimumCardHeight, alignment: .topLeading)
+                .background(cardBackground)
+                .contentShape(Rectangle())
+                .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+                        .stroke(
+                            selected || hovering ? palette.accentColor : palette.borderColor,
+                            lineWidth: selected ? 2 : 1
+                        )
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .disabled(descriptor.status != "valid")
+            .accessibilityLabel("\(name), \(sourceLabel)")
+
+            actionButtons
+                .padding(6)
+        }
+        .frame(maxWidth: .infinity, minHeight: ThemeV2CardLayout.minimumCardHeight)
+        .opacity(descriptor.status == "valid" ? 1 : 0.7)
+        .onHover { hovering = $0 }
+    }
+
+    private var previewBand: some View {
+        ZStack(alignment: .leading) {
+            palette.windowColor
+            Rectangle()
+                .fill(palette.accentColor)
+                .frame(width: 4)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 6) {
+                    Text(previewTitle)
+                        .font(selection.displayFont(size: 10, weight: .semibold))
+                        .foregroundColor(palette.primaryColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Spacer(minLength: 4)
+                    previewSwatch(palette.accentColor)
+                    previewSwatch(palette.secondaryColor)
+                    previewSwatch(palette.borderStrongColor)
+                }
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(palette.secondaryColor.opacity(0.55))
+                    .frame(maxWidth: .infinity, minHeight: 2, maxHeight: 2)
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: min(5, max(1, metrics.controlRadius)))
+                        .fill(palette.inputColor)
+                        .overlay(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(palette.tertiaryColor.opacity(0.55))
+                                .frame(width: 44, height: 2)
+                                .padding(.leading, 7)
+                        }
+                    RoundedRectangle(cornerRadius: min(5, max(1, metrics.controlRadius)))
+                        .fill(palette.accentSoftColor)
+                        .frame(width: 34)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(palette.accentColor)
+                                .frame(width: 13, height: 2)
+                        }
+                }
+                .frame(height: 16)
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, descriptor.source == "builtin" ? 10 : 72)
+            .padding(.vertical, 9)
+        }
+        .clipped()
+    }
+
+    private func previewSwatch(_ color: Color) -> some View {
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(color)
+            .frame(width: 9, height: 9)
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if descriptor.source != "builtin" {
+            HStack(spacing: 4) {
+                if descriptor.status == "valid" {
+                    actionButton(
+                        systemName: "arrow.triangle.2.circlepath",
+                        label: Loc.t("settings.themePackageUpdate"),
+                        action: onUpdate
+                    )
+                    actionButton(
+                        systemName: "arrow.uturn.backward",
+                        label: Loc.t("settings.themePackageRollback"),
+                        action: onRollback
+                    )
+                }
+                actionButton(
+                    systemName: "trash",
+                    label: Loc.t("settings.themePackageDelete"),
+                    action: onDelete
+                )
+            }
+        }
+    }
+
+    private func actionButton(
+        systemName: String,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(palette.primaryColor)
+                .frame(
+                    width: ThemeV2CardLayout.minimumActionHitSize,
+                    height: ThemeV2CardLayout.minimumActionHitSize
+                )
+                .background(palette.raisedColor.opacity(0.96))
+                .clipShape(RoundedRectangle(cornerRadius: min(7, cardRadius), style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: min(7, cardRadius), style: .continuous)
+                        .stroke(palette.borderColor, lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .help(label)
+    }
+}
+
+enum ThemePackageVersionRelation: Equatable {
+    case upgrade
+    case same
+    case downgrade
+}
+
+struct ThemePackageUpdateOptions: Equatable {
+    let allowSameVersion: Bool
+    let allowDowngrade: Bool
+
+    static func forRelation(_ relation: ThemePackageVersionRelation?) -> Self {
+        Self(
+            allowSameVersion: relation == .same,
+            allowDowngrade: relation == .downgrade
+        )
+    }
+}
+
+struct ThemePackageSemanticVersion: Comparable {
+    let core: [UInt32]
+    let prerelease: [String]?
+
+    init?(_ value: String) {
+        let buildParts = value.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
+        guard buildParts.count <= 2,
+              buildParts.count == 1 || Self.validIdentifiers(String(buildParts[1]), numericLeadingZeroesAllowed: true) else { return nil }
+        let versionParts = buildParts[0].split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        let numbers = versionParts[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard numbers.count == 3 else { return nil }
+        var parsed: [UInt32] = []
+        for number in numbers {
+            let text = String(number)
+            guard !text.isEmpty, text == "0" || !text.hasPrefix("0"), let value = UInt32(text) else { return nil }
+            parsed.append(value)
+        }
+        if versionParts.count == 2 {
+            let value = String(versionParts[1])
+            guard Self.validIdentifiers(value, numericLeadingZeroesAllowed: false) else { return nil }
+            prerelease = value.split(separator: ".").map(String.init)
+        } else {
+            prerelease = nil
+        }
+        core = parsed
+    }
+
+    private static func validIdentifiers(_ value: String, numericLeadingZeroesAllowed: Bool) -> Bool {
+        let identifiers = value.split(separator: ".", omittingEmptySubsequences: false)
+        return !identifiers.isEmpty && identifiers.allSatisfy { identifier in
+            let text = String(identifier)
+            guard !text.isEmpty,
+                  text.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" }) else { return false }
+            return numericLeadingZeroesAllowed || !text.allSatisfy(\.isNumber) || text == "0" || !text.hasPrefix("0")
+        }
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        for index in lhs.core.indices where lhs.core[index] != rhs.core[index] {
+            return lhs.core[index] < rhs.core[index]
+        }
+        switch (lhs.prerelease, rhs.prerelease) {
+        case (nil, nil): return false
+        case (nil, .some): return false
+        case (.some, nil): return true
+        case let (.some(left), .some(right)):
+            for index in 0..<max(left.count, right.count) {
+                guard index < left.count else { return true }
+                guard index < right.count else { return false }
+                let a = left[index], b = right[index]
+                if a == b { continue }
+                let aNumeric = a.allSatisfy(\.isNumber)
+                let bNumeric = b.allSatisfy(\.isNumber)
+                if aNumeric && bNumeric {
+                    if a.count != b.count { return a.count < b.count }
+                    return a < b
+                }
+                if aNumeric != bNumeric { return aNumeric }
+                return a < b
+            }
+            return false
+        }
+    }
+
+    static func relation(candidate: String, installed: String) -> ThemePackageVersionRelation? {
+        guard let candidate = Self(candidate), let installed = Self(installed) else { return nil }
+        if candidate == installed { return .same }
+        return candidate < installed ? .downgrade : .upgrade
+    }
+}
+
 struct SettingsView: View {
+    private enum ThemePackageOperation {
+        case install
+        case update(themeId: String, installedVersion: String)
+
+        var isInstall: Bool {
+            if case .install = self { return true }
+            return false
+        }
+    }
+
+    private struct PendingThemeImport: Identifiable {
+        let id = UUID()
+        let path: String
+        let digest: String
+        let standard: TailSyncThemeDefinition
+        let highContrast: TailSyncThemeDefinition
+        let diagnostics: [ApiClient.ThemeDiagnostic]
+        let assetImages: [String: NSImage]
+        let candidateVersion: String
+        let versionRelation: ThemePackageVersionRelation?
+        let operation: ThemePackageOperation
+    }
+    private enum ShortcutKind: Equatable {
+        case sync
+        case history
+
+        var titleKey: String {
+            self == .sync ? "settings.syncShortcut" : "settings.historyShortcut"
+        }
+
+        var recordKey: String {
+            self == .sync ? "settings.shortcutRecord" : "settings.historyShortcutRecord"
+        }
+
+        func value(in settings: AppSettings) -> String {
+            self == .sync ? settings.sync_shortcut : settings.history_shortcut
+        }
+    }
+
     private struct PeerRoute: Identifiable {
         let peer: ApiClient.PeerSnapshot
         let address: String
@@ -117,18 +478,30 @@ struct SettingsView: View {
     @State private var storageStatus: ApiClient.StorageStatus?
     @State private var storageBusy = false
     @State private var oldStorage: ApiClient.StorageMigrationResult?
-    @State private var isRecordingShortcut = false
+    @State private var recordingShortcut: ShortcutKind?
     @State private var shortcutDraft = ""
     @State private var shortcutError = ""
+    @State private var shortcutErrorKind: ShortcutKind?
     @State private var shortcutBusy = false
     @State private var shortcutMonitor: Any?
+    @State private var pendingThemeImport: PendingThemeImport?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private var activeTheme: TailSyncColorTheme {
-        TailSyncColorTheme(storedValue: loc.colorTheme)
+    private var activeTheme: TailSyncThemeSelection {
+        TailSyncThemeSelection(
+            storedValue: loc.colorTheme,
+            catalogue: loc.resolvedV2Themes,
+            reduceTransparency: loc.reduceTransparency,
+            interfaceScale: TailSyncThemeAccessibilityPolicy.interfaceScale(for: dynamicTypeSize)
+        )
     }
 
     private var palette: TailSyncThemePalette {
         activeTheme.palette(for: colorScheme)
+    }
+
+    private func component(_ name: String, state: String = "default") -> TailSyncThemeComponentTokens? {
+        activeTheme.component(name, state: state, scheme: colorScheme)
     }
 
     var body: some View {
@@ -160,13 +533,14 @@ struct SettingsView: View {
                 }
                 .overlay(alignment: .bottom) {
                     if saved || actionErrorMessage != nil {
+                        let toast = component("toast")
                         Text(actionErrorMessage ?? Loc.t("settings.saved"))
                             .font(.caption)
-                            .foregroundColor(palette.toastTextColor)
-                            .padding(.horizontal, 12)
+                            .foregroundColor(toast?.foregroundColor ?? palette.toastTextColor)
+                            .padding(.horizontal, toast?.padding ?? 12)
                             .padding(.vertical, 6)
-                            .background(palette.toastColor)
-                            .clipShape(Capsule())
+                            .background(toast?.backgroundColor ?? palette.toastColor)
+                            .clipShape(RoundedRectangle(cornerRadius: toast?.radius ?? 999, style: .continuous))
                             .padding(.bottom, 8)
                     }
                 }
@@ -192,6 +566,9 @@ struct SettingsView: View {
         .sheet(isPresented: $showPairingSheet) {
             pairingSheet
         }
+        .sheet(item: $pendingThemeImport) { preview in
+            themeImportPreview(preview)
+        }
         .onReceive(
             NotificationCenter.default.publisher(for: GlobalShortcutController.syncStateChanged)
         ) { notification in
@@ -200,8 +577,8 @@ struct SettingsView: View {
             }
         }
         .onDisappear {
-            if isRecordingShortcut {
-                cancelShortcutRecording()
+            if let recordingShortcut {
+                cancelShortcutRecording(recordingShortcut)
             }
         }
         .tailSyncThemed()
@@ -219,7 +596,9 @@ struct SettingsView: View {
                     .onChange(of: settings.sync_enabled) { _ in save() }
             }
             themedDivider.padding(.leading, 16)
-            shortcutRow
+            shortcutRow(.sync)
+            themedDivider.padding(.leading, 16)
+            shortcutRow(.history)
             themedDivider.padding(.leading, 16)
             settingRow {
                 Text(Loc.t("settings.notifications"))
@@ -246,34 +625,34 @@ struct SettingsView: View {
         }
     }
 
-    private var shortcutRow: some View {
+    private func shortcutRow(_ kind: ShortcutKind) -> some View {
         settingRow {
-            Text(Loc.t("settings.syncShortcut"))
+            Text(Loc.t(kind.titleKey))
             Spacer()
-            if isRecordingShortcut {
+            if recordingShortcut == kind {
                 Text(shortcutDraft.isEmpty
                      ? Loc.t("settings.shortcutRecording")
                      : ShortcutDisplayFormatter.string(for: shortcutDraft))
                     .font(.caption2.monospaced())
                     .foregroundColor(palette.accentColor)
-                Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording() }
+                Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording(kind) }
                     .buttonStyle(.borderless)
                     .disabled(shortcutBusy)
-                Button(Loc.t("settings.shortcutSave")) { confirmShortcut() }
+                Button(Loc.t("settings.shortcutSave")) { confirmShortcut(kind) }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .disabled(shortcutDraft.isEmpty || shortcutBusy)
             } else {
-                Text(settings.sync_shortcut.isEmpty
+                Text(kind.value(in: settings).isEmpty
                      ? Loc.t("settings.shortcutNone")
-                     : ShortcutDisplayFormatter.string(for: settings.sync_shortcut))
+                     : ShortcutDisplayFormatter.string(for: kind.value(in: settings)))
                     .font(.caption2.monospaced())
                     .foregroundColor(palette.tertiaryColor)
-                Button(Loc.t("settings.shortcutRecord")) { startShortcutRecording() }
+                Button(Loc.t(kind.recordKey)) { startShortcutRecording(kind) }
                     .buttonStyle(.borderless)
-                    .disabled(shortcutBusy)
+                    .disabled(shortcutBusy || recordingShortcut != nil)
             }
-            if !shortcutError.isEmpty {
+            if !shortcutError.isEmpty, shortcutErrorKind == kind {
                 Text(shortcutError)
                     .font(.caption2)
                     .foregroundColor(.red)
@@ -282,15 +661,16 @@ struct SettingsView: View {
         }
     }
 
-    private func startShortcutRecording() {
-        guard !isRecordingShortcut, !shortcutBusy else { return }
+    private func startShortcutRecording(_ kind: ShortcutKind) {
+        guard recordingShortcut == nil, !shortcutBusy else { return }
         GlobalShortcutController.shared.unregister()
         shortcutDraft = ""
         shortcutError = ""
+        shortcutErrorKind = nil
         shortcutBusy = false
-        isRecordingShortcut = true
+        recordingShortcut = kind
         shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard isRecordingShortcut else { return event }
+            guard recordingShortcut == kind else { return event }
             if let shortcut = Self.capturedShortcut(from: event) {
                 shortcutDraft = shortcut
                 shortcutError = ""
@@ -299,11 +679,15 @@ struct SettingsView: View {
         }
     }
 
-    private func cancelShortcutRecording() {
+    private func cancelShortcutRecording(_ kind: ShortcutKind) {
         finishShortcutRecording()
         if case .failure(let error) =
-            GlobalShortcutController.shared.register(shortcut: settings.sync_shortcut) {
+            GlobalShortcutController.shared.register(
+                syncShortcut: settings.sync_shortcut,
+                historyShortcut: settings.history_shortcut
+            ) {
             shortcutError = error.message
+            shortcutErrorKind = kind
         }
     }
 
@@ -312,24 +696,36 @@ struct SettingsView: View {
             NSEvent.removeMonitor(monitor)
             shortcutMonitor = nil
         }
-        isRecordingShortcut = false
+        recordingShortcut = nil
         shortcutDraft = ""
         shortcutError = ""
+        shortcutErrorKind = nil
     }
 
-    private func confirmShortcut() {
-        guard isRecordingShortcut, !shortcutDraft.isEmpty else { return }
+    private func confirmShortcut(_ kind: ShortcutKind) {
+        guard recordingShortcut == kind, !shortcutDraft.isEmpty else { return }
         let next = shortcutDraft
-        let previous = settings.sync_shortcut
+        let previous = kind.value(in: settings)
         let controller = GlobalShortcutController.shared
         shortcutBusy = true
         shortcutError = ""
+        shortcutErrorKind = kind
         Task { @MainActor in
             let error = await GlobalShortcutController.apply(
                 previous: previous,
                 next: next,
-                register: { controller.register(shortcut: $0) },
-                persist: { await ApiClient.shared.setSyncShortcut($0) }
+                register: { candidate in
+                    controller.register(
+                        syncShortcut: kind == .sync ? candidate : settings.sync_shortcut,
+                        historyShortcut: kind == .history ? candidate : settings.history_shortcut
+                    )
+                },
+                persist: { candidate in
+                    if kind == .sync {
+                        return await ApiClient.shared.setSyncShortcut(candidate)
+                    }
+                    return await ApiClient.shared.setHistoryShortcut(candidate)
+                }
             )
             shortcutBusy = false
             if let error {
@@ -337,8 +733,13 @@ struct SettingsView: View {
                 return
             }
             finishShortcutRecording()
-            settings.sync_shortcut = next
-            persistedSettings.sync_shortcut = next
+            if kind == .sync {
+                settings.sync_shortcut = next
+                persistedSettings.sync_shortcut = next
+            } else {
+                settings.history_shortcut = next
+                persistedSettings.history_shortcut = next
+            }
         }
     }
 
@@ -844,18 +1245,16 @@ struct SettingsView: View {
             settingRow {
                 Text(Loc.t("settings.theme"))
                 Spacer()
-                Picker("", selection: $settings.theme) {
+                Picker("", selection: Binding(
+                    get: { loc.localThemeSettings.appearance },
+                    set: { appearance in Task { @MainActor in await loc.selectLocalTheme(id: loc.localThemeSettings.activeThemeId, appearance: appearance) } }
+                )) {
                     Text(Loc.t("settings.themeSystem")).tag("system")
                     Text(Loc.t("settings.themeLight")).tag("light")
                     Text(Loc.t("settings.themeDark")).tag("dark")
                 }
                 .pickerStyle(.menu)
                 .frame(width: 130)
-                .onChange(of: settings.theme) { theme in
-                    loc.theme = theme
-                    loc.applyTheme()
-                    save()
-                }
             }
             themedDivider.padding(.leading, 16)
             colorThemePicker
@@ -887,8 +1286,6 @@ struct SettingsView: View {
                 persistedSettings = settings
                 storageStatus = await ApiClient.shared.getStorageStatus()
                 loc.lang = settings.language
-                loc.theme = settings.theme
-                loc.colorTheme = TailSyncColorTheme(storedValue: settings.color_theme).rawValue
                 loc.notificationsEnabled = settings.notifications_enabled
                 loc.applyTheme()
                 isLoading = false
@@ -1035,21 +1432,14 @@ struct SettingsView: View {
         applyingPersistedSettings = true
         settings = value
         loc.lang = value.language
-        loc.theme = value.theme
-        loc.colorTheme = TailSyncColorTheme(storedValue: value.color_theme).rawValue
+        // Theme is local-only V2 state; never hydrate it from synced
+        // AppSettings.color_theme/theme.
         loc.notificationsEnabled = value.notifications_enabled
         loc.applyTheme()
         Task { @MainActor in
             await Task.yield()
             applyingPersistedSettings = false
         }
-    }
-
-    private func selectColorTheme(_ theme: TailSyncColorTheme) {
-        guard settings.color_theme != theme.rawValue else { return }
-        settings.color_theme = theme.rawValue
-        loc.colorTheme = theme.rawValue
-        save()
     }
 
     private func togglePairingWindow() {
@@ -1229,7 +1619,7 @@ struct SettingsView: View {
                 .font(.system(.caption, design: .monospaced).weight(.medium))
                 .foregroundColor(palette.accentColor)
                 .frame(width: 46, height: 26)
-                .background(palette.accentColor.opacity(0.10))
+                .background(palette.accentSoftColor)
                 .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
         }
     }
@@ -1240,27 +1630,29 @@ struct SettingsView: View {
     }
 
     private func settingsCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let section = component("section")
+        let panel = component("panel")
+        return VStack(alignment: .leading, spacing: 0) {
             Text(title)
                 .font(activeTheme.displayFont(
                     size: activeTheme.typography.sectionTitleSize,
-                    weight: activeTheme == .tailsync ? .regular : .semibold
+                    weight: activeTheme.builtin == .tailsync ? .regular : .semibold
                 ))
                 .textCase(activeTheme.typography.uppercasesSectionTitles ? .uppercase : nil)
-                .foregroundColor(palette.secondaryColor)
+                .foregroundColor(section?.foregroundColor ?? palette.secondaryColor)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 6)
             VStack(spacing: 0) { content() }
-                .background(palette.surfaceColor)
-                .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous))
+                .background(panel?.backgroundColor ?? palette.surfaceColor)
+                .clipShape(RoundedRectangle(cornerRadius: panel?.radius ?? activeTheme.metrics.cardRadius, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous)
-                        .stroke(palette.borderColor, lineWidth: activeTheme == .highContrast ? 2 : 1)
+                    RoundedRectangle(cornerRadius: panel?.radius ?? activeTheme.metrics.cardRadius, style: .continuous)
+                        .stroke(panel?.borderColor ?? palette.borderColor, lineWidth: activeTheme.builtin == .highContrast ? 2 : 1)
                 }
                 .shadow(
-                    color: palette.primaryColor.opacity(activeTheme.metrics.shadowRadius == 0 ? 0 : 0.08),
-                    radius: activeTheme.metrics.shadowRadius,
-                    y: activeTheme.metrics.shadowRadius > 0 ? 3 : 0
+                    color: palette.primaryColor.opacity(panel?.shadowOpacity ?? (activeTheme.metrics.shadowRadius == 0 ? 0 : 0.08)),
+                    radius: panel?.shadowRadius ?? activeTheme.metrics.shadowRadius,
+                    y: panel?.shadowY ?? (activeTheme.metrics.shadowRadius > 0 ? 3 : 0)
                 )
                 .padding(.horizontal, 12)
         }
@@ -1277,7 +1669,7 @@ struct SettingsView: View {
     private var themedDivider: some View {
         Rectangle()
             .fill(palette.dividerColor)
-            .frame(height: activeTheme == .highContrast ? 2 : 1)
+            .frame(height: activeTheme.builtin == .highContrast ? 2 : 1)
     }
 
     private var colorThemePicker: some View {
@@ -1290,84 +1682,350 @@ struct SettingsView: View {
                     .foregroundColor(palette.tertiaryColor)
             }
 
-            Grid(horizontalSpacing: 8, verticalSpacing: 8) {
-                GridRow {
-                    colorThemeButton(.tailsync)
-                    colorThemeButton(.ocean)
-                }
-                GridRow {
-                    colorThemeButton(.forest)
-                    colorThemeButton(.rose)
-                }
-                GridRow {
-                    colorThemeButton(.highContrast)
-                        .gridCellColumns(2)
+            if !loc.themeDescriptors.isEmpty {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 190), spacing: 8)],
+                    spacing: 8
+                ) {
+                    ForEach(loc.themeDescriptors) { descriptor in
+                        themeV2Card(descriptor)
+                    }
                 }
             }
+
+            if !loc.themeCatalogueLoaded {
+                HStack(spacing: 6) {
+                    if loc.themeCatalogueLoadFailed {
+                        Label(Loc.t("error.localServiceUnavailable"), systemImage: "exclamationmark.triangle")
+                            .foregroundColor(palette.warningColor)
+                        Spacer()
+                        Button(Loc.t("settings.retry")) {
+                            Task { @MainActor in await loc.retryThemeCatalogueLoading() }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    } else {
+                        ProgressView().controlSize(.small)
+                        Text(Loc.t("settings.loading"))
+                            .foregroundColor(palette.tertiaryColor)
+                    }
+                }
+                .font(activeTheme.readingFont(size: 10))
+            } else if ThemeCatalogueDisplayPolicy.shouldShowFallback(
+                catalogueLoaded: loc.themeCatalogueLoaded,
+                activeThemeId: loc.colorTheme,
+                validThemeIds: loc.themeDescriptors
+                    .filter { $0.status == "valid" }
+                    .map(\.id)
+            ) {
+                Label(Loc.t("settings.themePackageFallback"), systemImage: "exclamationmark.triangle")
+                    .font(activeTheme.readingFont(size: 10))
+                    .foregroundColor(palette.warningColor)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    selectThemePackage(for: .install)
+                } label: {
+                    Label(Loc.t("settings.themePackageImport"), systemImage: "square.and.arrow.down")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
     }
 
-    private func colorThemeButton(_ theme: TailSyncColorTheme) -> some View {
-        let optionPalette = theme.palette(for: colorScheme)
-        let selected = settings.color_theme == theme.rawValue
-        let radius = theme.metrics.cardRadius
+    private func themeV2Card(_ descriptor: ApiClient.ThemeV2Descriptor) -> some View {
+        let selected = loc.colorTheme == descriptor.id
+        let name: String = switch descriptor.id {
+        case "builtin:canvas@1": Loc.t("settings.colorTheme.tailsync")
+        case "builtin:flux@1": Loc.t("settings.colorTheme.ocean")
+        case "builtin:ledger@1": Loc.t("settings.colorTheme.forest")
+        case "builtin:aura@1": Loc.t("settings.colorTheme.rose")
+        case "builtin:mono@1": Loc.t("settings.colorTheme.high-contrast")
+        default: descriptor.name[loc.lang] ?? descriptor.name["en"] ?? descriptor.id
+        }
+        let previewSelection = ThemeV2CardPreviewPolicy.selection(
+            themeId: descriptor.id,
+            catalogue: loc.resolvedV2Themes,
+            reduceTransparency: loc.reduceTransparency,
+            interfaceScale: min(activeTheme.interfaceScale, 1.25)
+        )
+        return ThemeV2CardView(
+            descriptor: descriptor,
+            name: name,
+            selected: selected,
+            selection: previewSelection,
+            colorScheme: colorScheme,
+            onSelect: { Task { @MainActor in await loc.selectLocalTheme(id: descriptor.id) } },
+            onUpdate: { selectThemePackage(for: .update(themeId: descriptor.id, installedVersion: descriptor.version)) },
+            onRollback: { rollbackThemeV2(descriptor) },
+            onDelete: { deleteThemeV2(descriptor) }
+        )
+    }
 
-        return Button {
-            selectColorTheme(theme)
-        } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(optionPalette.accentColor)
-                        .frame(width: 6)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("TailSync")
-                            .font(theme.displayFont(size: 12, weight: .semibold))
-                            .foregroundColor(optionPalette.primaryColor)
-                        Capsule()
-                            .fill(optionPalette.textTertiary == optionPalette.textPrimary
-                                  ? optionPalette.primaryColor
-                                  : optionPalette.tertiaryColor)
-                            .frame(maxWidth: 68, minHeight: 3, maxHeight: 3)
-                        Capsule()
-                            .fill(optionPalette.dividerColor)
-                            .frame(maxWidth: 96, minHeight: 3, maxHeight: 3)
-                    }
-                    .padding(9)
-                    Spacer(minLength: 0)
+    private func selectThemePackage(for operation: ThemePackageOperation) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "tailsync-theme")!]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = Loc.t(operation.isInstall ? "settings.themePackageImportTitle" : "settings.themePackageUpdateTitle")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { @MainActor in
+            do {
+                let light = try await ApiClient.shared.validateThemeV2(path: url.path, mode: "light")
+                let dark = try await ApiClient.shared.validateThemeV2(path: url.path, mode: "dark")
+                let highLight = try await ApiClient.shared.validateThemeV2(path: url.path, mode: "light", highContrast: true)
+                let highDark = try await ApiClient.shared.validateThemeV2(path: url.path, mode: "dark", highContrast: true)
+                let validations = [light, dark, highLight, highDark]
+                let diagnostics = validations.flatMap(\.diagnostics)
+                guard validations.allSatisfy(\.valid),
+                      let digest = light.digest,
+                      let candidateVersion = light.candidateVersion,
+                      validations.allSatisfy({ $0.digest == digest }),
+                      validations.allSatisfy({ $0.candidateVersion == candidateVersion }),
+                      let lightTokens = light.previewTokens,
+                      let darkTokens = dark.previewTokens,
+                      let highLightTokens = highLight.previewTokens,
+                      let highDarkTokens = highDark.previewTokens else {
+                    throw ApiError.serverError(diagnostics.map(\.message).joined(separator: "\n"))
                 }
-                .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-                .background(optionPalette.windowColor)
-
-                HStack(spacing: 6) {
-                    Image(systemName: theme.symbolName)
-                        .font(.system(size: 11, weight: .medium))
-                    Text(Loc.t(theme.localizationKey))
-                        .font(theme.readingFont(size: 11, weight: .medium))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 12, weight: .semibold))
+                if case .update(let themeId, _) = operation,
+                   validations.contains(where: { $0.previewId != themeId }) {
+                    throw ApiError.serverError(Loc.t("settings.themePackageIdMismatch"))
+                }
+                var images: [String: NSImage] = [:]
+                for slot in light.previewAssetSlots.keys where ["logo", "emptyState", "previewPlaceholder"].contains(slot) {
+                    if let data = try? await ApiClient.shared.previewThemeAssetSlot(path: url.path, digest: digest, slot: slot),
+                       let image = ThemeAssetImageDecoder.decode(data, slot: slot) {
+                        images[slot] = image
                     }
                 }
-                .foregroundColor(selected ? palette.accentColor : palette.secondaryColor)
-                .padding(.horizontal, 9)
-                .frame(height: 30)
-                .background(palette.raisedColor)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(selected ? palette.accentColor : palette.borderColor,
-                            lineWidth: selected || activeTheme == .highContrast ? 2 : 1)
+                pendingThemeImport = PendingThemeImport(
+                    path: url.path,
+                    digest: digest,
+                    standard: TailSyncThemeDefinition.resolvedV2(id: "preview", light: lightTokens, dark: darkTokens),
+                    highContrast: TailSyncThemeDefinition.resolvedV2(id: "preview-high", light: highLightTokens, dark: highDarkTokens),
+                    diagnostics: diagnostics,
+                    assetImages: images,
+                    candidateVersion: candidateVersion,
+                    versionRelation: {
+                        if case .update(_, let installedVersion) = operation {
+                            return ThemePackageSemanticVersion.relation(
+                                candidate: candidateVersion,
+                                installed: installedVersion
+                            )
+                        }
+                        return nil
+                    }(),
+                    operation: operation
+                )
+            } catch {
+                actionErrorMessage = error.localizedDescription
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Loc.t(theme.localizationKey))
-        .accessibilityValue(selected ? Loc.t("settings.selected") : "")
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
+
+    private func themeImportPreview(_ preview: PendingThemeImport) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(Loc.t("settings.themePackagePreview")).font(.headline)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                previewSwatch(Loc.t("settings.themePreviewLight"), theme: preview.standard, scheme: .light)
+                previewSwatch(Loc.t("settings.themePreviewDark"), theme: preview.standard, scheme: .dark)
+                previewSwatch(Loc.t("settings.themePreviewHighLight"), theme: preview.highContrast, scheme: .light)
+                previewSwatch(Loc.t("settings.themePreviewHighDark"), theme: preview.highContrast, scheme: .dark)
+            }
+            if let logo = preview.assetImages["logo"] {
+                Image(nsImage: logo).resizable().aspectRatio(contentMode: .fit).frame(width: 42, height: 42).frame(maxWidth: .infinity, alignment: .center)
+            }
+            HStack(spacing: 12) {
+                if let empty = preview.assetImages["emptyState"] {
+                    Image(nsImage: empty).resizable().aspectRatio(contentMode: .fit).frame(width: 46, height: 34)
+                }
+                if let placeholder = preview.assetImages["previewPlaceholder"] {
+                    Image(nsImage: placeholder).resizable().aspectRatio(contentMode: .fit).frame(width: 58, height: 34)
+                }
+            }
+            Text(themeVersionDescription(preview))
+                .font(.caption.monospacedDigit())
+                .foregroundColor(preview.versionRelation == .downgrade ? palette.warningColor : palette.secondaryColor)
+            if !preview.diagnostics.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(preview.diagnostics.indices, id: \.self) { index in
+                        Text(preview.diagnostics[index].message)
+                            .font(.caption)
+                            .foregroundColor(preview.diagnostics[index].severity == "error" ? .red : .orange)
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button(Loc.t("common.cancel")) { pendingThemeImport = nil }
+                Button(Loc.t(preview.operation.isInstall ? "settings.themePackageInstall" : "settings.themePackageUpdate")) {
+                    applyPreviewedTheme(preview)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 640)
+    }
+
+    private func previewSwatch(
+        _ title: String,
+        theme: TailSyncThemeDefinition,
+        scheme: ColorScheme
+    ) -> some View {
+        let palette = scheme == .light ? theme.lightPalette : theme.darkPalette
+        let components = scheme == .light ? theme.components : theme.darkComponents
+        let search = components["search"]?["focus"]
+        let hover = components["history"]?["hover"]
+        let selected = components["history"]?["selected"]
+        let buttonStates = ["default", "hover", "active", "selected", "disabled", "focus"]
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold)).foregroundColor(palette.primaryColor)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(Loc.t("settings.themePreviewSearch"))
+                    .font(.caption)
+                    .foregroundColor(search?.foregroundColor ?? palette.primaryColor)
+                    .padding(search?.padding ?? 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(search?.backgroundColor ?? palette.softSurfaceColor)
+                    .clipShape(RoundedRectangle(cornerRadius: search?.radius ?? 6))
+                    .overlay(RoundedRectangle(cornerRadius: search?.radius ?? 6).stroke(search?.focusRingColor ?? palette.accentColor, lineWidth: 2))
+                Text(Loc.t("settings.themePreviewHover"))
+                    .font(.caption)
+                    .foregroundColor(hover?.foregroundColor ?? palette.primaryColor)
+                    .padding(hover?.padding ?? 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(hover?.backgroundColor ?? palette.hoverColor)
+                Text(Loc.t("settings.themePreviewSelected"))
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(selected?.foregroundColor ?? palette.accentContrastColor)
+                    .padding(selected?.padding ?? 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(selected?.backgroundColor ?? palette.accentColor)
+            }
+            .padding(8)
+            .background(palette.surfaceColor)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 5) {
+                ForEach(buttonStates, id: \.self) { state in
+                    let token = components["button"]?[state]
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(previewStateLabel(state))
+                            .font(.system(size: 9))
+                            .foregroundColor(palette.tertiaryColor)
+                        Text(previewStateLabel(state))
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(token?.foregroundColor ?? palette.primaryColor)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .padding(.horizontal, token?.padding ?? 5)
+                            .background(token?.backgroundColor ?? palette.raisedColor)
+                            .clipShape(RoundedRectangle(cornerRadius: token?.radius ?? 5, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: token?.radius ?? 5, style: .continuous)
+                                    .stroke(token?.borderColor ?? palette.borderColor, lineWidth: state == "focus" ? 2 : 1)
+                            }
+                            .opacity(state == "disabled" ? 0.55 : 1)
+                    }
+                }
+            }
+        }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(palette.windowColor).clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func previewStateLabel(_ state: String) -> String {
+        switch state {
+        case "default": return Loc.t("settings.themePreviewStateDefault")
+        case "hover": return Loc.t("settings.themePreviewStateHover")
+        case "active": return Loc.t("settings.themePreviewStateActive")
+        case "selected": return Loc.t("settings.themePreviewStateSelected")
+        case "disabled": return Loc.t("settings.themePreviewStateDisabled")
+        case "focus": return Loc.t("settings.themePreviewStateFocus")
+        default: return state
+        }
+    }
+
+    private func themeVersionDescription(_ preview: PendingThemeImport) -> String {
+        if case .update(_, let installedVersion) = preview.operation {
+            return "\(installedVersion) → \(preview.candidateVersion)"
+        }
+        return "\(Loc.t("settings.themePackageCandidateVersion")): \(preview.candidateVersion)"
+    }
+
+    private func applyPreviewedTheme(_ preview: PendingThemeImport) {
+        if case .update(_, let installedVersion) = preview.operation,
+           preview.versionRelation == .same || preview.versionRelation == .downgrade {
+            let alert = NSAlert()
+            alert.messageText = Loc.t(preview.versionRelation == .same
+                ? "settings.themePackageReplaceTitle"
+                : "settings.themePackageDowngradeTitle")
+            alert.informativeText = "\(installedVersion) → \(preview.candidateVersion)"
+            alert.addButton(withTitle: Loc.t("settings.themePackageUpdate"))
+            alert.addButton(withTitle: Loc.t("common.cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        let updateOptions = ThemePackageUpdateOptions.forRelation(preview.versionRelation)
+        Task { @MainActor in
+            do {
+                switch preview.operation {
+                case .install:
+                    _ = try await ApiClient.shared.installThemeV2(path: preview.path, digest: preview.digest)
+                case .update:
+                    _ = try await ApiClient.shared.updateThemeV2(
+                        path: preview.path,
+                        digest: preview.digest,
+                        allowSameVersion: updateOptions.allowSameVersion,
+                        allowDowngrade: updateOptions.allowDowngrade
+                    )
+                }
+                pendingThemeImport = nil
+                await loc.refreshThemesV2()
+                await loc.reloadActiveThemeAfterPackageChange()
+                saved = true
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                saved = false
+            } catch { actionErrorMessage = error.localizedDescription }
+        }
+    }
+
+    private func rollbackThemeV2(_ descriptor: ApiClient.ThemeV2Descriptor) {
+        let alert = NSAlert()
+        alert.messageText = Loc.t("settings.themePackageRollbackTitle")
+        alert.informativeText = descriptor.name[loc.lang] ?? descriptor.name["en"] ?? descriptor.id
+        alert.addButton(withTitle: Loc.t("settings.themePackageRollback"))
+        alert.addButton(withTitle: Loc.t("common.cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { @MainActor in
+            do {
+                _ = try await ApiClient.shared.rollbackThemeV2(id: descriptor.id)
+                await loc.refreshThemesV2()
+                await loc.reloadActiveThemeAfterPackageChange()
+            } catch {
+                actionErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteThemeV2(_ descriptor: ApiClient.ThemeV2Descriptor) {
+        let alert = NSAlert()
+        alert.messageText = Loc.t("settings.themePackageDeleteTitle")
+        alert.informativeText = descriptor.name[loc.lang] ?? descriptor.name["en"] ?? descriptor.id
+        alert.addButton(withTitle: Loc.t("settings.themePackageDelete"))
+        alert.addButton(withTitle: Loc.t("common.cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { @MainActor in
+            do {
+                try await ApiClient.shared.deleteThemeV2(id: descriptor.id, storageHandle: descriptor.storageHandle)
+                await loc.refreshThemesV2()
+                await loc.syncLocalThemeSettings()
+            } catch {
+                actionErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
 }

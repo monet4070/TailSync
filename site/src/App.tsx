@@ -135,6 +135,13 @@ const flowData: Record<
   },
 };
 
+const heroStats = [
+  { value: "4 ms", label: "局域网直达延迟" },
+  { value: "0", label: "云端中转 · 数据不出网" },
+  { value: "08", label: "本地智能内容分类" },
+  { value: "E2E", label: "Noise XX 端到端加密" },
+];
+
 function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [routeMode, setRouteMode] = useState<RouteMode>("auto");
@@ -166,7 +173,7 @@ function App() {
     document.documentElement.style.colorScheme = timeTheme;
     document
       .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-      ?.setAttribute("content", timeTheme === "light" ? "#f1efe7" : "#11120f");
+      ?.setAttribute("content", timeTheme === "light" ? "#fbfbfd" : "#000000");
 
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
@@ -244,8 +251,8 @@ function App() {
       <header className="site-header">
         <a className="brand" href="#top" onClick={closeMenu}>
           <img src={tailsyncIcon} alt="TailSync" />
-          <span>TAILSYNC</span>
-          <small>MAIN</small>
+          <span>TailSync</span>
+          <small>V2</small>
         </a>
 
         <button
@@ -305,9 +312,13 @@ function App() {
           <a href="#routing" onClick={closeMenu}>智能路由</a>
           <a href="#history" onClick={closeMenu}>智能历史</a>
           <a href="#security" onClick={closeMenu}>安全</a>
+          <a href="/themes.html">主题工坊</a>
           <a className="nav-source" href={GITHUB_URL} target="_blank" rel="noreferrer">
-            <GitFork size={15} />
+            <GitFork size={14} />
             源码
+          </a>
+          <a className="nav-cta" href={RELEASE_URL} target="_blank" rel="noreferrer">
+            获取
             <ArrowUpRight size={13} />
           </a>
         </nav>
@@ -316,11 +327,10 @@ function App() {
       <main>
         <section className="hero" aria-labelledby="hero-title">
           <SyncField theme={timeTheme} />
-          <div className="hero-noise" aria-hidden="true" />
           <div className="hero-copy">
             <div className="hero-kicker">
               <span className="live-dot" />
-              LATEST MAIN / CLASSIFIER V4
+              TailSync 2.0 · 本地优先的跨设备剪贴板
             </div>
             <h1 id="hero-title">
               复制。
@@ -335,42 +345,30 @@ function App() {
               <a className="button button-primary" href={RELEASE_URL} target="_blank" rel="noreferrer">
                 <Download size={17} />
                 获取 TailSync
-                <ArrowUpRight size={15} />
               </a>
               <a className="button button-quiet" href="#routing">
-                看它如何工作
-                <ArrowDown size={16} />
+                了解如何工作
+                <ArrowDown size={15} />
               </a>
             </div>
           </div>
 
-          <div className="hero-index" aria-hidden="true">
-            <span>01</span>
-            <span>DIRECT CLIPBOARD PROTOCOL</span>
-          </div>
           <a className="scroll-cue" href="#manifesto" aria-label="继续浏览">
-            <span>SCROLL TO SYNC</span>
-            <ArrowDown size={15} />
+            <span>SCROLL</span>
+            <ArrowDown size={14} />
           </a>
         </section>
 
-        <section className="manifesto" id="manifesto">
-          <div className="marquee" aria-hidden="true">
-            <div className="marquee-track">
-              <span>LOCAL FIRST</span><i />
-              <span>NO CLOUD</span><i />
-              <span>END TO END</span><i />
-              <span>TEXT / IMAGE / FILE</span><i />
-              <span>SMART HISTORY</span><i />
-              <span>WAKE RECOVERY</span><i />
-              <span>LOCAL FIRST</span><i />
-              <span>NO CLOUD</span><i />
-              <span>END TO END</span><i />
-              <span>TEXT / IMAGE / FILE</span><i />
-              <span>SMART HISTORY</span><i />
-              <span>WAKE RECOVERY</span><i />
+        <div className="stat-band" data-reveal>
+          {heroStats.map((stat) => (
+            <div key={stat.label}>
+              <strong>{stat.value}</strong>
+              <span>{stat.label}</span>
             </div>
-          </div>
+          ))}
+        </div>
+
+        <section className="manifesto" id="manifesto">
           <div className="manifesto-inner" data-reveal>
             <div className="manifesto-copy">
               <div className="section-marker">
@@ -382,7 +380,7 @@ function App() {
                 <strong>跟着你，而不是困在某一台设备里。</strong>
               </p>
               <div className="manifesto-note">
-                <CloudOff size={28} strokeWidth={1.35} />
+                <CloudOff size={26} strokeWidth={1.5} />
                 <p>
                   没有云端收件箱，也没有把内容发给自己的临时聊天。
                   TailSync 在你拥有的网络与设备之间建立一条可信通道。
@@ -431,7 +429,7 @@ function App() {
 
         <section className="routing-section" id="routing">
           <div className="routing-copy" data-reveal>
-            <div className="section-marker section-marker-dark">
+            <div className="section-marker">
               <span>02</span>
               <small>ADAPTIVE ROUTING</small>
             </div>
@@ -611,14 +609,6 @@ function App() {
           </div>
 
           <div className="product-stage" data-reveal>
-            <div className="product-stage-motion" aria-hidden="true">
-              <span className="stage-scan" />
-              <span className="stage-rail stage-rail-a" />
-              <span className="stage-rail stage-rail-b" />
-              <span className="stage-packet stage-packet-text"><FileText size={15} /></span>
-              <span className="stage-packet stage-packet-image"><ImageIcon size={15} /></span>
-              <span className="stage-packet stage-packet-file"><File size={15} /></span>
-            </div>
             <div className="product-stage-label label-top">WINDOWS / REACT + TAURI</div>
             <ProductWindow />
             <div className="route-float">
@@ -685,9 +675,9 @@ function App() {
               </a>
             </div>
             <a className="source-link" href={GITHUB_URL} target="_blank" rel="noreferrer">
-              <GitFork size={17} />
+              <GitFork size={16} />
               在 GitHub 查看源码
-              <ArrowUpRight size={15} />
+              <ArrowUpRight size={14} />
             </a>
           </div>
         </section>
@@ -696,9 +686,9 @@ function App() {
       <footer className="site-footer">
         <div className="brand footer-brand">
           <img src={tailsyncIcon} alt="" />
-          <span>TAILSYNC</span>
+          <span>TailSync</span>
         </div>
-        <p>SMART LOCAL HISTORY / RESILIENT DIRECT SYNC / BUILT FOR DEVICES YOU TRUST</p>
+        <p>智能本地历史 · 弹性直连同步 · 只为你信任的设备而建</p>
         <span>© {year} TAILSYNC · MIT</span>
       </footer>
     </div>

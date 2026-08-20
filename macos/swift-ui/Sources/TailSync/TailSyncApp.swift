@@ -32,6 +32,25 @@ enum DaemonLifecyclePolicy {
     }
 }
 
+enum RuntimeNotificationPolicy {
+    static func shouldRefreshHistory(
+        previousHistoryVersion: UInt64?,
+        currentHistoryVersion: UInt64,
+        isFirstPoll: Bool
+    ) -> Bool {
+        isFirstPoll || previousHistoryVersion != currentHistoryVersion
+    }
+}
+
+enum StatusItemImagePolicy {
+    static func image(from cachedImage: NSImage) -> NSImage? {
+        guard let image = cachedImage.copy() as? NSImage else { return nil }
+        image.size = NSSize(width: 18, height: 18)
+        image.isTemplate = false
+        return image
+    }
+}
+
 @main
 struct TailSyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -45,8 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
     private var lastNotifiedId: Int64 = 0
-    private var notificationPollRunning = false
     private var isFirstNotificationPoll = true
+    private var notificationRuntimeRevision: UInt64 = 0
+    private var notificationHistoryVersion: UInt64?
+    private var notificationEventId: UInt64 = 0
     private var consecutiveWatchdogFailures = 0
     private var terminationInProgress = false
     private var watchdogCheckRunning = false
@@ -56,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var syncEnabled = true
     private var shortcutRegistered = false
     private var updateCheckRunning = false
-    private var notificationTimer: Timer?
+    private var notificationTask: Task<Void, Never>?
     private var watchdogTimer: Timer?
     private static var historyWC: NSWindowController?
     private static var settingsWC: NSWindowController?
@@ -86,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.forceAccessory()
         NSApp.setActivationPolicy(.accessory)
+        // Remove plaintext Quick Look files left by a previous crash before
+        // any history window can create a new preview session.
+        _ = HistoryPreviewSession.cleanupAtStartup()
 
         // Set app icon explicitly so notifications show the correct icon
         if let icon = NSImage(contentsOf: Bundle.main.bundleURL
@@ -101,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerSleepWakeNotifications()
         scheduleUpdateCheck()
 
-        GlobalShortcutController.shared.onActivate = { [weak self] in
+        GlobalShortcutController.shared.onSyncActivate = { [weak self] in
             Task { @MainActor in
                 guard let self, self.daemonActivityAllowed else { return }
                 guard let enabled = await ApiClient.shared.toggleSync(), self.daemonActivityAllowed else { return }
@@ -113,6 +137,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     userInfo: ["enabled": enabled]
                 )
             }
+        }
+        GlobalShortcutController.shared.onHistoryActivate = {
+            Self.showHistory()
         }
     }
 
@@ -169,11 +196,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Background poller: checks for remote clipboard events and shows
     /// notifications even before the History window is opened.
     private func startNotificationPoller() {
-        notificationTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.daemonActivityAllowed, !self.notificationPollRunning else { return }
-                self.notificationPollRunning = true
-                defer { self.notificationPollRunning = false }
+        notificationTask?.cancel()
+        notificationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                guard self.daemonActivityAllowed else { return }
+                guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(
+                    since: self.notificationRuntimeRevision,
+                    sinceNotificationId: self.notificationEventId
+                ) else {
+                    try? await Task.sleep(for: .milliseconds(750))
+                    continue
+                }
+                self.notificationRuntimeRevision = snapshot.revision
+                let shouldRefreshHistory = RuntimeNotificationPolicy.shouldRefreshHistory(
+                    previousHistoryVersion: self.notificationHistoryVersion,
+                    currentHistoryVersion: snapshot.historyVersion,
+                    isFirstPoll: self.isFirstNotificationPoll
+                )
+                self.notificationHistoryVersion = snapshot.historyVersion
+
+                for event in snapshot.notifications {
+                    self.notificationEventId = max(self.notificationEventId, event.id)
+                    guard Loc.shared.notificationsEnabled,
+                          Bundle.main.bundleURL.pathExtension == "app",
+                          self.daemonActivityAllowed else { continue }
+                    let content = UNMutableNotificationContent()
+                    content.title = "TailSync"
+                    content.body = event.message
+                    content.sound = nil
+                    let request = UNNotificationRequest(
+                        identifier: "tailsync-runtime-\(event.id)",
+                        content: content,
+                        trigger: nil
+                    )
+                    try? await UNUserNotificationCenter.current().add(request)
+                }
 
                 // Establish a baseline before notifying so existing history is
                 // not reported as newly received after every app launch.
@@ -182,16 +240,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if let latest = try? await ApiClient.shared.getHistory(limit: 1, offset: 0) {
                         self.lastNotifiedId = latest.first?.id ?? 0
                     }
-                    return
+                    continue
                 }
-                guard Loc.shared.notificationsEnabled else { return }
-                guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+                guard shouldRefreshHistory,
+                      Loc.shared.notificationsEnabled,
+                      Bundle.main.bundleURL.pathExtension == "app",
+                      snapshot.historyVersion > 0,
+                      self.daemonActivityAllowed else { continue }
                 guard let latest = try? await ApiClient.shared.getHistory(limit: 1, offset: 0),
-                      self.daemonActivityAllowed,
                       let newest = latest.first,
                       newest.id > self.lastNotifiedId,
-                      newest.source_peer != "self" else { return }
+                      self.daemonActivityAllowed else { continue }
                 self.lastNotifiedId = newest.id
+                guard newest.source_peer != "self" else { continue }
                 let body: String = switch newest.type {
                     case "image": "📷 Image received"
                     case "file":  "📎 \(newest.description)"
@@ -208,14 +269,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     trigger: nil
                 )
                 try? await UNUserNotificationCenter.current().add(request)
-                // Keep polling quiet briefly to prevent duplicate notifications.
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         stopBackgroundActivity()
+        HistoryPreviewWindowController.shared.shutdown()
         // Remove the status item before the process exits to prevent ghost icons.
         if let item = statusItem {
             NSStatusBar.system.removeStatusItem(item)
@@ -236,11 +296,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func stopBackgroundActivity() {
-        notificationTimer?.invalidate()
-        notificationTimer = nil
+        notificationTask?.cancel()
+        notificationTask = nil
         watchdogTimer?.invalidate()
         watchdogTimer = nil
-        GlobalShortcutController.shared.onActivate = nil
+        GlobalShortcutController.shared.onSyncActivate = nil
+        GlobalShortcutController.shared.onHistoryActivate = nil
+        GlobalShortcutController.shared.unregister()
     }
 
     // ── Status Item ─────────────────────────────────────────────
@@ -264,6 +326,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: .tailSyncLocaleChanged, object: nil, queue: .main) { _ in
             self.rebuildMenu()
+        }
+        NotificationCenter.default.addObserver(
+            forName: .tailSyncThemeAssetsChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.applyThemeLogo()
+        }
+        applyThemeLogo()
+    }
+
+    private func applyThemeLogo() {
+        guard let button = statusItem?.button else { return }
+        if let cachedImage = Loc.shared.themeAssetImages["logo"],
+           let image = StatusItemImagePolicy.image(from: cachedImage) {
+            button.image = image
+        } else {
+            button.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "TailSync")
         }
     }
 
@@ -574,32 +651,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, self.daemonActivityAllowed, !self.watchdogCheckRunning else { return }
                 self.watchdogCheckRunning = true
                 defer { self.watchdogCheckRunning = false }
-                let status = await ApiClient.shared.getStatus()
+                // A zero revision requests an immediate consolidated snapshot;
+                // this keeps the watchdog independent while avoiding four
+                // separate status/progress/storage/settings round trips.
+                guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: 0) else {
+                    self.consecutiveWatchdogFailures += 1
+                    if self.consecutiveWatchdogFailures >= 2 {
+                        print("[TailSync] daemon API unresponsive — restarting...")
+                        await Self.stopDaemonForRestart()
+                        guard self.daemonActivityAllowed else { return }
+                        self.launchDaemon()
+                        self.consecutiveWatchdogFailures = 0
+                    }
+                    return
+                }
+                let status = snapshot.status
                 guard self.daemonActivityAllowed else { return }
-                let transfer = await ApiClient.shared.getFileProgress()
-                guard self.daemonActivityAllowed else { return }
+                let transfer = snapshot.progress
                 if transfer != self.activeTransfer {
                     self.activeTransfer = transfer
                     self.rebuildMenu()
                 }
-                let unavailable = await ApiClient.shared.getStorageStatus()?.available == false
-                guard self.daemonActivityAllowed else { return }
+                let unavailable = snapshot.storage?.available == false
                 if unavailable != self.storageUnavailable {
                     self.storageUnavailable = unavailable
                     self.rebuildMenu()
                 }
-                if let settings = try? await ApiClient.shared.getSettings() {
+                if snapshot.syncEnabled != self.syncEnabled {
                     guard self.daemonActivityAllowed else { return }
-                    if settings.sync_enabled != self.syncEnabled {
-                        self.syncEnabled = settings.sync_enabled
-                        self.rebuildMenu()
-                    }
+                    self.syncEnabled = snapshot.syncEnabled
+                    self.rebuildMenu()
+                }
+                if !self.shortcutRegistered,
+                   let settings = try? await ApiClient.shared.getSettings() {
+                    guard self.daemonActivityAllowed else { return }
                     if !self.shortcutRegistered {
                         self.shortcutRegistered = true
                         if case .failure(let error) =
-                            GlobalShortcutController.shared.register(shortcut: settings.sync_shortcut)
+                            GlobalShortcutController.shared.register(
+                                syncShortcut: settings.sync_shortcut,
+                                historyShortcut: settings.history_shortcut
+                            )
                         {
-                            print("[TailSync] could not register sync shortcut: \(error)")
+                            print("[TailSync] could not register global shortcuts: \(error)")
                         }
                     }
                 }
@@ -646,8 +740,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             let wc = makeWindow(title: "History", content: HistoryView(),
                                 size: NSSize(width: 400, height: 600),
-                                minSize: NSSize(width: 300, height: 360))
+                                minSize: NSSize(width: 300, height: 360)) {
+                historyWC = nil
+                Task { @MainActor in
+                    HistoryPreviewWindowController.shared.attachHistoryWindow(nil)
+                }
+            }
             historyWC = wc
+        }
+        Task { @MainActor in
+            HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
         }
         NSApp.activate(ignoringOtherApps: true)
         Self.forceAccessory()
@@ -659,15 +761,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             let wc = makeWindow(title: "Settings", content: SettingsView(),
                                 size: NSSize(width: 540, height: 500),
-                                minSize: NSSize(width: 380, height: 400))
+                                minSize: NSSize(width: 380, height: 400)) {
+                settingsWC = nil
+            }
             settingsWC = wc
         }
         NSApp.activate(ignoringOtherApps: true)
         Self.forceAccessory()
     }
 
-    private static func makeWindow<V: View>(title: String, content: V,
-                                             size: NSSize, minSize: NSSize) -> NSWindowController {
+    private static func makeWindow<V: View>(
+        title: String,
+        content: V,
+        size: NSSize,
+        minSize: NSSize,
+        onClose: @escaping () -> Void
+    ) -> NSWindowController {
         let hosting = NSHostingController(rootView: content)
         let window = NSWindow(contentViewController: hosting)
         window.title = title
@@ -675,13 +784,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = true
         TailSyncWindowPolicy.configure(window)
         window.minSize = minSize
-        window.isReleasedWhenClosed = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.setFrameAutosaveName(title + "Window")
         // Set content size AFTER autosave so it overrides any restored tiny frame
         // from a stale UserDefaults entry.
         window.setContentSize(size)
-        let wc = NSWindowController(window: window)
+        let wc = TailSyncTransientWindowController(window: window, onClose: onClose)
         wc.showWindow(nil)
         return wc
     }

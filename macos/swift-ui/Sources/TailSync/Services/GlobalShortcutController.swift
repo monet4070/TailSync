@@ -211,41 +211,72 @@ enum ShortcutDisplayFormatter {
     }
 }
 
-/// Registers the sync global shortcut with Carbon's hot key API, avoiding the
-/// Accessibility permission that NSEvent global monitors would require. Only
-/// one hot key is registered at a time.
+/// Registers TailSync's global shortcuts with Carbon's hot key API, avoiding
+/// the Accessibility permission that NSEvent global monitors would require.
 final class GlobalShortcutController {
     static let shared = GlobalShortcutController()
     static let syncStateChanged = Notification.Name("TailSyncSyncStateChanged")
 
-    /// Fired on the main thread when the registered hot key is pressed.
-    var onActivate: (() -> Void)?
+    /// Fired on the main thread when a registered hot key is pressed.
+    var onSyncActivate: (() -> Void)?
+    var onHistoryActivate: (() -> Void)?
 
-    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var eventHandlerRef: EventHandlerRef?
     private var eventHandlerError: ShortcutError?
     private let hotKeySignature: UInt32 = 0x54415359 // 'TASY'
+    private let syncHotKeyID: UInt32 = 1
+    private let historyHotKeyID: UInt32 = 2
 
     private init() {
         installEventHandler()
     }
 
-    func register(shortcut: String) -> Result<Void, ShortcutError> {
+    func register(
+        syncShortcut: String,
+        historyShortcut: String
+    ) -> Result<Void, ShortcutError> {
+        if !syncShortcut.isEmpty, syncShortcut == historyShortcut {
+            return .failure(ShortcutError(
+                message: "The sync and history shortcuts must be different"
+            ))
+        }
         unregister()
-        guard !shortcut.isEmpty else { return .success(()) }
         if let eventHandlerError { return .failure(eventHandlerError) }
+        if case .failure(let error) = registerOne(
+            shortcut: syncShortcut,
+            id: syncHotKeyID
+        ) {
+            unregister()
+            return .failure(error)
+        }
+        if case .failure(let error) = registerOne(
+            shortcut: historyShortcut,
+            id: historyHotKeyID
+        ) {
+            unregister()
+            return .failure(error)
+        }
+        return .success(())
+    }
+
+    private func registerOne(
+        shortcut: String,
+        id: UInt32
+    ) -> Result<Void, ShortcutError> {
+        guard !shortcut.isEmpty else { return .success(()) }
         let parsed: ShortcutParser.Parsed
         switch ShortcutParser.parse(shortcut) {
         case .success(let value): parsed = value
         case .failure(let error):
             return .failure(ShortcutError(message: "Invalid shortcut: \(error)"))
         }
-        let id = EventHotKeyID(signature: hotKeySignature, id: 1)
+        let hotKeyID = EventHotKeyID(signature: hotKeySignature, id: id)
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
             parsed.keyCode,
             parsed.carbonModifiers,
-            id,
+            hotKeyID,
             GetApplicationEventTarget(),
             0,
             &ref
@@ -257,14 +288,13 @@ final class GlobalShortcutController {
                 )
             )
         }
-        hotKeyRef = ref
+        hotKeyRefs[id] = ref
         return .success(())
     }
 
     func unregister() {
-        guard let hotKeyRef else { return }
-        UnregisterEventHotKey(hotKeyRef)
-        self.hotKeyRef = nil
+        hotKeyRefs.values.forEach { UnregisterEventHotKey($0) }
+        hotKeyRefs.removeAll()
     }
 
     /// Apply a shortcut change as a transaction: register the next shortcut,
@@ -345,10 +375,15 @@ final class GlobalShortcutController {
             &hotKeyID
         )
         guard status == noErr,
-              hotKeyID.signature == hotKeySignature,
-              hotKeyID.id == 1 else { return }
+              hotKeyID.signature == hotKeySignature else { return }
+        let pressedID = hotKeyID.id
         DispatchQueue.main.async { [weak self] in
-            self?.onActivate?()
+            guard let self else { return }
+            switch pressedID {
+            case self.syncHotKeyID: self.onSyncActivate?()
+            case self.historyHotKeyID: self.onHistoryActivate?()
+            default: break
+            }
         }
     }
 }

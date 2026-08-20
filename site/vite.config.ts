@@ -8,8 +8,18 @@ export default defineConfig({
   server: {
     port: 5174,
     strictPort: true,
+    fs: {
+      // Allow importing the theme manifests from ../themes during dev.
+      allow: [resolve(import.meta.dirname, '..')],
+    },
   },
   build: {
     target: 'esnext',
+    rollupOptions: {
+      input: {
+        main: resolve(import.meta.dirname, 'index.html'),
+        themes: resolve(import.meta.dirname, 'themes.html'),
+      },
+    },
   },
 })

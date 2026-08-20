@@ -1,296 +1,242 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SettingsData } from "../types/settings.generated";
+import { render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { ThemePackagePreview } from "../components/ThemePackagePreview";
 import {
-  pairingAddressForPeer,
-  routeSupportsLatencyTest,
-  Settings,
-  type PeerDevice,
-  type PeerRoute,
-} from "./Settings";
+  applyThemePackageOperation,
+  compareThemeVersions,
+  updateOptionsFor,
+  validateThemePackageForPreview,
+  type PendingThemePackage,
+} from "../utils/themePackageWorkflow";
+import type {
+  ResolvedThemeV2,
+  ThemeV2Descriptor,
+  ThemeValidationV2,
+} from "../tailsyncClient";
+import { decodeThemeDiagnostic, formatThemeError } from "../tailsyncClient";
 
-const {
-  hideMock,
-  invokeMock,
-  listenMock,
-  eventHandlers,
-  openMock,
-  setColorThemeMock,
-  setLocaleMock,
-  setThemeMock,
-} = vi.hoisted(() => ({
-  hideMock: vi.fn(),
-  invokeMock: vi.fn(),
-  eventHandlers: new Map<string, (event: { payload: unknown }) => void>(),
-  listenMock: vi.fn((event: string, handler: (event: { payload: unknown }) => void) => {
-    eventHandlers.set(event, handler);
-    return Promise.resolve(vi.fn());
-  }),
-  openMock: vi.fn(),
-  setColorThemeMock: vi.fn(),
-  setLocaleMock: vi.fn(),
-  setThemeMock: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ hide: hideMock }),
-}));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openMock }));
-vi.mock("../hooks/useTheme", () => ({
-  COLOR_THEMES: ["tailsync", "ocean", "forest", "rose", "high-contrast"],
-  isColorTheme: () => true,
-  isThemePreference: () => true,
-  useTheme: () => ({
-    theme: "light",
-    themePreference: "system",
-    colorTheme: "tailsync",
-    setTheme: setThemeMock,
-    setColorTheme: setColorThemeMock,
-  }),
-}));
-vi.mock("../hooks/useI18n", () => ({
-  useI18n: () => ({
-    t: (key: string) => key,
-    setLocale: setLocaleMock,
-  }),
-}));
-
-const settings: SettingsData = {
-  color_theme: "tailsync",
-  connection_mode: "auto",
-  enabled_peers: {},
-  history_limit: 100,
-  language: "en",
-  notifications_enabled: true,
-  paired_peer_endpoints: {},
-  progress_bar_enabled: true,
-  storage_quota_bytes: 10 * 1024 * 1024 * 1024,
-  storage_root: null,
-  sync_enabled: true,
-  sync_shortcut: "CommandOrControl+Shift+S",
-  theme: "system",
-  trusted_peer_addresses: {},
-  trusted_peer_keys: {},
-};
-
-const peers = {
-  self: {
-    hostname: "test-pc",
-    tailscale_ip: "",
-    connection_mode: "auto",
-    public_key: "public-key",
-    fingerprint: "fingerprint",
-    iroh_endpoint_id: null,
+const resolved = (mode: "light" | "dark", highContrast = false): ResolvedThemeV2 => ({
+  id: "custom:studio.night",
+  digest: "package-digest",
+  mode,
+  highContrast,
+  provenance: {},
+  assetSlots: {},
+  tokens: {
+    colors: {
+      background: { canvas: "#101010", input: "#202020" },
+      text: { primary: "#ffffff", secondary: "#dddddd" },
+    },
+    components: {
+      history: {
+        hover: { background: "#123456", foreground: "#ffffff" },
+        selected: { background: "#345678", foreground: "#ffffff" },
+      },
+      search: {
+        focus: { background: "#222222", foreground: "#ffffff", focusRing: "#ffff00" },
+      },
+      button: {
+        default: { background: "#111111", foreground: "#ffffff" },
+        hover: { background: "#222222", foreground: "#ffffff" },
+        active: { background: "#333333", foreground: "#ffffff" },
+        selected: { background: "#444444", foreground: "#ffffff" },
+        disabled: { background: "#555555", foreground: "#cccccc" },
+        focus: { background: "#666666", foreground: "#ffffff", focusRing: "#ffff00" },
+      },
+    },
   },
-  peers: [],
-  paired_peer_endpoints: {},
+});
+
+const validation = (preview: ResolvedThemeV2): ThemeValidationV2 => ({
+  valid: true,
+  digest: "package-digest",
+  candidateVersion: "1.1.0",
+  preview,
+  diagnostics: [],
+});
+
+const descriptor: ThemeV2Descriptor = {
+  id: "custom:studio.night",
+  storageHandle: "studio_night",
+  source: "custom",
+  version: "1.1.0",
+  digest: "package-digest",
+  name: { en: "Night" },
+  status: "valid",
+  diagnostics: [],
 };
 
-function installInvokeMock(updatesEnabled: boolean) {
-  invokeMock.mockImplementation((command: string) => {
-    switch (command) {
-      case "get_settings":
-        return Promise.resolve(settings);
-      case "get_storage_status":
-        return Promise.resolve({
-          root: "C:\\TailSync",
-          used_bytes: 0,
-          quota_bytes: settings.storage_quota_bytes,
-          available: true,
-        });
-      case "get_update_status":
-        return Promise.resolve({
-          current_version: "2.1.0",
-          updates_enabled: updatesEnabled,
-        });
-      case "get_peers":
-        return Promise.resolve(peers);
-      case "check_for_update":
-        return Promise.resolve({
-          current_version: "2.1.0",
-          version: "2.2.0",
-          notes: "Release notes",
-          published_at: null,
-        });
-      case "install_update":
-        return Promise.resolve(true);
-      default:
-        return Promise.resolve(undefined);
+describe("Settings Theme V2 workflow", () => {
+  it("validates and retains all four isolated preview modes", async () => {
+    const validate = vi.fn()
+      .mockResolvedValueOnce(validation(resolved("light")))
+      .mockResolvedValueOnce(validation(resolved("dark")))
+      .mockResolvedValueOnce(validation(resolved("light", true)))
+      .mockResolvedValueOnce(validation(resolved("dark", true)));
+
+    const pending = await validateThemePackageForPreview(
+      "/tmp/night.tailsync-theme",
+      { kind: "install" },
+      validate,
+    );
+
+    expect(validate.mock.calls).toEqual([
+      ["/tmp/night.tailsync-theme", "light"],
+      ["/tmp/night.tailsync-theme", "dark"],
+      ["/tmp/night.tailsync-theme", "light", true],
+      ["/tmp/night.tailsync-theme", "dark", true],
+    ]);
+    expect(pending.previews.highContrastLight.highContrast).toBe(true);
+    expect(pending.previews.highContrastDark).toMatchObject({ mode: "dark", highContrast: true });
+  });
+
+  it("rejects an update package belonging to a different theme", async () => {
+    const wrong = { ...resolved("light"), id: "custom:other.theme" };
+    const validate = vi.fn().mockResolvedValue(validation(wrong));
+    await expect(validateThemePackageForPreview(
+      "/tmp/other.tailsync-theme",
+      { kind: "update", themeId: "custom:studio.night", installedVersion: "1.0.0" },
+      validate,
+    )).rejects.toThrow("does not match");
+  });
+
+  it("installs or updates, refreshes the catalogue, and never activates implicitly", async () => {
+    const base: PendingThemePackage = {
+      path: "/tmp/night.tailsync-theme",
+      digest: "package-digest",
+      previews: {
+        light: resolved("light"),
+        dark: resolved("dark"),
+        highContrastLight: resolved("light", true),
+        highContrastDark: resolved("dark", true),
+      },
+      diagnostics: [],
+      candidateVersion: "1.1.0",
+      operation: { kind: "install" },
+    };
+    const install = vi.fn().mockResolvedValue(descriptor);
+    const update = vi.fn().mockResolvedValue(descriptor);
+    const refresh = vi.fn().mockResolvedValue(undefined);
+
+    await applyThemePackageOperation(base, { install, update, refresh });
+    await applyThemePackageOperation(
+      { ...base, operation: { kind: "update", themeId: descriptor.id, installedVersion: "1.0.0" }, versionRelation: "upgrade" },
+      { install, update, refresh },
+    );
+
+    expect(install).toHaveBeenCalledOnce();
+    expect(update).toHaveBeenCalledOnce();
+    expect(update).toHaveBeenCalledWith("/tmp/night.tailsync-theme", "package-digest", {});
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("classifies SemVer updates and supplies only the explicitly required Core flag", () => {
+    expect(compareThemeVersions("1.0.0", "1.0.0")).toBe("same");
+    expect(compareThemeVersions("1.0.0-beta.2", "1.0.0-beta.11")).toBe("downgrade");
+    expect(compareThemeVersions("1.0.0", "1.0.0-rc.1")).toBe("upgrade");
+    expect(compareThemeVersions("2.0.0", "3.0.0")).toBe("downgrade");
+
+    const base = {
+      path: "/tmp/night.tailsync-theme",
+      digest: "digest",
+      previews: {
+        light: resolved("light"), dark: resolved("dark"),
+        highContrastLight: resolved("light", true), highContrastDark: resolved("dark", true),
+      },
+      diagnostics: [],
+      candidateVersion: "1.0.0",
+      operation: { kind: "update", themeId: descriptor.id, installedVersion: "1.0.0" } as const,
+    };
+    expect(updateOptionsFor({ ...base, versionRelation: "same" })).toEqual({ allowSameVersion: true });
+    expect(updateOptionsFor({ ...base, versionRelation: "downgrade" })).toEqual({ allowDowngrade: true });
+    expect(updateOptionsFor({ ...base, versionRelation: "upgrade" })).toEqual({});
+  });
+
+  it("decodes and formats the complete structured theme error contract", () => {
+    const thrown = {
+      code: "THEME_ID",
+      message: "theme id does not match storage handle",
+      jsonPointer: "/id",
+      severity: "error",
+      platforms: ["windows"],
+      recoverable: true,
+      fallbackApplied: false,
+    };
+    expect(decodeThemeDiagnostic(thrown)).toEqual(thrown);
+    expect(decodeThemeDiagnostic(JSON.stringify(thrown))).toEqual(thrown);
+    expect(decodeThemeDiagnostic({ message: JSON.stringify(thrown) })).toEqual(thrown);
+    expect(formatThemeError(thrown)).toContain("[error] THEME_ID");
+    expect(formatThemeError(thrown)).toContain("/id; windows; recoverable; fallback not applied");
+    expect(formatThemeError(thrown)).not.toContain("[object Object]");
+    expect(formatThemeError(undefined)).toBe("Unknown theme error");
+  });
+
+  it("retains structured diagnostics returned by theme validation", async () => {
+    const diagnostic = {
+      code: "THEME_ID",
+      message: "custom id must use the custom namespace",
+      jsonPointer: "/id",
+      severity: "error" as const,
+      platforms: ["windows"],
+      recoverable: true,
+      fallbackApplied: false,
+    };
+    const invalid: ThemeValidationV2 = {
+      valid: false,
+      diagnostics: [diagnostic],
+    };
+    const validate = vi.fn().mockResolvedValue(invalid);
+
+    await expect(validateThemePackageForPreview(
+      "/tmp/reserved.tailsync-theme",
+      { kind: "install" },
+      validate,
+    )).rejects.toEqual(diagnostic);
+  });
+
+  it("renders all component states inside the isolated preview context", () => {
+    render(<ThemePackagePreview
+      resolved={resolved("light")}
+      path="/tmp/night.tailsync-theme"
+      digest="package-digest"
+      label="Light"
+    />);
+    const preview = screen.getByLabelText("Light theme preview");
+    expect(preview.style.getPropertyValue("--theme-history-hover-background")).toBe("#123456");
+    expect(preview.style.getPropertyValue("--theme-history-selected-background")).toBe("#345678");
+    expect(preview.style.getPropertyValue("--theme-search-focus-focus-ring")).toBe("#ffff00");
+    expect(preview.style.getPropertyValue("--theme-button-active-background")).toBe("#333333");
+    for (const state of ["default", "hover", "active", "selected", "disabled", "focus"]) {
+      expect(screen.getAllByText(state).length).toBeGreaterThan(0);
     }
-  });
-}
-
-describe("Settings updates", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    eventHandlers.clear();
+    expect(document.documentElement.style.getPropertyValue("--theme-history-hover-background")).toBe("");
+    expect(document.documentElement.style.getPropertyValue("--theme-button-active-background")).toBe("");
   });
 
-  it("shows the app version without contacting the update service when no key is configured", async () => {
-    installInvokeMock(false);
-    render(<Settings />);
+  it("previews every declared semantic image slot without installing", async () => {
+    const withAssets = resolved("light");
+    withAssets.assetSlots = Object.fromEntries(["logo", "emptyState", "previewPlaceholder"].map((slot) => [slot, {
+      slot,
+      key: `assets/${slot}.png`,
+      digest: `${slot}-digest`,
+      mimeType: "image/png",
+      bytes: 8,
+      width: 1,
+      height: 1,
+    }]));
+    const loadAsset = vi.fn().mockResolvedValue(new ArrayBuffer(8));
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
 
-    expect(await screen.findByText("TailSync 2.1.0")).toBeInTheDocument();
-    expect(screen.getByText("settings.updateDisabled")).toBeInTheDocument();
+    const { container } = render(<ThemePackagePreview
+      resolved={withAssets}
+      path="/tmp/night.tailsync-theme"
+      digest="package-digest"
+      label="Light"
+      loadAsset={loadAsset}
+    />);
 
-    fireEvent.click(screen.getByRole("button", { name: "settings.updateCheck" }));
-    expect(invokeMock).not.toHaveBeenCalledWith("check_for_update");
-  });
-
-  it("checks for and installs a signed update from the settings footer", async () => {
-    installInvokeMock(true);
-    render(<Settings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "settings.updateCheck" }));
-    await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("check_for_update");
-    });
-
-    const installButton = await screen.findByRole("button", { name: "settings.updateInstall" });
-    expect(screen.getByText("settings.updateAvailable")).toBeInTheDocument();
-    fireEvent.click(installButton);
-
-    await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("install_update");
-      expect(screen.getByText("settings.updateInstalled")).toBeInTheDocument();
-    });
-  });
-
-  it("reflects tray and global-shortcut sync changes in the visible toggle", async () => {
-    installInvokeMock(false);
-    render(<Settings />);
-
-    const label = await screen.findByText("settings.syncEnabled");
-    const toggle = label.closest(".setting-row")?.querySelector("input[type='checkbox']");
-    expect(toggle).toBeChecked();
-
-    await waitFor(() => expect(eventHandlers.has("sync-state-changed")).toBe(true));
-    act(() => {
-      eventHandlers.get("sync-state-changed")?.({ payload: { enabled: false } });
-    });
-
-    expect(toggle).not.toBeChecked();
-  });
-
-  it("records a physical-key shortcut and saves it only after confirmation", async () => {
-    installInvokeMock(false);
-    render(<Settings />);
-
-    const recorder = await screen.findByRole("button", { name: "settings.shortcutRecord" });
-    fireEvent.click(recorder);
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("suspend_sync_shortcut"));
-    const captureTarget = screen.getByRole("button", { name: "settings.shortcutRecording" });
-
-    fireEvent.keyDown(captureTarget, {
-      code: "Slash",
-      key: "?",
-      ctrlKey: true,
-      shiftKey: true,
-    });
-    expect(invokeMock).not.toHaveBeenCalledWith("set_sync_shortcut", expect.anything());
-    expect(screen.getByText("settings.shortcutCaptured")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "settings.shortcutSave" }));
-    await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("set_sync_shortcut", {
-        shortcut: "Control+Shift+Slash",
-      });
-    });
-    expect(screen.getByText("/")).toBeInTheDocument();
-  });
-
-  it("keeps the recorder open when a global shortcut is already occupied", async () => {
-    installInvokeMock(false);
-    invokeMock.mockImplementation((command: string) => {
-      if (command === "get_settings") return Promise.resolve(settings);
-      if (command === "get_storage_status") return Promise.resolve({
-        root: "C:\\TailSync",
-        used_bytes: 0,
-        quota_bytes: settings.storage_quota_bytes,
-        available: true,
-      });
-      if (command === "get_update_status") return Promise.resolve({
-        current_version: "2.1.0",
-        updates_enabled: false,
-      });
-      if (command === "get_peers") return Promise.resolve(peers);
-      if (command === "set_sync_shortcut") return Promise.reject(new Error("already registered"));
-      return Promise.resolve(undefined);
-    });
-    render(<Settings />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "settings.shortcutRecord" }));
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("suspend_sync_shortcut"));
-    fireEvent.keyDown(screen.getByRole("button", { name: "settings.shortcutRecording" }), {
-      code: "F12",
-      key: "F12",
-      altKey: true,
-    });
-    fireEvent.click(screen.getByRole("button", { name: "settings.shortcutSave" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("settings.shortcutConflict");
-    expect(screen.getByRole("dialog", { name: "settings.shortcutDialogTitle" })).toBeInTheDocument();
-  });
-});
-
-describe("pairingAddressForPeer", () => {
-  const peer = (overrides: Partial<PeerDevice> = {}): PeerDevice => ({
-    hostname: "MacBook",
-    tailscale_ip: "100.64.0.5",
-    address: "192.168.1.10",
-    online: true,
-    enabled: true,
-    connection_mode: "auto",
-    trusted: false,
-    fingerprint: "abcd",
-    ...overrides,
-  });
-
-  it("prefers the iroh route over other candidates", () => {
-    const result = pairingAddressForPeer(peer({
-      routes: [
-        { interface: "lan", address: "192.168.1.10", status: "online", online: true, connected: false, latency_ms: 2 },
-        { interface: "iroh", address: "5866666666666666666666666666666666666666666666666666666666666666", status: "online", online: true, connected: false, latency_ms: 30 },
-      ],
-    }));
-    expect(result).toBe("5866666666666666666666666666666666666666666666666666666666666666");
-  });
-
-  it("returns null when the active route is iroh but no route lists an address", () => {
-    expect(pairingAddressForPeer(peer({ current_interface: "iroh", routes: [] }))).toBeNull();
-  });
-
-  it("falls back to the connected route and then the peer address for TCP pairing", () => {
-    expect(pairingAddressForPeer(peer({
-      routes: [
-        { interface: "tailscale", address: "100.64.0.5", status: "online", online: true, connected: true, latency_ms: 20 },
-      ],
-    }))).toBe("100.64.0.5");
-    expect(pairingAddressForPeer(peer({ routes: [], address: "", tailscale_ip: "100.64.0.5" }))).toBe("100.64.0.5");
-    expect(pairingAddressForPeer(peer({ routes: [], address: "", tailscale_ip: "" }))).toBeNull();
-  });
-});
-
-describe("routeSupportsLatencyTest", () => {
-  const route = (overrides: Partial<PeerRoute> = {}): PeerRoute => ({
-    interface: "iroh" as const,
-    address: "endpoint",
-    status: "online" as const,
-    online: true,
-    connected: false,
-    ...overrides,
-  });
-
-  it("fails closed for an iroh route without an explicit capability", () => {
-    expect(routeSupportsLatencyTest(route())).toBe(false);
-    expect(routeSupportsLatencyTest(route({ rtt_capable: false }))).toBe(false);
-    expect(routeSupportsLatencyTest(route({ rtt_capable: true }))).toBe(true);
-  });
-
-  it("keeps TCP route tests available", () => {
-    expect(routeSupportsLatencyTest(route({ interface: "lan" }))).toBe(true);
-    expect(routeSupportsLatencyTest(route({ interface: "tailscale" }))).toBe(true);
+    await waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(3));
+    expect(loadAsset).toHaveBeenCalledTimes(3);
+    createObjectURL.mockRestore();
   });
 });

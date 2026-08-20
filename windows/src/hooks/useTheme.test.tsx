@@ -1,91 +1,88 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isColorTheme, isThemePreference, useTheme } from "./useTheme";
+import { useTheme } from "./useTheme";
 
-class MockMediaQueryList extends EventTarget {
-  matches = false;
-  readonly media = "(prefers-color-scheme: dark)";
-  onchange: ((event: MediaQueryListEvent) => void) | null = null;
+const state = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), resolve: vi.fn(), handlers: new Map<string, (event: { payload: any }) => void>() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn((name: string, handler: (event: { payload: any }) => void) => { state.handlers.set(name, handler); return Promise.resolve(vi.fn()); }) }));
+vi.mock("../tailsyncClient", () => ({ getLocalThemeSettingsV2: state.get, setLocalThemeSettingsV2: state.set, resolveThemeV2: state.resolve }));
 
-  addListener(listener: (event: MediaQueryListEvent) => void) {
-    this.addEventListener("change", listener as EventListener);
-  }
-
-  removeListener(listener: (event: MediaQueryListEvent) => void) {
-    this.removeEventListener("change", listener as EventListener);
-  }
-
-  setMatches(matches: boolean) {
-    this.matches = matches;
-    this.dispatchEvent(new Event("change"));
-  }
-}
-
-describe("useTheme", () => {
-  let mediaQuery: MockMediaQueryList;
-
+describe("useTheme V2 local settings", () => {
   beforeEach(() => {
-    localStorage.clear();
-    mediaQuery = new MockMediaQueryList();
-    vi.stubGlobal("matchMedia", vi.fn(() => mediaQuery));
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }) });
+    localStorage.clear(); state.handlers.clear(); state.set.mockReset();
+    state.get.mockResolvedValue({ activeThemeId: "custom:midnight", appearance: "dark", highContrast: false });
+    state.resolve.mockResolvedValue({ tokens: { colors: { background: { canvas: "#111111", surface: "#222222" }, text: { primary: "#fff", secondary: "#aaa" }, accent: { default: "#f00" } } } });
+    document.body.innerHTML = '<div id="root"><div class="app"></div></div>';
   });
 
-  it("validates persisted theme identifiers", () => {
-    expect(isThemePreference("system")).toBe(true);
-    expect(isThemePreference("sepia")).toBe(false);
-    expect(isColorTheme("high-contrast")).toBe(true);
-    expect(isColorTheme("unknown")).toBe(false);
-  });
-
-  it("ignores invalid persisted values", () => {
-    localStorage.setItem("tailsync-theme", "sepia");
-    localStorage.setItem("tailsync-color-theme", "unknown");
-
+  it("starts from Core local selection, never localStorage or synced settings", async () => {
+    localStorage.setItem("tailsync-color-theme", "rose");
     const { result } = renderHook(() => useTheme());
-
-    expect(result.current.themePreference).toBe("system");
-    expect(result.current.theme).toBe("light");
-    expect(result.current.colorTheme).toBe("tailsync");
-  });
-
-  it("persists explicit appearance changes", () => {
-    const { result } = renderHook(() => useTheme());
-
-    act(() => {
-      result.current.setTheme("dark");
-      result.current.setColorTheme("rose");
-    });
-
-    expect(result.current.theme).toBe("dark");
-    expect(result.current.colorTheme).toBe("rose");
-    expect(localStorage.getItem("tailsync-theme")).toBe("dark");
-    expect(localStorage.getItem("tailsync-color-theme")).toBe("rose");
-  });
-
-  it("tracks system appearance changes in system mode", () => {
-    const { result } = renderHook(() => useTheme());
-
-    act(() => mediaQuery.setMatches(true));
-
-    expect(result.current.theme).toBe("dark");
-  });
-
-  it("accepts valid appearance changes from another window", () => {
-    const { result } = renderHook(() => useTheme());
-
-    act(() => {
-      window.dispatchEvent(new StorageEvent("storage", {
-        key: "tailsync-theme",
-        newValue: "dark",
-      }));
-      window.dispatchEvent(new StorageEvent("storage", {
-        key: "tailsync-color-theme",
-        newValue: "forest",
-      }));
-    });
-
+    await waitFor(() => expect(result.current.colorTheme).toBe("custom:midnight"));
     expect(result.current.themePreference).toBe("dark");
-    expect(result.current.theme).toBe("dark");
-    expect(result.current.colorTheme).toBe("forest");
+    expect(state.resolve).toHaveBeenCalledWith("custom:midnight", "dark");
+  });
+
+  it("applies theme_changed in every open window", async () => {
+    const { result } = renderHook(() => useTheme());
+    await waitFor(() => expect(state.handlers.get("theme_changed")).toBeDefined());
+    act(() => state.handlers.get("theme_changed")!({ payload: { activeThemeId: "builtin:canvas@1", appearance: "light", highContrast: false } }));
+    expect(result.current.colorTheme).toBe("builtin:canvas@1");
+    expect(result.current.themePreference).toBe("light");
+  });
+
+  it("converges failed resolution to persisted Canvas", async () => {
+    state.resolve.mockRejectedValueOnce(new Error("bad package"));
+    const { result } = renderHook(() => useTheme());
+    await waitFor(() => expect(result.current.colorTheme).toBe("builtin:canvas@1"));
+    expect(state.set).toHaveBeenCalledWith(expect.objectContaining({ activeThemeId: "builtin:canvas@1" }));
+  });
+
+  it("passes a persisted high-contrast preference to the Core resolver", async () => {
+    state.get.mockResolvedValueOnce({ activeThemeId: "custom:midnight", appearance: "dark", highContrast: true });
+    renderHook(() => useTheme());
+    await waitFor(() => expect(state.resolve).toHaveBeenCalledWith("custom:midnight", "dark", true));
+  });
+
+  it("updates the history font variable when the active theme changes", async () => {
+    state.get.mockResolvedValue({ activeThemeId: "builtin:canvas@1", appearance: "light", highContrast: false });
+    state.resolve.mockImplementation((themeId: string) => Promise.resolve({
+      tokens: {
+        typography: {
+          display: { families: [themeId === "builtin:flux@1" ? "Flux Display" : "Canvas Display"] },
+          reading: { families: ["Reading"] },
+        },
+      },
+    }));
+
+    renderHook(() => useTheme());
+    await waitFor(() => expect(document.querySelector<HTMLElement>(".app")?.style.getPropertyValue("--font-history"))
+      .toBe("var(--font-display)"));
+
+    act(() => state.handlers.get("theme_changed")!({
+      payload: { activeThemeId: "builtin:flux@1", appearance: "light", highContrast: false },
+    }));
+    await waitFor(() => expect(document.querySelector<HTMLElement>(".app")?.style.getPropertyValue("--font-history"))
+      .toBe("var(--font-content)"));
+  });
+
+  it("keeps the transparent document backing surface across theme changes", async () => {
+    state.resolve.mockImplementation((themeId: string) => Promise.resolve({
+      tokens: { colors: { background: { canvas: themeId === "builtin:canvas@1" ? "#faf4f8" : "#111111" } } },
+    }));
+
+    renderHook(() => useTheme());
+    await waitFor(() => expect(document.body.style.backgroundColor).toBe("transparent"));
+    expect(document.documentElement.style.backgroundColor).toBe("transparent");
+    expect(document.getElementById("root")?.style.backgroundColor).toBe("transparent");
+    expect(document.querySelector<HTMLElement>(".app")?.style.getPropertyValue("--bg-window")).toBe("#111111");
+
+    act(() => state.handlers.get("theme_changed")!({
+      payload: { activeThemeId: "builtin:canvas@1", appearance: "light", highContrast: false },
+    }));
+    await waitFor(() => expect(document.body.style.backgroundColor).toBe("transparent"));
+    expect(document.documentElement.style.backgroundColor).toBe("transparent");
+    expect(document.getElementById("root")?.style.backgroundColor).toBe("transparent");
+    expect(document.querySelector<HTMLElement>(".app")?.style.getPropertyValue("--bg-window")).toBe("#faf4f8");
   });
 });

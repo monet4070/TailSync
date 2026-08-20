@@ -82,10 +82,9 @@ pub async fn request_peer_refresh_and_wait() -> Result<(), String> {
 
 pub async fn peer_cache_refresh_loop(
     settings: Arc<Mutex<crypto::Settings>>,
-    app_handle: tauri::AppHandle,
+    app_handle: Option<tauri::AppHandle>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    use tauri::Emitter;
     loop {
         if *shutdown.borrow() {
             return;
@@ -104,7 +103,10 @@ pub async fn peer_cache_refresh_loop(
         peer_refresh_generation().send_modify(|generation| {
             *generation = generation.wrapping_add(1);
         });
-        let _ = app_handle.emit("peer-health-changed", ());
+        if let Some(app_handle) = &app_handle {
+            use tauri::Emitter;
+            let _ = app_handle.emit("peer-health-changed", ());
+        }
         tokio::select! {
             _ = tokio::time::sleep(PEER_CACHE_REFRESH_INTERVAL) => {}
             _ = PEER_REFRESH_NOTIFY.get_or_init(Notify::new).notified() => {}

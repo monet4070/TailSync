@@ -149,7 +149,7 @@ export function HistoryIntelligence() {
       </div>
 
       <div className="history-intro" data-reveal>
-        <div className="section-marker section-marker-light">
+        <div className="section-marker">
           <span>04</span>
           <small>SMART HISTORY / V4</small>
         </div>

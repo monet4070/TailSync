@@ -110,6 +110,34 @@ pub(crate) fn peer_snapshot_data(
     })
 }
 
+fn daemon_status_data() -> Value {
+    serde_json::json!({
+        "tcp_server_healthy": network::TCP_SERVER_HEALTHY.load(Ordering::Acquire),
+        "clipboard_monitor_healthy": crate::clipboard::monitor_is_healthy(),
+        "clipboard_monitor_failures": crate::clipboard::monitor_failure_count(),
+        "active_routes": network::active_routes_snapshot(),
+    })
+}
+
+async fn runtime_snapshot_data(state: &ApiState, since_notification_id: Option<u64>) -> Value {
+    // A change during snapshot assembly remains observable: the response keeps
+    // the starting revision, so the client's next wait returns immediately.
+    let revision = get_runtime_revision();
+    let sync_enabled = state.settings.lock().await.sync_enabled;
+    let storage = state.db.lock().await.storage_status();
+    serde_json::json!({
+        "revision": revision,
+        "history_version": get_clipboard_version(),
+        "progress": get_file_progress(),
+        "storage": storage,
+        "sync_enabled": sync_enabled,
+        "status": daemon_status_data(),
+        "notifications": since_notification_id
+            .map(get_runtime_notifications_since)
+            .unwrap_or_default(),
+    })
+}
+
 pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
     match req.cmd.as_str() {
         "ping" => Response {
@@ -118,41 +146,68 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             error: None,
         },
 
+        "wait_runtime_snapshot" => {
+            let since = req.since_revision.unwrap_or_default();
+            let wait_ms = req.wait_ms.unwrap_or(2_500).clamp(50, 15_000);
+            let _ = wait_for_runtime_revision(since, Duration::from_millis(wait_ms)).await;
+            Response {
+                ok: true,
+                data: Some(runtime_snapshot_data(state, req.since_notification_id).await),
+                error: None,
+            }
+        }
+
         "check_for_update" => {
-            let result = match crate::updates::app_handle() {
-                Ok(handle) => crate::updates::check_for_update(handle).await,
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(update) => Response {
-                    ok: true,
-                    data: Some(serde_json::to_value(update).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Err(error) => Response {
+            #[cfg(target_os = "macos")]
+            {
+                let result = crate::updates::check_for_update_headless().await;
+                match result {
+                    Ok(update) => Response {
+                        ok: true,
+                        data: Some(serde_json::to_value(update).unwrap_or(Value::Null)),
+                        error: None,
+                    },
+                    Err(error) => Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error),
+                    },
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
-                },
+                    error: Some("Headless updates are only available on macOS".to_string()),
+                }
             }
         }
 
         "install_update" => {
-            let result = match crate::updates::app_handle() {
-                Ok(handle) => crate::updates::install_available_update(handle).await,
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(installed) => Response {
-                    ok: true,
-                    data: Some(serde_json::json!({ "installed": installed })),
-                    error: None,
-                },
-                Err(error) => Response {
+            #[cfg(target_os = "macos")]
+            {
+                let result = crate::updates::install_available_update_headless().await;
+                match result {
+                    Ok(installed) => Response {
+                        ok: true,
+                        data: Some(serde_json::json!({ "installed": installed })),
+                        error: None,
+                    },
+                    Err(error) => Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error),
+                    },
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
-                },
+                    error: Some("Headless updates are only available on macOS".to_string()),
+                }
             }
         }
 
@@ -256,12 +311,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         "get_status" => Response {
             ok: true,
-            data: Some(serde_json::json!({
-                "tcp_server_healthy": network::TCP_SERVER_HEALTHY.load(Ordering::Acquire),
-                "clipboard_monitor_healthy": crate::clipboard::monitor_is_healthy(),
-                "clipboard_monitor_failures": crate::clipboard::monitor_failure_count(),
-                "active_routes": network::active_routes_snapshot(),
-            })),
+            data: Some(daemon_status_data()),
             error: None,
         },
 
@@ -311,7 +361,12 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "confirm_pairing" => match state.pairing.confirm().await {
+        "confirm_pairing" => match state
+            .pairing
+            .confirm()
+            .await
+            .map_err(|error| error.to_string())
+        {
             Ok(status) => Response {
                 ok: true,
                 data: Some(serde_json::to_value(status).unwrap_or_default()),
@@ -355,6 +410,65 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     data: None,
                     error: Some(e),
                 },
+            }
+        }
+
+        "get_preview_data" => {
+            let Some(id) = req.id else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing id".into()),
+                };
+            };
+
+            // Keep the decrypted payload in memory only.  The core preview
+            // accessor deliberately avoids materialising file entries to a
+            // plaintext path, which is important for the macOS Quick Look
+            // caller and for text/image previews alike.
+            let db = state.db.lock().await;
+            let preview_id = match req.batch_id.as_deref() {
+                Some(batch_id) => db
+                    .get_preview_batch_navigation(batch_id, id)
+                    .map(|navigation| navigation.first_entry_id),
+                None => Ok(id),
+            };
+            let result = preview_id.and_then(|preview_id| {
+                let metadata = db.get_preview_metadata(preview_id)?;
+                let payload = db.get_preview_payload(preview_id)?;
+                Ok((metadata, payload))
+            });
+            drop(db);
+
+            let result = result.map(|(metadata, payload)| {
+                use base64::Engine;
+                serde_json::json!({
+                    "entry_id": metadata.entry_id,
+                    "kind": payload.kind,
+                    "name": payload.name,
+                    "size_bytes": payload.size_bytes,
+                    "batch": metadata.batch,
+                    "data_b64": base64::engine::general_purpose::STANDARD
+                        .encode(payload.data),
+                })
+            });
+
+            match result {
+                Ok(data) => Response {
+                    ok: true,
+                    data: Some(data),
+                    error: None,
+                },
+                Err(error) => {
+                    let failure = db::PreviewErrorInfo::from(error);
+                    let encoded =
+                        serde_json::to_string(&failure).unwrap_or_else(|_| failure.message.clone());
+                    Response {
+                        ok: false,
+                        data: None,
+                        error: Some(encoded),
+                    }
+                }
             }
         }
 
@@ -517,6 +631,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 data: Some(serde_json::json!({
                     "enabled": settings.sync_enabled,
                     "shortcut": settings.sync_shortcut,
+                    "history_shortcut": settings.history_shortcut,
                 })),
                 error: None,
             }
@@ -530,6 +645,9 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .await
                 .set_sync_enabled(enabled)
                 .map_err(|error| error.to_string());
+            if result.is_ok() {
+                bump_runtime_revision();
+            }
             Response {
                 ok: result.is_ok(),
                 data: None,
@@ -541,11 +659,15 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             let mut settings = state.settings.lock().await;
             let enabled = !settings.sync_enabled;
             match settings.set_sync_enabled(enabled) {
-                Ok(()) => Response {
-                    ok: true,
-                    data: Some(serde_json::json!({ "enabled": enabled })),
-                    error: None,
-                },
+                Ok(()) => {
+                    drop(settings);
+                    bump_runtime_revision();
+                    Response {
+                        ok: true,
+                        data: Some(serde_json::json!({ "enabled": enabled })),
+                        error: None,
+                    }
+                }
                 Err(error) => Response {
                     ok: false,
                     data: None,
@@ -562,6 +684,27 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .await
                 .set_sync_shortcut(&shortcut)
                 .map_err(|error| error.to_string());
+            if result.is_ok() {
+                bump_runtime_revision();
+            }
+            Response {
+                ok: result.is_ok(),
+                data: None,
+                error: result.err(),
+            }
+        }
+
+        "set_history_shortcut" => {
+            let shortcut = req.shortcut.unwrap_or_default();
+            let result = state
+                .settings
+                .lock()
+                .await
+                .set_history_shortcut(&shortcut)
+                .map_err(|error| error.to_string());
+            if result.is_ok() {
+                bump_runtime_revision();
+            }
             Response {
                 ok: result.is_ok(),
                 data: None,
@@ -578,54 +721,43 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 };
             };
             match serde_json::from_value::<crate::crypto::Settings>(settings_json) {
-                Ok(requested_settings) => {
-                    let mut settings = state.settings.lock().await;
-                    let mut new_settings = match settings.prepare_user_update(requested_settings) {
-                        Ok(new_settings) => new_settings,
-                        Err(error) => {
-                            return Response {
-                                ok: false,
-                                data: None,
-                                error: Some(error),
-                            };
-                        }
-                    };
+                Ok(mut requested_settings) => {
                     // The shortcut is registered in the GUI process, so it can
                     // only be changed through the dedicated set_sync_shortcut
                     // route; ignore any value coming from generic settings.
-                    new_settings.sync_shortcut = settings.sync_shortcut.clone();
-                    let mode_changed = settings.connection_mode != new_settings.connection_mode;
-                    let connection_mode = new_settings.connection_mode.clone();
-                    let limit = new_settings.history_limit as i64;
-                    let quota = new_settings.storage_quota_bytes;
-                    if let Err(e) = new_settings.save() {
-                        return Response {
-                            ok: false,
-                            data: None,
-                            error: Some(e.to_string()),
-                        };
-                    }
-                    *settings = new_settings;
-                    drop(settings);
-                    if mode_changed {
-                        state.pool.lock().await.disconnect_all();
-                        network::clear_peer_cache().await;
-                        network::refresh_iroh_for_mode(&connection_mode).await;
-                    }
-                    let mut db = state.db.lock().await;
-                    db.set_max_history(limit);
-                    db.set_storage_quota(quota);
-                    if let Err(error) = db.enforce_limits() {
-                        return Response {
+                    requested_settings.sync_shortcut =
+                        state.settings.lock().await.sync_shortcut.clone();
+                    requested_settings.history_shortcut =
+                        state.settings.lock().await.history_shortcut.clone();
+                    match crate::crypto::apply_settings_update(
+                        &state.settings,
+                        &state.db,
+                        requested_settings,
+                        &|settings: &crate::crypto::Settings| {
+                            settings.save().map_err(|error| error.to_string())
+                        },
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => {
+                            if outcome.mode_changed {
+                                state.pool.lock().await.disconnect_all();
+                                network::clear_peer_cache().await;
+                                network::refresh_iroh_for_mode(&outcome.connection_mode).await;
+                            }
+                            bump_runtime_revision();
+                            Response {
+                                ok: true,
+                                data: None,
+                                error: None,
+                            }
+                        }
+                        Err(error) => Response {
                             ok: false,
                             data: None,
                             error: Some(error.to_string()),
-                        };
-                    }
-                    Response {
-                        ok: true,
-                        data: None,
-                        error: None,
+                        },
                     }
                 }
                 Err(e) => Response {
@@ -644,76 +776,50 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     error: Some("missing parent".into()),
                 };
             };
-            let wait_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-            while has_active_file_progress() {
-                if tokio::time::Instant::now() >= wait_deadline {
-                    return Response {
-                        ok: false,
-                        data: None,
-                        error: Some("Timed out waiting for active file transfers to finish".into()),
-                    };
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-            let previous_storage_root = state.settings.lock().await.storage_root.clone();
-            let database = state.db.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                database
-                    .blocking_lock()
-                    .migrate_storage_parent(std::path::Path::new(&parent))
-                    .map_err(|error| error.to_string())
-            })
+            let parent = std::path::PathBuf::from(parent);
+            match db::migrate_storage_with_rollback(
+                &state.db,
+                &state.settings,
+                &parent,
+                db::StorageMigrationHooks {
+                    wait_timeout: std::time::Duration::from_secs(60),
+                    has_active_transfers: &has_active_file_progress,
+                    notify: None,
+                    persist_settings: &|settings: &crate::crypto::Settings| {
+                        settings.save().map_err(|error| error.to_string())
+                    },
+                },
+            )
             .await
-            .map_err(|error| error.to_string())
-            .and_then(|result| result);
-            match result {
+            {
                 Ok(result) => {
-                    let mut settings = state.settings.lock().await;
-                    settings.storage_root = Some(result.new_root.clone());
-                    match settings.save().map_err(|error| error.to_string()) {
-                        Ok(()) => Response {
-                            ok: true,
-                            data: serde_json::to_value(result).ok(),
-                            error: None,
-                        },
-                        Err(error) => {
-                            settings.storage_root = previous_storage_root;
-                            drop(settings);
-                            let old_root = std::path::PathBuf::from(&result.old_root);
-                            let database = state.db.clone();
-                            let rollback = tokio::task::spawn_blocking(move || {
-                                database
-                                    .blocking_lock()
-                                    .reopen_storage_at(&old_root)
-                                    .map_err(|error| error.to_string())
-                            })
-                            .await
-                            .map_err(|join_error| join_error.to_string())
-                            .and_then(|result| result);
-                            Response {
-                                ok: false,
-                                data: None,
-                                error: Some(match rollback {
-                                    Ok(()) => {
-                                        let _ = db::delete_old_storage(std::path::Path::new(
-                                            &result.new_root,
-                                        ));
-                                        format!(
-                                            "Could not save the new storage location; TailSync returned to the old location: {error}"
-                                        )
-                                    }
-                                    Err(rollback_error) => format!(
-                                        "Could not save the new storage location ({error}); rollback also failed: {rollback_error}"
-                                    ),
-                                }),
-                            }
-                        }
+                    bump_runtime_revision();
+                    Response {
+                        ok: true,
+                        data: serde_json::to_value(result).ok(),
+                        error: None,
                     }
                 }
-                Err(error) => Response {
+                Err(failure) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(match failure {
+                        db::StorageMigrationFailure::TimedOutWaitingForTransfers => {
+                            "Timed out waiting for active file transfers to finish".to_string()
+                        }
+                        db::StorageMigrationFailure::Migrate(error) => error,
+                        db::StorageMigrationFailure::SaveFailedAfterRollback { save_error } => {
+                            format!(
+                                "Could not save the new storage location; TailSync returned to the old location: {save_error}"
+                            )
+                        }
+                        db::StorageMigrationFailure::RollbackAlsoFailed {
+                            save_error,
+                            rollback_error,
+                        } => format!(
+                            "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
+                        ),
+                    }),
                 },
             }
         }
@@ -823,68 +929,32 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 .address
                 .as_deref()
                 .filter(|value| !value.trim().is_empty());
-            if hostname.is_empty() || hostname.len() > 255 {
-                return Response {
-                    ok: false,
-                    data: None,
-                    error: Some("invalid hostname".into()),
-                };
-            }
-            let public_key = match identity::canonical_public_key(public_key) {
-                Ok(key) => key,
-                Err(error) => {
-                    return Response {
-                        ok: false,
-                        data: None,
-                        error: Some(error),
-                    }
+            let result = identity::trust_peer(
+                &state.identity,
+                &state.settings,
+                &|settings: &crate::crypto::Settings| {
+                    settings.save().map_err(|error| error.to_string())
+                },
+                hostname,
+                public_key,
+                address,
+            )
+            .await
+            .map_err(|failure| match failure {
+                identity::TrustPeerFailure::InvalidHostname => "invalid hostname".to_string(),
+                identity::TrustPeerFailure::SelfPairing => {
+                    "cannot pair this device with itself".to_string()
                 }
-            };
-            if public_key == state.identity.public_key_base64() {
-                return Response {
-                    ok: false,
-                    data: None,
-                    error: Some("cannot pair this device with itself".into()),
-                };
-            }
-            let decoded = match identity::decode_public_key(&public_key) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    return Response {
-                        ok: false,
-                        data: None,
-                        error: Some(error),
-                    }
-                }
-            };
-            let fingerprint = identity::fingerprint(&decoded);
-            let result = {
-                let mut settings = state.settings.lock().await;
-                let mode = match (settings.connection_mode.as_str(), req.address.as_deref()) {
-                    ("auto", Some(address)) => match network::infer_interface(address) {
-                        Ok(interface) => interface.as_str().to_string(),
-                        Err(error) => {
-                            return Response {
-                                ok: false,
-                                data: None,
-                                error: Some(error),
-                            }
-                        }
-                    },
-                    (mode, _) => network::mode_interface(mode)
-                        .map(|interface| interface.as_str().to_string())
-                        .unwrap_or_else(|| "lan".to_string()),
-                };
-                settings
-                    .trust_peer(hostname, &public_key, &mode, address)
-                    .map_err(|error| error.to_string())
-            };
+                identity::TrustPeerFailure::Key(error)
+                | identity::TrustPeerFailure::Interface(error)
+                | identity::TrustPeerFailure::Trust(error) => error,
+            });
             if result.is_ok() {
                 state.pool.lock().await.disconnect_hostname(hostname);
                 network::clear_protocol_compatibility_error(hostname);
             }
             match result {
-                Ok(()) => Response {
+                Ok(fingerprint) => Response {
                     ok: true,
                     data: Some(serde_json::json!({ "fingerprint": fingerprint })),
                     error: None,
@@ -1089,6 +1159,385 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     ok: false,
                     data: None,
                     error: Some(e.to_string()),
+                },
+            }
+        }
+
+        "list_themes_v2" => Response {
+            ok: true,
+            data: serde_json::to_value(tailsync_core::themes_v2::list_themes_v2()).ok(),
+            error: None,
+        },
+
+        "get_local_theme_settings" => Response {
+            ok: true,
+            data: serde_json::to_value(tailsync_core::themes_v2::get_local_theme_settings()).ok(),
+            error: None,
+        },
+
+        "set_local_theme_settings" => {
+            let result = req
+                .settings
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_SETTINGS".into(),
+                    message: "missing settings".into(),
+                    json_pointer: "/settings".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(|value| {
+                    serde_json::from_value(value).map_err(|error| {
+                        tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_SETTINGS".into(),
+                            message: error.to_string(),
+                            json_pointer: "/settings".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        }
+                    })
+                })
+                .and_then(tailsync_core::themes_v2::set_local_theme_settings);
+            match result {
+                Ok(()) => Response {
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "validate_theme" => {
+            let result = req
+                .path
+                .as_deref()
+                .ok_or_else(|| "missing path".to_string())
+                .and_then(|path| std::fs::read(path).map_err(|error| error.to_string()))
+                .map(|bytes| {
+                    tailsync_core::themes_v2::validate_theme_for_platform(
+                        &bytes,
+                        req.mode.as_deref().unwrap_or("light"),
+                        "macos",
+                        req.high_contrast.unwrap_or(false),
+                    )
+                });
+            match result {
+                Ok(value) => Response {
+                    ok: true,
+                    data: serde_json::to_value(value).ok(),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(
+                        serde_json::to_value(tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_IO".into(),
+                            message: error.clone(),
+                            json_pointer: "/path".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })
+                        .unwrap_or(Value::Null),
+                    ),
+                    error: Some(error),
+                },
+            }
+        }
+
+        "install_theme" | "update_theme" => {
+            let result: Result<
+                tailsync_core::themes_v2::ThemeDescriptor,
+                tailsync_core::themes_v2::ThemeError,
+            > = (|| {
+                let path =
+                    req.path
+                        .as_deref()
+                        .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_IO".into(),
+                            message: "missing path".into(),
+                            json_pointer: "/path".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })?;
+                let digest = req.expected_digest.as_deref().ok_or_else(|| {
+                    tailsync_core::themes_v2::ThemeError {
+                        code: "THEME_DIGEST".into(),
+                        message: "missing expected digest".into(),
+                        json_pointer: "/expectedDigest".into(),
+                        platforms: vec!["macos".into()],
+                        severity: "error".into(),
+                        recoverable: true,
+                        fallback_applied: false,
+                    }
+                })?;
+                let bytes =
+                    std::fs::read(path).map_err(|e| tailsync_core::themes_v2::ThemeError {
+                        code: "THEME_IO".into(),
+                        message: e.to_string(),
+                        json_pointer: "/path".into(),
+                        platforms: vec!["macos".into()],
+                        severity: "error".into(),
+                        recoverable: true,
+                        fallback_applied: false,
+                    })?;
+                if req.cmd == "install_theme" {
+                    tailsync_core::themes_v2::install_theme(&bytes, digest)
+                } else {
+                    let options = req
+                        .options
+                        .clone()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|e| tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_OPTIONS".into(),
+                            message: e.to_string(),
+                            json_pointer: "/options".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })?
+                        .unwrap_or_default();
+                    tailsync_core::themes_v2::update_theme(&bytes, digest, options)
+                }
+            })();
+            match result {
+                Ok(value) => Response {
+                    ok: true,
+                    data: serde_json::to_value(value).ok(),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "rollback_theme" => {
+            let result = req
+                .theme_id
+                .as_deref()
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_ID".into(),
+                    message: "missing theme id".into(),
+                    json_pointer: "/themeId".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(tailsync_core::themes_v2::rollback_theme);
+            match result {
+                Ok(value) => Response {
+                    ok: true,
+                    data: serde_json::to_value(value).ok(),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "delete_theme_v2" => {
+            let result = if let Some(handle) = req.storage_handle.as_deref() {
+                tailsync_core::themes_v2::delete_theme_by_handle_for_theme(
+                    handle,
+                    req.theme_id.as_deref().unwrap_or(""),
+                )
+            } else if let Some(id) = req.theme_id.as_deref() {
+                tailsync_core::themes_v2::delete_theme(id)
+            } else {
+                Err(tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_ID".into(),
+                    message: "missing theme_id or storage_handle".into(),
+                    json_pointer: "".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+            };
+            match result {
+                Ok(()) => Response {
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "resolve_theme" => {
+            let theme_id = req
+                .theme_id
+                .as_deref()
+                .unwrap_or(tailsync_core::themes_v2::CANVAS_ID);
+            let mode = req.mode.as_deref().unwrap_or("light");
+            match tailsync_core::themes_v2::resolve_theme(
+                theme_id,
+                mode,
+                "macos",
+                req.high_contrast.unwrap_or(false),
+            ) {
+                Ok(theme) => Response {
+                    ok: true,
+                    data: serde_json::to_value(theme).ok(),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "get_theme_asset_slot" => {
+            use base64::Engine;
+            let result = req
+                .theme_id
+                .as_deref()
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_ID".into(),
+                    message: "missing theme id".into(),
+                    json_pointer: "/themeId".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(|id| {
+                    req.expected_digest
+                        .as_deref()
+                        .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_DIGEST".into(),
+                            message: "missing theme digest".into(),
+                            json_pointer: "/digest".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })
+                        .map(|digest| (id, digest))
+                })
+                .and_then(|(id, digest)| {
+                    req.asset_slot
+                        .as_deref()
+                        .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_ASSET_SLOT".into(),
+                            message: "missing asset slot".into(),
+                            json_pointer: "/slot".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        })
+                        .and_then(|slot| {
+                            tailsync_core::themes_v2::get_theme_asset_slot(id, digest, slot)
+                        })
+                });
+            match result {
+                Ok((descriptor, bytes)) => Response {
+                    ok: true,
+                    data: Some(
+                        serde_json::json!({"descriptor": descriptor, "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes)}),
+                    ),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "preview_theme_asset_slot" => {
+            use base64::Engine;
+            let result: Result<Vec<u8>, tailsync_core::themes_v2::ThemeError> = req
+                .path
+                .as_deref()
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_PATH".into(),
+                    message: "missing path".into(),
+                    json_pointer: "/path".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(|path| {
+                    std::fs::read(path).map_err(|error| tailsync_core::themes_v2::ThemeError {
+                        code: "THEME_IO".into(),
+                        message: error.to_string(),
+                        json_pointer: "/path".into(),
+                        platforms: vec!["macos".into()],
+                        severity: "error".into(),
+                        recoverable: true,
+                        fallback_applied: false,
+                    })
+                })
+                .and_then(|bytes| {
+                    let digest = req.expected_digest.as_deref().ok_or_else(|| {
+                        tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_DIGEST".into(),
+                            message: "missing digest".into(),
+                            json_pointer: "/digest".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        }
+                    })?;
+                    let slot = req.asset_slot.as_deref().ok_or_else(|| {
+                        tailsync_core::themes_v2::ThemeError {
+                            code: "THEME_ASSET_SLOT".into(),
+                            message: "missing asset slot".into(),
+                            json_pointer: "/slot".into(),
+                            platforms: vec!["macos".into()],
+                            severity: "error".into(),
+                            recoverable: true,
+                            fallback_applied: false,
+                        }
+                    })?;
+                    tailsync_core::themes_v2::get_theme_asset_slot_from_package(
+                        &bytes, digest, slot,
+                    )
+                    .map(|(_descriptor, asset)| asset)
+                });
+            match result {
+                Ok(bytes) => Response {
+                    ok: true,
+                    data: Some(
+                        serde_json::json!({"data_b64": base64::engine::general_purpose::STANDARD.encode(bytes)}),
+                    ),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
+                    error: Some(error.to_string()),
                 },
             }
         }

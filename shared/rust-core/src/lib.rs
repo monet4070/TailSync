@@ -1,7 +1,9 @@
 pub mod crypto;
 pub mod db;
+pub mod diagnostics;
 pub mod history_classifier;
 pub mod identity;
+pub mod import;
 pub mod iroh_transport;
 pub mod pairing;
 pub mod peer;
@@ -9,3 +11,4 @@ pub mod protocol;
 pub mod secure;
 pub mod sync;
 pub mod sync_warning;
+pub mod themes_v2;

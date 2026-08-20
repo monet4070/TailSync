@@ -49,47 +49,78 @@ pub(crate) async fn toggle_sync_for_app(app: &tauri::AppHandle) -> Result<bool, 
     Ok(enabled)
 }
 
-fn install_sync_shortcut(app: &tauri::AppHandle, shortcut: &str) -> Result<(), String> {
+fn install_global_shortcuts(
+    app: &tauri::AppHandle,
+    sync_shortcut: &str,
+    history_shortcut: &str,
+) -> Result<(), String> {
+    if !sync_shortcut.is_empty() && sync_shortcut == history_shortcut {
+        return Err("The sync and history shortcuts must be different".to_string());
+    }
     app.global_shortcut()
         .unregister_all()
         .map_err(|error| error.to_string())?;
-    if shortcut.is_empty() {
-        return Ok(());
+    if !sync_shortcut.is_empty() {
+        if let Err(error) =
+            app.global_shortcut()
+                .on_shortcut(sync_shortcut, |app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = toggle_sync_for_app(&app).await {
+                            log::warn!("Could not toggle sync from shortcut: {error}");
+                        }
+                    });
+                })
+        {
+            return Err(error.to_string());
+        }
     }
-    app.global_shortcut()
-        .on_shortcut(shortcut, |app, _shortcut, event| {
-            use tauri_plugin_global_shortcut::ShortcutState;
-            if event.state != ShortcutState::Pressed {
-                return;
-            }
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = toggle_sync_for_app(&app).await {
-                    log::warn!("Could not toggle sync from shortcut: {error}");
-                }
-            });
-        })
-        .map_err(|error| error.to_string())
+    if !history_shortcut.is_empty() {
+        if let Err(error) =
+            app.global_shortcut()
+                .on_shortcut(history_shortcut, |app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = open_history_window(app).await {
+                            log::warn!("Could not open history from shortcut: {error}");
+                        }
+                    });
+                })
+        {
+            let _ = app.global_shortcut().unregister_all();
+            return Err(error.to_string());
+        }
+    }
+    Ok(())
 }
 
-pub(crate) fn register_saved_sync_shortcut(
+pub(crate) fn register_saved_shortcuts(
     app: &tauri::AppHandle,
-    shortcut: &str,
+    settings: &crate::crypto::Settings,
 ) -> Result<(), String> {
-    install_sync_shortcut(app, shortcut)
+    install_global_shortcuts(app, &settings.sync_shortcut, &settings.history_shortcut)
 }
 
 /// Apply a shortcut change as a transaction: register the next shortcut first,
 /// then persist it, restoring the previous shortcut if either step fails.
 /// Returns the original failure, with any restore failure appended.
-fn apply_shortcut_change<R, S>(
-    previous: &str,
-    next: &str,
+fn apply_shortcut_change<T, R, S>(
+    previous: &T,
+    next: &T,
     mut register: R,
     mut save: S,
 ) -> Result<(), String>
 where
-    R: FnMut(&str) -> Result<(), String>,
+    T: PartialEq + ?Sized,
+    R: FnMut(&T) -> Result<(), String>,
     S: FnMut() -> Result<(), String>,
 {
     if next == previous {
@@ -104,9 +135,10 @@ where
     Ok(())
 }
 
-fn rollback_shortcut<R>(previous: &str, register: &mut R, original_error: String) -> String
+fn rollback_shortcut<T, R>(previous: &T, register: &mut R, original_error: String) -> String
 where
-    R: FnMut(&str) -> Result<(), String>,
+    T: ?Sized,
+    R: FnMut(&T) -> Result<(), String>,
 {
     match register(previous) {
         Ok(()) => original_error,
@@ -397,35 +429,26 @@ pub async fn trust_peer(
     public_key: String,
     address: Option<String>,
 ) -> Result<String, String> {
-    let hostname = hostname.trim();
-    if hostname.is_empty() || hostname.len() > 255 {
-        return Err("Invalid peer hostname".to_string());
-    }
-    let public_key = crate::identity::canonical_public_key(&public_key)?;
-    if public_key == state.identity.public_key_base64() {
-        return Err("Cannot pair this device with itself".to_string());
-    }
-    let decoded = crate::identity::decode_public_key(&public_key)?;
-    let fingerprint = crate::identity::fingerprint(&decoded);
-    {
-        let mut settings = state.settings.lock().await;
-        let mode = match (settings.connection_mode.as_str(), address.as_deref()) {
-            ("auto", Some(address)) => network::infer_interface(address)?.as_str().to_string(),
-            (mode, _) => network::mode_interface(mode)
-                .map(|interface| interface.as_str().to_string())
-                .unwrap_or_else(|| "lan".to_string()),
-        };
-        settings
-            .trust_peer(
-                hostname,
-                &public_key,
-                &mode,
-                address.as_deref().filter(|value| !value.trim().is_empty()),
-            )
-            .map_err(|error| error.to_string())?;
-    }
-    state.pool.lock().await.disconnect_hostname(hostname);
-    crate::network::clear_protocol_compatibility_error(hostname);
+    let fingerprint = crate::identity::trust_peer(
+        &state.identity,
+        &state.settings,
+        &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
+        &hostname,
+        &public_key,
+        address.as_deref(),
+    )
+    .await
+    .map_err(|failure| match failure {
+        crate::identity::TrustPeerFailure::InvalidHostname => "Invalid peer hostname".to_string(),
+        crate::identity::TrustPeerFailure::SelfPairing => {
+            "Cannot pair this device with itself".to_string()
+        }
+        crate::identity::TrustPeerFailure::Key(error)
+        | crate::identity::TrustPeerFailure::Interface(error)
+        | crate::identity::TrustPeerFailure::Trust(error) => error,
+    })?;
+    state.pool.lock().await.disconnect_hostname(hostname.trim());
+    crate::network::clear_protocol_compatibility_error(hostname.trim());
     Ok(fingerprint)
 }
 
@@ -477,7 +500,11 @@ pub async fn start_pairing(
 pub async fn confirm_pairing(
     state: State<'_, AppState>,
 ) -> Result<crate::pairing::PairingStatus, String> {
-    state.pairing.confirm().await
+    state
+        .pairing
+        .confirm()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[command]
@@ -512,6 +539,7 @@ pub async fn get_sync_state(state: State<'_, AppState>) -> Result<serde_json::Va
     Ok(serde_json::json!({
         "enabled": settings.sync_enabled,
         "shortcut": settings.sync_shortcut,
+        "history_shortcut": settings.history_shortcut,
     }))
 }
 
@@ -538,8 +566,8 @@ pub async fn resume_sync_shortcut(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let shortcut = state.settings.lock().await.sync_shortcut.clone();
-    install_sync_shortcut(&app, &shortcut)
+    let settings = state.settings.lock().await.clone();
+    install_global_shortcuts(&app, &settings.sync_shortcut, &settings.history_shortcut)
 }
 
 #[command]
@@ -550,14 +578,38 @@ pub async fn set_sync_shortcut(
 ) -> Result<(), String> {
     let shortcut = shortcut.trim().to_string();
     let mut settings = state.settings.lock().await;
-    let previous = settings.sync_shortcut.clone();
-    let register = |next: &str| install_sync_shortcut(&app, next);
-    let save = || {
-        settings
-            .set_sync_shortcut(&shortcut)
-            .map_err(|error| error.to_string())
+    let previous = settings.clone();
+    let mut next = previous.clone();
+    next.sync_shortcut = shortcut;
+    let register = |candidate: &crate::crypto::Settings| {
+        install_global_shortcuts(&app, &candidate.sync_shortcut, &candidate.history_shortcut)
     };
-    apply_shortcut_change(&previous, &shortcut, register, save)
+    apply_shortcut_change(&previous, &next, register, || {
+        next.save().map_err(|error| error.to_string())
+    })?;
+    *settings = next;
+    Ok(())
+}
+
+#[command]
+pub async fn set_history_shortcut(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    shortcut: String,
+) -> Result<(), String> {
+    let shortcut = shortcut.trim().to_string();
+    let mut settings = state.settings.lock().await;
+    let previous = settings.clone();
+    let mut next = previous.clone();
+    next.history_shortcut = shortcut;
+    let register = |candidate: &crate::crypto::Settings| {
+        install_global_shortcuts(&app, &candidate.sync_shortcut, &candidate.history_shortcut)
+    };
+    apply_shortcut_change(&previous, &next, register, || {
+        next.save().map_err(|error| error.to_string())
+    })?;
+    *settings = next;
+    Ok(())
 }
 
 /// Get current settings
@@ -576,34 +628,32 @@ pub async fn update_settings(
 ) -> Result<(), String> {
     let requested_settings: crate::crypto::Settings =
         serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
-    let mut settings = state.settings.lock().await;
-    let new_settings = settings.prepare_user_update(requested_settings)?;
-    let history_limit = new_settings.history_limit as i64;
-    let storage_quota_bytes = new_settings.storage_quota_bytes;
-    let mode_changed = settings.connection_mode != new_settings.connection_mode;
-    let shortcut_changed = settings.sync_shortcut != new_settings.sync_shortcut;
-    let previous_shortcut = settings.sync_shortcut.clone();
-    let shortcut = new_settings.sync_shortcut.clone();
-    let connection_mode = new_settings.connection_mode.clone();
-    if shortcut_changed {
-        let register = |next: &str| install_sync_shortcut(&app, next);
-        let save = || new_settings.save().map_err(|error| error.to_string());
-        apply_shortcut_change(&previous_shortcut, &shortcut, register, save)?;
-    } else {
-        new_settings.save().map_err(|e| e.to_string())?;
-    }
-    *settings = new_settings;
-    drop(settings);
-    {
-        let mut db = state.db.lock().await;
-        db.set_max_history(history_limit);
-        db.set_storage_quota(storage_quota_bytes);
-        db.enforce_limits().map_err(|error| error.to_string())?;
-    }
-    if mode_changed {
+    let apply_shortcut_transaction =
+        |previous: &crate::crypto::Settings, new_settings: &crate::crypto::Settings| {
+            let register = |candidate: &crate::crypto::Settings| {
+                install_global_shortcuts(
+                    &app,
+                    &candidate.sync_shortcut,
+                    &candidate.history_shortcut,
+                )
+            };
+            apply_shortcut_change(previous, new_settings, register, || {
+                new_settings.save().map_err(|error| error.to_string())
+            })
+        };
+    let outcome = crate::crypto::apply_settings_update(
+        &state.settings,
+        &state.db,
+        requested_settings,
+        &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
+        Some(&apply_shortcut_transaction),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if outcome.mode_changed {
         state.pool.lock().await.disconnect_all();
         network::clear_peer_cache().await;
-        network::refresh_iroh_for_mode(&connection_mode).await;
+        network::refresh_iroh_for_mode(&outcome.connection_mode).await;
     }
     Ok(())
 }
@@ -613,8 +663,10 @@ pub async fn update_settings(
 pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
 
+    crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::HISTORY_WINDOW_LABEL);
+
     // Check if window already exists
-    if let Some(window) = app.get_webview_window("history") {
+    if let Some(window) = app.get_webview_window(crate::window_lifecycle::HISTORY_WINDOW_LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
@@ -623,12 +675,17 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     // Create new history window
     let _window = tauri::WebviewWindowBuilder::new(
         &app,
-        "history",
+        crate::window_lifecycle::HISTORY_WINDOW_LABEL,
         tauri::WebviewUrl::App("history.html".into()),
     )
     .title("TailSync - History")
     .inner_size(400.0, 600.0)
     .decorations(false) // Borderless, per user preference
+    // Let the rounded `.app` surface own the window shape. Tauri otherwise
+    // keeps the Windows undecorated shadow, which paints a square/white edge
+    // around transparent corners.
+    .transparent(true)
+    .shadow(false)
     .resizable(true)
     .center()
     .build()
@@ -642,7 +699,9 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
 pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
 
-    if let Some(window) = app.get_webview_window("settings") {
+    crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::SETTINGS_WINDOW_LABEL);
+
+    if let Some(window) = app.get_webview_window(crate::window_lifecycle::SETTINGS_WINDOW_LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
@@ -650,12 +709,14 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 
     let _window = tauri::WebviewWindowBuilder::new(
         &app,
-        "settings",
+        crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
         tauri::WebviewUrl::App("settings.html".into()),
     )
     .title("TailSync - Settings")
     .inner_size(520.0, 700.0)
     .decorations(false)
+    .transparent(true)
+    .shadow(false)
     .min_inner_size(440.0, 560.0)
     .resizable(true)
     .center()
@@ -663,6 +724,22 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[command]
+pub fn close_history_window(app: tauri::AppHandle) -> Result<(), String> {
+    crate::window_lifecycle::hide_then_release_window(
+        app,
+        crate::window_lifecycle::HISTORY_WINDOW_LABEL,
+    )
+}
+
+#[command]
+pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    crate::window_lifecycle::hide_then_release_window(
+        app,
+        crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
+    )
 }
 
 /// Get image data as base64 thumbnail for frontend display
@@ -684,6 +761,252 @@ pub async fn get_image_data(
         "thumbnail_width": tw,
         "thumbnail_height": th,
     }))
+}
+
+const PREVIEW_RESPONSE_MAGIC: &[u8; 4] = b"TSPV";
+const PREVIEW_RESPONSE_VERSION: u8 = 1;
+
+#[derive(serde::Serialize)]
+struct PreviewResponseMetadata {
+    entry_id: i64,
+    kind: String,
+    name: String,
+    size_bytes: u64,
+    width: Option<u32>,
+    height: Option<u32>,
+    batch: Option<db::PreviewBatchNavigation>,
+}
+
+fn preview_payload_error(entry_id: i64, message: impl Into<String>) -> db::PreviewErrorInfo {
+    db::PreviewErrorInfo::payload_unavailable(entry_id, message)
+}
+
+/// Encode preview metadata and bytes into one raw IPC response.
+///
+/// `tauri::ipc::Response` can return an `ArrayBuffer` without base64, but it
+/// cannot carry a JSON object alongside that buffer. The response therefore
+/// uses a small versioned envelope:
+///
+/// `TSPV | version:u8 | metadata_length:u32(le) | metadata_json | payload`
+///
+/// Image payloads are decoded from the stored `PackedImage` representation to
+/// raw RGBA bytes; their dimensions are included in the metadata.
+fn encode_preview_response(
+    metadata: db::PreviewMetadata,
+    payload: db::PreviewPayload,
+) -> Result<Vec<u8>, db::PreviewErrorInfo> {
+    let entry_id = metadata.entry_id;
+    let (width, height, data) = if payload.kind == "image" {
+        let image = crate::protocol::PackedImage::try_from(payload.data.as_slice())
+            .map_err(|error| preview_payload_error(entry_id, error.to_string()))?;
+        (Some(image.width), Some(image.height), image.rgba.to_vec())
+    } else {
+        (None, None, payload.data)
+    };
+    let metadata = PreviewResponseMetadata {
+        entry_id,
+        kind: payload.kind,
+        name: payload.name,
+        size_bytes: u64::try_from(data.len()).unwrap_or(u64::MAX),
+        width,
+        height,
+        batch: metadata.batch,
+    };
+    let metadata = serde_json::to_vec(&metadata)
+        .map_err(|error| preview_payload_error(entry_id, error.to_string()))?;
+    let metadata_len = u32::try_from(metadata.len())
+        .map_err(|_| preview_payload_error(entry_id, "preview metadata is too large"))?;
+    let capacity = 9_usize
+        .checked_add(metadata.len())
+        .and_then(|length| length.checked_add(data.len()))
+        .ok_or_else(|| preview_payload_error(entry_id, "preview response is too large"))?;
+
+    let mut response = Vec::with_capacity(capacity);
+    response.extend_from_slice(PREVIEW_RESPONSE_MAGIC);
+    response.push(PREVIEW_RESPONSE_VERSION);
+    response.extend_from_slice(&metadata_len.to_le_bytes());
+    response.extend_from_slice(&metadata);
+    response.extend_from_slice(&data);
+    Ok(response)
+}
+
+/// Return a bounded history preview as a raw `ArrayBuffer` to the frontend.
+#[command]
+pub async fn get_preview(
+    state: State<'_, AppState>,
+    id: i64,
+    batch_id: Option<String>,
+) -> Result<tauri::ipc::Response, db::PreviewErrorInfo> {
+    let db = state.db.lock().await;
+    if let Some(batch_id) = batch_id.as_deref() {
+        db.get_preview_batch_navigation(batch_id, id)
+            .map_err(db::PreviewErrorInfo::from)?;
+    }
+    let preview_id = id;
+    let metadata = db
+        .get_preview_metadata(preview_id)
+        .map_err(db::PreviewErrorInfo::from)?;
+    let payload = db
+        .get_preview_payload(preview_id)
+        .map_err(db::PreviewErrorInfo::from)?;
+    Ok(tauri::ipc::Response::new(encode_preview_response(
+        metadata, payload,
+    )?))
+}
+
+// V2 package boundary. These commands deliberately use the shared Core model
+// rather than re-validating JSON in a platform renderer.
+fn v2_package(path: &str) -> Result<Vec<u8>, Box<tailsync_core::themes_v2::ThemeError>> {
+    if !path.ends_with(".tailsync-theme") {
+        return Err(Box::new(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_EXTENSION".into(),
+            message: "theme package must end in .tailsync-theme".into(),
+            json_pointer: "/path".into(),
+            platforms: vec!["windows".into(), "macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        }));
+    }
+    std::fs::read(path).map_err(|e| {
+        Box::new(tailsync_core::themes_v2::ThemeError {
+            code: "THEME_IO".into(),
+            message: e.to_string(),
+            json_pointer: "/path".into(),
+            platforms: vec!["windows".into(), "macos".into()],
+            severity: "error".into(),
+            recoverable: true,
+            fallback_applied: false,
+        })
+    })
+}
+
+#[command]
+pub async fn validate_theme(
+    path: String,
+    mode: String,
+    high_contrast: bool,
+) -> tailsync_core::themes_v2::ThemeValidation {
+    match v2_package(&path) {
+        Ok(bytes) => tailsync_core::themes_v2::validate_theme_for_platform(
+            &bytes,
+            &mode,
+            "windows",
+            high_contrast,
+        ),
+        Err(error) => tailsync_core::themes_v2::ThemeValidation {
+            valid: false,
+            digest: None,
+            candidate_version: None,
+            preview: None,
+            diagnostics: vec![*error],
+            assets: vec![],
+            compatible: false,
+        },
+    }
+}
+#[command]
+pub async fn install_theme(
+    path: String,
+    expected_digest: String,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    let package = v2_package(&path).map_err(|error| *error)?;
+    tailsync_core::themes_v2::install_theme(&package, &expected_digest)
+}
+#[command]
+pub async fn update_theme(
+    path: String,
+    expected_digest: String,
+    options: tailsync_core::themes_v2::UpdateThemeOptions,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    let package = v2_package(&path).map_err(|error| *error)?;
+    tailsync_core::themes_v2::update_theme(&package, &expected_digest, options)
+}
+#[command]
+pub async fn rollback_theme(
+    theme_id: String,
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::rollback_theme(&theme_id)
+}
+#[command]
+pub async fn delete_theme_v2(
+    app: AppHandle,
+    theme_id: String,
+    storage_handle: Option<String>,
+) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+    if let Some(handle) = storage_handle {
+        tailsync_core::themes_v2::delete_theme_by_handle_for_theme(&handle, &theme_id)?;
+    } else {
+        tailsync_core::themes_v2::delete_theme(&theme_id)?;
+    }
+    let _ = app.emit(
+        "theme_changed",
+        tailsync_core::themes_v2::get_local_theme_settings(),
+    );
+    Ok(())
+}
+#[command]
+pub async fn list_themes_v2() -> Vec<tailsync_core::themes_v2::ThemeDescriptor> {
+    tailsync_core::themes_v2::list_themes_v2()
+}
+#[command]
+pub async fn get_local_theme_settings() -> tailsync_core::themes_v2::LocalThemeSettings {
+    tailsync_core::themes_v2::get_local_theme_settings()
+}
+#[command]
+pub async fn set_local_theme_settings(
+    app: AppHandle,
+    settings: tailsync_core::themes_v2::LocalThemeSettings,
+) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::set_local_theme_settings(settings.clone())?;
+    // Theme selection is deliberately local, but every open webview must see
+    // it immediately.  Do not use the synchronised AppSettings channel here.
+    let _ = app.emit("theme_changed", settings);
+    Ok(())
+}
+#[command]
+pub async fn resolve_theme(
+    theme_id: String,
+    mode: String,
+    platform: String,
+    high_contrast: bool,
+) -> Result<tailsync_core::themes_v2::ResolvedTheme, tailsync_core::themes_v2::ThemeError> {
+    tailsync_core::themes_v2::resolve_theme(&theme_id, &mode, &platform, high_contrast)
+}
+
+/// Raw binary IPC; MIME and dimensions are supplied by the descriptor's asset
+/// metadata, so no image is ever expanded into a Base64 JSON listing.
+#[command]
+pub async fn get_theme_asset(
+    theme_id: String,
+    digest: String,
+    asset_key: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let (_mime, bytes) = tailsync_core::themes_v2::get_theme_asset(&theme_id, &digest, &asset_key)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[command]
+pub async fn get_theme_asset_slot(
+    theme_id: String,
+    digest: String,
+    slot: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let (_descriptor, bytes) =
+        tailsync_core::themes_v2::get_theme_asset_slot(&theme_id, &digest, &slot)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[command]
+pub async fn preview_theme_asset_slot(
+    path: String,
+    digest: String,
+    slot: String,
+) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+    let bytes = v2_package(&path).map_err(|error| *error)?;
+    let (_descriptor, asset) =
+        tailsync_core::themes_v2::get_theme_asset_slot_from_package(&bytes, &digest, &slot)?;
+    Ok(tauri::ipc::Response::new(asset))
 }
 
 /// Get current file transfer progress (for progress bar)
@@ -739,63 +1062,46 @@ pub async fn change_storage_location(
 ) -> Result<db::StorageMigrationResult, String> {
     use tauri_plugin_notification::NotificationExt;
     let parent = std::path::PathBuf::from(parent);
-    let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let active = crate::api::has_active_file_progress();
-        if !active {
-            break;
+    let notifications_enabled = state.settings.lock().await.notifications_enabled;
+    let show = || {
+        if notifications_enabled {
+            let _ = app
+                .notification()
+                .builder()
+                .title("TailSync")
+                .body("File transfers finished. Moving TailSync data now.")
+                .show();
         }
-        if tokio::time::Instant::now() >= wait_deadline {
-            return Err("Timed out waiting for active file transfers to finish".to_string());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    if state.settings.lock().await.notifications_enabled {
-        let _ = app
-            .notification()
-            .builder()
-            .title("TailSync")
-            .body("File transfers finished. Moving TailSync data now.")
-            .show();
-    }
-    let previous_storage_root = state.settings.lock().await.storage_root.clone();
-    let database = state.db.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        database
-            .blocking_lock()
-            .migrate_storage_parent(&parent)
-            .map_err(|error| error.to_string())
-    })
+    };
+    let notify: Option<&(dyn Fn() + Send + Sync)> = Some(&show);
+    db::migrate_storage_with_rollback(
+        &state.db,
+        &state.settings,
+        &parent,
+        db::StorageMigrationHooks {
+            wait_timeout: std::time::Duration::from_secs(60),
+            has_active_transfers: &crate::api::has_active_file_progress,
+            notify,
+            persist_settings: &|settings: &crate::crypto::Settings| {
+                settings.save().map_err(|error| error.to_string())
+            },
+        },
+    )
     .await
-    .map_err(|error| error.to_string())??;
-    let mut settings = state.settings.lock().await;
-    settings.storage_root = Some(result.new_root.clone());
-    if let Err(error) = settings.save().map_err(|error| error.to_string()) {
-        settings.storage_root = previous_storage_root;
-        drop(settings);
-        let old_root = std::path::PathBuf::from(&result.old_root);
-        let database = state.db.clone();
-        let rollback = tokio::task::spawn_blocking(move || {
-            database
-                .blocking_lock()
-                .reopen_storage_at(&old_root)
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|join_error| join_error.to_string())?;
-        return match rollback {
-            Ok(()) => {
-                let _ = db::delete_old_storage(std::path::Path::new(&result.new_root));
-                Err(format!(
-                    "Could not save the new storage location; TailSync returned to the old location: {error}"
-                ))
-            }
-            Err(rollback_error) => Err(format!(
-                "Could not save the new storage location ({error}); rollback also failed: {rollback_error}"
-            )),
-        };
-    }
-    Ok(result)
+    .map_err(|failure| match failure {
+        db::StorageMigrationFailure::TimedOutWaitingForTransfers => {
+            "Timed out waiting for active file transfers to finish".to_string()
+        }
+        db::StorageMigrationFailure::Migrate(error) => error,
+        db::StorageMigrationFailure::SaveFailedAfterRollback { save_error } => format!(
+            "Could not save the new storage location; TailSync returned to the old location: {save_error}"
+        ),
+        db::StorageMigrationFailure::RollbackAlsoFailed { save_error, rollback_error } => {
+            format!(
+                "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
+            )
+        }
+    })
 }
 
 #[command]
@@ -854,6 +1160,37 @@ pub async fn get_version() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "version": crate::api::get_clipboard_version()
     }))
+}
+
+#[derive(serde::Serialize)]
+pub struct RuntimeSnapshot {
+    revision: u64,
+    history_version: u64,
+    progress: Option<crate::api::FileProgress>,
+    sync_warning: Option<tailsync_core::sync_warning::SyncWarning>,
+}
+
+/// Wait until history or transfer state changes, then return one coherent
+/// snapshot. The bounded timeout lets the UI recover if a notification is
+/// missed without reverting to high-frequency polling.
+#[command]
+pub async fn wait_runtime_snapshot(
+    since_revision: u64,
+    wait_ms: Option<u64>,
+) -> Result<RuntimeSnapshot, String> {
+    let wait_ms = wait_ms.unwrap_or(2_500).clamp(50, 15_000);
+    let _ = crate::api::wait_for_runtime_revision(
+        since_revision,
+        std::time::Duration::from_millis(wait_ms),
+    )
+    .await;
+    let revision = crate::api::get_runtime_revision();
+    Ok(RuntimeSnapshot {
+        revision,
+        history_version: crate::api::get_clipboard_version(),
+        progress: crate::api::get_file_progress(),
+        sync_warning: tailsync_core::sync_warning::take(),
+    })
 }
 
 #[command]
@@ -960,6 +1297,77 @@ fn set_clipboard_dib(dib: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decode_preview_response(response: &[u8]) -> (serde_json::Value, &[u8]) {
+        assert_eq!(&response[..4], PREVIEW_RESPONSE_MAGIC);
+        assert_eq!(response[4], PREVIEW_RESPONSE_VERSION);
+        let metadata_len = u32::from_le_bytes(response[5..9].try_into().unwrap()) as usize;
+        let payload_offset = 9 + metadata_len;
+        let metadata = serde_json::from_slice(&response[9..payload_offset]).unwrap();
+        (metadata, &response[payload_offset..])
+    }
+
+    #[test]
+    fn preview_response_keeps_text_metadata_and_raw_bytes() {
+        let response = encode_preview_response(
+            db::PreviewMetadata {
+                entry_id: 17,
+                kind: db::PreviewKind::Text,
+                name: "text.txt".to_string(),
+                size_bytes: 13,
+                batch: None,
+            },
+            db::PreviewPayload {
+                kind: "text".to_string(),
+                name: "text.txt".to_string(),
+                size_bytes: 13,
+                data: b"preview bytes".to_vec(),
+            },
+        )
+        .unwrap();
+        let (metadata, data) = decode_preview_response(&response);
+
+        assert_eq!(metadata["kind"], "text");
+        assert_eq!(metadata["entry_id"], 17);
+        assert_eq!(metadata["name"], "text.txt");
+        assert_eq!(metadata["size_bytes"], 13);
+        assert!(metadata["width"].is_null());
+        assert!(metadata["height"].is_null());
+        assert!(metadata["batch"].is_null());
+        assert_eq!(data, b"preview bytes");
+    }
+
+    #[test]
+    fn preview_response_decodes_images_to_rgba_with_dimensions() {
+        let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
+        let mut packed = Vec::new();
+        packed.extend_from_slice(&2_u32.to_le_bytes());
+        packed.extend_from_slice(&1_u32.to_le_bytes());
+        packed.extend_from_slice(&rgba);
+        let response = encode_preview_response(
+            db::PreviewMetadata {
+                entry_id: 23,
+                kind: db::PreviewKind::Image,
+                name: "image".to_string(),
+                size_bytes: packed.len() as u64,
+                batch: None,
+            },
+            db::PreviewPayload {
+                kind: "image".to_string(),
+                name: "image".to_string(),
+                size_bytes: packed.len() as u64,
+                data: packed,
+            },
+        )
+        .unwrap();
+        let (metadata, data) = decode_preview_response(&response);
+
+        assert_eq!(metadata["kind"], "image");
+        assert_eq!(metadata["size_bytes"], rgba.len());
+        assert_eq!(metadata["width"], 2);
+        assert_eq!(metadata["height"], 1);
+        assert_eq!(data, rgba);
+    }
 
     #[test]
     fn shortcut_transaction_registers_new_then_persists() {

@@ -2,30 +2,6 @@ import AppKit
 import Foundation
 import SwiftUI
 
-private enum HistoryDateFilter: String, CaseIterable, Identifiable {
-    case all
-    case today
-    case yesterday
-    case last7
-    case last30
-    case thisMonth
-    case custom
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .all: return Loc.t("history.date.all")
-        case .today: return Loc.t("history.date.today")
-        case .yesterday: return Loc.t("history.date.yesterday")
-        case .last7: return Loc.t("history.date.last7")
-        case .last30: return Loc.t("history.date.last30")
-        case .thisMonth: return Loc.t("history.date.thisMonth")
-        case .custom: return Loc.t("history.date.custom")
-        }
-    }
-}
-
 private struct HistoryDateBounds {
     let start: Date?
     let end: Date?
@@ -34,6 +10,7 @@ private struct HistoryDateBounds {
 struct HistoryView: View {
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
     @State private var entries: [HistoryEntry] = []
     @State private var keyword = ""
@@ -45,12 +22,16 @@ struct HistoryView: View {
     @State private var hasNext = false
     @State private var isLoading = false
     @State private var restoredId: Int64? = nil
+    // Previewing is independent of restoration: selection chooses a row,
+    // Space opens it in the reusable preview window, and double-click retains
+    // the established clipboard-restore gesture.
+    @State private var focusedEntryId: Int64? = nil
     @State private var errorMsg: String? = nil
     @State private var lastVersion: UInt64 = 0
+    @State private var runtimeRevision: UInt64 = 0
     @State private var daemonOnline = false
     @State private var fileProgress: ApiClient.FileProgress? = nil
     @State private var progressBarEnabled = true
-    @State private var progressPollInFlight = false
     @State private var showingClearAlert = false
     @State private var loadGeneration = 0
     @State private var supportedCategories: Set<String> = []
@@ -68,8 +49,13 @@ struct HistoryView: View {
     private let collapsedBatchFileLimit = 2
     private let knownCategories = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]
 
-    private var activeTheme: TailSyncColorTheme {
-        TailSyncColorTheme(storedValue: loc.colorTheme)
+    private var activeTheme: TailSyncThemeSelection {
+        TailSyncThemeSelection(
+            storedValue: loc.colorTheme,
+            catalogue: loc.resolvedV2Themes,
+            reduceTransparency: loc.reduceTransparency,
+            interfaceScale: TailSyncThemeAccessibilityPolicy.interfaceScale(for: dynamicTypeSize)
+        )
     }
 
     private var palette: TailSyncThemePalette {
@@ -84,10 +70,6 @@ struct HistoryView: View {
         !supportedCategories.isEmpty
     }
 
-    private var dateFilterTitle: String {
-        Loc.t("history.dateFilter")
-    }
-
     private var displayedEntries: [HistoryEntry] {
         var batchPositions: [String: Int] = [:]
         return entries.filter { entry in
@@ -98,14 +80,6 @@ struct HistoryView: View {
             batchPositions[batchId] = position + 1
             return position < collapsedBatchFileLimit
         }
-    }
-
-    private var customStartTitle: String {
-        Loc.t("history.date.start")
-    }
-
-    private var customEndTitle: String {
-        Loc.t("history.date.end")
     }
 
     private func batchCount(_ entry: HistoryEntry) -> Int {
@@ -123,86 +97,19 @@ struct HistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 6) {
-                HStack {
-                    Image(systemName: "magnifyingglass").foregroundColor(palette.tertiaryColor)
-                    TextField(Loc.t("history.search"), text: $keyword)
-                        .textFieldStyle(.plain)
-                        .font(activeTheme.typography.searchUsesDisplayFont
-                              ? activeTheme.displayFont(size: activeTheme.typography.searchSize)
-                              : activeTheme.readingFont(size: activeTheme.typography.searchSize))
-                        .onSubmit { page = 0; load(targetPage: 0) }
-                    if !keyword.isEmpty {
-                        Button { keyword = ""; page = 0; load(targetPage: 0) } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundColor(palette.tertiaryColor)
-                        }.buttonStyle(.plain)
-                    }
-                    Circle()
-                        .fill(daemonOnline ? palette.positiveColor : palette.warningColor)
-                        .frame(width: 7, height: 7)
-                }
-
-                HStack(spacing: 8) {
-                    Picker(Loc.t("history.categoryFilter"), selection: $selectedCategory) {
-                        ForEach(categories, id: \.self) { category in
-                            Text(Loc.t("history.category.\(category)")).tag(category)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                    .disabled(!categoryFilteringSupported)
-                    .onChange(of: selectedCategory) { _ in page = 0; load(targetPage: 0) }
-
-                    Picker(dateFilterTitle, selection: $selectedDateFilter) {
-                        ForEach(HistoryDateFilter.allCases) { filter in
-                            Text(filter.label).tag(filter)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                    .disabled(!dateRangeFilteringSupported)
-                    .onChange(of: selectedDateFilter) { _ in page = 0; load(targetPage: 0) }
-                }
-
-                if dateRangeFilteringSupported && selectedDateFilter == .custom {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(customStartTitle).font(.caption2).foregroundColor(palette.tertiaryColor)
-                            DatePicker(
-                                customStartTitle,
-                                selection: $customStartDate,
-                                in: ...customEndDate,
-                                displayedComponents: .date
-                            )
-                            .labelsHidden()
-                            .onChange(of: customStartDate) { _ in page = 0; load(targetPage: 0) }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(customEndTitle).font(.caption2).foregroundColor(palette.tertiaryColor)
-                            DatePicker(
-                                customEndTitle,
-                                selection: $customEndDate,
-                                in: customStartDate...,
-                                displayedComponents: .date
-                            )
-                            .labelsHidden()
-                            .onChange(of: customEndDate) { _ in page = 0; load(targetPage: 0) }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-            .padding(8)
-            .background(palette.softSurfaceColor)
-            .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous)
-                    .stroke(palette.borderColor, lineWidth: activeTheme == .highContrast ? 2 : 1)
-            }
+            HistoryFilterBar(
+                keyword: $keyword,
+                selectedCategory: $selectedCategory,
+                selectedDateFilter: $selectedDateFilter,
+                customStartDate: $customStartDate,
+                customEndDate: $customEndDate,
+                categories: categories,
+                categoryFilteringSupported: categoryFilteringSupported,
+                dateRangeFilteringSupported: dateRangeFilteringSupported,
+                daemonOnline: daemonOnline,
+                onSubmit: { page = 0; load(targetPage: 0) },
+                onFilterChanged: { page = 0; load(targetPage: 0) }
+            )
             .padding(.horizontal, 12).padding(.top, 8)
 
             if unresolvedMigrationCount > 0 {
@@ -217,7 +124,7 @@ struct HistoryView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(palette.warningColor.opacity(0.08))
+                .background(palette.warningSoftColor)
                 .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous)
@@ -247,9 +154,13 @@ struct HistoryView: View {
             } else if entries.isEmpty {
                 Spacer()
                 VStack(spacing: 8) {
-                    Image(systemName: "doc.on.clipboard")
-                        .font(.system(size: 32))
-                        .foregroundColor(palette.tertiaryColor)
+                    if let image = loc.themeAssetImages["emptyState"] {
+                        Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(width: 64, height: 64)
+                    } else {
+                        Image(systemName: "doc.on.clipboard")
+                            .font(.system(size: 32))
+                            .foregroundColor(palette.tertiaryColor)
+                    }
                     Text(Loc.t("history.empty"))
                         .font(activeTheme.displayFont(size: 15))
                         .foregroundColor(palette.secondaryColor)
@@ -302,21 +213,45 @@ struct HistoryView: View {
                         HistoryRow(
                             entry: entry,
                             isRestored: restoredId == entry.id,
+                            isFocused: focusedEntryId == entry.id,
                             showsMultipleLabels: multipleLabelsSupported
                         )
                         .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { restore(entry.id) }
-                        .onDirectRightClick { delete(entry.id) }
+                        .overlay {
+                            HistoryRowInteraction(
+                                previewRequest: historyPreviewRequest(
+                                    focusedId: entry.id,
+                                    entries: entries,
+                                    expandedBatchIds: expandedBatchIds
+                                ),
+                                onSelect: {
+                                    focusedEntryId = entry.id
+                                },
+                                onRestore: {
+                                    restore(entry.id)
+                                },
+                                onDelete: {
+                                    delete(entry.id)
+                                },
+                                onPreview: { request in
+                                    HistoryPreviewWindowController.shared.present(request)
+                                },
+                                onClosePreview: {
+                                    HistoryPreviewWindowController.shared.close()
+                                },
+                                isPreviewVisible: {
+                                    HistoryPreviewWindowController.shared.isPreviewVisible
+                                }
+                            )
+                        }
                         }
                         .listRowBackground(palette.surfaceColor)
                         .listRowSeparatorTint(palette.dividerColor)
-                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
-                .background(palette.windowColor)
-                .animation(.spring(response: 0.35, dampingFraction: 0.9), value: entries.count)
+                .animation(loc.reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.9), value: entries.count)
             }
 
             // Pagination + clear
@@ -342,7 +277,7 @@ struct HistoryView: View {
             .padding(.horizontal, 12)
             .background(palette.surfaceColor)
             .overlay(alignment: .top) {
-                Rectangle().fill(palette.dividerColor).frame(height: activeTheme == .highContrast ? 2 : 1)
+                Rectangle().fill(palette.dividerColor).frame(height: activeTheme.builtin == .highContrast ? 2 : 1)
             }
             .alert(Loc.t("history.confirmClear"), isPresented: $showingClearAlert) {
                 Button(Loc.t("common.cancel"), role: .cancel) {}
@@ -355,44 +290,7 @@ struct HistoryView: View {
             loadHistoryCapabilities()
             loadMigrationDiagnostics()
         }
-        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
-            guard scenePhase == .active, !progressPollInFlight else { return }
-            progressPollInFlight = true
-            Task { @MainActor in
-                defer { progressPollInFlight = false }
-                if let version = await ApiClient.shared.getVersion() {
-                    let reconnected = !daemonOnline
-                    if reconnected || version != lastVersion {
-                        lastVersion = version
-                        load(targetPage: page, clearExisting: false)
-                    }
-                    daemonOnline = true
-                    if reconnected {
-                        historyCapabilitiesChecked = false
-                        loadHistoryCapabilities()
-                    }
-                } else {
-                    daemonOnline = false
-                }
-                if !historyCapabilitiesChecked { loadHistoryCapabilities() }
-                if progressBarEnabled {
-                    fileProgress = await ApiClient.shared.getFileProgress()
-                } else {
-                    fileProgress = nil
-                }
-                if let warning = await ApiClient.shared.takeSyncWarning(),
-                   warning.kind == "expired_event" {
-                    syncWarning = Loc.t("history.syncExpired")
-                        .replacingOccurrences(of: "{peer}", with: warning.peer)
-                    syncWarningTask?.cancel()
-                    syncWarningTask = Task { @MainActor in
-                        try? await Task.sleep(for: .seconds(8))
-                        guard !Task.isCancelled else { return }
-                        syncWarning = nil
-                    }
-                }
-            }
-        }
+        .task { await runtimeSnapshotLoop() }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             reloadActiveDateFilter()
         }
@@ -405,10 +303,13 @@ struct HistoryView: View {
             if !progressBarEnabled { fileProgress = nil }
         }
         .onDisappear {
+            HistoryThumbnailCache.removeAll()
             restoreFeedbackTask?.cancel()
             restoreFeedbackTask = nil
             syncWarningTask?.cancel()
             syncWarningTask = nil
+            focusedEntryId = nil
+            HistoryPreviewWindowController.shared.close()
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
@@ -446,6 +347,7 @@ struct HistoryView: View {
                         .font(.caption2)
                         .foregroundColor(palette.secondaryColor)
                     }
+                    .tint(palette.infoColor)
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .background(palette.raisedColor)
                     .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.cardRadius, style: .continuous))
@@ -462,7 +364,9 @@ struct HistoryView: View {
                 }
             }
         }
-        .background(palette.windowColor)
+        // The window background (window colour + custom background image +
+        // scrim) is owned by tailSyncThemed(); painting an opaque root
+        // background here would cover it.
         .tailSyncThemed()
     }
 
@@ -484,6 +388,7 @@ struct HistoryView: View {
         if clearExisting {
             entries = []
             hasNext = false
+            focusedEntryId = nil
         }
         Task {
             do {
@@ -498,6 +403,7 @@ struct HistoryView: View {
                 entries = Array(result.prefix(pageSize))
                 hasNext = result.count > pageSize
                 page = requestedPage
+                pruneSelection()
             } catch {
                 guard generation == loadGeneration else { return }
                 errorMsg = Loc.t("history.loadError")
@@ -536,6 +442,52 @@ struct HistoryView: View {
             if let settings = try? await ApiClient.shared.getSettings() {
                 progressBarEnabled = settings.progress_bar_enabled
                 if !progressBarEnabled { fileProgress = nil }
+            }
+        }
+    }
+
+    @MainActor
+    private func runtimeSnapshotLoop() async {
+        while !Task.isCancelled {
+            guard scenePhase == .active else {
+                try? await Task.sleep(for: .milliseconds(500))
+                continue
+            }
+            guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: runtimeRevision) else {
+                daemonOnline = false
+                try? await Task.sleep(for: .milliseconds(750))
+                continue
+            }
+
+            let reconnected = !daemonOnline
+            daemonOnline = true
+            runtimeRevision = snapshot.revision
+            if reconnected || snapshot.historyVersion != lastVersion {
+                lastVersion = snapshot.historyVersion
+                load(targetPage: page, clearExisting: false)
+                if reconnected {
+                    historyCapabilitiesChecked = false
+                    loadHistoryCapabilities()
+                }
+                if let warning = await ApiClient.shared.takeSyncWarning(),
+                   warning.kind == "expired_event" {
+                    syncWarning = Loc.t("history.syncExpired")
+                        .replacingOccurrences(of: "{peer}", with: warning.peer)
+                    syncWarningTask?.cancel()
+                    syncWarningTask = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(8))
+                        guard !Task.isCancelled else { return }
+                        syncWarning = nil
+                    }
+                }
+            }
+            if !historyCapabilitiesChecked { loadHistoryCapabilities() }
+            fileProgress = progressBarEnabled ? snapshot.progress : nil
+
+            // Progress may update for every transfer chunk. Coalesce those
+            // events while keeping the visible bar responsive.
+            if snapshot.progress?.active == true {
+                try? await Task.sleep(for: .milliseconds(250))
             }
         }
     }
@@ -625,14 +577,14 @@ struct HistoryView: View {
                 return
             }
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.4)) { restoredId = id }
+            withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.4)) { restoredId = id }
             do {
                 try await Task.sleep(nanoseconds: 1_500_000_000)
             } catch {
                 return
             }
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.4)) { restoredId = nil }
+            withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.4)) { restoredId = nil }
         }
     }
 
@@ -641,6 +593,8 @@ struct HistoryView: View {
             do {
                 try await ApiClient.shared.deleteEntry(id: id)
                 entries.removeAll { $0.id == id }
+                HistoryPreviewWindowController.shared.closeIfShowing(entryId: id)
+                pruneSelection()
                 loadMigrationDiagnostics()
             } catch {
                 errorMsg = Loc.t("history.deleteError")
@@ -655,45 +609,22 @@ struct HistoryView: View {
                 entries = []
                 page = 0
                 hasNext = false
+                focusedEntryId = nil
+                HistoryPreviewWindowController.shared.close()
                 loadMigrationDiagnostics()
             } else {
                 errorMsg = Loc.t("history.deleteError")
             }
         }
     }
-}
 
-private extension View {
-    func onDirectRightClick(perform action: @escaping () -> Void) -> some View {
-        overlay(DirectRightClickView(action: action))
-    }
-}
-
-private struct DirectRightClickView: NSViewRepresentable {
-    let action: () -> Void
-
-    func makeNSView(context: Context) -> DirectRightClickNSView {
-        let view = DirectRightClickNSView()
-        view.action = action
-        return view
-    }
-
-    func updateNSView(_ nsView: DirectRightClickNSView, context: Context) {
-        nsView.action = action
-    }
-}
-
-private final class DirectRightClickNSView: NSView {
-    var action: (() -> Void)?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let event = NSApp.currentEvent,
-              event.type == .rightMouseDown || event.type == .rightMouseUp else { return nil }
-        return self
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        action?()
+    /// Remove a selection that no longer refers to a loaded row so a delayed
+    /// key event cannot preview deleted or stale content.
+    private func pruneSelection() {
+        let validIds = Set(entries.map(\.id))
+        if let focusedEntryId, !validIds.contains(focusedEntryId) {
+            self.focusedEntryId = nil
+        }
     }
 }
 
@@ -702,10 +633,18 @@ private final class DirectRightClickNSView: NSView {
 struct HistoryRow: View {
     let entry: HistoryEntry
     let isRestored: Bool
+    let isFocused: Bool
     let showsMultipleLabels: Bool
     @State private var thumbnail: NSImage? = nil
-    @Environment(\.tailSyncTheme) private var theme
+    @State private var hovering = false
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.tailSyncSelection) private var selection
     @Environment(\.tailSyncPalette) private var palette
+
+    private var component: TailSyncThemeComponentTokens? {
+        let state = isRestored ? "selected" : (isFocused ? "focus" : (hovering ? "hover" : "default"))
+        return selection.component("history", state: state, scheme: colorScheme)
+    }
 
     private var visibleCategoryLabels: [String] {
         showsMultipleLabels ? entry.categoryLabels : [entry.categoryLabel]
@@ -717,49 +656,73 @@ struct HistoryRow: View {
                 if entry.type == "image", let thumb = thumbnail {
                     Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
                         .frame(width: 32, height: 32)
-                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
                 } else {
                     Image(systemName: entry.icon).frame(width: 24, height: 24)
-                        .foregroundColor(palette.accentColor)
-                        .background(palette.accentColor.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+                        .foregroundColor(component?.iconColor ?? component?.accentColor ?? palette.accentColor)
+                        .background((component?.accentColor ?? palette.accentColor).opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous))
                 }
             }
             .frame(width: 32, height: 32)
-            .task { if entry.type == "image", let img = await ApiClient.shared.getImageData(id: entry.id) { thumbnail = rgbaToImage(img) } }
+            .task {
+                guard entry.type == "image" else { return }
+                if let cached = HistoryThumbnailCache.image(for: entry.id) {
+                    thumbnail = cached
+                } else if let img = await ApiClient.shared.getImageData(id: entry.id),
+                          let image = rgbaToImage(img) {
+                    HistoryThumbnailCache.insert(image, for: entry.id)
+                    thumbnail = image
+                }
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(visibleCategoryLabels.map { $0.uppercased() }.joined(separator: "  \u{00B7}  "))
-                        .font(theme.readingFont(size: 10, weight: .semibold))
-                        .foregroundColor(palette.accentColor).padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(palette.accentColor.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+                        .font(selection.readingFont(size: 10, weight: .semibold))
+                        .foregroundColor(component?.accentColor ?? palette.accentColor).padding(.horizontal, 4).padding(.vertical, 1)
+                        .background((component?.accentColor ?? palette.accentColor).opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous))
                         .fixedSize(horizontal: false, vertical: true)
                         .layoutPriority(1)
                     Text(entry.formattedTime).font(.caption).foregroundColor(palette.tertiaryColor)
                 }
                 Text(entry.description)
-                    .font(theme == .tailsync
-                          ? theme.displayFont(size: theme.typography.historyContentSize)
-                          : theme == .forest
-                              ? theme.displayFont(size: theme.typography.historyContentSize, weight: .medium)
-                              : theme.readingFont(size: theme.typography.historyContentSize, weight: .medium))
-                    .foregroundColor(palette.primaryColor)
+                    .font(selection.builtin == .tailsync
+                          ? selection.displayFont(size: selection.typography.historyContentSize)
+                          : selection.builtin == .forest
+                              ? selection.displayFont(size: selection.typography.historyContentSize, weight: .medium)
+                              : selection.readingFont(size: selection.typography.historyContentSize, weight: .medium))
+                    .foregroundColor(component?.foregroundColor ?? palette.primaryColor)
                     .lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(entry.formattedSize).font(.caption2).foregroundColor(palette.tertiaryColor).monospacedDigit()
+                    Text(entry.formattedSize).font(.caption2).foregroundColor(component?.secondaryTextColor ?? palette.tertiaryColor).monospacedDigit()
                     Spacer()
-                    Text(entry.source_peer).font(.caption2).foregroundColor(palette.tertiaryColor).lineLimit(1)
+                    Text(entry.source_peer).font(.caption2).foregroundColor(component?.secondaryTextColor ?? palette.tertiaryColor).lineLimit(1)
                 }
             }
         }
-        .padding(.vertical, max(2, (theme.metrics.rowPadding - 6) / 2))
+        .padding(.vertical, component?.padding ?? max(2, (selection.metrics.rowPadding - 6) / 2))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isRestored ? palette.accentColor.opacity(0.12) : .clear)
-        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.controlRadius, style: .continuous))
+        .background(
+            component?.backgroundColor ?? (isRestored
+                ? palette.activeColor
+                : isFocused ? palette.hoverColor : .clear)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous)
+                .stroke(
+                    isFocused ? (component?.focusRingColor ?? palette.accentColor).opacity(0.7) : (component?.borderColor ?? .clear),
+                    lineWidth: isFocused ? 1 : 0
+                )
+        }
+        .accessibilityAddTraits(isFocused ? .isSelected : [])
         .contentShape(Rectangle())
-        .animation(.easeOut(duration: 0.4), value: isRestored)
+        .onHover { hovering = $0 }
+        .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.4), value: isRestored)
+        .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.18), value: isFocused)
+        .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
     }
 }
 
@@ -779,4 +742,26 @@ private func rgbaToImage(_ data: ApiClient.ImageData) -> NSImage? {
     let img = NSImage(size: NSSize(width: w, height: h))
     img.addRepresentation(rep)
     return img
+}
+
+private enum HistoryThumbnailCache {
+    private static let cache: NSCache<NSNumber, NSImage> = {
+        let cache = NSCache<NSNumber, NSImage>()
+        cache.countLimit = 30
+        cache.totalCostLimit = 4 * 1024 * 1024
+        return cache
+    }()
+
+    static func image(for id: Int64) -> NSImage? {
+        cache.object(forKey: NSNumber(value: id))
+    }
+
+    static func insert(_ image: NSImage, for id: Int64) {
+        let pixels = max(1, Int(image.size.width * image.size.height))
+        cache.setObject(image, forKey: NSNumber(value: id), cost: pixels * 4)
+    }
+
+    static func removeAll() {
+        cache.removeAllObjects()
+    }
 }

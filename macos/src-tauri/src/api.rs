@@ -7,12 +7,12 @@ mod imports;
 mod routes;
 mod transport;
 
-pub(crate) use imports::ImportRegistry;
 use imports::{
     append_import_chunk, begin_import, finish_import, import_response, import_size_limit,
 };
 use routes::handle_cmd;
 pub(crate) use routes::{history_capabilities_data, peer_snapshot_data};
+pub(crate) use tailsync_core::import::ImportRegistry;
 pub use transport::start;
 #[cfg(test)]
 use transport::{bind_api_listener, read_request_with_limits};
@@ -27,9 +27,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -37,18 +35,98 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufRead
 use tokio::sync::{watch, Mutex, Semaphore};
 use tokio::time::timeout;
 
+use std::collections::{HashSet, VecDeque};
+use std::sync::{LazyLock, Mutex as StdMutex};
+
+static RUNTIME_REVISION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(1).0);
+const MAX_RUNTIME_NOTIFICATIONS: usize = 32;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RuntimeNotification {
+    pub id: u64,
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Default)]
+struct RuntimeNotificationBuffer {
+    next_id: u64,
+    entries: VecDeque<RuntimeNotification>,
+}
+
+impl RuntimeNotificationBuffer {
+    fn push(&mut self, level: &str, message: String) -> u64 {
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        let id = self.next_id;
+        self.entries.push_back(RuntimeNotification {
+            id,
+            level: level.to_string(),
+            message,
+        });
+        while self.entries.len() > MAX_RUNTIME_NOTIFICATIONS {
+            self.entries.pop_front();
+        }
+        id
+    }
+
+    fn since(&self, id: u64) -> Vec<RuntimeNotification> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.id > id)
+            .cloned()
+            .collect()
+    }
+}
+
+static RUNTIME_NOTIFICATIONS: LazyLock<StdMutex<RuntimeNotificationBuffer>> =
+    LazyLock::new(|| StdMutex::new(RuntimeNotificationBuffer::default()));
+
+pub fn get_runtime_revision() -> u64 {
+    *RUNTIME_REVISION.borrow()
+}
+
+pub fn bump_runtime_revision() {
+    RUNTIME_REVISION.send_modify(|revision| {
+        *revision = revision.wrapping_add(1).max(1);
+    });
+}
+
+pub async fn wait_for_runtime_revision(since: u64, wait: Duration) -> u64 {
+    let mut receiver = RUNTIME_REVISION.subscribe();
+    if *receiver.borrow() != since {
+        return *receiver.borrow();
+    }
+    let _ = timeout(wait, receiver.changed()).await;
+    let revision = *receiver.borrow();
+    revision
+}
+
+pub fn push_runtime_notification(level: &str, message: impl Into<String>) {
+    if let Ok(mut notifications) = RUNTIME_NOTIFICATIONS.lock() {
+        notifications.push(level, message.into());
+        drop(notifications);
+        bump_runtime_revision();
+    }
+}
+
+pub fn get_runtime_notifications_since(id: u64) -> Vec<RuntimeNotification> {
+    RUNTIME_NOTIFICATIONS
+        .lock()
+        .map(|notifications| notifications.since(id))
+        .unwrap_or_default()
+}
+
 /// Monotonic version — bumped on every clipboard change.
 pub static CLIPBOARD_VERSION: AtomicU64 = AtomicU64::new(0);
 pub fn bump_clipboard_version() {
     CLIPBOARD_VERSION.fetch_add(1, Ordering::Release);
+    bump_runtime_revision();
 }
 pub fn get_clipboard_version() -> u64 {
     CLIPBOARD_VERSION.load(Ordering::Acquire)
 }
 
 // File transfer progress
-use std::collections::{HashSet, VecDeque};
-use std::sync::{LazyLock, Mutex as StdMutex};
 static FILE_PROGRESS: LazyLock<StdMutex<HashMap<String, TrackedFileProgress>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 static CANCELLED_FILE_BATCHES: LazyLock<StdMutex<HashSet<String>>> =
@@ -142,22 +220,35 @@ pub fn set_file_batch_progress(mut progress: FileProgress) {
         }
         tracked.progress = progress;
         tracked.updated_at = now;
+        drop(state);
+        bump_runtime_revision();
     }
 }
 pub fn clear_file_progress() {
     if let Ok(mut progress) = FILE_PROGRESS.lock() {
+        let changed = !progress.is_empty();
         progress.clear();
+        drop(progress);
+        if changed {
+            bump_runtime_revision();
+        }
     }
 }
 
 pub fn clear_file_progress_scope(batch_id: Option<&str>, device: Option<&str>) {
     if let Ok(mut progress) = FILE_PROGRESS.lock() {
+        let previous_count = progress.len();
         progress.retain(|_, tracked| {
             let batch_matches =
                 batch_id.is_none_or(|batch_id| tracked.progress.batch_id == batch_id);
             let device_matches = device.is_none_or(|device| tracked.progress.device == device);
             !(batch_matches && device_matches)
         });
+        let changed = progress.len() != previous_count;
+        drop(progress);
+        if changed {
+            bump_runtime_revision();
+        }
     }
 }
 
@@ -330,10 +421,6 @@ const API_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const API_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const API_BIND_RETRY_DELAY: Duration = Duration::from_millis(250);
 const API_MAX_CONNECTIONS: usize = 16;
-const IMPORT_CHUNK_MAX_BYTES: usize = 512 * 1024;
-const API_MAX_IMPORTS: usize = 4;
-const IMPORT_SESSION_TTL: Duration = Duration::from_secs(10 * 60);
-const MAX_IMPORT_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct ApiToken([u8; 32]);
@@ -461,7 +548,27 @@ struct Request {
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
+    theme_id: Option<String>,
+    #[serde(default)]
+    asset_slot: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    high_contrast: Option<bool>,
+    #[serde(default)]
+    expected_digest: Option<String>,
+    #[serde(default)]
+    storage_handle: Option<String>,
+    #[serde(default)]
+    options: Option<Value>,
+    #[serde(default)]
     pinned: Option<bool>,
+    #[serde(default)]
+    since_revision: Option<u64>,
+    #[serde(default)]
+    wait_ms: Option<u64>,
+    #[serde(default)]
+    since_notification_id: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -476,9 +583,10 @@ struct Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_api_listener, clear_file_progress, clear_file_progress_scope, get_file_progress,
-        history_capabilities_data, peer_snapshot_data, read_request_with_limits,
-        set_file_batch_progress, ApiToken, FileProgress, Request,
+        bind_api_listener, bump_runtime_revision, clear_file_progress, clear_file_progress_scope,
+        get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
+        read_request_with_limits, set_file_batch_progress, wait_for_runtime_revision, ApiToken,
+        FileProgress, Request, RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS,
     };
     use crate::crypto::Settings;
     use crate::identity::DeviceIdentity;
@@ -513,6 +621,47 @@ mod tests {
         assert_eq!(remaining.batch_id, "batch-a");
         assert_eq!(remaining.device, "peer-a");
         clear_file_progress();
+    }
+
+    #[tokio::test]
+    async fn runtime_revision_waiter_wakes_on_change() {
+        let current = get_runtime_revision();
+        let waiter = tokio::spawn(async move {
+            wait_for_runtime_revision(current, Duration::from_secs(1)).await
+        });
+        tokio::task::yield_now().await;
+        bump_runtime_revision();
+        let changed = waiter.await.unwrap();
+        assert_ne!(changed, current);
+    }
+
+    #[test]
+    fn runtime_snapshot_request_accepts_bounded_wait_fields() {
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "wait_runtime_snapshot",
+            "since_revision": 42,
+            "wait_ms": 2500,
+            "since_notification_id": 7
+        }))
+        .unwrap();
+        assert_eq!(request.since_revision, Some(42));
+        assert_eq!(request.wait_ms, Some(2500));
+        assert_eq!(request.since_notification_id, Some(7));
+    }
+
+    #[test]
+    fn runtime_notification_buffer_is_bounded_and_incremental() {
+        let mut notifications = RuntimeNotificationBuffer::default();
+        for index in 0..(MAX_RUNTIME_NOTIFICATIONS + 3) {
+            notifications.push("error", format!("failure {index}"));
+        }
+
+        let all = notifications.since(0);
+        assert_eq!(all.len(), MAX_RUNTIME_NOTIFICATIONS);
+        assert_eq!(all.first().map(|entry| entry.id), Some(4));
+        let latest = notifications.since((MAX_RUNTIME_NOTIFICATIONS + 1) as u64);
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest[0].message, "failure 33");
     }
 
     #[tokio::test]
@@ -603,6 +752,40 @@ mod tests {
             capabilities["categories"].as_array().map(Vec::len),
             Some(crate::history_classifier::CATEGORIES.len())
         );
+    }
+
+    #[test]
+    fn v2_theme_request_carries_path_and_theme_id() {
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "install_theme",
+            "path": "/tmp/my-theme.json",
+            "theme_id": "studio",
+        }))
+        .unwrap();
+        assert_eq!(request.path.as_deref(), Some("/tmp/my-theme.json"));
+        assert_eq!(request.theme_id.as_deref(), Some("studio"));
+        let themed: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "resolve_theme",
+            "theme_id": "studio",
+            "mode": "dark",
+        }))
+        .unwrap();
+        assert_eq!(themed.theme_id.as_deref(), Some("studio"));
+        assert_eq!(themed.mode.as_deref(), Some("dark"));
+        let rollback: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "rollback_theme",
+            "theme_id": "custom:studio@1",
+        }))
+        .unwrap();
+        assert_eq!(rollback.cmd, "rollback_theme");
+        assert_eq!(rollback.theme_id.as_deref(), Some("custom:studio@1"));
+        let minimal: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "list_themes_v2",
+        }))
+        .unwrap();
+        assert_eq!(minimal.path, None);
+        assert_eq!(minimal.theme_id, None);
+        assert_eq!(minimal.mode, None);
     }
 
     #[test]

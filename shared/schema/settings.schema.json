@@ -3,16 +3,6 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
-    "ColorThemeContract": {
-      "enum": [
-        "tailsync",
-        "ocean",
-        "forest",
-        "rose",
-        "high-contrast"
-      ],
-      "type": "string"
-    },
     "ConnectionModeContract": {
       "enum": [
         "auto",
@@ -27,26 +17,10 @@
         "zh-CN"
       ],
       "type": "string"
-    },
-    "ThemeContract": {
-      "enum": [
-        "system",
-        "light",
-        "dark"
-      ],
-      "type": "string"
     }
   },
   "description": "Encrypted settings stored alongside the app",
   "properties": {
-    "color_theme": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/ColorThemeContract"
-        }
-      ],
-      "default": "tailsync"
-    },
     "connection_mode": {
       "allOf": [
         {
@@ -69,6 +43,11 @@
       "maximum": 500.0,
       "minimum": 10.0,
       "type": "integer"
+    },
+    "history_shortcut": {
+      "default": "CommandOrControl+Shift+H",
+      "description": "Optional global shortcut used to open the history window. Empty disables it.",
+      "type": "string"
     },
     "language": {
       "$ref": "#/definitions/LanguageContract",
@@ -115,10 +94,6 @@
       "description": "Optional global shortcut used to toggle sync. Empty disables it.",
       "type": "string"
     },
-    "theme": {
-      "$ref": "#/definitions/ThemeContract",
-      "default": "system"
-    },
     "trusted_peer_addresses": {
       "additionalProperties": {
         "additionalProperties": {
@@ -140,10 +115,10 @@
     }
   },
   "required": [
-    "color_theme",
     "connection_mode",
     "enabled_peers",
     "history_limit",
+    "history_shortcut",
     "language",
     "notifications_enabled",
     "paired_peer_endpoints",
@@ -152,7 +127,6 @@
     "storage_root",
     "sync_enabled",
     "sync_shortcut",
-    "theme",
     "trusted_peer_addresses",
     "trusted_peer_keys"
   ],

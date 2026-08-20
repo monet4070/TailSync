@@ -7,7 +7,23 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+mod resume;
+pub use resume::cleanup_expired_transfers;
+use resume::{
+    persist_incoming_batch, persist_transfer_state, restore_persisted_received_file,
+    PersistedIncomingBatch, PersistedTransfer,
+};
+mod shadow;
+use shadow::ShadowFilter;
+mod prepare;
+use prepare::hash_source_file;
+pub use prepare::{
+    normalize_transferred_file_name, prepare_file_batch, revalidate_prepared_file,
+    validate_incoming_file_meta, FileBatchEntry, FileBatchManifest, FileBatchRef, FileMeta,
+    PreparedFile, PreparedFileBatch, MAX_FILE_SIZE,
+};
 
 const SEEN_MESSAGE_RETENTION_SECONDS: i64 = 10 * 60;
 pub const INCOMPLETE_TRANSFER_RETENTION_SECONDS: u64 = 24 * 60 * 60;
@@ -19,8 +35,6 @@ const MAX_ACTIVE_BATCHES_PER_PEER: usize = 2;
 const MAX_ACTIVE_BATCHES_GLOBAL: usize = 8;
 const MAX_ACTIVE_RECEIVES_PER_PEER: usize = 2;
 const MAX_ACTIVE_RECEIVES_GLOBAL: usize = 8;
-const SHADOW_FILTER_TTL: Duration = Duration::from_secs(30);
-const SHADOW_FILTER_MAX_ENTRIES: usize = 1024;
 
 static FILE_BATCH_ADMISSION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -30,360 +44,6 @@ static FILE_BATCH_ADMISSION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
 /// check before either one inserts its batch state.
 pub fn file_batch_admission_lock() -> &'static tokio::sync::Mutex<()> {
     &FILE_BATCH_ADMISSION_LOCK
-}
-
-struct ShadowEntry {
-    expires_at: Instant,
-}
-
-struct ShadowFilter {
-    entries: HashMap<String, ShadowEntry>,
-}
-
-impl ShadowFilter {
-    fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
-    }
-
-    fn insert(&mut self, hash: String) {
-        let now = Instant::now();
-        self.prune(now);
-        if let Some(entry) = self.entries.get_mut(&hash) {
-            entry.expires_at = now + SHADOW_FILTER_TTL;
-            return;
-        }
-        if self.entries.len() >= SHADOW_FILTER_MAX_ENTRIES {
-            if let Some(oldest) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.expires_at)
-                .map(|(hash, _)| hash.clone())
-            {
-                self.entries.remove(&oldest);
-            }
-        }
-        self.entries.insert(
-            hash,
-            ShadowEntry {
-                expires_at: now + SHADOW_FILTER_TTL,
-            },
-        );
-    }
-
-    /// Shadow entries intentionally remain sticky for the full TTL. Clipboard
-    /// backends can emit several events for one programmatic write, and every
-    /// one of those echoes must be suppressed. The accepted trade-off is that
-    /// a user copying identical content during the TTL is suppressed as well.
-    fn contains(&mut self, hash: &str) -> bool {
-        self.prune(Instant::now());
-        self.entries.contains_key(hash)
-    }
-
-    fn remove(&mut self, hash: &str) -> bool {
-        self.entries.remove(hash).is_some()
-    }
-
-    fn prune(&mut self, now: Instant) {
-        self.entries.retain(|_, entry| entry.expires_at > now);
-    }
-}
-
-fn default_file_chunk_size() -> u32 {
-    FILE_CHUNK_SIZE as u32
-}
-
-pub fn normalize_transferred_file_name(name: &str, data_hash: &str) -> String {
-    let full_prefix = format!("{data_hash}-");
-    let legacy_prefix = data_hash.get(..12).map(|hash| format!("{hash}_"));
-    let mut normalized = name;
-    loop {
-        if let Some(stripped) = normalized.strip_prefix(&full_prefix) {
-            normalized = stripped;
-            continue;
-        }
-        if let Some(stripped) = legacy_prefix
-            .as_deref()
-            .and_then(|prefix| normalized.strip_prefix(prefix))
-        {
-            normalized = stripped;
-            continue;
-        }
-        break;
-    }
-    if normalized.is_empty() {
-        name.to_string()
-    } else {
-        normalized.to_string()
-    }
-}
-
-/// Metadata for incoming file transfers
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileMeta {
-    #[serde(default)]
-    pub transfer_id: Option<TransferId>,
-    pub name: String,
-    pub size: u64,
-    pub hash: String,
-    #[serde(default = "default_file_chunk_size")]
-    pub chunk_size: u32,
-    #[serde(default)]
-    pub batch: Option<FileBatchRef>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileBatchRef {
-    pub batch_id: TransferId,
-    pub index: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileBatchEntry {
-    pub transfer_id: TransferId,
-    pub index: u16,
-    pub name: String,
-    #[serde(default)]
-    pub source_parent: String,
-    pub size: u64,
-    pub hash: String,
-    #[serde(default = "default_file_chunk_size")]
-    pub chunk_size: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileBatchManifest {
-    pub batch_id: TransferId,
-    pub generation: u64,
-    pub total_bytes: u64,
-    pub files: Vec<FileBatchEntry>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PreparedFile {
-    pub path: PathBuf,
-    pub modified_nanos: u128,
-    pub entry: FileBatchEntry,
-}
-
-#[derive(Debug, Clone)]
-pub struct PreparedFileBatch {
-    pub manifest: FileBatchManifest,
-    pub files: Vec<PreparedFile>,
-}
-
-impl FileBatchManifest {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.files.is_empty() || self.files.len() > MAX_FILE_BATCH_COUNT {
-            return Err(format!(
-                "A file batch must contain between 1 and {MAX_FILE_BATCH_COUNT} files"
-            ));
-        }
-        if self.total_bytes > MAX_FILE_BATCH_BYTES {
-            return Err("File batch exceeds the 1 GiB transfer limit".to_string());
-        }
-        let mut transfer_ids = HashSet::new();
-        let mut total = 0_u64;
-        for (expected_index, file) in self.files.iter().enumerate() {
-            if usize::from(file.index) != expected_index {
-                return Err("File batch indexes must be contiguous".to_string());
-            }
-            if !transfer_ids.insert(file.transfer_id) {
-                return Err("File batch contains a duplicate transfer ID".to_string());
-            }
-            if file.name.is_empty()
-                || Path::new(&file.name)
-                    .file_name()
-                    .is_none_or(|name| name != file.name.as_str())
-            {
-                return Err("File batch contains an invalid file name".to_string());
-            }
-            if file.chunk_size == 0 || file.chunk_size as usize > FILE_CHUNK_SIZE {
-                return Err("File batch contains an invalid chunk size".to_string());
-            }
-            total = total
-                .checked_add(file.size)
-                .ok_or_else(|| "File batch byte count overflowed".to_string())?;
-        }
-        if total != self.total_bytes {
-            return Err("File batch total does not match its manifest".to_string());
-        }
-        Ok(())
-    }
-}
-
-pub fn prepare_file_batch(
-    paths: Vec<PathBuf>,
-    generation: u64,
-) -> Result<PreparedFileBatch, String> {
-    if paths.is_empty() || paths.len() > MAX_FILE_BATCH_COUNT {
-        return Err(format!(
-            "Select between 1 and {MAX_FILE_BATCH_COUNT} ordinary files"
-        ));
-    }
-    let mut candidates = Vec::with_capacity(paths.len());
-    let mut total_bytes = 0_u64;
-    for path in paths {
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("Cannot inspect {}: {error}", path.display()))?;
-        if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "The selection contains a symbolic link: {}",
-                path.display()
-            ));
-        }
-        if !metadata.is_file() {
-            return Err(format!(
-                "The selection contains a folder or non-file item: {}",
-                path.display()
-            ));
-        }
-        total_bytes = total_bytes
-            .checked_add(metadata.len())
-            .ok_or_else(|| "The selected file sizes overflowed".to_string())?;
-        if total_bytes > MAX_FILE_BATCH_BYTES {
-            return Err("The selected files exceed the 1 GiB batch limit".to_string());
-        }
-        let original_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| format!("{} does not have a valid file name", path.display()))?
-            .to_string();
-        let source_parent = path
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .map(short_parent_label)
-            .unwrap_or_default();
-        let modified_nanos = modified_nanos(&metadata)?;
-        candidates.push((
-            path,
-            original_name,
-            source_parent,
-            metadata.len(),
-            modified_nanos,
-        ));
-    }
-
-    let mut used_names = HashSet::new();
-    let mut entries = Vec::with_capacity(candidates.len());
-    let mut files = Vec::with_capacity(candidates.len());
-    for (index, (path, original_name, source_parent, size, modified_nanos)) in
-        candidates.into_iter().enumerate()
-    {
-        let display_name = collision_safe_name(&original_name, &source_parent, &mut used_names);
-        let hash = hash_source_file(&path)?;
-        let entry = FileBatchEntry {
-            transfer_id: TransferId::random(),
-            index: u16::try_from(index).map_err(|_| "File batch index overflowed")?,
-            name: display_name,
-            source_parent,
-            size,
-            hash,
-            chunk_size: FILE_CHUNK_SIZE as u32,
-        };
-        entries.push(entry.clone());
-        files.push(PreparedFile {
-            path,
-            modified_nanos,
-            entry,
-        });
-    }
-    let manifest = FileBatchManifest {
-        batch_id: TransferId::random(),
-        generation,
-        total_bytes,
-        files: entries,
-    };
-    manifest.validate()?;
-    Ok(PreparedFileBatch { manifest, files })
-}
-
-pub fn revalidate_prepared_file(file: &PreparedFile) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(&file.path)
-        .map_err(|error| format!("Cannot re-open {}: {error}", file.path.display()))?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() != file.entry.size
-        || modified_nanos(&metadata)? != file.modified_nanos
-    {
-        return Err(format!(
-            "{} changed after the batch was copied",
-            file.path.display()
-        ));
-    }
-    let hash = hash_source_file(&file.path)?;
-    if hash != file.entry.hash {
-        return Err(format!(
-            "{} changed after the batch was copied",
-            file.path.display()
-        ));
-    }
-    Ok(())
-}
-
-fn modified_nanos(metadata: &fs::Metadata) -> Result<u128, String> {
-    metadata
-        .modified()
-        .map_err(|error| error.to_string())?
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .map_err(|error| error.to_string())
-}
-
-fn hash_source_file(path: &Path) -> Result<String, String> {
-    let file = File::open(path).map_err(|error| error.to_string())?;
-    let mut reader = BufReader::with_capacity(64 * 1024, file);
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|error| error.to_string())?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-    Ok(hasher.finalize().to_hex().to_string())
-}
-
-fn short_parent_label(value: &str) -> String {
-    value.chars().take(24).collect()
-}
-
-fn collision_safe_name(original: &str, parent_label: &str, used: &mut HashSet<String>) -> String {
-    if used.insert(original.to_string()) {
-        return original.to_string();
-    }
-    let path = Path::new(original);
-    let stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or(original);
-    let extension = path.extension().and_then(|value| value.to_str());
-    let label = if parent_label.is_empty() {
-        "Folder"
-    } else {
-        parent_label
-    };
-    for suffix in 1..=9999 {
-        let annotation = if suffix == 1 {
-            label.to_string()
-        } else {
-            format!("{label} {suffix}")
-        };
-        let candidate = match extension {
-            Some(extension) => format!("{stem} ({annotation}).{extension}"),
-            None => format!("{stem} ({annotation})"),
-        };
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-    }
-    format!("{stem} ({})", TransferId::random().as_hex())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,14 +84,6 @@ pub trait SyncPlatform: Send + Sync {
     fn file_batch_failed(&self, batch_id: Option<TransferId>, message: &str);
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedTransfer {
-    meta: FileMeta,
-    source: String,
-    final_path: PathBuf,
-    updated_at: i64,
-}
-
 /// State for an in-progress file receive — streamed to disk.
 struct FileReceiveState {
     meta: FileMeta,
@@ -470,7 +122,7 @@ impl PendingReceivedFile {
         if self.hash_verified {
             return Ok(self);
         }
-        let computed = hash_source_file(&self.file.path)?;
+        let computed = hash_source_file(&self.file.path).map_err(|error| error.to_string())?;
         if computed != self.meta.hash {
             return Err(format!(
                 "whole-file checksum mismatch for {}",
@@ -503,13 +155,6 @@ struct IncomingBatch {
     local_generation: u64,
     files: Vec<Option<ReceivedFile>>,
     manifest_path: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedIncomingBatch {
-    source: String,
-    manifest: FileBatchManifest,
-    files: Vec<Option<ReceivedFile>>,
 }
 
 pub struct SyncEngine {
@@ -635,7 +280,7 @@ impl SyncEngine {
     ) -> Result<(), String> {
         // Validate before touching disk. The server also validates before its
         // quota preflight, but this remains the authoritative core check.
-        manifest.validate()?;
+        manifest.validate().map_err(|error| error.to_string())?;
         let key = (source.clone(), manifest.batch_id);
         self.prune_cancelled_batches();
         if self.cancelled_batches.contains_key(&key) {
@@ -696,7 +341,8 @@ impl SyncEngine {
                 manifest: manifest.clone(),
                 files: files.clone(),
             },
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let local_generation = self.supersede_file_clipboard();
         self.incoming_batches.insert(
             key,
@@ -1002,7 +648,7 @@ impl SyncEngine {
             received,
             requires_full_hash,
         };
-        persist_transfer_state(&state, &source)?;
+        persist_transfer_state(&state, &source).map_err(|error| error.to_string())?;
 
         info!(
             "File receive ready: {} from {} at {}/{} bytes",
@@ -1067,7 +713,7 @@ impl SyncEngine {
         state.writer.flush().map_err(|error| error.to_string())?;
         state.hasher.update(&chunk.data);
         state.received += chunk.data.len() as u64;
-        persist_transfer_state(state, &source)?;
+        persist_transfer_state(state, &source).map_err(|error| error.to_string())?;
         let next_offset = state.received;
         let completed = state.received == state.meta.size;
         let progress_name = state.meta.name.clone();
@@ -1199,7 +845,8 @@ impl SyncEngine {
                 manifest: batch.manifest.clone(),
                 files: files.clone(),
             };
-            persist_incoming_batch(&batch.manifest_path, &persisted)?;
+            persist_incoming_batch(&batch.manifest_path, &persisted)
+                .map_err(|error| error.to_string())?;
             batch.files = files;
             let completed_files = batch.files.iter().filter(|file| file.is_some()).count();
             let completed_bytes = batch
@@ -1395,140 +1042,82 @@ impl SyncEngine {
     }
 }
 
-fn persist_transfer_state(state: &FileReceiveState, source: &str) -> Result<(), String> {
-    let Some(path) = state.state_path.as_ref() else {
-        return Ok(());
-    };
-    let saved = PersistedTransfer {
-        meta: state.meta.clone(),
-        source: source.to_string(),
-        final_path: state.final_path.clone(),
-        updated_at: chrono::Utc::now().timestamp(),
-    };
-    let temp = path.with_extension("json.tmp");
-    fs::write(
-        &temp,
-        serde_json::to_vec_pretty(&saved).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    fs::rename(&temp, path).map_err(|error| error.to_string())
-}
-
-fn persist_incoming_batch(path: &Path, batch: &PersistedIncomingBatch) -> Result<(), String> {
-    let temp = path.with_extension("json.tmp");
-    fs::write(
-        &temp,
-        serde_json::to_vec_pretty(batch).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    fs::rename(&temp, path).map_err(|error| error.to_string())
-}
-
-fn restore_persisted_received_file(
-    saved: &ReceivedFile,
-    expected: &FileBatchEntry,
-    incoming_dir: &Path,
-) -> Option<ReceivedFile> {
-    if saved.name != expected.name || saved.size != expected.size || saved.hash != expected.hash {
-        return None;
-    }
-    let file_name = saved.path.file_name()?;
-    let candidate = incoming_dir.join(file_name);
-    let incoming_dir = incoming_dir.canonicalize().ok()?;
-    let canonical = candidate.canonicalize().ok()?;
-    if canonical.parent() != Some(incoming_dir.as_path()) {
-        return None;
-    }
-    let metadata = canonical.metadata().ok()?;
-    if !metadata.is_file() || metadata.len() != expected.size {
-        return None;
-    }
-    if hash_source_file(&canonical).ok()? != expected.hash {
-        return None;
-    }
-    Some(ReceivedFile {
-        name: expected.name.clone(),
-        size: expected.size,
-        hash: expected.hash.clone(),
-        path: canonical,
-    })
-}
-
-pub fn cleanup_expired_transfers() {
-    let incoming = crate::db::get_incoming_dir();
-    cleanup_expired_transfers_in(
-        &incoming,
-        Duration::from_secs(INCOMPLETE_TRANSFER_RETENTION_SECONDS),
-    );
-}
-
-fn cleanup_expired_transfers_in(incoming: &Path, retention: Duration) {
-    let Ok(entries) = fs::read_dir(incoming) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        // Only the incoming root is inspected. Managed subdirectories such as
-        // clipboard-files have their own lifecycle and must never be touched.
-        if !metadata.is_file() {
-            continue;
-        }
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        let is_partial = file_name.ends_with(".part")
-            || file_name.ends_with(".resume.json")
-            || file_name.ends_with(".batch.json");
-        let expired = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > retention);
-        if expired {
-            if is_partial && file_name.ends_with(".batch.json") {
-                if let Ok(data) = fs::read(&path) {
-                    if let Ok(batch) = serde_json::from_slice::<PersistedIncomingBatch>(&data) {
-                        for (index, saved) in batch.files.iter().enumerate() {
-                            let Some(saved) = saved else {
-                                continue;
-                            };
-                            let Some(expected) = batch.manifest.files.get(index) else {
-                                continue;
-                            };
-                            if let Some(file) =
-                                restore_persisted_received_file(saved, expected, incoming)
-                            {
-                                let _ = fs::remove_file(file.path);
-                            }
-                        }
-                    }
-                }
+/// Verifies a completed inbound file off the async path and commits it
+/// (T108 migration). On verification failure the temp file is removed and
+/// the receive is discarded; on commit failure the temp file is removed.
+pub async fn verify_and_commit_received_file(
+    sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+    source: &str,
+    pending: PendingReceivedFile,
+) -> Result<(), String> {
+    let path = pending.path().to_path_buf();
+    let batch_id = pending.batch_id();
+    let verification = tokio::task::spawn_blocking(move || pending.verify_hash())
+        .await
+        .map_err(|error| format!("File verification task failed: {error}"))?;
+    match verification {
+        Ok(verified) => {
+            let result = sync_engine
+                .lock()
+                .await
+                .commit_received_file(source, verified);
+            if result.is_err() {
+                let _ = std::fs::remove_file(&path);
             }
-            // Non-partial root files only exist briefly between a successful
-            // rename and history import. Once stale, they are orphaned
-            // plaintext left by an import failure or process crash.
-            let _ = fs::remove_file(path);
+            result
         }
+        Err(error) => {
+            let _ = std::fs::remove_file(&path);
+            sync_engine
+                .lock()
+                .await
+                .discard_received_file(source, batch_id);
+            Err(error)
+        }
+    }
+}
+
+/// RAII guard that suspends all active receives from a peer on drop
+/// (T109 migration). Used while a pairing session is being installed so a
+/// later disconnect releases receive state asynchronously.
+pub struct ReceiveSuspendGuard {
+    sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>,
+    source: String,
+}
+
+impl ReceiveSuspendGuard {
+    pub fn new(sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>, source: String) -> Self {
+        Self {
+            sync_engine,
+            source,
+        }
+    }
+}
+
+impl Drop for ReceiveSuspendGuard {
+    fn drop(&mut self) {
+        let sync_engine = self.sync_engine.clone();
+        let source = self.source.clone();
+        tokio::spawn(async move {
+            sync_engine.lock().await.suspend_receive(&source);
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_transferred_file_name, prepare_file_batch, FileBatchEntry, FileBatchManifest,
-        FileBatchProgress, FileBatchRef, FileMeta, ReceivedFile, ShadowFilter, SyncEngine,
+        normalize_transferred_file_name, prepare_file_batch, validate_incoming_file_meta,
+        verify_and_commit_received_file, FileBatchEntry, FileBatchManifest, FileBatchProgress,
+        FileBatchRef, FileMeta, PendingReceivedFile, ReceiveSuspendGuard, ReceivedFile, SyncEngine,
         SyncPlatform, CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS,
         MAX_ACTIVE_BATCHES_GLOBAL, MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES,
-        MAX_FILE_BATCH_COUNT, SHADOW_FILTER_MAX_ENTRIES,
+        MAX_FILE_BATCH_COUNT, MAX_FILE_SIZE,
     };
     use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, SystemTime};
 
     #[derive(Debug)]
     struct TestDirectory(PathBuf);
@@ -1683,17 +1272,21 @@ mod tests {
         assert!(manifest_with_sizes(&[0; MAX_FILE_BATCH_COUNT])
             .validate()
             .is_ok());
-        assert!(manifest_with_sizes(&[0; MAX_FILE_BATCH_COUNT + 1])
-            .validate()
-            .unwrap_err()
-            .contains("between 1 and"));
+        assert!(matches!(
+            manifest_with_sizes(&[0; MAX_FILE_BATCH_COUNT + 1])
+                .validate()
+                .unwrap_err(),
+            crate::sync::prepare::PrepareError::BadBatchSize(_)
+        ));
         assert!(manifest_with_sizes(&[MAX_FILE_BATCH_BYTES])
             .validate()
             .is_ok());
-        assert!(manifest_with_sizes(&[MAX_FILE_BATCH_BYTES + 1])
-            .validate()
-            .unwrap_err()
-            .contains("1 GiB"));
+        assert!(matches!(
+            manifest_with_sizes(&[MAX_FILE_BATCH_BYTES + 1])
+                .validate()
+                .unwrap_err(),
+            crate::sync::prepare::PrepareError::BatchTooLarge
+        ));
     }
 
     #[test]
@@ -1769,7 +1362,11 @@ mod tests {
         std::fs::create_dir(&folder).unwrap();
 
         let error = prepare_file_batch(vec![file, folder], 1).unwrap_err();
-        assert!(error.contains("folder or non-file"));
+        assert!(matches!(
+            error,
+            crate::sync::prepare::PrepareError::NonFileSelected(_)
+        ));
+        assert!(error.to_string().contains("folder or non-file"));
     }
 
     #[test]
@@ -1787,7 +1384,11 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
         let error = prepare_file_batch(vec![target, link], 1).unwrap_err();
-        assert!(error.contains("symbolic link"));
+        assert!(matches!(
+            error,
+            crate::sync::prepare::PrepareError::SymlinkSelected(_)
+        ));
+        assert!(error.to_string().contains("symbolic link"));
     }
 
     #[test]
@@ -1982,33 +1583,6 @@ mod tests {
         sync.record_message("peer-a", message_id);
         assert!(sync.has_seen_message("peer-a", message_id));
         assert!(!sync.has_seen_message("peer-b", message_id));
-    }
-
-    #[test]
-    fn shadow_filter_stays_sticky_and_bounded() {
-        let mut filter = ShadowFilter::new();
-        filter.insert("same".into());
-        filter.insert("same".into());
-        assert!(filter.contains("same"));
-        assert!(filter.contains("same"));
-        assert_eq!(filter.entries.len(), 1);
-
-        for index in 0..(SHADOW_FILTER_MAX_ENTRIES + 20) {
-            filter.insert(format!("hash-{index}"));
-        }
-        assert_eq!(filter.entries.len(), SHADOW_FILTER_MAX_ENTRIES);
-    }
-
-    #[test]
-    fn shadow_filter_remove_rolls_back_and_expired_entries_miss() {
-        let mut filter = ShadowFilter::new();
-        filter.insert("rollback".into());
-        assert!(filter.remove("rollback"));
-        assert!(!filter.contains("rollback"));
-
-        filter.insert("expired".into());
-        filter.entries.get_mut("expired").unwrap().expires_at = Instant::now();
-        assert!(!filter.contains("expired"));
     }
 
     #[tokio::test]
@@ -2334,11 +1908,266 @@ mod tests {
                 .unwrap();
         }
 
-        super::cleanup_expired_transfers_in(directory.path(), Duration::from_secs(60 * 60));
+        super::resume::cleanup_expired_transfers_in(directory.path(), Duration::from_secs(60 * 60));
 
         assert!(!old_plaintext.exists());
         assert!(!old_partial.exists());
         assert!(recent_plaintext.exists());
         assert!(nested_file.exists());
+    }
+
+    // ------------------------------------------------------------------
+    // verify_and_commit_received_file (T108): deferred verification and
+    // commit orchestration for completed inbound files.
+    // ------------------------------------------------------------------
+
+    async fn completed_pending_receive(
+        directory: &TestDirectory,
+        data: &[u8],
+        corrupt_first_chunk: bool,
+        transfer_id: TransferId,
+    ) -> (
+        Arc<tokio::sync::Mutex<SyncEngine>>,
+        Arc<TestPlatform>,
+        PendingReceivedFile,
+    ) {
+        let meta = FileMeta {
+            transfer_id: Some(transfer_id),
+            name: "received.bin".into(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: None,
+        };
+        let mut initial = SyncEngine::new();
+        initial
+            .begin_file_receive(
+                meta.clone(),
+                &directory.path().join("received.bin"),
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        let first_chunk = if corrupt_first_chunk {
+            b"wrong-".to_vec()
+        } else {
+            data[..6].to_vec()
+        };
+        initial
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 0,
+                    data: first_chunk,
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        initial.suspend_receive("peer");
+
+        let platform = Arc::new(TestPlatform::default());
+        let mut restored = SyncEngine::new();
+        restored.set_platform(platform.clone());
+        restored
+            .begin_file_receive(meta, &directory.path().join("different.bin"), "peer".into())
+            .await
+            .unwrap();
+        let progress = restored
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 6,
+                    data: data[6..].to_vec(),
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        let pending = progress.completed.unwrap();
+        (
+            Arc::new(tokio::sync::Mutex::new(restored)),
+            platform,
+            pending,
+        )
+    }
+
+    #[tokio::test]
+    async fn verify_and_commit_commits_verified_files() {
+        let directory = TestDirectory::new("verify-commit-ok");
+        let (engine, platform, pending) =
+            completed_pending_receive(&directory, b"first-second", false, TransferId([74; 16]))
+                .await;
+
+        verify_and_commit_received_file(&engine, "peer", pending)
+            .await
+            .unwrap();
+        assert_eq!(platform.received().len(), 1);
+        // The temp file's fate on success is the platform files_received
+        // responsibility (the test platform is a no-op), mirroring the
+        // original server behavior of removing it only on failure.
+    }
+
+    #[tokio::test]
+    async fn verify_and_commit_removes_corrupt_files_without_committing() {
+        let directory = TestDirectory::new("verify-commit-corrupt");
+        let (engine, platform, pending) =
+            completed_pending_receive(&directory, b"first-second", true, TransferId([75; 16]))
+                .await;
+        let path = pending.path().to_path_buf();
+        assert!(path.is_file());
+
+        let error = verify_and_commit_received_file(&engine, "peer", pending)
+            .await
+            .unwrap_err();
+        assert!(error.contains("checksum mismatch"));
+        assert!(!path.exists(), "corrupt temp file must be removed");
+        assert!(platform.received().is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // ReceiveSuspendGuard (T109): pairing-time receive suspension.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn receive_suspend_guard_suspends_active_receives_on_drop() {
+        let directory = TestDirectory::new("suspend-guard");
+        let transfer_id = TransferId([76; 16]);
+        // A deliberately partial receive: 6 of 12 bytes arrive before
+        // the guard drops, so the transfer stays active.
+        let data = b"first-second";
+        let meta = FileMeta {
+            transfer_id: Some(transfer_id),
+            name: "received.bin".into(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: None,
+        };
+        let mut engine = SyncEngine::new();
+        engine
+            .begin_file_receive(meta, &directory.path().join("received.bin"), "peer".into())
+            .await
+            .unwrap();
+        engine
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 0,
+                    data: data[..6].to_vec(),
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        let engine = Arc::new(tokio::sync::Mutex::new(engine));
+
+        {
+            let _guard = ReceiveSuspendGuard::new(engine.clone(), "peer".to_string());
+        }
+        tokio::task::yield_now().await;
+
+        // The active receive is gone; another chunk for it is unknown.
+        let error = engine
+            .lock()
+            .await
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 4,
+                    data: b"rest".to_vec(),
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("file transfer metadata is not available"));
+    }
+
+    // ------------------------------------------------------------------
+    // Inbound FileMeta validation (T107): untrusted peer input handling.
+    // ------------------------------------------------------------------
+    fn meta_with_name(name: &str) -> FileMeta {
+        FileMeta {
+            transfer_id: None,
+            name: name.to_string(),
+            size: 10,
+            hash: "abcd".repeat(16),
+            chunk_size: 0,
+            batch: Some(FileBatchRef {
+                batch_id: TransferId([7; 16]),
+                index: 0,
+            }),
+        }
+    }
+
+    #[test]
+    fn file_meta_accepts_valid_input_and_normalizes_the_name() {
+        let mut meta = meta_with_name("../nested/notes.txt");
+        validate_incoming_file_meta(&mut meta).unwrap();
+        assert_eq!(meta.name, "notes.txt");
+
+        // Hash-prefixed names are stripped by the normalizer.
+        let mut meta = meta_with_name(&format!("{}-notes.txt", "abcd".repeat(16)));
+        validate_incoming_file_meta(&mut meta).unwrap();
+        assert_eq!(meta.name, "notes.txt");
+    }
+
+    #[test]
+    fn file_meta_requires_the_batch_protocol() {
+        let mut meta = meta_with_name("a.txt");
+        meta.batch = None;
+        assert!(matches!(
+            validate_incoming_file_meta(&mut meta),
+            Err(crate::sync::prepare::PrepareError::ProtocolRequired)
+        ));
+    }
+
+    #[test]
+    fn file_meta_rejects_oversized_files() {
+        let mut meta = meta_with_name("big.bin");
+        meta.size = MAX_FILE_SIZE + 1;
+        assert!(matches!(
+            validate_incoming_file_meta(&mut meta),
+            Err(crate::sync::prepare::PrepareError::FileTooLarge)
+        ));
+    }
+
+    #[test]
+    fn file_meta_rejects_missing_or_invalid_names() {
+        let mut meta = meta_with_name("/");
+        assert!(matches!(
+            validate_incoming_file_meta(&mut meta),
+            Err(crate::sync::prepare::PrepareError::InvalidFileName)
+        ));
+
+        // A name that normalizes back to itself stays accepted.
+        let mut meta = meta_with_name(&format!("{}-", "abcd".repeat(16)));
+        assert!(validate_incoming_file_meta(&mut meta).is_ok());
+        assert_eq!(meta.name, format!("{}-", "abcd".repeat(16)));
+    }
+
+    #[test]
+    fn file_meta_rejects_invalid_chunk_sizes_for_resumable_transfers() {
+        let mut meta = meta_with_name("resume.bin");
+        meta.transfer_id = Some(TransferId([1; 16]));
+        meta.chunk_size = 0;
+        assert!(matches!(
+            validate_incoming_file_meta(&mut meta),
+            Err(crate::sync::prepare::PrepareError::InvalidChunkSize)
+        ));
+
+        let mut meta = meta_with_name("resume.bin");
+        meta.transfer_id = Some(TransferId([1; 16]));
+        meta.chunk_size = (crate::protocol::FILE_CHUNK_SIZE + 1) as u32;
+        assert!(matches!(
+            validate_incoming_file_meta(&mut meta),
+            Err(crate::sync::prepare::PrepareError::InvalidChunkSize)
+        ));
+
+        // Non-resumable transfers do not carry a chunk size requirement.
+        let mut meta = meta_with_name("plain.bin");
+        meta.chunk_size = 0;
+        assert!(validate_incoming_file_meta(&mut meta).is_ok());
     }
 }

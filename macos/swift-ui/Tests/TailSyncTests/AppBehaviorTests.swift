@@ -41,6 +41,24 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertLessThanOrEqual(DaemonShutdownPolicy.pollInterval, 0.05)
     }
 
+    func testNotificationPollerOnlyRefreshesHistoryForHistoryChanges() {
+        XCTAssertTrue(RuntimeNotificationPolicy.shouldRefreshHistory(
+            previousHistoryVersion: nil,
+            currentHistoryVersion: 0,
+            isFirstPoll: true
+        ))
+        XCTAssertFalse(RuntimeNotificationPolicy.shouldRefreshHistory(
+            previousHistoryVersion: 12,
+            currentHistoryVersion: 12,
+            isFirstPoll: false
+        ))
+        XCTAssertTrue(RuntimeNotificationPolicy.shouldRefreshHistory(
+            previousHistoryVersion: 12,
+            currentHistoryVersion: 13,
+            isFirstPoll: false
+        ))
+    }
+
     func testTerminationPreventsAllDaemonActivity() {
         XCTAssertTrue(
             DaemonLifecyclePolicy.allowsDaemonActivity(terminationInProgress: false)
@@ -155,6 +173,130 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertEqual(peerRefreshTicks, 0)
     }
 
+    func testHistoryPreviewTargetUsesFirstFileForCollapsedBatch() throws {
+        let entries = try [
+            makeHistoryEntry(id: 101, batchId: "batch-a", batchIndex: 0),
+            makeHistoryEntry(id: 102, batchId: "batch-a", batchIndex: 1),
+            makeHistoryEntry(id: 103, batchId: "batch-a", batchIndex: 2)
+        ]
+
+        XCTAssertEqual(
+            historyPreviewTargetId(
+                focusedId: 102,
+                entries: entries,
+                expandedBatchIds: []
+            ),
+            101
+        )
+    }
+
+    func testHistoryPreviewTargetUsesFocusedFileWhenBatchExpanded() throws {
+        let entries = try [
+            makeHistoryEntry(id: 201, batchId: "batch-b", batchIndex: 0),
+            makeHistoryEntry(id: 202, batchId: "batch-b", batchIndex: 1)
+        ]
+
+        XCTAssertEqual(
+            historyPreviewTargetId(
+                focusedId: 202,
+                entries: entries,
+                expandedBatchIds: ["batch-b"]
+            ),
+            202
+        )
+    }
+
+    func testHistoryPreviewTargetHandlesStandaloneAndMissingRows() throws {
+        let entries = try [makeHistoryEntry(id: 301)]
+
+        XCTAssertEqual(
+            historyPreviewTargetId(
+                focusedId: 301,
+                entries: entries,
+                expandedBatchIds: []
+            ),
+            301
+        )
+        XCTAssertNil(
+            historyPreviewTargetId(
+                focusedId: 999,
+                entries: entries,
+                expandedBatchIds: []
+            )
+        )
+    }
+
+    func testHistoryPreviewStringsExistInBothSupportedLanguages() {
+        let loc = Loc.shared
+        let originalLanguage = loc.lang
+        defer { loc.lang = originalLanguage }
+        let keys = [
+            "history.preview.title",
+            "history.preview.loading",
+            "history.preview.error",
+            "history.preview.close",
+            "history.preview.previousItem",
+            "history.preview.nextItem",
+            "history.preview.restore",
+            "history.preview.restored",
+            "history.preview.restoreFailed",
+            "history.preview.retry",
+            "history.preview.tooLargeTitle",
+            "history.preview.tooLargeMessage",
+            "history.preview.unsupportedTitle",
+            "history.preview.unsupportedMessage",
+            "history.preview.corruptTitle",
+            "history.preview.corruptMessage",
+            "history.preview.decryptTitle",
+            "history.preview.decryptMessage",
+            "history.preview.unavailableTitle",
+            "history.preview.unavailableMessage",
+            "history.preview.unknownType",
+            "history.preview.plainText",
+            "history.preview.code",
+            "history.preview.search",
+            "history.preview.previousMatch",
+            "history.preview.nextMatch",
+            "history.preview.wrapLines",
+            "history.preview.decreaseFont",
+            "history.preview.increaseFont",
+            "history.preview.copyAll",
+            "history.preview.lines",
+            "history.preview.characters",
+            "history.preview.fit",
+            "history.preview.actualSize",
+            "history.preview.rotate",
+            "history.preview.transparency",
+            "history.preview.thumbnails"
+        ]
+
+        for language in ["en", "zh-CN"] {
+            loc.lang = language
+            for key in keys {
+                XCTAssertFalse(Loc.t(key).isEmpty)
+                XCTAssertNotEqual(Loc.t(key), key)
+            }
+        }
+    }
+
+    func testThemeVersionConfirmationStringsExistInBothSupportedLanguages() {
+        let loc = Loc.shared
+        let originalLanguage = loc.lang
+        defer { loc.lang = originalLanguage }
+        let keys = [
+            "settings.themePackageCandidateVersion",
+            "settings.themePackageReplaceTitle",
+            "settings.themePackageDowngradeTitle"
+        ]
+
+        for language in ["en", "zh-CN"] {
+            loc.lang = language
+            for key in keys {
+                XCTAssertNotEqual(Loc.t(key), key)
+            }
+        }
+    }
+
     func testCanvasUsesTheWindowsSemanticColorTokens() throws {
         let light = TailSyncColorTheme.tailsync.palette(for: .light)
         let dark = TailSyncColorTheme.tailsync.palette(for: .dark)
@@ -213,5 +355,47 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertEqual(resolved.greenComponent, green, accuracy: 0.005, file: file, line: line)
         XCTAssertEqual(resolved.blueComponent, blue, accuracy: 0.005, file: file, line: line)
         XCTAssertEqual(resolved.alphaComponent, alpha, accuracy: 0.005, file: file, line: line)
+    }
+
+    private func makeHistoryEntry(
+        id: Int64,
+        batchId: String? = nil,
+        batchIndex: Int? = nil
+    ) throws -> HistoryEntry {
+        var json = """
+        {
+          "id": \(id),
+          "timestamp": "2026-01-01T00:00:00Z",
+          "type": "file",
+          "description": "file-\(id)",
+          "data_hash": "hash-\(id)",
+          "size_bytes": 1,
+          "source_peer": "local",
+          "category": "file",
+          "categories": ["file"],
+          "batch_status": "complete"
+        }
+        """
+        if let batchId, let batchIndex {
+            json = """
+            {
+              "id": \(id),
+              "timestamp": "2026-01-01T00:00:00Z",
+              "type": "file",
+              "description": "file-\(id)",
+              "data_hash": "hash-\(id)",
+              "size_bytes": 1,
+              "source_peer": "local",
+              "category": "file",
+              "categories": ["file"],
+              "batch_id": "\(batchId)",
+              "batch_index": \(batchIndex),
+              "batch_total": 3,
+              "batch_count": 3,
+              "batch_status": "complete"
+            }
+            """
+        }
+        return try JSONDecoder().decode(HistoryEntry.self, from: Data(json.utf8))
     }
 }

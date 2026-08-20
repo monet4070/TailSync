@@ -304,20 +304,20 @@ fn create_private_temporary_file(parent: &Path) -> Result<(PathBuf, std::fs::Fil
 }
 
 #[cfg(unix)]
-fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
         .map_err(|error| IdentityError::io("restricting the identity directory", error))
 }
 
 #[cfg(windows)]
-fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
     set_private_windows_acl(path, true)
         .map_err(|error| IdentityError::io("restricting the identity directory", error))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn restrict_private_directory(_path: &Path) -> Result<(), IdentityError> {
+pub(crate) fn restrict_private_directory(_path: &Path) -> Result<(), IdentityError> {
     Ok(())
 }
 
@@ -407,17 +407,27 @@ fn sync_parent_directory(_path: &Path) -> Result<(), IdentityError> {
     Ok(())
 }
 
-pub fn decode_public_key(encoded: &str) -> Result<Vec<u8>, String> {
+/// Device public-key decoding failures (T353 migration). Display strings
+/// reach the UI and wire surfaces verbatim.
+#[derive(Debug, Error)]
+pub enum IdentityKeyError {
+    #[error("Device public key is not valid Base64")]
+    InvalidBase64,
+    #[error("Device public key must decode to 32 bytes")]
+    WrongLength,
+}
+
+pub fn decode_public_key(encoded: &str) -> Result<Vec<u8>, IdentityKeyError> {
     let key = STANDARD
         .decode(encoded.trim())
-        .map_err(|_| "Device public key is not valid Base64".to_string())?;
+        .map_err(|_| IdentityKeyError::InvalidBase64)?;
     if key.len() != KEY_SIZE {
-        return Err("Device public key must decode to 32 bytes".to_string());
+        return Err(IdentityKeyError::WrongLength);
     }
     Ok(key)
 }
 
-pub fn canonical_public_key(encoded: &str) -> Result<String, String> {
+pub fn canonical_public_key(encoded: &str) -> Result<String, IdentityKeyError> {
     decode_public_key(encoded).map(|key| STANDARD.encode(key))
 }
 
@@ -435,6 +445,70 @@ pub fn fingerprint(public_key: &[u8]) -> String {
         })
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Reasons a peer-trust operation can fail once the surface-specific
+/// message formatting has been peeled away.
+#[derive(Debug)]
+pub enum TrustPeerFailure {
+    InvalidHostname,
+    SelfPairing,
+    Key(String),
+    Interface(String),
+    Trust(String),
+}
+
+/// Pin a peer's Noise static public key after out-of-band verification
+/// (T302 extraction from the Tauri command and API route surfaces).
+///
+/// Validates the hostname and key, resolves the connection-mode interface
+/// for the peer address, records the trusted identity in settings, and
+/// persists through the injected hook. Persistence follows the same
+/// clone-then-commit semantics as `Settings::trust_peer`: on any failure
+/// the in-memory settings are restored to their previous state.
+pub async fn trust_peer(
+    identity: &DeviceIdentity,
+    settings: &tokio::sync::Mutex<crypto::Settings>,
+    persist_settings: &(dyn Fn(&crypto::Settings) -> Result<(), String> + Send + Sync),
+    hostname: &str,
+    public_key: &str,
+    address: Option<&str>,
+) -> Result<String, TrustPeerFailure> {
+    let hostname = hostname.trim();
+    if hostname.is_empty() || hostname.len() > 255 {
+        return Err(TrustPeerFailure::InvalidHostname);
+    }
+    let public_key = canonical_public_key(public_key)
+        .map_err(|error| TrustPeerFailure::Key(error.to_string()))?;
+    if public_key == identity.public_key_base64() {
+        return Err(TrustPeerFailure::SelfPairing);
+    }
+    let decoded =
+        decode_public_key(&public_key).map_err(|error| TrustPeerFailure::Key(error.to_string()))?;
+    let fingerprint = fingerprint(&decoded);
+    let mut settings_guard = settings.lock().await;
+    let address = address.filter(|value| !value.trim().is_empty());
+    let mode = match (settings_guard.connection_mode.as_str(), address) {
+        ("auto", Some(address)) => crate::peer::directory::infer_interface(address)
+            .map_err(TrustPeerFailure::Interface)?
+            .as_str()
+            .to_string(),
+        (mode, _) => crate::peer::directory::mode_interface(mode)
+            .map(|interface| interface.as_str().to_string())
+            .unwrap_or_else(|| "lan".to_string()),
+    };
+    let snapshot = settings_guard.clone();
+    if let Err(error) =
+        settings_guard.trust_peer_without_save(hostname, &public_key, &mode, address)
+    {
+        *settings_guard = snapshot;
+        return Err(TrustPeerFailure::Trust(error.to_string()));
+    }
+    if let Err(error) = persist_settings(&settings_guard) {
+        *settings_guard = snapshot;
+        return Err(TrustPeerFailure::Trust(error));
+    }
+    Ok(fingerprint)
 }
 
 fn identity_path() -> PathBuf {
@@ -573,5 +647,170 @@ mod tests {
             0o600
         );
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn trust_peer_settings() -> std::sync::Arc<tokio::sync::Mutex<crypto::Settings>> {
+        std::sync::Arc::new(tokio::sync::Mutex::new(crypto::Settings::default()))
+    }
+
+    #[tokio::test]
+    async fn trust_peer_rejects_an_empty_hostname() {
+        let identity = DeviceIdentity::generate_for_test();
+        let settings = trust_peer_settings();
+        let persist = |_settings: &crypto::Settings| -> Result<(), String> { Ok(()) };
+        let error = trust_peer(
+            &identity,
+            &settings,
+            &persist,
+            "   ",
+            &identity.public_key_base64(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TrustPeerFailure::InvalidHostname));
+    }
+
+    #[tokio::test]
+    async fn trust_peer_rejects_pinning_this_device_itself() {
+        let identity = DeviceIdentity::generate_for_test();
+        let settings = trust_peer_settings();
+        let persist = |_settings: &crypto::Settings| -> Result<(), String> { Ok(()) };
+        let error = trust_peer(
+            &identity,
+            &settings,
+            &persist,
+            "laptop",
+            &identity.public_key_base64(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, TrustPeerFailure::SelfPairing));
+    }
+
+    #[tokio::test]
+    async fn trust_peer_pins_the_key_and_persists_via_the_hook() {
+        let identity = DeviceIdentity::generate_for_test();
+        let peer = DeviceIdentity::generate_for_test();
+        let settings = trust_peer_settings();
+        let persisted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let persist_counter = persisted.clone();
+        let persist = move |_settings: &crypto::Settings| -> Result<(), String> {
+            persist_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+
+        let pinned_fingerprint = trust_peer(
+            &identity,
+            &settings,
+            &persist,
+            "laptop",
+            &peer.public_key_base64(),
+            Some("192.168.1.5"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pinned_fingerprint, fingerprint(peer.public_key()));
+        let settings_guard = settings.lock().await;
+        assert_eq!(
+            settings_guard
+                .trusted_peer_keys
+                .get("laptop")
+                .map(String::as_str),
+            Some(peer.public_key_base64().as_str())
+        );
+        assert_eq!(
+            settings_guard
+                .paired_peer_endpoints
+                .get("laptop")
+                .map(String::as_str),
+            Some("192.168.1.5")
+        );
+        assert_eq!(settings_guard.enabled_peers.get("laptop"), Some(&true));
+        drop(settings_guard);
+        assert_eq!(persisted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn trust_peer_rolls_back_the_settings_when_persistence_fails() {
+        let identity = DeviceIdentity::generate_for_test();
+        let peer = DeviceIdentity::generate_for_test();
+        let settings = trust_peer_settings();
+        let fail_persist = |_settings: &crypto::Settings| -> Result<(), String> {
+            Err("simulated save failure".to_string())
+        };
+
+        let error = trust_peer(
+            &identity,
+            &settings,
+            &fail_persist,
+            "laptop",
+            &peer.public_key_base64(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            TrustPeerFailure::Trust(ref message) if message == "simulated save failure"
+        ));
+        let settings_guard = settings.lock().await;
+        assert!(!settings_guard.trusted_peer_keys.contains_key("laptop"));
+        assert!(!settings_guard.enabled_peers.contains_key("laptop"));
+    }
+
+    #[tokio::test]
+    async fn trust_peer_filters_blank_addresses_and_falls_back_to_lan_in_auto_mode() {
+        let identity = DeviceIdentity::generate_for_test();
+        let peer = DeviceIdentity::generate_for_test();
+        let settings = trust_peer_settings();
+        assert_eq!(settings.lock().await.connection_mode, "auto");
+        let persist = |_settings: &crypto::Settings| -> Result<(), String> { Ok(()) };
+
+        trust_peer(
+            &identity,
+            &settings,
+            &persist,
+            "laptop",
+            &peer.public_key_base64(),
+            Some("   "),
+        )
+        .await
+        .unwrap();
+        let settings_guard = settings.lock().await;
+        assert!(settings_guard.trusted_peer_keys.contains_key("laptop"));
+        assert!(!settings_guard.paired_peer_endpoints.contains_key("laptop"));
+        assert!(
+            !settings_guard.trusted_peer_addresses.contains_key("laptop"),
+            "a blank address must not be remembered"
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_peer_infers_tailscale_mode_for_cgnat_addresses() {
+        let identity = DeviceIdentity::generate_for_test();
+        let peer = DeviceIdentity::generate_for_test();
+        let settings = trust_peer_settings();
+        let persist = |_settings: &crypto::Settings| -> Result<(), String> { Ok(()) };
+
+        trust_peer(
+            &identity,
+            &settings,
+            &persist,
+            "laptop",
+            &peer.public_key_base64(),
+            Some("100.64.0.9"),
+        )
+        .await
+        .unwrap();
+        let settings_guard = settings.lock().await;
+        assert_eq!(
+            settings_guard
+                .trusted_peer_addresses
+                .get("laptop")
+                .and_then(|modes| modes.get("tailscale")),
+            Some(&"100.64.0.9".to_string())
+        );
     }
 }

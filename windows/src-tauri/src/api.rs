@@ -7,12 +7,12 @@ mod imports;
 mod routes;
 mod transport;
 
-pub(crate) use imports::ImportRegistry;
 use imports::{
     append_import_chunk, begin_import, finish_import, import_response, import_size_limit,
 };
 use routes::handle_cmd;
 pub(crate) use routes::{history_capabilities_data, peer_snapshot_data};
+pub(crate) use tailsync_core::import::ImportRegistry;
 pub use transport::start;
 #[cfg(test)]
 use transport::{bind_api_listener, read_request_with_limits};
@@ -26,29 +26,48 @@ use log::{info, warn};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{watch, Mutex, Semaphore};
 use tokio::time::timeout;
 
+static RUNTIME_REVISION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(1).0);
+
+pub fn get_runtime_revision() -> u64 {
+    *RUNTIME_REVISION.borrow()
+}
+
+pub fn bump_runtime_revision() {
+    RUNTIME_REVISION.send_modify(|revision| {
+        *revision = revision.wrapping_add(1).max(1);
+    });
+}
+
+pub async fn wait_for_runtime_revision(since: u64, wait: Duration) -> u64 {
+    let mut receiver = RUNTIME_REVISION.subscribe();
+    if *receiver.borrow() != since {
+        return *receiver.borrow();
+    }
+    let _ = timeout(wait, receiver.changed()).await;
+    let revision = *receiver.borrow();
+    revision
+}
+
 /// Monotonic version — bumped on every clipboard change.
 pub static CLIPBOARD_VERSION: AtomicU64 = AtomicU64::new(0);
 pub fn bump_clipboard_version() {
     CLIPBOARD_VERSION.fetch_add(1, Ordering::Release);
+    bump_runtime_revision();
 }
 pub fn get_clipboard_version() -> u64 {
     CLIPBOARD_VERSION.load(Ordering::Acquire)
 }
 
 // File transfer progress
-use std::collections::{HashSet, VecDeque};
-use std::sync::{LazyLock, Mutex as StdMutex};
 static FILE_PROGRESS: LazyLock<StdMutex<HashMap<String, TrackedFileProgress>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 static CANCELLED_FILE_BATCHES: LazyLock<StdMutex<HashSet<String>>> =
@@ -142,22 +161,35 @@ pub fn set_file_batch_progress(mut progress: FileProgress) {
         }
         tracked.progress = progress;
         tracked.updated_at = now;
+        drop(state);
+        bump_runtime_revision();
     }
 }
 pub fn clear_file_progress() {
     if let Ok(mut progress) = FILE_PROGRESS.lock() {
+        let changed = !progress.is_empty();
         progress.clear();
+        drop(progress);
+        if changed {
+            bump_runtime_revision();
+        }
     }
 }
 
 pub fn clear_file_progress_scope(batch_id: Option<&str>, device: Option<&str>) {
     if let Ok(mut progress) = FILE_PROGRESS.lock() {
+        let previous_count = progress.len();
         progress.retain(|_, tracked| {
             let batch_matches =
                 batch_id.is_none_or(|batch_id| tracked.progress.batch_id == batch_id);
             let device_matches = device.is_none_or(|device| tracked.progress.device == device);
             !(batch_matches && device_matches)
         });
+        let changed = progress.len() != previous_count;
+        drop(progress);
+        if changed {
+            bump_runtime_revision();
+        }
     }
 }
 
@@ -330,10 +362,6 @@ const API_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const API_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const API_BIND_RETRY_DELAY: Duration = Duration::from_millis(250);
 const API_MAX_CONNECTIONS: usize = 16;
-const IMPORT_CHUNK_MAX_BYTES: usize = 512 * 1024;
-const API_MAX_IMPORTS: usize = 4;
-const IMPORT_SESSION_TTL: Duration = Duration::from_secs(10 * 60);
-const MAX_IMPORT_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct ApiToken([u8; 32]);
@@ -462,9 +490,10 @@ struct Response {
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_api_listener, clear_file_progress, clear_file_progress_scope, get_file_progress,
-        history_capabilities_data, peer_snapshot_data, read_request_with_limits,
-        set_file_batch_progress, ApiToken, FileProgress, Request,
+        bind_api_listener, bump_runtime_revision, clear_file_progress, clear_file_progress_scope,
+        get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
+        read_request_with_limits, set_file_batch_progress, wait_for_runtime_revision, ApiToken,
+        FileProgress, Request,
     };
     use crate::crypto::Settings;
     use crate::identity::DeviceIdentity;
@@ -500,6 +529,18 @@ mod tests {
         assert_eq!(remaining.batch_id, "batch-a");
         assert_eq!(remaining.device, "peer-a");
         clear_file_progress();
+    }
+
+    #[tokio::test]
+    async fn runtime_revision_waiter_wakes_on_change() {
+        let current = get_runtime_revision();
+        let waiter = tokio::spawn(async move {
+            wait_for_runtime_revision(current, Duration::from_secs(1)).await
+        });
+        tokio::task::yield_now().await;
+        bump_runtime_revision();
+        let changed = waiter.await.unwrap();
+        assert_ne!(changed, current);
     }
 
     #[tokio::test]

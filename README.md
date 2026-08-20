@@ -62,6 +62,7 @@ macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/r
 - 文件回传抑制：应用托管的 `clipboard-files/` 文件不会被回传给原发送端
 - 文件名清理、1 GiB 接收上限和入站连接数限制
 - 中英文界面与本地化托盘菜单、浅色 / 深色 / 跟随系统及五套配色主题、通知、设备启停与路由选择
+- 自定义主题（Theme V2）：导入 `.tailsync-theme` 主题包（`theme.json` 清单 + 可选 `assets/`），在设置页启用、更新与删除，与内置主题并列；主题选择为本地偏好（`themes-v2/local-settings.json`），缺包时自动回退默认主题，详见 `docs/THEMING.md`
 
 ## 技术架构
 
