@@ -49,6 +49,7 @@ windows/tailsync-site-*.tar.gz
 # directories, so they must never be stageable.
 windows/.tmp/
 windows/ci-artifacts/
+ci-downloads/
 
 # Runtime logs
 **/logs/
