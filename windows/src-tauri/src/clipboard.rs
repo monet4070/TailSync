@@ -1001,15 +1001,28 @@ async fn broadcast_to_peers(
     }
     let peers = configured_peers(settings).await;
 
+    // Encode the event exactly once and share the reference-counted buffer
+    // across every peer, so broadcasting a large image holds a single payload
+    // instead of one copy per peer. Every peer acknowledges the same message
+    // id; receiver dedup is scoped to (source, message_id) and each peer sees
+    // the broadcast at most once, so the shared id is safe.
+    let event = match network::SharedEvent::encode(cmd, payload) {
+        Ok(event) => event,
+        Err(error) => {
+            warn!("Skipping clipboard broadcast: {error}");
+            return;
+        }
+    };
+
     for peer in &peers {
         if !peer_is_transfer_eligible(peer) {
             continue;
         }
         let pool = pool.clone();
-        let payload = payload.clone();
+        let event = event.clone();
         let peer = peer.clone();
         tokio::spawn(async move {
-            if let Err(error) = network::queue_peer_frame(&pool, &peer, cmd, payload).await {
+            if let Err(error) = network::queue_peer_shared_event(&pool, &peer, &event).await {
                 debug!("Broadcast to {} failed: {}", peer.hostname, error);
             }
         });

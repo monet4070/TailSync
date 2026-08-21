@@ -87,7 +87,7 @@ mod pool;
 use pool::wait_for_shutdown;
 pub use pool::{
     acquire_peer_file_batch, prewarm_connections, queue_peer_batch_frame, queue_peer_file_frame,
-    queue_peer_frame, ConnectionPool,
+    queue_peer_frame, queue_peer_shared_event, ConnectionPool, SharedEvent,
 };
 #[cfg(test)]
 use pool::{

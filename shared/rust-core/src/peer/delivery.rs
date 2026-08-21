@@ -11,6 +11,7 @@
 //! and one test suite.
 
 use std::future::Future;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{timeout, Duration};
 
@@ -111,13 +112,31 @@ pub enum AckExpectation {
     Batch(TransferId),
 }
 
+/// The wire bytes of a queued frame. Most frames uniquely own their payload;
+/// a broadcast to several peers instead shares one reference-counted buffer
+/// (see [`SharedEvent`]) so a large image is encoded once and never copied
+/// per peer.
+enum Payload {
+    Owned(Vec<u8>),
+    Shared(Arc<[u8]>),
+}
+
+impl Payload {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Payload::Owned(bytes) => bytes,
+            Payload::Shared(bytes) => bytes,
+        }
+    }
+}
+
 /// A frame queued for one peer, with its expected acknowledgement and an
 /// optional completion callback for the caller that enqueued it. Fields are
 /// private: frames can only be built through the constructors, which keep
 /// command, payload, and acknowledgement internally consistent.
 pub struct QueuedFrame {
     command: Command,
-    payload: Vec<u8>,
+    payload: Payload,
     acknowledgement: AckExpectation,
     completion: Option<oneshot::Sender<Result<DeliveryReceipt, DeliveryError>>>,
 }
@@ -128,7 +147,7 @@ impl QueuedFrame {
     }
 
     pub fn payload(&self) -> &[u8] {
-        &self.payload
+        self.payload.as_slice()
     }
 
     pub fn acknowledgement(&self) -> AckExpectation {
@@ -153,7 +172,7 @@ impl QueuedFrame {
                     ));
                 }
                 let message_id = envelope.message_id;
-                (envelope.encode(), AckExpectation::Event(message_id))
+                (Payload::Owned(envelope.encode()), AckExpectation::Event(message_id))
             } else {
                 if content.len() > command.payload_limit() {
                     return Err(format!(
@@ -162,7 +181,7 @@ impl QueuedFrame {
                         command.payload_limit()
                     ));
                 }
-                (content, AckExpectation::None)
+                (Payload::Owned(content), AckExpectation::None)
             };
         Ok(Self {
             command,
@@ -188,7 +207,7 @@ impl QueuedFrame {
         }
         Ok(Self {
             command,
-            payload,
+            payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::Event(envelope.message_id),
             completion: None,
         })
@@ -217,7 +236,7 @@ impl QueuedFrame {
         }
         Ok(Self {
             command,
-            payload,
+            payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::File(transfer_id),
             completion: Some(completion),
         })
@@ -242,10 +261,69 @@ impl QueuedFrame {
         }
         Ok(Self {
             command,
-            payload,
+            payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::Batch(batch_id),
             completion: Some(completion),
         })
+    }
+}
+
+/// A text or image event, encoded exactly once so a single broadcast can be
+/// delivered to every peer without re-encoding or copying the payload per
+/// peer. [`SharedEvent::queued`] hands each peer a [`QueuedFrame`] that shares
+/// this buffer (an `Arc` bump, not a copy), so broadcasting a 32 MiB image to
+/// N peers holds one buffer instead of N.
+///
+/// Every peer receives the same `message_id`. Receiver-side dedup is scoped to
+/// `(source, message_id)` and each peer sees a given broadcast at most once
+/// (peers do not relay), so the shared id is safe — it simply means one
+/// clipboard event carries one identity across the fan-out.
+#[derive(Clone)]
+pub struct SharedEvent {
+    command: Command,
+    payload: Arc<[u8]>,
+    message_id: MessageId,
+}
+
+impl SharedEvent {
+    /// Encode a text/image payload once into a shared, reference-counted
+    /// buffer, validated against the command limit exactly like
+    /// [`QueuedFrame::new`] so a broadcast can never put an oversized frame on
+    /// the wire.
+    pub fn encode(command: Command, content: Vec<u8>) -> Result<Self, String> {
+        if !matches!(command, Command::TextPayload | Command::ImagePayload) {
+            return Err(format!("{command:?} is not an envelope-wrapped command"));
+        }
+        let envelope = EventEnvelope::new(content);
+        if envelope.encoded_len() > command.payload_limit() {
+            return Err(format!(
+                "{:?} reliable payload exceeds the {} byte limit",
+                command,
+                command.payload_limit()
+            ));
+        }
+        let message_id = envelope.message_id;
+        Ok(Self {
+            command,
+            payload: Arc::from(envelope.encode()),
+            message_id,
+        })
+    }
+
+    pub fn command(&self) -> Command {
+        self.command
+    }
+
+    /// Build a per-peer queued frame that shares this event's encoded bytes
+    /// (an `Arc` reference-count bump, no payload copy) and acknowledges the
+    /// shared message ID.
+    pub fn queued(&self) -> QueuedFrame {
+        QueuedFrame {
+            command: self.command,
+            payload: Payload::Shared(self.payload.clone()),
+            acknowledgement: AckExpectation::Event(self.message_id),
+            completion: None,
+        }
     }
 }
 
@@ -466,7 +544,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                pending.queued.payload.clone(),
+                pending.queued.payload.as_slice().to_vec(),
             )
             .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             stream
@@ -476,7 +554,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
             Ok(DeliveryReceipt::default())
         }
         AckExpectation::Event(message_id) => {
-            let envelope = EventEnvelope::decode(&pending.queued.payload)
+            let envelope = EventEnvelope::decode(pending.queued.payload.as_slice())
                 .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             if envelope.message_id != message_id {
                 return Err(DeliveryError::protocol(
@@ -487,7 +565,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                pending.queued.payload.clone(),
+                pending.queued.payload.as_slice().to_vec(),
             )
             .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             deliver_event_frame(stream, pending, &frame, message_id, config).await?;
@@ -498,7 +576,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                pending.queued.payload.clone(),
+                pending.queued.payload.as_slice().to_vec(),
             )
             .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             deliver_file_frame(stream, pending, &frame, transfer_id, config).await
@@ -508,7 +586,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                pending.queued.payload.clone(),
+                pending.queued.payload.as_slice().to_vec(),
             )
             .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             deliver_batch_frame(stream, pending, &frame, batch_id, config).await
@@ -965,7 +1043,7 @@ mod tests {
     fn text_payload_is_wrapped_in_an_event_envelope() {
         let frame = QueuedFrame::new(Command::TextPayload, b"hello".to_vec()).unwrap();
         assert!(matches!(frame.acknowledgement, AckExpectation::Event(_)));
-        let envelope = EventEnvelope::decode(&frame.payload).unwrap();
+        let envelope = EventEnvelope::decode(frame.payload()).unwrap();
         assert_eq!(
             envelope.message_id,
             match frame.acknowledgement {
@@ -979,7 +1057,7 @@ mod tests {
     fn control_payloads_are_acknowledged_implicitly() {
         let frame = QueuedFrame::new(Command::Heartbeat, b"ping".to_vec()).unwrap();
         assert!(matches!(frame.acknowledgement, AckExpectation::None));
-        assert_eq!(frame.payload, b"ping");
+        assert_eq!(frame.payload(), b"ping");
     }
 
     #[test]
@@ -988,6 +1066,44 @@ mod tests {
         assert!(QueuedFrame::new(Command::TextPayload, oversized).is_err());
         let oversized_control = vec![0u8; Command::Heartbeat.payload_limit() + 1];
         assert!(QueuedFrame::new(Command::Heartbeat, oversized_control).is_err());
+    }
+
+    #[test]
+    fn shared_event_encodes_once_and_shares_bytes_across_peers() {
+        let content = vec![7u8; 4096];
+        let event = SharedEvent::encode(Command::ImagePayload, content.clone()).unwrap();
+        let a = event.queued();
+        let b = event.queued();
+
+        // Zero-copy fan-out: both peers' frames view the same backing buffer,
+        // so broadcasting to N peers holds one payload instead of N copies.
+        assert_eq!(a.payload().as_ptr(), b.payload().as_ptr());
+        assert_eq!(a.payload().len(), b.payload().len());
+
+        // Every peer acknowledges the same identity. Receiver dedup is scoped
+        // to (source, message_id) and each peer sees the broadcast at most
+        // once, so a shared id is safe and means one event has one identity.
+        let id_a = match a.acknowledgement() {
+            AckExpectation::Event(id) => id,
+            other => panic!("expected an event ack, got {other:?}"),
+        };
+        let id_b = match b.acknowledgement() {
+            AckExpectation::Event(id) => id,
+            other => panic!("expected an event ack, got {other:?}"),
+        };
+        assert_eq!(id_a, id_b);
+
+        // The shared bytes still decode back to the original content.
+        let envelope = EventEnvelope::decode(a.payload()).unwrap();
+        assert_eq!(envelope.content, content);
+        assert_eq!(envelope.message_id, id_a);
+    }
+
+    #[test]
+    fn shared_event_rejects_non_envelope_commands_and_oversized_payloads() {
+        assert!(SharedEvent::encode(Command::Heartbeat, b"nope".to_vec()).is_err());
+        let oversized = vec![0u8; Command::TextPayload.payload_limit() + 1];
+        assert!(SharedEvent::encode(Command::TextPayload, oversized).is_err());
     }
 
     #[test]
