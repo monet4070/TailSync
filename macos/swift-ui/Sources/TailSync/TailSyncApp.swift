@@ -61,6 +61,8 @@ struct TailSyncApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let singleInstanceLock = SingleInstanceLock()
+    private var ownsSingleInstanceLock = false
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
     private var lastNotifiedId: Int64 = 0
@@ -104,7 +106,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        do {
+            guard try singleInstanceLock.acquire() else {
+                Self.activateExistingInstance()
+                NSApp.terminate(nil)
+                return
+            }
+            ownsSingleInstanceLock = true
+        } catch {
+            print("[TailSync] could not acquire the single-instance lock: \(error)")
+            NSApp.terminate(nil)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard ownsSingleInstanceLock else { return }
         Self.forceAccessory()
         NSApp.setActivationPolicy(.accessory)
         // Remove plaintext Quick Look files left by a previous crash before
@@ -274,6 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        guard ownsSingleInstanceLock else { return }
         stopBackgroundActivity()
         HistoryPreviewWindowController.shared.shutdown()
         // Remove the status item before the process exits to prevent ghost icons.
@@ -282,9 +300,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem = nil
         }
         GlobalShortcutController.shared.unregister()
+        singleInstanceLock.release()
+        ownsSingleInstanceLock = false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard ownsSingleInstanceLock else { return .terminateNow }
         guard !terminationInProgress else { return .terminateLater }
         terminationInProgress = true
         stopBackgroundActivity()
@@ -303,6 +324,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GlobalShortcutController.shared.onSyncActivate = nil
         GlobalShortcutController.shared.onHistoryActivate = nil
         GlobalShortcutController.shared.unregister()
+    }
+
+    private static func activateExistingInstance() {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.tailsync.app"
+        let executableURL = Bundle.main.executableURL?.resolvingSymlinksInPath()
+        let existing = NSWorkspace.shared.runningApplications.first { application in
+            guard application.processIdentifier != currentPID else { return false }
+            if application.bundleIdentifier == bundleIdentifier {
+                return true
+            }
+            return application.executableURL?.resolvingSymlinksInPath() == executableURL
+        }
+        existing?.activate(options: [.activateIgnoringOtherApps])
     }
 
     // ── Status Item ─────────────────────────────────────────────
