@@ -661,9 +661,7 @@ struct HistoryRow: View {
         HStack(spacing: 10) {
             Group {
                 if entry.type == "image", let thumb = thumbnail {
-                    Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: 32, height: 32)
-                        .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
+                    thumbnailImage(thumb)
                 } else {
                     Image(systemName: entry.icon).frame(width: 24, height: 24)
                         .foregroundColor(component?.iconColor ?? component?.accentColor ?? palette.accentColor)
@@ -671,7 +669,7 @@ struct HistoryRow: View {
                         .clipShape(RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous))
                 }
             }
-            .frame(width: 32, height: 32)
+            .frame(width: HistoryThumbnailLayout.columnWidth)
             .task {
                 guard entry.type == "image" else { return }
                 if let cached = HistoryThumbnailCache.image(for: entry.id) {
@@ -731,6 +729,24 @@ struct HistoryRow: View {
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.18), value: isFocused)
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
     }
+
+    /// Render an image thumbnail at its natural aspect ratio inside the fixed
+    /// column: `.fit` shows the whole image (a long screenshot is never cropped
+    /// to an unrecognizable middle band), `.high` interpolation keeps the
+    /// downscaled pixels crisp, and the frame comes from the ratio-clamped
+    /// layout so extreme strips cannot distort the row.
+    private func thumbnailImage(_ thumb: NSImage) -> some View {
+        let size = HistoryThumbnailLayout.displaySize(
+            pixelWidth: thumb.size.width,
+            pixelHeight: thumb.size.height
+        )
+        return Image(nsImage: thumb)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size.width, height: size.height)
+            .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -751,11 +767,43 @@ private func rgbaToImage(_ data: ApiClient.ImageData) -> NSImage? {
     return img
 }
 
+/// Layout math for history-row image thumbnails.
+///
+/// Thumbnails render at their true aspect ratio inside a fixed-width column so
+/// the text beside them stays left-aligned across rows. The ratio is clamped to
+/// `maxAspect`:1 in both directions: without the clamp an extreme long-strip
+/// (a full-page screenshot, a wide banner) would either blow the row height up
+/// or shrink to an unreadable sliver.
+enum HistoryThumbnailLayout {
+    /// Longest displayed edge, in points.
+    static let maxSide: CGFloat = 48
+    /// Steepest displayed width:height (or height:width) ratio.
+    static let maxAspect: CGFloat = 2.5
+    /// Fixed column width so rows align regardless of thumbnail shape.
+    static let columnWidth: CGFloat = maxSide
+
+    /// Display size for a thumbnail of the given pixel dimensions.
+    static func displaySize(pixelWidth: CGFloat, pixelHeight: CGFloat) -> CGSize {
+        let w = max(pixelWidth, 1)
+        let h = max(pixelHeight, 1)
+        let clamped = min(max(w / h, 1 / maxAspect), maxAspect)
+        if clamped >= 1 {
+            // Wider than tall (or square): width drives the longest edge.
+            return CGSize(width: maxSide, height: maxSide / clamped)
+        } else {
+            // Taller than wide: height drives the longest edge.
+            return CGSize(width: maxSide * clamped, height: maxSide)
+        }
+    }
+}
+
 private enum HistoryThumbnailCache {
     private static let cache: NSCache<NSNumber, NSImage> = {
         let cache = NSCache<NSNumber, NSImage>()
         cache.countLimit = 30
-        cache.totalCostLimit = 4 * 1024 * 1024
+        // 160px thumbnails cost ~100 KB each; 8 MB leaves headroom over the
+        // 30-item count limit so the cache is bounded by count, not evictions.
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
 

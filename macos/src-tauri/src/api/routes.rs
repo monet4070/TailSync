@@ -1066,8 +1066,8 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                             }
                         }
                     };
-                    // Downsample to thumbnail (max 64px)
-                    let (tw, th, thumb) = thumbnail_rgba(image, 64);
+                    // Downsample to a recognizable thumbnail (longest edge).
+                    let (tw, th, thumb) = thumbnail_rgba(image, THUMBNAIL_MAX_SIDE);
                     use base64::Engine;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&thumb);
                     Response {

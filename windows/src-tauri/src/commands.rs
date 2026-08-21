@@ -752,7 +752,7 @@ pub async fn get_image_data(
     let data = db.get_data(id).map_err(|e| e.to_string())?;
     let image = crate::protocol::PackedImage::try_from(data.as_slice())
         .map_err(|error| error.to_string())?;
-    let (tw, th, thumb) = crate::api::thumbnail_rgba(image, 64);
+    let (tw, th, thumb) = crate::api::thumbnail_rgba(image, crate::api::THUMBNAIL_MAX_SIDE);
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&thumb);
     Ok(serde_json::json!({
