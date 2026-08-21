@@ -328,6 +328,10 @@ async fn clipboard_loop(
                 let w = image.width();
                 let h = image.height();
                 let packed = pack_image_data(w, h, rgba);
+                // The pixels are copied into `packed`; release the source image
+                // (up to 32 MiB) now so it does not linger through the echo
+                // check's await and the broadcast clone below.
+                drop(image);
                 let hash = blake3::hash(&packed).to_hex().to_string();
                 if !image_event_gate.should_process(
                     hash != last_image_hash,
