@@ -917,6 +917,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connection_pool_rebuilds_a_dead_cached_sender() {
+        // Regression: if a worker task has exited it dropped its receivers, so
+        // the cached sender's channels read as closed. Reusing it would
+        // silently black-hole every frame; sender_for must rebuild instead.
+        let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let settings = Arc::new(Mutex::new(crypto::Settings::default()));
+        let mut pool = ConnectionPool::new(identity, settings);
+        let addr: std::net::SocketAddr = "127.0.0.1:19890".parse().unwrap();
+
+        // A sender whose worker has "exited": drop both receivers so the
+        // channels report closed, then seed it into the cache under the key
+        // sender_for computes for this (target, hostname).
+        let (priority, priority_rx) = mpsc::channel::<QueuedFrame>(POOL_CHANNEL_SIZE);
+        let (bulk, bulk_rx) = mpsc::channel::<QueuedFrame>(POOL_CHANNEL_SIZE);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        drop(priority_rx);
+        drop(bulk_rx);
+        let dead = PoolSender {
+            priority,
+            bulk,
+            shutdown,
+        };
+        assert!(dead.priority.is_closed() && dead.bulk.is_closed());
+        pool.senders.insert(
+            (ResolvedTarget::Tcp(addr), "windows-pc".into()),
+            dead.clone(),
+        );
+
+        let rebuilt = pool.sender_for(addr, "windows-pc".into()).unwrap();
+
+        assert_eq!(pool.senders.len(), 1, "the dead entry must be replaced");
+        assert!(
+            !dead.same_channel(&rebuilt),
+            "sender_for must hand back a freshly built worker, not the dead one"
+        );
+        assert!(
+            !rebuilt.priority.is_closed(),
+            "the rebuilt worker's channel must be live"
+        );
+    }
+
+    #[tokio::test]
     async fn file_chunks_use_a_separate_queue_from_priority_messages() {
         let (priority, mut priority_rx) = mpsc::channel(1);
         let (bulk, mut bulk_rx) = mpsc::channel(1);

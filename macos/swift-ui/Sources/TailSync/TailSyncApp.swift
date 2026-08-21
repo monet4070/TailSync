@@ -586,8 +586,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         environment.removeValue(forKey: "TAILSYNC_API_TOKEN")
         environment["TAILSYNC_API_TOKEN_STDIN"] = "1"
         proc.environment = environment
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        if let logHandle = Self.daemonLogHandle() {
+            // Share one handle across stdout+stderr so their writes interleave
+            // into a single file, exactly like `tailsyncd >log 2>&1`. Previously
+            // both went to /dev/null, so a wedged link left no trace to inspect.
+            proc.standardOutput = logHandle
+            proc.standardError = logHandle
+        } else {
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+        }
         let tokenPipe = Pipe()
         proc.standardInput = tokenPipe
         do {
@@ -602,6 +610,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Self.daemonProcess = proc
         print("[TailSync] daemon started (pid=\(proc.processIdentifier))")
+    }
+
+    /// Open (creating if needed) the daemon log at
+    /// `~/Library/Logs/TailSync/tailsyncd.log`, positioned to append. The
+    /// daemon's `env_logger` already writes to stderr at `info` by default, so
+    /// pointing stderr here captures diagnostics for a wedged link. Returns
+    /// `nil` on any filesystem error so the caller falls back to `/dev/null`.
+    private static func daemonLogHandle() -> FileHandle? {
+        let fileManager = FileManager.default
+        guard
+            let logsDirectory = fileManager
+                .urls(for: .libraryDirectory, in: .userDomainMask)
+                .first?
+                .appendingPathComponent("Logs/TailSync", isDirectory: true)
+        else { return nil }
+
+        do {
+            try fileManager.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
+        } catch {
+            print("[TailSync] could not create daemon log directory: \(error)")
+            return nil
+        }
+
+        let logURL = logsDirectory.appendingPathComponent("tailsyncd.log")
+
+        // Bound growth: if the log has passed the cap, truncate before reopening
+        // so it can't grow without limit across restarts.
+        let maxLogBytes: UInt64 = 5 * 1024 * 1024
+        if let size = try? fileManager.attributesOfItem(atPath: logURL.path)[.size] as? UInt64,
+           size > maxLogBytes {
+            try? Data().write(to: logURL)
+        }
+        if !fileManager.fileExists(atPath: logURL.path) {
+            fileManager.createFile(atPath: logURL.path, contents: nil)
+        }
+
+        guard let handle = try? FileHandle(forWritingTo: logURL) else {
+            print("[TailSync] could not open daemon log at \(logURL.path)")
+            return nil
+        }
+        _ = try? handle.seekToEnd()
+        return handle
     }
 
     /// Ask the daemon to drain its background tasks, then use bounded signal fallbacks.

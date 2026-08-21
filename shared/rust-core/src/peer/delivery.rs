@@ -664,6 +664,11 @@ pub struct WorkerConfig {
     pub heartbeat_interval: Duration,
     pub heartbeat_ack_timeout: Duration,
     pub reconnect_delay: Duration,
+    /// Upper bound on a single candidate-refresh. Refresh acquires the shared
+    /// settings lock; if that contends or the settings task wedges, the worker
+    /// would park before ever reaching `connect` and the link could never
+    /// self-heal. Bounding it guarantees the loop always makes forward progress.
+    pub refresh_timeout: Duration,
     pub delivery: DeliveryConfig,
 }
 
@@ -673,6 +678,7 @@ impl Default for WorkerConfig {
             heartbeat_interval: Duration::from_secs(30),
             heartbeat_ack_timeout: Duration::from_secs(10),
             reconnect_delay: Duration::from_secs(5),
+            refresh_timeout: Duration::from_secs(5),
             delivery: DeliveryConfig::DEFAULT,
         }
     }
@@ -751,7 +757,18 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
     let mut pending: Option<PendingFrame> = None;
     let mut next_sequence = 1u32;
     loop {
-        adapter.refresh_candidates(&hostname, &mut candidates).await;
+        if timeout(
+            config.refresh_timeout,
+            adapter.refresh_candidates(&hostname, &mut candidates),
+        )
+        .await
+        .is_err()
+        {
+            log::warn!(
+                "Candidate refresh for {hostname} exceeded {:?}; proceeding with known routes",
+                config.refresh_timeout
+            );
+        }
         let connection_result = {
             let connection = adapter.connect(&hostname, &candidates);
             tokio::pin!(connection);
@@ -785,7 +802,12 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 continue;
             }
         };
-        let learned_iroh = adapter.refresh_candidates(&hostname, &mut candidates).await;
+        let learned_iroh = timeout(
+            config.refresh_timeout,
+            adapter.refresh_candidates(&hostname, &mut candidates),
+        )
+        .await
+        .unwrap_or(false);
         if learned_iroh
             && candidates
                 .iter()
@@ -1536,6 +1558,10 @@ mod tests {
         sessions: std::sync::Mutex<Vec<(String, ConnectionInterface, String, u64)>>,
         active_sessions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         connect_calls: std::sync::atomic::AtomicUsize,
+        /// When set, `refresh_candidates` never returns. Models the settings
+        /// lock contending or its owning task wedging — the park point that
+        /// froze the live link. The worker must still reach `connect`.
+        hang_refresh: std::sync::atomic::AtomicBool,
     }
 
     struct FakeSessionLease {
@@ -1595,6 +1621,11 @@ mod tests {
             _hostname: &str,
             _candidates: &mut Vec<ResolvedCandidate>,
         ) -> bool {
+            if self.hang_refresh.load(std::sync::atomic::Ordering::SeqCst) {
+                // Never resolves; the worker relies on its refresh_timeout to
+                // proceed past this await.
+                std::future::pending::<()>().await;
+            }
             false
         }
     }
@@ -1604,6 +1635,7 @@ mod tests {
             heartbeat_interval: Duration::from_secs(30),
             heartbeat_ack_timeout: Duration::from_millis(100),
             reconnect_delay: Duration::from_millis(10),
+            refresh_timeout: Duration::from_secs(5),
             delivery: DeliveryConfig::DEFAULT,
         }
     }
@@ -1626,6 +1658,7 @@ mod tests {
             sessions: std::sync::Mutex::new(Vec::new()),
             active_sessions: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             connect_calls: std::sync::atomic::AtomicUsize::new(0),
+            hang_refresh: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1714,6 +1747,88 @@ mod tests {
             0,
             "the session lease must be released when the worker exits"
         );
+    }
+
+    #[tokio::test]
+    async fn worker_reaches_connect_when_refresh_hangs() {
+        // Regression: a wedged candidate refresh (settings-lock contention or a
+        // stalled settings task) must not park the worker before it connects.
+        // Without the refresh_timeout bound the worker would await here forever
+        // and the link could never self-heal — the exact live freeze observed.
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+        let adapter = std::sync::Arc::new(scripted_adapter(vec![Ok((
+            MemoryConnection { io: client_io },
+            candidate.clone(),
+        ))]));
+        adapter
+            .hang_refresh
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let server = tokio::spawn(async move {
+            let mut server = MemoryConnection { io: server_io };
+            let frame = server.read_frame().await.unwrap();
+            let ack = FileOffset {
+                transfer_id: TransferId([0x33; 16]),
+                next_offset: 512,
+            };
+            server
+                .write_frame(
+                    &Frame::try_new(Command::FileAck, 0, frame.sequence, ack.encode()).unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut config = fast_worker_config();
+        config.refresh_timeout = Duration::from_millis(50);
+        let (priority_tx, priority_rx) = mpsc::channel(4);
+        let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let adapter_for_worker = adapter.clone();
+        let worker = tokio::spawn(async move {
+            run_connection_worker(
+                adapter_for_worker.as_ref(),
+                &config,
+                vec![candidate],
+                "peer".into(),
+                priority_rx,
+                bulk_rx,
+                shutdown_rx,
+            )
+            .await
+        });
+
+        let (completion_tx, mut completion_rx) = oneshot::channel();
+        let queued = QueuedFrame::confirmed_file(
+            Command::FileChunk,
+            vec![0u8; 8],
+            TransferId([0x33; 16]),
+            completion_tx,
+        )
+        .unwrap();
+        priority_tx.send(queued).await.unwrap();
+
+        let receipt = timeout(Duration::from_secs(2), &mut completion_rx)
+            .await
+            .expect("delivery must complete despite the hanging refresh")
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.next_offset, Some(512));
+        assert!(
+            adapter
+                .connect_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1,
+            "worker must reach connect even though refresh never returns"
+        );
+
+        server.await.unwrap();
+        drop(priority_tx);
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

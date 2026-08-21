@@ -80,7 +80,14 @@ impl ConnectionPool {
             .clone();
         let key = (target, hostname.clone());
         if let Some(tx) = self.senders.get(&key) {
-            return Ok(tx.clone());
+            // Only reuse a cached sender whose worker is still alive. If the
+            // worker task has exited it dropped its receivers, so the channels
+            // read as closed — reusing that sender would silently black-hole
+            // every frame. Fall through to rebuild a fresh worker instead.
+            if !tx.priority.is_closed() && !tx.bulk.is_closed() {
+                return Ok(tx.clone());
+            }
+            debug!("Cached sender for {hostname} is dead; rebuilding connection worker");
         }
 
         self.senders.retain(|(_, peer_hostname), sender| {
@@ -138,9 +145,9 @@ impl ConnectionPool {
                 cmd.payload_limit()
             ));
         }
-        let tx = self.sender_for(addr, hostname)?;
+        let tx = self.sender_for(addr, hostname.clone())?;
 
-        enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), cmd, payload).await
+        enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), &hostname, cmd, payload).await
     }
 
     /// Remove a peer from the pool (e.g. when user disables it).
@@ -205,7 +212,7 @@ pub async fn queue_peer_frame(
         .first()
         .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
-    enqueue_pool_frame(tx, preferred, cmd, payload).await
+    enqueue_pool_frame(tx, preferred, &peer.hostname, cmd, payload).await
 }
 
 pub async fn queue_peer_file_frame(
@@ -292,11 +299,21 @@ pub async fn prewarm_connections(
 async fn enqueue_pool_frame(
     tx: PoolSender,
     target: ResolvedTarget,
+    peer_label: &str,
     cmd: Command,
     payload: Vec<u8>,
 ) -> Result<(), String> {
     let queued = QueuedFrame::new(cmd, payload)?;
-    enqueue_queued_frame(tx, target, queued).await
+    enqueue_queued_frame(tx, target, queued)
+        .await
+        .inspect_err(|error| {
+            // Reaching here means pairing and route selection already succeeded, so
+            // the frame genuinely could not be handed to the worker (channel full
+            // past the pool timeout, or the worker exited). Surface it instead of
+            // letting the clipboard broadcast swallow it.
+            warn!("Delivery to {peer_label} stalled: {error}");
+            tailsync_core::sync_warning::record_delivery_stalled(peer_label);
+        })
 }
 
 async fn enqueue_queued_frame(

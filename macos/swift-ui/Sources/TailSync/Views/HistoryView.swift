@@ -469,15 +469,22 @@ struct HistoryView: View {
                     historyCapabilitiesChecked = false
                     loadHistoryCapabilities()
                 }
-                if let warning = await ApiClient.shared.takeSyncWarning(),
-                   warning.kind == "expired_event" {
-                    syncWarning = Loc.t("history.syncExpired")
-                        .replacingOccurrences(of: "{peer}", with: warning.peer)
-                    syncWarningTask?.cancel()
-                    syncWarningTask = Task { @MainActor in
-                        try? await Task.sleep(for: .seconds(8))
-                        guard !Task.isCancelled else { return }
-                        syncWarning = nil
+                if let warning = await ApiClient.shared.takeSyncWarning() {
+                    let messageKey: String?
+                    switch warning.kind {
+                    case "expired_event": messageKey = "history.syncExpired"
+                    case "delivery_stalled": messageKey = "history.syncStalled"
+                    default: messageKey = nil
+                    }
+                    if let messageKey {
+                        syncWarning = Loc.t(messageKey)
+                            .replacingOccurrences(of: "{peer}", with: warning.peer)
+                        syncWarningTask?.cancel()
+                        syncWarningTask = Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(8))
+                            guard !Task.isCancelled else { return }
+                            syncWarning = nil
+                        }
                     }
                 }
             }

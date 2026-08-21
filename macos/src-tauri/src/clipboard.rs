@@ -1121,7 +1121,7 @@ async fn broadcast_to_peers(
         let peer = peer.clone();
         tokio::spawn(async move {
             if let Err(error) = network::queue_peer_frame(&pool, &peer, cmd, payload).await {
-                debug!("Broadcast to {} failed: {}", peer.hostname, error);
+                warn!("Broadcast to {} failed: {}", peer.hostname, error);
             }
         });
     }
