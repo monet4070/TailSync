@@ -484,12 +484,10 @@ mod tests {
 
     #[tokio::test]
     async fn listener_can_rebind_after_a_connection_closes() {
-        // Port 0 comes from the same range used by parallel outbound tests,
-        // which can claim the port between close and rebind.
-        let base_port = 20_000 + (std::process::id() % 9_000) as u16;
-        let listener = (base_port..base_port + 100)
-            .find_map(|port| bind_tcp_listener(([127, 0, 0, 1], port).into()).ok())
-            .expect("a free non-ephemeral test port");
+        // Let the OS choose the port so this test never collides with a
+        // running daemon or another test process.
+        let listener =
+            bind_tcp_listener(([127, 0, 0, 1], 0).into()).expect("a free ephemeral test port");
         let address = listener.local_addr().unwrap();
         let (client, accepted) =
             tokio::join!(tokio::net::TcpStream::connect(address), listener.accept());

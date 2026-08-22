@@ -3413,7 +3413,7 @@ mod tests {
         bytes
     }
     fn manifest() -> Value {
-        serde_json::json!({"formatVersion":2,"id":"custom:studio.night","version":"1.0.0","minCoreVersion":"2.1.0","name":{"en":"Night"},"extends":"builtin:canvas@1","light":{"colors":{"background":{"canvas":"#ffffff"},"text":{"primary":"#111111"}}},"dark":{"colors":{"background":{"canvas":"#111111"},"text":{"primary":"#ffffff"}}}})
+        serde_json::json!({"formatVersion":2,"id":"custom:studio.night","version":"1.0.0","minCoreVersion":CORE_VERSION,"name":{"en":"Night"},"extends":"builtin:canvas@1","light":{"colors":{"background":{"canvas":"#ffffff"},"text":{"primary":"#111111"}}},"dark":{"colors":{"background":{"canvas":"#111111"},"text":{"primary":"#ffffff"}}}})
     }
     fn diagnostic(manifest: Value) -> ThemeError {
         validate_theme(&package(manifest), "light", false)
@@ -4219,13 +4219,26 @@ mod tests {
     #[test]
     fn min_core_version_must_be_compatible() {
         let mut m = manifest();
-        m["minCoreVersion"] = Value::from("2.1.1");
+        let core = semver(CORE_VERSION).unwrap();
+        let newer_core = if core.patch < u32::MAX {
+            format!("{}.{}.{}", core.major, core.minor, core.patch + 1)
+        } else if core.minor < u32::MAX {
+            format!("{}.{}.0", core.major, core.minor + 1)
+        } else {
+            format!("{}.0.0", core.major + 1)
+        };
+        m["minCoreVersion"] = Value::from(newer_core);
         let error = diagnostic(m);
         assert_eq!(error.code, "THEME_MIN_CORE_VERSION");
         assert_eq!(error.json_pointer, "/minCoreVersion");
 
         let mut m = manifest();
-        m["minCoreVersion"] = Value::from("2.1.0-rc.1");
+        let compatible_version = if core.prerelease.is_none() {
+            format!("{}.{}.{}-rc.1", core.major, core.minor, core.patch)
+        } else {
+            CORE_VERSION.to_owned()
+        };
+        m["minCoreVersion"] = Value::from(compatible_version);
         assert!(validate_theme(&package(m), "light", false).valid);
     }
 
