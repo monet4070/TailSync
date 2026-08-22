@@ -63,6 +63,7 @@ jobs:
         with:
           workspaces: |
             shared/rust-core
+            shared/tailsync-protocol
             shared/tailsync-themes
             windows/src-tauri
             macos/src-tauri
@@ -77,6 +78,12 @@ jobs:
       - name: Build Windows frontend assets
         working-directory: windows
         run: npm run build
+      - name: Check protocol crate formatting
+        run: cargo fmt --manifest-path shared/tailsync-protocol/Cargo.toml --all -- --check
+      - name: Run protocol crate Clippy
+        run: cargo clippy --locked --manifest-path shared/tailsync-protocol/Cargo.toml --all-targets -- -D warnings
+      - name: Run protocol crate unit tests
+        run: cargo test --locked --manifest-path shared/tailsync-protocol/Cargo.toml
       - name: Check theme crate formatting
         run: cargo fmt --manifest-path shared/tailsync-themes/Cargo.toml --all -- --check
       - name: Run theme crate Clippy
@@ -126,6 +133,7 @@ jobs:
         with:
           workspaces: |
             shared/rust-core
+            shared/tailsync-protocol
             shared/tailsync-themes
             macos/src-tauri
       - name: Check macOS sources and cross-platform contracts

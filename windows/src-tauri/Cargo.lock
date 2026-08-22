@@ -5958,11 +5958,23 @@ dependencies = [
  "serde",
  "serde_json",
  "snow",
+ "tailsync-protocol",
  "tailsync-themes",
  "thiserror 2.0.18",
  "tokio",
  "windows-sys 0.59.0",
  "zip",
+]
+
+[[package]]
+name = "tailsync-protocol"
+version = "2.1.0"
+dependencies = [
+ "blake3",
+ "hex",
+ "rand 0.8.7",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
