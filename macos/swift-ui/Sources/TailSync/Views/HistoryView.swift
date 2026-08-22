@@ -11,7 +11,6 @@ struct HistoryView: View {
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.scenePhase) private var scenePhase
     @State private var entries: [HistoryEntry] = []
     @State private var keyword = ""
     @State private var selectedCategory = "all"
@@ -449,10 +448,6 @@ struct HistoryView: View {
     @MainActor
     private func runtimeSnapshotLoop() async {
         while !Task.isCancelled {
-            guard scenePhase == .active else {
-                try? await Task.sleep(for: .milliseconds(500))
-                continue
-            }
             guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: runtimeRevision) else {
                 daemonOnline = false
                 try? await Task.sleep(for: .milliseconds(750))
