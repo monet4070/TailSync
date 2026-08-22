@@ -3509,9 +3509,23 @@ dependencies = [
  "serde",
  "serde_json",
  "snow",
+ "tailsync-themes",
  "thiserror 2.0.19",
  "tokio",
  "windows-sys 0.59.0",
+ "zip",
+]
+
+[[package]]
+name = "tailsync-themes"
+version = "2.1.0"
+dependencies = [
+ "blake3",
+ "fs2",
+ "log",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
  "zip",
 ]
 
