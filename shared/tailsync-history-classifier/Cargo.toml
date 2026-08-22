@@ -1,0 +1,11 @@
+[package]
+name = "tailsync-history-classifier"
+version = "2.1.0"
+description = "TailSync clipboard-history text classification: deterministic category detection and confidence scoring"
+edition = "2021"
+license = "MIT"
+
+# Classification is pure std logic over &str, with one exception: JSON
+# structured-data detection uses serde_json to validate candidate payloads.
+[dependencies]
+serde_json = "1"

@@ -3509,12 +3509,20 @@ dependencies = [
  "serde",
  "serde_json",
  "snow",
+ "tailsync-history-classifier",
  "tailsync-protocol",
  "tailsync-themes",
  "thiserror 2.0.19",
  "tokio",
  "windows-sys 0.59.0",
  "zip",
+]
+
+[[package]]
+name = "tailsync-history-classifier"
+version = "2.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

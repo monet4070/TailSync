@@ -21,6 +21,7 @@
 **/src-tauri/target/
 **/src-tauri/target-*/
 /shared/rust-core/target/
+/shared/tailsync-history-classifier/target/
 /shared/tailsync-protocol/target/
 /shared/tailsync-themes/target/
 **/swift-ui/.build/
