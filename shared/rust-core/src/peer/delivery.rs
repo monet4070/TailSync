@@ -172,7 +172,10 @@ impl QueuedFrame {
                     ));
                 }
                 let message_id = envelope.message_id;
-                (Payload::Owned(envelope.encode()), AckExpectation::Event(message_id))
+                (
+                    Payload::Owned(envelope.encode()),
+                    AckExpectation::Event(message_id),
+                )
             } else {
                 if content.len() > command.payload_limit() {
                     return Err(format!(
