@@ -825,7 +825,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             let wc = makeWindow(title: "History", content: HistoryView(),
                                 size: NSSize(width: 400, height: 600),
-                                minSize: NSSize(width: 300, height: 360)) {
+                                minSize: NSSize(width: 300, height: 360),
+                                onVisibilityChange: { isVisible in
+                                    NotificationCenter.default.post(
+                                        name: .tailSyncHistoryWindowVisibilityChanged,
+                                        object: nil,
+                                        userInfo: ["visible": isVisible]
+                                    )
+                                }) {
                 historyWC = nil
                 Task { @MainActor in
                     HistoryPreviewWindowController.shared.attachHistoryWindow(nil)
@@ -860,6 +867,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content: V,
         size: NSSize,
         minSize: NSSize,
+        onVisibilityChange: ((Bool) -> Void)? = nil,
         onClose: @escaping () -> Void
     ) -> NSWindowController {
         let hosting = NSHostingController(rootView: content)
@@ -874,7 +882,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Set content size AFTER autosave so it overrides any restored tiny frame
         // from a stale UserDefaults entry.
         window.setContentSize(size)
-        let wc = TailSyncTransientWindowController(window: window, onClose: onClose)
+        let wc = TailSyncTransientWindowController(
+            window: window,
+            onVisibilityChange: onVisibilityChange,
+            onClose: onClose
+        )
         wc.showWindow(nil)
         return wc
     }

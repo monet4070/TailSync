@@ -23,6 +23,26 @@ final class WindowLifecycleTests: XCTestCase {
         XCTAssertNil(window.contentViewController)
     }
 
+    func testTransientWindowReportsVisibilityChangesOncePerState() {
+        _ = NSApplication.shared
+        let window = NSWindow(contentViewController: NSViewController())
+        var states: [Bool] = []
+        let controller = TailSyncTransientWindowController(
+            window: window,
+            onVisibilityChange: { states.append($0) },
+            onClose: {}
+        )
+
+        controller.windowDidMiniaturize(Notification(name: NSWindow.didMiniaturizeNotification,
+                                                     object: window))
+        controller.windowDidMiniaturize(Notification(name: NSWindow.didMiniaturizeNotification,
+                                                     object: window))
+        controller.windowDidDeminiaturize(Notification(name: NSWindow.didDeminiaturizeNotification,
+                                                       object: window))
+
+        XCTAssertEqual(states, [false, true])
+    }
+
     func testPreviewWindowIsRecreatedAfterClose() {
         _ = NSApplication.shared
         let model = HistoryPreviewViewModel(

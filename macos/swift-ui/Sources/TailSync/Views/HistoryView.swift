@@ -20,6 +20,7 @@ struct HistoryView: View {
     @State private var page = 0
     @State private var hasNext = false
     @State private var isLoading = false
+    @State private var historyWindowIsVisible = true
     @State private var restoredId: Int64? = nil
     // Previewing is independent of restoration: selection chooses a row,
     // Space opens it in the reusable preview window, and double-click retains
@@ -289,7 +290,16 @@ struct HistoryView: View {
             loadHistoryCapabilities()
             loadMigrationDiagnostics()
         }
-        .task { await runtimeSnapshotLoop() }
+        .task(id: historyWindowIsVisible) {
+            guard historyWindowIsVisible else { return }
+            await runtimeSnapshotLoop(forceRefresh: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .tailSyncHistoryWindowVisibilityChanged
+        )) { notification in
+            guard let isVisible = notification.userInfo?["visible"] as? Bool else { return }
+            historyWindowIsVisible = isVisible
+        }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             reloadActiveDateFilter()
         }
@@ -446,9 +456,14 @@ struct HistoryView: View {
     }
 
     @MainActor
-    private func runtimeSnapshotLoop() async {
+    private func runtimeSnapshotLoop(forceRefresh: Bool) async {
+        var shouldRefreshImmediately = forceRefresh
         while !Task.isCancelled {
-            guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: runtimeRevision) else {
+            // A resumed window should get a fresh consolidated snapshot right
+            // away instead of waiting for the previous revision to change.
+            let sinceRevision = shouldRefreshImmediately ? 0 : runtimeRevision
+            shouldRefreshImmediately = false
+            guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: sinceRevision) else {
                 daemonOnline = false
                 try? await Task.sleep(for: .milliseconds(750))
                 continue
