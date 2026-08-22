@@ -15,26 +15,32 @@
 | 3 | `windows/src-tauri/Cargo.toml` | `version` | 2.1.0 | ✅ validator（cargo metadata --locked） | |
 | 4 | `macos/src-tauri/Cargo.toml` | `version` | 2.1.0 | ✅ validator | |
 | 5 | `shared/rust-core/Cargo.toml` | `version` | 2.1.0 | ✅ validator | |
-| 6 | `windows/package.json` | `version` | 2.1.0 | ❌ | 前端包版本 |
-| 7 | `site/package.json` | `version` | 2.1.0 | ❌ | 营销站点，独立发布物 |
-| 8 | `windows/src-tauri/Cargo.lock` | `tailsync-core` 条目 | 2.1.0 | ⚠️ 间接 | `--locked` 构建要求 lock 与 manifest 一致 |
-| 9 | `macos/src-tauri/Cargo.lock` | `tailsync-core` 条目 | 2.1.0 | ⚠️ 间接 | 同上 |
-| 10 | `shared/rust-core/Cargo.lock` | `tailsync-core` 条目 | 2.1.0 | ⚠️ 间接 | 同上 |
-| 11 | `windows/package-lock.json` | root + `packages[""]` | 2.1.0 | ❌ | npm ci 一致性 |
-| 12 | `site/package-lock.json` | root + `packages[""]` | 2.1.0 | ❌ | 同上 |
-| 13 | `README.md` 徽章/正文 | 文本 | v2.1.0 | ❌ | 文档性，非机械校验 |
+| 6 | `shared/tailsync-protocol/Cargo.toml` | `version` | 2.1.0 | ✅ validator | 抽离 crate（refactor/peer-core） |
+| 7 | `shared/tailsync-themes/Cargo.toml` | `version` | 2.1.0 | ✅ validator | 抽离 crate（refactor/peer-core） |
+| 8 | `shared/tailsync-history-classifier/Cargo.toml` | `version` | 2.1.0 | ✅ validator | 抽离 crate（refactor/peer-core） |
+| 9 | `windows/package.json` | `version` | 2.1.0 | ❌ | 前端包版本 |
+| 10 | `site/package.json` | `version` | 2.1.0 | ❌ | 营销站点，独立发布物 |
+| 11 | `windows/src-tauri/Cargo.lock` | tailsync + tailsync-core + 3 抽离 crate 条目 | 2.1.0 | ⚠️ 间接 | `--locked` 构建要求 lock 与 manifest 一致 |
+| 12 | `macos/src-tauri/Cargo.lock` | tailsync + tailsync-core + 3 抽离 crate 条目 | 2.1.0 | ⚠️ 间接 | 同上 |
+| 13 | `shared/rust-core/Cargo.lock` | tailsync-core + 3 抽离 crate 条目 | 2.1.0 | ⚠️ 间接 | 同上 |
+| 14 | `shared/tailsync-protocol/Cargo.lock` | tailsync-protocol 条目 | 2.1.0 | ⚠️ 间接 | 抽离 crate 独立 lock |
+| 15 | `shared/tailsync-themes/Cargo.lock` | tailsync-themes 条目 | 2.1.0 | ⚠️ 间接 | 同上 |
+| 16 | `shared/tailsync-history-classifier/Cargo.lock` | tailsync-history-classifier 条目 | 2.1.0 | ⚠️ 间接 | 同上 |
+| 17 | `windows/package-lock.json` | root + `packages[""]` | 2.1.0 | ❌ | npm ci 一致性 |
+| 18 | `site/package-lock.json` | root + `packages[""]` | 2.1.0 | ❌ | 同上 |
+| 19 | `README.md` 徽章/正文 | 文本 | v2.1.0 | ❌ | 文档性，非机械校验 |
 
-- FACT: `scripts/validate-release-version.mjs` 校验 #1-#5（`validateRepositoryVersions`，经 `cargo metadata --locked --no-deps`）；tag 必须 `vX.Y.Z` 且 5 处全等；同时输出 stable/prerelease 通道判定。
+- FACT: `scripts/validate-release-version.mjs` 校验 #1-#8（`validateRepositoryVersions`，经 `cargo metadata --locked --no-deps`）；tag 必须 `vX.Y.Z` 且 8 处全等；同时输出 stable/prerelease 通道判定。
 - FACT: CI（ci.yml `scripts` job + release.yml `validate` job）执行该校验；release 流程在打包前强制一致。
-- FACT: Cargo.lock 的三个 `tailsync-core` 版本条目与 package-lock 的 `version` 字段均实测为 2.1.0（本机核查）。
-- FACT: 三个 Cargo.lock 为独立文件（非 workspace），每个 crate 各自锁定。
-- INFERENCE: "被校验"缺口 = #6/#7（package.json）与 #11/#12（package-lock）——CI 不检查它们；#13 为文档。
+- FACT: Cargo.lock 的六个 `tailsync-core`/抽离 crate 版本条目与 package-lock 的 `version` 字段均实测为 2.1.0（本机核查）。
+- FACT: 六个 Cargo.lock 为独立文件（非 workspace），每个 crate 各自锁定。
+- INFERENCE: "被校验"缺口 = #9/#10（package.json）与 #17/#18（package-lock）——CI 不检查它们；#19 为文档。
 
 ## 2. 现状成本
 
-- FACT: 一次版本升级需手工同步 12 个文件（#1-#12），其中 4 个 lock 文件若不同步会导致 `--locked` 构建或 `npm ci` 失败——失败模式是"构建期才暴露"而非"提交前暴露"。
+- FACT: 一次版本升级需手工同步 18 个文件（#1-#18），其中 6 个 lock 文件若不同步会导致 `--locked` 构建或 `npm ci` 失败——失败模式是"构建期才暴露"而非"提交前暴露"。历史基线：2026-08-15 时为 12 个文件（#1-#12，含 4 个 lock）；2026-08-22 refactor/peer-core 抽离三个独立 crate 后扩展为 18。
 - FACT: 现有 validator 只检测不一致、不提供写入入口；无任何脚本提供 bump 功能。
-- INFERENCE: 统一工具的价值：单一入口 + 写入后立即自校验 + lock 同步，把 12 文件的手工操作压缩为 1 条命令。
+- INFERENCE: 统一工具的价值：单一入口 + 写入后立即自校验 + lock 同步，把 18 文件的手工操作压缩为 1 条命令。
 
 ## 3. 统一版本工具设计（仅设计，不实现）
 
@@ -47,7 +53,7 @@
 ### 3.2 命令契约（设计）
 
 ```text
-node scripts/bump-version.mjs X.Y.Z            # 写入 12 个文件 + 自校验
+node scripts/bump-version.mjs X.Y.Z            # 写入 18 个文件 + 自校验
 node scripts/bump-version.mjs X.Y.Z --check    # 只校验不写入（CI 可复用）
 node scripts/bump-version.mjs --dry-run        # 预览将修改的文件与 diff
 ```
@@ -83,11 +89,11 @@ node scripts/bump-version.mjs --dry-run        # 预览将修改的文件与 dif
 ## 5. 实现状态（T355，2026-08-15）
 
 - **`scripts/bump-version.mjs` 已实现**（候选 B，Node 脚本，与 validator 同栈）：
-  - `node scripts/bump-version.mjs --target X.Y.Z [--root PATH]` —— 写 12 个文件（JSON 解析重写保序 + Cargo.toml [package] 行级替换 + Cargo.lock [[package]] 块级定向替换，不触碰依赖解析）+ 自校验（复用 validate-release-version.mjs）。
+  - `node scripts/bump-version.mjs --target X.Y.Z [--root PATH]` —— 写 18 个文件（JSON 解析重写保序 + Cargo.toml [package] 行级替换 + Cargo.lock [[package]] 块级定向替换，不触碰依赖解析）+ 自校验（复用 validate-release-version.mjs）。
   - `--check` —— 只校验（validator + 锁文件一致性 grep），CI 可复用；不一致非零退出。
   - `--dry-run` —— 只报告将写入的文件数，零写入。
   - `--target` 语义版本校验复用 validator 的 tag 正则（`^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$`）。
 - **验收实测（全部 PASS）**：
-  - `bump-version.test.mjs` 4 用例（12 文件全写 + 幂等、dry-run 零写、verify 新旧版本正负、锁文件失同步检测）→ `node --test` 9/9（含既有 5 个）。
-  - 真实仓库：`--check --target 2.1.0` PASS（stable channel）；`--check --target 2.2.0` FAIL（负向，exit 1）；`--dry-run --target 2.2.0` 报告 12 文件、`git status` 12 个版本文件零改动。
+  - `bump-version.test.mjs` 4 用例（18 文件全写 + 幂等、dry-run 零写、verify 新旧版本正负、锁文件失同步检测）→ `node --test` 10/10（含既有 6 个）。
+  - 真实仓库：`--check --target 2.1.0` PASS（stable channel）；`--check --target 2.2.0` FAIL（负向，exit 1）；`--dry-run --target 2.2.0` 报告 18 文件、`git status` 18 个版本文件零改动。
 - **R015 边界**：CI scripts job 增加 `--check` 调用属 CI 增强，需独立 Task 确认（本任务未动 CI）。

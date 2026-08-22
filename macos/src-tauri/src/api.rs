@@ -688,7 +688,11 @@ mod tests {
         let rgba = [0u8, 0, 0, 255, 255, 255, 255, 255];
         let (tw, th, out) = thumbnail_of(2, 1, &rgba, 1);
         assert_eq!((tw, th), (1, 1));
-        assert!((125..=130).contains(&out[0]), "expected gray, got {}", out[0]);
+        assert!(
+            (125..=130).contains(&out[0]),
+            "expected gray, got {}",
+            out[0]
+        );
         assert_eq!(out[0], out[1]);
         assert_eq!(out[1], out[2]);
         assert_eq!(out[3], 255);
@@ -700,7 +704,10 @@ mod tests {
         // a plain RGB mean would leak red (127) into the result.
         let rgba = [255u8, 0, 0, 0, 0, 0, 255, 255];
         let (_, _, out) = thumbnail_of(2, 1, &rgba, 1);
-        assert_eq!(out[0], 0, "transparent red must not bleed into the red channel");
+        assert_eq!(
+            out[0], 0,
+            "transparent red must not bleed into the red channel"
+        );
         assert_eq!(out[2], 255, "opaque blue must survive");
         assert_eq!(out[3], 127, "alpha is the plain mean of 255 and 0");
     }

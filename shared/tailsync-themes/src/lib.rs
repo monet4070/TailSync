@@ -24,7 +24,7 @@ pub const MAX_UNCOMPRESSED_BYTES: u64 = 50 * 1024 * 1024;
 pub const MAX_ASSET_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_ASSETS: usize = 64;
 pub const MAX_DECODED_PIXELS: u64 = 80_000_000;
-const CORE_VERSION: &str = "2.1.0";
+const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 // These capabilities describe behavior which this resolver implements today.
 // Keep this deliberately small: a package must fail closed when it requires a
 // capability that this Core cannot prove it supports.

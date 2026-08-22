@@ -101,6 +101,8 @@ jobs:
         run: cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check
       - name: Check Windows application formatting
         run: cargo fmt --manifest-path windows/src-tauri/Cargo.toml --all -- --check
+      - name: Check macOS application formatting
+        run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
       - name: Run shared core Clippy
         run: cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings
       - name: Run Windows application Clippy
@@ -146,6 +148,30 @@ jobs:
             macos/src-tauri
       - name: Check macOS sources and cross-platform contracts
         run: bash macos/scripts/check_macos_sources.sh "$GITHUB_WORKSPACE/windows"
+      - name: Check history-classifier crate formatting
+        run: cargo fmt --manifest-path shared/tailsync-history-classifier/Cargo.toml --all -- --check
+      - name: Run history-classifier crate Clippy
+        run: cargo clippy --locked --manifest-path shared/tailsync-history-classifier/Cargo.toml --all-targets -- -D warnings
+      - name: Run history-classifier crate unit tests
+        run: cargo test --locked --manifest-path shared/tailsync-history-classifier/Cargo.toml
+      - name: Check protocol crate formatting
+        run: cargo fmt --manifest-path shared/tailsync-protocol/Cargo.toml --all -- --check
+      - name: Run protocol crate Clippy
+        run: cargo clippy --locked --manifest-path shared/tailsync-protocol/Cargo.toml --all-targets -- -D warnings
+      - name: Run protocol crate unit tests
+        run: cargo test --locked --manifest-path shared/tailsync-protocol/Cargo.toml
+      - name: Check theme crate formatting
+        run: cargo fmt --manifest-path shared/tailsync-themes/Cargo.toml --all -- --check
+      - name: Run theme crate Clippy
+        run: cargo clippy --locked --manifest-path shared/tailsync-themes/Cargo.toml --all-targets -- -D warnings
+      - name: Run theme crate unit tests
+        run: cargo test --locked --manifest-path shared/tailsync-themes/Cargo.toml
+      - name: Check macOS application formatting
+        run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
+      - name: Run macOS application Clippy
+        run: cargo clippy --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Run macOS application unit tests
+        run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
       - name: Build the macOS application bundle
         run: bash macos/build-mac.sh --skip-swift-build
       - name: Launch and verify the packaged macOS application

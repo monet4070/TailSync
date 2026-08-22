@@ -53,7 +53,7 @@ COMPLETED_TASKS:
   T400 R018 日志清单形式化（新文档 LOGS_INVENTORY.md：core 67 处 e2/w30/i26/d9 + 平台 173/161 实测；无结构化字段确认；T401/T402 设计先行 + §18 禁止清单）
   T420 R019 网络测试分层形式化（新文档 NETWORK_TEST_LAYERING.md：确定性 62 测试全在 core（目标态达成）+ 真实传输层 CI-only/ignored 现状保持；R015 门禁不动）
   T440 R020 fuzz 候选审计（新文档 FUZZ_AUDIT.md：0 fuzz target 实测；Frame::decode 最高优先 + proptest 无新门禁方案；不凑数）
-  T355 R017 版本入口实现（scripts/bump-version.mjs：12 文件定向写入 + Cargo.lock 块级同步零依赖重解析 + --check/--dry-run + 自校验；4 新测试，脚本测试 9/9；真实仓库 check 正负/dry-run 零写实测；CI 增强留独立 R015 任务）
+  T355 R017 版本入口实现（scripts/bump-version.mjs：18 文件定向写入 + Cargo.lock 块级同步零依赖重解析 + --check/--dry-run + 自校验；refactor/peer-core 扩展三个抽离 crate 后从 12→18 文件；脚本测试 10/10；真实仓库 check 正负/dry-run 零写实测；CI 增强留独立 R015 任务）
   T356 R013 错误边界形式化（新文档 ERROR_BOUNDARY.md：三层错误流图 + Swift ApiError 5 case 实测 + K004 子串↔R012 枚举对照表 + 边界决策 3 条；swift test 30/30 作为契约门禁实证）
   T441 Frame::decode proptest（R020 实现：proptest dev-dep + 6 属性测试——24 命令全变体 round-trip/任意字节不 panic/consumed 上界/3 解码器不 panic；core 273→279；附带修正 api/imports.rs 钉扎面 fmt 归一化）
   T357 R016 coverage 报告（REPORT ONLY：Apple LLVM 17 + -Cinstrument-coverage 零新依赖；core 87.34% 行 / 85.64% 区域 / 80.34% 函数；分文件表 + 复现命令入 COVERAGE_REPORT.md；CI 未动；插桩缓存清理后 279 测试复原）
@@ -90,7 +90,7 @@ PARTIALLY_VERIFIED_REQUIREMENTS:
 [
   R013: 完成 —— T356 错误边界形式化（三层边界明确 + K004 对照表 + swift test 30/30 实证）
   R016: 完成 —— T357 core 覆盖报告（87.34% 行，REPORT ONLY，CI 未动）+ T903 刷新（87.66% 行）
-  R017: 完成 —— T355 bump-version.mjs（12 文件 + 锁同步 + --check/--dry-run + 自校验，测试 9/9，真实仓库正负实测）；CI 集成留独立 R015 任务
+  R017: 完成 —— T355 bump-version.mjs（18 文件 + 锁同步 + --check/--dry-run + 自校验，测试 10/10，真实仓库正负实测）；CI 集成留独立 R015 任务
   R018: 推进（T400 清单 + T401 schema + T402 pairing 挂载试点完成；导出通道 T402+ 待评估）
   R019: 推进（T420 分层表完成，目标态已达成；T421+ 可选增量）
   R020: 完成 —— T440 候选审计 + T441 Frame::decode 等 6 属性测试（无新 CI 门禁，R015 不动）
@@ -186,7 +186,7 @@ LAST_VERIFIED_COMMIT:
 | R014 高风险路径测试优先 | 完成 | 续传/恢复/pairing/proptest 专项 |
 | R015 CI 不降低 | 完成 | CI 零削弱 + T359 增强（bump 测试 + --check 步骤入 scripts job） |
 | R016 coverage 可观察 | 完成 | 87.66% 行 REPORT ONLY（无 gate，T903 刷新） |
-| R017 单一版本入口 | 完成 | bump-version.mjs + 9/9 测试 + 真实仓库实测 |
+| R017 单一版本入口 | 完成 | bump-version.mjs + 10/10 测试 + 真实仓库实测（18 文件覆盖三个抽离 crate） |
 | R018 可观察性 | 试点完成 | 清单+schema+pairing 挂载；导出通道留 T402+（登记） |
 | R019 网络测试分层 | 完成 | 确定性 62 测试全在 core（目标态达成） |
 | R020 parser 健壮性 | 完成 | 6 属性测试（Frame/解码器不 panic + round-trip） |

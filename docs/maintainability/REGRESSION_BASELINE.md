@@ -23,11 +23,11 @@
 | 11 | site lint | `npm run lint` | **0 warnings / 0 errors** |
 | 12 | site 构建 | `npm run build` | **PASS** |
 | 13 | swift 测试 | `swift test --package-path macos/swift-ui` | **30 passed / 0 failed** |
-| 14 | node 脚本测试 | `node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs` | **5 pass / 0 fail** |
+| 14 | node 脚本测试 | `node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs` | **10 pass / 0 fail** |
 | 15 | python v1 迁移测试 | `python3 -m unittest shared/scripts/test_migrate_v1.py` + py_compile ×3 | **3 tests OK / PASS** |
 | 16 | settings 契约 | `node shared/schema/generate-settings.mjs --check` | **PASS** |
 | 17 | 跨平台漂移 | `node windows/scripts/check_cross_platform_sync.mjs --win-root windows --mac-root macos --core-root shared/rust-core` | **PASS**（"Cross-platform contract passed: shared Rust core, 38 Swift API commands, …"） |
-| 18 | 版本一致性 | `node scripts/validate-release-version.mjs --root . --tag v2.1.0` | **PASS**（stable channel） |
+| 18 | 版本一致性 | `node scripts/validate-release-version.mjs --root . --tag v2.1.0` + `node scripts/bump-version.mjs --root . --target 2.1.0 --check` | **PASS**（stable channel，8 manifest + 6 lock 一致） |
 
 ## 2. UNVERIFIED（本机不可运行，CI 负责）
 

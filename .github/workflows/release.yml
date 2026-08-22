@@ -33,6 +33,12 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/validate-release-version.mjs --root . --tag "$RELEASE_TAG"
+      - name: Validate version-file and lockfile consistency (bump-version --check)
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          node scripts/bump-version.mjs --root . --target "$RELEASE_VERSION" --check
       - name: Validate release tier
         run: |
           case "$TAILSYNC_RELEASE_TIER" in
@@ -40,7 +46,7 @@ jobs:
             *) echo "TAILSYNC_RELEASE_TIER must be community or trusted." >&2; exit 1 ;;
           esac
       - name: Test release metadata generators
-        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs
 
   windows:
     name: Package Windows (${{ vars.TAILSYNC_RELEASE_TIER || 'community' }})

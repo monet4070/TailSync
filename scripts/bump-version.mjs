@@ -108,12 +108,24 @@ const CARGO_TOML_FILES = [
   'windows/src-tauri/Cargo.toml',
   'macos/src-tauri/Cargo.toml',
   'shared/rust-core/Cargo.toml',
+  'shared/tailsync-protocol/Cargo.toml',
+  'shared/tailsync-themes/Cargo.toml',
+  'shared/tailsync-history-classifier/Cargo.toml',
 ];
 
 const LOCK_ROOTS = [
-  ['windows/src-tauri/Cargo.lock', 'tailsync'],
-  ['macos/src-tauri/Cargo.lock', 'tailsync'],
-  ['shared/rust-core/Cargo.lock', 'tailsync-core'],
+  // Application locks: tailsync + tailsync-core + the three extracted shared crates.
+  ['windows/src-tauri/Cargo.lock', 'tailsync', 'tailsync-core',
+   'tailsync-protocol', 'tailsync-themes', 'tailsync-history-classifier'],
+  ['macos/src-tauri/Cargo.lock', 'tailsync', 'tailsync-core',
+   'tailsync-protocol', 'tailsync-themes', 'tailsync-history-classifier'],
+  // rust-core lock: tailsync-core + the three extracted shared crates.
+  ['shared/rust-core/Cargo.lock', 'tailsync-core',
+   'tailsync-protocol', 'tailsync-themes', 'tailsync-history-classifier'],
+  // Per-crate standalone locks: only the crate itself.
+  ['shared/tailsync-protocol/Cargo.lock', 'tailsync-protocol'],
+  ['shared/tailsync-themes/Cargo.lock', 'tailsync-themes'],
+  ['shared/tailsync-history-classifier/Cargo.lock', 'tailsync-history-classifier'],
 ];
 
 const PACKAGE_LOCK_FILES = ['windows/package-lock.json', 'site/package-lock.json'];
@@ -141,9 +153,10 @@ export function bumpRepositoryVersions(root, version, dryRun = false) {
   for (const relative of CARGO_TOML_FILES) {
     bumpCargoToml(resolve(root, relative), expected, written, dryRun);
   }
-  for (const [relative, packageName] of LOCK_ROOTS) {
-    bumpCargoLock(resolve(root, relative), packageName, expected, written, dryRun);
-    bumpCargoLock(resolve(root, relative), 'tailsync-core', expected, written, dryRun);
+  for (const [relative, ...packageNames] of LOCK_ROOTS) {
+    for (const packageName of packageNames) {
+      bumpCargoLock(resolve(root, relative), packageName, expected, written, dryRun);
+    }
   }
   for (const relative of PACKAGE_LOCK_FILES) {
     bumpJson(resolve(root, relative), (parsed) => {
@@ -160,10 +173,18 @@ export function verifyRepositoryVersions(root, version) {
   const tag = version.startsWith('v') ? version : `v${version}`;
   validateRepositoryVersions(root, tag);
   const expected = version.replace(/^v/, '');
-  for (const [relative] of LOCK_ROOTS) {
+  for (const [relative, ...packageNames] of LOCK_ROOTS) {
     const lock = readFileSync(resolve(root, relative), 'utf8');
-    if (!lock.includes(`version = "${expected}"`)) {
-      fail(`${relative} does not contain version ${expected}`);
+    let allPresent = lock.includes(`version = "${expected}"`);
+    for (const packageName of packageNames) {
+      // The version line must immediately follow the package name within
+      // the same [[package]] block (only whitespace/newlines between them).
+      // Lock files may use CRLF or LF line endings.
+      const re = new RegExp(`name = "${packageName}"\\r?\\nversion = "${expected}"`);
+      allPresent = allPresent && re.test(lock);
+    }
+    if (!allPresent) {
+      fail(`${relative} does not contain version ${expected} for all expected packages`);
     }
   }
   for (const relative of PACKAGE_LOCK_FILES) {
