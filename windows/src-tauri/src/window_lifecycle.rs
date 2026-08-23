@@ -16,7 +16,7 @@ where
 {
     #[cfg(not(target_os = "macos"))]
     {
-        return builder.transparent(true);
+        builder.transparent(true)
     }
 
     #[cfg(target_os = "macos")]
