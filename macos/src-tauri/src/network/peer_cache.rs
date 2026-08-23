@@ -1,4 +1,6 @@
 use super::*;
+use std::collections::HashSet;
+use tailsync_core::peer::health::RouteKey;
 
 #[derive(Clone)]
 struct PeerCacheEntry {
@@ -38,9 +40,49 @@ pub async fn clear_peer_cache() {
 async fn refresh_peer_cache(
     mode: &str,
 ) -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
-    let (local, peers) = discover_peers(mode).await?;
+    let (local, mut peers) = discover_peers(mode).await?;
+    probe_discovered_routes(&mut peers).await;
     store_peer_cache(mode, local.clone(), peers.clone()).await;
     Ok((local, peers))
+}
+
+/// mDNS contributes remembered routes but is only a discovery signal. Probe
+/// those LAN/Tailscale addresses explicitly so health state is based on an
+/// authenticated TailSync response rather than a presentation field.
+async fn probe_discovered_routes(peers: &mut [tailscale::PeerInfo]) {
+    for interface in [ConnectionInterface::Lan, ConnectionInterface::Tailscale] {
+        let addresses = peers
+            .iter()
+            .flat_map(|peer| peer.candidates.iter())
+            .filter(|candidate| {
+                candidate.interface == interface && candidate.latency.is_none()
+            })
+            .map(|candidate| candidate.address.clone())
+            .collect::<HashSet<_>>();
+        if addresses.is_empty() {
+            continue;
+        }
+        let Ok(responses) = lan::probe_addresses(addresses, interface).await else {
+            continue;
+        };
+        for response in responses {
+            let Some(peer) = peers.iter_mut().find(|peer| peer.hostname == response.hostname)
+            else {
+                continue;
+            };
+            for response_candidate in response.candidates {
+                if response_candidate.interface != interface {
+                    continue;
+                }
+                if let Some(candidate) = peer.candidates.iter_mut().find(|candidate| {
+                    candidate.interface == interface
+                        && candidate.address == response_candidate.address
+                }) {
+                    candidate.latency = response_candidate.latency;
+                }
+            }
+        }
+    }
 }
 
 pub async fn cached_discover_peers(
@@ -92,7 +134,21 @@ pub async fn peer_cache_refresh_loop(
         let mode = settings.lock().await.connection_mode.clone();
         match refresh_peer_cache(&mode).await {
             Ok((_, peers)) => {
-                update_peer_health(&mode, &peers);
+                let observations = peers.iter().flat_map(|peer| {
+                    peer.candidates.iter().filter_map(|candidate| {
+                        candidate.latency.map(|latency_ms| {
+                            (
+                                RouteKey::new(
+                                    &peer.hostname,
+                                    candidate.interface,
+                                    &candidate.address,
+                                ),
+                                latency_ms,
+                            )
+                        })
+                    })
+                });
+                record_probe_round(&mode, &peers, observations);
                 remember_peer_addresses(&settings, &mode, &peers).await;
             }
             Err(error) => {

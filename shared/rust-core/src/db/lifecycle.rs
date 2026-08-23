@@ -1,5 +1,46 @@
 use super::*;
 
+fn remove_history_entry(path: &Path) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let result = if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match result {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+fn clear_history_directory_with<F>(directory: &Path, remove_entry: &mut F) -> std::io::Result<()>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
+    std::fs::create_dir_all(directory)?;
+    let mut first_error = None;
+    for entry in std::fs::read_dir(directory)? {
+        match entry {
+            Ok(entry) => {
+                if let Err(error) = remove_entry(&entry.path()) {
+                    first_error.get_or_insert(error);
+                }
+            }
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 impl HistoryDB {
     /// Delete a history entry and its unreferenced external payload.
     pub fn delete(&mut self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
@@ -9,25 +50,50 @@ impl HistoryDB {
 
     /// Remove every history entry in one transaction.
     pub fn clear_all(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.clear_all_with(remove_history_entry)
+    }
+
+    fn clear_all_with<F>(&mut self, mut remove_entry: F) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: FnMut(&Path) -> std::io::Result<()>,
+    {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM history", [])?;
         tx.commit()?;
-        if let Err(error) = std::fs::remove_dir_all(&self.file_history_dir) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                warn!("Could not remove file history folder: {error}");
+
+        let mut first_error: Option<Box<dyn std::error::Error>> = None;
+        for (label, directory) in [
+            ("file", self.file_history_dir.clone()),
+            ("image", self.image_history_dir.clone()),
+        ] {
+            if let Err(error) = clear_history_directory_with(&directory, &mut remove_entry) {
+                warn!("Could not clear {label} history folder: {error}");
+                if first_error.is_none() {
+                    first_error = Some(Box::new(std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "Could not clear {label} history folder {}: {error}",
+                            directory.display()
+                        ),
+                    )));
+                }
             }
         }
-        std::fs::create_dir_all(&self.file_history_dir)?;
-        if let Err(error) = std::fs::remove_dir_all(&self.image_history_dir) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                warn!("Could not remove image history folder: {error}");
-            }
-        }
-        std::fs::create_dir_all(&self.image_history_dir)?;
+
         // Reclaim pages after an explicit user-initiated clear operation.
-        self.conn
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
-        Ok(())
+        if let Err(error) = self
+            .conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+        {
+            if first_error.is_none() {
+                first_error = Some(Box::new(error));
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Trim entries of a given type beyond the configured count and byte limits.
@@ -263,10 +329,6 @@ impl HistoryDB {
             }
         }
         tx.commit()?;
-        // Every deletion path, including quota trimming and duplicate
-        // replacement, must remove deleted rows from the WAL as well.
-        self.conn
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
 
         for (stored, directory, reference) in references {
             let remaining: i64 = self.conn.query_row(
@@ -286,6 +348,58 @@ impl HistoryDB {
                 }
             }
         }
+        // Every deletion path, including quota trimming and duplicate
+        // replacement, must remove deleted rows from the WAL as well. Perform
+        // this after the external encrypted payloads have been handled so a
+        // transient checkpoint failure cannot skip their deletion.
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_all_reports_removal_failure_and_continues_other_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-clear-all-failure-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut db = HistoryDB::open_at(&root).unwrap();
+        let blocked = db.add_file("blocked.bin", b"blocked", "self").unwrap();
+        db.add_image(&[1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], "self")
+            .unwrap();
+        let image_entry = std::fs::read_dir(&db.image_history_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+
+        let result = db.clear_all_with(|path| {
+            if path == blocked {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected removal failure",
+                ));
+            }
+            remove_history_entry(path)
+        });
+
+        assert!(result.is_err());
+        assert!(blocked.exists());
+        assert!(!image_entry.exists());
+        let row_count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(row_count, 0);
+
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -283,7 +283,9 @@ final class AppBehaviorTests: XCTestCase {
             "history.preview.actualSize",
             "history.preview.rotate",
             "history.preview.transparency",
-            "history.preview.thumbnails"
+            "history.preview.thumbnails",
+            "history.windowPin",
+            "history.windowUnpin"
         ]
 
         for language in ["en", "zh-CN"] {

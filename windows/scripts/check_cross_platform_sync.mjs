@@ -161,7 +161,7 @@ for (const [root, label] of [[winRoot, 'Windows'], [macRoot, 'macOS']]) {
 
 function assertReceivedFileHistorySource(root, platform) {
   const syncAdapter = read(root, 'src-tauri/src/sync_adapter.rs');
-  const storesAuthenticatedDevice = /add_file_batch_with_status\(\s*&history_batch_id,\s*&history_files,\s*batch_total,\s*&device,\s*true,\s*batch_complete,\s*\)/s;
+  const storesAuthenticatedDevice = /let\s+([A-Za-z_]\w*)\s*=\s*device\.clone\(\)\s*;[\s\S]*?add_file_batch_with_status\(\s*&history_batch_id,\s*&history_files,\s*batch_total,\s*&\1,\s*true,\s*batch_complete,\s*\)/;
   if (!storesAuthenticatedDevice.test(syncAdapter)) {
     fail(`${platform} received file history must store the authenticated device name.`);
   }

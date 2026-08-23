@@ -523,10 +523,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let visibleWindow = [NSApp.keyWindow, Self.settingsWC?.window, Self.historyWC?.window]
             .compactMap { $0 }
             .first(where: { $0.isVisible })
-        if visibleWindow == nil {
-            Self.showHistory()
+        if let visibleWindow {
+            beginUpdateAlert(alert, for: visibleWindow)
+        } else {
+            Self.showHistory { [weak self] window in
+                self?.beginUpdateAlert(alert, for: window)
+            }
         }
-        guard let parentWindow = visibleWindow ?? Self.historyWC?.window else { return }
+    }
+
+    private func beginUpdateAlert(_ alert: NSAlert, for parentWindow: NSWindow) {
         alert.beginSheetModal(for: parentWindow) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             Task { @MainActor in
@@ -819,32 +825,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── Windows ─────────────────────────────────────────────────
 
-    static func showHistory() {
-        if let wc = historyWC {
-            wc.window?.makeKeyAndOrderFront(nil)
-        } else {
-            let wc = makeWindow(title: "History", content: HistoryView(),
-                                size: NSSize(width: 400, height: 600),
-                                minSize: NSSize(width: 300, height: 360),
-                                onVisibilityChange: { isVisible in
-                                    NotificationCenter.default.post(
-                                        name: .tailSyncHistoryWindowVisibilityChanged,
-                                        object: nil,
-                                        userInfo: ["visible": isVisible]
-                                    )
-                                }) {
-                historyWC = nil
-                Task { @MainActor in
-                    HistoryPreviewWindowController.shared.attachHistoryWindow(nil)
+    static func showHistory(completion: ((NSWindow) -> Void)? = nil) {
+        DispatchQueue.main.async {
+            let historyWindowController = HistoryWindowController.shared
+            Self.forceAccessory()
+            if let wc = historyWC, let window = wc.window {
+                historyWindowController.attach(window)
+                historyWindowController.present()
+                completion?(window)
+            } else {
+                let wc = makeWindow(title: "History", content: HistoryView(),
+                                    size: NSSize(width: 400, height: 600),
+                                    minSize: NSSize(width: 300, height: 360),
+                                    onVisibilityChange: { isVisible in
+                                        NotificationCenter.default.post(
+                                            name: .tailSyncHistoryWindowVisibilityChanged,
+                                            object: nil,
+                                            userInfo: ["visible": isVisible]
+                                        )
+                                    }) {
+                    historyWindowController.detach()
+                    historyWC = nil
+                    Task { @MainActor in
+                        HistoryPreviewWindowController.shared.attachHistoryWindow(nil)
+                    }
                 }
+                historyWC = wc
+                guard let window = wc.window else { return }
+                historyWindowController.attach(window)
+                historyWindowController.present()
+                completion?(window)
             }
-            historyWC = wc
+            Task { @MainActor in
+                HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
+            }
         }
-        Task { @MainActor in
-            HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        Self.forceAccessory()
     }
 
     static func showSettings() {

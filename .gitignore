@@ -18,6 +18,7 @@
 **/pnpm-debug.log*
 
 # Rust, Swift and Tauri
+/target/
 **/src-tauri/target/
 **/src-tauri/target-*/
 /shared/rust-core/target/

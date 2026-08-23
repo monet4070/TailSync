@@ -24,6 +24,10 @@ pub fn record_delivery_stalled(peer: &str) {
     record(peer, "delivery_stalled");
 }
 
+pub fn record_delivery_shutdown(peer: &str) {
+    record(peer, "delivery_shutdown");
+}
+
 fn record(peer: &str, kind: &'static str) {
     *latest_warning()
         .lock()
@@ -65,5 +69,14 @@ mod tests {
         assert_eq!(warning.peer, "Desktop");
         assert!(warning.occurred_at_ms > 0);
         assert_eq!(take(), None);
+    }
+
+    #[test]
+    fn delivery_shutdown_records_its_own_kind() {
+        let _ = take();
+        record_delivery_shutdown("Desktop");
+        let warning = take().unwrap();
+        assert_eq!(warning.kind, "delivery_shutdown");
+        assert_eq!(warning.peer, "Desktop");
     }
 }

@@ -248,11 +248,7 @@ async fn clipboard_loop(
                 continue;
             }
             if !outbound_paths.is_empty() {
-                #[cfg(target_os = "macos")]
-                let files_are_readable =
-                    clipboard_file::clipboard_files_are_readable(&outbound_paths);
-                #[cfg(not(target_os = "macos"))]
-                let files_are_readable: Result<(), String> = Ok(());
+                let files_are_readable = sync::clipboard_files_are_readable(&outbound_paths);
                 match files_are_readable {
                     Ok(()) => {
                         if file_event_gate.should_process(
@@ -309,7 +305,7 @@ async fn clipboard_loop(
                     sync_engine.lock().await.supersede_file_clipboard();
                     crate::api::bump_clipboard_version();
 
-                    let payload = t.into_bytes();
+                    let payload: Arc<[u8]> = Arc::from(t.into_bytes().into_boxed_slice());
                     let broadcast_pool = pool.clone();
                     let broadcast_settings = settings.clone();
                     let broadcast_payload = payload.clone();
@@ -344,10 +340,16 @@ async fn clipboard_loop(
             Ok(image) => {
                 let w = image.width;
                 let h = image.height;
-                let packed = pack_image_data(w, h, &image.rgba);
+                let packed: Arc<[u8]> = match crate::protocol::pack_rgba_image(w, h, &image.rgba) {
+                    Ok(packed) => Arc::from(packed.into_boxed_slice()),
+                    Err(error) => {
+                        warn!("Ignoring invalid clipboard image {w}×{h}: {error}");
+                        continue;
+                    }
+                };
                 // The pixels are copied into `packed`; release the source image
-                // (up to 32 MiB) now so it does not linger through the echo
-                // check's await and the broadcast clone below.
+                // now. History and broadcast then share this buffer by Arc,
+                // avoiding another full image copy before event encoding.
                 drop(image);
                 let hash = blake3::hash(&packed).to_hex().to_string();
                 if !image_event_gate.should_process(
@@ -1035,15 +1037,6 @@ fn hash_file(path: &std::path::Path) -> std::io::Result<(u64, String)> {
     Ok((total, hasher.finalize().to_hex().to_string()))
 }
 
-/// Pack width (u32 LE) + height (u32 LE) + RGBA bytes into one buffer.
-fn pack_image_data(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 + rgba.len());
-    out.extend_from_slice(&width.to_le_bytes());
-    out.extend_from_slice(&height.to_le_bytes());
-    out.extend_from_slice(rgba);
-    out
-}
-
 // ── Shadow-filter helpers ────────────────────────────────────────────
 
 async fn shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) -> bool {
@@ -1066,7 +1059,7 @@ async fn image_shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &s
     }
 }
 
-fn spawn_save_text(database: Arc<Mutex<db::HistoryDB>>, text: Vec<u8>) {
+fn spawn_save_text(database: Arc<Mutex<db::HistoryDB>>, text: Arc<[u8]>) {
     tokio::spawn(async move {
         let length = text.len();
         let result = tokio::task::spawn_blocking(move || {
@@ -1085,7 +1078,7 @@ fn spawn_save_text(database: Arc<Mutex<db::HistoryDB>>, text: Vec<u8>) {
     });
 }
 
-fn spawn_save_image(database: Arc<Mutex<db::HistoryDB>>, data: Vec<u8>) {
+fn spawn_save_image(database: Arc<Mutex<db::HistoryDB>>, data: Arc<[u8]>) {
     tokio::spawn(async move {
         let length = data.len();
         let result = tokio::task::spawn_blocking(move || {
@@ -1108,7 +1101,7 @@ async fn broadcast_to_peers(
     pool: &Arc<Mutex<network::ConnectionPool>>,
     settings: &Arc<Mutex<crypto::Settings>>,
     cmd: Command,
-    payload: Vec<u8>,
+    payload: Arc<[u8]>,
 ) {
     if !settings.lock().await.sync_enabled {
         debug!("Sync is paused; skipping clipboard broadcast");
@@ -1121,7 +1114,7 @@ async fn broadcast_to_peers(
     // instead of one copy per peer. Every peer acknowledges the same message
     // id; receiver dedup is scoped to (source, message_id) and each peer sees
     // the broadcast at most once, so the shared id is safe.
-    let event = match network::SharedEvent::encode(cmd, payload) {
+    let event = match network::SharedEvent::encode_shared(cmd, payload) {
         Ok(event) => event,
         Err(error) => {
             warn!("Skipping clipboard broadcast: {error}");

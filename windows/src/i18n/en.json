@@ -43,6 +43,8 @@
   "history.cancel": "Cancel",
   "history.clearing": "Clearing...",
   "history.close": "Close",
+  "history.pinWindow": "Keep history window on top",
+  "history.unpinWindow": "Stop keeping history window on top",
   "history.loadError": "Could not load history",
   "history.restoreEntry": "Restore entry",
   "history.deleteEntry": "Delete entry",

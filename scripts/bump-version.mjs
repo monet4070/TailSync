@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Single-entry version bump (T355 implementation of the T003 design).
 //
-// Writes the new version into all 12 version-bearing files (#1-#12 in
-// VERSION_MATRIX), keeps the three Cargo.lock files in sync without
+// Writes the new version into all version-bearing files (#1-#12 in
+// VERSION_MATRIX), keeps the Cargo.lock files in sync without
 // re-resolving dependencies, and self-verifies through the existing
 // validate-release-version.mjs. README badges (#13) are intentionally not
 // touched unless --readme is passed.
@@ -114,18 +114,14 @@ const CARGO_TOML_FILES = [
 ];
 
 const LOCK_ROOTS = [
-  // Application locks: tailsync + tailsync-core + the three extracted shared crates.
+  // Application locks: tailsync + tailsync-core + the extracted shared crates.
   ['windows/src-tauri/Cargo.lock', 'tailsync', 'tailsync-core',
    'tailsync-protocol', 'tailsync-themes', 'tailsync-history-classifier'],
   ['macos/src-tauri/Cargo.lock', 'tailsync', 'tailsync-core',
    'tailsync-protocol', 'tailsync-themes', 'tailsync-history-classifier'],
-  // rust-core lock: tailsync-core + the three extracted shared crates.
-  ['shared/rust-core/Cargo.lock', 'tailsync-core',
-   'tailsync-protocol', 'tailsync-themes', 'tailsync-history-classifier'],
-  // Per-crate standalone locks: only the crate itself.
-  ['shared/tailsync-protocol/Cargo.lock', 'tailsync-protocol'],
-  ['shared/tailsync-themes/Cargo.lock', 'tailsync-themes'],
-  ['shared/tailsync-history-classifier/Cargo.lock', 'tailsync-history-classifier'],
+  // Root workspace lock: the four shared crates.
+  ['Cargo.lock', 'tailsync-core', 'tailsync-protocol', 'tailsync-themes',
+   'tailsync-history-classifier'],
 ];
 
 const PACKAGE_LOCK_FILES = ['windows/package-lock.json', 'site/package-lock.json'];

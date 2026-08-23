@@ -72,7 +72,7 @@ pub use health::{
     active_routes_snapshot, apply_peer_health, record_address_test_failure,
     record_address_test_success,
 };
-use health::{record_probe_miss, record_probe_success, PeerRouteKey};
+use health::{record_probe_round, PeerRouteKey};
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
 pub use iroh::start_server as start_iroh_server;

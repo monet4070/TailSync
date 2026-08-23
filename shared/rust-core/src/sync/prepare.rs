@@ -33,6 +33,8 @@ pub enum PrepareError {
     NonContiguousIndexes,
     #[error("File batch contains a duplicate transfer ID")]
     DuplicateTransferId,
+    #[error("File batch contains an invalid transfer ID")]
+    InvalidTransferId,
     #[error("File batch contains an invalid file name")]
     InvalidBatchFileName,
     #[error("File batch contains an invalid chunk size")]
@@ -109,13 +111,30 @@ pub fn validate_incoming_file_meta(meta: &mut FileMeta) -> Result<(), PrepareErr
     };
     meta.name = file_name.to_string_lossy().to_string();
     meta.name = normalize_transferred_file_name(&meta.name, &meta.hash);
-    if meta.name.is_empty() {
+    if meta.name.is_empty() || meta.name == "." || meta.name == ".." {
         return Err(PrepareError::InvalidFileName);
     }
     if meta.transfer_id.is_some()
         && (meta.chunk_size == 0 || meta.chunk_size as usize > crate::protocol::FILE_CHUNK_SIZE)
     {
         return Err(PrepareError::InvalidChunkSize);
+    }
+    Ok(())
+}
+
+/// Verify that clipboard paths can still be inspected and opened before a
+/// transfer is admitted. Clipboard providers may advertise a path whose
+/// backing file has already disappeared or become inaccessible.
+pub fn clipboard_files_are_readable(paths: &[PathBuf]) -> Result<(), String> {
+    for path in paths {
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            format!("Cannot inspect clipboard file {}: {error}", path.display())
+        })?;
+        if !metadata.is_file() {
+            continue;
+        }
+        File::open(path)
+            .map_err(|error| format!("Cannot read clipboard file {}: {error}", path.display()))?;
     }
     Ok(())
 }
@@ -187,6 +206,9 @@ impl FileBatchManifest {
         for (expected_index, file) in self.files.iter().enumerate() {
             if usize::from(file.index) != expected_index {
                 return Err(PrepareError::NonContiguousIndexes);
+            }
+            if file.transfer_id.is_zero() {
+                return Err(PrepareError::InvalidTransferId);
             }
             if !transfer_ids.insert(file.transfer_id) {
                 return Err(PrepareError::DuplicateTransferId);
@@ -456,6 +478,12 @@ mod tests {
             manifest(vec![entry(0)], 5).validate().is_err(),
             "total byte mismatch is rejected"
         );
+        let mut zero_transfer = entry(0);
+        zero_transfer.transfer_id = TransferId([0; 16]);
+        assert!(
+            manifest(vec![zero_transfer], 4).validate().is_err(),
+            "all-zero transfer IDs are rejected"
+        );
         assert!(
             manifest(vec![entry(0)], 4).validate().is_ok(),
             "a well-formed manifest validates"
@@ -517,6 +545,25 @@ mod tests {
             assert!(matches!(link_error, PrepareError::SymlinkSelected(_)));
             assert!(link_error.to_string().contains("symbolic link"));
         }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn clipboard_files_are_readable_rejects_missing_paths() {
+        let missing = test_directory("missing-clipboard-file").join("missing.txt");
+        let error = clipboard_files_are_readable(&[missing]).unwrap_err();
+        assert!(error.contains("Cannot inspect clipboard file"));
+    }
+
+    #[test]
+    fn clipboard_files_are_readable_accepts_regular_files() {
+        let directory = test_directory("readable-clipboard-file");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("clipboard.txt");
+        fs::write(&path, b"clipboard file").unwrap();
+
+        assert!(clipboard_files_are_readable(std::slice::from_ref(&path)).is_ok());
+
         fs::remove_dir_all(directory).unwrap();
     }
 }

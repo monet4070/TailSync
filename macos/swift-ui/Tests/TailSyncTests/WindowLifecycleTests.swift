@@ -5,6 +5,68 @@ import XCTest
 
 @MainActor
 final class WindowLifecycleTests: XCTestCase {
+    func testShowHistoryCallsCompletionAfterWindowIsPresented() {
+        _ = NSApplication.shared
+        let expectation = expectation(description: "history window presented")
+
+        AppDelegate.showHistory { window in
+            XCTAssertTrue(window.isVisible)
+            window.close()
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1)
+    }
+
+    func testHistoryWindowPolicyMovesNormalWindowToTheActiveSpace() {
+        _ = NSApplication.shared
+        let window = NSWindow()
+
+        HistoryWindowPresentationPolicy.configure(window, isPinned: false)
+
+        XCTAssertTrue(window.collectionBehavior.contains(.moveToActiveSpace))
+        XCTAssertTrue(window.collectionBehavior.contains(.fullScreenAuxiliary))
+        XCTAssertFalse(window.collectionBehavior.contains(.canJoinAllSpaces))
+        XCTAssertEqual(window.level, .normal)
+    }
+
+    func testHistoryWindowPolicyPinsWindowAboveOtherWindowsAcrossSpaces() {
+        _ = NSApplication.shared
+        let window = NSWindow()
+
+        HistoryWindowPresentationPolicy.configure(window, isPinned: true)
+
+        XCTAssertTrue(window.collectionBehavior.contains(.canJoinAllSpaces))
+        XCTAssertTrue(window.collectionBehavior.contains(.fullScreenAuxiliary))
+        XCTAssertFalse(window.collectionBehavior.contains(.moveToActiveSpace))
+        XCTAssertEqual(window.level, .floating)
+    }
+
+    func testHistoryWindowPinStatePersistsAndUpdatesAttachedWindow() {
+        _ = NSApplication.shared
+        let suiteName = "TailSync.WindowLifecycleTests.\(UUID().uuidString)"
+        let defaults = try! XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let controller = HistoryWindowController(defaults: defaults)
+        let window = NSWindow()
+        controller.attach(window)
+
+        XCTAssertFalse(controller.isPinned)
+        XCTAssertEqual(window.level, .normal)
+
+        controller.togglePinned()
+
+        XCTAssertTrue(controller.isPinned)
+        XCTAssertEqual(window.level, .floating)
+        XCTAssertTrue(defaults.bool(forKey: HistoryWindowController.isPinnedKey))
+
+        let restored = HistoryWindowController(defaults: defaults)
+        XCTAssertTrue(restored.isPinned)
+        restored.attach(window)
+        XCTAssertEqual(window.level, .floating)
+    }
+
     func testTransientWindowDetachesOwnerAndContentWhenClosed() {
         _ = NSApplication.shared
         let window = NSWindow(contentViewController: NSViewController())

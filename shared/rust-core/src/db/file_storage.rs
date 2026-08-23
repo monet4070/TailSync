@@ -182,6 +182,15 @@ pub(super) fn materialize_clipboard_file_at(
     source: &Path,
     original_name: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    materialize_clipboard_file_at_inner(directory, source, original_name, false)
+}
+
+fn materialize_clipboard_file_at_inner(
+    directory: &Path,
+    source: &Path,
+    original_name: &str,
+    force_copy: bool,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if !source.is_file() {
         return Err(format!("Clipboard source file is missing: {}", source.display()).into());
     }
@@ -191,7 +200,7 @@ pub(super) fn materialize_clipboard_file_at(
     let target = transfer_directory.join(safe_name);
     if file_encryption::is_encrypted_file(source)? {
         file_encryption::decrypt_file_to_path(source, &target)?;
-    } else if std::fs::hard_link(source, &target).is_err() {
+    } else if force_copy || std::fs::hard_link(source, &target).is_err() {
         std::fs::copy(source, &target)?;
     }
     Ok(target)
@@ -202,6 +211,89 @@ pub fn materialize_clipboard_file(
     original_name: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     materialize_clipboard_file_at(&get_clipboard_files_dir(), source, original_name)
+}
+
+/// Materialize a file received from a peer and mark it as having remote origin.
+///
+/// Plaintext legacy sources are copied instead of hard-linked so the platform
+/// marker cannot modify the history source through a shared inode.
+pub fn materialize_remote_clipboard_file(
+    source: &Path,
+    original_name: &str,
+    source_peer: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    materialize_remote_clipboard_file_at(
+        &get_clipboard_files_dir(),
+        source,
+        original_name,
+        source_peer,
+    )
+}
+
+pub(super) fn materialize_remote_clipboard_file_at(
+    directory: &Path,
+    source: &Path,
+    original_name: &str,
+    source_peer: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let target = materialize_clipboard_file_at_inner(directory, source, original_name, true)?;
+    mark_as_remote_origin(&target, source_peer);
+    Ok(target)
+}
+
+fn mark_as_remote_origin(path: &Path, source_peer: &str) {
+    let _ = source_peer;
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            log::warn!("Could not mark remote file origin: path contains a null byte");
+            return;
+        };
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let value = format!(
+            "0081;{timestamp:x};TailSync;{:032x}",
+            rand::random::<u128>()
+        );
+        let Ok(value) = std::ffi::CString::new(value) else {
+            log::warn!("Could not mark remote file origin: invalid quarantine value");
+            return;
+        };
+        let name = b"com.apple.quarantine\0";
+        let result = unsafe {
+            libc::setxattr(
+                path.as_ptr(),
+                name.as_ptr().cast(),
+                value.as_ptr().cast(),
+                value.as_bytes().len(),
+                0,
+                0,
+            )
+        };
+        if result != 0 {
+            log::warn!(
+                "Could not mark received file as remote on macOS: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut stream_path = path.as_os_str().to_os_string();
+        stream_path.push(":Zone.Identifier");
+        let stream_path = PathBuf::from(stream_path);
+        let marker = b"[ZoneTransfer]\r\nZoneId=3\r\n";
+        if let Err(error) = std::fs::write(stream_path, marker) {
+            log::warn!("Could not mark received file as remote on Windows: {error}");
+        }
+    }
 }
 
 pub fn cleanup_clipboard_files(referenced: &[PathBuf], minimum_age: std::time::Duration) {

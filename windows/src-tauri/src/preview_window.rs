@@ -123,16 +123,15 @@ pub async fn open_preview_window(
         return Ok(snapshot);
     }
 
-    tauri::WebviewWindowBuilder::new(
+    crate::window_lifecycle::configure_transparent_window(tauri::WebviewWindowBuilder::new(
         &app,
         PREVIEW_WINDOW_LABEL,
         tauri::WebviewUrl::App("preview.html".into()),
-    )
+    ))
     .title("TailSync - Preview")
     .inner_size(900.0, 680.0)
     .min_inner_size(520.0, 360.0)
     .decorations(false)
-    .transparent(true)
     .shadow(false)
     .resizable(true)
     .visible(false)

@@ -7,6 +7,7 @@
 /// └──────────┴───────┴───────┴───────┴───────┴───────┴──────────┴──────────┘
 /// Total header: 16 bytes + 32 byte checksum = 48 bytes overhead per frame
 use blake3::Hasher;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -62,6 +63,10 @@ impl TransferId {
 
     pub fn as_hex(self) -> String {
         self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    pub fn is_zero(self) -> bool {
+        self.0 == [0; 16]
     }
 
     pub fn from_hex(value: &str) -> Result<Self, String> {
@@ -181,6 +186,19 @@ impl EventEnvelope {
         encoded.extend_from_slice(&self.timestamp_ms.to_be_bytes());
         encoded.extend_from_slice(&self.content);
         encoded
+    }
+
+    /// Encode an event while retaining the caller's content buffer for a
+    /// second consumer. The envelope itself still owns one wire buffer.
+    pub fn encode_shared(content: Arc<[u8]>) -> (Arc<[u8]>, MessageId) {
+        let message_id = MessageId::random();
+        let timestamp_ms = unix_timestamp_ms();
+        let mut encoded = Vec::with_capacity(EVENT_ENVELOPE_HEADER_SIZE + content.len());
+        encoded.extend_from_slice(&EVENT_MAGIC);
+        encoded.extend_from_slice(&message_id.0);
+        encoded.extend_from_slice(&timestamp_ms.to_be_bytes());
+        encoded.extend_from_slice(content.as_ref());
+        (Arc::from(encoded.into_boxed_slice()), message_id)
     }
 
     pub fn encoded_len(&self) -> usize {
@@ -390,6 +408,34 @@ pub struct PackedImage<'a> {
     pub rgba: &'a [u8],
 }
 
+fn validate_rgba_image(width: u32, height: u32, rgba: &[u8]) -> Result<(), ProtocolError> {
+    if width == 0 || height == 0 {
+        return Err(ProtocolError::InvalidImage);
+    }
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .filter(|pixels| *pixels <= MAX_IMAGE_PIXELS)
+        .ok_or(ProtocolError::InvalidImage)?;
+    let expected = pixels.checked_mul(4).ok_or(ProtocolError::InvalidImage)?;
+    if rgba.len() != expected {
+        return Err(ProtocolError::InvalidImage);
+    }
+    Ok(())
+}
+
+/// Validate and pack width (u32 LE), height (u32 LE), and RGBA bytes. The
+/// dimensions and byte count are checked before the output allocation so a
+/// malformed or oversized platform image cannot cause an avoidable full-size
+/// copy.
+pub fn pack_rgba_image(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+    validate_rgba_image(width, height, rgba)?;
+    let mut packed = Vec::with_capacity(8 + rgba.len());
+    packed.extend_from_slice(&width.to_le_bytes());
+    packed.extend_from_slice(&height.to_le_bytes());
+    packed.extend_from_slice(rgba);
+    Ok(packed)
+}
+
 impl<'a> TryFrom<&'a [u8]> for PackedImage<'a> {
     type Error = ProtocolError;
 
@@ -408,18 +454,8 @@ impl<'a> TryFrom<&'a [u8]> for PackedImage<'a> {
                 .try_into()
                 .map_err(|_| ProtocolError::InvalidImage)?,
         );
-        if width == 0 || height == 0 {
-            return Err(ProtocolError::InvalidImage);
-        }
-        let pixels = (width as usize)
-            .checked_mul(height as usize)
-            .filter(|pixels| *pixels <= MAX_IMAGE_PIXELS)
-            .ok_or(ProtocolError::InvalidImage)?;
-        let expected = pixels.checked_mul(4).ok_or(ProtocolError::InvalidImage)?;
         let rgba = value.get(8..).ok_or(ProtocolError::InvalidImage)?;
-        if rgba.len() != expected {
-            return Err(ProtocolError::InvalidImage);
-        }
+        validate_rgba_image(width, height, rgba)?;
         Ok(Self {
             width,
             height,
@@ -644,6 +680,19 @@ mod tests {
         valid.extend_from_slice(&[0_u8; 16]);
         let parsed = PackedImage::try_from(valid.as_slice()).unwrap();
         assert_eq!((parsed.width, parsed.height, parsed.rgba.len()), (2, 2, 16));
+    }
+
+    #[test]
+    fn platform_image_packing_validates_before_copying() {
+        let rgba = [0x7b_u8; 16];
+        let packed = pack_rgba_image(2, 2, &rgba).unwrap();
+        let parsed = PackedImage::try_from(packed.as_slice()).unwrap();
+        assert_eq!((parsed.width, parsed.height), (2, 2));
+        assert_eq!(parsed.rgba, rgba);
+
+        assert!(pack_rgba_image(0, 2, &rgba).is_err());
+        assert!(pack_rgba_image(2, 2, &rgba[..15]).is_err());
+        assert!(pack_rgba_image(u32::MAX, u32::MAX, &[]).is_err());
     }
 
     #[test]

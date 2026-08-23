@@ -8,6 +8,7 @@ use super::lan;
 use super::tailscale::{LocalInfo, PeerInfo};
 use super::{source_matches_mode, ConnectionInterface, PeerCandidate, PeerStatus, TCP_PORT};
 use crate::identity::DeviceIdentity;
+use tailsync_core::peer::directory::is_remote_service;
 
 const SERVICE_TYPE: &str = "_tailsync._tcp.local.";
 
@@ -41,6 +42,7 @@ async fn run_once(identity: &DeviceIdentity) -> Result<(), String> {
     let daemon = ServiceDaemon::new().map_err(|error| error.to_string())?;
     let service = build_service_info(identity)?;
     let local_fullname = service.get_fullname().to_string();
+    let local_fingerprint = identity.fingerprint();
     daemon
         .register(service)
         .map_err(|error| error.to_string())?;
@@ -52,7 +54,14 @@ async fn run_once(identity: &DeviceIdentity) -> Result<(), String> {
     while let Ok(event) = receiver.recv_async().await {
         match event {
             ServiceEvent::ServiceResolved(service) => {
-                if service.get_fullname() == local_fullname || service.get_port() != TCP_PORT {
+                if !is_remote_service(
+                    service.get_fullname(),
+                    service.get_property_val_str("fingerprint"),
+                    service.get_port(),
+                    &local_fullname,
+                    &local_fingerprint,
+                    TCP_PORT,
+                ) {
                     continue;
                 }
                 if service.get_property_val_str("protocol") != Some("2") {
@@ -169,10 +178,10 @@ pub fn snapshot() -> (LocalInfo, Vec<PeerInfo>) {
         let mut candidates = record
             .addresses
             .iter()
-            .map(|address| PeerCandidate::new(ConnectionInterface::Lan, address))
+            .map(|address| PeerCandidate::remembered(ConnectionInterface::Lan, address))
             .collect::<Vec<_>>();
         if let Some(endpoint_id) = record.iroh_endpoint_id {
-            let mut candidate = PeerCandidate::new(ConnectionInterface::Iroh, endpoint_id);
+            let mut candidate = PeerCandidate::remembered(ConnectionInterface::Iroh, endpoint_id);
             candidate.set_rtt_capable(super::iroh::supports_rtt(&candidate.address));
             candidates.push(candidate);
         }
@@ -209,7 +218,9 @@ pub fn snapshot() -> (LocalInfo, Vec<PeerInfo>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_service_info, cache, dns_label, snapshot, MdnsRecord, SERVICE_TYPE};
+    use super::{
+        build_service_info, cache, dns_label, is_remote_service, snapshot, MdnsRecord, SERVICE_TYPE,
+    };
     use crate::identity::DeviceIdentity;
     use crate::network::TCP_PORT;
 
@@ -233,6 +244,42 @@ mod tests {
         assert_eq!(dns_label("My Laptop (Work)"), "my-laptop--work");
         assert_eq!(dns_label("***"), "tailsync-device");
         assert!(dns_label(&"a".repeat(100)).len() <= 63);
+    }
+
+    #[test]
+    fn discovery_rejects_self_by_fullname_or_device_fingerprint() {
+        assert!(!is_remote_service(
+            "windows._tailsync._tcp.local.",
+            Some("self-fingerprint"),
+            TCP_PORT,
+            "windows._tailsync._tcp.local.",
+            "self-fingerprint",
+            TCP_PORT,
+        ));
+        assert!(!is_remote_service(
+            "stale-windows._tailsync._tcp.local.",
+            Some("self-fingerprint"),
+            TCP_PORT,
+            "windows._tailsync._tcp.local.",
+            "self-fingerprint",
+            TCP_PORT,
+        ));
+        assert!(!is_remote_service(
+            "macbook._tailsync._tcp.local.",
+            Some("peer-fingerprint"),
+            TCP_PORT + 1,
+            "windows._tailsync._tcp.local.",
+            "self-fingerprint",
+            TCP_PORT,
+        ));
+        assert!(is_remote_service(
+            "macbook._tailsync._tcp.local.",
+            Some("peer-fingerprint"),
+            TCP_PORT,
+            "windows._tailsync._tcp.local.",
+            "self-fingerprint",
+            TCP_PORT,
+        ));
     }
 
     #[test]

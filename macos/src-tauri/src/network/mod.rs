@@ -69,7 +69,7 @@ pub use health::{
     record_address_test_success,
 };
 use health::{
-    clear_peer_health, register_active_session, update_peer_health,
+    clear_peer_health, record_probe_round, register_active_session,
     update_peer_health_for_failed_round,
 };
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;

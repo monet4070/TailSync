@@ -84,6 +84,10 @@ pub struct SecureConnection {
     stream: BoxedSessionIo,
     transport: TransportState,
     read_buffer: Vec<u8>,
+    partial_header: [u8; 2],
+    partial_header_len: usize,
+    partial_record: Vec<u8>,
+    partial_expected: Option<usize>,
     peer_identity: PeerIdentity,
 }
 
@@ -199,15 +203,53 @@ impl SecureConnection {
     }
 
     async fn read_transport_record(&mut self) -> Result<(), ProtocolError> {
-        let mut length = [0u8; 2];
-        self.stream.read_exact(&mut length).await?;
-        let encrypted_length = u16::from_be_bytes(length) as usize;
-        if !(16..=MAX_TRANSPORT_RECORD).contains(&encrypted_length) {
-            return Err(ProtocolError::InvalidEncryptedRecord);
+        while self.partial_header_len < self.partial_header.len() {
+            let read = self
+                .stream
+                .read(&mut self.partial_header[self.partial_header_len..])
+                .await?;
+            if read == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "early eof while reading encrypted record length",
+                )
+                .into());
+            }
+            self.partial_header_len += read;
         }
-        let mut encrypted = vec![0u8; encrypted_length];
-        self.stream.read_exact(&mut encrypted).await?;
-        let mut plaintext = vec![0u8; encrypted_length];
+
+        if self.partial_expected.is_none() {
+            let encrypted_length = u16::from_be_bytes(self.partial_header) as usize;
+            if !(16..=MAX_TRANSPORT_RECORD).contains(&encrypted_length) {
+                return Err(ProtocolError::InvalidEncryptedRecord);
+            }
+            self.partial_record.clear();
+            self.partial_record.reserve(encrypted_length);
+            self.partial_expected = Some(encrypted_length);
+        }
+
+        let expected = self
+            .partial_expected
+            .expect("encrypted record length set above");
+        let mut chunk = [0u8; 8192];
+        while self.partial_record.len() < expected {
+            let remaining = expected - self.partial_record.len();
+            let chunk_len = remaining.min(chunk.len());
+            let read = self.stream.read(&mut chunk[..chunk_len]).await?;
+            if read == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "early eof while reading encrypted record",
+                )
+                .into());
+            }
+            self.partial_record.extend_from_slice(&chunk[..read]);
+        }
+
+        let encrypted = std::mem::take(&mut self.partial_record);
+        self.partial_expected = None;
+        self.partial_header_len = 0;
+        let mut plaintext = vec![0u8; encrypted.len()];
         let length = self
             .transport
             .read_message(&encrypted, &mut plaintext)
@@ -260,6 +302,10 @@ where
         stream: Box::new(stream),
         transport,
         read_buffer: Vec::new(),
+        partial_header: [0; 2],
+        partial_header_len: 0,
+        partial_record: Vec::new(),
+        partial_expected: None,
         peer_identity: peer_info,
     };
     let ready = secure.read_frame().await?;
@@ -313,6 +359,10 @@ where
         stream: Box::new(stream),
         transport,
         read_buffer: Vec::new(),
+        partial_header: [0; 2],
+        partial_header_len: 0,
+        partial_record: Vec::new(),
+        partial_expected: None,
         peer_identity: peer_identity.clone(),
     };
     let ready = connection.read_frame().await?;
@@ -435,6 +485,10 @@ where
             stream: Box::new(stream),
             transport,
             read_buffer: Vec::new(),
+            partial_header: [0; 2],
+            partial_header_len: 0,
+            partial_record: Vec::new(),
+            partial_expected: None,
             peer_identity: peer_info.clone(),
         },
         peer_identity: peer_info,
@@ -633,8 +687,100 @@ mod tests {
     use super::*;
     use crate::identity::DeviceIdentity;
     use crate::pairing::derive_verification_code;
+    use std::time::Duration;
     use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Notify;
+
+    fn transport_pair() -> (TransportState, TransportState) {
+        let initiator_identity = DeviceIdentity::generate_for_test();
+        let responder_identity = DeviceIdentity::generate_for_test();
+        let mut initiator = build_handshake(&initiator_identity, true).unwrap();
+        let mut responder = build_handshake(&responder_identity, false).unwrap();
+        let mut message = vec![0u8; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
+        let mut plaintext = vec![0u8; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
+
+        let length = initiator.write_message(&[], &mut message).unwrap();
+        responder
+            .read_message(&message[..length], &mut plaintext)
+            .unwrap();
+        let length = responder.write_message(&[], &mut message).unwrap();
+        initiator
+            .read_message(&message[..length], &mut plaintext)
+            .unwrap();
+        let length = initiator.write_message(&[], &mut message).unwrap();
+        responder
+            .read_message(&message[..length], &mut plaintext)
+            .unwrap();
+
+        (
+            initiator.into_transport_mode().unwrap(),
+            responder.into_transport_mode().unwrap(),
+        )
+    }
+
+    fn encrypted_record(transport: &mut TransportState, frame: &Frame) -> Vec<u8> {
+        let encoded = frame.encode();
+        let mut encrypted = vec![0u8; encoded.len() + 32];
+        let length = transport.write_message(&encoded, &mut encrypted).unwrap();
+        encrypted.truncate(length);
+        let mut record = Vec::with_capacity(2 + encrypted.len());
+        record.extend_from_slice(&(encrypted.len() as u16).to_be_bytes());
+        record.extend_from_slice(&encrypted);
+        record
+    }
+
+    async fn assert_read_resumes_after_cancellation(split_at: usize) {
+        let (mut sender_transport, receiver_transport) = transport_pair();
+        let expected = Frame::try_new(
+            Command::TextPayload,
+            0,
+            42,
+            b"cancel-safe encrypted frame".to_vec(),
+        )
+        .unwrap();
+        let record = encrypted_record(&mut sender_transport, &expected);
+        assert!(split_at > 0 && split_at < record.len());
+
+        let (mut writer, reader) = tokio::io::duplex(record.len() * 2);
+        let release = std::sync::Arc::new(Notify::new());
+        let writer_release = release.clone();
+        let sender = tokio::spawn(async move {
+            writer.write_all(&record[..split_at]).await.unwrap();
+            writer_release.notified().await;
+            writer.write_all(&record[split_at..]).await.unwrap();
+        });
+        let mut secure = SecureConnection {
+            stream: Box::new(reader),
+            transport: receiver_transport,
+            read_buffer: Vec::new(),
+            partial_header: [0; 2],
+            partial_header_len: 0,
+            partial_record: Vec::new(),
+            partial_expected: None,
+            peer_identity: PeerIdentity {
+                hostname: "sender".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+        };
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), secure.read_frame())
+                .await
+                .is_err()
+        );
+        release.notify_one();
+        let received = tokio::time::timeout(Duration::from_secs(1), secure.read_frame())
+            .await
+            .expect("resumed read timed out")
+            .expect("resumed read failed");
+        sender.await.unwrap();
+
+        assert_eq!(received.command, expected.command);
+        assert_eq!(received.sequence, expected.sequence);
+        assert_eq!(received.payload, expected.payload);
+    }
 
     #[test]
     fn peer_identity_is_backward_compatible_and_only_serializes_iroh_when_present() {
@@ -733,6 +879,16 @@ mod tests {
         assert_eq!(received.command, Command::TextPayload);
         assert_eq!(received.sequence, 7);
         assert_eq!(received.payload, b"encrypted clipboard");
+    }
+
+    #[tokio::test]
+    async fn encrypted_record_read_resumes_after_length_prefix_cancellation() {
+        assert_read_resumes_after_cancellation(1).await;
+    }
+
+    #[tokio::test]
+    async fn encrypted_record_read_resumes_after_ciphertext_cancellation() {
+        assert_read_resumes_after_cancellation(7).await;
     }
 
     #[tokio::test]

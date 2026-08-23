@@ -62,6 +62,19 @@ pub fn source_matches_mode(ip: IpAddr, mode: &str) -> bool {
     }
 }
 
+/// Whether an mDNS service is a remote TailSync instance rather than this
+/// device or an unrelated service on another port.
+pub fn is_remote_service(
+    fullname: &str,
+    fingerprint: Option<&str>,
+    port: u16,
+    local_fullname: &str,
+    local_fingerprint: &str,
+    expected_port: u16,
+) -> bool {
+    fullname != local_fullname && fingerprint != Some(local_fingerprint) && port == expected_port
+}
+
 /// Infer the interface for an address: Tailscale ranges map to Tailscale,
 /// everything else is treated as LAN.
 pub fn infer_interface(address: &str) -> Result<ConnectionInterface, String> {
@@ -545,6 +558,42 @@ mod tests {
         assert!(source_matches_mode(tailscale, "auto"));
         assert!(source_matches_mode(lan, "auto"));
         assert!(!source_matches_mode(public, "auto"));
+    }
+
+    #[test]
+    fn mdns_self_filter_requires_remote_identity_and_expected_port() {
+        assert!(!is_remote_service(
+            "self._tailsync._tcp.local.",
+            Some("self-fingerprint"),
+            19890,
+            "self._tailsync._tcp.local.",
+            "self-fingerprint",
+            19890,
+        ));
+        assert!(!is_remote_service(
+            "stale-self._tailsync._tcp.local.",
+            Some("self-fingerprint"),
+            19890,
+            "self._tailsync._tcp.local.",
+            "self-fingerprint",
+            19890,
+        ));
+        assert!(!is_remote_service(
+            "peer._tailsync._tcp.local.",
+            Some("peer-fingerprint"),
+            19891,
+            "self._tailsync._tcp.local.",
+            "self-fingerprint",
+            19890,
+        ));
+        assert!(is_remote_service(
+            "peer._tailsync._tcp.local.",
+            Some("peer-fingerprint"),
+            19890,
+            "self._tailsync._tcp.local.",
+            "self-fingerprint",
+            19890,
+        ));
     }
 
     #[test]
