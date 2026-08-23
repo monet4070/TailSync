@@ -68,9 +68,9 @@ pub(super) fn record_probe_round(
     observations: impl IntoIterator<Item = (RouteKey, u64)>,
 ) {
     let candidates = peers.iter().flat_map(|peer| {
-        peer.candidates.iter().map(|candidate| {
-            RouteKey::new(&peer.hostname, candidate.interface, &candidate.address)
-        })
+        peer.candidates
+            .iter()
+            .map(|candidate| RouteKey::new(&peer.hostname, candidate.interface, &candidate.address))
     });
     record_probe_round_impl(
         &mut peer_health()

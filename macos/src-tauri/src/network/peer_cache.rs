@@ -54,9 +54,7 @@ async fn probe_discovered_routes(peers: &mut [tailscale::PeerInfo]) {
         let addresses = peers
             .iter()
             .flat_map(|peer| peer.candidates.iter())
-            .filter(|candidate| {
-                candidate.interface == interface && candidate.latency.is_none()
-            })
+            .filter(|candidate| candidate.interface == interface && candidate.latency.is_none())
             .map(|candidate| candidate.address.clone())
             .collect::<HashSet<_>>();
         if addresses.is_empty() {
@@ -66,7 +64,9 @@ async fn probe_discovered_routes(peers: &mut [tailscale::PeerInfo]) {
             continue;
         };
         for response in responses {
-            let Some(peer) = peers.iter_mut().find(|peer| peer.hostname == response.hostname)
+            let Some(peer) = peers
+                .iter_mut()
+                .find(|peer| peer.hostname == response.hostname)
             else {
                 continue;
             };
