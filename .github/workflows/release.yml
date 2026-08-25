@@ -45,8 +45,10 @@ jobs:
             community|trusted) ;;
             *) echo "TAILSYNC_RELEASE_TIER must be community or trusted." >&2; exit 1 ;;
           esac
+      - name: Validate updater trust anchor and endpoints
+        run: node scripts/validate-updater-config.mjs --root .
       - name: Test release metadata generators
-        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs
 
   windows:
     name: Package Windows (${{ vars.TAILSYNC_RELEASE_TIER || 'community' }})

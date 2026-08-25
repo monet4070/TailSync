@@ -47,6 +47,8 @@ windows/*.sub2api.*.json
 windows/tailsync-site-*.zip
 windows/tailsync-site-*.tar.gz
 /tailsync-site-*.tar.gz
+/tailsync-updater.key
+/tailsync-updater.key.pub
 
 # Local dev scratch and CI download residue. Probe runs under windows/.tmp/
 # write real app data (.dek, identity-v1.bin, history-v2.db) into these

@@ -35,6 +35,12 @@ if [[ "$FORMAL_RELEASE" == "1" ]]; then
         echo "TAILSYNC_UPDATER_PUBLIC_KEY is required for a formal release." >&2
         exit 1
     fi
+    CHECKED_IN_UPDATER_PUBLIC_KEY=$(tr -d '\r\n' < ../shared/updater.pub)
+    PROVIDED_UPDATER_PUBLIC_KEY=$(printf '%s' "$TAILSYNC_UPDATER_PUBLIC_KEY" | tr -d '\r\n')
+    if [[ "$PROVIDED_UPDATER_PUBLIC_KEY" != "$CHECKED_IN_UPDATER_PUBLIC_KEY" ]]; then
+        echo "TAILSYNC_UPDATER_PUBLIC_KEY does not match shared/updater.pub." >&2
+        exit 1
+    fi
 fi
 
 if [[ "$FORMAL_RELEASE" == "1" && "$RELEASE_TIER" == "community" ]]; then

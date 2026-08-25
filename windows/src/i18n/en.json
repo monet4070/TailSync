@@ -233,7 +233,7 @@
   "settings.updateChecking": "Checking for updates...",
   "settings.updateAvailable": "TailSync {version} is available",
   "settings.updateCurrent": "TailSync is up to date",
-  "settings.updateDisabled": "Updates are not configured. Add an updater public key to enable signed updates.",
+  "settings.updateDisabled": "This development build does not enable the release update channel. Install a signed release build to check for updates.",
   "settings.updateInstalling": "Downloading and verifying the signed update...",
   "settings.updateInstalled": "Update installed. Restart TailSync to finish.",
   "settings.updateFailed": "Could not check for updates",

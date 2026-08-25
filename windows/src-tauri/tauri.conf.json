@@ -46,7 +46,7 @@
       "endpoints": [
         "https://github.com/monet4070/TailSync/releases/latest/download/latest.json"
       ],
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5RkUxRTVCQTk1MjM2RjAKUldUd05sS3BXeDcrNlhxY3BQeXFGemlEeWNiSVovaVpHMUw3ZDVmMS80RE5nSUcrNEVkTjZqTk0K",
       "windows": {
         "installMode": "passive"
       }

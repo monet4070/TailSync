@@ -14,6 +14,7 @@ const UPDATE_PUBLIC_KEY: &str = match option_env!("TAILSYNC_UPDATER_PUBLIC_KEY")
     Some(key) => key,
     None => "",
 };
+const RELEASE_UPDATE_PUBLIC_KEY: &str = include_str!("../../../shared/updater.pub");
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 const PACKAGE_METADATA_PATH: &str = "tailsync-update.json";
@@ -336,11 +337,20 @@ pub fn spawn_automatic_update_check(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_metadata, validate_update_package, UPDATE_PUBLIC_KEY};
+    use super::{
+        validate_metadata, validate_update_package, RELEASE_UPDATE_PUBLIC_KEY, UPDATE_PUBLIC_KEY,
+    };
 
     #[test]
     fn embedded_update_key_is_never_a_documented_placeholder() {
         assert!(!UPDATE_PUBLIC_KEY.contains("REPLACE_WITH"));
+    }
+
+    #[test]
+    fn release_build_key_matches_the_checked_in_trust_anchor() {
+        if !UPDATE_PUBLIC_KEY.trim().is_empty() {
+            assert_eq!(UPDATE_PUBLIC_KEY.trim(), RELEASE_UPDATE_PUBLIC_KEY.trim());
+        }
     }
 
     #[test]

@@ -233,7 +233,7 @@
   "settings.updateChecking": "正在检查更新...",
   "settings.updateAvailable": "TailSync {version} 可用",
   "settings.updateCurrent": "TailSync 已是最新版",
-  "settings.updateDisabled": "更新尚未配置。添加更新公钥后即可启用签名更新。",
+  "settings.updateDisabled": "当前开发构建未启用正式更新通道，请安装签名发布版后检查更新。",
   "settings.updateInstalling": "正在下载并验证签名更新...",
   "settings.updateInstalled": "更新已安装，重启 TailSync 后生效",
   "settings.updateFailed": "无法检查更新",

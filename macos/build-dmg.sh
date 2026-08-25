@@ -37,6 +37,12 @@ if [[ "$FORMAL_RELEASE" == "1" ]]; then
             exit 1
         fi
     done
+    CHECKED_IN_UPDATER_PUBLIC_KEY=$(tr -d '\r\n' < ../shared/updater.pub)
+    PROVIDED_UPDATER_PUBLIC_KEY=$(printf '%s' "$TAILSYNC_UPDATER_PUBLIC_KEY" | tr -d '\r\n')
+    if [[ "$PROVIDED_UPDATER_PUBLIC_KEY" != "$CHECKED_IN_UPDATER_PUBLIC_KEY" ]]; then
+        echo "TAILSYNC_UPDATER_PUBLIC_KEY does not match shared/updater.pub." >&2
+        exit 1
+    fi
     if [[ ! -x "$TAURI_CLI" ]]; then
         echo "Tauri CLI is required to sign the updater archive: $TAURI_CLI" >&2
         exit 1

@@ -28,12 +28,13 @@ npm ci
 npx tauri signer generate --write-keys ..\tailsync-updater.key
 ```
 
-私钥及密码必须保存在仓库之外，并备份到受控的离线位置。将以下三个值加入
-GitHub Actions secrets：
+私钥及密码必须保存在仓库之外，并备份到受控的离线位置。生成后的公钥是公开信任锚，
+应写入 `shared/updater.pub` 和两个 `tauri.conf.json`。将以下三个值加入 GitHub Actions
+secrets：
 
 | Secret | 内容 |
 |---|---|
-| `TAILSYNC_UPDATER_PUBLIC_KEY` | Tauri updater 公钥 |
+| `TAILSYNC_UPDATER_PUBLIC_KEY` | 与 `shared/updater.pub` 完全一致的 Tauri updater 公钥 |
 | `TAURI_SIGNING_PRIVATE_KEY` | Tauri updater 私钥文件的完整内容 |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥密码 |
 
@@ -44,8 +45,9 @@ GitHub 仓库的 Actions variables 中显式设置：
 TAILSYNC_RELEASE_TIER=community
 ```
 
-发布构建缺少 updater 公钥或私钥会直接失败，不会静默生成一个无法验证更新的包。
-公钥会编译进两个客户端。轮换公钥需要先用旧私钥签一个过渡版本，不能直接覆盖。
+发布构建缺少 updater 公钥或私钥、Secret 与仓库信任锚不一致，都会直接失败，不会静默
+生成一个无法验证更新的包。公钥会编译进两个客户端。轮换公钥需要先用旧私钥签一个
+同时信任新公钥的过渡版本，不能直接覆盖。
 
 ## 发布通道
 

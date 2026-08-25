@@ -119,6 +119,7 @@ $manifestPath = Join-Path $tauriRoot 'Cargo.toml'
 $configPath = Join-Path $tauriRoot 'tauri.conf.json'
 $lockPath = Join-Path $tauriRoot 'Cargo.lock'
 $sharedManifest = Join-Path $repositoryRoot 'shared\rust-core\Cargo.toml'
+$updaterPublicKeyPath = Join-Path $repositoryRoot 'shared\updater.pub'
 $tauriCli = Join-Path $windowsRoot 'node_modules\.bin\tauri.cmd'
 $targetDirectory = Resolve-OutputPath -BasePath $tauriRoot -RequestedPath $BuildDirectory
 $releaseDirectory = Resolve-OutputPath -BasePath $windowsRoot -RequestedPath $OutputDirectory
@@ -128,6 +129,7 @@ $requiredFiles = @(
     $configPath,
     $lockPath,
     $sharedManifest,
+    $updaterPublicKeyPath,
     (Join-Path $windowsRoot 'package-lock.json'),
     (Join-Path $windowsRoot 'history.html'),
     (Join-Path $windowsRoot 'settings.html'),
@@ -139,6 +141,14 @@ $requiredFiles = @(
 foreach ($requiredFile in $requiredFiles) {
     if (!(Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required packaging input is missing: $requiredFile"
+    }
+}
+
+if ($Release) {
+    $checkedInUpdaterPublicKey = (Get-Content -Raw -LiteralPath $updaterPublicKeyPath).Trim()
+    $providedUpdaterPublicKey = ([string]$env:TAILSYNC_UPDATER_PUBLIC_KEY).Trim()
+    if ($providedUpdaterPublicKey -ne $checkedInUpdaterPublicKey) {
+        throw 'TAILSYNC_UPDATER_PUBLIC_KEY does not match shared/updater.pub.'
     }
 }
 
