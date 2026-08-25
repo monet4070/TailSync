@@ -14,6 +14,7 @@ const UPDATE_PUBLIC_KEY: &str = match option_env!("TAILSYNC_UPDATER_PUBLIC_KEY")
     Some(key) => key,
     None => "",
 };
+#[cfg(test)]
 const RELEASE_UPDATE_PUBLIC_KEY: &str = include_str!("../../../shared/updater.pub");
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();

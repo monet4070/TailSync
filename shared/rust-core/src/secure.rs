@@ -168,6 +168,14 @@ impl SecureConnection {
         Ok(())
     }
 
+    /// Finish the underlying write side after the application protocol has
+    /// completed its final acknowledgement exchange. In particular, Iroh's
+    /// `flush` only means that bytes reached the local QUIC stack; an explicit
+    /// shutdown is still needed to finish the send stream before dropping it.
+    pub async fn shutdown(&mut self) -> std::io::Result<()> {
+        self.stream.shutdown().await
+    }
+
     fn pending_frame_metadata(&self) -> Result<Option<(Command, usize, usize)>, ProtocolError> {
         if self.read_buffer.len() < protocol::HEADER_SIZE {
             return Ok(None);
@@ -789,7 +797,7 @@ mod tests {
         assert!(legacy.iroh_endpoint_id.is_none());
         let serialized_legacy = serde_json::to_string(&legacy).unwrap();
         assert!(!serialized_legacy.contains("iroh_endpoint_id"));
-        assert!(serialized_legacy.contains("\"protocol_version\":3"));
+        assert!(serialized_legacy.contains("\"protocol_version\":4"));
 
         let with_iroh = PeerIdentity {
             hostname: "current".into(),
@@ -811,7 +819,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("peer (2.0.2) uses v2"));
-        assert!(error.contains("requires v3"));
+        assert!(error.contains("requires v4"));
         assert!(error.contains("Update TailSync on both devices"));
     }
 

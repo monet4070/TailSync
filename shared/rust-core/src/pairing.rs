@@ -167,7 +167,7 @@ impl PairingManager {
         )
     }
 
-    fn with_policy(
+    pub(crate) fn with_policy(
         settings: Arc<Mutex<Settings>>,
         identity: Arc<DeviceIdentity>,
         window_duration: Duration,
@@ -493,6 +493,8 @@ impl PairingManager {
         tokio::pin!(timeout);
         let mut local_confirmed = false;
         let mut remote_confirmed = false;
+        let mut local_persisted = false;
+        let mut remote_persisted = false;
 
         loop {
             tokio::select! {
@@ -523,6 +525,17 @@ impl PairingManager {
                         remote_confirmed = true;
                         self.set_confirmation(session_id, local_confirmed, true).await;
                     }
+                    Ok(frame) if frame.command == Command::PairingPersisted => {
+                        if !remote_confirmed {
+                            self.fail_session(
+                                session_id,
+                                "Received pairing completion before confirmation".to_string(),
+                            )
+                            .await;
+                            return;
+                        }
+                        remote_persisted = true;
+                    }
                     Ok(frame) if frame.command == Command::PairingCancel => {
                         self.fail_session(session_id, "The other device cancelled pairing".to_string()).await;
                         return;
@@ -549,9 +562,9 @@ impl PairingManager {
                 }
             }
 
-            if local_confirmed && remote_confirmed {
+            if local_confirmed && remote_confirmed && !local_persisted {
                 if let Err(error) = self
-                    .finish_success(
+                    .persist_pairing(
                         session_id,
                         &hostname,
                         &remote_public_key,
@@ -561,7 +574,36 @@ impl PairingManager {
                     .await
                 {
                     self.fail_session(session_id, error.to_string()).await;
+                    return;
                 }
+                let Ok(frame) = Frame::try_new(Command::PairingPersisted, 0, 0, Vec::new()) else {
+                    self.fail_session(
+                        session_id,
+                        "Could not construct pairing completion".to_string(),
+                    )
+                    .await;
+                    return;
+                };
+                if let Err(error) = connection.write_frame(&frame).await {
+                    self.fail_session(
+                        session_id,
+                        format!("Could not confirm saved pairing: {error}"),
+                    )
+                    .await;
+                    return;
+                }
+                local_persisted = true;
+            }
+
+            if local_persisted && remote_persisted {
+                if let Err(error) = self.finish_success(session_id, &hostname).await {
+                    self.fail_session(session_id, error.to_string()).await;
+                }
+                // Both peers have observed the other's persisted state. Finish
+                // the underlying send stream explicitly; Iroh's flush is not a
+                // delivery acknowledgement and Drop may close the QUIC
+                // connection before the final frame is consumed.
+                let _ = connection.shutdown().await;
                 return;
             }
         }
@@ -583,7 +625,7 @@ impl PairingManager {
         };
     }
 
-    async fn finish_success(
+    async fn persist_pairing(
         &self,
         session_id: u64,
         hostname: &str,
@@ -610,8 +652,10 @@ impl PairingManager {
         result.map_err(|error| {
             PairingError::Transport(format!("Could not save paired device: {error}"))
         })?;
-        drop(settings);
+        Ok(())
+    }
 
+    async fn finish_success(&self, session_id: u64, hostname: &str) -> Result<(), PairingError> {
         let mut state = self.state.lock().await;
         if state.session_id != session_id {
             return Ok(());
@@ -961,6 +1005,65 @@ mod tests {
                 .and_then(|routes| routes.get("iroh"))
                 .map(String::as_str),
             Some(IROH_ENDPOINT_ID)
+        );
+    }
+
+    #[tokio::test]
+    async fn pairing_waits_for_remote_persisted_ack_before_marking_paired() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let server_settings = Arc::new(Mutex::new(Settings::default()));
+        let server_manager = PairingManager::with_policy(
+            server_settings.clone(),
+            server_identity.clone(),
+            Duration::from_secs(2),
+            5,
+            false,
+        );
+        server_manager.enable().await;
+
+        let (mut client, server) =
+            establish_in_memory_pair(&server_identity, &client_identity).await;
+        server_manager
+            .install_session(PendingPairing {
+                connection: server,
+                hostname: "client".into(),
+                remote_public_key: client_identity.public_key().to_vec(),
+                handshake_hash: vec![7; 32],
+                address: "5866666666666666666666666666666666666666666666666666666666666666".into(),
+                interface: "iroh".into(),
+            })
+            .await
+            .unwrap();
+
+        server_manager.confirm().await.unwrap();
+        let frame = client.read_frame().await.unwrap();
+        assert_eq!(frame.command, Command::PairingConfirm);
+        client
+            .write_frame(&Frame::try_new(Command::PairingConfirm, 0, 0, Vec::new()).unwrap())
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_ne!(server_manager.status().await.phase, PairingPhase::Paired);
+
+        let frame = client.read_frame().await.unwrap();
+        assert_eq!(frame.command, Command::PairingPersisted);
+        client
+            .write_frame(&Frame::try_new(Command::PairingPersisted, 0, 0, Vec::new()).unwrap())
+            .await
+            .unwrap();
+
+        for _ in 0..50 {
+            if server_manager.status().await.phase == PairingPhase::Paired {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(server_manager.status().await.phase, PairingPhase::Paired);
+        assert_eq!(
+            server_settings.lock().await.trusted_peer_keys.get("client"),
+            Some(&client_identity.public_key_base64())
         );
     }
 

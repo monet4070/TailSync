@@ -57,10 +57,10 @@ describe("useI18n", () => {
   });
 
   it("localizes the actionable protocol upgrade prompt", () => {
-    expect(en["settings.protocolUpgradeRequired"].replace("{version}", "3"))
-      .toContain("protocol v3");
-    expect(zhCN["settings.protocolUpgradeRequired"].replace("{version}", "3"))
-      .toContain("协议 v3");
+    expect(en["settings.protocolUpgradeRequired"].replace("{version}", "4"))
+      .toContain("protocol v4");
+    expect(zhCN["settings.protocolUpgradeRequired"].replace("{version}", "4"))
+      .toContain("协议 v4");
   });
 
   it("keeps both locale catalogs complete for history preview", () => {

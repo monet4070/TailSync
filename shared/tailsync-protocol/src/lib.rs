@@ -3,7 +3,7 @@
 /// Frame structure:
 /// ┌──────────┬───────┬───────┬───────┬───────┬───────┬──────────┬──────────┐
 /// │ Magic(4) │ Ver(1)│Flags(1)│Cmd(2) │ Seq(4)│ Len(4)│ Payload   │Blake3(32)│
-/// │ "TSYN"   │ 0x03  │       │       │       │       │ (var)     │          │
+/// │ "TSYN"   │ 0x04  │       │       │       │       │ (var)     │          │
 /// └──────────┴───────┴───────┴───────┴───────┴───────┴──────────┴──────────┘
 /// Total header: 16 bytes + 32 byte checksum = 48 bytes overhead per frame
 use blake3::Hasher;
@@ -12,9 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 pub const MAGIC: [u8; 4] = *b"TSYN";
-/// Protocol v3 introduces atomic file batches. Older peers are intentionally
+/// Protocol v4 introduces atomic pairing completion and retains atomic file
+/// batches. Older peers are intentionally
 /// rejected at framing time; their pinned identity remains valid after upgrade.
-pub const VERSION: u8 = 0x03;
+pub const VERSION: u8 = 0x04;
 pub const HEADER_SIZE: usize = 16;
 pub const CHECKSUM_SIZE: usize = 32;
 pub const MAX_HANDSHAKE_PAYLOAD_SIZE: usize = 4 * 1024;
@@ -256,6 +257,7 @@ pub enum Command {
     PairingConfirm = 0x000d,
     PairingCancel = 0x000e,
     EventAck = 0x000f,
+    PairingPersisted = 0x0010,
     // Content transfer
     TextPayload = 0x0101,
     ImagePayload = 0x0102,
@@ -290,6 +292,7 @@ impl Command {
             0x000d => Some(Self::PairingConfirm),
             0x000e => Some(Self::PairingCancel),
             0x000f => Some(Self::EventAck),
+            0x0010 => Some(Self::PairingPersisted),
             0x0101 => Some(Self::TextPayload),
             0x0102 => Some(Self::ImagePayload),
             0x0103 => Some(Self::FileMeta),
@@ -327,6 +330,7 @@ impl Command {
             | Self::PairingConfirm
             | Self::PairingCancel
             | Self::EventAck
+            | Self::PairingPersisted
             | Self::FileAck
             | Self::FileComplete
             | Self::FileBatchAccept

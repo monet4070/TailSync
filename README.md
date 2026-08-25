@@ -13,7 +13,7 @@
 [![macOS](https://img.shields.io/badge/macOS-SwiftUI-000000?logo=apple&logoColor=white)](#平台支持)
 [![Windows](https://img.shields.io/badge/Windows-Tauri-0078D4?logo=windows11&logoColor=white)](#平台支持)
 [![Rust](https://img.shields.io/badge/Core-Rust-DEA584?logo=rust&logoColor=black)](#技术架构)
-[![Protocol](https://img.shields.io/badge/Protocol-v3-2F81F7)](#安全模型)
+[![Protocol](https://img.shields.io/badge/Protocol-v4-2F81F7)](#安全模型)
 [![Version](https://img.shields.io/badge/Version-v2.1.0-D5684B)](https://github.com/monet4070/TailSync/tree/v2.1.0)
 [![License](https://img.shields.io/badge/License-MIT-22C55E)](#许可证)
 
@@ -43,7 +43,7 @@
 | Windows | ✅ 可用 | React / TypeScript / Tauri 桌面应用 |
 | Android | 🧪 尚未支持 | 不属于当前跨平台兼容范围 |
 
-macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/rust-core` 中的 v3 线协议、加密、历史存储和同步状态机，并通过跨平台漂移检查保持契约一致。
+macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/rust-core` 中的 v4 线协议、加密、历史存储和同步状态机，并通过跨平台漂移检查保持契约一致。
 
 ## 核心功能
 
@@ -82,7 +82,7 @@ flowchart LR
         R <--> T
     end
 
-    D --- C[共享 v3 协议与 Rust 核心]
+    D --- C[共享 v4 协议与 Rust 核心]
     T --- C
     C --> P[发现与健康监控]
     C --> N[Noise 安全会话]
@@ -93,7 +93,7 @@ flowchart LR
 
 `shared/rust-core` 负责：
 
-- v3 帧协议、输入校验和 Noise 加密通道
+- v4 帧协议、输入校验和 Noise 加密通道
 - DEK、设置、固定设备身份和配对状态
 - 历史数据库、图片/文件生命周期和存储配额
 - 文本、图片和大文件同步状态机及可靠投递
@@ -135,7 +135,7 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 - 文本、图片和文件历史均使用系统保护的数据密钥加密存储。
 - 文件历史使用 1 MiB 分块 AES-256-GCM 容器；恢复时只在受控剪贴板目录生成临时明文。
 
-当前线协议为 v3，加入了原子文件批次；握手会交换协议版本，不匹配时明确提示同时更新两端。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.1.0，数据库 schema 为 v9，这三个版本号彼此独立。
+当前线协议为 v4，加入了原子配对提交确认和原子文件批次；握手会交换协议版本，不匹配时明确提示同时更新两端。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.1.0，数据库 schema 为 v9，这三个版本号彼此独立。
 
 旧版 TailSync v1 历史数据库会在首次启动时自动导入。迁移按内容哈希保持幂等，损坏条目会写入诊断报告但不会阻止启动；原 `history.db` 和 `.fernet_key` 会保留，不会被自动删除。
 
@@ -285,7 +285,7 @@ macOS 与 Windows 的平台 UI 可以按系统体验分别演进；共享业务�
 - 历史正文与图片/文件负载由应用数据密钥加密；类型、时间戳等数据库元数据不加密，系统磁盘加密仍可提供额外的整盘保护。
 - 默认 tag 产物是 Community Release：macOS 使用 ad-hoc 签名且未公证，Windows 不含商业 Authenticode 签名，因此首次打开会出现 Gatekeeper 或 SmartScreen 警告；不要通过关闭系统安全功能来规避警告。
 - updater 签名、稳定通道 manifest 和降级保护已经接入，但尚未在本仓库凭据下完成首次线上更新及完整真实设备回归矩阵。预发布 tag 不进入稳定更新通道。
-- Android 客户端尚未纳入当前 v3 协议实现与兼容性保证。
+- Android 客户端尚未纳入当前 v4 协议实现与兼容性保证。
 
 ## 许可证
 

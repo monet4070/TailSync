@@ -15,8 +15,8 @@ use crate::identity::{
     persist_protected_bytes_create_only, read_protected_bytes, CreateOutcome, IdentityError,
 };
 
-pub const ALPN: &[u8] = b"tailsync/3";
-pub const RTT_ALPN: &[u8] = b"tailsync/3/rtt";
+pub const ALPN: &[u8] = b"tailsync/4";
+pub const RTT_ALPN: &[u8] = b"tailsync/4/rtt";
 const SECRET_KEY_SIZE: usize = 32;
 static IDENTITY_RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -391,6 +391,12 @@ fn identity_path() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::Settings;
+    use crate::identity::DeviceIdentity;
+    use crate::pairing::{PairingManager, PairingPhase, PendingPairing};
+    use crate::secure::{self, HandshakePurpose, PeerIdentity};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     // IGNORED (environment regression, not a code defect): since 2026-08-14
     // the isolated-endpoint connect on this machine reliably hits the 30 s
@@ -496,6 +502,154 @@ mod tests {
         let _ = business_done_tx.send(());
         server_task.await.unwrap();
         probe_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pairing_completes_over_a_real_iroh_stream() {
+        let server = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let client = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let server_endpoint_id = server.endpoint_id();
+        let client_endpoint_id = client.endpoint_id();
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let server_settings = Arc::new(Mutex::new(Settings::default()));
+        let client_settings = Arc::new(Mutex::new(Settings::default()));
+        let server_manager = PairingManager::with_policy(
+            server_settings.clone(),
+            server_identity.clone(),
+            Duration::from_secs(5),
+            5,
+            false,
+        );
+        let client_manager = PairingManager::with_policy(
+            client_settings.clone(),
+            client_identity.clone(),
+            Duration::from_secs(5),
+            5,
+            false,
+        );
+        server_manager.enable().await;
+        client_manager.enable().await;
+
+        let server_task = {
+            let server = server.clone();
+            let server_manager = server_manager.clone();
+            let server_identity = server_identity.clone();
+            let client_endpoint_id = client_endpoint_id.clone();
+            let server_endpoint_id = server_endpoint_id.clone();
+            tokio::spawn(async move {
+                let accepted = server.accept().await.unwrap().unwrap();
+                assert_eq!(accepted.remote_endpoint_id, client_endpoint_id);
+                let stream = accepted.accept_stream().await.unwrap();
+                let accepted = secure::accept_with_pairing_window(
+                    stream,
+                    &server_identity,
+                    PeerIdentity {
+                        hostname: "server".into(),
+                        tailscale_ip: String::new(),
+                        iroh_endpoint_id: Some(server_endpoint_id),
+                    },
+                    server_manager.subscribe_window(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(accepted.purpose, HandshakePurpose::Pairing);
+                let mut connection = accepted.connection;
+                secure::write_ready(&mut connection).await.unwrap();
+                server_manager
+                    .install_session(PendingPairing {
+                        connection,
+                        hostname: accepted.peer_identity.hostname,
+                        remote_public_key: accepted.remote_public_key,
+                        handshake_hash: accepted.handshake_hash,
+                        address: client_endpoint_id,
+                        interface: "iroh".into(),
+                    })
+                    .await
+                    .unwrap();
+            })
+        };
+
+        let stream = client.connect_addr(server.endpoint.addr()).await.unwrap();
+        let accepted = secure::connect_pairing(
+            stream,
+            &client_identity,
+            PeerIdentity {
+                hostname: "client".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: Some(client_endpoint_id),
+            },
+        )
+        .await
+        .unwrap();
+        client_manager
+            .install_session(PendingPairing {
+                connection: accepted.connection,
+                hostname: accepted.peer_identity.hostname,
+                remote_public_key: accepted.remote_public_key,
+                handshake_hash: accepted.handshake_hash,
+                address: server_endpoint_id,
+                interface: "iroh".into(),
+            })
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+
+        let server_code = server_manager
+            .status()
+            .await
+            .peer
+            .as_ref()
+            .unwrap()
+            .verification_code
+            .clone();
+        let client_code = client_manager
+            .status()
+            .await
+            .peer
+            .as_ref()
+            .unwrap()
+            .verification_code
+            .clone();
+        assert_eq!(server_code, client_code);
+
+        server_manager.confirm().await.unwrap();
+        client_manager.confirm().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if server_manager.status().await.phase == PairingPhase::Paired
+                    && client_manager.status().await.phase == PairingPhase::Paired
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Iroh pairing should complete after both persisted acknowledgements");
+
+        assert_eq!(
+            server_settings.lock().await.trusted_peer_keys.get("client"),
+            Some(&client_identity.public_key_base64())
+        );
+        assert_eq!(
+            client_settings.lock().await.trusted_peer_keys.get("server"),
+            Some(&server_identity.public_key_base64())
+        );
+        client.close().await;
+        server.close().await;
     }
 
     #[tokio::test]

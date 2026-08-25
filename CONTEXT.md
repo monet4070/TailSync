@@ -5,7 +5,7 @@
 TailSync 是端到端加密的跨平台剪贴板同步工具：macOS（SwiftUI 菜单栏外壳 + Rust 守护进程）与
 Windows（React + Tauri）之间同步文本、图片和文件，优先局域网，必要时经 Tailscale 或 Iroh。
 
-线协议 v3；产品版本 2.1.0；数据库 schema v9。详见 `README.md`。
+线协议 v4；产品版本 2.1.0；数据库 schema v9。详见 `README.md`。
 
 ## 分层与契约面
 
@@ -63,4 +63,4 @@ test --no-run），Windows 原生编译/打包/运行由 CI 负责。注意 host
 ## 已知缺口
 
 - `iroh_transport` 的 `repeated_rtt_probes` 测试因本机 QUIC 环境回归已 `#[ignore]`（2026-08-14 起记录）。
-- Android 客户端不在 v3 协议兼容范围。
+- Android 客户端不在 v4 协议兼容范围。
