@@ -37,7 +37,7 @@ export function MockWindow({ render, mode, className }: MockWindowProps) {
         <span className="mw-title">TailSync</span>
         <span className="mw-titlebar-meta">
           <Wifi size={11} />
-          LAN · 4 ms
+          LAN · 直连
         </span>
       </div>
 

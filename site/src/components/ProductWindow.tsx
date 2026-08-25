@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Braces, CalendarDays, Check, Copy, Database, File, Globe2, Search, Tags, Terminal } from "lucide-react";
+import { MAC_INSTALLER_NAME } from "../product";
 const tailsyncIcon = "/tailsync-icon.png";
 
 export function ProductWindow() {
@@ -25,7 +26,7 @@ export function ProductWindow() {
     {
       icon: Braces,
       type: "DATA",
-      title: '{"trusted":true,"latency":4}',
+      title: '{"trusted":true,"route":"lan"}',
       meta: "MacBook Pro · 4 分钟前",
       color: "cyan",
       tags: ["结构化数据", "代码"],
@@ -34,7 +35,7 @@ export function ProductWindow() {
     {
       icon: File,
       type: "FILE",
-      title: "TailSync-v2.0.1-universal.dmg",
+      title: MAC_INSTALLER_NAME,
       meta: "Windows Studio · 8 分钟前",
       color: "paper",
       tags: ["文件"],

@@ -67,13 +67,16 @@
 
   /* stacked layouts */
 
+  /* minmax(0, …) not 1fr: a bare 1fr floors at the column's min-content, so one
+     oversized diagram widens the column and clips its sibling prose too. This
+     keeps an overflow contained to the element that causes it. */
   .manifesto-inner,
   .routing-section,
   .security-inner,
   .product-section,
   .architecture-strip,
   .recovery-section {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 48px;
   }
 
@@ -83,9 +86,13 @@
   .product-section,
   .recovery-section,
   .history-intelligence,
+  .preview-section,
   .flow-section {
     padding-block: 96px;
   }
+
+  /* .preview-sheet columns are defined in preview.css — it is shared with
+     /preview.html, which does not import this file. */
 
   .architecture-strip {
     padding-bottom: 96px;
@@ -188,31 +195,18 @@
     border-left: 0;
   }
 
-  .relay-device {
-    padding: 12px 14px;
-  }
-
-  .relay-core {
-    width: 96px;
-    height: 96px;
-  }
-
-  .relay-core-face {
-    width: 66px;
-    height: 66px;
+  /* shrinks the orrery's layout box and its paint together (304 × 0.82 + 102px
+     of chrome = 351px, so it fits from 351px up) */
+  .relay-stage {
+    --orrery-scale: 0.82;
   }
 
   .route-stage {
-    height: 250px;
+    height: 210px;
   }
 
-  .lab-device {
-    padding: 14px 16px;
-  }
-
-  .route-core-content {
-    width: 78px;
-    height: 78px;
+  .crypto-stage {
+    height: 210px;
   }
 
   .handshake-steps {
@@ -230,17 +224,19 @@
     font-size: 16px;
   }
 
+  /* the fingerprint hex is nowrap; unwrapped it sets a 314px min-content that
+     stretched the whole security column past the viewport */
+  .fingerprint-line {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+
   .recovery-timeline {
     grid-template-columns: repeat(3, 1fr);
   }
 
-  .recovery-network {
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-
-  .recovery-link {
-    min-width: 90px;
+  .recovery-trace {
+    height: 84px;
   }
 
   .route-float,
@@ -297,5 +293,13 @@
   .site-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+/* body has min-width: 320px, and 304 × 0.82 + 102px of chrome needs 351px —
+   one more step down keeps the orrery inside the card on the narrowest phones. */
+@media (max-width: 350px) {
+  .relay-stage {
+    --orrery-scale: 0.66;
   }
 }

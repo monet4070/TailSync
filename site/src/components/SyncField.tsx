@@ -17,9 +17,10 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
     ).matches;
     const pointer = { x: -1000, y: -1000, active: false };
     const lightTheme = theme === "light";
+    // Warm atelier palette: coral / warm-orange / amber / warm ink.
     const colors = lightTheme
-      ? ["#0071e3", "#7d5aff", "#ff5e8a", "#1d1d1f"]
-      : ["#2997ff", "#bf5af2", "#ff6482", "#f5f5f7"];
+      ? ["#bd4f2c", "#c8703c", "#c88a3c", "#17160f"]
+      : ["#f0946a", "#f0a884", "#c88a3c", "#f2ebdb"];
     const particles = Array.from({ length: 52 }, (_, index) => ({
       offset: index / 52,
       lane: (index % 7) - 3,
@@ -85,22 +86,22 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
       context.save();
       context.translate(x, y);
       context.strokeStyle = reverse
-        ? lightTheme ? "rgba(125,90,255,.7)" : "rgba(191,90,242,.75)"
-        : lightTheme ? "rgba(0,113,227,.72)" : "rgba(41,151,255,.78)";
+        ? lightTheme ? "rgba(200,112,60,.7)" : "rgba(200,138,60,.75)"
+        : lightTheme ? "rgba(189,79,44,.72)" : "rgba(240,148,106,.78)";
       context.lineWidth = 1.2;
       context.beginPath();
       context.arc(0, 0, 30 + pulse, 0, Math.PI * 2);
       context.stroke();
       context.strokeStyle = lightTheme
-        ? "rgba(29,29,31,.12)"
-        : "rgba(245,245,247,.12)";
+        ? "rgba(23,22,15,.12)"
+        : "rgba(242,235,219,.12)";
       context.lineWidth = 1;
       context.beginPath();
       context.arc(0, 0, 46 - pulse, 0, Math.PI * 2);
       context.stroke();
       context.fillStyle = reverse
-        ? lightTheme ? "#7d5aff" : "#bf5af2"
-        : lightTheme ? "#0071e3" : "#2997ff";
+        ? lightTheme ? "#c8703c" : "#c88a3c"
+        : lightTheme ? "#bd4f2c" : "#f0946a";
       context.beginPath();
       context.arc(0, 0, 3.5, 0, Math.PI * 2);
       context.fill();
@@ -116,8 +117,8 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
 
       context.save();
       context.strokeStyle = lightTheme
-        ? "rgba(29,29,31,.045)"
-        : "rgba(245,245,247,.04)";
+        ? "rgba(23,22,15,.045)"
+        : "rgba(242,235,219,.04)";
       context.lineWidth = 1;
       for (let x = 0; x < width; x += 72) {
         context.beginPath();
@@ -146,8 +147,8 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
           centerY - lane * 8,
         );
         context.strokeStyle = lane === 0
-          ? lightTheme ? "rgba(0,113,227,.26)" : "rgba(41,151,255,.24)"
-          : lightTheme ? "rgba(29,29,31,.08)" : "rgba(245,245,247,.08)";
+          ? lightTheme ? "rgba(189,79,44,.26)" : "rgba(240,148,106,.24)"
+          : lightTheme ? "rgba(23,22,15,.08)" : "rgba(242,235,219,.08)";
         context.lineWidth = lane === 0 ? 1.4 : 0.8;
         context.stroke();
       }
@@ -200,8 +201,8 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
         context.beginPath();
         context.arc(pointer.x, pointer.y, 18, 0, Math.PI * 2);
         context.strokeStyle = lightTheme
-          ? "rgba(29,29,31,.2)"
-          : "rgba(245,245,247,.22)";
+          ? "rgba(23,22,15,.2)"
+          : "rgba(242,235,219,.22)";
         context.stroke();
       }
 

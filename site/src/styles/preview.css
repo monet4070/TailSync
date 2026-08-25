@@ -1,0 +1,438 @@
+/* ============================================================
+   Rich preview — the six richly-rendered history formats.
+   Shared by the landing section (#preview) and the dedicated
+   /preview.html feature page. Warm atelier tokens, both themes.
+   Facts trace to docs/features/history-preview.md.
+   ============================================================ */
+
+.preview-section {
+  padding: 140px 24px;
+}
+
+.preview-heading {
+  max-width: 760px;
+  margin: 0 auto 60px;
+  text-align: center;
+}
+
+.preview-heading .section-marker {
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+.preview-heading h2 {
+  font-family: var(--font-display);
+  font-size: clamp(32px, 4.4vw, 54px);
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.14;
+}
+
+.preview-heading h2 span {
+  color: var(--brand);
+}
+
+.preview-heading > p {
+  max-width: 620px;
+  margin: 20px auto 0;
+  color: var(--ink-2);
+  font-size: 16.5px;
+  line-height: 1.65;
+}
+
+.preview-facts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.preview-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-chip);
+  background: var(--chip-bg);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+
+.preview-facts svg {
+  color: var(--brand);
+}
+
+/* ---------- the contact sheet ---------- */
+
+.preview-sheet {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+
+.preview-card {
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--elevated);
+  box-shadow: var(--shadow-card);
+  transition: transform 0.35s var(--ease-apple), box-shadow 0.35s ease, border-color 0.35s ease;
+}
+
+.preview-card:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--brand) 32%, transparent);
+  box-shadow: var(--shadow-float);
+}
+
+.preview-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.preview-card-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.preview-card-name svg {
+  color: var(--brand);
+}
+
+.preview-card-head small {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+}
+
+.preview-card-art {
+  position: relative;
+  height: 132px;
+  padding: 14px;
+  border-radius: var(--radius-inner);
+  background: var(--bg-alt);
+  overflow: hidden;
+}
+
+.preview-card-note {
+  margin-top: 14px;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* The contact sheet's breakpoints live here, not in responsive.css: this file is
+   shared by the landing section and /preview.html, and only the landing entry
+   imports responsive.css — so the standalone page was stuck at three columns and
+   scrolled sideways on phones. */
+@media (max-width: 960px) {
+  .preview-sheet {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .preview-sheet {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- per-format micro-renders ---------- */
+
+/* image */
+.pv-image {
+  position: relative;
+  height: 100%;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--brand) 60%, transparent), #c88a3c 55%, color-mix(in srgb, var(--positive) 60%, transparent));
+}
+
+.pv-image-frame {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+}
+
+.pv-image-dim,
+.pv-image-zoom {
+  position: absolute;
+  bottom: 8px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(20, 19, 14, 0.62);
+  color: #f2ebdb;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.pv-image-dim {
+  left: 8px;
+}
+
+.pv-image-zoom {
+  right: 8px;
+}
+
+/* text */
+.pv-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+}
+
+.pv-text i {
+  height: 7px;
+  border-radius: 3px;
+  background: var(--hairline-strong);
+}
+
+.pv-text-short {
+  width: 55%;
+}
+
+.pv-text-hit {
+  background: color-mix(in srgb, var(--brand) 55%, transparent);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+/* code */
+.pv-code {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pv-code span {
+  display: flex;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.pv-code i {
+  color: var(--ink-3);
+  font-style: normal;
+  opacity: 0.7;
+}
+
+.pv-code code {
+  color: var(--ink-2);
+}
+
+.pv-code em {
+  color: var(--brand);
+  font-style: normal;
+  font-weight: 600;
+}
+
+/* markdown */
+.pv-md {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  justify-content: center;
+}
+
+.pv-md-h {
+  width: 62%;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--brand);
+  opacity: 0.82;
+}
+
+.pv-md-li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+
+.pv-md-li i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+.pv-md-table {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  margin-top: 2px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.pv-md-table span {
+  height: 12px;
+  background: var(--hairline);
+}
+
+/* pdf */
+.pv-pdf {
+  position: relative;
+  height: 100%;
+}
+
+.pv-pdf-page {
+  position: absolute;
+  width: 78px;
+  height: 100px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 5px;
+  background: var(--elevated);
+}
+
+.pv-pdf-p3 {
+  top: 6px;
+  left: 30px;
+  transform: rotate(6deg);
+  opacity: 0.5;
+}
+
+.pv-pdf-p2 {
+  top: 3px;
+  left: 20px;
+  transform: rotate(3deg);
+  opacity: 0.75;
+}
+
+.pv-pdf-p1 {
+  top: 0;
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+}
+
+.pv-pdf-p1 i {
+  height: 5px;
+  border-radius: 2px;
+  background: var(--hairline-strong);
+}
+
+.pv-pdf-short {
+  width: 60%;
+}
+
+.pv-pdf-count {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--brand);
+  color: var(--on-brand);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+}
+
+/* docx */
+.pv-docx {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  padding: 4px 2px;
+  justify-content: center;
+}
+
+.pv-docx-title {
+  width: 70%;
+  height: 11px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tone-b) 60%, var(--ink-3));
+  opacity: 0.7;
+}
+
+.pv-docx i {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--hairline-strong);
+}
+
+.pv-docx-tag {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--chip-bg);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+}
+
+/* ---------- shortcut row + CTA ---------- */
+
+.preview-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 18px 28px;
+  max-width: var(--content-max);
+  margin: 44px auto 0;
+}
+
+.preview-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.preview-keys > svg {
+  color: var(--brand);
+}
+
+.preview-keys span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-keys kbd {
+  padding: 3px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--chip-bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}

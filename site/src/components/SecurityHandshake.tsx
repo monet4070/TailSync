@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, Fingerprint, Laptop, LockKeyhole, Monitor, ScanLine, ShieldCheck } from "lucide-react";
+import { Check, Fingerprint, LockKeyhole, ScanLine, ShieldCheck } from "lucide-react";
 
 const handshakeSteps = [
   { label: "IDENTITY", icon: Fingerprint },
@@ -33,34 +33,22 @@ export function SecurityHandshake() {
         </span>
       </div>
 
-      <div className="crypto-stage" aria-label="实时加密握手演示">
-        <div className="crypto-sweep" aria-hidden="true" />
-        <div className="crypto-peer crypto-peer-local">
-          <Laptop size={20} />
-          <strong>MAC</strong>
-          <small>X25519 ID</small>
+      <div className="crypto-stage" aria-label="加密握手演示：双方身份合拢成印">
+        <div className="seal" aria-hidden="true">
+          <svg className="seal-svg" viewBox="0 0 200 200">
+            <circle className="seal-guide" cx="100" cy="100" r="84" />
+            <circle className="seal-guide seal-guide-dash" cx="100" cy="100" r="64" />
+            <path className="seal-arc seal-arc-a" d="M100,26 A74,74 0 0 1 100,174" />
+            <path className="seal-arc seal-arc-b" d="M100,26 A74,74 0 0 0 100,174" />
+            <circle className="seal-disc" cx="100" cy="100" r="46" />
+          </svg>
+          <div className="seal-core">
+            <LockKeyhole size={22} />
+            <small>NOISE XX</small>
+          </div>
         </div>
-        <div className="crypto-channel" aria-hidden="true">
-          <i />
-          <span className="crypto-signal crypto-signal-a"><Fingerprint size={12} /></span>
-          <span className="crypto-signal crypto-signal-b"><LockKeyhole size={12} /></span>
-          <span className="crypto-signal crypto-signal-c"><Check size={12} /></span>
-        </div>
-        <div className="crypto-core">
-          <span className="crypto-ring crypto-ring-a" aria-hidden="true" />
-          <span className="crypto-ring crypto-ring-b" aria-hidden="true" />
-          <div><LockKeyhole size={22} /><small>NOISE XX</small></div>
-        </div>
-        <div className="crypto-peer crypto-peer-remote">
-          <Monitor size={20} />
-          <strong>PC</strong>
-          <small>KEY PINNED</small>
-        </div>
-        <div className="entropy-stream" aria-hidden="true">
-          {Array.from({ length: 12 }, (_, index) => <i key={`entropy-${index}`} />)}
-        </div>
-        <span className="crypto-caption crypto-caption-left">EPHEMERAL KEY</span>
-        <span className="crypto-caption crypto-caption-right">AUTHENTICATED</span>
+        <span className="seal-caption seal-caption-a">X25519 · 本机</span>
+        <span className="seal-caption seal-caption-b">X25519 · 对端</span>
       </div>
 
       <div className="pair-code-panel">

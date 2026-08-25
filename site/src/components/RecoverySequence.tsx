@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Check, ClipboardCopy, Laptop, LockKeyhole, Monitor, Power, RefreshCw, ShieldCheck, Waves, WifiOff, Zap } from "lucide-react";
+import { Activity, Power, RefreshCw, ShieldCheck, Waves, WifiOff, Zap } from "lucide-react";
 
 const recoverySteps = [
   { label: "SLEEP", title: "系统休眠", detail: "SOCKET SUSPENDED", icon: WifiOff },
@@ -27,7 +27,7 @@ export function RecoverySequence() {
     <section className={`recovery-section recovery-phase-${phase}`} id="recovery">
       <div className="recovery-copy" data-reveal>
         <div className="section-marker">
-          <span>07</span>
+          <span>08</span>
           <small>WAKE RECOVERY / MAIN</small>
         </div>
         <span className="recovery-eyebrow"><RefreshCw size={15} /> RESILIENT SESSION</span>
@@ -49,11 +49,21 @@ export function RecoverySequence() {
           <small>MAIN / CLASSIFIER V4</small>
         </div>
 
-        <div className="recovery-wave" aria-hidden="true">
-          {Array.from({ length: 32 }, (_, index) => (
-            <i className={`wave-${(index % 6) + 1}`} key={`wave-${index}`} />
-          ))}
-          <span>CONNECTION SIGNAL</span>
+        <div className={`recovery-trace status-${phase === 0 ? "flat" : phase === 4 ? "live" : "revive"}`} aria-hidden="true">
+          <svg className="ecg" viewBox="0 0 480 96" preserveAspectRatio="none">
+            <path className="ecg-flat" d="M0,48 H480" vectorEffect="non-scaling-stroke" />
+            <path
+              className="ecg-line"
+              pathLength={100}
+              vectorEffect="non-scaling-stroke"
+              d="M0,48 H36 L44,48 L47,41 L50,48 L53,61 L56,15 L59,66 L62,48 H132 L140,48 L143,41 L146,48 L149,61 L152,15 L155,66 L158,48 H228 L236,48 L239,41 L242,48 L245,61 L248,15 L251,66 L254,48 H324 L332,48 L335,41 L338,48 L341,61 L344,15 L347,66 L350,48 H420 L428,48 L431,41 L434,48 L437,61 L440,15 L443,66 L446,48 H480"
+            />
+          </svg>
+          <span className="ecg-sweep" />
+          <div className="ecg-readout">
+            <i />
+            <b>{current.detail}</b>
+          </div>
         </div>
 
         <div className="recovery-timeline" role="group" aria-label="休眠唤醒恢复阶段">
@@ -75,39 +85,6 @@ export function RecoverySequence() {
               </button>
             );
           })}
-        </div>
-
-        <div className="recovery-network">
-          <div className="recovery-device recovery-device-source">
-            <Laptop size={23} />
-            <strong>MAC</strong>
-            <small>SOURCE / TRUSTED</small>
-          </div>
-          <div className="recovery-link" aria-hidden="true">
-            <span className="recovery-link-base" />
-            <span className="recovery-link-live" />
-            <i className="recovery-packet packet-a"><ClipboardCopy size={12} /></i>
-            <i className="recovery-packet packet-b"><LockKeyhole size={12} /></i>
-            <b>{current.detail}</b>
-          </div>
-          <div className="recovery-core">
-            <span aria-hidden="true" />
-            <RefreshCw size={23} />
-            <strong>SESSION</strong>
-            <small>{phase < 2 ? "PAUSED" : phase < 4 ? "REBUILD" : "HEALTHY"}</small>
-          </div>
-          <div className="recovery-link recovery-link-right" aria-hidden="true">
-            <span className="recovery-link-base" />
-            <span className="recovery-link-live" />
-            <i className="recovery-packet packet-a"><Check size={12} /></i>
-            <i className="recovery-packet packet-b"><Zap size={12} /></i>
-            <b>{phase === 4 ? "SYNC RESUMED" : "WAITING ACK"}</b>
-          </div>
-          <div className="recovery-device recovery-device-target">
-            <Monitor size={23} />
-            <strong>PC</strong>
-            <small>TARGET / {phase === 0 ? "ASLEEP" : "ONLINE"}</small>
-          </div>
         </div>
 
         <div className="recovery-log">

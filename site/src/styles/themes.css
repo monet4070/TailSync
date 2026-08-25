@@ -1,54 +1,71 @@
 /* ============================================================
-   Theme surfaces — Apple light / dark palettes.
-   Sections consume these variables; security stays pitch black.
+   Theme surfaces — warm "atelier" light / dark palettes.
+   Light = warm bone (showcase.css chrome); dark = Canvas-Atelier dark.colors
+   (themes/canvas-atelier/theme.json). Sections consume these variables.
    ============================================================ */
 
 html[data-theme="light"] {
-  --bg: #fbfbfd;
-  --bg-alt: #f5f5f7;
-  --elevated: #ffffff;
-  --ink: #1d1d1f;
-  --ink-2: #6e6e73;
-  --ink-3: #86868b;
-  --hairline: rgba(0, 0, 0, 0.09);
-  --hairline-strong: rgba(0, 0, 0, 0.16);
-  --chip-bg: rgba(0, 0, 0, 0.045);
-  --segment-bg: rgba(120, 120, 128, 0.14);
-  --nav-bg: rgba(251, 251, 253, 0.72);
+  --bg: #f2f0e9;
+  --bg-alt: #ece4d2;
+  --elevated: #fffdf5;
+  --ink: #17160f;
+  --ink-2: #565347;
+  --ink-3: #8a8779;
+  --hairline: rgba(23, 22, 15, 0.14);
+  --hairline-strong: rgba(23, 22, 15, 0.24);
+  --chip-bg: rgba(23, 22, 15, 0.05);
+  --segment-bg: rgba(23, 22, 15, 0.07);
+  --nav-bg: rgba(242, 240, 233, 0.82);
 
-  --shadow-card: 0 2px 10px rgba(0, 0, 0, 0.04), 0 24px 70px rgba(0, 0, 0, 0.07);
-  --shadow-float: 0 2px 8px rgba(0, 0, 0, 0.06), 0 20px 56px rgba(0, 0, 0, 0.12);
-  --ghost-word: rgba(0, 0, 0, 0.045);
+  /* Warm coral brand + on-brand text, and the derived semantic tones.
+     Nudged from the app's #bd4f2c to #ad4522 (same burnt coral, imperceptible
+     hue shift) so coral small-text — section eyebrows, quiet links — clears
+     WCAG AA 4.5:1 on the bone/bg-alt surfaces. Dark theme keeps #f0946a (~8:1). */
+  --brand: #ad4522;
+  --brand-hover: #a03e1f;
+  --brand-soft: rgba(189, 79, 44, 0.12);
+  --on-brand: #fff7ef;
+  --positive: #3a6449;
 
-  --tone-a: #0071e3;
-  --tone-b: #7d5aff;
-  --tone-c: #ff375f;
-  --tone-d: #32ade6;
+  --shadow-card: 0 2px 10px rgba(10, 9, 6, 0.05), 0 24px 70px rgba(10, 9, 6, 0.1);
+  --shadow-float: 0 2px 8px rgba(10, 9, 6, 0.08), 0 20px 56px rgba(10, 9, 6, 0.14);
+  --ghost-word: rgba(23, 22, 15, 0.05);
+
+  --tone-a: #ad4522;
+  --tone-b: #61507f;
+  --tone-c: #b84a7d;
+  --tone-d: #40614b;
 
   color-scheme: light;
 }
 
 html[data-theme="dark"] {
-  --bg: #000000;
-  --bg-alt: #101012;
-  --elevated: #161617;
-  --ink: #f5f5f7;
-  --ink-2: #a1a1a6;
-  --ink-3: #86868b;
-  --hairline: rgba(255, 255, 255, 0.11);
-  --hairline-strong: rgba(255, 255, 255, 0.2);
-  --chip-bg: rgba(255, 255, 255, 0.08);
-  --segment-bg: rgba(120, 120, 128, 0.22);
-  --nav-bg: rgba(18, 18, 19, 0.68);
+  --bg: #14130e;
+  --bg-alt: #1c1915;
+  --elevated: #28241d;
+  --ink: #f2ebdb;
+  --ink-2: #b4a98f;
+  --ink-3: #9d937f;
+  --hairline: rgba(242, 235, 219, 0.12);
+  --hairline-strong: rgba(242, 235, 219, 0.22);
+  --chip-bg: rgba(242, 235, 219, 0.07);
+  --segment-bg: rgba(242, 235, 219, 0.09);
+  --nav-bg: rgba(20, 19, 14, 0.72);
+
+  --brand: #f0946a;
+  --brand-hover: #f8ab87;
+  --brand-soft: rgba(240, 148, 106, 0.16);
+  --on-brand: #27150c;
+  --positive: #8cba94;
 
   --shadow-card: 0 2px 10px rgba(0, 0, 0, 0.4), 0 24px 70px rgba(0, 0, 0, 0.45);
   --shadow-float: 0 2px 8px rgba(0, 0, 0, 0.5), 0 20px 56px rgba(0, 0, 0, 0.55);
-  --ghost-word: rgba(255, 255, 255, 0.05);
+  --ghost-word: rgba(242, 235, 219, 0.05);
 
-  --tone-a: #2997ff;
-  --tone-b: #bf5af2;
-  --tone-c: #ff6482;
-  --tone-d: #64d2ff;
+  --tone-a: #f0946a;
+  --tone-b: #bb9ed8;
+  --tone-c: #f0a0c6;
+  --tone-d: #a4c4a9;
 
   color-scheme: dark;
 }
