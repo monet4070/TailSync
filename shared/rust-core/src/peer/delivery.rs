@@ -11,14 +11,22 @@
 //! and one test suite.
 
 use std::future::Future;
+use std::sync::Arc;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{timeout, Duration};
 
 use crate::peer::types::{
     ActiveRoute, ConnectionInterface, DeliveryReceipt, ResolvedCandidate, ResolvedTarget,
 };
-use crate::protocol::{Command, EventEnvelope, FileOffset, Frame, MessageId, TransferId};
+use crate::protocol::{
+    Command, EventEnvelope, FileOffset, Frame, MessageId, TransferId, EVENT_ENVELOPE_HEADER_SIZE,
+};
 use crate::secure::SecureConnection;
+
+/// Keep interactive clipboard traffic responsive without allowing a
+/// continuously readable priority queue to starve file-transfer traffic.
+const PRIORITY_BURST_LIMIT: usize = 8;
 
 /// Timing for one reliable delivery attempt. Defaults match the shared
 /// platform constants (750 ms event ACK window, 10 s file ACK window,
@@ -111,13 +119,31 @@ pub enum AckExpectation {
     Batch(TransferId),
 }
 
+/// The wire bytes of a queued frame. Most frames uniquely own their payload;
+/// a broadcast to several peers instead shares one reference-counted buffer
+/// (see [`SharedEvent`]) so a large image is encoded once and never copied
+/// per peer.
+enum Payload {
+    Owned(Vec<u8>),
+    Shared(Arc<[u8]>),
+}
+
+impl Payload {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Payload::Owned(bytes) => bytes,
+            Payload::Shared(bytes) => bytes,
+        }
+    }
+}
+
 /// A frame queued for one peer, with its expected acknowledgement and an
 /// optional completion callback for the caller that enqueued it. Fields are
 /// private: frames can only be built through the constructors, which keep
 /// command, payload, and acknowledgement internally consistent.
 pub struct QueuedFrame {
     command: Command,
-    payload: Vec<u8>,
+    payload: Payload,
     acknowledgement: AckExpectation,
     completion: Option<oneshot::Sender<Result<DeliveryReceipt, DeliveryError>>>,
 }
@@ -128,7 +154,7 @@ impl QueuedFrame {
     }
 
     pub fn payload(&self) -> &[u8] {
-        &self.payload
+        self.payload.as_slice()
     }
 
     pub fn acknowledgement(&self) -> AckExpectation {
@@ -153,7 +179,10 @@ impl QueuedFrame {
                     ));
                 }
                 let message_id = envelope.message_id;
-                (envelope.encode(), AckExpectation::Event(message_id))
+                (
+                    Payload::Owned(envelope.encode()),
+                    AckExpectation::Event(message_id),
+                )
             } else {
                 if content.len() > command.payload_limit() {
                     return Err(format!(
@@ -162,7 +191,7 @@ impl QueuedFrame {
                         command.payload_limit()
                     ));
                 }
-                (content, AckExpectation::None)
+                (Payload::Owned(content), AckExpectation::None)
             };
         Ok(Self {
             command,
@@ -188,7 +217,7 @@ impl QueuedFrame {
         }
         Ok(Self {
             command,
-            payload,
+            payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::Event(envelope.message_id),
             completion: None,
         })
@@ -217,7 +246,7 @@ impl QueuedFrame {
         }
         Ok(Self {
             command,
-            payload,
+            payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::File(transfer_id),
             completion: Some(completion),
         })
@@ -242,10 +271,75 @@ impl QueuedFrame {
         }
         Ok(Self {
             command,
-            payload,
+            payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::Batch(batch_id),
             completion: Some(completion),
         })
+    }
+}
+
+/// A text or image event, encoded exactly once so a single broadcast can be
+/// delivered to every peer without re-encoding or copying the payload per
+/// peer. [`SharedEvent::queued`] hands each peer a [`QueuedFrame`] that shares
+/// this buffer (an `Arc` bump, not a copy), so broadcasting a 32 MiB image to
+/// N peers holds one buffer instead of N.
+///
+/// Every peer receives the same `message_id`. Receiver-side dedup is scoped to
+/// `(source, message_id)` and each peer sees a given broadcast at most once
+/// (peers do not relay), so the shared id is safe — it simply means one
+/// clipboard event carries one identity across the fan-out.
+#[derive(Clone)]
+pub struct SharedEvent {
+    command: Command,
+    payload: Arc<[u8]>,
+    message_id: MessageId,
+}
+
+impl SharedEvent {
+    /// Encode a text/image payload once into a shared, reference-counted
+    /// buffer, validated against the command limit exactly like
+    /// [`QueuedFrame::new`] so a broadcast can never put an oversized frame on
+    /// the wire.
+    pub fn encode(command: Command, content: Vec<u8>) -> Result<Self, String> {
+        Self::encode_shared(command, Arc::from(content.into_boxed_slice()))
+    }
+
+    /// Encode an event from a caller-owned shared content buffer. The content
+    /// remains available to another consumer (for example, local history
+    /// persistence) while the wire envelope is built once for fan-out.
+    pub fn encode_shared(command: Command, content: Arc<[u8]>) -> Result<Self, String> {
+        if !matches!(command, Command::TextPayload | Command::ImagePayload) {
+            return Err(format!("{command:?} is not an envelope-wrapped command"));
+        }
+        if EVENT_ENVELOPE_HEADER_SIZE + content.len() > command.payload_limit() {
+            return Err(format!(
+                "{:?} reliable payload exceeds the {} byte limit",
+                command,
+                command.payload_limit()
+            ));
+        }
+        let (payload, message_id) = EventEnvelope::encode_shared(content);
+        Ok(Self {
+            command,
+            payload,
+            message_id,
+        })
+    }
+
+    pub fn command(&self) -> Command {
+        self.command
+    }
+
+    /// Build a per-peer queued frame that shares this event's encoded bytes
+    /// (an `Arc` reference-count bump, no payload copy) and acknowledges the
+    /// shared message ID.
+    pub fn queued(&self) -> QueuedFrame {
+        QueuedFrame {
+            command: self.command,
+            payload: Payload::Shared(self.payload.clone()),
+            acknowledgement: AckExpectation::Event(self.message_id),
+            completion: None,
+        }
     }
 }
 
@@ -253,11 +347,24 @@ impl QueuedFrame {
 pub struct PendingFrame {
     queued: QueuedFrame,
     sequence: u32,
+    undelivered_peer: Option<String>,
 }
 
 impl PendingFrame {
     pub fn new(queued: QueuedFrame, sequence: u32) -> Self {
-        Self { queued, sequence }
+        Self {
+            queued,
+            sequence,
+            undelivered_peer: None,
+        }
+    }
+
+    fn new_for_peer(queued: QueuedFrame, sequence: u32, hostname: &str) -> Self {
+        Self {
+            queued,
+            sequence,
+            undelivered_peer: Some(hostname.to_string()),
+        }
     }
 
     pub fn sequence(&self) -> u32 {
@@ -266,9 +373,25 @@ impl PendingFrame {
 
     /// Report the delivery result to the enqueuer, if one is waiting.
     pub fn complete(mut self, result: Result<DeliveryReceipt, DeliveryError>) {
+        self.undelivered_peer = None;
         if let Some(completion) = self.queued.completion.take() {
             let _ = completion.send(result);
         }
+    }
+}
+
+impl Drop for PendingFrame {
+    fn drop(&mut self) {
+        let Some(hostname) = self.undelivered_peer.take() else {
+            return;
+        };
+        if let Some(completion) = self.queued.completion.take() {
+            let _ = completion.send(Err(DeliveryError::Transport(
+                "Connection task closed".to_string(),
+            )));
+        }
+        crate::sync_warning::record_delivery_shutdown(&hostname);
+        log::warn!("Delivery to {hostname} ended before the in-flight frame completed");
     }
 }
 
@@ -466,7 +589,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                pending.queued.payload.clone(),
+                pending.queued.payload.as_slice().to_vec(),
             )
             .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             stream
@@ -476,7 +599,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
             Ok(DeliveryReceipt::default())
         }
         AckExpectation::Event(message_id) => {
-            let envelope = EventEnvelope::decode(&pending.queued.payload)
+            let envelope = EventEnvelope::decode(pending.queued.payload.as_slice())
                 .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             if envelope.message_id != message_id {
                 return Err(DeliveryError::protocol(
@@ -487,7 +610,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                pending.queued.payload.clone(),
+                pending.queued.payload.as_slice().to_vec(),
             )
             .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             deliver_event_frame(stream, pending, &frame, message_id, config).await?;
@@ -498,7 +621,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                pending.queued.payload.clone(),
+                pending.queued.payload.as_slice().to_vec(),
             )
             .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             deliver_file_frame(stream, pending, &frame, transfer_id, config).await
@@ -508,7 +631,7 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                 pending.queued.command,
                 0,
                 pending.sequence,
-                pending.queued.payload.clone(),
+                pending.queued.payload.as_slice().to_vec(),
             )
             .map_err(|error| DeliveryError::protocol(error.to_string()))?;
             deliver_batch_frame(stream, pending, &frame, batch_id, config).await
@@ -664,6 +787,11 @@ pub struct WorkerConfig {
     pub heartbeat_interval: Duration,
     pub heartbeat_ack_timeout: Duration,
     pub reconnect_delay: Duration,
+    /// Upper bound on a single candidate-refresh. Refresh acquires the shared
+    /// settings lock; if that contends or the settings task wedges, the worker
+    /// would park before ever reaching `connect` and the link could never
+    /// self-heal. Bounding it guarantees the loop always makes forward progress.
+    pub refresh_timeout: Duration,
     pub delivery: DeliveryConfig,
 }
 
@@ -673,6 +801,7 @@ impl Default for WorkerConfig {
             heartbeat_interval: Duration::from_secs(30),
             heartbeat_ack_timeout: Duration::from_secs(10),
             reconnect_delay: Duration::from_secs(5),
+            refresh_timeout: Duration::from_secs(5),
             delivery: DeliveryConfig::DEFAULT,
         }
     }
@@ -729,6 +858,48 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
     }
 }
 
+async fn receive_scheduled_frame(
+    priority_rx: &mut mpsc::Receiver<QueuedFrame>,
+    bulk_rx: &mut mpsc::Receiver<QueuedFrame>,
+    priority_streak: &mut usize,
+) -> Option<QueuedFrame> {
+    loop {
+        let priority_open = !priority_rx.is_closed() || !priority_rx.is_empty();
+        let bulk_open = !bulk_rx.is_closed() || !bulk_rx.is_empty();
+        if !priority_open && !bulk_open {
+            return None;
+        }
+
+        if *priority_streak >= PRIORITY_BURST_LIMIT && bulk_open {
+            match bulk_rx.try_recv() {
+                Ok(frame) => {
+                    *priority_streak = 0;
+                    return Some(frame);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) if !priority_open => return None,
+                Err(TryRecvError::Disconnected) => {}
+            }
+        }
+
+        tokio::select! {
+            biased;
+            frame = priority_rx.recv(), if priority_open => {
+                if let Some(frame) = frame {
+                    *priority_streak = priority_streak.saturating_add(1);
+                    return Some(frame);
+                }
+            }
+            frame = bulk_rx.recv(), if bulk_open => {
+                if let Some(frame) = frame {
+                    *priority_streak = 0;
+                    return Some(frame);
+                }
+            }
+        }
+    }
+}
+
 /// Background worker for one pooled connection: connects and handshakes,
 /// serves queued frames with heartbeat keepalive, reconnects transparently
 /// on transient failures, and keeps the in-flight frame across reconnects so
@@ -750,14 +921,29 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
     };
     let mut pending: Option<PendingFrame> = None;
     let mut next_sequence = 1u32;
+    let mut priority_streak = 0usize;
     loop {
-        adapter.refresh_candidates(&hostname, &mut candidates).await;
+        if timeout(
+            config.refresh_timeout,
+            adapter.refresh_candidates(&hostname, &mut candidates),
+        )
+        .await
+        .is_err()
+        {
+            log::warn!(
+                "Candidate refresh for {hostname} exceeded {:?}; proceeding with known routes",
+                config.refresh_timeout
+            );
+        }
         let connection_result = {
             let connection = adapter.connect(&hostname, &candidates);
             tokio::pin!(connection);
             tokio::select! {
                 biased;
-                _ = wait_for_shutdown(&mut shutdown) => return,
+                _ = wait_for_shutdown(&mut shutdown) => {
+                    crate::sync_warning::record_delivery_shutdown(&hostname);
+                    return;
+                },
                 result = &mut connection => result,
             }
         };
@@ -779,13 +965,21 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 );
                 tokio::select! {
                     biased;
-                    _ = wait_for_shutdown(&mut shutdown) => return,
+                    _ = wait_for_shutdown(&mut shutdown) => {
+                        crate::sync_warning::record_delivery_shutdown(&hostname);
+                        return;
+                    },
                     _ = tokio::time::sleep(config.reconnect_delay) => {}
                 }
                 continue;
             }
         };
-        let learned_iroh = adapter.refresh_candidates(&hostname, &mut candidates).await;
+        let learned_iroh = timeout(
+            config.refresh_timeout,
+            adapter.refresh_candidates(&hostname, &mut candidates),
+        )
+        .await
+        .unwrap_or(false);
         if learned_iroh
             && candidates
                 .iter()
@@ -821,7 +1015,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
         if let Some(frame) = pending.take() {
             let delivery = tokio::select! {
                 biased;
-                _ = wait_for_shutdown(&mut shutdown) => return,
+                _ = wait_for_shutdown(&mut shutdown) => {
+                    crate::sync_warning::record_delivery_shutdown(&hostname);
+                    return;
+                },
                 result = deliver_pending_frame(&mut stream, &frame, &config.delivery) => result,
             };
             match delivery {
@@ -853,7 +1050,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 next_sequence = next_sequence.wrapping_add(1).max(1);
                 let heartbeat_ok = tokio::select! {
                     biased;
-                    _ = wait_for_shutdown(&mut shutdown) => return,
+                    _ = wait_for_shutdown(&mut shutdown) => {
+                        crate::sync_warning::record_delivery_shutdown(&hostname);
+                        return;
+                    },
                     result = async {
                         if stream.write_frame(&hb).await.is_err() {
                             return false;
@@ -875,25 +1075,26 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
             let deadline = config
                 .heartbeat_interval
                 .saturating_sub(last_heartbeat.elapsed());
-            let next_frame = async {
-                tokio::select! {
-                    biased;
-                    frame = priority_rx.recv() => frame,
-                    frame = bulk_rx.recv() => frame,
-                }
-            };
+            let next_frame =
+                receive_scheduled_frame(&mut priority_rx, &mut bulk_rx, &mut priority_streak);
             let next = tokio::select! {
                 biased;
-                _ = wait_for_shutdown(&mut shutdown) => return,
+                    _ = wait_for_shutdown(&mut shutdown) => {
+                        crate::sync_warning::record_delivery_shutdown(&hostname);
+                        return;
+                    },
                 result = tokio::time::timeout(deadline, next_frame) => result,
             };
             match next {
                 Ok(Some(queued)) => {
-                    let frame = PendingFrame::new(queued, next_sequence);
+                    let frame = PendingFrame::new_for_peer(queued, next_sequence, &hostname);
                     next_sequence = next_sequence.wrapping_add(1).max(1);
                     let delivery = tokio::select! {
                         biased;
-                        _ = wait_for_shutdown(&mut shutdown) => return,
+                        _ = wait_for_shutdown(&mut shutdown) => {
+                            crate::sync_warning::record_delivery_shutdown(&hostname);
+                            return;
+                        },
                         result = deliver_pending_frame(&mut stream, &frame, &config.delivery) => result,
                     };
                     match delivery {
@@ -943,7 +1144,7 @@ mod tests {
     fn text_payload_is_wrapped_in_an_event_envelope() {
         let frame = QueuedFrame::new(Command::TextPayload, b"hello".to_vec()).unwrap();
         assert!(matches!(frame.acknowledgement, AckExpectation::Event(_)));
-        let envelope = EventEnvelope::decode(&frame.payload).unwrap();
+        let envelope = EventEnvelope::decode(frame.payload()).unwrap();
         assert_eq!(
             envelope.message_id,
             match frame.acknowledgement {
@@ -957,7 +1158,7 @@ mod tests {
     fn control_payloads_are_acknowledged_implicitly() {
         let frame = QueuedFrame::new(Command::Heartbeat, b"ping".to_vec()).unwrap();
         assert!(matches!(frame.acknowledgement, AckExpectation::None));
-        assert_eq!(frame.payload, b"ping");
+        assert_eq!(frame.payload(), b"ping");
     }
 
     #[test]
@@ -966,6 +1167,56 @@ mod tests {
         assert!(QueuedFrame::new(Command::TextPayload, oversized).is_err());
         let oversized_control = vec![0u8; Command::Heartbeat.payload_limit() + 1];
         assert!(QueuedFrame::new(Command::Heartbeat, oversized_control).is_err());
+    }
+
+    #[test]
+    fn shared_event_encodes_once_and_shares_bytes_across_peers() {
+        let content = vec![7u8; 4096];
+        let event = SharedEvent::encode(Command::ImagePayload, content.clone()).unwrap();
+        let a = event.queued();
+        let b = event.queued();
+
+        // Zero-copy fan-out: both peers' frames view the same backing buffer,
+        // so broadcasting to N peers holds one payload instead of N copies.
+        assert_eq!(a.payload().as_ptr(), b.payload().as_ptr());
+        assert_eq!(a.payload().len(), b.payload().len());
+
+        // Every peer acknowledges the same identity. Receiver dedup is scoped
+        // to (source, message_id) and each peer sees the broadcast at most
+        // once, so a shared id is safe and means one event has one identity.
+        let id_a = match a.acknowledgement() {
+            AckExpectation::Event(id) => id,
+            other => panic!("expected an event ack, got {other:?}"),
+        };
+        let id_b = match b.acknowledgement() {
+            AckExpectation::Event(id) => id,
+            other => panic!("expected an event ack, got {other:?}"),
+        };
+        assert_eq!(id_a, id_b);
+
+        // The shared bytes still decode back to the original content.
+        let envelope = EventEnvelope::decode(a.payload()).unwrap();
+        assert_eq!(envelope.content, content);
+        assert_eq!(envelope.message_id, id_a);
+    }
+
+    #[test]
+    fn shared_event_can_encode_without_consuming_history_bytes() {
+        let content: Arc<[u8]> = Arc::from(vec![0x5a; 4096].into_boxed_slice());
+        let history_bytes = content.clone();
+        let event = SharedEvent::encode_shared(Command::ImagePayload, content).unwrap();
+        let queued = event.queued();
+        let envelope = EventEnvelope::decode(queued.payload()).unwrap();
+
+        assert_eq!(history_bytes.as_ref(), envelope.content);
+        assert_eq!(Arc::strong_count(&history_bytes), 1);
+    }
+
+    #[test]
+    fn shared_event_rejects_non_envelope_commands_and_oversized_payloads() {
+        assert!(SharedEvent::encode(Command::Heartbeat, b"nope".to_vec()).is_err());
+        let oversized = vec![0u8; Command::TextPayload.payload_limit() + 1];
+        assert!(SharedEvent::encode(Command::TextPayload, oversized).is_err());
     }
 
     #[test]
@@ -1002,12 +1253,90 @@ mod tests {
         let pending = PendingFrame {
             queued: frame,
             sequence: 7,
+            undelivered_peer: None,
         };
         pending.complete(Ok(DeliveryReceipt {
             next_offset: Some(3),
         }));
         let receipt = rx.try_recv().unwrap().unwrap();
         assert_eq!(receipt.next_offset, Some(3));
+    }
+
+    #[test]
+    fn dropping_an_in_flight_frame_reports_worker_shutdown() {
+        let _ = crate::sync_warning::take();
+        drop(PendingFrame::new_for_peer(
+            QueuedFrame::new(Command::TextPayload, b"in flight".to_vec()).unwrap(),
+            9,
+            "Laptop",
+        ));
+        let warning = crate::sync_warning::take().unwrap();
+        assert_eq!(warning.kind, "delivery_shutdown");
+        assert_eq!(warning.peer, "Laptop");
+
+        let (tx, mut rx) = oneshot::channel();
+        drop(PendingFrame::new_for_peer(
+            QueuedFrame::confirmed_file(Command::FileChunk, vec![1], transfer_id(4), tx).unwrap(),
+            10,
+            "Laptop",
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Err(DeliveryError::Transport(message))) if message == "Connection task closed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn scheduler_serves_bulk_after_a_bounded_priority_burst() {
+        let (priority_tx, mut priority_rx) = mpsc::channel(PRIORITY_BURST_LIMIT + 2);
+        let (bulk_tx, mut bulk_rx) = mpsc::channel(2);
+        for index in 0..=PRIORITY_BURST_LIMIT {
+            priority_tx
+                .send(QueuedFrame::new(Command::Heartbeat, vec![index as u8]).unwrap())
+                .await
+                .unwrap();
+        }
+        bulk_tx
+            .send(QueuedFrame::new(Command::FileBatchCancel, vec![0xaa]).unwrap())
+            .await
+            .unwrap();
+
+        let mut priority_streak = 0;
+        for _ in 0..PRIORITY_BURST_LIMIT {
+            let frame =
+                receive_scheduled_frame(&mut priority_rx, &mut bulk_rx, &mut priority_streak)
+                    .await
+                    .unwrap();
+            assert_eq!(frame.command(), Command::Heartbeat);
+        }
+        let frame = receive_scheduled_frame(&mut priority_rx, &mut bulk_rx, &mut priority_streak)
+            .await
+            .unwrap();
+        assert_eq!(frame.command(), Command::FileBatchCancel);
+        assert_eq!(priority_streak, 0);
+    }
+
+    #[tokio::test]
+    async fn scheduler_keeps_serving_the_open_channel() {
+        let (priority_tx, mut priority_rx) = mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = mpsc::channel(1);
+        drop(priority_tx);
+        bulk_tx
+            .send(QueuedFrame::new(Command::FileBatchCancel, vec![1]).unwrap())
+            .await
+            .unwrap();
+        drop(bulk_tx);
+
+        let mut priority_streak = PRIORITY_BURST_LIMIT;
+        let frame = receive_scheduled_frame(&mut priority_rx, &mut bulk_rx, &mut priority_streak)
+            .await
+            .unwrap();
+        assert_eq!(frame.command(), Command::FileBatchCancel);
+        assert!(
+            receive_scheduled_frame(&mut priority_rx, &mut bulk_rx, &mut priority_streak,)
+                .await
+                .is_none()
+        );
     }
 
     #[test]
@@ -1029,6 +1358,7 @@ mod tests {
         let pending = PendingFrame {
             queued: frame,
             sequence: 3,
+            undelivered_peer: None,
         };
         let good = Frame::try_new(Command::EventAck, 0, 3, message_id.ack_payload()).unwrap();
         validate_event_ack(&good, &pending, message_id).unwrap();
@@ -1050,6 +1380,7 @@ mod tests {
         let pending = PendingFrame {
             queued: frame,
             sequence: 5,
+            undelivered_peer: None,
         };
         let mut payload = Vec::new();
         payload.extend_from_slice(&transfer.0);
@@ -1536,6 +1867,10 @@ mod tests {
         sessions: std::sync::Mutex<Vec<(String, ConnectionInterface, String, u64)>>,
         active_sessions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         connect_calls: std::sync::atomic::AtomicUsize,
+        /// When set, `refresh_candidates` never returns. Models the settings
+        /// lock contending or its owning task wedging — the park point that
+        /// froze the live link. The worker must still reach `connect`.
+        hang_refresh: std::sync::atomic::AtomicBool,
     }
 
     struct FakeSessionLease {
@@ -1595,6 +1930,11 @@ mod tests {
             _hostname: &str,
             _candidates: &mut Vec<ResolvedCandidate>,
         ) -> bool {
+            if self.hang_refresh.load(std::sync::atomic::Ordering::SeqCst) {
+                // Never resolves; the worker relies on its refresh_timeout to
+                // proceed past this await.
+                std::future::pending::<()>().await;
+            }
             false
         }
     }
@@ -1604,6 +1944,7 @@ mod tests {
             heartbeat_interval: Duration::from_secs(30),
             heartbeat_ack_timeout: Duration::from_millis(100),
             reconnect_delay: Duration::from_millis(10),
+            refresh_timeout: Duration::from_secs(5),
             delivery: DeliveryConfig::DEFAULT,
         }
     }
@@ -1626,6 +1967,7 @@ mod tests {
             sessions: std::sync::Mutex::new(Vec::new()),
             active_sessions: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             connect_calls: std::sync::atomic::AtomicUsize::new(0),
+            hang_refresh: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1655,7 +1997,7 @@ mod tests {
         });
 
         let (priority_tx, priority_rx) = mpsc::channel(4);
-        let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (bulk_tx, bulk_rx) = mpsc::channel(4);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let adapter_for_worker = adapter.clone();
         let worker = tokio::spawn(async move {
@@ -1699,6 +2041,7 @@ mod tests {
         // Worker keeps running after the delivery: drop senders to let it
         // exit, then verify the session was registered.
         drop(priority_tx);
+        drop(bulk_tx);
         timeout(Duration::from_secs(2), worker)
             .await
             .unwrap()
@@ -1714,6 +2057,89 @@ mod tests {
             0,
             "the session lease must be released when the worker exits"
         );
+    }
+
+    #[tokio::test]
+    async fn worker_reaches_connect_when_refresh_hangs() {
+        // Regression: a wedged candidate refresh (settings-lock contention or a
+        // stalled settings task) must not park the worker before it connects.
+        // Without the refresh_timeout bound the worker would await here forever
+        // and the link could never self-heal — the exact live freeze observed.
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+        let adapter = std::sync::Arc::new(scripted_adapter(vec![Ok((
+            MemoryConnection { io: client_io },
+            candidate.clone(),
+        ))]));
+        adapter
+            .hang_refresh
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let server = tokio::spawn(async move {
+            let mut server = MemoryConnection { io: server_io };
+            let frame = server.read_frame().await.unwrap();
+            let ack = FileOffset {
+                transfer_id: TransferId([0x33; 16]),
+                next_offset: 512,
+            };
+            server
+                .write_frame(
+                    &Frame::try_new(Command::FileAck, 0, frame.sequence, ack.encode()).unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut config = fast_worker_config();
+        config.refresh_timeout = Duration::from_millis(50);
+        let (priority_tx, priority_rx) = mpsc::channel(4);
+        let (bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let adapter_for_worker = adapter.clone();
+        let worker = tokio::spawn(async move {
+            run_connection_worker(
+                adapter_for_worker.as_ref(),
+                &config,
+                vec![candidate],
+                "peer".into(),
+                priority_rx,
+                bulk_rx,
+                shutdown_rx,
+            )
+            .await
+        });
+
+        let (completion_tx, mut completion_rx) = oneshot::channel();
+        let queued = QueuedFrame::confirmed_file(
+            Command::FileChunk,
+            vec![0u8; 8],
+            TransferId([0x33; 16]),
+            completion_tx,
+        )
+        .unwrap();
+        priority_tx.send(queued).await.unwrap();
+
+        let receipt = timeout(Duration::from_secs(2), &mut completion_rx)
+            .await
+            .expect("delivery must complete despite the hanging refresh")
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.next_offset, Some(512));
+        assert!(
+            adapter
+                .connect_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1,
+            "worker must reach connect even though refresh never returns"
+        );
+
+        server.await.unwrap();
+        drop(priority_tx);
+        drop(bulk_tx);
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1754,7 +2180,7 @@ mod tests {
         config.delivery = fast_file_config();
         let config = std::sync::Arc::new(config);
         let (priority_tx, priority_rx) = mpsc::channel(4);
-        let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (bulk_tx, bulk_rx) = mpsc::channel(4);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let adapter_for_worker = adapter.clone();
         let config_for_worker = config.clone();
@@ -1791,6 +2217,7 @@ mod tests {
         assert_eq!(receipt.next_offset, Some(2048));
 
         drop(priority_tx);
+        drop(bulk_tx);
         timeout(Duration::from_secs(2), worker)
             .await
             .unwrap()
@@ -1832,7 +2259,7 @@ mod tests {
         });
 
         let (priority_tx, priority_rx) = mpsc::channel(4);
-        let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+        let (bulk_tx, bulk_rx) = mpsc::channel(4);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let adapter_for_worker = adapter.clone();
         let worker = tokio::spawn(async move {
@@ -1869,6 +2296,7 @@ mod tests {
         // The worker keeps serving (rejections are dropped, not fatal):
         // drop senders and confirm clean exit without any reconnect.
         drop(priority_tx);
+        drop(bulk_tx);
         timeout(Duration::from_secs(2), worker)
             .await
             .unwrap()

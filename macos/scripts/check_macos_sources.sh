@@ -1,8 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
-WIN_ROOT="${1:-$(cd .. && pwd)/windows}"
+CALLER_ROOT="$PWD"
+SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WIN_ROOT="${1:-$(cd "$SCRIPT_ROOT/.." && pwd)/windows}"
+if [[ "$WIN_ROOT" != /* ]]; then
+    WIN_ROOT="$(cd "$CALLER_ROOT/$WIN_ROOT" && pwd)"
+fi
+cd "$SCRIPT_ROOT"
 
 echo '[1/3] Checking Rust sources...'
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check

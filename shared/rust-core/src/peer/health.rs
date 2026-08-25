@@ -19,7 +19,7 @@
 //! - Registering an authenticated session counts as a probe success and
 //!   forces `Connected` until the last session for that route closes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -30,6 +30,7 @@ use crate::peer::types::{
 
 /// How recently a probe must have succeeded for a route to count as online.
 const ONLINE_TTL: Duration = Duration::from_secs(12);
+const MAX_TRACKED_ROUTES: usize = 1024;
 
 /// Identity of one route to a peer, keying both health and sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -49,6 +50,21 @@ impl RouteKey {
     }
 }
 
+/// One successful route probe. Discovery supplies the candidate set
+/// separately; this type makes reachability an explicit observation instead
+/// of inferring it from UI projection fields such as `PeerCandidate::online`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeObservation {
+    pub route: RouteKey,
+    pub latency_ms: u64,
+}
+
+impl ProbeObservation {
+    pub fn new(route: RouteKey, latency_ms: u64) -> Self {
+        Self { route, latency_ms }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct PeerHealth {
     last_seen: Option<Instant>,
@@ -61,14 +77,30 @@ struct PeerHealth {
 #[derive(Debug, Default)]
 pub struct HealthTracker {
     routes: HashMap<RouteKey, PeerHealth>,
+    route_order: VecDeque<RouteKey>,
 }
 
 impl HealthTracker {
+    fn ensure_route(&mut self, route: RouteKey) {
+        if self.routes.contains_key(&route) {
+            return;
+        }
+        while self.routes.len() >= MAX_TRACKED_ROUTES {
+            let Some(oldest) = self.route_order.pop_front() else {
+                break;
+            };
+            self.routes.remove(&oldest);
+        }
+        self.route_order.push_back(route.clone());
+        self.routes.insert(route, PeerHealth::default());
+    }
+
     pub fn ensure_candidate(&mut self, route: RouteKey) {
-        self.routes.entry(route).or_default();
+        self.ensure_route(route);
     }
 
     pub fn record_success(&mut self, route: &RouteKey, latency_ms: u64, now: Instant) {
+        self.ensure_route(route.clone());
         let health = self.routes.entry(route.clone()).or_default();
         health.last_seen = Some(now);
         health.consecutive_misses = 0;
@@ -79,6 +111,7 @@ impl HealthTracker {
     /// miss, including routes that never answered: two consecutive misses
     /// move a route offline per the shared status model.
     pub fn record_miss(&mut self, route: &RouteKey, now: Instant) {
+        self.ensure_route(route.clone());
         let health = self.routes.entry(route.clone()).or_default();
         health.consecutive_misses = health.consecutive_misses.saturating_add(1);
         let _ = now;
@@ -94,7 +127,7 @@ impl HealthTracker {
         observed: HashMap<RouteKey, u64>,
     ) {
         for route in observed.keys() {
-            self.routes.entry(route.clone()).or_default();
+            self.ensure_route(route.clone());
         }
         for (route, health) in &mut self.routes {
             if route.interface != interface {
@@ -144,6 +177,11 @@ impl HealthTracker {
 
     pub fn clear(&mut self) {
         self.routes.clear();
+        self.route_order.clear();
+    }
+
+    pub fn tracked_route_count(&self) -> usize {
+        self.routes.len()
     }
 
     pub fn record_address_test_success(&mut self, address: &str, latency_ms: u64, now: Instant) {
@@ -295,41 +333,30 @@ fn interfaces_for_mode(mode: &str) -> &'static [ConnectionInterface] {
         .interfaces()
 }
 
-/// Feed one discovery round into the tracker: ensure every candidate route is
-/// tracked, then apply observed (online) routes per interface.
-pub fn update_peer_health(
+/// Feed one discovery/probe round into the tracker. `candidates` says which
+/// routes were eligible this round; `observations` contains only routes that
+/// actually answered a probe. Keeping those inputs separate prevents a fresh
+/// discovery or a legacy `online` display flag from being mistaken for proof
+/// of reachability.
+pub fn record_probe_round(
     tracker: &mut HealthTracker,
     mode: &str,
-    peers: &[PeerInfo],
+    candidates: impl IntoIterator<Item = RouteKey>,
+    observations: impl IntoIterator<Item = ProbeObservation>,
     now: Instant,
 ) {
-    for peer in peers {
-        for candidate in &peer.candidates {
-            tracker.ensure_candidate(RouteKey {
-                hostname: peer.hostname.clone(),
-                interface: candidate.interface,
-                address: candidate.address.clone(),
-            });
-        }
+    for route in candidates {
+        tracker.ensure_candidate(route);
     }
+    let observations = observations
+        .into_iter()
+        .map(|observation| (observation.route, observation.latency_ms))
+        .collect::<HashMap<_, _>>();
     for interface in interfaces_for_mode(mode) {
-        let observed = peers
+        let observed = observations
             .iter()
-            .flat_map(|peer| {
-                peer.candidates
-                    .iter()
-                    .filter(move |candidate| candidate.interface == *interface && candidate.online)
-                    .map(move |candidate| {
-                        (
-                            RouteKey {
-                                hostname: peer.hostname.clone(),
-                                interface: candidate.interface,
-                                address: candidate.address.clone(),
-                            },
-                            candidate.latency.unwrap_or_default(),
-                        )
-                    })
-            })
+            .filter(|(route, _)| route.interface == *interface)
+            .map(|(route, latency_ms)| (route.clone(), *latency_ms))
             .collect();
         tracker.apply_round(now, *interface, observed);
     }
@@ -765,7 +792,7 @@ mod tests {
         // offline after two failed rounds, per the shared status model.
         let mut tracker = HealthTracker::default();
         let mut now = Instant::now();
-        let peers = vec![PeerInfo {
+        let peers = [PeerInfo {
             hostname: "peer-d".into(),
             tailscale_ip: "100.100.250.29".into(),
             online: false,
@@ -783,8 +810,13 @@ mod tests {
             status: PeerStatus::Discovered,
         }];
 
-        update_peer_health(&mut tracker, "auto", &peers, now);
         let route = candidate_route("peer-d", ConnectionInterface::Tailscale, "100.100.250.29");
+        let candidates = peers.iter().flat_map(|peer| {
+            peer.candidates.iter().map(|candidate| {
+                RouteKey::new(&peer.hostname, candidate.interface, &candidate.address)
+            })
+        });
+        record_probe_round(&mut tracker, "auto", candidates, std::iter::empty(), now);
         assert_eq!(
             tracker.status_at(&route, now, false),
             PeerStatus::Discovered
@@ -794,5 +826,78 @@ mod tests {
         now += Duration::from_secs(5);
         update_peer_health_for_failed_round(&mut tracker, "auto", now);
         assert_eq!(tracker.status_at(&route, now, false), PeerStatus::Offline);
+    }
+
+    #[test]
+    fn probe_round_requires_an_explicit_success_observation() {
+        let mut tracker = HealthTracker::default();
+        let now = Instant::now();
+        let route = candidate_route(
+            "explicit-observation",
+            ConnectionInterface::Lan,
+            "192.0.2.30",
+        );
+
+        record_probe_round(
+            &mut tracker,
+            "lan_only",
+            [route.clone()],
+            std::iter::empty(),
+            now,
+        );
+        assert_eq!(
+            tracker.status_at(&route, now, false),
+            PeerStatus::Discovered
+        );
+        assert_eq!(tracker.latency(&route), None);
+
+        record_probe_round(
+            &mut tracker,
+            "lan_only",
+            [route.clone()],
+            [ProbeObservation::new(route.clone(), 6)],
+            now,
+        );
+        assert_eq!(tracker.status_at(&route, now, false), PeerStatus::Online);
+        assert_eq!(tracker.latency(&route), Some(6));
+    }
+
+    #[test]
+    fn route_tracking_is_bounded_and_connected_sessions_survive_eviction() {
+        let mut tracker = HealthTracker::default();
+        let sessions = SessionRegistry::default();
+        let now = Instant::now();
+        let active = candidate_route("active-peer", ConnectionInterface::Lan, "192.0.2.1");
+        let guard = sessions.register(active.clone(), 4, &mut tracker, now);
+
+        let first_transient =
+            candidate_route("transient-0", ConnectionInterface::Lan, "198.51.100.0");
+        for index in 0..=MAX_TRACKED_ROUTES {
+            let route = candidate_route(
+                &format!("transient-{index}"),
+                ConnectionInterface::Lan,
+                &format!("198.51.100.{}", index % 255),
+            );
+            tracker.record_miss(&route, now);
+        }
+
+        assert_eq!(tracker.tracked_route_count(), MAX_TRACKED_ROUTES);
+        assert_eq!(
+            tracker.status_at(&active, now, false),
+            PeerStatus::Discovered
+        );
+        assert_eq!(
+            tracker.status_at(&first_transient, now, false),
+            PeerStatus::Discovered
+        );
+        let connected = health_snapshot(&tracker, &sessions, &active, now);
+        assert_eq!(connected.status, PeerStatus::Connected);
+        assert_eq!(connected.latency_ms, Some(4));
+
+        drop(guard);
+        assert_eq!(
+            health_snapshot(&tracker, &sessions, &active, now).status,
+            PeerStatus::Discovered
+        );
     }
 }

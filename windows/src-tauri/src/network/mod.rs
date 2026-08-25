@@ -72,7 +72,7 @@ pub use health::{
     active_routes_snapshot, apply_peer_health, record_address_test_failure,
     record_address_test_success,
 };
-use health::{record_probe_miss, record_probe_success, PeerRouteKey};
+use health::{record_probe_round, PeerRouteKey};
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
 pub use iroh::start_server as start_iroh_server;
@@ -88,7 +88,7 @@ mod pool;
 use pool::wait_for_shutdown;
 pub use pool::{
     acquire_peer_file_batch, prewarm_connections, queue_peer_batch_frame, queue_peer_file_frame,
-    queue_peer_frame, ConnectionPool,
+    queue_peer_frame, queue_peer_shared_event, ConnectionPool, SharedEvent,
 };
 #[cfg(test)]
 use pool::{
@@ -914,6 +914,48 @@ mod tests {
             .expect("full peer queue held the global connection pool lock");
         drop(lock);
         blocked_send.abort();
+    }
+
+    #[tokio::test]
+    async fn connection_pool_rebuilds_a_dead_cached_sender() {
+        // Regression: if a worker task has exited it dropped its receivers, so
+        // the cached sender's channels read as closed. Reusing it would
+        // silently black-hole every frame; sender_for must rebuild instead.
+        let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let settings = Arc::new(Mutex::new(crypto::Settings::default()));
+        let mut pool = ConnectionPool::new(identity, settings);
+        let addr: std::net::SocketAddr = "127.0.0.1:19890".parse().unwrap();
+
+        // A sender whose worker has "exited": drop both receivers so the
+        // channels report closed, then seed it into the cache under the key
+        // sender_for computes for this (target, hostname).
+        let (priority, priority_rx) = mpsc::channel::<QueuedFrame>(POOL_CHANNEL_SIZE);
+        let (bulk, bulk_rx) = mpsc::channel::<QueuedFrame>(POOL_CHANNEL_SIZE);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        drop(priority_rx);
+        drop(bulk_rx);
+        let dead = PoolSender {
+            priority,
+            bulk,
+            shutdown,
+        };
+        assert!(dead.priority.is_closed() && dead.bulk.is_closed());
+        pool.senders.insert(
+            (ResolvedTarget::Tcp(addr), "windows-pc".into()),
+            dead.clone(),
+        );
+
+        let rebuilt = pool.sender_for(addr, "windows-pc".into()).unwrap();
+
+        assert_eq!(pool.senders.len(), 1, "the dead entry must be replaced");
+        assert!(
+            !dead.same_channel(&rebuilt),
+            "sender_for must hand back a freshly built worker, not the dead one"
+        );
+        assert!(
+            !rebuilt.priority.is_closed(),
+            "the rebuilt worker's channel must be live"
+        );
     }
 
     #[tokio::test]

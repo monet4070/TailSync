@@ -69,7 +69,7 @@ pub use health::{
     record_address_test_success,
 };
 use health::{
-    clear_peer_health, register_active_session, update_peer_health,
+    clear_peer_health, record_probe_round, register_active_session,
     update_peer_health_for_failed_round,
 };
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
@@ -87,7 +87,7 @@ mod pool;
 use pool::wait_for_shutdown;
 pub use pool::{
     acquire_peer_file_batch, prewarm_connections, queue_peer_batch_frame, queue_peer_file_frame,
-    queue_peer_frame, ConnectionPool,
+    queue_peer_frame, queue_peer_shared_event, ConnectionPool, SharedEvent,
 };
 #[cfg(test)]
 use pool::{
@@ -484,12 +484,10 @@ mod tests {
 
     #[tokio::test]
     async fn listener_can_rebind_after_a_connection_closes() {
-        // Port 0 comes from the same range used by parallel outbound tests,
-        // which can claim the port between close and rebind.
-        let base_port = 20_000 + (std::process::id() % 9_000) as u16;
-        let listener = (base_port..base_port + 100)
-            .find_map(|port| bind_tcp_listener(([127, 0, 0, 1], port).into()).ok())
-            .expect("a free non-ephemeral test port");
+        // Let the OS choose the port so this test never collides with a
+        // running daemon or another test process.
+        let listener =
+            bind_tcp_listener(([127, 0, 0, 1], 0).into()).expect("a free ephemeral test port");
         let address = listener.local_addr().unwrap();
         let (client, accepted) =
             tokio::join!(tokio::net::TcpStream::connect(address), listener.accept());
@@ -535,6 +533,46 @@ mod tests {
 
         assert_eq!(pool.senders.len(), 1);
         assert!(first.same_channel(&second));
+    }
+
+    #[tokio::test]
+    async fn connection_pool_rebuilds_a_dead_cached_sender() {
+        // Regression: if a worker task has exited it dropped its receivers, so
+        // the cached sender's channels read as closed. Reusing it would
+        // silently black-hole every frame; sender_for must rebuild instead.
+        let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let settings = Arc::new(Mutex::new(crypto::Settings::default()));
+        let mut pool = ConnectionPool::new(identity, settings);
+        let addr: std::net::SocketAddr = "127.0.0.1:19890".parse().unwrap();
+
+        // A sender whose worker has "exited": drop both receivers so the
+        // channels report closed, then seed it into the cache under the key
+        // sender_for computes for this (target, hostname).
+        let (priority, priority_rx) = mpsc::channel::<QueuedFrame>(POOL_CHANNEL_SIZE);
+        let (bulk, bulk_rx) = mpsc::channel::<QueuedFrame>(POOL_CHANNEL_SIZE);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        drop(priority_rx);
+        drop(bulk_rx);
+        let dead = PoolSender {
+            priority,
+            bulk,
+            shutdown,
+        };
+        assert!(dead.priority.is_closed() && dead.bulk.is_closed());
+        pool.senders
+            .insert((ResolvedTarget::Tcp(addr), "macbook".into()), dead.clone());
+
+        let rebuilt = pool.sender_for(addr, "macbook".into()).unwrap();
+
+        assert_eq!(pool.senders.len(), 1, "the dead entry must be replaced");
+        assert!(
+            !dead.same_channel(&rebuilt),
+            "sender_for must hand back a freshly built worker, not the dead one"
+        );
+        assert!(
+            !rebuilt.priority.is_closed(),
+            "the rebuilt worker's channel must be live"
+        );
     }
 
     #[tokio::test]

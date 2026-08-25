@@ -385,7 +385,20 @@ fn write_file_path_to_clipboard(_file_path: &Path) -> Result<(), String> {
     Err("File clipboard restore is unavailable on this platform".to_string())
 }
 
-/// Nearest-neighbor downscale of a validated packed RGBA image.
+/// Longest-edge size (in pixels) for history thumbnails.
+///
+/// 160px keeps a thumbnail recognizable — a long screenshot or wide banner
+/// stays legible instead of collapsing into a blurry smudge — while remaining
+/// tiny to transfer and cache (~100 KB of RGBA at most, ~140 KB base64).
+pub const THUMBNAIL_MAX_SIDE: usize = 160;
+
+/// Box-averaging downscale of a validated packed RGBA image, preserving the
+/// aspect ratio (the longest edge is clamped to `max_side`).
+///
+/// Each destination pixel is the average of the source rectangle it covers,
+/// which avoids the aliasing and blur of nearest-neighbor point sampling. The
+/// average is alpha-weighted (premultiplied) so fully or partially transparent
+/// regions do not bleed their arbitrary RGB toward the opaque neighbors.
 pub fn thumbnail_rgba(
     image: crate::protocol::PackedImage<'_>,
     max_side: usize,
@@ -402,14 +415,50 @@ pub fn thumbnail_rgba(
             (h * max_side / longest).max(1),
         )
     };
+
+    // No downscale needed — hand back the pixels unchanged.
+    if tw == w && th == h {
+        return (w, h, image.rgba.to_vec());
+    }
+
+    let src = image.rgba;
     let mut out = vec![0u8; tw * th * 4];
-    for y in 0..th {
-        for x in 0..tw {
-            let sx = x * w / tw;
-            let sy = y * h / th;
-            let si = (sy * w + sx) * 4;
-            let di = (y * tw + x) * 4;
-            out[di..di + 4].copy_from_slice(&image.rgba[si..si + 4]);
+    for ty in 0..th {
+        // Source rows [sy0, sy1) that map to this destination row.
+        let sy0 = ty * h / th;
+        let sy1 = (((ty + 1) * h) / th).max(sy0 + 1).min(h);
+        for tx in 0..tw {
+            // Source columns [sx0, sx1) that map to this destination column.
+            let sx0 = tx * w / tw;
+            let sx1 = (((tx + 1) * w) / tw).max(sx0 + 1).min(w);
+
+            let mut sum_r: u64 = 0;
+            let mut sum_g: u64 = 0;
+            let mut sum_b: u64 = 0;
+            let mut sum_a: u64 = 0;
+            let mut count: u64 = 0;
+            for sy in sy0..sy1 {
+                let row = sy * w;
+                for sx in sx0..sx1 {
+                    let si = (row + sx) * 4;
+                    let a = src[si + 3] as u64;
+                    sum_r += src[si] as u64 * a;
+                    sum_g += src[si + 1] as u64 * a;
+                    sum_b += src[si + 2] as u64 * a;
+                    sum_a += a;
+                    count += 1;
+                }
+            }
+
+            let di = (ty * tw + tx) * 4;
+            if sum_a > 0 {
+                // Un-premultiply: divide the weighted color sum by total alpha.
+                out[di] = (sum_r / sum_a) as u8;
+                out[di + 1] = (sum_g / sum_a) as u8;
+                out[di + 2] = (sum_b / sum_a) as u8;
+            }
+            // A fully transparent region leaves RGB at 0; only alpha matters.
+            out[di + 3] = (sum_a / count) as u8;
         }
     }
     (tw, th, out)
@@ -585,14 +634,83 @@ mod tests {
     use super::{
         bind_api_listener, bump_runtime_revision, clear_file_progress, clear_file_progress_scope,
         get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
-        read_request_with_limits, set_file_batch_progress, wait_for_runtime_revision, ApiToken,
-        FileProgress, Request, RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS,
+        read_request_with_limits, set_file_batch_progress, thumbnail_rgba,
+        wait_for_runtime_revision, ApiToken, FileProgress, Request, RuntimeNotificationBuffer,
+        MAX_RUNTIME_NOTIFICATIONS, THUMBNAIL_MAX_SIDE,
     };
     use crate::crypto::Settings;
     use crate::identity::DeviceIdentity;
     use crate::network::tailscale::{LocalInfo, PeerInfo};
     use crate::network::{ConnectionInterface, PeerCandidate};
     use std::time::Duration;
+
+    fn thumbnail_of(
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        max_side: usize,
+    ) -> (usize, usize, Vec<u8>) {
+        let image = crate::protocol::PackedImage {
+            width,
+            height,
+            rgba,
+        };
+        thumbnail_rgba(image, max_side)
+    }
+
+    #[test]
+    fn thumbnail_preserves_aspect_ratio_and_caps_longest_edge() {
+        let rgba = [10u8, 20, 30, 255].repeat(320 * 160);
+        let (tw, th, out) = thumbnail_of(320, 160, &rgba, THUMBNAIL_MAX_SIDE);
+        assert_eq!((tw, th), (160, 80));
+        assert_eq!(out.len(), 160 * 80 * 4);
+    }
+
+    #[test]
+    fn thumbnail_leaves_images_within_the_cap_untouched() {
+        let rgba = vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255];
+        let (tw, th, out) = thumbnail_of(4, 1, &rgba, THUMBNAIL_MAX_SIDE);
+        assert_eq!((tw, th), (4, 1));
+        assert_eq!(out, rgba);
+    }
+
+    #[test]
+    fn thumbnail_keeps_a_solid_color_pure() {
+        let rgba = [10u8, 20, 30, 255].repeat(200 * 100);
+        let (_, _, out) = thumbnail_of(200, 100, &rgba, THUMBNAIL_MAX_SIDE);
+        assert!(out.chunks_exact(4).all(|px| *px == [10u8, 20, 30, 255]));
+    }
+
+    #[test]
+    fn thumbnail_box_averages_instead_of_point_sampling() {
+        // Black beside white must average to gray; nearest-neighbor would keep
+        // one original (0 or 255) and discard the other entirely.
+        let rgba = [0u8, 0, 0, 255, 255, 255, 255, 255];
+        let (tw, th, out) = thumbnail_of(2, 1, &rgba, 1);
+        assert_eq!((tw, th), (1, 1));
+        assert!(
+            (125..=130).contains(&out[0]),
+            "expected gray, got {}",
+            out[0]
+        );
+        assert_eq!(out[0], out[1]);
+        assert_eq!(out[1], out[2]);
+        assert_eq!(out[3], 255);
+    }
+
+    #[test]
+    fn thumbnail_alpha_weights_prevent_transparent_color_bleed() {
+        // A fully transparent red pixel must not tint the opaque blue neighbor;
+        // a plain RGB mean would leak red (127) into the result.
+        let rgba = [255u8, 0, 0, 0, 0, 0, 255, 255];
+        let (_, _, out) = thumbnail_of(2, 1, &rgba, 1);
+        assert_eq!(
+            out[0], 0,
+            "transparent red must not bleed into the red channel"
+        );
+        assert_eq!(out[2], 255, "opaque blue must survive");
+        assert_eq!(out[3], 127, "alpha is the plain mean of 255 and 0");
+    }
 
     fn progress(batch_id: &str, device: &str, sent: u64) -> FileProgress {
         FileProgress {

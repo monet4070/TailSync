@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "shared/rust-core",
+    "shared/tailsync-history-classifier",
+    "shared/tailsync-protocol",
+    "shared/tailsync-themes",
+]
+exclude = ["windows/src-tauri", "macos/src-tauri"]

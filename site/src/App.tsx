@@ -10,18 +10,20 @@ import {
   CloudOff,
   Code2,
   Download,
+  Eye,
   File,
   FileText,
   GitFork,
   Image as ImageIcon,
+  Keyboard,
   Laptop,
-  LockKeyhole,
   Menu,
   Monitor,
   Moon,
   Network,
   RadioTower,
   Route,
+  ShieldCheck,
   Sun,
   Tags,
   X,
@@ -31,8 +33,16 @@ import { ClipboardPreview } from "./components/ClipboardPreview";
 import { HistoryIntelligence } from "./components/HistoryIntelligence";
 import { ProductWindow } from "./components/ProductWindow";
 import { RecoverySequence } from "./components/RecoverySequence";
+import { RichPreview } from "./components/RichPreview";
 import { SecurityHandshake } from "./components/SecurityHandshake";
 import { SyncField } from "./components/SyncField";
+import {
+  GITHUB_URL,
+  MAC_INSTALLER_NAME,
+  PRODUCT_FACTS,
+  PRODUCT_VERSION,
+  RELEASE_URL,
+} from "./product";
 
 const tailsyncIcon = "/tailsync-icon.png";
 
@@ -41,8 +51,6 @@ type ClipboardKind = "text" | "image" | "file";
 type TimeTheme = "light" | "dark";
 type ThemePreference = "auto" | TimeTheme;
 
-const GITHUB_URL = "https://github.com/monet4070/TailSync";
-const RELEASE_URL = `${GITHUB_URL}/releases`;
 const DAY_START_HOUR = 7;
 const NIGHT_START_HOUR = 19;
 const THEME_STORAGE_KEY = "tailsync-theme-preference";
@@ -135,10 +143,17 @@ const flowData: Record<
   },
 };
 
+// Every figure here must be traceable to source via PRODUCT_FACTS. An earlier
+// version of this band led with "4 ms 局域网直达延迟", which nothing in the
+// codebase supports — LAN latency depends entirely on the user's network, so
+// publishing a fixed number was a falsifiable claim for no benefit.
 const heroStats = [
-  { value: "4 ms", label: "局域网直达延迟" },
+  { value: PRODUCT_FACTS.batchBytesLabel, label: "单次原子文件批次上限" },
   { value: "0", label: "云端中转 · 数据不出网" },
-  { value: "08", label: "本地智能内容分类" },
+  {
+    value: String(PRODUCT_FACTS.categoryCount).padStart(2, "0"),
+    label: "本地智能内容分类",
+  },
   { value: "E2E", label: "Noise XX 端到端加密" },
 ];
 
@@ -173,7 +188,7 @@ function App() {
     document.documentElement.style.colorScheme = timeTheme;
     document
       .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-      ?.setAttribute("content", timeTheme === "light" ? "#fbfbfd" : "#000000");
+      ?.setAttribute("content", timeTheme === "light" ? "#f2f0e9" : "#14130e");
 
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
@@ -311,6 +326,7 @@ function App() {
           </div>
           <a href="#routing" onClick={closeMenu}>智能路由</a>
           <a href="#history" onClick={closeMenu}>智能历史</a>
+          <a href="#preview" onClick={closeMenu}>富预览</a>
           <a href="#security" onClick={closeMenu}>安全</a>
           <a href="/themes.html">主题工坊</a>
           <a className="nav-source" href={GITHUB_URL} target="_blank" rel="noreferrer">
@@ -330,7 +346,7 @@ function App() {
           <div className="hero-copy">
             <div className="hero-kicker">
               <span className="live-dot" />
-              TailSync 2.0 · 本地优先的跨设备剪贴板
+              TailSync {PRODUCT_VERSION} · 本地优先的跨设备剪贴板
             </div>
             <h1 id="hero-title">
               复制。
@@ -394,33 +410,34 @@ function App() {
                 <small>LOCAL / END-TO-END</small>
               </div>
               <div className="relay-stage">
-                <div className="relay-axis" aria-hidden="true" />
-                <div className="relay-scanner" aria-hidden="true" />
-                <div className="relay-device relay-device-mac">
-                  <Laptop size={24} />
-                  <strong>MAC</strong>
-                  <small>SOURCE / 4 ms</small>
-                </div>
-                <div className="relay-core">
-                  <div className="relay-orbit" aria-hidden="true"><i /><i /><i /></div>
-                  <div className="relay-core-face">
-                    <ClipboardCopy size={25} />
-                    <strong>TAILSYNC</strong>
-                    <small>ENCRYPTED</small>
+                <div className="orrery" aria-hidden="true">
+                  <div className="orrery-rings"><i /><i /><i /></div>
+
+                  <div className="orrery-arm orrery-arm-1">
+                    <div className="orrery-hold">
+                      <span className="orrery-chip"><FileText size={14} /></span>
+                    </div>
+                  </div>
+                  <div className="orrery-arm orrery-arm-2">
+                    <div className="orrery-hold">
+                      <span className="orrery-chip"><ImageIcon size={14} /></span>
+                    </div>
+                  </div>
+                  <div className="orrery-arm orrery-arm-3 orrery-arm-rev">
+                    <div className="orrery-hold">
+                      <span className="orrery-chip"><File size={14} /></span>
+                    </div>
+                  </div>
+
+                  <div className="orrery-center">
+                    <ClipboardCopy size={24} />
+                    <em>现在</em>
                   </div>
                 </div>
-                <div className="relay-device relay-device-pc">
-                  <Monitor size={24} />
-                  <strong>PC</strong>
-                  <small>TARGET / READY</small>
-                </div>
-                <span className="relay-packet relay-packet-text" aria-hidden="true"><FileText size={13} /></span>
-                <span className="relay-packet relay-packet-image" aria-hidden="true"><ImageIcon size={13} /></span>
-                <span className="relay-packet relay-packet-file" aria-hidden="true"><File size={13} /></span>
               </div>
               <div className="relay-footer">
                 <span><Check size={13} /> VERIFIED PATH</span>
-                <span>ACK / 00:00.004</span>
+                <span>ACK / RECEIPT</span>
                 <span>NO CLOUD HOP</span>
               </div>
             </div>
@@ -468,40 +485,27 @@ function App() {
           <div className={`route-lab mode-${routeMode}`} data-reveal>
             <div className="lab-header">
               <span>LIVE ROUTE LAB</span>
-              <small>SIMULATION / 02 DEVICES</small>
+              <small>LAN 优先 · TAILNET 兜底</small>
             </div>
-            <div className="route-stage">
-              <div className="lab-device lab-device-a">
-                <Laptop size={25} />
-                <strong>MAC</strong>
-                <small>192.168.1.24</small>
-              </div>
-              <div className="route-path route-path-lan">
-                <span className="route-packet packet-lan"><ClipboardCopy size={13} /></span>
-                <span className="route-path-label">
-                  <b>LAN</b>
-                  <small>{routeMode === "tailscale" ? "STANDBY" : "ACTIVE"}</small>
-                </span>
-              </div>
-              <div className="route-path route-path-tail">
-                <span className="route-packet packet-tail"><LockKeyhole size={13} /></span>
-                <span className="route-path-label">
-                  <b>TAILNET</b>
-                  <small>{routeMode === "lan" ? "DISABLED" : routeMode === "tailscale" ? "ACTIVE" : "READY"}</small>
-                </span>
-              </div>
-              <div className="lab-device lab-device-b">
-                <Monitor size={25} />
-                <strong>PC</strong>
-                <small>100.72.18.9</small>
-              </div>
-              <div className="route-core">
-                <div className="route-core-content">
-                  <span><Route size={19} /></span>
-                  <strong>{routeMode === "auto" ? "AUTO" : routeMode === "lan" ? "LAN" : "TAIL"}</strong>
-                  <small>ROUTER</small>
-                </div>
-              </div>
+            <div className="route-stage" aria-label="LAN 与 Tailscale 路径选择演示">
+              <svg className="route-map" viewBox="0 0 460 220" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+                <path className="route-sketch route-sketch-lan" d="M42,110 C150,34 310,34 418,110" />
+                <path className="route-sketch route-sketch-tail" d="M42,110 C150,186 310,186 418,110" />
+                <path className="route-ink route-ink-lan" d="M42,110 C150,34 310,34 418,110" />
+                <path className="route-ink route-ink-tail" d="M42,110 C150,186 310,186 418,110" />
+                <circle className="route-node" cx="42" cy="110" r="5.5" />
+                <circle className="route-node" cx="418" cy="110" r="5.5" />
+                <text className="route-node-label" x="40" y="136">本机</text>
+                <text className="route-node-label" x="420" y="136" textAnchor="end">对端</text>
+              </svg>
+              <span className="route-tag route-tag-lan">
+                <b>LAN</b>
+                <small>{routeMode === "tailscale" ? "STANDBY" : "ACTIVE"}</small>
+              </span>
+              <span className="route-tag route-tag-tail">
+                <b>TAILNET</b>
+                <small>{routeMode === "lan" ? "DISABLED" : routeMode === "tailscale" ? "ACTIVE" : "READY"}</small>
+              </span>
             </div>
             <div className="lab-status">
               <span><i /> AUTHENTICATED</span>
@@ -564,12 +568,51 @@ function App() {
 
         <HistoryIntelligence />
 
+        <section className="preview-section" id="preview">
+          <div className="preview-heading" data-reveal>
+            <div className="section-marker">
+              <span>05</span>
+              <small>RICH PREVIEW</small>
+            </div>
+            <h2>
+              同步之后，回头看。
+              <br />
+              <span>每种内容，都完整呈现。</span>
+            </h2>
+            <p>
+              历史里的每一条，都能在一个独立的预览窗口里原样打开——不打断列表的搜索、筛选与恢复。
+              图片、文本、代码、Markdown、PDF 与 docx，六种格式各有各的读法。
+            </p>
+            <div className="preview-facts">
+              <span><Eye size={15} /> 独立非模态窗口</span>
+              <span><ShieldCheck size={15} /> 负载上限 64 MiB</span>
+              <span><Check size={15} /> Markdown 净化渲染</span>
+            </div>
+          </div>
+
+          <RichPreview />
+
+          <div className="preview-more" data-reveal>
+            <div className="preview-keys">
+              <Keyboard size={16} />
+              <span><kbd>空格</kbd> 打开 / 关闭</span>
+              <span><kbd>双击</kbd> 恢复到剪贴板</span>
+              <span><kbd>Alt</kbd> + <kbd>←/→</kbd> 同批翻看</span>
+              <span><kbd>Ctrl/⌘</kbd> + 滚轮 缩放</span>
+            </div>
+            <a className="button button-quiet" href="/preview.html">
+              查看完整预览能力
+              <ArrowUpRight size={15} />
+            </a>
+          </div>
+        </section>
+
         <section className="security-section" id="security">
           <div className="security-word" aria-hidden="true">PRIVATE</div>
           <div className="security-inner">
             <div className="security-copy" data-reveal>
               <div className="section-marker section-marker-light">
-                <span>05</span>
+                <span>06</span>
                 <small>TRUST, EXPLICITLY</small>
               </div>
               <h2>
@@ -594,7 +637,7 @@ function App() {
         <section className="product-section" id="product">
           <div className="product-copy" data-reveal>
             <div className="section-marker">
-              <span>06</span>
+              <span>07</span>
               <small>INTELLIGENCE, IN CONTEXT</small>
             </div>
             <h2>安静常驻。<br />需要时，历史已经整理好。</h2>
@@ -620,7 +663,7 @@ function App() {
               <small>LAN · 192.168.1.24</small>
               <div className="route-float-meta">
                 <span>CONNECTED</span>
-                <b>4 ms</b>
+                <b>直连</b>
               </div>
               <div className="route-signal" aria-hidden="true">
                 {Array.from({ length: 7 }, (_, index) => <i key={`signal-${index}`} />)}
@@ -629,7 +672,7 @@ function App() {
             <div className="transfer-float">
               <File size={17} />
               <div className="transfer-float-copy">
-                <strong>TailSync-v2.0.1.dmg</strong>
+                <strong>{MAC_INSTALLER_NAME}</strong>
                 <small>分块写入 / 来源已标记</small>
                 <span className="transfer-progress"><i /></span>
               </div>
@@ -659,7 +702,7 @@ function App() {
           <div className="download-grid" aria-hidden="true" />
           <div className="download-copy" data-reveal>
             <img src={tailsyncIcon} alt="" />
-            <span>LATEST RELEASE / 2.0.1</span>
+            <span>LATEST RELEASE / {PRODUCT_VERSION}</span>
             <h2>你的剪贴板，<br />应该跟着你。</h2>
             <p>macOS 与 Windows。开源。MIT License。</p>
             <div className="download-actions">
@@ -674,6 +717,10 @@ function App() {
                 <Download size={16} />
               </a>
             </div>
+            <p className="download-note">
+              <ShieldCheck size={14} />
+              当前为 Community Release：更新包由 TailSync 私钥签名并做 SHA-256 校验，但 macOS 未公证、Windows 无商业代码签名，首次打开会看到 Gatekeeper / SmartScreen 提示，属正常现象。
+            </p>
             <a className="source-link" href={GITHUB_URL} target="_blank" rel="noreferrer">
               <GitFork size={16} />
               在 GitHub 查看源码

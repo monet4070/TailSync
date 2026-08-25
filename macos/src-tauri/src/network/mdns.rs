@@ -8,6 +8,7 @@ use super::lan;
 use super::tailscale::{LocalInfo, PeerInfo};
 use super::{source_matches_mode, ConnectionInterface, PeerCandidate, PeerStatus, TCP_PORT};
 use crate::identity::DeviceIdentity;
+use tailsync_core::peer::directory::is_remote_service;
 
 const SERVICE_TYPE: &str = "_tailsync._tcp.local.";
 
@@ -22,16 +23,6 @@ static CACHE: OnceLock<Mutex<HashMap<String, MdnsRecord>>> = OnceLock::new();
 
 fn cache() -> &'static Mutex<HashMap<String, MdnsRecord>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn is_remote_service(
-    fullname: &str,
-    fingerprint: Option<&str>,
-    port: u16,
-    local_fullname: &str,
-    local_fingerprint: &str,
-) -> bool {
-    fullname != local_fullname && fingerprint != Some(local_fingerprint) && port == TCP_PORT
 }
 
 pub async fn run(identity: Arc<DeviceIdentity>) {
@@ -69,6 +60,7 @@ async fn run_once(identity: &DeviceIdentity) -> Result<(), String> {
                     service.get_port(),
                     &local_fullname,
                     &local_fingerprint,
+                    TCP_PORT,
                 ) {
                     continue;
                 }
@@ -258,6 +250,7 @@ mod tests {
             TCP_PORT,
             "macbook._tailsync._tcp.local.",
             "self-fingerprint",
+            TCP_PORT,
         ));
         assert!(!is_remote_service(
             "stale-macbook._tailsync._tcp.local.",
@@ -265,6 +258,7 @@ mod tests {
             TCP_PORT,
             "macbook._tailsync._tcp.local.",
             "self-fingerprint",
+            TCP_PORT,
         ));
         assert!(is_remote_service(
             "windows._tailsync._tcp.local.",
@@ -272,6 +266,7 @@ mod tests {
             TCP_PORT,
             "macbook._tailsync._tcp.local.",
             "self-fingerprint",
+            TCP_PORT,
         ));
     }
 }

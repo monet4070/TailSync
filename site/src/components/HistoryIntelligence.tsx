@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Activity, ArrowRight, Braces, CalendarDays, Check, Code2, Database, File, Folder, Globe2, ImageIcon, Search, Tags, Terminal, Type } from "lucide-react";
+import { MAC_INSTALLER_NAME, RELEASE_TAG_URL } from "../product";
 
 type HistoryCategory =
   | "text"
@@ -33,7 +34,7 @@ const historySamples: Array<{
 }> = [
   {
     category: "website",
-    value: "https://github.com/monet4070/TailSync/releases/tag/v2.0.1",
+    value: RELEASE_TAG_URL,
     source: "MacBook Pro / Safari",
     time: "刚刚",
     tags: ["网站", "文本"],
@@ -60,7 +61,7 @@ const historySamples: Array<{
   },
   {
     category: "structured_data",
-    value: '{"device":"MacBook Pro","trusted":true,"latency_ms":4}',
+    value: '{"device":"MacBook Pro","trusted":true,"route":"lan"}',
     source: "Windows Studio / Console",
     time: "8 分钟前",
     tags: ["结构化数据", "代码"],
@@ -96,7 +97,7 @@ const historySamples: Array<{
   },
   {
     category: "file",
-    value: "TailSync-v2.0.1-universal.dmg / 18.4 MB",
+    value: `${MAC_INSTALLER_NAME} / 18.4 MB`,
     source: "Windows Studio / Downloads",
     time: "31 分钟前",
     tags: ["文件"],
@@ -284,8 +285,8 @@ export function HistoryIntelligence() {
             })}
             <div className="history-query-state">
               <Activity size={15} />
-              <span>QUERY LATENCY</span>
-              <strong>12 ms</strong>
+              <span>LOCAL QUERY</span>
+              <strong>INDEXED</strong>
             </div>
           </div>
         </div>

@@ -940,8 +940,12 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                             }
                         }
                     };
-                    // Downsample to thumbnail (max 64px)
-                    let (tw, th, thumb) = thumbnail_rgba(image, 64);
+                    // Downsample to a recognizable thumbnail (longest edge).
+                    let (tw, th, thumb) = thumbnail_rgba(image, THUMBNAIL_MAX_SIDE);
+                    // The full-size RGBA (up to 32 MiB) is now dead; release it
+                    // before base64-encoding the ~100 KB thumbnail so the large
+                    // buffer and the encoded copy never coexist.
+                    drop(data);
                     use base64::Engine;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&thumb);
                     Response {

@@ -187,10 +187,23 @@ impl IrohBiStream {
 }
 
 impl IrohRttProbe {
+    /// Abort the probe immediately without waiting for QUIC drain. This is
+    /// safe for cancellation paths such as a timeout or task drop; the
+    /// endpoint's normal async `close` remains available to measured probes.
+    pub fn close_now(&self) {
+        self.connection.close(0u32.into(), b"probe cancelled");
+    }
+
     pub async fn measure_rtt(self, direct_path_wait: Duration) -> Option<RttSample> {
         let sample = measure_connection_rtt(&self.connection, direct_path_wait).await;
         self.endpoint.close().await;
         sample
+    }
+}
+
+impl Drop for IrohRttProbe {
+    fn drop(&mut self) {
+        self.close_now();
     }
 }
 

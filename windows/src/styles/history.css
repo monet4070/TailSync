@@ -121,6 +121,13 @@ html, body {
   color: #ffffff;
 }
 
+.titlebar-actions {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .titlebar-btn {
   -webkit-app-region: no-drag;
   width: 22px;
@@ -142,6 +149,11 @@ html, body {
 .titlebar-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.titlebar-btn.active {
+  background: var(--brand-soft);
+  color: var(--brand);
 }
 
 /* ── Search ───────────────────────────────────────────────────────── */

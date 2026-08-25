@@ -1,11 +1,131 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 
 pub const HISTORY_WINDOW_LABEL: &str = "history";
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
 pub const TRANSIENT_WINDOW_IDLE_RELEASE: Duration = Duration::from_secs(5);
+
+pub(crate) fn configure_transparent_window<'a, R, M>(
+    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+) -> tauri::WebviewWindowBuilder<'a, R, M>
+where
+    R: Runtime,
+    M: Manager<R>,
+{
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder.transparent(true)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        builder
+    }
+}
+
+pub(crate) trait WindowActivation {
+    fn move_to_current_desktop(&self) -> Result<(), String>;
+    fn unminimize_window(&self) -> tauri::Result<()>;
+    fn show_window(&self) -> tauri::Result<()>;
+    fn focus_window(&self) -> tauri::Result<()>;
+}
+
+impl<R: tauri::Runtime> WindowActivation for tauri::WebviewWindow<R> {
+    fn move_to_current_desktop(&self) -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        {
+            if let Err(error) = move_window_to_current_virtual_desktop(self) {
+                // Virtual desktop APIs are optional on older Windows builds
+                // and may reject a window owned by another security context.
+                // Failing this best-effort step must not prevent the normal
+                // show/focus path from restoring the history window.
+                log::debug!("Could not move window to the current virtual desktop: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    fn unminimize_window(&self) -> tauri::Result<()> {
+        self.unminimize()
+    }
+
+    fn show_window(&self) -> tauri::Result<()> {
+        self.show()
+    }
+
+    fn focus_window(&self) -> tauri::Result<()> {
+        self.set_focus()
+    }
+}
+
+pub(crate) fn restore_and_focus_window<W: WindowActivation>(window: &W) -> Result<(), String> {
+    window.move_to_current_desktop()?;
+    window
+        .unminimize_window()
+        .map_err(|error| error.to_string())?;
+    window.show_window().map_err(|error| error.to_string())?;
+    window.focus_window().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn move_window_to_current_virtual_desktop<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    use windows::Win32::System::Com::CoGetApartmentType;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager};
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    let hwnd =
+        windows::Win32::Foundation::HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.0.is_null() || foreground == hwnd {
+        return Ok(());
+    }
+
+    // The Tauri callback can run on a worker thread. Initialise COM only for
+    // this call when the thread has not already joined an apartment.
+    let mut apartment_type = windows::Win32::System::Com::APTTYPE(0);
+    let mut apartment_qualifier = windows::Win32::System::Com::APTTYPEQUALIFIER(0);
+    let apartment_result =
+        unsafe { CoGetApartmentType(&mut apartment_type, &mut apartment_qualifier) };
+    let initialized_here = apartment_result.is_err();
+    if initialized_here {
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
+            .ok()
+            .map_err(|error| error.to_string())?;
+    }
+
+    let result = (|| {
+        let manager: IVirtualDesktopManager =
+            unsafe { CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_ALL) }
+                .map_err(|error| error.to_string())?;
+        let on_current = unsafe {
+            manager
+                .IsWindowOnCurrentVirtualDesktop(hwnd)
+                .map_err(|error| error.to_string())?
+        };
+        if on_current.as_bool() {
+            return Ok(());
+        }
+        let desktop_id = unsafe {
+            manager
+                .GetWindowDesktopId(foreground)
+                .map_err(|error| error.to_string())?
+        };
+        unsafe { manager.MoveWindowToDesktop(hwnd, &desktop_id) }.map_err(|error| error.to_string())
+    })();
+
+    if initialized_here {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ReleaseTicket {
@@ -95,6 +215,45 @@ pub fn hide_then_release_window(app: AppHandle, label: &'static str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct FakeWindow {
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl WindowActivation for FakeWindow {
+        fn move_to_current_desktop(&self) -> Result<(), String> {
+            self.calls.lock().unwrap().push("desktop");
+            Ok(())
+        }
+
+        fn unminimize_window(&self) -> tauri::Result<()> {
+            self.calls.lock().unwrap().push("unminimize");
+            Ok(())
+        }
+
+        fn show_window(&self) -> tauri::Result<()> {
+            self.calls.lock().unwrap().push("show");
+            Ok(())
+        }
+
+        fn focus_window(&self) -> tauri::Result<()> {
+            self.calls.lock().unwrap().push("focus");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restoring_a_window_unminimizes_shows_and_focuses_in_order() {
+        let window = FakeWindow::default();
+
+        restore_and_focus_window(&window).unwrap();
+
+        assert_eq!(
+            *window.calls.lock().unwrap(),
+            vec!["desktop", "unminimize", "show", "focus"]
+        );
+    }
 
     #[test]
     fn reopening_cancels_an_older_release_ticket() {

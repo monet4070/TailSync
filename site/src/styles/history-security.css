@@ -44,18 +44,16 @@
 }
 
 .history-intro-copy h2 {
+  font-family: var(--font-display);
   font-size: clamp(32px, 4.2vw, 54px);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.12;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.14;
 }
 
 .history-intro-copy h2 strong {
-  font-weight: 700;
-  background: var(--gradient-accent);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-weight: 600;
+  color: var(--brand);
 }
 
 .history-eyebrow {
@@ -95,9 +93,10 @@
 }
 
 .history-intro-stats strong {
+  font-family: var(--font-display);
   font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-weight: 600;
+  letter-spacing: normal;
 }
 
 .history-intro-stats span {
@@ -186,7 +185,7 @@
 
 .history-date-options button {
   padding: 7px 14px;
-  border-radius: 980px;
+  border-radius: 8px;
   color: var(--ink-2);
   font-size: 12.5px;
   font-weight: 500;
@@ -389,7 +388,7 @@
   align-items: center;
   gap: 5px;
   padding: 5px 11px;
-  border-radius: 980px;
+  border-radius: 8px;
   font-size: 11.5px;
   font-weight: 600;
 }
@@ -427,7 +426,7 @@
 .history-confidence > div strong {
   font-size: 17px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: normal;
 }
 
 .history-confidence-track {
@@ -435,7 +434,7 @@
   flex: 1;
   height: 5px;
   overflow: hidden;
-  border-radius: 980px;
+  border-radius: 8px;
   background: var(--chip-bg);
 }
 
@@ -658,8 +657,8 @@
   position: relative;
   overflow: hidden;
   padding: 150px 24px;
-  background: #000;
-  color: #f5f5f7;
+  background: #14130e;
+  color: #f2ebdb;
 }
 
 .security-word {
@@ -667,7 +666,7 @@
   top: 40px;
   left: 50%;
   transform: translateX(-50%);
-  color: rgba(255, 255, 255, 0.045);
+  color: rgba(242, 235, 219, 0.045);
   font-size: clamp(130px, 24vw, 330px);
   font-weight: 800;
   letter-spacing: 0.05em;
@@ -689,23 +688,21 @@
 
 .security-copy h2 {
   margin-top: 24px;
+  font-family: var(--font-display);
   font-size: clamp(34px, 4vw, 54px);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.12;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.14;
 }
 
 .security-copy h2 span {
-  background: linear-gradient(100deg, #58c4ff, #bf9cff 50%, #ff8fb0);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--brand);
 }
 
 .security-copy > p {
   margin-top: 20px;
   max-width: 460px;
-  color: #a1a1a6;
+  color: #b4a98f;
   font-size: 16.5px;
   line-height: 1.65;
 }
@@ -721,12 +718,12 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  color: #d6d6da;
+  color: #d8cfbb;
   font-size: 14.5px;
 }
 
 .security-facts svg {
-  color: #30d158;
+  color: #8cba94;
 }
 
 /* handshake card */
@@ -734,10 +731,10 @@
 .handshake {
   position: relative;
   padding: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(242, 235, 219, 0.12);
   border-radius: var(--radius-card);
   background: linear-gradient(180deg, #161617, #101011);
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(242, 235, 219, 0.07);
 }
 
 .handshake-head {
@@ -745,14 +742,14 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  color: #86868b;
+  color: #9d937f;
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: 0.14em;
 }
 
 .handshake-head b {
-  color: #f5f5f7;
+  color: #f2ebdb;
   font-weight: 600;
 }
 
@@ -760,252 +757,179 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #30d158;
+  color: #8cba94;
 }
 
 .handshake-live-status i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #30d158;
+  background: #8cba94;
   animation: live-pulse 2.4s ease-out infinite;
 }
 
+/* WAX-SEAL MEDALLION — two X25519 identities (coral + amber half-arcs) press
+   into a single sealed crest as the handshake advances phase 0→3. Stays dark
+   (editorial security band, both themes). (metaphor 3 of 4 — see plan) */
+
 .crypto-stage {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 210px;
+  display: grid;
+  place-items: center;
+  height: 236px;
   margin-top: 22px;
-  padding: 0 6px;
   overflow: hidden;
   border-radius: var(--radius-inner);
-  background: rgba(255, 255, 255, 0.03);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  background: rgba(242, 235, 219, 0.03);
+  box-shadow: inset 0 0 0 1px rgba(242, 235, 219, 0.06);
 }
 
-.crypto-sweep {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent 30%, rgba(41, 151, 255, 0.07) 50%, transparent 70%);
-  background-size: 250% 100%;
-  animation: sweep-x 6.5s linear infinite;
-}
-
-@keyframes sweep-x {
-  from {
-    background-position: 120% 0;
-  }
-  to {
-    background-position: -120% 0;
-  }
-}
-
-.crypto-peer {
+.seal {
   position: relative;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  padding: 15px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 16px;
-  background: #1d1d1f;
-}
-
-.crypto-peer strong {
-  font-size: 11px;
-  letter-spacing: 0.14em;
-}
-
-.crypto-peer small {
-  color: #86868b;
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  letter-spacing: 0.1em;
-}
-
-.crypto-channel {
-  position: absolute;
-  left: 18%;
-  right: 18%;
-  top: 50%;
-  height: 2px;
-  transform: translateY(-50%);
-}
-
-.crypto-channel > i {
-  position: absolute;
-  inset: 0;
-  border-radius: 2px;
-  background: linear-gradient(90deg, rgba(41, 151, 255, 0.7), rgba(191, 90, 242, 0.7), rgba(255, 100, 130, 0.7));
-  opacity: 0.55;
-}
-
-.crypto-signal {
-  position: absolute;
-  top: 50%;
-  z-index: 2;
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  margin-top: -12px;
-  border-radius: 8px;
-  background: #0a84ff;
-  color: #fff;
-  box-shadow: 0 0 18px rgba(10, 132, 255, 0.55);
-  animation: signal-travel 3.6s var(--ease-apple) infinite;
+  width: 196px;
+  height: 196px;
 }
 
-.crypto-signal-b {
-  background: #bf5af2;
-  box-shadow: 0 0 18px rgba(191, 90, 242, 0.55);
-  animation-delay: 1.2s;
+.seal-svg {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 
-.crypto-signal-c {
-  background: #30d158;
-  box-shadow: 0 0 18px rgba(48, 209, 88, 0.55);
-  animation-delay: 2.4s;
+/* faint astrolabe guide rings; the inner dashed one rotates slowly for life */
+.seal-guide {
+  fill: none;
+  stroke: rgba(242, 235, 219, 0.14);
+  stroke-width: 1;
 }
 
-@keyframes signal-travel {
-  0% {
-    left: 0;
-    opacity: 0;
-  }
-  12% {
-    opacity: 1;
-  }
-  88% {
-    opacity: 1;
-  }
-  100% {
-    left: calc(100% - 24px);
-    opacity: 0;
+.seal-guide-dash {
+  stroke: rgba(240, 148, 106, 0.28);
+  stroke-dasharray: 2 9;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: seal-rotate 26s linear infinite;
+}
+
+@keyframes seal-rotate {
+  to {
+    transform: rotate(360deg);
   }
 }
 
-.crypto-core {
+/* the two identity halves — coral (本机) + amber (对端) */
+.seal-arc {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  opacity: 0.5;
+  transition: opacity 0.8s var(--ease-apple), stroke-width 0.8s var(--ease-apple);
+}
+
+.seal-arc-a {
+  stroke: #f0946a;
+}
+
+.seal-arc-b {
+  stroke: #c88a3c;
+}
+
+/* the solid wax seal — a filled orange disc that grows to its maximum (out to
+   the outer ring, ≈163px) as the handshake completes */
+.seal-disc {
+  fill: #bd4f2c;
+  stroke: rgba(255, 200, 170, 0.35);
+  stroke-width: 1;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(0.3);
+  opacity: 0;
+  transition: transform 0.8s var(--ease-apple), opacity 0.8s var(--ease-apple);
+}
+
+.seal-core {
   position: absolute;
+  top: 50%;
   left: 50%;
-  top: 50%;
-  z-index: 3;
+  z-index: 2;
   display: grid;
   place-items: center;
+  color: #9d937f;
   transform: translate(-50%, -50%);
+  transition: color 0.8s var(--ease-apple), transform 0.8s var(--ease-apple);
 }
 
-.crypto-core > div {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 84px;
-  height: 84px;
-  border-radius: 50%;
-  background: #1d1d1f;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 0 40px rgba(41, 151, 255, 0.28);
-}
-
-.crypto-core small {
-  color: #64d2ff;
+/* NOISE XX label sits below the lock without shifting it off the true center */
+.seal-core small {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 8.5px;
   letter-spacing: 0.14em;
+  opacity: 0;
+  transition: opacity 0.8s var(--ease-apple);
 }
 
-.crypto-ring {
+/* phase progression: identities present → verify → seal forms → pinned */
+.handshake-phase-1 .seal-arc,
+.handshake-phase-2 .seal-arc,
+.handshake-phase-3 .seal-arc {
+  opacity: 0.85;
+}
+
+.handshake-phase-1 .seal-disc {
+  transform: scale(0.9);
+  opacity: 0.5;
+}
+
+.handshake-phase-2 .seal-disc {
+  transform: scale(1.35);
+  opacity: 0.82;
+}
+
+.handshake-phase-3 .seal-disc {
+  transform: scale(1.85);
+  opacity: 1;
+}
+
+.handshake-phase-2 .seal-core,
+.handshake-phase-3 .seal-core {
+  color: #fff7ef;
+}
+
+.handshake-phase-3 .seal-core {
+  transform: translate(-50%, -50%) scale(1.04);
+}
+
+.handshake-phase-3 .seal-core small {
+  opacity: 0.9;
+}
+
+.seal-caption {
   position: absolute;
-  inset: 0;
-  border: 1px solid rgba(41, 151, 255, 0.35);
-  border-radius: 50%;
-  animation: ring-breathe 3s ease-in-out infinite;
-}
-
-.crypto-ring-b {
-  animation-delay: 1.5s;
-}
-
-@keyframes ring-breathe {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 0.7;
-  }
-  50% {
-    transform: scale(1.55);
-    opacity: 0;
-  }
-}
-
-.entropy-stream {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 14px;
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-}
-
-.entropy-stream i {
-  width: 3px;
-  border-radius: 2px;
-  background: rgba(100, 210, 255, 0.5);
-  animation: entropy-bounce 1.6s ease-in-out infinite;
-}
-
-.entropy-stream i:nth-child(3n) {
-  background: rgba(191, 90, 242, 0.5);
-}
-
-.entropy-stream i:nth-child(1) { height: 8px; animation-delay: 0s; }
-.entropy-stream i:nth-child(2) { height: 14px; animation-delay: 0.15s; }
-.entropy-stream i:nth-child(3) { height: 10px; animation-delay: 0.3s; }
-.entropy-stream i:nth-child(4) { height: 16px; animation-delay: 0.45s; }
-.entropy-stream i:nth-child(5) { height: 9px; animation-delay: 0.6s; }
-.entropy-stream i:nth-child(6) { height: 13px; animation-delay: 0.75s; }
-.entropy-stream i:nth-child(7) { height: 8px; animation-delay: 0.9s; }
-.entropy-stream i:nth-child(8) { height: 15px; animation-delay: 1.05s; }
-.entropy-stream i:nth-child(9) { height: 10px; animation-delay: 1.2s; }
-.entropy-stream i:nth-child(10) { height: 14px; animation-delay: 1.35s; }
-.entropy-stream i:nth-child(11) { height: 8px; animation-delay: 1.5s; }
-.entropy-stream i:nth-child(12) { height: 12px; animation-delay: 1.65s; }
-
-@keyframes entropy-bounce {
-  0%,
-  100% {
-    transform: scaleY(0.5);
-    opacity: 0.4;
-  }
-  50% {
-    transform: scaleY(1.4);
-    opacity: 1;
-  }
-}
-
-.crypto-caption {
-  position: absolute;
-  top: 14px;
-  color: #636366;
+  color: #8a8779;
   font-family: var(--font-mono);
   font-size: 8.5px;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
 }
 
-.crypto-caption-left {
+.seal-caption-a {
+  top: 16px;
   left: 18px;
 }
 
-.crypto-caption-right {
+.seal-caption-b {
+  bottom: 16px;
   right: 18px;
 }
+
 
 /* pair code */
 
@@ -1017,13 +941,13 @@
   margin-top: 18px;
   padding: 16px 18px;
   border-radius: var(--radius-inner);
-  background: rgba(255, 255, 255, 0.04);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  background: rgba(242, 235, 219, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(242, 235, 219, 0.07);
 }
 
 .pair-code-meta span {
   display: block;
-  color: #d6d6da;
+  color: #d8cfbb;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -1032,7 +956,7 @@
 .pair-code-meta small {
   display: block;
   margin-top: 4px;
-  color: #636366;
+  color: #8a8779;
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.12em;
@@ -1048,10 +972,10 @@
   place-items: center;
   width: 38px;
   height: 46px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(242, 235, 219, 0.14);
   border-radius: 11px;
   background: #0c0c0d;
-  color: #64d2ff;
+  color: #e2a26c;
   font-family: var(--font-mono);
   font-size: 19px;
   font-weight: 600;
@@ -1060,8 +984,8 @@
 .handshake-phase-1 .pair-code span:nth-child(-n + 3),
 .handshake-phase-2 .pair-code span,
 .handshake-phase-3 .pair-code span {
-  border-color: rgba(48, 209, 88, 0.5);
-  color: #30d158;
+  border-color: rgba(140, 186, 148, 0.5);
+  color: #8cba94;
 }
 
 /* steps */
@@ -1079,9 +1003,9 @@
   align-items: center;
   gap: 5px;
   padding: 15px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(242, 235, 219, 0.08);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(242, 235, 219, 0.03);
   transition: border-color 0.4s ease, background 0.4s ease;
 }
 
@@ -1091,13 +1015,13 @@
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.06);
-  color: #86868b;
+  background: rgba(242, 235, 219, 0.06);
+  color: #9d937f;
   transition: background 0.4s ease, color 0.4s ease, box-shadow 0.4s ease;
 }
 
 .handshake-steps small {
-  color: #636366;
+  color: #8a8779;
   font-family: var(--font-mono);
   font-size: 9px;
 }
@@ -1105,31 +1029,31 @@
 .handshake-steps strong {
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: #a1a1a6;
+  color: #b4a98f;
 }
 
 .handshake-steps .active {
-  border-color: rgba(41, 151, 255, 0.5);
-  background: rgba(41, 151, 255, 0.08);
+  border-color: rgba(240, 148, 106, 0.5);
+  background: rgba(240, 148, 106, 0.08);
 }
 
 .handshake-steps .active > span {
-  background: #0a84ff;
+  background: #f0946a;
   color: #fff;
-  box-shadow: 0 0 22px rgba(10, 132, 255, 0.5);
+  box-shadow: 0 0 22px rgba(240, 148, 106, 0.5);
 }
 
 .handshake-steps .active strong {
-  color: #f5f5f7;
+  color: #f2ebdb;
 }
 
 .handshake-steps .complete > span {
-  background: rgba(48, 209, 88, 0.16);
-  color: #30d158;
+  background: rgba(140, 186, 148, 0.16);
+  color: #8cba94;
 }
 
 .handshake-steps .complete strong {
-  color: #30d158;
+  color: #8cba94;
 }
 
 .fingerprint-line {
@@ -1139,15 +1063,15 @@
   gap: 14px;
   margin-top: 18px;
   padding-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  color: #636366;
+  border-top: 1px solid rgba(242, 235, 219, 0.08);
+  color: #8a8779;
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.12em;
 }
 
 .fingerprint-line code {
-  color: #a1a1a6;
+  color: #b4a98f;
   font-size: 11px;
 }
 
@@ -1155,5 +1079,5 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #30d158;
+  color: #8cba94;
 }

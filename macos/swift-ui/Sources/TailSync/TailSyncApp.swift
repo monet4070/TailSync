@@ -61,6 +61,8 @@ struct TailSyncApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let singleInstanceLock = SingleInstanceLock()
+    private var ownsSingleInstanceLock = false
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
     private var lastNotifiedId: Int64 = 0
@@ -104,7 +106,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        do {
+            guard try singleInstanceLock.acquire() else {
+                Self.activateExistingInstance()
+                NSApp.terminate(nil)
+                return
+            }
+            ownsSingleInstanceLock = true
+        } catch {
+            print("[TailSync] could not acquire the single-instance lock: \(error)")
+            NSApp.terminate(nil)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard ownsSingleInstanceLock else { return }
         Self.forceAccessory()
         NSApp.setActivationPolicy(.accessory)
         // Remove plaintext Quick Look files left by a previous crash before
@@ -274,6 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        guard ownsSingleInstanceLock else { return }
         stopBackgroundActivity()
         HistoryPreviewWindowController.shared.shutdown()
         // Remove the status item before the process exits to prevent ghost icons.
@@ -282,9 +300,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem = nil
         }
         GlobalShortcutController.shared.unregister()
+        singleInstanceLock.release()
+        ownsSingleInstanceLock = false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard ownsSingleInstanceLock else { return .terminateNow }
         guard !terminationInProgress else { return .terminateLater }
         terminationInProgress = true
         stopBackgroundActivity()
@@ -303,6 +324,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GlobalShortcutController.shared.onSyncActivate = nil
         GlobalShortcutController.shared.onHistoryActivate = nil
         GlobalShortcutController.shared.unregister()
+    }
+
+    private static func activateExistingInstance() {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.tailsync.app"
+        let executableURL = Bundle.main.executableURL?.resolvingSymlinksInPath()
+        let existing = NSWorkspace.shared.runningApplications.first { application in
+            guard application.processIdentifier != currentPID else { return false }
+            if application.bundleIdentifier == bundleIdentifier {
+                return true
+            }
+            return application.executableURL?.resolvingSymlinksInPath() == executableURL
+        }
+        existing?.activate(options: [.activateIgnoringOtherApps])
     }
 
     // ── Status Item ─────────────────────────────────────────────
@@ -488,10 +523,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let visibleWindow = [NSApp.keyWindow, Self.settingsWC?.window, Self.historyWC?.window]
             .compactMap { $0 }
             .first(where: { $0.isVisible })
-        if visibleWindow == nil {
-            Self.showHistory()
+        if let visibleWindow {
+            beginUpdateAlert(alert, for: visibleWindow)
+        } else {
+            Self.showHistory { [weak self] window in
+                self?.beginUpdateAlert(alert, for: window)
+            }
         }
-        guard let parentWindow = visibleWindow ?? Self.historyWC?.window else { return }
+    }
+
+    private func beginUpdateAlert(_ alert: NSAlert, for parentWindow: NSWindow) {
         alert.beginSheetModal(for: parentWindow) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             Task { @MainActor in
@@ -551,8 +592,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         environment.removeValue(forKey: "TAILSYNC_API_TOKEN")
         environment["TAILSYNC_API_TOKEN_STDIN"] = "1"
         proc.environment = environment
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        if let logHandle = Self.daemonLogHandle() {
+            // Share one handle across stdout+stderr so their writes interleave
+            // into a single file, exactly like `tailsyncd >log 2>&1`. Previously
+            // both went to /dev/null, so a wedged link left no trace to inspect.
+            proc.standardOutput = logHandle
+            proc.standardError = logHandle
+        } else {
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+        }
         let tokenPipe = Pipe()
         proc.standardInput = tokenPipe
         do {
@@ -567,6 +616,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Self.daemonProcess = proc
         print("[TailSync] daemon started (pid=\(proc.processIdentifier))")
+    }
+
+    /// Open (creating if needed) the daemon log at
+    /// `~/Library/Logs/TailSync/tailsyncd.log`, positioned to append. The
+    /// daemon's `env_logger` already writes to stderr at `info` by default, so
+    /// pointing stderr here captures diagnostics for a wedged link. Returns
+    /// `nil` on any filesystem error so the caller falls back to `/dev/null`.
+    private static func daemonLogHandle() -> FileHandle? {
+        let fileManager = FileManager.default
+        guard
+            let logsDirectory = fileManager
+                .urls(for: .libraryDirectory, in: .userDomainMask)
+                .first?
+                .appendingPathComponent("Logs/TailSync", isDirectory: true)
+        else { return nil }
+
+        do {
+            try fileManager.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
+        } catch {
+            print("[TailSync] could not create daemon log directory: \(error)")
+            return nil
+        }
+
+        let logURL = logsDirectory.appendingPathComponent("tailsyncd.log")
+
+        // Bound growth: if the log has passed the cap, truncate before reopening
+        // so it can't grow without limit across restarts.
+        let maxLogBytes: UInt64 = 5 * 1024 * 1024
+        if let size = try? fileManager.attributesOfItem(atPath: logURL.path)[.size] as? UInt64,
+           size > maxLogBytes {
+            try? Data().write(to: logURL)
+        }
+        if !fileManager.fileExists(atPath: logURL.path) {
+            fileManager.createFile(atPath: logURL.path, contents: nil)
+        }
+
+        guard let handle = try? FileHandle(forWritingTo: logURL) else {
+            print("[TailSync] could not open daemon log at \(logURL.path)")
+            return nil
+        }
+        _ = try? handle.seekToEnd()
+        return handle
     }
 
     /// Ask the daemon to drain its background tasks, then use bounded signal fallbacks.
@@ -734,25 +825,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── Windows ─────────────────────────────────────────────────
 
-    static func showHistory() {
-        if let wc = historyWC {
-            wc.window?.makeKeyAndOrderFront(nil)
-        } else {
-            let wc = makeWindow(title: "History", content: HistoryView(),
-                                size: NSSize(width: 400, height: 600),
-                                minSize: NSSize(width: 300, height: 360)) {
-                historyWC = nil
-                Task { @MainActor in
-                    HistoryPreviewWindowController.shared.attachHistoryWindow(nil)
+    static func showHistory(completion: ((NSWindow) -> Void)? = nil) {
+        DispatchQueue.main.async {
+            let historyWindowController = HistoryWindowController.shared
+            Self.forceAccessory()
+            if let wc = historyWC, let window = wc.window {
+                historyWindowController.attach(window)
+                historyWindowController.present()
+                completion?(window)
+            } else {
+                let wc = makeWindow(title: "History", content: HistoryView(),
+                                    size: NSSize(width: 400, height: 600),
+                                    minSize: NSSize(width: 300, height: 360),
+                                    onVisibilityChange: { isVisible in
+                                        NotificationCenter.default.post(
+                                            name: .tailSyncHistoryWindowVisibilityChanged,
+                                            object: nil,
+                                            userInfo: ["visible": isVisible]
+                                        )
+                                    }) {
+                    historyWindowController.detach()
+                    historyWC = nil
+                    Task { @MainActor in
+                        HistoryPreviewWindowController.shared.attachHistoryWindow(nil)
+                    }
                 }
+                historyWC = wc
+                guard let window = wc.window else { return }
+                historyWindowController.attach(window)
+                historyWindowController.present()
+                completion?(window)
             }
-            historyWC = wc
+            Task { @MainActor in
+                HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
+            }
         }
-        Task { @MainActor in
-            HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        Self.forceAccessory()
     }
 
     static func showSettings() {
@@ -775,6 +882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content: V,
         size: NSSize,
         minSize: NSSize,
+        onVisibilityChange: ((Bool) -> Void)? = nil,
         onClose: @escaping () -> Void
     ) -> NSWindowController {
         let hosting = NSHostingController(rootView: content)
@@ -789,7 +897,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Set content size AFTER autosave so it overrides any restored tiny frame
         // from a stale UserDefaults entry.
         window.setContentSize(size)
-        let wc = TailSyncTransientWindowController(window: window, onClose: onClose)
+        let wc = TailSyncTransientWindowController(
+            window: window,
+            onVisibilityChange: onVisibilityChange,
+            onClose: onClose
+        )
         wc.showWindow(nil)
         return wc
     }

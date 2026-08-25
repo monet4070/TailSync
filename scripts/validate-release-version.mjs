@@ -56,6 +56,9 @@ export function validateRepositoryVersions(root, tag) {
     'windows/Cargo.toml': cargoPackageVersion(root, 'windows/src-tauri/Cargo.toml'),
     'macos/Cargo.toml': cargoPackageVersion(root, 'macos/src-tauri/Cargo.toml'),
     'shared/Cargo.toml': cargoPackageVersion(root, 'shared/rust-core/Cargo.toml'),
+    'tailsync-protocol/Cargo.toml': cargoPackageVersion(root, 'shared/tailsync-protocol/Cargo.toml'),
+    'tailsync-themes/Cargo.toml': cargoPackageVersion(root, 'shared/tailsync-themes/Cargo.toml'),
+    'tailsync-history-classifier/Cargo.toml': cargoPackageVersion(root, 'shared/tailsync-history-classifier/Cargo.toml'),
   };
   return validateVersions(tag, versions);
 }

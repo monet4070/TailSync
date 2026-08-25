@@ -21,12 +21,18 @@ function fixture(version = '2.1.0') {
       '[package]\nname = "tailsync"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
     'shared/rust-core/Cargo.toml':
       '[package]\nname = "tailsync-core"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
+    'shared/tailsync-protocol/Cargo.toml':
+      '[package]\nname = "tailsync-protocol"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
+    'shared/tailsync-themes/Cargo.toml':
+      '[package]\nname = "tailsync-themes"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
+    'shared/tailsync-history-classifier/Cargo.toml':
+      '[package]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
     'windows/src-tauri/Cargo.lock':
-      'version = 4\n\n[[package]]\nname = "tailsync"\nversion = "' + version + '"\ndependencies = ["tailsync-core"]\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n',
+      'version = 4\n\n[[package]]\nname = "tailsync"\nversion = "' + version + '"\ndependencies = ["tailsync-core"]\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
     'macos/src-tauri/Cargo.lock':
-      'version = 4\n\n[[package]]\nname = "tailsync"\nversion = "' + version + '"\ndependencies = ["tailsync-core"]\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n',
-    'shared/rust-core/Cargo.lock':
-      'version = 4\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n',
+      'version = 4\n\n[[package]]\nname = "tailsync"\nversion = "' + version + '"\ndependencies = ["tailsync-core"]\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
+    'Cargo.lock':
+      'version = 4\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
     'windows/package-lock.json':
       JSON.stringify({
         name: 'tailsync-v2',
@@ -50,24 +56,27 @@ function fixture(version = '2.1.0') {
   return root;
 }
 
-test('bump writes all twelve version files and is idempotent', () => {
+test('bump writes all fifteen version files and is idempotent', () => {
   const root = fixture('2.1.0');
   try {
     const written = bumpRepositoryVersions(root, '2.2.0');
-    assert.equal(written.length, 12, `expected 12 files, got ${written.length}`);
+    assert.equal(written.length, 15, `expected 15 files, got ${written.length}`);
     for (const relative of [
       'windows/src-tauri/tauri.conf.json',
       'macos/src-tauri/tauri.conf.json',
       'windows/package.json',
       'site/package.json',
       'shared/rust-core/Cargo.toml',
+      'shared/tailsync-protocol/Cargo.toml',
+      'shared/tailsync-themes/Cargo.toml',
+      'shared/tailsync-history-classifier/Cargo.toml',
     ]) {
       assert.match(readFileSync(join(root, relative), 'utf8'), /2\.2\.0/);
     }
     for (const relative of [
       'windows/src-tauri/Cargo.lock',
       'macos/src-tauri/Cargo.lock',
-      'shared/rust-core/Cargo.lock',
+      'Cargo.lock',
     ]) {
       const lock = readFileSync(join(root, relative), 'utf8');
       assert.match(lock, /version = "2\.2\.0"/);
@@ -89,7 +98,7 @@ test('dry-run records the would-be writes without touching the tree', () => {
   const root = fixture('2.1.0');
   try {
     const written = bumpRepositoryVersions(root, '2.2.0', true);
-    assert.equal(written.length, 12);
+    assert.equal(written.length, 15);
     assert.match(readFileSync(join(root, 'windows/package.json'), 'utf8'), /2\.1\.0/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -112,7 +121,7 @@ test('verify detects an out-of-sync Cargo.lock', () => {
   try {
     bumpRepositoryVersions(root, '2.2.0');
     // Revert one lockfile entry behind the others.
-    const lock = join(root, 'shared/rust-core/Cargo.lock');
+    const lock = join(root, 'Cargo.lock');
     writeFileSync(lock, readFileSync(lock, 'utf8').replace('2.2.0', '2.1.0'));
     assert.throws(() => verifyRepositoryVersions(root, '2.2.0'));
   } finally {

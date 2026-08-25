@@ -373,6 +373,48 @@ final class HistoryPreviewLayoutTests: XCTestCase {
         XCTAssertFalse(document.isFinding)
     }
 
+    func testThumbnailLayoutPreservesModerateAspectRatios() {
+        let wide = HistoryThumbnailLayout.displaySize(pixelWidth: 200, pixelHeight: 100)
+        XCTAssertEqual(wide.width, HistoryThumbnailLayout.maxSide, accuracy: 0.01)
+        XCTAssertEqual(wide.width / wide.height, 2, accuracy: 0.01, "a 2:1 image must stay 2:1")
+
+        let tall = HistoryThumbnailLayout.displaySize(pixelWidth: 100, pixelHeight: 200)
+        XCTAssertEqual(tall.height, HistoryThumbnailLayout.maxSide, accuracy: 0.01)
+        XCTAssertEqual(tall.height / tall.width, 2, accuracy: 0.01, "a 1:2 image must stay 1:2")
+    }
+
+    func testThumbnailLayoutRendersSquaresAsSquares() {
+        let square = HistoryThumbnailLayout.displaySize(pixelWidth: 128, pixelHeight: 128)
+        XCTAssertEqual(square.width, HistoryThumbnailLayout.maxSide, accuracy: 0.01)
+        XCTAssertEqual(square.height, HistoryThumbnailLayout.maxSide, accuracy: 0.01)
+    }
+
+    func testThumbnailLayoutClampsExtremeLongStrips() {
+        let maxAspect = HistoryThumbnailLayout.maxAspect
+        let maxSide = HistoryThumbnailLayout.maxSide
+
+        let banner = HistoryThumbnailLayout.displaySize(pixelWidth: 2000, pixelHeight: 100)
+        XCTAssertEqual(
+            banner.width / banner.height, maxAspect, accuracy: 0.01,
+            "a 20:1 banner must be clamped to \(maxAspect):1"
+        )
+        XCTAssertLessThanOrEqual(max(banner.width, banner.height), maxSide + 0.01)
+
+        let column = HistoryThumbnailLayout.displaySize(pixelWidth: 100, pixelHeight: 2000)
+        XCTAssertEqual(
+            column.height / column.width, maxAspect, accuracy: 0.01,
+            "a 1:20 long screenshot must be clamped to 1:\(maxAspect)"
+        )
+        XCTAssertLessThanOrEqual(max(column.width, column.height), maxSide + 0.01)
+    }
+
+    func testThumbnailLayoutSurvivesDegenerateSizes() {
+        let zero = HistoryThumbnailLayout.displaySize(pixelWidth: 0, pixelHeight: 0)
+        XCTAssertEqual(zero.width, HistoryThumbnailLayout.maxSide, accuracy: 0.01)
+        XCTAssertEqual(zero.height, HistoryThumbnailLayout.maxSide, accuracy: 0.01)
+        XCTAssertTrue(zero.width.isFinite && zero.height.isFinite)
+    }
+
     @MainActor
     private func visibleControlCount(in host: NSView) -> Int {
         descendants(of: host).filter { view in

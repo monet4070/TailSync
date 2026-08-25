@@ -63,6 +63,4 @@ test --no-run），Windows 原生编译/打包/运行由 CI 负责。注意 host
 ## 已知缺口
 
 - `iroh_transport` 的 `repeated_rtt_probes` 测试因本机 QUIC 环境回归已 `#[ignore]`（2026-08-14 起记录）。
-- `peer_cache.rs` 探活循环 / `health.rs` 的 `update_peer_health`（macOS 轮式）与
-  `record_probe_*`（Windows 逐路由式）是同一状态机的两种喂入方式，暂保留。
 - Android 客户端不在 v3 协议兼容范围。

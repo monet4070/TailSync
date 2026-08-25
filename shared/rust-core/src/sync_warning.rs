@@ -14,10 +14,25 @@ fn latest_warning() -> &'static Mutex<Option<SyncWarning>> {
 }
 
 pub fn record_expired_event(peer: &str) {
+    record(peer, "expired_event");
+}
+
+/// A clipboard frame could not even be handed to the connection worker for
+/// delivery — the send channel was full past the pool timeout or its worker
+/// had exited. Surfaced so a wedged link is visible instead of silent.
+pub fn record_delivery_stalled(peer: &str) {
+    record(peer, "delivery_stalled");
+}
+
+pub fn record_delivery_shutdown(peer: &str) {
+    record(peer, "delivery_shutdown");
+}
+
+fn record(peer: &str, kind: &'static str) {
     *latest_warning()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(SyncWarning {
-        kind: "expired_event",
+        kind,
         peer: peer.chars().take(255).collect(),
         occurred_at_ms: crate::protocol::unix_timestamp_ms(),
     });
@@ -43,5 +58,25 @@ mod tests {
         assert_eq!(warning.peer, "Laptop");
         assert!(warning.occurred_at_ms > 0);
         assert_eq!(take(), None);
+    }
+
+    #[test]
+    fn delivery_stalled_records_its_own_kind() {
+        let _ = take();
+        record_delivery_stalled("Desktop");
+        let warning = take().unwrap();
+        assert_eq!(warning.kind, "delivery_stalled");
+        assert_eq!(warning.peer, "Desktop");
+        assert!(warning.occurred_at_ms > 0);
+        assert_eq!(take(), None);
+    }
+
+    #[test]
+    fn delivery_shutdown_records_its_own_kind() {
+        let _ = take();
+        record_delivery_shutdown("Desktop");
+        let warning = take().unwrap();
+        assert_eq!(warning.kind, "delivery_shutdown");
+        assert_eq!(warning.peer, "Desktop");
     }
 }

@@ -5,6 +5,22 @@ import XCTest
 
 @MainActor
 final class AppBehaviorTests: XCTestCase {
+    func testSingleInstanceLockAllowsOnlyOneOwner() throws {
+        let lockURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tailsync-single-instance-\(UUID().uuidString).lock")
+        defer { try? FileManager.default.removeItem(at: lockURL) }
+
+        let first = SingleInstanceLock(lockFileURL: lockURL)
+        let second = SingleInstanceLock(lockFileURL: lockURL)
+
+        XCTAssertTrue(try first.acquire())
+        XCTAssertFalse(try second.acquire())
+
+        first.release()
+        XCTAssertTrue(try second.acquire())
+        second.release()
+    }
+
     func testInteractiveContentDoesNotMakeTheWindowDraggable() {
         let window = NSWindow()
 
@@ -267,7 +283,9 @@ final class AppBehaviorTests: XCTestCase {
             "history.preview.actualSize",
             "history.preview.rotate",
             "history.preview.transparency",
-            "history.preview.thumbnails"
+            "history.preview.thumbnails",
+            "history.windowPin",
+            "history.windowUnpin"
         ]
 
         for language in ["en", "zh-CN"] {

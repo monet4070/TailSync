@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>TailSync 架构与协议设计图谱 (Dark Theme)</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-inner: #0b1120;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.15);
+      --border: #1f293d;
+      --border-highlight: #334155;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.08) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(99, 102, 241, 0.08) 0px, transparent 50%);
+      color: var(--text);
+      margin: 0;
+      padding: 48px 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1080px;
+      width: 100%;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      color: #38bdf8;
+      padding: 4px 14px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+    h1 {
+      font-size: 32px;
+      font-weight: 700;
+      margin: 0 0 12px 0;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    p.subtitle {
+      color: var(--text-muted);
+      font-size: 15px;
+      margin: 0;
+    }
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      margin-bottom: 40px;
+      box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5);
+      transition: border-color 0.2s;
+    }
+    .card:hover {
+      border-color: var(--border-highlight);
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+    }
+    .card-title {
+      font-size: 19px;
+      font-weight: 600;
+      color: #f8fafc;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-title::before {
+      content: "";
+      display: inline-block;
+      width: 4px;
+      height: 18px;
+      background: #38bdf8;
+      border-radius: 2px;
+    }
+    .btn-group {
+      display: flex;
+      gap: 10px;
+    }
+    button {
+      background: #1e293b;
+      color: #f1f5f9;
+      border: 1px solid #334155;
+      padding: 9px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+    button:hover {
+      background: #38bdf8;
+      color: #090d16;
+      border-color: #38bdf8;
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.4);
+      transform: translateY(-1px);
+    }
+    button.primary {
+      background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+      border-color: #38bdf8;
+      color: white;
+    }
+    button.primary:hover {
+      background: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%);
+      color: #090d16;
+    }
+    .diagram-wrapper {
+      background: var(--card-inner);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 12px;
+      padding: 32px 24px;
+      overflow-x: auto;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .diagram-wrapper svg {
+      max-width: 100%;
+      height: auto;
+      filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.2));
+    }
+    /* Mermaid Text & Node Font styling override */
+    .mermaid text {
+      font-family: 'Plus Jakarta Sans', -apple-system, sans-serif !important;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <div class="badge">TAILSYNC ARCHITECTURE V2.1</div>
+    <h1>TailSync 架构与协议高保真图谱</h1>
+    <p class="subtitle">与 IDE / 聊天界面 100% 一致的高颜值暗黑风格，支持超清 3x PNG 与无损 SVG 导出</p>
+  </div>
+
+  <!-- 图 1 -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">图 1：跨平台多进程架构与网络流转图</h2>
+      <div class="btn-group">
+        <button onclick="downloadSVG('diag1', 'TailSync-Architecture.svg')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          下载 SVG
+        </button>
+        <button class="primary" onclick="downloadPNG('diag1', 'TailSync-Architecture.png')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          导出高清 PNG
+        </button>
+      </div>
+    </div>
+    <div class="diagram-wrapper" id="diag1">
+      <pre class="mermaid">
+flowchart TB
+    subgraph macOS ["macOS Runtime (原生 + 守护进程)"]
+        SW["SwiftUI 菜单栏应用\n(Menu Bar UI)"]
+        API["Localhost TCP API (127.0.0.1:19889)\nJSON Lines 协议 + Watch Channel"]
+        DAEMON["Rust 守护进程\n(tailsync-daemon)"]
+        CH["clipboard-helper\n(NSPasteboard 监听)"]
+
+        SW <-->|JSON-L| API
+        API <--> DAEMON
+        CH -->|事件捕获| DAEMON
+    end
+
+    subgraph Windows ["Windows Runtime (Tauri v2 桌面应用)"]
+        FE["React 19 + TypeScript\n(UI / 历史记录 / 富文本预览)"]
+        T_IPC["Tauri IPC 桥接\n(Async Commands / Events)"]
+        T_CORE["Tauri Backend (Rust)"]
+
+        FE <-->|IPC| T_IPC
+        T_IPC <--> T_CORE
+    end
+
+    subgraph Shared ["shared/rust-core (跨平台 Rust 共享核心)"]
+        direction TB
+        PEER["Peer Health 状态机\n& 路由竞速 (race_connections)"]
+        DELIV["Reliable Delivery 投递引擎\n(ACK / 指数退避重试 / 唤醒恢复)"]
+        NOISE["Noise XX 安全通道\n(ChaCha20-Poly1305 加密)"]
+        DB_STORE["SQLite 数据库 (Schema v9)\n& AES-256-GCM 加密存储"]
+        PROTO["Wire Protocol v3\n(48B 帧头 + Blake3 分块校验)"]
+    end
+
+    DAEMON --- Shared
+    T_CORE --- Shared
+
+    Shared <===>|TCP 19890 (Noise 加密数据传输)| RemotePeer["对端 TailSync 设备\n(macOS / Windows)"]
+    Shared <===>|UDP 19889 / mDNS / Tailscale (心跳探活与发现)| RemotePeer
+      </pre>
+    </div>
+  </div>
+
+  <!-- 图 2 -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">图 2：零信任双向配对与 6 位验证码协商时序图</h2>
+      <div class="btn-group">
+        <button onclick="downloadSVG('diag2', 'TailSync-Pairing-Sequence.svg')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          下载 SVG
+        </button>
+        <button class="primary" onclick="downloadPNG('diag2', 'TailSync-Pairing-Sequence.png')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          导出高清 PNG
+        </button>
+      </div>
+    </div>
+    <div class="diagram-wrapper" id="diag2">
+      <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor UserA as 用户 A (发起端)
+    participant DevA as 设备 A (TailSync)
+    participant DevB as 设备 B (TailSync)
+    actor UserB as 用户 B (接收端)
+
+    Note over DevA,DevB: 阶段 1: 发现与 Noise XX 加密握手
+    UserA->>DevA: 点击“允许配对”
+    UserB->>DevB: 点击“允许配对” (120s 窗口期)
+    DevA->>DevB: PairingHandshakeReq (携带 Noise 握手 Payload 1)
+    DevB->>DevA: PairingHandshakeAck (携带 Noise 握手 Payload 2)
+    DevA->>DevB: PairingHandshakeFinish (Noise 握手完成，建立临时安全通道)
+
+    Note over DevA,DevB: 阶段 2: 派生 6 位防中间人（MITM）验证码
+    rect rgb(20, 30, 48)
+    Note over DevA,DevB: Code = HKDF-SHA256(Handshake_Hash, Sort(PubKey_A, PubKey_B)) % 1,000,000
+    end
+    DevA-->>UserA: 屏幕显示 6 位验证码 (例如 582194)
+    DevB-->>UserB: 屏幕显示 6 位验证码 (例如 582194)
+
+    Note over DevA,DevB: 阶段 3: 双方人工核对与双向确认
+    UserA->>DevA: 确认验证码一致
+    UserB->>DevB: 确认验证码一致
+    DevA->>DevB: PairingConfirm
+    DevB->>DevA: PairingConfirm
+
+    Note over DevA,DevB: 阶段 4: 设备身份固化与安全存储
+    DevA->>DevA: 固化对端 X25519 静态公钥到 Keychain/DPAPI
+    DevB->>DevB: 固化对端 X25519 静态公钥到 Keychain/DPAPI
+    Note over DevA,DevB: 配对成功，后续所有连接均基于该静态身份认证
+      </pre>
+    </div>
+  </div>
+
+  <!-- 图 3 -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">图 3：设备在线状态流转状态机</h2>
+      <div class="btn-group">
+        <button onclick="downloadSVG('diag3', 'TailSync-Health-StateMachine.svg')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          下载 SVG
+        </button>
+        <button class="primary" onclick="downloadPNG('diag3', 'TailSync-Health-StateMachine.png')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          导出高清 PNG
+        </button>
+      </div>
+    </div>
+    <div class="diagram-wrapper" id="diag3">
+      <pre class="mermaid">
+stateDiagram-v2
+    [*] --> Discovered: 收到 mDNS 广播 / Tailscale 地址
+    Discovered --> Online: 主动探测成功 (UDP/TCP 收到回包)
+    Discovered --> Offline: 连续 2 轮探测失败 (未曾响应)
+
+    Online --> Confirming: 探测发生 1 次 Miss (仍视为在线，进入观察期)
+    Confirming --> Online: 下一轮探测成功 (恢复正常)
+    Confirming --> Offline: 连续 2 轮 Miss 或超过 12 秒 TTL
+
+    Online --> Connected: 建立已通过 Noise 认证的 TCP 会话
+    Confirming --> Connected: 建立已通过 Noise 认证的 TCP 会话
+    Connected --> Online: TCP 会话断开但探测仍正常
+    Offline --> Online: 探测重新收到响应
+      </pre>
+    </div>
+  </div>
+</div>
+
+<script>
+  // 配置与 Antigravity / IDE 相同的深色高级调色盘
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      darkMode: true,
+      background: 'transparent',
+      primaryColor: '#1e293b',
+      primaryTextColor: '#f8fafc',
+      primaryBorderColor: '#38bdf8',
+      lineColor: '#60a5fa',
+      secondaryColor: '#1e293b',
+      tertiaryColor: '#0f172a',
+      fontFamily: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      fontSize: '14px',
+      nodeBorder: '#38bdf8',
+      clusterBkg: '#0f172a99',
+      clusterBorder: '#334155',
+      titleColor: '#38bdf8',
+      edgeLabelBackground: '#1e293b',
+      actorBkg: '#1e293b',
+      actorBorder: '#38bdf8',
+      actorTextColor: '#f8fafc',
+      actorLineColor: '#475569',
+      signalColor: '#38bdf8',
+      signalTextColor: '#f8fafc',
+      labelBoxBkgColor: '#1e293b',
+      labelBoxBorderColor: '#38bdf8',
+      labelTextColor: '#f8fafc',
+      loopTextColor: '#f8fafc',
+      noteBorderColor: '#38bdf8',
+      noteBkgColor: '#0f172a',
+      noteTextColor: '#f8fafc',
+      activationBorderColor: '#38bdf8',
+      activationBkgColor: '#334155'
+    }
+  });
+
+  function getSVGElement(wrapperId) {
+    return document.querySelector('#' + wrapperId + ' svg');
+  }
+
+  function downloadSVG(wrapperId, filename) {
+    const svg = getSVGElement(wrapperId);
+    if (!svg) return;
+    const serializer = new XMLSerializer();
+    const source = serializer.serializeToString(svg);
+    const blob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadPNG(wrapperId, filename) {
+    const svg = getSVGElement(wrapperId);
+    if (!svg) return;
+
+    // 克隆 SVG 确保样式完整
+    const serializer = new XMLSerializer();
+    let svgString = serializer.serializeToString(svg);
+
+    // 创建图像与高清 Canvas (3x 视网膜清晰度)
+    const scale = 3;
+    const rect = svg.getBoundingClientRect();
+    const width = (rect.width || 900);
+    const height = (rect.height || 600);
+
+    const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+
+    const img = new Image();
+    img.onload = function () {
+      const canvas = document.createElement('canvas');
+      canvas.width = (width + 60) * scale;
+      canvas.height = (height + 60) * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(scale, scale);
+
+      // 绘制高级深色暗调背景
+      ctx.fillStyle = '#0b1120';
+      ctx.roundRect(0, 0, width + 60, height + 60, 16);
+      ctx.fill();
+
+      // 绘制 SVG 内容
+      ctx.drawImage(img, 30, 30, width, height);
+
+      const pngUrl = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.href = pngUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  }
+</script>
+</body>
+</html>

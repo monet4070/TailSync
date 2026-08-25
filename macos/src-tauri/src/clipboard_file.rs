@@ -5,8 +5,6 @@
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
-use std::fs::{self, File};
-#[cfg(target_os = "macos")]
 use std::io::{Read, Write};
 #[cfg(target_os = "macos")]
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -144,21 +142,6 @@ fn parse_native_clipboard_image(output: &[u8]) -> Result<ClipboardImageData, Str
         height,
         rgba,
     })
-}
-
-#[cfg(target_os = "macos")]
-pub fn clipboard_files_are_readable(paths: &[PathBuf]) -> Result<(), String> {
-    for path in paths {
-        let metadata = fs::symlink_metadata(path).map_err(|error| {
-            format!("Cannot inspect clipboard file {}: {error}", path.display())
-        })?;
-        if !metadata.is_file() {
-            continue;
-        }
-        File::open(path)
-            .map_err(|error| format!("Cannot read clipboard file {}: {error}", path.display()))?;
-    }
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -363,34 +346,6 @@ mod tests {
 
         assert!(error.contains("timed out"));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn unreadable_clipboard_file_can_fall_back_to_another_representation() {
-        let missing = std::env::temp_dir().join(format!(
-            "tailsync-missing-clipboard-file-{:016x}",
-            rand::random::<u64>()
-        ));
-
-        let error = super::clipboard_files_are_readable(&[missing]).unwrap_err();
-
-        assert!(error.contains("Cannot inspect clipboard file"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn readable_clipboard_file_keeps_file_semantics() {
-        let path = std::env::temp_dir().join(format!(
-            "tailsync-readable-clipboard-file-{:016x}",
-            rand::random::<u64>()
-        ));
-        std::fs::write(&path, b"clipboard file").unwrap();
-
-        let result = super::clipboard_files_are_readable(std::slice::from_ref(&path));
-
-        std::fs::remove_file(path).unwrap();
-        assert!(result.is_ok());
     }
 
     #[cfg(target_os = "macos")]

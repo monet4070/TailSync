@@ -271,8 +271,15 @@ async fn handle_accepted_connection(
     secure::write_ready(&mut stream).await?;
     let _active_guard =
         register_active_session(&peer_info.hostname, source_interface, &source_address, 0);
-    let _receive_guard =
-        sync::ReceiveSuspendGuard::new(sync_engine.clone(), peer_info.hostname.clone());
+    let receive_epoch = sync_engine
+        .lock()
+        .await
+        .start_receive_session(&peer_info.hostname);
+    let _receive_guard = sync::ReceiveSuspendGuard::new(
+        sync_engine.clone(),
+        peer_info.hostname.clone(),
+        receive_epoch,
+    );
 
     // ── Receive loop ─────────────────────────────────────────────
     let mut last_activity = tokio::time::Instant::now();
@@ -383,10 +390,11 @@ async fn handle_accepted_connection(
                                 Ok(())
                             };
                             match preflight {
-                                Ok(()) => sync_engine.lock().await.begin_file_batch(
+                                Ok(()) => sync_engine.lock().await.begin_file_batch_at_epoch(
                                     manifest.clone(),
                                     peer_info.hostname.clone(),
                                     &db::get_incoming_dir(),
+                                    receive_epoch,
                                 ),
                                 Err(error) => Err(error),
                             }
@@ -482,8 +490,13 @@ async fn handle_accepted_connection(
                 let meta_batch_id = meta.batch.map(|batch| batch.batch_id);
                 let result = {
                     let mut sync = sync_engine.lock().await;
-                    sync.begin_file_receive(meta, &file_path, peer_info.hostname.clone())
-                        .await
+                    sync.begin_file_receive_at_epoch(
+                        meta,
+                        &file_path,
+                        peer_info.hostname.clone(),
+                        receive_epoch,
+                    )
+                    .await
                 };
                 let result = match result {
                     Ok(mut progress) => {

@@ -5,6 +5,9 @@ use super::tailscale;
 use tailsync_core::peer::health::{
     apply_peer_health as apply_peer_health_impl, HealthTracker, SessionGuard, SessionRegistry,
 };
+use tailsync_core::peer::health::{
+    record_probe_round as record_probe_round_impl, ProbeObservation,
+};
 use tailsync_core::peer::types::{ActiveRoute, ConnectionInterface};
 
 /// Platform alias for the shared route key, kept for existing call sites.
@@ -21,18 +24,29 @@ fn active_sessions() -> &'static SessionRegistry {
     ACTIVE_SESSIONS.get_or_init(SessionRegistry::default)
 }
 
-pub(super) fn record_probe_success(key: &PeerRouteKey, latency_ms: u64) {
+pub(super) fn clear_peer_health() {
     peer_health()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .record_success(key, latency_ms, tokio::time::Instant::now());
+        .clear();
 }
 
-pub(super) fn record_probe_miss(key: &PeerRouteKey) {
-    peer_health()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .record_miss(key, tokio::time::Instant::now());
+pub(super) fn record_probe_round(
+    mode: &str,
+    candidates: impl IntoIterator<Item = PeerRouteKey>,
+    observations: impl IntoIterator<Item = (PeerRouteKey, u64)>,
+) {
+    record_probe_round_impl(
+        &mut peer_health()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        mode,
+        candidates,
+        observations
+            .into_iter()
+            .map(|(route, latency_ms)| ProbeObservation::new(route, latency_ms)),
+        tokio::time::Instant::now(),
+    );
 }
 
 pub fn record_address_test_success(address: &str, latency_ms: u64) {
@@ -81,4 +95,43 @@ pub fn apply_peer_health(peers: &mut [tailscale::PeerInfo]) {
 
 pub fn active_routes_snapshot() -> HashMap<String, ActiveRoute> {
     active_sessions().snapshot()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tailsync_core::peer::types::PeerStatus;
+
+    #[test]
+    fn clear_peer_health_discards_pre_wake_probe_state() {
+        let route = PeerRouteKey::new(
+            "windows-wake-reset-test",
+            ConnectionInterface::Lan,
+            "192.0.2.240",
+        );
+        let now = tokio::time::Instant::now();
+        {
+            let mut tracker = peer_health()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            tracker.record_success(&route, 17, now);
+            tracker.record_miss(&route, now);
+            assert_eq!(
+                tracker.status_at(&route, now, false),
+                PeerStatus::Confirming
+            );
+            assert_eq!(tracker.latency(&route), Some(17));
+        }
+
+        clear_peer_health();
+
+        let tracker = peer_health()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            tracker.status_at(&route, now, false),
+            PeerStatus::Discovered
+        );
+        assert_eq!(tracker.latency(&route), None);
+    }
 }

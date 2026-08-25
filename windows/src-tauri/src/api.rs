@@ -326,7 +326,20 @@ fn write_file_path_to_clipboard(_file_path: &Path) -> Result<(), String> {
     Err("File clipboard restore is unavailable on this platform".to_string())
 }
 
-/// Nearest-neighbor downscale of a validated packed RGBA image.
+/// Longest-edge size (in pixels) for history thumbnails.
+///
+/// 160px keeps a thumbnail recognizable — a long screenshot or wide banner
+/// stays legible instead of collapsing into a blurry smudge — while remaining
+/// tiny to transfer and cache (~100 KB of RGBA at most, ~140 KB base64).
+pub const THUMBNAIL_MAX_SIDE: usize = 160;
+
+/// Box-averaging downscale of a validated packed RGBA image, preserving the
+/// aspect ratio (the longest edge is clamped to `max_side`).
+///
+/// Each destination pixel is the average of the source rectangle it covers,
+/// which avoids the aliasing and blur of nearest-neighbor point sampling. The
+/// average is alpha-weighted (premultiplied) so fully or partially transparent
+/// regions do not bleed their arbitrary RGB toward the opaque neighbors.
 pub fn thumbnail_rgba(
     image: crate::protocol::PackedImage<'_>,
     max_side: usize,
@@ -343,14 +356,50 @@ pub fn thumbnail_rgba(
             (h * max_side / longest).max(1),
         )
     };
+
+    // No downscale needed — hand back the pixels unchanged.
+    if tw == w && th == h {
+        return (w, h, image.rgba.to_vec());
+    }
+
+    let src = image.rgba;
     let mut out = vec![0u8; tw * th * 4];
-    for y in 0..th {
-        for x in 0..tw {
-            let sx = x * w / tw;
-            let sy = y * h / th;
-            let si = (sy * w + sx) * 4;
-            let di = (y * tw + x) * 4;
-            out[di..di + 4].copy_from_slice(&image.rgba[si..si + 4]);
+    for ty in 0..th {
+        // Source rows [sy0, sy1) that map to this destination row.
+        let sy0 = ty * h / th;
+        let sy1 = (((ty + 1) * h) / th).max(sy0 + 1).min(h);
+        for tx in 0..tw {
+            // Source columns [sx0, sx1) that map to this destination column.
+            let sx0 = tx * w / tw;
+            let sx1 = (((tx + 1) * w) / tw).max(sx0 + 1).min(w);
+
+            let mut sum_r: u64 = 0;
+            let mut sum_g: u64 = 0;
+            let mut sum_b: u64 = 0;
+            let mut sum_a: u64 = 0;
+            let mut count: u64 = 0;
+            for sy in sy0..sy1 {
+                let row = sy * w;
+                for sx in sx0..sx1 {
+                    let si = (row + sx) * 4;
+                    let a = src[si + 3] as u64;
+                    sum_r += src[si] as u64 * a;
+                    sum_g += src[si + 1] as u64 * a;
+                    sum_b += src[si + 2] as u64 * a;
+                    sum_a += a;
+                    count += 1;
+                }
+            }
+
+            let di = (ty * tw + tx) * 4;
+            if sum_a > 0 {
+                // Un-premultiply: divide the weighted color sum by total alpha.
+                out[di] = (sum_r / sum_a) as u8;
+                out[di + 1] = (sum_g / sum_a) as u8;
+                out[di + 2] = (sum_b / sum_a) as u8;
+            }
+            // A fully transparent region leaves RGB at 0; only alpha matters.
+            out[di + 3] = (sum_a / count) as u8;
         }
     }
     (tw, th, out)

@@ -18,9 +18,13 @@
 **/pnpm-debug.log*
 
 # Rust, Swift and Tauri
+/target/
 **/src-tauri/target/
 **/src-tauri/target-*/
 /shared/rust-core/target/
+/shared/tailsync-history-classifier/target/
+/shared/tailsync-protocol/target/
+/shared/tailsync-themes/target/
 **/swift-ui/.build/
 **/src-tauri/tray-helper/.build/
 
@@ -49,6 +53,7 @@ windows/tailsync-site-*.tar.gz
 # directories, so they must never be stageable.
 windows/.tmp/
 windows/ci-artifacts/
+ci-downloads/
 
 # Runtime logs
 **/logs/

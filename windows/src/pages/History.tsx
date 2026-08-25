@@ -89,6 +89,7 @@ const MAX_CACHED_THUMBNAILS = PAGE_SIZE;
 const NEW_GLOW_DURATION_MS = 3000;
 const RESTORE_FEEDBACK_DURATION_MS = 1500;
 const COLLAPSED_BATCH_FILE_LIMIT = 2;
+const HISTORY_ALWAYS_ON_TOP_STORAGE_KEY = "tailsync-history-always-on-top";
 // Animate only the rows that can plausibly be visible in the history window.
 // Animating an entire 50-row page creates dozens of WebView compositor layers.
 const MAX_PAGE_ENTER_ITEMS = 12;
@@ -117,6 +118,23 @@ const CATEGORY_ICONS = {
   image: ImageIcon,
   file: File,
 } satisfies Record<HistoryCategory, typeof Type>;
+
+function readStoredHistoryAlwaysOnTop(): boolean | null {
+  try {
+    const value = localStorage.getItem(HISTORY_ALWAYS_ON_TOP_STORAGE_KEY);
+    return value === null ? null : value === "true";
+  } catch {
+    return null;
+  }
+}
+
+function persistHistoryAlwaysOnTop(value: boolean): void {
+  try {
+    localStorage.setItem(HISTORY_ALWAYS_ON_TOP_STORAGE_KEY, String(value));
+  } catch {
+    // A restricted WebView may not provide persistent storage.
+  }
+}
 
 function resolvedCategory(entry: HistoryEntry): HistoryCategory {
   return entry.category && HISTORY_CATEGORIES.includes(entry.category)
@@ -427,6 +445,8 @@ export function History() {
   const historyRequests = useRef(new LatestRequest());
   const [fileProgress, setFileProgress] = useState<FileProgress | null>(null);
   const [progressBarEnabled, setProgressBarEnabled] = useState(true);
+  const [windowAlwaysOnTop, setWindowAlwaysOnTop] = useState(false);
+  const [windowAlwaysOnTopPending, setWindowAlwaysOnTopPending] = useState(true);
   const closeHistory = useCallback(async () => {
     try {
       await closePreviewWindow();
@@ -672,6 +692,47 @@ export function History() {
   useEffect(() => {
     const appWindow = getCurrentWindow();
     let disposed = false;
+    const stored = readStoredHistoryAlwaysOnTop();
+    const syncAlwaysOnTop = async () => {
+      try {
+        let actual = await appWindow.isAlwaysOnTop();
+        if (!disposed) setWindowAlwaysOnTop(actual);
+        const desired = stored ?? actual;
+        if (stored !== null && actual !== desired) {
+          await appWindow.setAlwaysOnTop(desired);
+          actual = desired;
+        }
+        if (!disposed) setWindowAlwaysOnTop(actual);
+      } catch (error) {
+        if (!disposed) console.error("Could not sync history-window always-on-top state:", error);
+      } finally {
+        if (!disposed) setWindowAlwaysOnTopPending(false);
+      }
+    };
+    void syncAlwaysOnTop();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const toggleWindowAlwaysOnTop = useCallback(async () => {
+    if (windowAlwaysOnTopPending) return;
+    const next = !windowAlwaysOnTop;
+    setWindowAlwaysOnTopPending(true);
+    try {
+      await getCurrentWindow().setAlwaysOnTop(next);
+      setWindowAlwaysOnTop(next);
+      persistHistoryAlwaysOnTop(next);
+    } catch (error) {
+      console.error("Could not change history-window always-on-top state:", error);
+    } finally {
+      setWindowAlwaysOnTopPending(false);
+    }
+  }, [windowAlwaysOnTop, windowAlwaysOnTopPending]);
+
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    let disposed = false;
     const syncMinimized = () => {
       void appWindow.isMinimized()
         .then((minimized) => {
@@ -861,14 +922,28 @@ export function History() {
           <span className="titlebar-text">TailSync</span>
           <span className="titlebar-badge">v2</span>
         </div>
-        <button
-          className="titlebar-close"
-          onClick={() => void closeHistory()}
-          title={t("history.close")}
-          aria-label={t("history.close")}
-        >
-          <X size={15} strokeWidth={1.8} aria-hidden="true" />
-        </button>
+        <div className="titlebar-actions">
+          <button
+            className={`titlebar-btn titlebar-pin${windowAlwaysOnTop ? " active" : ""}`}
+            type="button"
+            onClick={() => void toggleWindowAlwaysOnTop()}
+            disabled={windowAlwaysOnTopPending}
+            title={t(windowAlwaysOnTop ? "history.unpinWindow" : "history.pinWindow")}
+            aria-label={t(windowAlwaysOnTop ? "history.unpinWindow" : "history.pinWindow")}
+            aria-pressed={windowAlwaysOnTop}
+          >
+            <Pin size={14} fill={windowAlwaysOnTop ? "currentColor" : "none"} aria-hidden="true" />
+          </button>
+          <button
+            className="titlebar-close"
+            type="button"
+            onClick={() => void closeHistory()}
+            title={t("history.close")}
+            aria-label={t("history.close")}
+          >
+            <X size={15} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
       {/* ── Search ── */}

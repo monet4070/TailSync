@@ -9,9 +9,9 @@ private struct HistoryDateBounds {
 
 struct HistoryView: View {
     @ObservedObject private var loc = Loc.shared
+    @ObservedObject private var historyWindowController = HistoryWindowController.shared
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.scenePhase) private var scenePhase
     @State private var entries: [HistoryEntry] = []
     @State private var keyword = ""
     @State private var selectedCategory = "all"
@@ -21,6 +21,7 @@ struct HistoryView: View {
     @State private var page = 0
     @State private var hasNext = false
     @State private var isLoading = false
+    @State private var historyWindowIsVisible = true
     @State private var restoredId: Int64? = nil
     // Previewing is independent of restoration: selection chooses a row,
     // Space opens it in the reusable preview window, and double-click retains
@@ -97,6 +98,45 @@ struct HistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack {
+                Spacer(minLength: 0)
+                Button {
+                    historyWindowController.togglePinned()
+                } label: {
+                    Image(systemName: historyWindowController.isPinned ? "pin.fill" : "pin")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(
+                            historyWindowController.isPinned
+                                ? palette.accentColor
+                                : palette.secondaryColor
+                        )
+                        .frame(width: 28, height: 24)
+                        .background(
+                            historyWindowController.isPinned
+                                ? palette.accentColor.opacity(0.12)
+                                : Color.clear
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help(Loc.t(
+                    historyWindowController.isPinned
+                        ? "history.windowUnpin"
+                        : "history.windowPin"
+                ))
+                .accessibilityLabel(Loc.t(
+                    historyWindowController.isPinned
+                        ? "history.windowUnpin"
+                        : "history.windowPin"
+                ))
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(palette.surfaceColor)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(palette.dividerColor).frame(height: 1)
+            }
+
             HistoryFilterBar(
                 keyword: $keyword,
                 selectedCategory: $selectedCategory,
@@ -290,7 +330,16 @@ struct HistoryView: View {
             loadHistoryCapabilities()
             loadMigrationDiagnostics()
         }
-        .task { await runtimeSnapshotLoop() }
+        .task(id: historyWindowIsVisible) {
+            guard historyWindowIsVisible else { return }
+            await runtimeSnapshotLoop(forceRefresh: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .tailSyncHistoryWindowVisibilityChanged
+        )) { notification in
+            guard let isVisible = notification.userInfo?["visible"] as? Bool else { return }
+            historyWindowIsVisible = isVisible
+        }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             reloadActiveDateFilter()
         }
@@ -447,13 +496,14 @@ struct HistoryView: View {
     }
 
     @MainActor
-    private func runtimeSnapshotLoop() async {
+    private func runtimeSnapshotLoop(forceRefresh: Bool) async {
+        var shouldRefreshImmediately = forceRefresh
         while !Task.isCancelled {
-            guard scenePhase == .active else {
-                try? await Task.sleep(for: .milliseconds(500))
-                continue
-            }
-            guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: runtimeRevision) else {
+            // A resumed window should get a fresh consolidated snapshot right
+            // away instead of waiting for the previous revision to change.
+            let sinceRevision = shouldRefreshImmediately ? 0 : runtimeRevision
+            shouldRefreshImmediately = false
+            guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: sinceRevision) else {
                 daemonOnline = false
                 try? await Task.sleep(for: .milliseconds(750))
                 continue
@@ -469,15 +519,22 @@ struct HistoryView: View {
                     historyCapabilitiesChecked = false
                     loadHistoryCapabilities()
                 }
-                if let warning = await ApiClient.shared.takeSyncWarning(),
-                   warning.kind == "expired_event" {
-                    syncWarning = Loc.t("history.syncExpired")
-                        .replacingOccurrences(of: "{peer}", with: warning.peer)
-                    syncWarningTask?.cancel()
-                    syncWarningTask = Task { @MainActor in
-                        try? await Task.sleep(for: .seconds(8))
-                        guard !Task.isCancelled else { return }
-                        syncWarning = nil
+                if let warning = await ApiClient.shared.takeSyncWarning() {
+                    let messageKey: String?
+                    switch warning.kind {
+                    case "expired_event": messageKey = "history.syncExpired"
+                    case "delivery_stalled": messageKey = "history.syncStalled"
+                    default: messageKey = nil
+                    }
+                    if let messageKey {
+                        syncWarning = Loc.t(messageKey)
+                            .replacingOccurrences(of: "{peer}", with: warning.peer)
+                        syncWarningTask?.cancel()
+                        syncWarningTask = Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(8))
+                            guard !Task.isCancelled else { return }
+                            syncWarning = nil
+                        }
                     }
                 }
             }
@@ -654,9 +711,7 @@ struct HistoryRow: View {
         HStack(spacing: 10) {
             Group {
                 if entry.type == "image", let thumb = thumbnail {
-                    Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: 32, height: 32)
-                        .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
+                    thumbnailImage(thumb)
                 } else {
                     Image(systemName: entry.icon).frame(width: 24, height: 24)
                         .foregroundColor(component?.iconColor ?? component?.accentColor ?? palette.accentColor)
@@ -664,7 +719,7 @@ struct HistoryRow: View {
                         .clipShape(RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous))
                 }
             }
-            .frame(width: 32, height: 32)
+            .frame(width: HistoryThumbnailLayout.columnWidth)
             .task {
                 guard entry.type == "image" else { return }
                 if let cached = HistoryThumbnailCache.image(for: entry.id) {
@@ -724,6 +779,24 @@ struct HistoryRow: View {
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.18), value: isFocused)
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
     }
+
+    /// Render an image thumbnail at its natural aspect ratio inside the fixed
+    /// column: `.fit` shows the whole image (a long screenshot is never cropped
+    /// to an unrecognizable middle band), `.high` interpolation keeps the
+    /// downscaled pixels crisp, and the frame comes from the ratio-clamped
+    /// layout so extreme strips cannot distort the row.
+    private func thumbnailImage(_ thumb: NSImage) -> some View {
+        let size = HistoryThumbnailLayout.displaySize(
+            pixelWidth: thumb.size.width,
+            pixelHeight: thumb.size.height
+        )
+        return Image(nsImage: thumb)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size.width, height: size.height)
+            .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -744,11 +817,43 @@ private func rgbaToImage(_ data: ApiClient.ImageData) -> NSImage? {
     return img
 }
 
+/// Layout math for history-row image thumbnails.
+///
+/// Thumbnails render at their true aspect ratio inside a fixed-width column so
+/// the text beside them stays left-aligned across rows. The ratio is clamped to
+/// `maxAspect`:1 in both directions: without the clamp an extreme long-strip
+/// (a full-page screenshot, a wide banner) would either blow the row height up
+/// or shrink to an unreadable sliver.
+enum HistoryThumbnailLayout {
+    /// Longest displayed edge, in points.
+    static let maxSide: CGFloat = 48
+    /// Steepest displayed width:height (or height:width) ratio.
+    static let maxAspect: CGFloat = 2.5
+    /// Fixed column width so rows align regardless of thumbnail shape.
+    static let columnWidth: CGFloat = maxSide
+
+    /// Display size for a thumbnail of the given pixel dimensions.
+    static func displaySize(pixelWidth: CGFloat, pixelHeight: CGFloat) -> CGSize {
+        let w = max(pixelWidth, 1)
+        let h = max(pixelHeight, 1)
+        let clamped = min(max(w / h, 1 / maxAspect), maxAspect)
+        if clamped >= 1 {
+            // Wider than tall (or square): width drives the longest edge.
+            return CGSize(width: maxSide, height: maxSide / clamped)
+        } else {
+            // Taller than wide: height drives the longest edge.
+            return CGSize(width: maxSide * clamped, height: maxSide)
+        }
+    }
+}
+
 private enum HistoryThumbnailCache {
     private static let cache: NSCache<NSNumber, NSImage> = {
         let cache = NSCache<NSNumber, NSImage>()
         cache.countLimit = 30
-        cache.totalCostLimit = 4 * 1024 * 1024
+        // 160px thumbnails cost ~100 KB each; 8 MB leaves headroom over the
+        // 30-item count limit so the cache is bounded by count, not evictions.
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
 

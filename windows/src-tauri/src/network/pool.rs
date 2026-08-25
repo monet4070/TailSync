@@ -9,6 +9,7 @@ pub(super) struct PoolSender {
 }
 
 pub(super) use tailsync_core::peer::delivery::QueuedFrame;
+pub use tailsync_core::peer::delivery::SharedEvent;
 pub use tailsync_core::peer::types::DeliveryReceipt;
 
 impl PoolSender {
@@ -80,7 +81,14 @@ impl ConnectionPool {
             .clone();
         let key = (target, hostname.clone());
         if let Some(tx) = self.senders.get(&key) {
-            return Ok(tx.clone());
+            // Only reuse a cached sender whose worker is still alive. If the
+            // worker task has exited it dropped its receivers, so the channels
+            // read as closed — reusing that sender would silently black-hole
+            // every frame. Fall through to rebuild a fresh worker instead.
+            if !tx.priority.is_closed() && !tx.bulk.is_closed() {
+                return Ok(tx.clone());
+            }
+            debug!("Cached sender for {hostname} is dead; rebuilding connection worker");
         }
 
         self.senders.retain(|(_, peer_hostname), sender| {
@@ -138,9 +146,9 @@ impl ConnectionPool {
                 cmd.payload_limit()
             ));
         }
-        let tx = self.sender_for(addr, hostname)?;
+        let tx = self.sender_for(addr, hostname.clone())?;
 
-        enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), cmd, payload).await
+        enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), &hostname, cmd, payload).await
     }
 
     /// Remove a peer from the pool (e.g. when user disables it).
@@ -205,7 +213,36 @@ pub async fn queue_peer_frame(
         .first()
         .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
-    enqueue_pool_frame(tx, preferred, cmd, payload).await
+    enqueue_pool_frame(tx, preferred, &peer.hostname, cmd, payload).await
+}
+
+/// Broadcast-friendly sibling of [`queue_peer_frame`]: enqueue a
+/// [`SharedEvent`] whose encoded payload is shared (reference-counted) across
+/// every peer of one broadcast, so a large image is encoded once and never
+/// copied per peer. Trust and route selection mirror [`queue_peer_frame`];
+/// the payload limit was already enforced when the event was encoded.
+pub async fn queue_peer_shared_event(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &tailscale::PeerInfo,
+    event: &SharedEvent,
+) -> Result<(), String> {
+    let settings = { pool.lock().await.settings.clone() };
+    let trusted_key = settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .get(&peer.hostname)
+        .cloned()
+        .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
+    secure::decode_trusted_key(&trusted_key)
+        .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
+
+    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let preferred = resolve_candidates(peer, TCP_PORT)?
+        .first()
+        .map(|candidate| candidate.target.clone())
+        .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    enqueue_pool_queued_frame(tx, preferred, &peer.hostname, event.queued()).await
 }
 
 pub async fn queue_peer_file_frame(
@@ -292,11 +329,30 @@ pub async fn prewarm_connections(
 async fn enqueue_pool_frame(
     tx: PoolSender,
     target: ResolvedTarget,
+    peer_label: &str,
     cmd: Command,
     payload: Vec<u8>,
 ) -> Result<(), String> {
-    let queued = QueuedFrame::new(cmd, payload)?;
-    enqueue_queued_frame(tx, target, queued).await
+    enqueue_pool_queued_frame(tx, target, peer_label, QueuedFrame::new(cmd, payload)?).await
+}
+
+/// Hand an already-built queued frame to the worker, surfacing a stall the
+/// same way [`enqueue_pool_frame`] does: pairing and route selection have
+/// already succeeded, so a failure here means the frame genuinely could not
+/// be handed to the worker (channel full past the pool timeout, or the worker
+/// exited) and must not be swallowed by the clipboard broadcast.
+async fn enqueue_pool_queued_frame(
+    tx: PoolSender,
+    target: ResolvedTarget,
+    peer_label: &str,
+    queued: QueuedFrame,
+) -> Result<(), String> {
+    enqueue_queued_frame(tx, target, queued)
+        .await
+        .inspect_err(|error| {
+            warn!("Delivery to {peer_label} stalled: {error}");
+            tailsync_core::sync_warning::record_delivery_stalled(peer_label);
+        })
 }
 
 async fn enqueue_queued_frame(

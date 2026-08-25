@@ -1,0 +1,435 @@
+/* ============================================================
+   /preview.html — dedicated rich-preview feature page.
+   Reuses base tokens + theme forking + the shared contact-sheet
+   (preview.css), and adds the standalone page's own furniture.
+   ============================================================ */
+
+@import "../styles/base.css";
+@import "../styles/preview.css";
+@import "../styles/themes.css";
+
+.preview-page {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* ---------- topbar ---------- */
+
+.preview-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: var(--nav-height);
+  padding-inline: max(24px, calc((100vw - var(--content-max)) / 2));
+  background: var(--nav-bg);
+  border-bottom: 1px solid var(--hairline);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+.preview-home,
+.preview-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  transition: color 0.25s ease;
+}
+
+.preview-home span {
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.preview-home:hover,
+.preview-source:hover {
+  color: var(--brand);
+}
+
+.preview-topbar-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+}
+
+/* ---------- hero ---------- */
+
+.preview-hero {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 100px 24px 56px;
+  text-align: center;
+}
+
+.preview-hero-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 15px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-chip);
+  background: var(--chip-bg);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+
+.preview-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 0 0 4px var(--brand-soft);
+}
+
+.preview-hero-title {
+  margin-top: 26px;
+  font-family: var(--font-display);
+  font-size: clamp(40px, 6vw, 72px);
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.08;
+}
+
+.preview-hero-title span {
+  color: var(--brand);
+}
+
+.preview-hero-lead {
+  max-width: 660px;
+  margin: 22px auto 0;
+  color: var(--ink-2);
+  font-size: 17px;
+  line-height: 1.68;
+}
+
+/* ---------- contact sheet band ---------- */
+
+.preview-sheet-band {
+  padding: 20px 24px 40px;
+}
+
+/* ---------- per-format detail rows ---------- */
+
+.preview-details {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 40px 24px;
+}
+
+.preview-detail {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 32px;
+  padding: 40px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.preview-detail:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.preview-detail-mark {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: var(--brand);
+}
+
+.preview-detail-no {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  color: var(--ink-3);
+}
+
+.preview-detail-body h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 3vw, 36px);
+  font-weight: 600;
+  letter-spacing: normal;
+}
+
+.preview-detail-body h2 small {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+}
+
+.preview-detail-lead {
+  margin-top: 12px;
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+.preview-detail-body ul {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  list-style: none;
+}
+
+.preview-detail-body li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.preview-detail-body li svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+  color: var(--brand);
+}
+
+/* ---------- interaction ---------- */
+
+.preview-interaction,
+.preview-guarantees {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 72px 24px;
+}
+
+.preview-block-head {
+  max-width: 640px;
+  margin-bottom: 40px;
+}
+
+.preview-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--brand);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+}
+
+.preview-block-head h2 {
+  margin-top: 14px;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3.6vw, 44px);
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.14;
+}
+
+.preview-block-head p {
+  margin-top: 16px;
+  color: var(--ink-2);
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.preview-block-head code {
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--chip-bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.preview-keymap {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  list-style: none;
+}
+
+.preview-keymap li {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-inner);
+  background: var(--elevated);
+}
+
+.preview-keymap-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.preview-keymap-keys > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.preview-keymap-keys i {
+  color: var(--ink-3);
+  font-style: normal;
+  font-size: 12px;
+}
+
+.preview-keymap kbd {
+  padding: 4px 9px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--chip-bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.preview-keymap-label {
+  color: var(--ink-2);
+  font-size: 14.5px;
+}
+
+/* ---------- guarantees ---------- */
+
+.preview-guarantees {
+  border-top: 1px solid var(--hairline);
+}
+
+.preview-guarantee-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+}
+
+.preview-guarantee {
+  padding: 26px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--elevated);
+  box-shadow: var(--shadow-card);
+}
+
+.preview-guarantee > svg {
+  color: var(--brand);
+}
+
+.preview-guarantee strong {
+  display: block;
+  margin: 14px 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.preview-guarantee p {
+  color: var(--ink-2);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+/* ---------- cta ---------- */
+
+.preview-cta {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 96px 24px 110px;
+  text-align: center;
+}
+
+.preview-cta h2 {
+  font-family: var(--font-display);
+  font-size: clamp(30px, 4.4vw, 52px);
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.14;
+}
+
+.preview-cta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 34px;
+}
+
+/* ---------- footer ---------- */
+
+.preview-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 34px max(24px, calc((100vw - var(--content-max)) / 2));
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.preview-footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+.preview-footer a:hover {
+  color: var(--brand);
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 760px) {
+  .preview-detail {
+    grid-template-columns: 1fr;
+    gap: 18px;
+    padding: 32px 0;
+  }
+
+  .preview-detail-mark {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .preview-keymap,
+  .preview-guarantee-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-interaction,
+  .preview-guarantees {
+    padding-block: 56px;
+  }
+}
+
+@media (max-width: 640px) {
+  /* the centre tag is decorative, and at phone widths all three items wrapped —
+     three ragged lines inside a 54px bar. Drop it and keep the two links flat. */
+  .preview-topbar-tag {
+    display: none;
+  }
+
+  .preview-home,
+  .preview-source {
+    white-space: nowrap;
+  }
+}

@@ -1,3 +1,4 @@
+use super::health::clear_peer_health;
 use super::*;
 use std::collections::HashSet;
 
@@ -51,6 +52,7 @@ pub(crate) async fn store_peer_cache(
 
 pub async fn clear_peer_cache() {
     peer_cache().write().await.clear();
+    clear_peer_health();
     peer_refresh_notify().notify_one();
 }
 
@@ -163,20 +165,21 @@ async fn run_peer_health_round(
             .map_err(|error| format!("Peer health probe task failed: {error}"))?
     };
 
-    for (key, latency) in routes {
-        let latency = latency.or_else(|| {
-            key.address
-                .parse::<IpAddr>()
-                .ok()
-                .and_then(|address| probed.get(&address))
-                .map(|response| response.latency_ms)
-        });
-        if let Some(latency_ms) = latency {
-            record_probe_success(&key, latency_ms);
-        } else {
-            record_probe_miss(&key);
-        }
-    }
+    let candidates = routes.keys().cloned().collect::<Vec<_>>();
+    let observations = routes
+        .into_iter()
+        .filter_map(|(key, latency)| {
+            let latency = latency.or_else(|| {
+                key.address
+                    .parse::<IpAddr>()
+                    .ok()
+                    .and_then(|address| probed.get(&address))
+                    .map(|response| response.latency_ms)
+            });
+            latency.map(|latency_ms| (key, latency_ms))
+        })
+        .collect::<Vec<_>>();
+    record_probe_round(&mode, candidates, observations);
 
     Ok((mode, peers))
 }

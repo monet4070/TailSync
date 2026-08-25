@@ -667,29 +667,31 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
 
     // Check if window already exists
     if let Some(window) = app.get_webview_window(crate::window_lifecycle::HISTORY_WINDOW_LABEL) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        crate::window_lifecycle::restore_and_focus_window(&window)?;
         return Ok(());
     }
 
     // Create new history window
-    let _window = tauri::WebviewWindowBuilder::new(
-        &app,
-        crate::window_lifecycle::HISTORY_WINDOW_LABEL,
-        tauri::WebviewUrl::App("history.html".into()),
-    )
-    .title("TailSync - History")
-    .inner_size(400.0, 600.0)
-    .decorations(false) // Borderless, per user preference
-    // Let the rounded `.app` surface own the window shape. Tauri otherwise
-    // keeps the Windows undecorated shadow, which paints a square/white edge
-    // around transparent corners.
-    .transparent(true)
-    .shadow(false)
-    .resizable(true)
-    .center()
-    .build()
-    .map_err(|e| e.to_string())?;
+    let window =
+        crate::window_lifecycle::configure_transparent_window(tauri::WebviewWindowBuilder::new(
+            &app,
+            crate::window_lifecycle::HISTORY_WINDOW_LABEL,
+            tauri::WebviewUrl::App("history.html".into()),
+        ))
+        .title("TailSync - History")
+        .inner_size(400.0, 600.0)
+        .decorations(false) // Borderless, per user preference
+        // Let the rounded `.app` surface own the window shape. Tauri otherwise
+        // keeps the Windows undecorated shadow, which paints a square/white edge
+        // around transparent corners.
+        .shadow(false)
+        .resizable(true)
+        .visible(false)
+        .center()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    crate::window_lifecycle::restore_and_focus_window(&window)?;
 
     Ok(())
 }
@@ -702,26 +704,28 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::SETTINGS_WINDOW_LABEL);
 
     if let Some(window) = app.get_webview_window(crate::window_lifecycle::SETTINGS_WINDOW_LABEL) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        crate::window_lifecycle::restore_and_focus_window(&window)?;
         return Ok(());
     }
 
-    let _window = tauri::WebviewWindowBuilder::new(
-        &app,
-        crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
-        tauri::WebviewUrl::App("settings.html".into()),
-    )
-    .title("TailSync - Settings")
-    .inner_size(520.0, 700.0)
-    .decorations(false)
-    .transparent(true)
-    .shadow(false)
-    .min_inner_size(440.0, 560.0)
-    .resizable(true)
-    .center()
-    .build()
-    .map_err(|e| e.to_string())?;
+    let window =
+        crate::window_lifecycle::configure_transparent_window(tauri::WebviewWindowBuilder::new(
+            &app,
+            crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
+            tauri::WebviewUrl::App("settings.html".into()),
+        ))
+        .title("TailSync - Settings")
+        .inner_size(520.0, 700.0)
+        .decorations(false)
+        .shadow(false)
+        .min_inner_size(440.0, 560.0)
+        .resizable(true)
+        .center()
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    crate::window_lifecycle::restore_and_focus_window(&window)?;
 
     Ok(())
 }
@@ -752,7 +756,11 @@ pub async fn get_image_data(
     let data = db.get_data(id).map_err(|e| e.to_string())?;
     let image = crate::protocol::PackedImage::try_from(data.as_slice())
         .map_err(|error| error.to_string())?;
-    let (tw, th, thumb) = crate::api::thumbnail_rgba(image, 64);
+    let (tw, th, thumb) = crate::api::thumbnail_rgba(image, crate::api::THUMBNAIL_MAX_SIDE);
+    // The thumbnail is built; the full-size RGBA (up to 32 MiB) is now dead.
+    // Release it before base64-encoding the ~100 KB thumbnail and building the
+    // response, so the large buffer and the encoded copy never coexist.
+    drop(data);
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&thumb);
     Ok(serde_json::json!({

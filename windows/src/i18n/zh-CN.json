@@ -43,6 +43,8 @@
   "history.cancel": "取消",
   "history.clearing": "正在清空...",
   "history.close": "关闭",
+  "history.pinWindow": "历史窗口置顶",
+  "history.unpinWindow": "取消历史窗口置顶",
   "history.loadError": "无法加载历史记录",
   "history.restoreEntry": "恢复此条记录",
   "history.deleteEntry": "删除此条记录",

@@ -8,6 +8,9 @@ test('accepts a tag matching every application manifest', () => {
     windows: '2.1.0',
     macos: '2.1.0',
     shared: '2.1.0',
+    'tailsync-protocol': '2.1.0',
+    'tailsync-themes': '2.1.0',
+    'tailsync-history-classifier': '2.1.0',
   }), '2.1.0');
 });
 
@@ -15,6 +18,20 @@ test('rejects a release when any application manifest drifts', () => {
   assert.throws(
     () => validateVersions('v2.2.0', { windows: '2.2.0', macos: '2.1.0' }),
     /macos=2\.1\.0/,
+  );
+});
+
+test('rejects a release when an extracted shared crate drifts', () => {
+  assert.throws(
+    () => validateVersions('v2.2.0', {
+      windows: '2.2.0',
+      macos: '2.2.0',
+      shared: '2.2.0',
+      'tailsync-protocol': '2.2.0',
+      'tailsync-themes': '2.2.0',
+      'tailsync-history-classifier': '2.1.0',
+    }),
+    /tailsync-history-classifier=2\.1\.0/,
   );
 });
 

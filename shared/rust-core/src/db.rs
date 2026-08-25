@@ -19,6 +19,7 @@ mod types;
 
 pub use file_storage::{
     cleanup_clipboard_files, materialize_clipboard_bytes, materialize_clipboard_file,
+    materialize_remote_clipboard_file,
 };
 use file_storage::{
     decode_file_reference, decode_image_reference, encode_file_reference_version,
@@ -27,7 +28,10 @@ use file_storage::{
     validate_history_file_size,
 };
 #[cfg(test)]
-use file_storage::{materialize_clipboard_bytes_at, StoredFileReference, FILE_HISTORY_BYTE_LIMIT};
+use file_storage::{
+    materialize_clipboard_bytes_at, materialize_remote_clipboard_file_at, StoredFileReference,
+    FILE_HISTORY_BYTE_LIMIT,
+};
 pub use paths::{
     configure_storage_dir, configure_storage_parent, get_clipboard_files_dir, get_data_dir,
     get_file_history_dir, get_history_db_path, get_image_history_dir, get_incoming_dir,
@@ -217,6 +221,7 @@ impl HistoryDB {
         info!("Opening database at {}", db_path.display());
 
         let conn = Connection::open(&db_path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let file_history_dir = storage_dir.join("file-history");
         let image_history_dir = storage_dir.join("image-history");
 
@@ -1669,6 +1674,25 @@ mod tests {
     }
 
     #[test]
+    fn main_database_connection_waits_for_transient_locks() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-busy-timeout-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = HistoryDB::open_at(&root).unwrap();
+
+        let timeout_ms: i64 = db
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(timeout_ms, 5_000);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn file_byte_quota_selects_oldest_entries_for_removal() {
         let root = std::env::temp_dir().join(format!(
             "tailsync-file-quota-{:016x}",
@@ -1995,6 +2019,80 @@ mod tests {
 
         assert_eq!(clipboard_path.file_name().unwrap(), "report.pdf");
         assert_eq!(std::fs::read(clipboard_path).unwrap(), data);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn remote_clipboard_materialization_copies_and_marks_plaintext_source() {
+        let directory = std::env::temp_dir().join(format!(
+            "tailsync-remote-clipboard-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let source = directory.join("source.bin");
+        let clipboard_directory = directory.join("clipboard-files");
+        let data = b"remote clipboard file content";
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(&source, data).unwrap();
+
+        let target = materialize_remote_clipboard_file_at(
+            &clipboard_directory,
+            &source,
+            "received.bin",
+            "peer-with-untrusted-name",
+        )
+        .unwrap();
+        std::fs::write(&target, b"changed clipboard copy").unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), data);
+
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+
+            let path = std::ffi::CString::new(target.as_os_str().as_bytes()).unwrap();
+            let name = b"com.apple.quarantine\0";
+            let size = unsafe {
+                libc::getxattr(
+                    path.as_ptr(),
+                    name.as_ptr().cast(),
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                )
+            };
+            assert!(
+                size > 0,
+                "remote file should carry macOS quarantine metadata"
+            );
+            let mut value = vec![0u8; usize::try_from(size).unwrap()];
+            let read = unsafe {
+                libc::getxattr(
+                    path.as_ptr(),
+                    name.as_ptr().cast(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                    0,
+                    0,
+                )
+            };
+            assert_eq!(read, size);
+            let value = String::from_utf8(value).unwrap();
+            let fields = value.split(';').collect::<Vec<_>>();
+            assert_eq!(fields.len(), 4, "quarantine value should have four fields");
+            assert_eq!(fields[0], "0081");
+            assert_eq!(fields[2], "TailSync");
+            assert_eq!(fields[3].len(), 32);
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let mut stream = target.as_os_str().to_os_string();
+            stream.push(":Zone.Identifier");
+            let marker = std::fs::read(stream).unwrap();
+            assert_eq!(marker, b"[ZoneTransfer]\r\nZoneId=3\r\n");
+        }
+
         std::fs::remove_dir_all(directory).unwrap();
     }
 

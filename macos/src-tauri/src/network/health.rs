@@ -3,9 +3,9 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 
 use super::tailscale;
 use tailsync_core::peer::health::{
-    apply_peer_health as apply_peer_health_impl, update_peer_health as update_peer_health_impl,
-    update_peer_health_for_failed_round as update_failed_round_impl, HealthTracker, SessionGuard,
-    SessionRegistry,
+    apply_peer_health as apply_peer_health_impl, record_probe_round as record_probe_round_impl,
+    update_peer_health_for_failed_round as update_failed_round_impl, HealthTracker,
+    ProbeObservation, SessionGuard, SessionRegistry,
 };
 
 pub use tailsync_core::peer::health::RouteKey;
@@ -62,13 +62,25 @@ pub fn record_address_test_failure(address: &str) {
         .record_address_test_failure(address, tokio::time::Instant::now());
 }
 
-pub(super) fn update_peer_health(mode: &str, peers: &[tailscale::PeerInfo]) {
-    update_peer_health_impl(
+pub(super) fn record_probe_round(
+    mode: &str,
+    peers: &[tailscale::PeerInfo],
+    observations: impl IntoIterator<Item = (RouteKey, u64)>,
+) {
+    let candidates = peers.iter().flat_map(|peer| {
+        peer.candidates
+            .iter()
+            .map(|candidate| RouteKey::new(&peer.hostname, candidate.interface, &candidate.address))
+    });
+    record_probe_round_impl(
         &mut peer_health()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         mode,
-        peers,
+        candidates,
+        observations
+            .into_iter()
+            .map(|(route, latency_ms)| ProbeObservation::new(route, latency_ms)),
         tokio::time::Instant::now(),
     );
 }

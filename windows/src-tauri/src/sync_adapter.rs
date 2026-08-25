@@ -129,13 +129,14 @@ impl SyncPlatform for TauriSyncPlatform {
                 .map(|file| file.name.clone())
                 .collect::<Vec<_>>();
             let history_batch_id = batch_id.unwrap_or_else(TransferId::random).as_hex();
+            let db_source_peer = device.clone();
             let stored_paths = match tokio::task::spawn_blocking(move || {
                 db.blocking_lock()
                     .add_file_batch_with_status(
                         &history_batch_id,
                         &history_files,
                         batch_total,
-                        &device,
+                        &db_source_peer,
                         true,
                         batch_complete,
                     )
@@ -166,7 +167,7 @@ impl SyncPlatform for TauriSyncPlatform {
             if activate_clipboard && batch_complete {
                 let mut clipboard_paths = Vec::with_capacity(stored_paths.len());
                 for (stored_path, name) in stored_paths.iter().zip(&names) {
-                    match db::materialize_clipboard_file(stored_path, name) {
+                    match db::materialize_remote_clipboard_file(stored_path, name, &device) {
                         Ok(path) => clipboard_paths.push(path),
                         Err(error) => {
                             log::error!("Could not prepare received batch for clipboard: {error}");

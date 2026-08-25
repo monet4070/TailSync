@@ -22,17 +22,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: 1.91.0
       - name: Match tag to every application manifest
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/validate-release-version.mjs --root . --tag "$RELEASE_TAG"
+      - name: Validate version-file and lockfile consistency (bump-version --check)
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          node scripts/bump-version.mjs --root . --target "$RELEASE_VERSION" --check
       - name: Validate release tier
         run: |
           case "$TAILSYNC_RELEASE_TIER" in
@@ -40,7 +46,7 @@ jobs:
             *) echo "TAILSYNC_RELEASE_TIER must be community or trusted." >&2; exit 1 ;;
           esac
       - name: Test release metadata generators
-        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs
 
   windows:
     name: Package Windows (${{ vars.TAILSYNC_RELEASE_TIER || 'community' }})
@@ -52,19 +58,19 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: windows/package-lock.json
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: 1.91.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           workspaces: |
-            shared/rust-core
+            .
             windows/src-tauri
       - name: Install frontend and Tauri CLI
         working-directory: windows
@@ -97,7 +103,7 @@ jobs:
         shell: pwsh
         run: ./windows/scripts/package-windows.ps1 -Release -ReleaseTier $env:TAILSYNC_RELEASE_TIER
       - name: Upload Windows release files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tailsync-windows-release
           path: windows/release/*
@@ -119,20 +125,20 @@ jobs:
       TAILSYNC_CODESIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       TAILSYNC_NOTARY_PROFILE: tailsync-ci
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: windows/package-lock.json
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: 1.91.0
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           workspaces: |
-            shared/rust-core
+            .
             macos/src-tauri
       - name: Install Tauri CLI
         working-directory: windows
@@ -179,7 +185,7 @@ jobs:
       - name: Launch and verify the packaged macOS application
         run: bash macos/scripts/verify_macos_bundle.sh
       - name: Upload macOS release files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tailsync-macos-release
           path: macos/release/*
@@ -198,11 +204,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: tailsync-*-release
           path: release
@@ -239,7 +245,7 @@ jobs:
           EOF
       - name: Publish stable release
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
           body_path: release-notes.md
           generate_release_notes: true
@@ -258,7 +264,7 @@ jobs:
             release/latest.json
       - name: Publish prerelease without a stable updater manifest
         if: ${{ contains(github.ref_name, '-') }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
           body_path: release-notes.md
           generate_release_notes: true

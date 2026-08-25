@@ -1,7 +1,7 @@
 use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -20,12 +20,13 @@ use shadow::ShadowFilter;
 mod prepare;
 use prepare::hash_source_file;
 pub use prepare::{
-    normalize_transferred_file_name, prepare_file_batch, revalidate_prepared_file,
-    validate_incoming_file_meta, FileBatchEntry, FileBatchManifest, FileBatchRef, FileMeta,
-    PreparedFile, PreparedFileBatch, MAX_FILE_SIZE,
+    clipboard_files_are_readable, normalize_transferred_file_name, prepare_file_batch,
+    revalidate_prepared_file, validate_incoming_file_meta, FileBatchEntry, FileBatchManifest,
+    FileBatchRef, FileMeta, PreparedFile, PreparedFileBatch, MAX_FILE_SIZE,
 };
 
 const SEEN_MESSAGE_RETENTION_SECONDS: i64 = 10 * 60;
+const SEEN_MESSAGE_MAX_ENTRIES: usize = 1024;
 pub const INCOMPLETE_TRANSFER_RETENTION_SECONDS: u64 = 24 * 60 * 60;
 const CANCELLED_BATCH_RETENTION_SECONDS: i64 = 24 * 60 * 60;
 const CANCELLED_BATCH_MAX_ENTRIES: usize = 1024;
@@ -87,6 +88,7 @@ pub trait SyncPlatform: Send + Sync {
 /// State for an in-progress file receive — streamed to disk.
 struct FileReceiveState {
     meta: FileMeta,
+    session_epoch: u64,
     /// Temp file path; renamed to final on success.
     tmp_path: PathBuf,
     final_path: PathBuf,
@@ -149,9 +151,22 @@ struct CompletedTransfer {
     completed_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ReceiveKey {
+    Resumable(TransferId),
+    Legacy,
+}
+
+impl From<Option<TransferId>> for ReceiveKey {
+    fn from(transfer_id: Option<TransferId>) -> Self {
+        transfer_id.map_or(Self::Legacy, Self::Resumable)
+    }
+}
+
 struct IncomingBatch {
     manifest: FileBatchManifest,
     source: String,
+    session_epoch: u64,
     local_generation: u64,
     files: Vec<Option<ReceivedFile>>,
     manifest_path: PathBuf,
@@ -160,13 +175,15 @@ struct IncomingBatch {
 pub struct SyncEngine {
     /// Reliable event IDs retained across reconnects so ACK loss cannot apply
     /// the same clipboard event twice.
-    seen_messages: HashMap<(String, MessageId), i64>,
+    seen_messages: HashMap<Arc<str>, HashMap<MessageId, i64>>,
+    seen_message_order: VecDeque<(Arc<str>, MessageId, i64)>,
     /// Active file receives: authenticated peer + transfer ID → receive state.
-    active_receives: HashMap<(String, TransferId), FileReceiveState>,
-    completed_transfers: HashMap<(String, TransferId), CompletedTransfer>,
+    active_receives: HashMap<(String, ReceiveKey), FileReceiveState>,
+    completed_transfers: HashMap<(String, ReceiveKey), CompletedTransfer>,
     incoming_batches: HashMap<(String, TransferId), IncomingBatch>,
     cancelled_batches: HashMap<(String, TransferId), i64>,
     completed_batches: HashMap<(String, TransferId), i64>,
+    receive_epochs: HashMap<String, u64>,
     clipboard_generation: u64,
     /// Shadow-packet filter for text (echo suppression)
     shadow_filter: ShadowFilter,
@@ -185,11 +202,13 @@ impl SyncEngine {
     pub fn new() -> Self {
         SyncEngine {
             seen_messages: HashMap::new(),
+            seen_message_order: VecDeque::new(),
             active_receives: HashMap::new(),
             completed_transfers: HashMap::new(),
             incoming_batches: HashMap::new(),
             cancelled_batches: HashMap::new(),
             completed_batches: HashMap::new(),
+            receive_epochs: HashMap::new(),
             clipboard_generation: 0,
             shadow_filter: ShadowFilter::new(),
             image_shadow_filter: ShadowFilter::new(),
@@ -278,6 +297,17 @@ impl SyncEngine {
         source: String,
         incoming_dir: &Path,
     ) -> Result<(), String> {
+        let session_epoch = self.receive_epoch(&source);
+        self.begin_file_batch_at_epoch(manifest, source, incoming_dir, session_epoch)
+    }
+
+    pub fn begin_file_batch_at_epoch(
+        &mut self,
+        manifest: FileBatchManifest,
+        source: String,
+        incoming_dir: &Path,
+        session_epoch: u64,
+    ) -> Result<(), String> {
         // Validate before touching disk. The server also validates before its
         // quota preflight, but this remains the authoritative core check.
         manifest.validate().map_err(|error| error.to_string())?;
@@ -286,12 +316,12 @@ impl SyncEngine {
         if self.cancelled_batches.contains_key(&key) {
             return Err("File batch was cancelled; copy the files again to retry".to_string());
         }
-        if let Some(existing) = self.incoming_batches.get(&key) {
-            return if existing.manifest == manifest {
-                Ok(())
-            } else {
-                Err("Batch ID was reused with a different manifest".to_string())
-            };
+        if let Some(existing) = self.incoming_batches.get_mut(&key) {
+            if existing.manifest == manifest {
+                existing.session_epoch = existing.session_epoch.max(session_epoch);
+                return Ok(());
+            }
+            return Err("Batch ID was reused with a different manifest".to_string());
         }
         let active_for_peer = self
             .incoming_batches
@@ -349,6 +379,7 @@ impl SyncEngine {
             IncomingBatch {
                 manifest,
                 source,
+                session_epoch,
                 local_generation,
                 files,
                 manifest_path,
@@ -390,7 +421,7 @@ impl SyncEngine {
 
     pub fn batch_for_transfer(&self, source: &str, transfer_id: TransferId) -> Option<TransferId> {
         self.active_receives
-            .get(&(source.to_string(), transfer_id))
+            .get(&(source.to_string(), ReceiveKey::Resumable(transfer_id)))
             .and_then(|state| state.meta.batch.map(|batch| batch.batch_id))
     }
 
@@ -464,22 +495,22 @@ impl SyncEngine {
                 self.clear_file_progress(Some(batch_id), Some(source));
             }
         }
-        let transfer_ids = self
+        let receive_keys = self
             .active_receives
             .iter()
-            .filter_map(|((peer, transfer_id), state)| {
+            .filter_map(|((peer, receive_key), state)| {
                 (peer == source
                     && state
                         .meta
                         .batch
                         .is_some_and(|batch| batch.batch_id == batch_id))
-                .then_some(*transfer_id)
+                .then_some(*receive_key)
             })
             .collect::<Vec<_>>();
-        for transfer_id in transfer_ids {
+        for receive_key in receive_keys {
             if let Some(state) = self
                 .active_receives
-                .remove(&(source.to_string(), transfer_id))
+                .remove(&(source.to_string(), receive_key))
             {
                 drop(state.writer);
                 let _ = fs::remove_file(state.tmp_path);
@@ -509,8 +540,21 @@ impl SyncEngine {
         file_path: &Path,
         source: String,
     ) -> Result<FileReceiveProgress, String> {
+        let session_epoch = self.receive_epoch(&source);
+        self.begin_file_receive_at_epoch(meta, file_path, source, session_epoch)
+            .await
+    }
+
+    pub async fn begin_file_receive_at_epoch(
+        &mut self,
+        meta: FileMeta,
+        file_path: &Path,
+        source: String,
+        session_epoch: u64,
+    ) -> Result<FileReceiveProgress, String> {
         let transfer_id = meta.transfer_id.unwrap_or(TransferId([0; 16]));
-        let key = (source.clone(), transfer_id);
+        let receive_key = ReceiveKey::from(meta.transfer_id);
+        let key = (source.clone(), receive_key);
         if let Some(batch_ref) = meta.batch {
             let batch_key = (source.clone(), batch_ref.batch_id);
             self.prune_cancelled_batches();
@@ -564,8 +608,9 @@ impl SyncEngine {
             }
             self.completed_transfers.remove(&key);
         }
-        if let Some(state) = self.active_receives.get(&key) {
+        if let Some(state) = self.active_receives.get_mut(&key) {
             if state.meta.hash == meta.hash && state.meta.size == meta.size {
+                state.session_epoch = state.session_epoch.max(session_epoch);
                 return Ok(FileReceiveProgress {
                     transfer_id,
                     next_offset: state.received,
@@ -640,6 +685,7 @@ impl SyncEngine {
         let writer = BufWriter::with_capacity(FILE_CHUNK_SIZE, file);
         let state = FileReceiveState {
             meta: meta.clone(),
+            session_epoch,
             tmp_path,
             final_path,
             state_path,
@@ -680,7 +726,17 @@ impl SyncEngine {
         chunk: &FileChunkPayload,
         source: String,
     ) -> Result<FileReceiveProgress, String> {
-        let key = (source.clone(), chunk.transfer_id);
+        self.handle_file_chunk_with_key(chunk, source, ReceiveKey::Resumable(chunk.transfer_id))
+            .await
+    }
+
+    async fn handle_file_chunk_with_key(
+        &mut self,
+        chunk: &FileChunkPayload,
+        source: String,
+        receive_key: ReceiveKey,
+    ) -> Result<FileReceiveProgress, String> {
+        let key = (source.clone(), receive_key);
         if let Some(completed) = self.completed_transfers.get(&key) {
             return Ok(FileReceiveProgress {
                 transfer_id: chunk.transfer_id,
@@ -746,7 +802,7 @@ impl SyncEngine {
 
     /// Compatibility path for peers that send unframed v2 file chunks.
     pub async fn handle_file_chunk(&mut self, chunk: &[u8], source: String) {
-        let key = (source.clone(), TransferId([0; 16]));
+        let key = (source.clone(), ReceiveKey::Legacy);
         let Some(offset) = self.active_receives.get(&key).map(|state| state.received) else {
             warn!("Legacy file chunk from unknown source: {}", source);
             return;
@@ -756,7 +812,10 @@ impl SyncEngine {
             offset,
             data: chunk.to_vec(),
         };
-        if let Err(error) = self.handle_resumable_file_chunk(&payload, source).await {
+        if let Err(error) = self
+            .handle_file_chunk_with_key(&payload, source, ReceiveKey::Legacy)
+            .await
+        {
             error!("Legacy file chunk failed: {error}");
         }
     }
@@ -825,7 +884,6 @@ impl SyncEngine {
             pending.meta.name, pending.meta.size
         );
         let PendingReceivedFile {
-            transfer_id,
             meta,
             file: received_file,
             ..
@@ -870,7 +928,7 @@ impl SyncEngine {
             platform.files_received(None, vec![received_file], 1, true, true, source.to_string());
         }
         self.completed_transfers.insert(
-            (source.to_string(), transfer_id),
+            (source.to_string(), ReceiveKey::from(meta.transfer_id)),
             CompletedTransfer {
                 size: meta.size,
                 hash: meta.hash,
@@ -907,20 +965,39 @@ impl SyncEngine {
     /// Release open handles for a disconnected peer while retaining durable
     /// transfer state so the sender can resume after reconnecting.
     pub fn suspend_receive(&mut self, source: &str) {
+        let epoch = self.receive_epoch(source);
+        self.suspend_receive_epoch(source, epoch);
+    }
+
+    pub fn start_receive_session(&mut self, source: &str) -> u64 {
+        let epoch = self.receive_epochs.entry(source.to_string()).or_insert(0);
+        *epoch = epoch.wrapping_add(1).max(1);
+        *epoch
+    }
+
+    fn receive_epoch(&self, source: &str) -> u64 {
+        self.receive_epochs.get(source).copied().unwrap_or(0)
+    }
+
+    pub fn suspend_receive_epoch(&mut self, source: &str, epoch: u64) {
         let keys = self
             .active_receives
-            .keys()
-            .filter(|(peer, _)| peer == source)
-            .cloned()
+            .iter()
+            .filter(|((peer, _), state)| peer == source && state.session_epoch == epoch)
+            .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         for key in keys {
             if let Some(state) = self.active_receives.remove(&key) {
                 drop(state.writer);
             }
         }
-        self.incoming_batches.retain(|(peer, _), _| peer != source);
-        self.cancelled_batches.retain(|(peer, _), _| peer != source);
-        self.clear_file_progress(None, Some(source));
+        self.incoming_batches
+            .retain(|(peer, _), batch| peer != source || batch.session_epoch != epoch);
+        if !self.active_receives.keys().any(|(peer, _)| peer == source)
+            && !self.incoming_batches.keys().any(|(peer, _)| peer == source)
+        {
+            self.clear_file_progress(None, Some(source));
+        }
     }
 
     fn prune_cancelled_batches(&mut self) {
@@ -945,19 +1022,69 @@ impl SyncEngine {
 
     // ── Shadow filter helpers ────────────────────────────────────
 
-    pub fn has_seen_message(&mut self, source: &str, message_id: MessageId) -> bool {
+    pub fn has_seen_message(&self, source: &str, message_id: MessageId) -> bool {
         let now = chrono::Utc::now().timestamp();
         self.seen_messages
-            .retain(|_, seen_at| now.saturating_sub(*seen_at) <= SEEN_MESSAGE_RETENTION_SECONDS);
-        self.seen_messages
-            .contains_key(&(source.to_string(), message_id))
+            .get(source)
+            .and_then(|messages| messages.get(&message_id))
+            .is_some_and(|seen_at| now.saturating_sub(*seen_at) <= SEEN_MESSAGE_RETENTION_SECONDS)
     }
 
     pub fn record_message(&mut self, source: &str, message_id: MessageId) {
-        self.seen_messages.insert(
-            (source.to_string(), message_id),
-            chrono::Utc::now().timestamp(),
-        );
+        let now = chrono::Utc::now().timestamp();
+        self.prune_seen_messages(now);
+        let source: Arc<str> = if let Some((source, _)) = self.seen_messages.get_key_value(source) {
+            source.clone()
+        } else {
+            let source: Arc<str> = Arc::from(source);
+            self.seen_messages.insert(source.clone(), HashMap::new());
+            source
+        };
+        let messages = self
+            .seen_messages
+            .get_mut(source.as_ref())
+            .expect("seen-message source key was just inserted or found");
+        if messages.contains_key(&message_id) {
+            return;
+        }
+        messages.insert(message_id, now);
+        self.seen_message_order.push_back((source, message_id, now));
+        self.prune_seen_messages(now);
+    }
+
+    fn prune_seen_messages(&mut self, now: i64) {
+        while let Some((source, message_id, seen_at)) = self.seen_message_order.front().cloned() {
+            let current = self
+                .seen_messages
+                .get(source.as_ref())
+                .and_then(|messages| messages.get(&message_id))
+                .copied();
+            let expired = now.saturating_sub(seen_at) > SEEN_MESSAGE_RETENTION_SECONDS;
+            let over_capacity = self.seen_message_order.len() > SEEN_MESSAGE_MAX_ENTRIES;
+            if current != Some(seen_at) || expired || over_capacity {
+                self.seen_message_order.pop_front();
+                if self
+                    .seen_messages
+                    .get(source.as_ref())
+                    .and_then(|messages| messages.get(&message_id))
+                    .copied()
+                    == Some(seen_at)
+                {
+                    let remove_peer =
+                        self.seen_messages
+                            .get_mut(source.as_ref())
+                            .is_some_and(|messages| {
+                                messages.remove(&message_id);
+                                messages.is_empty()
+                            });
+                    if remove_peer {
+                        self.seen_messages.remove(source.as_ref());
+                    }
+                }
+            } else {
+                break;
+            }
+        }
     }
 
     pub fn add_shadow_filter(&mut self, text: &str) {
@@ -1083,13 +1210,19 @@ pub async fn verify_and_commit_received_file(
 pub struct ReceiveSuspendGuard {
     sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>,
     source: String,
+    epoch: u64,
 }
 
 impl ReceiveSuspendGuard {
-    pub fn new(sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>, source: String) -> Self {
+    pub fn new(
+        sync_engine: Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: String,
+        epoch: u64,
+    ) -> Self {
         Self {
             sync_engine,
             source,
+            epoch,
         }
     }
 }
@@ -1098,9 +1231,17 @@ impl Drop for ReceiveSuspendGuard {
     fn drop(&mut self) {
         let sync_engine = self.sync_engine.clone();
         let source = self.source.clone();
-        tokio::spawn(async move {
-            sync_engine.lock().await.suspend_receive(&source);
-        });
+        let epoch = self.epoch;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                sync_engine
+                    .lock()
+                    .await
+                    .suspend_receive_epoch(&source, epoch);
+            });
+        } else if let Ok(mut sync) = sync_engine.try_lock() {
+            sync.suspend_receive_epoch(&source, epoch);
+        }
     }
 }
 
@@ -1112,7 +1253,7 @@ mod tests {
         FileBatchRef, FileMeta, PendingReceivedFile, ReceiveSuspendGuard, ReceivedFile, SyncEngine,
         SyncPlatform, CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS,
         MAX_ACTIVE_BATCHES_GLOBAL, MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES,
-        MAX_FILE_BATCH_COUNT, MAX_FILE_SIZE,
+        MAX_FILE_BATCH_COUNT, MAX_FILE_SIZE, SEEN_MESSAGE_MAX_ENTRIES,
     };
     use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
     use std::path::{Path, PathBuf};
@@ -1162,6 +1303,120 @@ mod tests {
 
         assert_eq!(engine.cancelled_batches.len(), CANCELLED_BATCH_MAX_ENTRIES);
         assert!(!engine.cancelled_batches.contains_key(&expired_key));
+    }
+
+    #[tokio::test]
+    async fn cancelled_batch_survives_connection_suspend() {
+        let directory = TestDirectory::new("cancelled-batch-suspend");
+        let manifest = manifest_with_sizes(&[0]);
+        let batch_id = manifest.batch_id;
+        let mut engine = SyncEngine::new();
+        engine
+            .begin_file_batch(manifest.clone(), "peer".to_string(), directory.path())
+            .unwrap();
+        engine.cancel_file_batch("peer", batch_id).await;
+        engine.suspend_receive("peer");
+
+        let error = engine
+            .begin_file_batch(manifest, "peer".to_string(), directory.path())
+            .unwrap_err();
+        assert!(error.contains("cancelled"));
+    }
+
+    #[test]
+    fn stale_connection_suspend_keeps_state_reassigned_to_new_epoch() {
+        let directory = TestDirectory::new("receive-session-epoch");
+        let manifest = manifest_with_sizes(&[0]);
+        let mut engine = SyncEngine::new();
+        let old_epoch = engine.start_receive_session("peer");
+        engine
+            .begin_file_batch_at_epoch(
+                manifest.clone(),
+                "peer".to_string(),
+                directory.path(),
+                old_epoch,
+            )
+            .unwrap();
+
+        let new_epoch = engine.start_receive_session("peer");
+        assert_ne!(old_epoch, new_epoch);
+        engine
+            .begin_file_batch_at_epoch(
+                manifest.clone(),
+                "peer".to_string(),
+                directory.path(),
+                new_epoch,
+            )
+            .unwrap();
+        engine
+            .begin_file_batch_at_epoch(
+                manifest.clone(),
+                "peer".to_string(),
+                directory.path(),
+                old_epoch,
+            )
+            .unwrap();
+        engine.suspend_receive_epoch("peer", old_epoch);
+
+        assert!(engine.has_file_batch("peer", manifest.batch_id));
+    }
+
+    #[tokio::test]
+    async fn stale_receive_metadata_cannot_downgrade_active_epoch() {
+        let directory = TestDirectory::new("receive-metadata-epoch");
+        let transfer_id = TransferId([87; 16]);
+        let meta = FileMeta {
+            transfer_id: Some(transfer_id),
+            name: "received.bin".into(),
+            size: 4,
+            hash: blake3::hash(b"data").to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: None,
+        };
+        let mut engine = SyncEngine::new();
+        let old_epoch = engine.start_receive_session("peer");
+        engine
+            .begin_file_receive_at_epoch(
+                meta.clone(),
+                &directory.path().join("received.bin"),
+                "peer".into(),
+                old_epoch,
+            )
+            .await
+            .unwrap();
+        let new_epoch = engine.start_receive_session("peer");
+        engine
+            .begin_file_receive_at_epoch(
+                meta.clone(),
+                &directory.path().join("received.bin"),
+                "peer".into(),
+                new_epoch,
+            )
+            .await
+            .unwrap();
+        engine
+            .begin_file_receive_at_epoch(
+                meta,
+                &directory.path().join("received.bin"),
+                "peer".into(),
+                old_epoch,
+            )
+            .await
+            .unwrap();
+        engine.suspend_receive_epoch("peer", old_epoch);
+
+        let progress = engine
+            .handle_resumable_file_chunk(
+                &FileChunkPayload {
+                    transfer_id,
+                    offset: 0,
+                    data: b"data".to_vec(),
+                },
+                "peer".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(progress.next_offset, 4);
     }
 
     #[derive(Debug, Clone)]
@@ -1583,6 +1838,27 @@ mod tests {
         sync.record_message("peer-a", message_id);
         assert!(sync.has_seen_message("peer-a", message_id));
         assert!(!sync.has_seen_message("peer-b", message_id));
+    }
+
+    #[test]
+    fn reliable_message_dedup_is_bounded_by_insertion_order() {
+        let mut sync = SyncEngine::new();
+        let mut first_id = [0_u8; 16];
+        first_id[..8].copy_from_slice(&0_u64.to_le_bytes());
+        let first_id = MessageId(first_id);
+
+        sync.record_message("peer", first_id);
+        for index in 1..=SEEN_MESSAGE_MAX_ENTRIES {
+            let mut id = [0_u8; 16];
+            id[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            sync.record_message("peer", MessageId(id));
+        }
+
+        assert!(!sync.has_seen_message("peer", first_id));
+        assert_eq!(sync.seen_message_order.len(), SEEN_MESSAGE_MAX_ENTRIES);
+        let mut latest_id = [0_u8; 16];
+        latest_id[..8].copy_from_slice(&(SEEN_MESSAGE_MAX_ENTRIES as u64).to_le_bytes());
+        assert!(sync.has_seen_message("peer", MessageId(latest_id)));
     }
 
     #[tokio::test]
@@ -2045,6 +2321,7 @@ mod tests {
             batch: None,
         };
         let mut engine = SyncEngine::new();
+        let epoch = engine.start_receive_session("peer");
         engine
             .begin_file_receive(meta, &directory.path().join("received.bin"), "peer".into())
             .await
@@ -2063,7 +2340,7 @@ mod tests {
         let engine = Arc::new(tokio::sync::Mutex::new(engine));
 
         {
-            let _guard = ReceiveSuspendGuard::new(engine.clone(), "peer".to_string());
+            let _guard = ReceiveSuspendGuard::new(engine.clone(), "peer".to_string(), epoch);
         }
         tokio::task::yield_now().await;
 
@@ -2082,6 +2359,13 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("file transfer metadata is not available"));
+    }
+
+    #[test]
+    fn receive_suspend_guard_drop_without_runtime_does_not_panic() {
+        let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+        let guard = ReceiveSuspendGuard::new(engine, "peer".to_string(), 0);
+        drop(guard);
     }
 
     // ------------------------------------------------------------------
@@ -2145,6 +2429,14 @@ mod tests {
         let mut meta = meta_with_name(&format!("{}-", "abcd".repeat(16)));
         assert!(validate_incoming_file_meta(&mut meta).is_ok());
         assert_eq!(meta.name, format!("{}-", "abcd".repeat(16)));
+
+        for suffix in [".", ".."] {
+            let mut meta = meta_with_name(&format!("{}-{suffix}", "abcd".repeat(16)));
+            assert!(matches!(
+                validate_incoming_file_meta(&mut meta),
+                Err(crate::sync::prepare::PrepareError::InvalidFileName)
+            ));
+        }
     }
 
     #[test]

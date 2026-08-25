@@ -1,0 +1,16 @@
+[package]
+name = "tailsync-protocol"
+version = "2.1.0"
+description = "TailSync wire protocol: framing, commands, payload codecs, and version constants"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+blake3 = "1"
+hex = "0.4"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"

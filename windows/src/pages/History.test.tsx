@@ -2,16 +2,26 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { History } from "./History";
 
-const { invokeMock, stopListening, onCloseRequestedMock } = vi.hoisted(() => ({
+const {
+  invokeMock,
+  stopListening,
+  onCloseRequestedMock,
+  isAlwaysOnTopMock,
+  setAlwaysOnTopMock,
+} = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   stopListening: vi.fn(),
   onCloseRequestedMock: vi.fn(),
+  isAlwaysOnTopMock: vi.fn(),
+  setAlwaysOnTopMock: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     isMinimized: vi.fn(() => Promise.resolve(false)),
+    isAlwaysOnTop: isAlwaysOnTopMock,
+    setAlwaysOnTop: setAlwaysOnTopMock,
     onResized: vi.fn(() => Promise.resolve(stopListening)),
     onFocusChanged: vi.fn(() => Promise.resolve(stopListening)),
     onCloseRequested: onCloseRequestedMock,
@@ -37,6 +47,9 @@ const entry = {
 
 describe("History item actions", () => {
   beforeEach(() => {
+    localStorage.clear();
+    isAlwaysOnTopMock.mockResolvedValue(false);
+    setAlwaysOnTopMock.mockResolvedValue(undefined);
     onCloseRequestedMock.mockImplementation(() => Promise.resolve(stopListening));
     invokeMock.mockImplementation((command: string) => {
       switch (command) {
@@ -61,6 +74,56 @@ describe("History item actions", () => {
           return Promise.resolve(undefined);
       }
     });
+  });
+
+  it("toggles the history window's always-on-top state and persists it", async () => {
+    render(<History />);
+
+    await screen.findByText(entry.description);
+    const pin = screen.getByRole("button", { name: "history.pinWindow" });
+    await waitFor(() => expect(pin).toBeEnabled());
+    expect(pin).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(pin);
+    await waitFor(() => {
+      expect(setAlwaysOnTopMock).toHaveBeenCalledWith(true);
+      expect(pin).toHaveAttribute("aria-pressed", "true");
+    });
+    expect(localStorage.getItem("tailsync-history-always-on-top")).toBe("true");
+
+    fireEvent.click(pin);
+    await waitFor(() => {
+      expect(setAlwaysOnTopMock).toHaveBeenLastCalledWith(false);
+      expect(pin).toHaveAttribute("aria-pressed", "false");
+    });
+    expect(localStorage.getItem("tailsync-history-always-on-top")).toBe("false");
+  });
+
+  it("restores the persisted always-on-top state when the window mounts", async () => {
+    localStorage.setItem("tailsync-history-always-on-top", "true");
+
+    render(<History />);
+
+    await screen.findByText(entry.description);
+    await waitFor(() => {
+      expect(setAlwaysOnTopMock).toHaveBeenCalledWith(true);
+      expect(screen.getByRole("button", { name: "history.unpinWindow" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+  });
+
+  it("keeps the window unpinned when restoring the persisted state fails", async () => {
+    localStorage.setItem("tailsync-history-always-on-top", "true");
+    setAlwaysOnTopMock.mockRejectedValueOnce(new Error("native failure"));
+
+    render(<History />);
+
+    await screen.findByText(entry.description);
+    const pin = await screen.findByRole("button", { name: "history.pinWindow" });
+    await waitFor(() => expect(pin).toBeEnabled());
+    expect(pin).toHaveAttribute("aria-pressed", "false");
   });
 
   it("keeps row actions gesture-only without rendering action buttons", async () => {
