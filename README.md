@@ -14,13 +14,13 @@
 [![Windows](https://img.shields.io/badge/Windows-Tauri-0078D4?logo=windows11&logoColor=white)](#平台支持)
 [![Rust](https://img.shields.io/badge/Core-Rust-DEA584?logo=rust&logoColor=black)](#技术架构)
 [![Protocol](https://img.shields.io/badge/Protocol-v4-2F81F7)](#安全模型)
-[![Version](https://img.shields.io/badge/Version-v2.1.0-D5684B)](https://github.com/monet4070/TailSync/tree/v2.1.0)
+[![Version](https://img.shields.io/badge/Version-v2.2.0-D5684B)](https://github.com/monet4070/TailSync/tree/v2.2.0)
 [![License](https://img.shields.io/badge/License-MIT-22C55E)](#许可证)
 
 </div>
 
 > [!NOTE]
-> TailSync 2.1.0 目前处于积极开发阶段。macOS 与 Windows 客户端已经可以互相同步，并支持休眠/唤醒后自动恢复。tag 流水线默认生成免费的 Community Release：更新包仍有 TailSync 私钥签名、SHA-256 校验和降级保护，但 macOS 未公证、Windows 无商业代码签名；付费平台签名可在以后切换为 Trusted Release。首次公开发布前仍需配置 updater 密钥并完成真实设备验收。
+> TailSync 2.2.0 目前处于积极开发阶段。macOS 与 Windows 客户端已经可以互相同步，并支持休眠/唤醒后自动恢复。tag 流水线默认生成免费的 Community Release：更新包仍有 TailSync 私钥签名、SHA-256 校验和降级保护，但 macOS 未公证、Windows 无商业代码签名；付费平台签名可在以后切换为 Trusted Release。首次公开发布前仍需完成真实设备验收。
 
 ## 为什么选择 TailSync
 
@@ -135,7 +135,7 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 - 文本、图片和文件历史均使用系统保护的数据密钥加密存储。
 - 文件历史使用 1 MiB 分块 AES-256-GCM 容器；恢复时只在受控剪贴板目录生成临时明文。
 
-当前线协议为 v4，加入了原子配对提交确认和原子文件批次；握手会交换协议版本，不匹配时明确提示同时更新两端。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.1.0，数据库 schema 为 v9，这三个版本号彼此独立。
+当前线协议为 v4，加入了原子配对提交确认和原子文件批次；握手会交换协议版本，不匹配时明确提示同时更新两端。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.2.0，数据库 schema 为 v9，这三个版本号彼此独立。
 
 旧版 TailSync v1 历史数据库会在首次启动时自动导入。迁移按内容哈希保持幂等，损坏条目会写入诊断报告但不会阻止启动；原 `history.db` 和 `.fernet_key` 会保留，不会被自动删除。
 
@@ -181,7 +181,6 @@ open TailSync.app
 ```bash
 TAILSYNC_RELEASE=1 \
 TAILSYNC_RELEASE_TIER=community \
-TAILSYNC_UPDATER_PUBLIC_KEY="..." \
 TAURI_SIGNING_PRIVATE_KEY="..." \
 ./build-dmg.sh
 ```

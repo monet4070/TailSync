@@ -1,6 +1,6 @@
 [package]
 name = "tailsync-themes"
-version = "2.1.0"
+version = "2.2.0"
 description = "Theme package V2 parsing, validation, storage, and resolution for TailSync"
 edition = "2021"
 license = "MIT"

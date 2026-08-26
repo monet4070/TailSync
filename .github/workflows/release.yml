@@ -48,7 +48,7 @@ jobs:
       - name: Validate updater trust anchor and endpoints
         run: node scripts/validate-updater-config.mjs --root .
       - name: Test release metadata generators
-        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs scripts/verify-published-update.test.mjs
 
   windows:
     name: Package Windows (${{ vars.TAILSYNC_RELEASE_TIER || 'community' }})
@@ -56,7 +56,6 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     env:
-      TAILSYNC_UPDATER_PUBLIC_KEY: ${{ secrets.TAILSYNC_UPDATER_PUBLIC_KEY }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
@@ -121,7 +120,6 @@ jobs:
       TAILSYNC_RELEASE: "1"
       TAILSYNC_RELEASE_TIER: ${{ vars.TAILSYNC_RELEASE_TIER || 'community' }}
       TAILSYNC_MACOS_TARGET: universal-apple-darwin
-      TAILSYNC_UPDATER_PUBLIC_KEY: ${{ secrets.TAILSYNC_UPDATER_PUBLIC_KEY }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       TAILSYNC_CODESIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -264,6 +262,17 @@ jobs:
             release/*-build.json
             release/*.sha256
             release/latest.json
+      - name: Verify public updater feed and artifacts
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          node scripts/verify-published-update.mjs \
+            --endpoint "https://github.com/${RELEASE_REPOSITORY}/releases/latest/download/latest.json" \
+            --version "$RELEASE_VERSION" \
+            --platforms windows-x86_64,darwin-aarch64,darwin-x86_64
       - name: Publish prerelease without a stable updater manifest
         if: ${{ contains(github.ref_name, '-') }}
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2

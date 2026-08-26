@@ -501,7 +501,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 self?.presentUpdate(update)
             } catch {
-                // Development builds intentionally omit the production update key.
+                // Surface the updater error so a missing feed or invalid release is diagnosable.
                 if showWhenCurrent {
                     self?.showUpdateMessage(error.localizedDescription, error: true)
                 }

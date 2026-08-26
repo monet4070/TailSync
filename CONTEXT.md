@@ -5,7 +5,7 @@
 TailSync 是端到端加密的跨平台剪贴板同步工具：macOS（SwiftUI 菜单栏外壳 + Rust 守护进程）与
 Windows（React + Tauri）之间同步文本、图片和文件，优先局域网，必要时经 Tailscale 或 Iroh。
 
-线协议 v4；产品版本 2.1.0；数据库 schema v9。详见 `README.md`。
+线协议 v4；产品版本 2.2.0；数据库 schema v9。详见 `README.md`。
 
 ## 分层与契约面
 

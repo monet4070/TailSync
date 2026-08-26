@@ -1213,8 +1213,8 @@ pub struct UpdateStatus {
     updates_enabled: bool,
 }
 
-/// Report updater availability separately from checking the network so a
-/// development build can explain why updates are unavailable in the UI.
+/// Report updater availability separately from checking the network so a build
+/// with a missing trust anchor can explain why updates are unavailable in the UI.
 #[command]
 pub async fn get_update_status() -> Result<UpdateStatus, String> {
     Ok(UpdateStatus {

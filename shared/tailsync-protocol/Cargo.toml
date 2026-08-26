@@ -1,6 +1,6 @@
 [package]
 name = "tailsync-protocol"
-version = "2.1.0"
+version = "2.2.0"
 description = "TailSync wire protocol: framing, commands, payload codecs, and version constants"
 edition = "2021"
 license = "MIT"

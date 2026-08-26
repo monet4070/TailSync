@@ -8,6 +8,7 @@ import {
   Wifi,
 } from 'lucide-react'
 import type { CSSProperties } from 'react'
+import { WINDOWS_INSTALLER_NAME } from '../product'
 import type { ModeRender, ThemeMode } from './themeData'
 
 interface MockWindowProps {
@@ -19,7 +20,7 @@ interface MockWindowProps {
 const HISTORY_ITEMS = [
   { icon: FileText, title: 'themeV2Css.ts — 令牌映射完成', meta: '文本 · 09:41', selected: false },
   { icon: ImageIcon, title: 'tailsync-theme-comparison.png', meta: '图片 · 09:32', selected: true },
-  { icon: File, title: 'TailSync-2.1.0-setup.exe', meta: '文件 · 08:57', selected: false },
+  { icon: File, title: WINDOWS_INSTALLER_NAME, meta: '文件 · 08:57', selected: false },
 ]
 
 export function MockWindow({ render, mode, className }: MockWindowProps) {

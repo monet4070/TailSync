@@ -10,10 +10,7 @@ use std::sync::OnceLock;
 use tauri::AppHandle;
 use tauri_plugin_updater::{Builder, UpdaterExt};
 
-const UPDATE_PUBLIC_KEY: &str = match option_env!("TAILSYNC_UPDATER_PUBLIC_KEY") {
-    Some(key) => key,
-    None => "",
-};
+const UPDATE_PUBLIC_KEY: &str = include_str!("../../../shared/updater.pub");
 #[cfg(test)]
 const RELEASE_UPDATE_PUBLIC_KEY: &str = include_str!("../../../shared/updater.pub");
 
@@ -37,12 +34,7 @@ pub struct UpdateInfo {
 }
 
 pub fn plugin_builder() -> Builder {
-    let builder = Builder::new();
-    if public_key_configured() {
-        builder.pubkey(UPDATE_PUBLIC_KEY.trim())
-    } else {
-        builder
-    }
+    Builder::new().pubkey(UPDATE_PUBLIC_KEY.trim())
 }
 
 pub fn register_app_handle(handle: AppHandle) {
@@ -63,7 +55,7 @@ fn require_public_key() -> Result<(), String> {
     if public_key_configured() {
         Ok(())
     } else {
-        Err("Updates are disabled in this development build".to_string())
+        Err("The updater trust anchor is missing from this build".to_string())
     }
 }
 
@@ -282,7 +274,7 @@ pub fn spawn_automatic_update_check(app: AppHandle) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
     if !public_key_configured() {
-        log::debug!("Automatic updates are disabled in this development build");
+        log::debug!("Automatic updates are disabled because the updater trust anchor is missing");
         return;
     }
     tauri::async_runtime::spawn(async move {
@@ -349,9 +341,8 @@ mod tests {
 
     #[test]
     fn release_build_key_matches_the_checked_in_trust_anchor() {
-        if !UPDATE_PUBLIC_KEY.trim().is_empty() {
-            assert_eq!(UPDATE_PUBLIC_KEY.trim(), RELEASE_UPDATE_PUBLIC_KEY.trim());
-        }
+        assert!(!UPDATE_PUBLIC_KEY.trim().is_empty());
+        assert_eq!(UPDATE_PUBLIC_KEY.trim(), RELEASE_UPDATE_PUBLIC_KEY.trim());
     }
 
     #[test]

@@ -99,7 +99,6 @@ if ($env:OS -ne 'Windows_NT') {
 
 if ($Release) {
     foreach ($requiredValue in @(
-        @{ Name = 'TAILSYNC_UPDATER_PUBLIC_KEY'; Value = $env:TAILSYNC_UPDATER_PUBLIC_KEY },
         @{ Name = 'TAURI_SIGNING_PRIVATE_KEY'; Value = $env:TAURI_SIGNING_PRIVATE_KEY }
     )) {
         if ([string]::IsNullOrWhiteSpace([string]$requiredValue.Value)) {
@@ -141,14 +140,6 @@ $requiredFiles = @(
 foreach ($requiredFile in $requiredFiles) {
     if (!(Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required packaging input is missing: $requiredFile"
-    }
-}
-
-if ($Release) {
-    $checkedInUpdaterPublicKey = (Get-Content -Raw -LiteralPath $updaterPublicKeyPath).Trim()
-    $providedUpdaterPublicKey = ([string]$env:TAILSYNC_UPDATER_PUBLIC_KEY).Trim()
-    if ($providedUpdaterPublicKey -ne $checkedInUpdaterPublicKey) {
-        throw 'TAILSYNC_UPDATER_PUBLIC_KEY does not match shared/updater.pub.'
     }
 }
 
@@ -210,13 +201,9 @@ try {
 
     $previousTargetDirectory = $env:CARGO_TARGET_DIR
     $previousCi = $env:CI
-    $previousPublishedRelease = $env:TAILSYNC_PUBLISHED_RELEASE
     try {
         $env:CARGO_TARGET_DIR = $targetDirectory
         $env:CI = 'true'
-        if ($Release) {
-            $env:TAILSYNC_PUBLISHED_RELEASE = '1'
-        }
         Write-Host 'Building the release binary and NSIS installer...'
         $buildArguments = @('build', '--target', $Target, '--bundles', 'nsis', '--ci')
         if ($Release -and $ReleaseTier -eq 'trusted') {
@@ -245,11 +232,6 @@ try {
             Remove-Item Env:CI -ErrorAction SilentlyContinue
         } else {
             $env:CI = $previousCi
-        }
-        if ($null -eq $previousPublishedRelease) {
-            Remove-Item Env:TAILSYNC_PUBLISHED_RELEASE -ErrorAction SilentlyContinue
-        } else {
-            $env:TAILSYNC_PUBLISHED_RELEASE = $previousPublishedRelease
         }
     }
 

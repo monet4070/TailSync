@@ -31,18 +31,12 @@ if [[ "$FORMAL_RELEASE" == "1" ]]; then
         echo "Trusted releases require TAILSYNC_CODESIGN_IDENTITY and TAILSYNC_NOTARY_PROFILE." >&2
         exit 1
     fi
-    for required_name in TAILSYNC_UPDATER_PUBLIC_KEY TAURI_SIGNING_PRIVATE_KEY; do
+    for required_name in TAURI_SIGNING_PRIVATE_KEY; do
         if [[ -z "${!required_name:-}" ]]; then
             echo "$required_name is required for every published release." >&2
             exit 1
         fi
     done
-    CHECKED_IN_UPDATER_PUBLIC_KEY=$(tr -d '\r\n' < ../shared/updater.pub)
-    PROVIDED_UPDATER_PUBLIC_KEY=$(printf '%s' "$TAILSYNC_UPDATER_PUBLIC_KEY" | tr -d '\r\n')
-    if [[ "$PROVIDED_UPDATER_PUBLIC_KEY" != "$CHECKED_IN_UPDATER_PUBLIC_KEY" ]]; then
-        echo "TAILSYNC_UPDATER_PUBLIC_KEY does not match shared/updater.pub." >&2
-        exit 1
-    fi
     if [[ ! -x "$TAURI_CLI" ]]; then
         echo "Tauri CLI is required to sign the updater archive: $TAURI_CLI" >&2
         exit 1
