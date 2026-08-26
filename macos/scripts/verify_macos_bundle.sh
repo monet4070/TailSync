@@ -3,29 +3,40 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 APP_PATH="$PWD/TailSync.app"
-APP_ID="com.tailsync.app"
 API_PORT=19889
 PEER_PORT=19890
-APP_STARTED=0
-APP_PROCESS_PID=''
+DAEMON_STARTED=0
+DAEMON_PROCESS_PID=''
+DAEMON_LOG=''
 API_TOKEN=''
 RELEASE_TIER="${TAILSYNC_RELEASE_TIER:-community}"
 
 cleanup() {
-    if [ "$APP_STARTED" -eq 1 ]; then
-        /usr/bin/osascript -e "tell application id \"$APP_ID\" to quit" >/dev/null 2>&1 || true
-        if [[ -n "$APP_PROCESS_PID" ]] && kill -0 "$APP_PROCESS_PID" >/dev/null 2>&1; then
-            kill "$APP_PROCESS_PID" >/dev/null 2>&1 || true
+    if [ "$DAEMON_STARTED" -eq 1 ]; then
+        if [[ -n "$DAEMON_PROCESS_PID" ]] && kill -0 "$DAEMON_PROCESS_PID" >/dev/null 2>&1; then
+            kill "$DAEMON_PROCESS_PID" >/dev/null 2>&1 || true
+            wait "$DAEMON_PROCESS_PID" >/dev/null 2>&1 || true
         fi
         for _ in {1..50}; do
-            if ! /usr/sbin/lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+            if ! /usr/sbin/lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1 &&
+                ! /usr/sbin/lsof -nP -iTCP:"$PEER_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
                 break
             fi
             sleep 0.1
         done
     fi
+    if [[ -n "$DAEMON_LOG" ]]; then
+        rm -f "$DAEMON_LOG"
+    fi
 }
 trap cleanup EXIT
+
+report_daemon_failure() {
+    if [[ -n "$DAEMON_LOG" && -s "$DAEMON_LOG" ]]; then
+        echo 'Packaged daemon output:' >&2
+        tail -n 80 "$DAEMON_LOG" >&2 || true
+    fi
+}
 
 for port in "$API_PORT" "$PEER_PORT"; do
     if /usr/sbin/lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
@@ -58,11 +69,17 @@ if ! printf '%s\n' "$helper_output" | grep -Fxq "$helper_probe"; then
 fi
 rm -f "$helper_probe"
 
-echo '[2/3] Launching the packaged application...'
+# GitHub-hosted macOS jobs may not have a WindowServer session. Launching the
+# SwiftUI menu-bar executable directly in that environment can terminate with
+# SIGTRAP before it gets a chance to start its child daemon. The daemon is the
+# network/API payload used by the UI, so smoke-test that exact packaged binary
+# here and keep the AppKit UI checks above structural and code-signature based.
+echo '[2/3] Launching the packaged daemon from the app bundle...'
 API_TOKEN="$(/usr/bin/openssl rand -hex 32)"
-TAILSYNC_API_TOKEN="$API_TOKEN" "$APP_PATH/Contents/MacOS/TailSync" >/dev/null 2>&1 &
-APP_PROCESS_PID=$!
-APP_STARTED=1
+DAEMON_LOG="$(mktemp -t tailsync-daemon.XXXXXX)"
+TAILSYNC_API_TOKEN="$API_TOKEN" "$APP_PATH/Contents/MacOS/tailsyncd" >"$DAEMON_LOG" 2>&1 &
+DAEMON_PROCESS_PID=$!
+DAEMON_STARTED=1
 api_ready=0
 for _ in {1..100}; do
     if /usr/sbin/lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1 &&
@@ -70,10 +87,14 @@ for _ in {1..100}; do
         api_ready=1
         break
     fi
+    if ! kill -0 "$DAEMON_PROCESS_PID" >/dev/null 2>&1; then
+        break
+    fi
     sleep 0.1
 done
 if [ "$api_ready" -ne 1 ]; then
-    echo 'Packaged app did not listen on both API 19889 and peer 19890 ports.' >&2
+    echo 'Packaged daemon did not listen on both API 19889 and peer 19890 ports.' >&2
+    report_daemon_failure
     exit 1
 fi
 

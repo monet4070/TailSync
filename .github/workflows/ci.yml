@@ -167,7 +167,7 @@ jobs:
         run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
       - name: Build the macOS application bundle
         run: bash macos/build-mac.sh --skip-swift-build
-      - name: Launch and verify the packaged macOS application
+      - name: Verify packaged macOS bundle and daemon
         run: bash macos/scripts/verify_macos_bundle.sh
 
   scripts:

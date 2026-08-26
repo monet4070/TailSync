@@ -1,6 +1,6 @@
 [package]
 name = "tailsync-history-classifier"
-version = "2.2.1"
+version = "2.2.2"
 description = "TailSync clipboard-history text classification: deterministic category detection and confidence scoring"
 edition = "2021"
 license = "MIT"

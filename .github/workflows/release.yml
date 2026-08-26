@@ -182,7 +182,7 @@ jobs:
         env:
           TAILSYNC_TAURI_CLI: ${{ github.workspace }}/windows/node_modules/.bin/tauri
         run: ./macos/build-dmg.sh
-      - name: Launch and verify the packaged macOS application
+      - name: Verify packaged macOS bundle and daemon
         run: bash macos/scripts/verify_macos_bundle.sh
       - name: Upload macOS release files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
