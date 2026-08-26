@@ -126,6 +126,7 @@
   "settings.colorTheme.forest": "书页 Ledger",
   "settings.colorTheme.rose": "柔光 Aura",
   "settings.colorTheme.high-contrast": "单色 Mono",
+  "settings.themePackageBuiltIn": "内置",
   "settings.customThemes": "自定义主题",
   "settings.customThemesDescription": "主题文件夹中的 JSON 主题文件，与内置主题并列展示",
   "settings.customThemeImport": "导入主题",

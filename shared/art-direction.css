@@ -874,7 +874,7 @@
 .app .palette-card {
   width: auto;
   min-width: 0;
-  height: 102px;
+  height: 108px;
   padding: 0;
   border: 1px solid var(--art-line);
   border-radius: 10px;
@@ -906,10 +906,14 @@
   --preview-bg: #faf9f5;
   --preview-surface: #fffefa;
   --preview-ink: #191918;
+  --preview-secondary: #68665f;
   --preview-line: #ded9ce;
+  --preview-border-strong: #d3cec2;
   --preview-accent: #d5684b;
+  --preview-accent-soft: rgba(213, 104, 75, 0.11);
+  --preview-input: rgba(26, 25, 22, 0.045);
   position: absolute;
-  inset: 0 0 28px;
+  inset: 0 0 40px;
   overflow: hidden;
   background: var(--preview-bg);
 }
@@ -938,8 +942,12 @@
   --preview-bg: #f4f8f6;
   --preview-surface: #fbfdfb;
   --preview-ink: #102724;
+  --preview-secondary: #58706c;
   --preview-line: #cbdcd7;
+  --preview-border-strong: #bfd2cd;
   --preview-accent: #147970;
+  --preview-accent-soft: rgba(20, 121, 112, 0.1);
+  --preview-input: rgba(10, 57, 54, 0.045);
 }
 
 .app .palette-card-preview.tailsync::after {
@@ -971,8 +979,12 @@
   --preview-bg: #f7f7f3;
   --preview-surface: #fdfdf9;
   --preview-ink: #202720;
+  --preview-secondary: #626b63;
   --preview-line: #d2d9d1;
+  --preview-border-strong: #c8d0c7;
   --preview-accent: #536859;
+  --preview-accent-soft: rgba(83, 104, 89, 0.1);
+  --preview-input: rgba(38, 48, 40, 0.045);
   background-image: repeating-linear-gradient(
     to bottom,
     transparent 0,
@@ -998,8 +1010,12 @@
   --preview-bg: #faf7f9;
   --preview-surface: #fffdfd;
   --preview-ink: #2d2229;
+  --preview-secondary: #76636e;
   --preview-line: #dfcfd7;
+  --preview-border-strong: #d5c1cc;
   --preview-accent: #a34f75;
+  --preview-accent-soft: rgba(163, 79, 117, 0.1);
+  --preview-input: rgba(70, 34, 55, 0.045);
 }
 
 .app .palette-card-preview.rose::before {
@@ -1022,8 +1038,12 @@
   --preview-bg: #ffffff;
   --preview-surface: #ffffff;
   --preview-ink: #080808;
+  --preview-secondary: #454545;
   --preview-line: #9b9b9b;
+  --preview-border-strong: #8c8c8c;
   --preview-accent: #111111;
+  --preview-accent-soft: rgba(0, 0, 0, 0.08);
+  --preview-input: #f3f3f3;
   background-image:
     linear-gradient(color-mix(in srgb, var(--preview-line) 26%, transparent) 1px, transparent 1px),
     linear-gradient(90deg, color-mix(in srgb, var(--preview-line) 26%, transparent) 1px, transparent 1px);
@@ -1062,7 +1082,7 @@
   top: 17px;
   left: 22px;
   color: var(--preview-ink);
-  font: 500 11px/1 var(--art-display);
+  font: 500 11px/1 var(--preview-title-font, var(--art-display));
 }
 
 .app .palette-card-preview.ocean .palette-preview-title {
@@ -1129,6 +1149,86 @@
   width: calc(72% - 22px);
 }
 
+.app .palette-preview-swatch,
+.app .palette-preview-rule,
+.app .palette-preview-control {
+  position: absolute;
+  z-index: 2;
+  display: block;
+}
+
+.app .palette-preview-swatch {
+  top: 13px;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.app .palette-preview-swatch.swatch-accent {
+  right: 41px;
+  background: var(--preview-accent);
+}
+
+.app .palette-preview-swatch.swatch-secondary {
+  right: 25px;
+  background: var(--preview-secondary);
+}
+
+.app .palette-preview-swatch.swatch-border {
+  right: 9px;
+  background: var(--preview-border-strong);
+}
+
+.app .palette-preview-rule {
+  top: 32px;
+  right: 10px;
+  left: 22px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--preview-secondary);
+  opacity: 0.55;
+}
+
+.app .palette-preview-control {
+  top: 41px;
+  height: 16px;
+  border-radius: 6px;
+}
+
+.app .palette-preview-control.control-input {
+  right: 50px;
+  left: 22px;
+  background: var(--preview-input);
+}
+
+.app .palette-preview-control.control-action {
+  right: 10px;
+  width: 34px;
+  background: var(--preview-accent-soft);
+}
+
+.app .palette-preview-control i {
+  position: absolute;
+  top: 7px;
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.app .palette-preview-control.control-input i {
+  left: 7px;
+  width: 44px;
+  background: var(--preview-secondary);
+  opacity: 0.55;
+}
+
+.app .palette-preview-control.control-action i {
+  left: 50%;
+  width: 13px;
+  background: var(--preview-accent);
+  transform: translateX(-50%);
+}
+
 .app .palette-card-preview.ocean .palette-preview-row {
   height: 3px;
   border-left-width: 7px;
@@ -1153,6 +1253,9 @@
 .app .palette-card-label {
   position: absolute !important;
   z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   right: 10px;
   bottom: 8px;
   left: 10px;
@@ -1167,6 +1270,25 @@
   white-space: nowrap;
 }
 
+.app .palette-card-label strong,
+.app .palette-card-label small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app .palette-card-label strong {
+  color: inherit;
+  font: inherit;
+  font-family: var(--preview-title-font, var(--art-display));
+  font-weight: 600;
+}
+
+.app .palette-card-label small {
+  color: var(--text-tertiary);
+  font: 400 9px/1.2 var(--art-reading);
+}
+
 .app .palette-card.active .palette-card-label {
   padding-right: 20px;
   color: var(--brand);
@@ -1177,7 +1299,13 @@
   z-index: 4;
   right: 8px;
   bottom: 7px;
-  color: var(--brand);
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  padding: 3px;
+  border-radius: 7px;
+  background: var(--brand);
+  color: var(--brand-text, #ffffff);
 }
 
 /* Dialogs and feedback */

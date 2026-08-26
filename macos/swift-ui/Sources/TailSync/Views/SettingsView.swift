@@ -443,10 +443,16 @@ struct SettingsView: View {
         let connected: Bool
         let status: String
         let latencyMs: Int?
-        let isPairingEndpoint: Bool
         let rttCapable: Bool
 
         var id: String { "\(peer.hostname)-\(interface ?? "unknown")-\(address)" }
+    }
+
+    private struct PeerConnectionTestResult {
+        let latencyMs: Int
+        let path: String
+        let error: String
+        let interface: String?
     }
 
     @ObservedObject private var loc = Loc.shared
@@ -456,7 +462,6 @@ struct SettingsView: View {
     @State private var applyingPersistedSettings = false
     @State private var localDevice: ApiClient.DeviceSnapshot?
     @State private var peers: [ApiClient.PeerSnapshot] = []
-    @State private var pairedPeerEndpoints: [String: String] = [:]
     @State private var isLoading = true
     @State private var peersLoading = false
     @State private var saved = false
@@ -470,7 +475,7 @@ struct SettingsView: View {
     @State private var previousPairingPhase: String?
     @State private var testingPeers: Set<String> = []
     @State private var removingPeers: Set<String> = []
-    @State private var testResults: [String: (latencyMs: Int, path: String, error: String)] = [:]
+    @State private var testResults: [String: PeerConnectionTestResult] = [:]
     @State private var peerLoadGeneration = 0
     @State private var peerRequestInFlight = false
     @State private var saveGeneration = 0
@@ -1047,7 +1052,7 @@ struct SettingsView: View {
             }
         } else {
             HStack {
-                Text("\(peerRoutes.count) \(Loc.t("settings.devices"))")
+                Text("\(peers.count) \(Loc.t("settings.devices"))")
                     .font(.caption2)
                     .foregroundColor(palette.tertiaryColor)
                 Spacer()
@@ -1058,65 +1063,54 @@ struct SettingsView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
 
-            ForEach(Array(peerRoutes.enumerated()), id: \.element.id) { index, route in
+            ForEach(Array(peers.enumerated()), id: \.element.id) { index, peer in
                 if index > 0 { themedDivider.padding(.leading, 48) }
-                peerRow(route)
+                peerRow(peer)
             }
         }
     }
 
-    private var peerRoutes: [PeerRoute] {
-        peers.flatMap { peer in
-            let availableAddresses = Set(peer.candidates.map(\.address) + [peer.address])
-            let savedPairingAddress = pairedPeerEndpoints[peer.hostname]
-            let pairedAddress = savedPairingAddress
-                .flatMap { availableAddresses.contains($0) ? $0 : nil }
-                ?? (peer.trusted ? peer.candidates.first?.address ?? peer.address : nil)
-            if !peer.routes.isEmpty {
-                return peer.routes.map {
-                    PeerRoute(
-                        peer: peer,
-                        address: $0.address,
-                        interface: $0.interface,
-                        online: $0.online,
-                        connected: $0.connected,
-                        status: $0.connected ? "connected" : $0.status,
-                        latencyMs: $0.latencyMs,
-                        isPairingEndpoint: peer.trusted
-                            && ($0.pairingEndpoint || $0.address == pairedAddress),
-                        rttCapable: $0.rttCapable
-                    )
-                }
+    private func peerRoutes(for peer: ApiClient.PeerSnapshot) -> [PeerRoute] {
+        if !peer.routes.isEmpty {
+            return peer.routes.map {
+                PeerRoute(
+                    peer: peer,
+                    address: $0.address,
+                    interface: $0.interface,
+                    online: $0.online,
+                    connected: $0.connected,
+                    status: $0.connected ? "connected" : $0.status,
+                    latencyMs: $0.latencyMs,
+                    rttCapable: $0.rttCapable
+                )
             }
-            if settings.connection_mode == "auto", !peer.candidates.isEmpty {
-                return peer.candidates.map {
-                    PeerRoute(
-                        peer: peer,
-                        address: $0.address,
-                        interface: $0.interface,
-                        online: $0.online,
-                        connected: peer.current_address == $0.address,
-                        status: peer.current_address == $0.address ? "connected" : $0.status,
-                        latencyMs: $0.latency,
-                        isPairingEndpoint: peer.trusted && $0.address == pairedAddress,
-                        rttCapable: $0.rttCapable
-                    )
-                }
-            }
-            return [PeerRoute(
-                peer: peer,
-                address: peer.address,
-                interface: routeInterface(for: settings.connection_mode),
-                online: peer.candidates.first?.online ?? peer.online,
-                connected: peer.current_address == peer.address,
-                status: peer.current_address == peer.address
-                    ? "connected"
-                    : peer.candidates.first?.status ?? peer.status,
-                latencyMs: peer.candidates.first?.latency,
-                isPairingEndpoint: peer.trusted && peer.address == pairedAddress,
-                rttCapable: true
-            )]
         }
+        if settings.connection_mode == "auto", !peer.candidates.isEmpty {
+            return peer.candidates.map {
+                PeerRoute(
+                    peer: peer,
+                    address: $0.address,
+                    interface: $0.interface,
+                    online: $0.online,
+                    connected: peer.current_address == $0.address,
+                    status: peer.current_address == $0.address ? "connected" : $0.status,
+                    latencyMs: $0.latency,
+                    rttCapable: $0.rttCapable
+                )
+            }
+        }
+        return [PeerRoute(
+            peer: peer,
+            address: peer.address,
+            interface: routeInterface(for: settings.connection_mode),
+            online: peer.candidates.first?.online ?? peer.online,
+            connected: peer.current_address == peer.address,
+            status: peer.current_address == peer.address
+                ? "connected"
+                : peer.candidates.first?.status ?? peer.status,
+            latencyMs: peer.candidates.first?.latency,
+            rttCapable: true
+        )]
     }
 
     private func routeInterface(for mode: String) -> String? {
@@ -1127,11 +1121,108 @@ struct SettingsView: View {
         }
     }
 
-    private func peerRow(_ route: PeerRoute) -> some View {
-        let peer = route.peer
+    private func routeIsAllowed(_ route: PeerRoute) -> Bool {
+        switch settings.connection_mode {
+        case "lan_only": return route.interface == "lan"
+        case "tailscale_only": return route.interface == "tailscale"
+        default: return true
+        }
+    }
+
+    private func routePriority(_ interface: String?) -> Int {
+        switch interface {
+        case "lan": return 0
+        case "iroh": return 1
+        case "tailscale": return 2
+        default: return 3
+        }
+    }
+
+    private func preferredTestRoute(in routes: [PeerRoute]) -> PeerRoute? {
+        routes
+            .filter { route in
+                routeIsAllowed(route)
+                    && !route.address.isEmpty
+                    && (route.interface != "iroh" || route.rttCapable)
+            }
+            .sorted { lhs, rhs in
+                let lhsIsCurrent = lhs.peer.current_address == lhs.address
+                let rhsIsCurrent = rhs.peer.current_address == rhs.address
+                if lhsIsCurrent != rhsIsCurrent { return lhsIsCurrent }
+                if lhs.connected != rhs.connected { return lhs.connected }
+                if lhs.online != rhs.online { return lhs.online }
+                let lhsConfirming = lhs.status == "confirming"
+                let rhsConfirming = rhs.status == "confirming"
+                if lhsConfirming != rhsConfirming { return lhsConfirming }
+                let lhsPriority = routePriority(lhs.interface)
+                let rhsPriority = routePriority(rhs.interface)
+                if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+                return lhs.address < rhs.address
+            }
+            .first
+    }
+
+    private func pairingRoute(in routes: [PeerRoute], for peer: ApiClient.PeerSnapshot) -> PeerRoute? {
+        let availableRoutes = routes.filter { routeIsAllowed($0) && !$0.address.isEmpty }
+        let tcpRoutes = availableRoutes.filter { $0.interface != "iroh" }
+        if let route = tcpRoutes.first(where: \.connected) { return route }
+        if let route = tcpRoutes.first(where: \.online) { return route }
+        if let route = tcpRoutes.first(where: { $0.status == "confirming" }) { return route }
+        if let route = availableRoutes.first(where: { $0.interface == "iroh" }) { return route }
+        if let route = tcpRoutes.first(where: { $0.address == peer.current_address }) { return route }
+        if let route = tcpRoutes.first(where: { $0.address == peer.address }) { return route }
+        return tcpRoutes.first ?? availableRoutes.first
+    }
+
+    private func peerStatus(_ peer: ApiClient.PeerSnapshot, routes: [PeerRoute]) -> String {
+        let allowedRoutes = routes.filter(routeIsAllowed)
+        if peer.current_address != nil || allowedRoutes.contains(where: \.connected) {
+            return "connected"
+        }
+        for status in ["online", "confirming", "discovered"]
+            where allowedRoutes.contains(where: { $0.status == status }) {
+            return status
+        }
+        return peer.status
+    }
+
+    private func peerRouteLine(_ route: PeerRoute) -> some View {
+        HStack(spacing: 7) {
+            Text(route.address.isEmpty ? Loc.t("settings.pairedOffline") : route.address)
+                .font(.caption.monospaced())
+                .foregroundColor(palette.secondaryColor)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(route.address)
+            if let interface = route.interface {
+                Text("· \(routeInterfaceLabel(interface))")
+                    .font(.caption2.weight(.medium))
+                    .foregroundColor(palette.accentColor)
+            }
+            Text(statusText(route.status))
+                .font(.caption2.weight(route.connected ? .semibold : .regular))
+                .foregroundColor(statusColor(route.status))
+            if let latencyMs = route.latencyMs,
+               ["online", "connected", "confirming"].contains(route.status) {
+                Text("\(latencyMs) ms")
+                    .font(.caption2.monospaced())
+                    .foregroundColor(palette.tertiaryColor)
+            }
+        }
+    }
+
+    private func peerRow(_ peer: ApiClient.PeerSnapshot) -> some View {
+        let routes = peerRoutes(for: peer)
+        let status = peerStatus(peer, routes: routes)
+        let testRoute = preferredTestRoute(in: routes)
+        let pairingRoute = pairingRoute(in: routes, for: peer)
+        let needsIrohRediscovery = testRoute == nil
+            && routes.contains { route in
+                routeIsAllowed(route) && route.interface == "iroh" && !route.rttCapable
+            }
         return settingRow {
             Circle()
-                .fill(statusColor(route.status))
+                .fill(statusColor(status))
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -1152,68 +1243,54 @@ struct SettingsView: View {
                     .foregroundColor(palette.warningColor)
                     .fixedSize(horizontal: false, vertical: true)
                 }
-                HStack(spacing: 7) {
-                    Text(route.address.isEmpty ? Loc.t("settings.pairedOffline") : route.address)
-                        .font(.caption.monospaced())
-                        .foregroundColor(palette.secondaryColor)
+                ForEach(routes) { route in
+                    peerRouteLine(route)
+                }
+                if peer.trusted, !peer.fingerprint.isEmpty {
+                    Text(peer.fingerprint)
+                        .font(.caption2.monospaced())
+                        .foregroundColor(palette.tertiaryColor)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .help(route.address)
-                    if let interface = route.interface {
-                        Text("· \(routeInterfaceLabel(interface))")
-                            .font(.caption2.weight(.medium))
-                            .foregroundColor(palette.accentColor)
-                    }
-                    Text(statusText(route.status))
-                        .font(.caption2.weight(route.connected ? .semibold : .regular))
-                        .foregroundColor(statusColor(route.status))
-                    if let latencyMs = route.latencyMs,
-                       ["online", "connected", "confirming"].contains(route.status) {
-                        Text("\(latencyMs) ms")
-                            .font(.caption2.monospaced())
-                            .foregroundColor(palette.tertiaryColor)
-                    }
-                    if peer.trusted, !peer.fingerprint.isEmpty {
-                        Text(peer.fingerprint)
-                            .font(.caption2.monospaced())
-                            .foregroundColor(palette.tertiaryColor)
-                    }
-                    if let result = testResults[route.id] {
-                        let label = result.error.isEmpty
-                            ? "\(result.latencyMs) ms"
-                                + (result.path == "relay" ? " · \(Loc.t("settings.relayPath"))" : "")
-                            : result.error
-                        Text(label)
-                            .font(.caption2)
-                            .foregroundColor(result.error.isEmpty ? .green : .red)
-                            .lineLimit(1)
-                    }
+                }
+                if let result = testResults[peer.hostname] {
+                    let label = result.error.isEmpty
+                        ? "\(result.latencyMs) ms"
+                            + (result.path == "relay" ? " · \(Loc.t("settings.relayPath"))" : "")
+                        : result.error
+                    let interfaceLabel = result.interface.map { "\(routeInterfaceLabel($0)) · " } ?? ""
+                    Text(interfaceLabel + label)
+                        .font(.caption2)
+                        .foregroundColor(result.error.isEmpty ? .green : .red)
+                        .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
 
-            if route.address.isEmpty {
-                EmptyView()
-            } else if testingPeers.contains(route.id) {
+            if testingPeers.contains(peer.hostname) {
                 ProgressView().controlSize(.small)
             } else {
-                Button { testPeer(route) } label: {
+                Button {
+                    if let testRoute {
+                        testPeer(peer.hostname, route: testRoute)
+                    }
+                } label: {
                     Image(systemName: "bolt.horizontal")
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
-                .disabled(route.interface == "iroh" && !route.rttCapable)
-                .help(route.interface == "iroh" && !route.rttCapable
+                .disabled(testRoute == nil)
+                .help(needsIrohRediscovery
                     ? Loc.t("settings.testRouteRediscover")
-                    : Loc.t("settings.testConnection"))
+                    : Loc.t("settings.testPreferredConnection"))
             }
 
-            if route.isPairingEndpoint, removingPeers.contains(peer.hostname) {
+            if peer.trusted, removingPeers.contains(peer.hostname) {
                 ProgressView()
                     .controlSize(.small)
                     .frame(width: 48)
-            } else if route.isPairingEndpoint {
+            } else if peer.trusted {
                 Button { forgetPeer(peer.hostname) } label: {
                     Text(Loc.t("settings.removeDevice"))
                 }
@@ -1223,16 +1300,19 @@ struct SettingsView: View {
                 .help(Loc.t("settings.unpair"))
             } else if !peer.trusted {
                 Button {
-                    startPairing(route)
+                    if let pairingRoute {
+                        startPairing(pairingRoute)
+                    }
                 } label: {
                     Image(systemName: "link.badge.plus")
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
+                .disabled(pairingRoute == nil || pairingInProgress)
                 .help(Loc.t("settings.pair"))
             }
 
-            if route.isPairingEndpoint {
+            if peer.trusted {
                 Toggle("", isOn: Binding(
                     get: { peer.enabled },
                     set: { togglePeer(peer.hostname, enabled: $0) }
@@ -1328,7 +1408,6 @@ struct SettingsView: View {
             peers = result.peers.filter { peer in
                 peer.online || peer.trusted || peer.status == "discovered"
             }
-            pairedPeerEndpoints = result.pairedEndpoints
         }
         peerError = result.error
         peerRequestInFlight = false
@@ -1531,7 +1610,8 @@ struct SettingsView: View {
         guard !removingPeers.contains(hostname) else { return }
         removingPeers.insert(hostname)
         peers.removeAll { $0.hostname == hostname }
-        testResults = testResults.filter { !$0.key.hasPrefix("\(hostname)-") }
+        testingPeers.remove(hostname)
+        testResults.removeValue(forKey: hostname)
 
         Task { @MainActor in
             do {
@@ -1557,13 +1637,19 @@ struct SettingsView: View {
         }
     }
 
-    private func testPeer(_ route: PeerRoute) {
+    private func testPeer(_ hostname: String, route: PeerRoute) {
         guard !route.address.isEmpty else { return }
-        testingPeers.insert(route.id)
+        testingPeers.insert(hostname)
         Task { @MainActor in
-            testResults[route.id] = await ApiClient.shared.testConnection(address: route.address)
+            let result = await ApiClient.shared.testConnection(address: route.address)
                 ?? (0, "", Loc.t("settings.connectionFailed"))
-            testingPeers.remove(route.id)
+            testResults[hostname] = PeerConnectionTestResult(
+                latencyMs: result.latencyMs,
+                path: result.path,
+                error: result.error,
+                interface: route.interface
+            )
+            testingPeers.remove(hostname)
         }
     }
 

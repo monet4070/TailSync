@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useRef, type CSSProperties } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTheme, type ThemePreference } from "../hooks/useTheme";
@@ -76,6 +76,68 @@ const routeInterfaceLabel = (routeInterface: PeerRoute["interface"]) => {
   if (routeInterface === "lan") return "LAN";
   if (routeInterface === "iroh") return "Iroh";
   return "Tailscale";
+};
+
+const palettePreviewClass = (themeId: string) => {
+  switch (themeId) {
+    case "builtin:flux@1": return "ocean";
+    case "builtin:ledger@1": return "forest";
+    case "builtin:aura@1": return "rose";
+    case "builtin:mono@1": return "high-contrast";
+    case "builtin:canvas@1": return "tailsync";
+    default: return "custom";
+  }
+};
+
+const palettePreviewTitle = (themeId: string) =>
+  themeId === "builtin:flux@1" || themeId === "builtin:mono@1"
+    ? "TAILSYNC"
+    : "TailSync";
+
+const themeToken = (
+  tokens: Record<string, unknown> | undefined,
+  path: string[],
+): string | undefined => {
+  let current: unknown = tokens;
+  for (const key of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "string" ? current : undefined;
+};
+
+const themeTokenFamilies = (
+  tokens: Record<string, unknown> | undefined,
+  path: string[],
+): string | undefined => {
+  let current: unknown = tokens;
+  for (const key of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return Array.isArray(current) && current.every((value) => typeof value === "string")
+    ? current.join(", ")
+    : undefined;
+};
+
+const palettePreviewStyle = (entry: ThemeV2Descriptor): CSSProperties | undefined => {
+  const tokens = entry.resolvedLight?.tokens;
+  if (!tokens) return undefined;
+  const values: Record<string, string | undefined> = {
+    "--preview-bg": themeToken(tokens, ["colors", "background", "canvas"]),
+    "--preview-surface": themeToken(tokens, ["colors", "background", "surface"]),
+    "--preview-ink": themeToken(tokens, ["colors", "text", "primary"]),
+    "--preview-secondary": themeToken(tokens, ["colors", "text", "secondary"]),
+    "--preview-line": themeToken(tokens, ["colors", "border", "default"]),
+    "--preview-border-strong": themeToken(tokens, ["colors", "border", "strong"]),
+    "--preview-accent": themeToken(tokens, ["colors", "accent", "default"]),
+    "--preview-accent-soft": themeToken(tokens, ["colors", "accent", "soft"]),
+    "--preview-input": themeToken(tokens, ["colors", "background", "input"]),
+    "--preview-title-font": themeTokenFamilies(tokens, ["typography", "display", "families"]),
+  };
+  return Object.fromEntries(
+    Object.entries(values).filter(([, value]) => value !== undefined),
+  ) as CSSProperties;
 };
 
 const peerCanSync = (peer: PeerDevice) =>
@@ -1191,10 +1253,27 @@ export function Settings() {
                 const active = entry.id === v2Active;
                 const label = entry.name[locale] ?? entry.name.en ?? entry.id;
                 return <button type="button" key={entry.id} aria-disabled={entry.status !== "valid"}
-                  className={`theme-card palette-card${active ? " active" : ""}${entry.status !== "valid" ? " is-invalid" : ""}`}
+                  className={`theme-card palette-card ${palettePreviewClass(entry.id)}${active ? " active" : ""}${entry.status !== "valid" ? " is-invalid" : ""}`}
+                  style={palettePreviewStyle(entry)}
                   onClick={() => { if (entry.status === "valid") void selectV2Theme(entry.id); }} aria-pressed={active} title={entry.diagnostics.map((x) => x.message).join("\n") || label}>
-                  <div className="palette-card-preview tailsync" aria-hidden="true"><span className="palette-preview-rail" /><span className="palette-preview-title">{entry.status === "valid" ? "V2" : "!"}</span><span className="palette-preview-row row-one" /><span className="palette-preview-row row-two" /></div>
-                  <span className="palette-card-label">{label}</span>{active && <Check className="palette-card-check" size={13} strokeWidth={2} aria-hidden="true" />}
+                  <div
+                    className={`palette-card-preview ${palettePreviewClass(entry.id)}${entry.status !== "valid" ? " invalid" : ""}`}
+                    aria-hidden="true"
+                  >
+                    <span className="palette-preview-rail" />
+                    <span className="palette-preview-title">{entry.status === "valid" ? palettePreviewTitle(entry.id) : "!"}</span>
+                    <span className="palette-preview-swatch swatch-accent" />
+                    <span className="palette-preview-swatch swatch-secondary" />
+                    <span className="palette-preview-swatch swatch-border" />
+                    <span className="palette-preview-rule" />
+                    <span className="palette-preview-control control-input"><i /></span>
+                    <span className="palette-preview-control control-action"><i /></span>
+                  </div>
+                  <span className="palette-card-label">
+                    <strong>{label}</strong>
+                    <small>{entry.source === "builtin" ? t("settings.themePackageBuiltIn") : entry.version}</small>
+                  </span>
+                  {active && <Check className="palette-card-check" size={13} strokeWidth={2} aria-hidden="true" />}
                   {(entry.source === "custom" || entry.status === "invalid") && <span className="theme-card-tools">
                     {entry.source === "custom" && entry.status === "valid" && <>
                       <span role="button" tabIndex={0} className="theme-card-tool" onClick={(event) => { event.stopPropagation(); void handleUpdateTheme(entry); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); void handleUpdateTheme(entry); } }} title={t("settings.customThemeUpdate")} aria-label={`${t("settings.customThemeUpdate")} ${label}`}><RefreshCw size={12} strokeWidth={1.8} aria-hidden="true" /></span>

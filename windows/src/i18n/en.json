@@ -126,6 +126,7 @@
   "settings.colorTheme.forest": "Ledger",
   "settings.colorTheme.rose": "Aura",
   "settings.colorTheme.high-contrast": "Mono",
+  "settings.themePackageBuiltIn": "Built-in",
   "settings.customThemes": "Custom themes",
   "settings.customThemesDescription": "JSON theme files from the themes folder, alongside the built-in set",
   "settings.customThemeImport": "Import theme",
