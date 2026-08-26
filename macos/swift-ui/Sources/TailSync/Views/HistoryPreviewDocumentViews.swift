@@ -167,7 +167,7 @@ final class HistoryPDFPreviewController: ObservableObject {
                 object: document,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.searchDidBegin() }
+                Task { @MainActor [weak self] in self?.searchDidBegin() }
             },
             center.addObserver(
                 forName: .PDFDocumentDidFindMatch,
@@ -176,14 +176,14 @@ final class HistoryPDFPreviewController: ObservableObject {
             ) { [weak self] notification in
                 guard let selection = notification.userInfo?[PDFDocumentFoundSelectionKey]
                     as? PDFSelection else { return }
-                Task { @MainActor in self?.searchDidFind(selection) }
+                Task { @MainActor [weak self, selection] in self?.searchDidFind(selection) }
             },
             center.addObserver(
                 forName: .PDFDocumentDidEndFind,
                 object: document,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.searchDidEnd() }
+                Task { @MainActor [weak self] in self?.searchDidEnd() }
             }
         ]
     }
@@ -356,14 +356,14 @@ private struct HistoryPDFContainer: NSViewRepresentable {
                     object: pdfView,
                     queue: .main
                 ) { [weak controller] _ in
-                    Task { @MainActor in controller?.updateCurrentPage() }
+                    Task { @MainActor [weak controller] in controller?.updateCurrentPage() }
                 },
                 center.addObserver(
                     forName: .PDFViewScaleChanged,
                     object: pdfView,
                     queue: .main
                 ) { [weak controller] _ in
-                    Task { @MainActor in controller?.updateZoom() }
+                    Task { @MainActor [weak controller] in controller?.updateZoom() }
                 }
             ]
         }

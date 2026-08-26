@@ -190,6 +190,9 @@ try {
         Invoke-Checked -FilePath 'npm' -Arguments @('run', 'lint')
         Invoke-Checked -FilePath 'npm' -Arguments @('test')
 
+        Write-Host 'Building frontend assets required by the Tauri context...'
+        Invoke-Checked -FilePath 'npm' -Arguments @('run', 'build')
+
         Write-Host 'Running Windows Rust tests...'
         Invoke-Checked -FilePath 'cargo' -Arguments @(
             'test', '--locked', '--manifest-path', $manifestPath, '--lib'

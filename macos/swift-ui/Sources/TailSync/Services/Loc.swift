@@ -220,7 +220,7 @@ final class Loc: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.refreshAccessibilityPreferences()
                 await self?.reloadActiveResolvedTheme()
             }

@@ -1,6 +1,6 @@
 [package]
 name = "tailsync-core"
-version = "2.2.0"
+version = "2.2.1"
 description = "Shared storage, identity, crypto, and wire protocol for TailSync"
 edition = "2021"
 license = "MIT"

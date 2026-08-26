@@ -49,21 +49,21 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
                 object: historyWindow,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.close() }
+                Task { @MainActor [weak self] in self?.close() }
             },
             center.addObserver(
                 forName: NSWindow.didMiniaturizeNotification,
                 object: historyWindow,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.historyDidMiniaturize() }
+                Task { @MainActor [weak self] in self?.historyDidMiniaturize() }
             },
             center.addObserver(
                 forName: NSWindow.didDeminiaturizeNotification,
                 object: historyWindow,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.historyDidDeminiaturize() }
+                Task { @MainActor [weak self] in self?.historyDidDeminiaturize() }
             }
         ]
     }

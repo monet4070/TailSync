@@ -535,7 +535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func beginUpdateAlert(_ alert: NSAlert, for parentWindow: NSWindow) {
         alert.beginSheetModal(for: parentWindow) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 do {
                     guard try await ApiClient.shared.installUpdate() else { return }
                     await Self.stopDaemonForRestart()

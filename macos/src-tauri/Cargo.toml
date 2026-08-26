@@ -1,6 +1,6 @@
 [package]
 name = "tailsync"
-version = "2.2.0"
+version = "2.2.1"
 description = "Encrypted cross-platform clipboard sync over LAN or Tailscale"
 authors = ["monet"]
 edition = "2021"

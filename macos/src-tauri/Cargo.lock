@@ -5873,7 +5873,7 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "tailsync"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -5917,7 +5917,7 @@ dependencies = [
 
 [[package]]
 name = "tailsync-core"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -5951,14 +5951,14 @@ dependencies = [
 
 [[package]]
 name = "tailsync-history-classifier"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "tailsync-protocol"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "blake3",
  "hex",
@@ -5969,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "tailsync-themes"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "blake3",
  "fs2",
