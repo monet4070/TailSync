@@ -248,6 +248,33 @@ describe("usePairing", () => {
     expect(result.current.pairingStatus?.phase).toBe("verification");
   });
 
+  it("keeps the dialog open while pairing is finalizing", async () => {
+    vi.useFakeTimers();
+    mockedGetStatus
+      .mockResolvedValueOnce(makeStatus({ phase: "waiting" }))
+      .mockResolvedValue(makeStatus({
+        phase: "finalizing",
+        peer: {
+          hostname: "MacBook",
+          address: "192.168.1.10",
+          fingerprint: "abcd",
+          verification_code: "1234",
+          local_confirmed: true,
+          remote_confirmed: true,
+        },
+      }));
+    const refreshDevices = vi.fn().mockResolvedValue(undefined);
+    const { result } = renderHook(() => usePairing({ refreshDevices }));
+    await flushMicrotasks();
+    expect(result.current.pairingOpen).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(result.current.pairingOpen).toBe(true);
+    expect(result.current.pairingStatus?.phase).toBe("finalizing");
+  });
+
   it("closes the dialog and refreshes devices once when a pairing completes", async () => {
     vi.useFakeTimers();
     mockedGetStatus

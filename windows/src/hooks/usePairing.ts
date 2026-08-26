@@ -2,7 +2,7 @@
 //
 // Owns the pairing dialog state machine, the 1s status polling that
 // auto-opens the dialog during verification, the dialog focus trap, and
-// the enable/start/cancel/confirm handlers. The devices refresh that must
+  // the enable/start/cancel/confirm handlers. The devices refresh that must
 // run after a successful pairing is injected through options so the hook
 // stays independent of the settings page's device list.
 
@@ -168,7 +168,7 @@ export function usePairing(options: PairingOptions) {
         const status = await getPairingStatus();
         if (!active) return;
         setPairingStatus(status);
-        if (status.peer && ["verification", "waiting_for_peer"].includes(status.phase)) {
+        if (status.peer && ["verification", "waiting_for_peer", "finalizing"].includes(status.phase)) {
           setPairingOpen(true);
         }
         if (status.phase === "paired" && previousPairingPhase.current !== "paired") {

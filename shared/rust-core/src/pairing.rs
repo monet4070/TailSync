@@ -15,6 +15,7 @@ const PAIRING_CODE_CONTEXT: &[u8] = b"tailsync pairing verification code v1";
 const X25519_PUBLIC_KEY_LENGTH: usize = 32;
 const DEFAULT_PAIRING_WINDOW: Duration = Duration::from_secs(120);
 const DEFAULT_MAX_FAILURES: u8 = 5;
+const PAIRING_FINALIZE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Pairing state-machine errors (T351 migration). The `Display` strings are
 /// part of the observable wire contract — Swift localizes by substring
@@ -90,6 +91,7 @@ pub enum PairingPhase {
     Handshaking,
     Verification,
     WaitingForPeer,
+    Finalizing,
     Paired,
     Cancelled,
     TimedOut,
@@ -596,16 +598,34 @@ impl PairingManager {
             }
 
             if local_persisted && remote_persisted {
+                self.set_finalizing(session_id).await;
+                match tokio::time::timeout(PAIRING_FINALIZE_TIMEOUT, connection.shutdown()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        log::warn!(
+                            "Pairing transport close failed after both peers persisted: {error}"
+                        );
+                    }
+                    Err(_) => {
+                        log::warn!("Pairing transport close timed out after both peers persisted");
+                    }
+                }
+                // Both trust records are already durable and both peers have
+                // observed the other's PairingPersisted frame. A close error
+                // here cannot undo the completed pairing and must not be
+                // reported as a pairing failure.
                 if let Err(error) = self.finish_success(session_id, &hostname).await {
                     self.fail_session(session_id, error.to_string()).await;
                 }
-                // Both peers have observed the other's persisted state. Finish
-                // the underlying send stream explicitly; Iroh's flush is not a
-                // delivery acknowledgement and Drop may close the QUIC
-                // connection before the final frame is consumed.
-                let _ = connection.shutdown().await;
                 return;
             }
+        }
+    }
+
+    async fn set_finalizing(&self, session_id: u64) {
+        let mut state = self.state.lock().await;
+        if state.session_id == session_id {
+            state.phase = PairingPhase::Finalizing;
         }
     }
 

@@ -350,6 +350,7 @@ export interface PairingStatus {
     | "handshaking"
     | "verification"
     | "waiting_for_peer"
+    | "finalizing"
     | "paired"
     | "cancelled"
     | "timed_out"

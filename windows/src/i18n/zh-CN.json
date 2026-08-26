@@ -208,6 +208,7 @@
   "settings.pairingCode": "配对验证码",
   "settings.compareCode": "请确认另一台设备显示相同验证码",
   "settings.waitingPeerConfirm": "已确认，等待对端确认...",
+  "settings.pairingFinalizing": "正在完成配对...",
   "settings.secureHandshake": "正在建立安全连接...",
   "settings.pairingReady": "配对已开启",
   "settings.pairingInstruction": "请在另一端设备列表点击配对按钮",

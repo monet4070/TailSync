@@ -972,7 +972,10 @@ struct SettingsView: View {
                     .font(.caption2.monospaced())
                     .foregroundColor(palette.tertiaryColor)
                     .textSelection(.enabled)
-                if peer.local_confirmed {
+                if pairingStatus?.phase == "finalizing" {
+                    ProgressView(Loc.t("settings.pairingFinalizing"))
+                        .controlSize(.small)
+                } else if peer.local_confirmed {
                     Text(Loc.t("settings.waitingPeerConfirm"))
                         .font(.caption)
                         .foregroundColor(palette.accentColor)
@@ -1009,6 +1012,7 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(
                         pairingInProgress
+                        || pairingStatus?.phase == "finalizing"
                         || pairingStatus?.peer == nil
                         || pairingStatus?.peer?.local_confirmed == true
                     )
@@ -1513,7 +1517,7 @@ struct SettingsView: View {
     private func refreshPairingStatus() async {
         guard let status = try? await ApiClient.shared.getPairingStatus() else { return }
         pairingStatus = status
-        if status.peer != nil && ["verification", "waiting_for_peer"].contains(status.phase) {
+        if status.peer != nil && ["verification", "waiting_for_peer", "finalizing"].contains(status.phase) {
             showPairingSheet = true
         }
         if status.phase == "paired", previousPairingPhase != "paired" {

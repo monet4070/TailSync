@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::pin::Pin;
@@ -19,6 +20,15 @@ pub const ALPN: &[u8] = b"tailsync/4";
 pub const RTT_ALPN: &[u8] = b"tailsync/4/rtt";
 const SECRET_KEY_SIZE: usize = 32;
 static IDENTITY_RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+type ShutdownFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
+
+enum ShutdownState {
+    Open,
+    Waiting(ShutdownFuture),
+    Complete,
+    Failed(String),
+}
 
 pub fn canonical_endpoint_id(value: &str) -> Result<String, String> {
     EndpointId::from_str(value.trim())
@@ -46,6 +56,7 @@ pub struct IrohBiStream {
     send: SendStream,
     recv: RecvStream,
     connection: Connection,
+    shutdown_state: ShutdownState,
 }
 
 pub struct IrohRttProbe {
@@ -176,6 +187,7 @@ impl IrohBiStream {
             send,
             recv,
             connection,
+            shutdown_state: ShutdownState::Open,
         }
     }
 
@@ -298,7 +310,53 @@ impl AsyncWrite for IrohBiStream {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        AsyncWrite::poll_shutdown(Pin::new(&mut self.send), cx)
+        if matches!(&self.shutdown_state, ShutdownState::Complete) {
+            return Poll::Ready(Ok(()));
+        }
+        if let ShutdownState::Failed(message) = &self.shutdown_state {
+            return Poll::Ready(Err(io::Error::other(message.clone())));
+        }
+
+        if matches!(&self.shutdown_state, ShutdownState::Open) {
+            if let Err(error) = self.send.finish() {
+                let message = error.to_string();
+                self.shutdown_state = ShutdownState::Failed(message.clone());
+                return Poll::Ready(Err(io::Error::other(message)));
+            }
+
+            let stopped = self.send.stopped();
+            self.shutdown_state = ShutdownState::Waiting(Box::pin(async move {
+                match stopped.await {
+                    Ok(None) => Ok(()),
+                    Ok(Some(code)) => Err(io::Error::other(format!(
+                        "peer stopped Iroh send stream with code {code}"
+                    ))),
+                    Err(error) => Err(io::Error::other(error)),
+                }
+            }));
+        }
+
+        let result = match &mut self.shutdown_state {
+            ShutdownState::Waiting(future) => future.as_mut().poll(cx),
+            ShutdownState::Complete => return Poll::Ready(Ok(())),
+            ShutdownState::Failed(message) => {
+                return Poll::Ready(Err(io::Error::other(message.clone())));
+            }
+            ShutdownState::Open => unreachable!("shutdown state initialized above"),
+        };
+
+        match result {
+            Poll::Ready(Ok(())) => {
+                self.shutdown_state = ShutdownState::Complete;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => {
+                let message = error.to_string();
+                self.shutdown_state = ShutdownState::Failed(message.clone());
+                Poll::Ready(Err(io::Error::other(message)))
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 

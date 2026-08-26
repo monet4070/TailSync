@@ -169,9 +169,9 @@ impl SecureConnection {
     }
 
     /// Finish the underlying write side after the application protocol has
-    /// completed its final acknowledgement exchange. In particular, Iroh's
-    /// `flush` only means that bytes reached the local QUIC stack; an explicit
-    /// shutdown is still needed to finish the send stream before dropping it.
+    /// completed its final acknowledgement exchange. Iroh waits for the
+    /// peer's transport acknowledgement here so the final frame is not lost
+    /// when the stream is dropped immediately afterwards.
     pub async fn shutdown(&mut self) -> std::io::Result<()> {
         self.stream.shutdown().await
     }

@@ -208,6 +208,7 @@
   "settings.pairingCode": "Pairing verification code",
   "settings.compareCode": "Confirm that the other device shows the same code",
   "settings.waitingPeerConfirm": "Confirmed, waiting for the other device...",
+  "settings.pairingFinalizing": "Finalizing pairing...",
   "settings.secureHandshake": "Establishing a secure connection...",
   "settings.pairingReady": "Pairing is ready",
   "settings.pairingInstruction": "On the other device, click Pair in the device list",

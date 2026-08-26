@@ -1309,7 +1309,9 @@ export function Settings() {
                   {t("settings.compareCode")}
                 </p>
                 <div className="pairing-peer-fingerprint">{pairingStatus.peer.fingerprint}</div>
-                {pairingStatus.phase === "waiting_for_peer" && (
+                {pairingStatus.phase === "finalizing" ? (
+                  <p className="pairing-progress">{t("settings.pairingFinalizing")}</p>
+                ) : pairingStatus.phase === "waiting_for_peer" && (
                   <p className="pairing-progress">{t("settings.waitingPeerConfirm")}</p>
                 )}
               </>
@@ -1343,7 +1345,7 @@ export function Settings() {
                 type="button"
                 className="pair-submit"
                 onClick={() => void handlePair()}
-                disabled={pairingBusy || !pairingStatus?.peer || pairingStatus.peer.local_confirmed}
+                disabled={pairingBusy || pairingStatus?.phase === "finalizing" || !pairingStatus?.peer || pairingStatus.peer.local_confirmed}
               >
                 {t(pairingStatus?.peer?.local_confirmed
                   ? "settings.confirmed"
