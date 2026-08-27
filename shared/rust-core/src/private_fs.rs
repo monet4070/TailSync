@@ -469,8 +469,34 @@ fn path_with_suffix(path: &Path, suffix: &str) -> std::path::PathBuf {
     path.with_file_name(name)
 }
 
+/// NTFS ACL inheritance propagation is asynchronous: while one thread
+/// restricts a parent directory (or replaces a sibling), a concurrent
+/// `SetFileSecurityW` on a file inside it can fail with a transient
+/// ERROR_ACCESS_DENIED even though the caller holds WRITE_DAC. The
+/// in-process restriction mutex removes most of the overlap, but parent
+/// restriction and file replacement still churn the security descriptors,
+/// so absorb the transient failures with a short bounded retry instead of
+/// failing the whole create/restrict flow.
 #[cfg(windows)]
 fn set_private_windows_acl(path: &Path, directory: bool) -> io::Result<()> {
+    const MAX_ATTEMPTS: u32 = 5;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match set_private_windows_acl_once(path, directory) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.raw_os_error() == Some(5) /* ERROR_ACCESS_DENIED */
+                    && attempt < MAX_ATTEMPTS =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(u64::from(attempt) * 4));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the retry loop always returns or errors on the last attempt")
+}
+
+#[cfg(windows)]
+fn set_private_windows_acl_once(path: &Path, directory: bool) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
