@@ -10,6 +10,7 @@ pub mod admission;
 pub mod connection_limiter;
 pub mod delivery;
 pub mod directory;
+pub mod discovery_admission;
 pub mod event_receiver;
 pub mod health;
 pub mod inbound_source;

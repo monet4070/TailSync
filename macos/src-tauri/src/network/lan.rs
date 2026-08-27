@@ -6,6 +6,7 @@ use tokio::time::{timeout, Duration, Instant};
 
 use super::tailscale::{LocalInfo, PeerInfo};
 use super::{ConnectionInterface, PeerCandidate, PeerStatus, TCP_PORT};
+use tailsync_core::peer::discovery_admission::DiscoveryAdmission;
 
 const DISCOVERY_PORT: u16 = 19889;
 const DISCOVERY_REQUEST: &[u8] = b"TAILSYNC_DISCOVER_V1";
@@ -244,9 +245,20 @@ pub async fn start_responder() {
             }
         };
         let mut buffer = [0u8; 128];
+        let mut admission = DiscoveryAdmission::new(std::time::Instant::now());
         loop {
             match socket.recv_from(&mut buffer).await {
                 Ok((length, source)) if &buffer[..length] == DISCOVERY_REQUEST => {
+                    // Every reply passes the shared admission gate (source
+                    // filter plus per-source/global budgets). Denied probes
+                    // are silently dropped: per-packet denial logs would
+                    // flood the log and leak source addresses.
+                    if !admission
+                        .should_reply(source.ip(), std::time::Instant::now())
+                        .is_allowed()
+                    {
+                        continue;
+                    }
                     if let Err(error) = socket.send_to(&payload, source).await {
                         log::debug!("LAN discovery response to {source} failed: {error}");
                     }

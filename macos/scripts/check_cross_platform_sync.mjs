@@ -186,6 +186,21 @@ for (const [root, label] of [[winRoot, 'Windows'], [macRoot, 'macOS']]) {
   if (!isReExportShim(rateLimitSource, 'tailsync_core::peer::rate_limit', 'check_peer_event_budget')) {
     fail(`${label} network/rate_limit.rs must re-export check_peer_event_budget from tailsync_core.`);
   }
+  // The UDP discovery responder is platform I/O with allowed drift, but
+  // every reply must pass the shared DiscoveryAdmission gate (2026-08
+  // audit follow-up): a platform that stops consulting the core policy
+  // silently loses the source filter and reply budgets.
+  const lanSource = read(root, 'src-tauri/src/network/lan.rs');
+  const lanCode = lanSource
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  if (!/\bDiscoveryAdmission\b/.test(lanCode) || !/should_reply\s*\(/.test(lanCode)) {
+    fail(
+      `${label} network/lan.rs must gate UDP discovery replies through ` +
+        'tailsync_core::peer::discovery_admission::DiscoveryAdmission::should_reply.',
+    );
+  }
 }
 
 function assertReceivedFileHistorySource(root, platform) {
