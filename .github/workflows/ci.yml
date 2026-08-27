@@ -209,9 +209,11 @@ jobs:
       - name: Run manual v1 recovery functional tests
         run: python -m unittest shared/scripts/test_migrate_v1.py
       - name: Test signed updater manifest generation
-        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs scripts/verify-published-update.test.mjs scripts/check-production-features.test.mjs
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs scripts/verify-published-update.test.mjs scripts/check-production-features.test.mjs scripts/check-rustsec-exceptions.test.mjs
       - name: Guard dev-only crate features
         run: node scripts/check-production-features.mjs .
+      - name: Validate RustSec exception registry
+        run: node scripts/check-rustsec-exceptions.mjs .
       - name: Validate updater trust anchor and endpoints
         run: node scripts/validate-updater-config.mjs --root .
       - name: Validate checked-in application versions

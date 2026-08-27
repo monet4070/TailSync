@@ -14,6 +14,10 @@ directories = "5"
 fernet = { version = "0.2", default-features = false, features = ["rustcrypto"] }
 fs2 = "0.4"
 hex = "0.4"
+# Exact pin: iroh's network behavior across versions needs explicit
+# verification (macOS/Windows device pairing over LAN and Tailscale, plus
+# the iroh_transport RTT tests) — a compile pass is not enough. Upgrades
+# are deliberate PRs driven by the monthly Dependabot bump, never silent.
 iroh = "=1.0.3"
 log = "0.4"
 rand = "0.8"

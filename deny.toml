@@ -1,0 +1,38 @@
+# cargo-deny configuration (2026-08 security-audit follow-up).
+#
+# Phase 1 enables the advisories check only. Licenses, bans, and sources
+# are phase 2: they land separately once the license allowlist has been
+# through legal review, so an unreviewed list never blocks this gate.
+#
+# Advisory exceptions are NOT registered here alone: every id in
+# [advisories].ignore must have a matching entry in
+# security/rustsec-exceptions.json (reason, upstream link, owner, expiry,
+# tracking issue), validated by scripts/check-rustsec-exceptions.mjs. The
+# check fails the day an exception expires.
+
+[graph]
+# Audit the dependency graphs of all three supported platforms, not just
+# whatever the runner happens to be.
+targets = [
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "x86_64-unknown-linux-gnu" },
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+# Phase-2 placeholders; unused while CI runs `cargo deny check advisories`.
+[licenses]
+version = 2
+allow = []
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,49 @@
+name: RustSec audit
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Daily at 06:00 UTC: catches newly published RustSec advisories even
+    # when nothing is pushed. Without this, a new advisory is invisible
+    # until the next push or PR.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rustsec-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo-deny advisories (${{ matrix.manifest }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        manifest:
+          - .
+          - windows/src-tauri
+          - macos/src-tauri
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
+          manifest-path: ${{ matrix.manifest }}/Cargo.toml
+
+  exceptions:
+    name: RustSec exception registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Validate exception registry against deny.toml
+        run: node scripts/check-rustsec-exceptions.mjs .

@@ -1,0 +1,36 @@
+# Dependabot configuration (2026-08 security-audit follow-up).
+#
+# Monthly version updates across all six dependency surfaces. High-risk
+# dependencies (iroh, windows-sys, Tauri) get their own PRs by default —
+# no grouping — because upgrades require the full device test matrix, not
+# just a compile. Never enable auto-merge for this repository.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /windows/src-tauri
+      - /macos/src-tauri
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directories:
+      - /windows
+      - /site
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
