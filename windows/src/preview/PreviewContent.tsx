@@ -5,6 +5,7 @@ import { previewRendererFor, type PreviewPayload } from "../utils/historyPreview
 // Keep PDF, DOCX and syntax-highlighting code out of the history window's
 // initial bundle. The renderer is loaded only after the user opens that type.
 const ImagePreview = lazy(async () => import("./renderers/ImagePreview").then((module) => ({ default: module.ImagePreview })));
+const SvgPreview = lazy(async () => import("./renderers/SvgPreview").then((module) => ({ default: module.SvgPreview })));
 const MarkdownPreview = lazy(async () => import("./renderers/MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })));
 const PdfPreview = lazy(async () => import("./renderers/PdfPreview").then((module) => ({ default: module.PdfPreview })));
 const DocxPreview = lazy(async () => import("./renderers/DocxPreview").then((module) => ({ default: module.DocxPreview })));
@@ -25,6 +26,8 @@ export function PreviewContent({
     switch (renderer) {
       case "image":
         return <ImagePreview payload={payload} t={t} onCorrupt={onCorrupt} />;
+      case "svg":
+        return <SvgPreview payload={payload} t={t} onCorrupt={onCorrupt} />;
       case "text":
         return <TextPreview key={`${payload.entry_id ?? 0}-${payload.name}`} data={payload.data} name={payload.name} t={t} />;
       case "code":

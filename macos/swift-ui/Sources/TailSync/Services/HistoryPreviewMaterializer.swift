@@ -56,6 +56,15 @@ extension HistoryPreviewStore {
         }
 
         let fileExtension = HistoryPreviewFileTypes.fileExtension(for: preview.name)
+        if fileExtension == "svg" {
+            guard let source = String(data: preview.data, encoding: .utf8) else {
+                throw HistoryPreviewStoreError.invalidText
+            }
+            // The browser-engine snapshot renderer takes over in the view
+            // model; this base material keeps the escaped source in memory
+            // and is what the preview shows if that render fails.
+            return .text(source)
+        }
         if preview.kind == "text" || HistoryPreviewFileTypes.textExtensions.contains(fileExtension) {
             guard let text = String(data: preview.data, encoding: .utf8) else {
                 throw HistoryPreviewStoreError.invalidText

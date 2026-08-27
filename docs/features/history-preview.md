@@ -38,7 +38,11 @@ renderer family, bounded to the current display's usable work area.
 - DOCX with a local renderer on Windows and the native preview path on macOS;
 - PPT and PPTX through the native macOS Quick Look preview path after signature
   validation;
-- SVG as source text only;
+- SVG on macOS rasterized by the system browser engine inside a locked-down
+  offscreen web view, and on Windows rendered in a sandboxed WebView2 iframe;
+  both provide a compact preview/source control and a per-entry "trust
+  external links" switch in the shared header. A render in progress shows a
+placeholder, and render failures or oversized SVGs fall back to source text;
 - metadata and restore controls for unsupported formats such as XLSX.
 
 ## Batch navigation
@@ -61,7 +65,43 @@ when the entry has been restored to the clipboard.
 Preview payloads are capped at 64 MiB and checked before and after decryption.
 Markdown is sanitized and cannot automatically load remote images, media,
 frames, scripts, or styles. Links are handed to the system browser only after
-an explicit click. SVG markup is never executed.
+an explicit click. On macOS, SVG markup is rendered by the system browser
+engine inside a locked-down offscreen WKWebView: JavaScript is disabled at the
+configuration level, the host document carries a `default-src 'none'`
+Content-Security-Policy that blocks every network subresource (inline styles
+and `data:` images/fonts remain available so design-tool exports keep their
+appearance), the SVG is loaded with a nil base URL (unique origin, no file
+access), and the data store is non-persistent. Because CSP does not constrain
+top-level navigation, the navigation delegate permits only the initial
+`about:blank` document load and cancels everything else — `<meta
+http-equiv="refresh">`, links, and form submissions cannot leave the origin.
+Each render is bounded by an 8 MiB input limit, 4,096-pixel dimension limit,
+16-million-pixel output limit, and a four-second watchdog; a render in
+progress shows a placeholder instead of intermediate source text. The
+snapshot is taken in memory and the web view is destroyed immediately after
+it; any render failure returns to the in-memory escaped source viewer. SVG
+bytes never touch disk or Quick Look.
+A per-entry "trust external links" switch, off by default and reset on
+navigation, lets the user opt the current preview into loading external
+images and fonts — always through a confirmation dialog listing the exact
+HTTPS hosts, with Allow as an explicit second button. References to
+non-HTTPS targets or literal private/loopback/link-local IP hosts are
+disclosed as refused and block trust entirely. Browser-compatible decimal,
+octal, hexadecimal, and shortened IPv4 spellings receive the same non-public
+classification as their canonical addresses. Trusted mode lists only the
+approved exact HTTPS origins in `img-src` and `font-src` (preserving explicit
+ports), so an undisclosed host remains blocked even if extraction misses its
+syntax; the renderer also re-checks eligibility before rendering.
+
+On Windows, the SVG is kept in memory and placed in a `srcdoc` document inside
+an iframe with an empty sandbox (no scripts, forms, top navigation, or host
+page access). Its CSP defaults to no network access and only permits inline
+styles and `data:` images/fonts; trusted mode adds only the exact approved
+public HTTPS origins to the image/font policy. The same 8 MiB input,
+4,096-pixel dimension, 16-million-pixel output, and four-second watchdog
+limits apply, and a timeout falls back to the in-memory source viewer.
+Documents containing active or navigation markup are also kept in the source
+viewer instead of being loaded into the visual frame.
 
 Windows keeps decrypted preview bytes in memory and revokes Blob URLs on item
 replacement and window close. macOS creates a plaintext temporary file only

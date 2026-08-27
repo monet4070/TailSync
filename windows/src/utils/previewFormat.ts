@@ -31,7 +31,8 @@ export function selectPreviewRenderer(
     case "gif":
     case "webp": return "image";
     case "txt":
-    case "svg": return "text";
+      return "text";
+    case "svg": return "svg";
     case "md":
     case "markdown": return "markdown";
     case "c":
@@ -89,7 +90,6 @@ export function getPreviewMimeType(
     case "jpeg": return "image/jpeg";
     case "gif": return "image/gif";
     case "webp": return "image/webp";
-    case "svg": return "text/plain";
     default: return null;
   }
 }

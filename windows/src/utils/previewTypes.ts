@@ -8,6 +8,7 @@ export type PreviewKind = "image" | "text" | "file";
 
 export type PreviewRenderer =
   | "image"
+  | "svg"
   | "text"
   | "code"
   | "markdown"

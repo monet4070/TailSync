@@ -69,6 +69,14 @@ struct HistoryImagePreviewView: View {
 
     private var image: NSImage { material.image }
 
+    init(
+        material: HistoryPreviewImageMaterial,
+        showsTransparencyInitially: Bool = true
+    ) {
+        self.material = material
+        _showsTransparency = State(initialValue: showsTransparencyInitially)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             imageToolbar
@@ -158,7 +166,7 @@ struct HistoryImagePreviewView: View {
             )
             .help(Loc.t("history.preview.transparency"))
         }
-        .historyPreviewToolbarStyle()
+        .historyPreviewToolbarStyle(height: HistoryPreviewLayoutMetrics.imageToolbarHeight)
     }
 
     private func imageMetadata(_ image: NSImage) -> some View {

@@ -97,6 +97,7 @@ final class HistoryPreviewModelTests: XCTestCase {
             ("file", "slides.ppt", nil, .presentation),
             ("file", "slides.pptx", nil, .presentation),
             ("file", "photo.webp", nil, .image),
+            ("file", "vector.svg", nil, .svg),
             ("file", "main.swift", nil, .code),
             ("text", "text.txt", "code", .code),
             ("text", "text.txt", nil, .text),

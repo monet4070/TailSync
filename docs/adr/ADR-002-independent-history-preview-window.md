@@ -46,7 +46,36 @@ loading all batch payloads into memory.
   runs on replacement, close, and application startup.
 - Markdown is sanitised and cannot load remote images, media, frames, scripts,
   or styles. Links open only after an explicit user action.
-- SVG is treated as text/code and is never executed as active markup.
+- macOS SVG previews rasterize every SVG with the system browser engine inside
+  a locked-down offscreen WKWebView, so a preview matches what a browser
+  would render. JavaScript is disabled at the configuration level, the host
+  document carries a `default-src 'none'` Content-Security-Policy that blocks
+  every network subresource, the SVG is loaded with a nil base URL (unique
+  origin, no file access), and the data store is non-persistent. Because CSP
+  does not constrain top-level navigation, the navigation delegate only
+  allows the initial `about:blank` document load and cancels every other
+  navigation decision — embedded `<meta http-equiv="refresh">`, link
+  activation, or form submission can never move the page to another origin.
+  Each render is bounded by an 8 MiB input limit, a 4,096-pixel dimension
+  limit, a 16-million-pixel output limit, and a four-second watchdog. The
+  snapshot is taken in memory and the web view is destroyed immediately; SVG
+  bytes are never written to a temporary file or passed to Quick Look. Any
+  render failure falls back to the in-memory escaped source viewer, and a
+  render in progress shows a placeholder instead of intermediate content.
+  This replaces the earlier bundled Rust resvg helper, which has been removed.
+- The preview may load external images and fonts only after the user
+  explicitly accepts per-host confirmation for the current entry; the choice
+  resets on navigation and is off by default. The confirmation lists the
+  exact HTTPS hosts the preview would contact, requires Allow as the explicit
+  second button, and refuses trust entirely when the document references
+  non-HTTPS targets, literal private/loopback/link-local IP hosts, or
+  non-public ranges, including browser-compatible alternate IPv4 spellings.
+  Trusted mode relaxes passive HTTPS image and font loading only, by listing
+  the approved exact origins (including explicit ports) in `img-src` and
+  `font-src` — external
+  stylesheets, media, plain HTTP, blob URLs, scripts, forms, and connections
+  stay blocked, and the renderer re-checks reference eligibility before
+  rendering so a bypassed dialog cannot widen it.
 - Oversized metadata is rejected before decryption and the decoded payload is
   checked again before it reaches a renderer.
 
@@ -60,6 +89,11 @@ loading all batch payloads into memory.
 - PDF uses a controllable local reader (PDF.js on Windows and PDFKit on macOS)
   with selectable text;
 - DOCX uses a local Windows renderer and the native macOS preview path;
+- SVG uses the platform browser engine in a locked-down visual renderer with a
+  visual/source toggle in the shared header: macOS uses an offscreen WKWebView
+  snapshot, while Windows uses a sandboxed WebView2 `srcdoc` iframe. Both
+  default to no external network access and fall back to the in-memory source
+  viewer when rendering fails;
 - unsupported formats show metadata and retain the restore action.
 
 ## Compatibility

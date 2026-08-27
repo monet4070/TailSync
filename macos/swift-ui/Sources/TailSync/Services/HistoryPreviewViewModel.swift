@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 struct HistoryPreviewDependencies: @unchecked Sendable {
@@ -31,6 +32,24 @@ final class HistoryPreviewViewModel: ObservableObject {
     @Published private(set) var items: [HistoryPreviewItem] = []
     @Published private(set) var currentIndex = 0
     @Published private(set) var restoreState: RestoreState = .idle
+    /// True while the browser engine is rasterizing the current SVG; the
+    /// preview shows a placeholder instead of the intermediate source text.
+    @Published private(set) var isRenderingSVG = false
+    /// Per-entry user choice to let the SVG preview load external images and
+    /// fonts.  Resets on navigation and starts disabled.
+    @Published private(set) var svgExternalResourcesTrusted = false
+
+    /// Host disclosure for the trust confirmation: which hosts enabling
+    /// trust would contact, and which references can never be trusted
+    /// (non-HTTPS or non-public literal IP targets).
+    var svgExternalReferenceSummary: HistoryPreviewWebViewSVGRenderer.ExternalReferenceSummary {
+        guard case .ready(let payload, _, let format) = state,
+              format == .svg,
+              let source = String(data: payload.data, encoding: .utf8) else {
+            return .init()
+        }
+        return HistoryPreviewWebViewSVGRenderer.externalReferenceSummary(for: source)
+    }
 
     enum RestoreState: Equatable {
         case idle
@@ -43,16 +62,20 @@ final class HistoryPreviewViewModel: ObservableObject {
 
     private let session: HistoryPreviewSession
     private let dependencies: HistoryPreviewDependencies
+    private let svgWebRenderer: any HistoryPreviewWebSVGRendering
     private var generation = 0
     private var loadTask: Task<Void, Never>?
     private var restoreFeedbackTask: Task<Void, Never>?
+    private var svgRenderTask: Task<Void, Never>?
 
     init(
         session: HistoryPreviewSession = HistoryPreviewSession(),
-        dependencies: HistoryPreviewDependencies = .live
+        dependencies: HistoryPreviewDependencies = .live,
+        svgWebRenderer: any HistoryPreviewWebSVGRendering = HistoryPreviewWebViewSVGRenderer()
     ) {
         self.session = session
         self.dependencies = dependencies
+        self.svgWebRenderer = svgWebRenderer
     }
 
     var currentItem: HistoryPreviewItem? {
@@ -145,6 +168,86 @@ final class HistoryPreviewViewModel: ObservableObject {
         }
     }
 
+    /// Explicit user choice to (stop) letting the current SVG preview load
+    /// external resources.  Only affects the current entry and re-renders it;
+    /// scripts stay disabled either way.
+    func setSVGExternalResourcesTrusted(_ trusted: Bool) {
+        guard trusted != svgExternalResourcesTrusted,
+              case .ready(let payload, _, let format) = state,
+              format == .svg else { return }
+        if trusted {
+            guard let source = String(data: payload.data, encoding: .utf8) else { return }
+            let summary = HistoryPreviewWebViewSVGRenderer.externalReferenceSummary(for: source)
+            guard summary.rejectedHosts.isEmpty else { return }
+        }
+        svgExternalResourcesTrusted = trusted
+        startSVGRender(payload: payload)
+    }
+
+    /// Rasterize (or re-rasterize) an SVG with the browser engine.  The
+    /// result upgrades the base source-text material; a failure keeps
+    /// whatever material is currently installed (escaped source, or the
+    /// previous snapshot when re-rendering after a trust change).
+    private func startSVGRender(payload: HistoryPreviewData) {
+        svgRenderTask?.cancel()
+        svgWebRenderer.cancel()
+        // Set before publishing anything the placeholder must cover: the
+        // render task only starts on the next main-actor hop, so a frame
+        // could otherwise show the intermediate source or stale snapshot.
+        isRenderingSVG = true
+        let requestGeneration = generation
+        let trustingExternalResources = svgExternalResourcesTrusted
+        svgRenderTask = Task { [weak self] in
+            await self?.renderSVG(
+                payload: payload,
+                trustingExternalResources: trustingExternalResources,
+                requestGeneration: requestGeneration
+            )
+        }
+    }
+
+    private func renderSVG(
+        payload: HistoryPreviewData,
+        trustingExternalResources: Bool,
+        requestGeneration: Int
+    ) async {
+        guard requestGeneration == generation else { return }
+        isRenderingSVG = true
+        defer {
+            if requestGeneration == generation {
+                isRenderingSVG = false
+            }
+        }
+        guard let source = String(data: payload.data, encoding: .utf8) else { return }
+        if trustingExternalResources {
+            // Second enforcement point behind the UI gate: even if the
+            // confirmation was bypassed, refuse to render a trusted document
+            // whose references include non-HTTPS or non-public targets.
+            let summary = HistoryPreviewWebViewSVGRenderer.externalReferenceSummary(for: source)
+            guard summary.rejectedHosts.isEmpty else {
+                svgExternalResourcesTrusted = false
+                return
+            }
+        }
+        do {
+            let png = try await svgWebRenderer.renderPNG(
+                fromSVG: source,
+                trustingExternalResources: trustingExternalResources
+            )
+            try Task.checkCancellation()
+            guard requestGeneration == generation else { return }
+            guard let image = NSImage(data: png), !image.representations.isEmpty else {
+                return
+            }
+            let material = HistoryPreviewImageMaterial(data: png, image: image)
+            session.install(payload, material: .image(material))
+            state = .ready(payload: payload, material: .image(material), format: .svg)
+        } catch {
+            // Cancellation, timeout, or a render failure: the currently
+            // installed material remains the visible state.
+        }
+    }
+
     func contains(entryId: Int64) -> Bool {
         items.contains { $0.id == entryId } || currentEntryId == entryId
     }
@@ -155,9 +258,14 @@ final class HistoryPreviewViewModel: ObservableObject {
         loadTask = nil
         restoreFeedbackTask?.cancel()
         restoreFeedbackTask = nil
+        svgRenderTask?.cancel()
+        svgRenderTask = nil
+        svgWebRenderer.cancel()
         session.close()
         state = .idle
         restoreState = .idle
+        isRenderingSVG = false
+        svgExternalResourcesTrusted = false
         items = []
         currentIndex = 0
     }
@@ -206,6 +314,11 @@ final class HistoryPreviewViewModel: ObservableObject {
         generation += 1
         let requestGeneration = generation
         loadTask?.cancel()
+        svgRenderTask?.cancel()
+        svgRenderTask = nil
+        svgWebRenderer.cancel()
+        isRenderingSVG = false
+        svgExternalResourcesTrusted = false
         session.close()
         state = .loading
         let batchLookup = item.resolvesBatchFirst ? item.batchId : nil
@@ -232,6 +345,12 @@ final class HistoryPreviewViewModel: ObservableObject {
                 )
                 state = .ready(payload: payload, material: material, format: format)
                 onFormatChange?(format.windowKind)
+                // SVG materializes as its escaped source; the locked-down
+                // browser-engine snapshot upgrades it to a rasterized image
+                // while the load task (and its generation) still govern it.
+                if format == .svg {
+                    startSVGRender(payload: payload)
+                }
             } catch is CancellationError {
                 if let preparedMaterial {
                     session.discard(preparedMaterial)

@@ -5,6 +5,7 @@ enum HistoryPreviewFormat: String, CaseIterable, Equatable, Sendable {
     case text
     case code
     case markdown
+    case svg
     case image
     case pdf
     case docx
@@ -15,7 +16,7 @@ enum HistoryPreviewFormat: String, CaseIterable, Equatable, Sendable {
         switch self {
         case .text, .code: return .text
         case .markdown, .docx, .presentation: return .document
-        case .image: return .image
+        case .svg, .image: return .image
         case .pdf: return .pdf
         case .unsupported: return .text
         }
@@ -28,6 +29,9 @@ enum HistoryPreviewFormat: String, CaseIterable, Equatable, Sendable {
         let fileExtension = HistoryPreviewFileTypes.fileExtension(for: payload.name)
         if payload.kind == "image" || HistoryPreviewFileTypes.imageExtensions.contains(fileExtension) {
             return .image
+        }
+        if fileExtension == "svg" {
+            return .svg
         }
         switch fileExtension {
         case "md", "markdown": return .markdown

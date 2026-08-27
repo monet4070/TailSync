@@ -2,7 +2,7 @@ import Foundation
 
 enum HistoryPreviewFileTypes {
     static let textExtensions: Set<String> = [
-        "txt", "md", "markdown", "svg", "json", "jsonl", "xml", "yaml", "yml",
+        "txt", "md", "markdown", "json", "jsonl", "xml", "yaml", "yml",
         "toml", "ini", "cfg", "conf", "log", "csv", "tsv", "html", "htm", "css",
         "js", "jsx", "ts", "tsx", "swift", "rs", "go", "py", "rb", "java", "kt",
         "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "php", "sh", "bash",

@@ -29,6 +29,18 @@ final class HistoryPreviewStoreTests: XCTestCase {
             + Data(repeating: 0, count: 32)
     }
 
+    private func pngFixture() throws -> Data {
+        let image = NSImage(size: NSSize(width: 2, height: 2))
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+        image.unlockFocus()
+        return try XCTUnwrap(
+            NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation))?
+                .representation(using: .png, properties: [:])
+        )
+    }
+
     func testSanitizedNameCannotEscapeAsPathOrControlCharacter() {
         let unsafe = "../absolute/path\u{00}\u{1F}\\secret.txt"
         let sanitized = HistoryPreviewStore.sanitizedFileName(unsafe)
@@ -128,7 +140,7 @@ final class HistoryPreviewStoreTests: XCTestCase {
         )
     }
 
-    func testSvgAndTextFilePathsStayAsEscapedSourceInMemory() throws {
+    func testSvgMaterializesAsEscapedSourceInMemory() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = HistoryPreviewStore(directory: directory)
@@ -161,6 +173,21 @@ final class HistoryPreviewStoreTests: XCTestCase {
             ).count,
             0
         )
+    }
+
+    func testNonUtf8SvgIsRejected() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HistoryPreviewStore(directory: directory)
+        let preview = HistoryPreviewData(
+            kind: "file",
+            name: "vector.svg",
+            sizeBytes: 2,
+            data: Data([0xFF, 0xFE])
+        )
+        XCTAssertThrowsError(try store.materialize(preview)) { error in
+            XCTAssertEqual(error as? HistoryPreviewStoreError, .invalidText)
+        }
     }
 
     func testSessionCloseRemovesDocxQuickLookFileButKeepsTextInMemory() throws {

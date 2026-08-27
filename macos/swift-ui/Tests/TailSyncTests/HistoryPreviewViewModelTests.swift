@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import TailSync
@@ -150,6 +151,255 @@ final class HistoryPreviewViewModelTests: XCTestCase {
         XCTAssertEqual(model.state, .idle)
     }
 
+    func testSVGLoadUpgradesSourceToBrowserEngineImageMaterial() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tailsync-preview-model-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = HistoryPreviewSession(store: HistoryPreviewStore(directory: directory))
+        let payload = Self.svgPayload(id: 51)
+        let webRenderer = StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        let model = HistoryPreviewViewModel(
+            session: session,
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+
+        model.present(Self.request(id: 51, name: "vector.svg"))
+        try await waitUntil {
+            if case .ready(_, .image, _) = model.state { return true }
+            return false
+        }
+        XCTAssertEqual(webRenderer.renderCount, 1)
+        guard case .ready(let installed, .image(let material), let format) = model.state else {
+            return XCTFail("the browser engine should rasterize SVG into an image material")
+        }
+        XCTAssertEqual(format, .svg)
+        XCTAssertFalse(material.image.representations.isEmpty)
+        XCTAssertEqual(installed.data, payload.data)
+        // The snapshot stayed in memory.
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    func testSVGLoadFailureKeepsInMemorySourceViewer() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tailsync-preview-model-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = HistoryPreviewSession(store: HistoryPreviewStore(directory: directory))
+        let payload = Self.svgPayload(id: 52)
+        let webRenderer = StubSVGWebRenderer(
+            result: .failure(HistoryPreviewWebSVGRendererError.timedOut)
+        )
+        let model = HistoryPreviewViewModel(
+            session: session,
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+
+        model.present(Self.request(id: 52, name: "vector.svg"))
+        try await waitUntil { model.isReady }
+        // The web render fails asynchronously after the source viewer is
+        // installed; both states end with the escaped source in memory.
+        try await Task.sleep(nanoseconds: 150_000_000)
+        guard case .ready(_, .text(let source), let format) = model.state else {
+            return XCTFail("a failed web render must keep the source viewer")
+        }
+        XCTAssertEqual(format, .svg)
+        XCTAssertEqual(source, String(data: payload.data, encoding: .utf8))
+    }
+
+    func testNonSVGEntriesNeverReachTheWebRenderer() async throws {
+        let webRenderer = StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        let model = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { id, _ in Self.textPayload(id: id, text: "plain") },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+        model.present(Self.request(id: 61))
+        try await waitUntil { model.isReady }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(webRenderer.renderCount, 0, "text entries must not reach the web renderer")
+    }
+
+    func testTrustingExternalResourcesReRendersAndResetsPerEntry() async throws {
+        let session = HistoryPreviewSession()
+        let firstPayload = Self.svgPayload(id: 71)
+        let secondPayload = Self.svgPayload(id: 72)
+        let payloads: [Int64: HistoryPreviewData] = [71: firstPayload, 72: secondPayload]
+        let webRenderer = StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        let model = HistoryPreviewViewModel(
+            session: session,
+            dependencies: HistoryPreviewDependencies(
+                load: { id, _ in payloads[id] ?? firstPayload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+
+        let firstItem = HistoryPreviewItem(
+            id: 71,
+            batchId: nil,
+            batchIndex: nil,
+            batchCount: nil,
+            category: "file",
+            type: "file",
+            nameHint: "vector.svg",
+            sizeBytes: 4
+        )
+        let secondItem = HistoryPreviewItem(
+            id: 72,
+            batchId: nil,
+            batchIndex: nil,
+            batchCount: nil,
+            category: "file",
+            type: "file",
+            nameHint: "vector.svg",
+            sizeBytes: 4
+        )
+        model.present(HistoryPreviewRequest(items: [firstItem, secondItem], selectedIndex: 0))
+        try await waitUntil {
+            if case .ready(_, .image, _) = model.state { return true }
+            return false
+        }
+        XCTAssertEqual(webRenderer.trustedFlags, [false])
+
+        model.setSVGExternalResourcesTrusted(true)
+        try await waitUntil { webRenderer.trustedFlags.count == 2 }
+        XCTAssertEqual(webRenderer.trustedFlags.last, true)
+        XCTAssertTrue(model.svgExternalResourcesTrusted)
+        try await waitUntil {
+            if case .ready(_, .image, _) = model.state { return true }
+            return false
+        }
+
+        // Navigating to the next entry resets the trust choice.
+        model.navigateForward()
+        try await waitUntil {
+            if case .ready(let payload, .image, _) = model.state,
+               payload.entryId == 72 {
+                return true
+            }
+            return false
+        }
+        XCTAssertFalse(model.svgExternalResourcesTrusted)
+        try await waitUntil { webRenderer.trustedFlags.count == 3 }
+        XCTAssertEqual(webRenderer.trustedFlags.last, false)
+    }
+
+    func testSVGRenderKeepsPreviousMaterialOnTrustRerenderFailure() async throws {
+        let session = HistoryPreviewSession()
+        let payload = Self.svgPayload(id: 81)
+        let webRenderer = StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        let model = HistoryPreviewViewModel(
+            session: session,
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+        model.present(Self.request(id: 81, name: "vector.svg"))
+        try await waitUntil {
+            if case .ready(_, .image, _) = model.state { return true }
+            return false
+        }
+
+        webRenderer.result = .failure(HistoryPreviewWebSVGRendererError.timedOut)
+        model.setSVGExternalResourcesTrusted(true)
+        try await waitUntil { webRenderer.renderCount == 2 }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        guard case .ready(_, .image, _) = model.state else {
+            return XCTFail("a failed trusted re-render must keep the previous snapshot")
+        }
+        XCTAssertFalse(model.isRenderingSVG)
+    }
+
+    func testRejectedExternalTargetCannotEnableTrustOrLeaveRendererBusy() async throws {
+        let source = ##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image href="https://127.0.0.1/private.png"/></svg>"##
+        let data = Data(source.utf8)
+        let payload = HistoryPreviewData(
+            kind: "file",
+            name: "private.svg",
+            sizeBytes: Int64(data.count),
+            data: data,
+            entryId: 82
+        )
+        let webRenderer = StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        let model = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+        model.present(Self.request(id: 82, name: "private.svg"))
+        try await waitUntil {
+            if case .ready(_, .image, _) = model.state { return true }
+            return false
+        }
+
+        model.setSVGExternalResourcesTrusted(true)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(webRenderer.renderCount, 1)
+        XCTAssertFalse(model.svgExternalResourcesTrusted)
+        XCTAssertFalse(model.isRenderingSVG)
+    }
+
+    func testSVGExternalReferenceSummaryClassifiesHosts() async throws {
+        let source = ##"""
+<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image href="https://cdn.example.com/a.png"/><image href="http://plain.example.org/b.png"/><image href="https://192.168.5.5/c.png"/></svg>
+"""##
+        let payload = HistoryPreviewData(
+            kind: "file",
+            name: "vector.svg",
+            sizeBytes: Int64(source.utf8.count),
+            data: Data(source.utf8),
+            entryId: 91
+        )
+        let model = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: StubSVGWebRenderer(
+                result: .failure(HistoryPreviewWebSVGRendererError.timedOut)
+            )
+        )
+        model.present(Self.request(id: 91, name: "vector.svg"))
+        try await waitUntil { model.isReady }
+
+        let summary = model.svgExternalReferenceSummary
+        XCTAssertEqual(summary.allowedHosts, ["cdn.example.com"])
+        XCTAssertEqual(
+            Set(summary.rejectedHosts),
+            ["plain.example.org", "192.168.5.5"]
+        )
+
+        // Non-SVG entries never disclose trust targets.
+        let textModel = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { id, _ in Self.textPayload(id: id, text: "plain") },
+                restore: { _ in }
+            ),
+            svgWebRenderer: StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        )
+        textModel.present(Self.request(id: 92))
+        try await waitUntil { textModel.isReady }
+        XCTAssertTrue(textModel.svgExternalReferenceSummary.allowedHosts.isEmpty)
+        XCTAssertTrue(textModel.svgExternalReferenceSummary.rejectedHosts.isEmpty)
+    }
+
     private func waitUntil(
         attempts: Int = 200,
         condition: @MainActor () -> Bool
@@ -226,11 +476,60 @@ final class HistoryPreviewViewModelTests: XCTestCase {
         )
     }
 
+    nonisolated private static func svgPayload(id: Int64) -> HistoryPreviewData {
+        let source = #"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>"#
+        let data = Data(source.utf8)
+        return HistoryPreviewData(
+            kind: "file",
+            name: "vector.svg",
+            sizeBytes: Int64(data.count),
+            data: data,
+            entryId: id
+        )
+    }
+
+    nonisolated private static func pngFixture() throws -> Data {
+        let image = NSImage(size: NSSize(width: 2, height: 2))
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: 2, height: 2).fill()
+        image.unlockFocus()
+        return try XCTUnwrap(
+            NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation))?
+                .representation(using: .png, properties: [:])
+        )
+    }
+
     nonisolated private static func docxFixture() -> Data {
         Data([0x50, 0x4B, 0x03, 0x04])
             + Data("[Content_Types].xml word/document.xml".utf8)
             + Data([0x50, 0x4B, 0x05, 0x06])
     }
+}
+
+@MainActor
+private final class StubSVGWebRenderer: HistoryPreviewWebSVGRendering {
+    var result: Result<Data, Error>
+    private(set) var renderCount = 0
+    private(set) var trustedFlags: [Bool] = []
+
+    init(result: Result<Data, Error>) {
+        self.result = result
+    }
+
+    func renderPNG(
+        fromSVG source: String,
+        trustingExternalResources: Bool
+    ) async throws -> Data {
+        renderCount += 1
+        trustedFlags.append(trustingExternalResources)
+        switch result {
+        case .success(let png): return png
+        case .failure(let error): throw error
+        }
+    }
+
+    func cancel() {}
 }
 
 private actor RetryPreviewLoader {

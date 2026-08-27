@@ -5,6 +5,7 @@ struct HistoryPreviewView: View {
     @ObservedObject var model: HistoryPreviewViewModel
 
     @ObservedObject private var loc = Loc.shared
+    @State private var svgMode: HistoryPreviewSVGView.Mode = .visual
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -28,6 +29,9 @@ struct HistoryPreviewView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .tailSyncThemed()
+        .onChange(of: model.currentEntryId) { _ in
+            svgMode = .visual
+        }
     }
 
     private var header: some View {
@@ -82,6 +86,10 @@ struct HistoryPreviewView: View {
             Spacer(minLength: 12)
 
             restoreFeedback
+            if readyFormat == .svg {
+                svgTrustButton
+                svgModeButton
+            }
             Button(action: model.restoreCurrent) {
                 Label(Loc.t("history.preview.restore"), systemImage: "doc.on.clipboard")
                     .font(.system(size: 12, weight: .semibold))
@@ -98,6 +106,107 @@ struct HistoryPreviewView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(palette.dividerColor).frame(height: 1)
         }
+    }
+
+    private var readyFormat: HistoryPreviewFormat? {
+        guard case .ready(_, _, let format) = model.state else { return nil }
+        return format
+    }
+
+    /// Placeholder shown while the browser engine rasterizes an SVG.  It
+    /// replaces both the intermediate escaped source and the previous
+    /// snapshot during a re-render, so loading never flashes stale content.
+    private var svgRenderingPlaceholder: some View {
+        VStack(spacing: 12) {
+            ProgressView().controlSize(.regular)
+            Text(Loc.t("history.preview.svgRendering"))
+                .font(theme.readingFont(size: 12))
+                .foregroundColor(palette.secondaryColor)
+                .multilineTextAlignment(.center)
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.surfaceColor)
+    }
+
+    /// Per-entry switch for letting the current SVG preview load external
+    /// images and fonts.  Enabling trust always goes through a confirmation
+    /// that lists the exact hosts the preview would contact; references that
+    /// are not HTTPS public targets are disclosed as refused, and trust is
+    /// not offered at all while such references exist.
+    private var svgTrustButton: some View {
+        let trusted = model.svgExternalResourcesTrusted
+        return Button {
+            if trusted {
+                model.setSVGExternalResourcesTrusted(false)
+            } else {
+                requestSVGExternalTrust()
+            }
+        } label: {
+            Label(
+                trusted
+                    ? Loc.t("history.preview.svgTrustedExternal")
+                    : Loc.t("history.preview.svgTrustExternal"),
+                systemImage: trusted ? "globe" : "lock"
+            )
+            .font(.system(size: 12, weight: .semibold))
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .disabled(model.isRenderingSVG)
+        .help(Loc.t("history.preview.svgTrustExternalHelp"))
+    }
+
+    /// Trust gate: show which hosts would be contacted and require an
+    /// explicit Allow.  Non-HTTPS or non-public references block trust
+    /// entirely instead of being partially loaded.
+    private func requestSVGExternalTrust() {
+        let summary = model.svgExternalReferenceSummary
+        guard summary.rejectedHosts.isEmpty else {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = Loc.t("history.preview.svgTrustRejectedTitle")
+            alert.informativeText = Loc.t("history.preview.svgTrustRejectedMessage")
+                + "\n\n" + summary.rejectedHosts.sorted().joined(separator: "\n")
+            alert.addButton(withTitle: Loc.t("common.cancel"))
+            alert.runModal()
+            return
+        }
+        guard !summary.allowedHosts.isEmpty else {
+            // No eligible external host was found.  Enabling trust here would
+            // either be a no-op re-render or — if the extractor missed a
+            // reference form — a silent network widening, so trust stays off.
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = Loc.t("history.preview.svgTrustAlertTitle")
+        alert.informativeText = Loc.t("history.preview.svgTrustAlertMessage")
+            + "\n\n" + summary.allowedHosts.sorted().joined(separator: "\n")
+        alert.addButton(withTitle: Loc.t("history.preview.svgTrustAlertDeny"))
+        alert.addButton(withTitle: Loc.t("history.preview.svgTrustAlertAllow"))
+        // Deny is the default response: enabling network access must never
+        // be a plain Return/Enter away.
+        if alert.runModal() == .alertSecondButtonReturn {
+            model.setSVGExternalResourcesTrusted(true)
+        }
+    }
+
+    private var svgModeButton: some View {
+        let showsSource = svgMode == .visual
+        let title = showsSource
+            ? Loc.t("history.preview.svgSource")
+            : Loc.t("history.preview.svgVisual")
+        let icon = showsSource ? "chevron.left.forwardslash.chevron.right" : "photo"
+        return Button {
+            svgMode = showsSource ? .source : .visual
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .help(title)
     }
 
     private func headerIconButton(
@@ -167,13 +276,35 @@ struct HistoryPreviewView: View {
     ) -> some View {
         switch material {
         case .text(let text):
-            if format == .markdown {
+            if format == .svg {
+                if model.isRenderingSVG {
+                    svgRenderingPlaceholder
+                } else {
+                    HistoryPreviewTextView(text: text, initiallyCode: true)
+                }
+            } else if format == .markdown {
                 HistoryMarkdownPreviewView(source: text)
             } else {
-                HistoryPreviewTextView(text: text, initiallyCode: format == .code)
+                HistoryPreviewTextView(
+                    text: text,
+                    initiallyCode: format == .code
+                )
             }
         case .image(let image):
-            HistoryImagePreviewView(material: image)
+            if format == .svg,
+               let source = String(data: payload.data, encoding: .utf8) {
+                if model.isRenderingSVG {
+                    svgRenderingPlaceholder
+                } else {
+                    HistoryPreviewSVGView(
+                        source: source,
+                        material: image,
+                        mode: $svgMode
+                    )
+                }
+            } else {
+                HistoryImagePreviewView(material: image)
+            }
         case .pdf(let pdf):
             HistoryPDFPreviewView(material: pdf)
         case .quickLook(let url):

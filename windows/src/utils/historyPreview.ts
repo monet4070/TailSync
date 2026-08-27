@@ -2,3 +2,4 @@
 export * from "./previewTypes";
 export * from "./previewParser";
 export * from "./previewFormat";
+export * from "./svgPreview";

@@ -216,7 +216,7 @@ describe("parsePreviewResponse", () => {
 });
 
 describe("preview renderer and MIME policy", () => {
-  it("selects all supported file renderers and keeps SVG as source text", () => {
+  it("selects all supported file renderers and gives SVG a visual renderer", () => {
     expect(selectPreviewRenderer("image", "image")).toBe("image");
     expect(selectPreviewRenderer("text", "text.txt")).toBe("text");
     expect(selectPreviewRenderer("file", "note.txt")).toBe("text");
@@ -228,7 +228,7 @@ describe("preview renderer and MIME policy", () => {
     expect(selectPreviewRenderer("file", "photo.jpeg")).toBe("image");
     expect(selectPreviewRenderer("file", "photo.gif")).toBe("image");
     expect(selectPreviewRenderer("file", "photo.webp")).toBe("image");
-    expect(selectPreviewRenderer("file", "vector.svg")).toBe("text");
+    expect(selectPreviewRenderer("file", "vector.svg")).toBe("svg");
     expect(selectPreviewRenderer("file", "archive.zip")).toBe("unsupported");
     expect(selectPreviewRenderer("file", "README")).toBe("unsupported");
   });
@@ -247,7 +247,7 @@ describe("preview renderer and MIME policy", () => {
     expect(getPreviewMimeType("file", "photo.jpeg")).toBe("image/jpeg");
     expect(getPreviewMimeType("file", "photo.gif")).toBe("image/gif");
     expect(getPreviewMimeType("file", "photo.webp")).toBe("image/webp");
-    expect(getPreviewMimeType("file", "vector.svg")).toBe("text/plain");
+    expect(getPreviewMimeType("file", "vector.svg")).toBeNull();
     expect(getPreviewMimeType("file", "archive.zip")).toBeNull();
   });
 });

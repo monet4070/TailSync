@@ -9,7 +9,6 @@ private struct HistoryDateBounds {
 
 struct HistoryView: View {
     @ObservedObject private var loc = Loc.shared
-    @ObservedObject private var historyWindowController = HistoryWindowController.shared
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var entries: [HistoryEntry] = []
@@ -98,45 +97,6 @@ struct HistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Spacer(minLength: 0)
-                Button {
-                    historyWindowController.togglePinned()
-                } label: {
-                    Image(systemName: historyWindowController.isPinned ? "pin.fill" : "pin")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(
-                            historyWindowController.isPinned
-                                ? palette.accentColor
-                                : palette.secondaryColor
-                        )
-                        .frame(width: 28, height: 24)
-                        .background(
-                            historyWindowController.isPinned
-                                ? palette.accentColor.opacity(0.12)
-                                : Color.clear
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .help(Loc.t(
-                    historyWindowController.isPinned
-                        ? "history.windowUnpin"
-                        : "history.windowPin"
-                ))
-                .accessibilityLabel(Loc.t(
-                    historyWindowController.isPinned
-                        ? "history.windowUnpin"
-                        : "history.windowPin"
-                ))
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(palette.surfaceColor)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(palette.dividerColor).frame(height: 1)
-            }
-
             HistoryFilterBar(
                 keyword: $keyword,
                 selectedCategory: $selectedCategory,

@@ -29,18 +29,21 @@ struct HistoryPreviewToolbarIconButton: View {
 }
 
 extension View {
-    func historyPreviewToolbarStyle() -> some View {
-        modifier(HistoryPreviewToolbarStyle())
+    func historyPreviewToolbarStyle(
+        height: CGFloat = HistoryPreviewLayoutMetrics.toolbarHeight
+    ) -> some View {
+        modifier(HistoryPreviewToolbarStyle(height: height))
     }
 }
 
 private struct HistoryPreviewToolbarStyle: ViewModifier {
     @Environment(\.tailSyncPalette) private var palette
+    let height: CGFloat
 
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 14)
-            .frame(height: HistoryPreviewLayoutMetrics.toolbarHeight)
+            .frame(height: height)
             .background(palette.raisedColor)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(palette.dividerColor).frame(height: 1)

@@ -279,6 +279,7 @@ struct HistoryFilterBar: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.tailSyncSelection) private var activeTheme
     @Environment(\.tailSyncPalette) private var palette
+    @ObservedObject private var historyWindowController = HistoryWindowController.shared
     @State private var dateMenuOpen = false
     @State private var categoryMenuOpen = false
 
@@ -297,6 +298,36 @@ struct HistoryFilterBar: View {
                     .fill(daemonOnline ? palette.positiveColor : palette.warningColor)
                     .frame(width: 7, height: 7)
                     .accessibilityHidden(true)
+
+                Button {
+                    historyWindowController.togglePinned()
+                } label: {
+                    Image(systemName: historyWindowController.isPinned ? "pin.fill" : "pin")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(
+                            historyWindowController.isPinned
+                                ? palette.accentColor
+                                : palette.secondaryColor
+                        )
+                        .frame(width: 28, height: 28)
+                        .background(
+                            historyWindowController.isPinned
+                                ? palette.accentColor.opacity(0.12)
+                                : Color.clear
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help(Loc.t(
+                    historyWindowController.isPinned
+                        ? "history.windowUnpin"
+                        : "history.windowPin"
+                ))
+                .accessibilityLabel(Loc.t(
+                    historyWindowController.isPinned
+                        ? "history.windowUnpin"
+                        : "history.windowPin"
+                ))
             }
 
             // Row 2 — category + date filters
