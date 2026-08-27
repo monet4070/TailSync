@@ -20,6 +20,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
+#[cfg(windows)]
+static PRIVATE_FILE_RESTRICTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Restrict an existing directory to the owning user.
 pub fn restrict_private_dir(path: &Path) -> io::Result<()> {
     ensure_expected_type(path, true)?;
@@ -28,6 +31,12 @@ pub fn restrict_private_dir(path: &Path) -> io::Result<()> {
 
 /// Restrict an existing regular file to the owning user.
 pub fn restrict_private_file(path: &Path) -> io::Result<()> {
+    // Windows rejects ACL updates that overlap another thread replacing the
+    // same file. Keep link inspection, isolation, and restriction atomic.
+    #[cfg(windows)]
+    let _guard = PRIVATE_FILE_RESTRICTION_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_expected_type(path, false)?;
     if has_multiple_hard_links(path)? {
         break_hard_link(path)?;
@@ -183,6 +192,16 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
 /// file already exists (`create_new` semantics, matching the container
 /// writers).
 pub fn create_private_file(path: &Path) -> io::Result<std::fs::File> {
+    let file = create_new_private_file(path)?;
+    if let Err(error) = restrict_private_file(path) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(file)
+}
+
+fn create_new_private_file(path: &Path) -> io::Result<File> {
     ensure_private_parent(path)?;
     #[cfg(unix)]
     let file = {
@@ -195,11 +214,6 @@ pub fn create_private_file(path: &Path) -> io::Result<std::fs::File> {
     }?;
     #[cfg(not(unix))]
     let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    if let Err(error) = restrict_private_file(path) {
-        drop(file);
-        let _ = std::fs::remove_file(path);
-        return Err(error);
-    }
     Ok(file)
 }
 
@@ -308,8 +322,18 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 fn allocate_private_temporary(path: &Path) -> io::Result<(std::path::PathBuf, File)> {
     for _ in 0..8 {
         let temporary = path.with_extension(format!("tmp.{:016x}", rand::random::<u64>()));
-        match create_private_file(&temporary) {
-            Ok(file) => return Ok((temporary, file)),
+        match create_new_private_file(&temporary) {
+            Ok(file) => {
+                // create_new proves this path cannot already be a hard link.
+                // Restrict it directly so hard-link isolation can allocate a
+                // temporary while holding the Windows restriction lock.
+                if let Err(error) = restrict(&temporary, false) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&temporary);
+                    return Err(error);
+                }
+                return Ok((temporary, file));
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
@@ -633,6 +657,37 @@ mod tests {
         std::fs::write(&path, b"still accessible").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"still accessible");
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_private_file_restriction_isolates_a_hard_link_once() {
+        let root = temporary_root("windows-concurrent-hard-link");
+        let managed = root.join("managed");
+        create_private_dir_all(&managed).unwrap();
+        let source = root.join("source.bin");
+        std::fs::write(&source, b"original").unwrap();
+        let path = managed.join("secret.bin");
+        std::fs::hard_link(&source, &path).unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let handles = (0..16)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    restrict_private_file(&path)
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        std::fs::write(&path, b"managed copy").unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), b"original");
         std::fs::remove_dir_all(root).unwrap();
     }
 
