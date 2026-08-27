@@ -45,6 +45,35 @@ for (const marker of ['Cargo.toml', 'src/lib.rs']) {
 const settingsSchemaPath = join(dirname(sharedCoreRoot), 'schema/settings.schema.json');
 if (!existsSync(settingsSchemaPath)) fail(`Missing shared Settings schema: ${settingsSchemaPath}`);
 
+// Shared SVG preview policy fixtures drive the macOS (XCTest) and Windows
+// (vitest) trust-gate suites; both platforms must consume the same file, so
+// verify it exists, parses, and carries the required sections.
+{
+  const fixturePath = join(dirname(sharedCoreRoot), 'svg-preview-policy-fixtures.json');
+  if (!existsSync(fixturePath)) fail(`Missing shared SVG preview policy fixtures: ${fixturePath}`);
+  let fixtures;
+  try {
+    fixtures = JSON.parse(readFileSync(fixturePath, 'utf8'));
+  } catch (error) {
+    fail(`Shared SVG preview policy fixtures are not valid JSON: ${error}`);
+  }
+  for (const section of ['trustEligibility', 'referenceExtraction', 'visualEligibility', 'csp']) {
+    if (!Array.isArray(fixtures[section]) || fixtures[section].length === 0) {
+      fail(`SVG preview policy fixtures section '${section}' must be a non-empty array`);
+    }
+  }
+  for (const entry of fixtures.trustEligibility) {
+    if (typeof entry.url !== 'string' || typeof entry.eligible !== 'boolean') {
+      fail(`Malformed trustEligibility fixture: ${JSON.stringify(entry)}`);
+    }
+  }
+  for (const entry of fixtures.csp) {
+    if (typeof entry.expectedCSP !== 'string' || !entry.expectedCSP.includes("default-src 'none'")) {
+      fail(`CSP fixture must pin a default-src 'none' policy: ${JSON.stringify(entry)}`);
+    }
+  }
+}
+
 function hash(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }

@@ -87,8 +87,14 @@ struct HistoryPreviewView: View {
 
             restoreFeedback
             if readyFormat == .svg {
-                svgTrustButton
-                svgModeButton
+                // Trust and the mode toggle only apply while a visual render
+                // exists or is still possible; blocked or oversized documents
+                // are pinned to the source viewer, where toggling would be a
+                // dead control.
+                if model.svgVisualFallback == nil {
+                    svgTrustButton
+                    svgModeButton
+                }
             }
             Button(action: model.restoreCurrent) {
                 Label(Loc.t("history.preview.restore"), systemImage: "doc.on.clipboard")
@@ -157,9 +163,10 @@ struct HistoryPreviewView: View {
         .help(Loc.t("history.preview.svgTrustExternalHelp"))
     }
 
-    /// Trust gate: show which hosts would be contacted and require an
-    /// explicit Allow.  Non-HTTPS or non-public references block trust
-    /// entirely instead of being partially loaded.
+    /// Trust gate: show which origins would be contacted and require an
+    /// explicit Allow.  Origins carry their ports so the disclosure matches
+    /// exactly what the trusted CSP enumerates.  Ineligible references are
+    /// disclosed as refused and block trust entirely.
     private func requestSVGExternalTrust() {
         let summary = model.svgExternalReferenceSummary
         guard summary.rejectedHosts.isEmpty else {
@@ -172,8 +179,8 @@ struct HistoryPreviewView: View {
             alert.runModal()
             return
         }
-        guard !summary.allowedHosts.isEmpty else {
-            // No eligible external host was found.  Enabling trust here would
+        guard !summary.allowedOrigins.isEmpty else {
+            // No eligible external origin was found.  Enabling trust here would
             // either be a no-op re-render or — if the extractor missed a
             // reference form — a silent network widening, so trust stays off.
             return
@@ -182,13 +189,53 @@ struct HistoryPreviewView: View {
         alert.alertStyle = .warning
         alert.messageText = Loc.t("history.preview.svgTrustAlertTitle")
         alert.informativeText = Loc.t("history.preview.svgTrustAlertMessage")
-            + "\n\n" + summary.allowedHosts.sorted().joined(separator: "\n")
+            + "\n\n" + summary.allowedOrigins.sorted().joined(separator: "\n")
         alert.addButton(withTitle: Loc.t("history.preview.svgTrustAlertDeny"))
         alert.addButton(withTitle: Loc.t("history.preview.svgTrustAlertAllow"))
         // Deny is the default response: enabling network access must never
         // be a plain Return/Enter away.
         if alert.runModal() == .alertSecondButtonReturn {
             model.setSVGExternalResourcesTrusted(true)
+        }
+    }
+
+    /// Source-viewer notice explaining why an SVG has no visual render.
+    /// Only transient render failures offer a retry; active markup and
+    /// oversized payloads fail deterministically.
+    @ViewBuilder
+    private var svgFallbackNotice: some View {
+        if let fallback = model.svgVisualFallback, !model.isRenderingSVG {
+            let (message, retryable): (String, Bool) = switch fallback {
+            case .blockedContent:
+                (Loc.t("history.preview.svgBlockedContent"), false)
+            case .tooLarge:
+                (Loc.t("history.preview.svgTooLarge"), false)
+            case .renderFailed:
+                (Loc.t("history.preview.svgRenderFailed"), true)
+            }
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(palette.warningColor)
+                Text(message)
+                    .font(theme.readingFont(size: 12))
+                    .foregroundColor(palette.secondaryColor)
+                Spacer(minLength: 8)
+                if retryable {
+                    Button(action: model.retrySVGVisualRender) {
+                        Label(Loc.t("history.preview.retry"), systemImage: "rotate.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(palette.warningColor.opacity(0.08))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(palette.dividerColor).frame(height: 1)
+            }
         }
     }
 
@@ -280,7 +327,10 @@ struct HistoryPreviewView: View {
                 if model.isRenderingSVG {
                     svgRenderingPlaceholder
                 } else {
-                    HistoryPreviewTextView(text: text, initiallyCode: true)
+                    VStack(spacing: 0) {
+                        svgFallbackNotice
+                        HistoryPreviewTextView(text: text, initiallyCode: true)
+                    }
                 }
             } else if format == .markdown {
                 HistoryMarkdownPreviewView(source: text)

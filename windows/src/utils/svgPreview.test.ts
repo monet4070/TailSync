@@ -34,7 +34,13 @@ describe("SVG preview document policy", () => {
     expect(summary.allowedHosts).toEqual(["cdn.example.com:8443"]);
     expect(summary.allowedOrigins).toEqual(["https://cdn.example.com:8443"]);
     expect(summary.rejectedHosts).toEqual(["localhost:9443"]);
+    // externalReferences performs no origin dedup — per-array deduplication
+    // happens in the summary after eligibility, so a credential URL can
+    // never be dropped behind its clean sibling.  Attribute targets are
+    // collected before CSS targets, in source order.
     expect(externalReferences(source).map((url) => url.host)).toEqual([
+      "localhost:9443",
+      "cdn.example.com:8443",
       "localhost:9443",
       "cdn.example.com:8443",
     ]);

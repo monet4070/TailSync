@@ -26,6 +26,15 @@ enum HistoryPreviewLoadState: Equatable {
     case failed(HistoryPreviewFailure)
 }
 
+/// Why an SVG shows the source viewer instead of a rendered snapshot.
+/// Only `renderFailed` is retryable: active markup and oversized payloads
+/// fail deterministically, so retrying them is noise.
+enum HistoryPreviewSVGVisualFallback: Equatable {
+    case blockedContent
+    case tooLarge
+    case renderFailed
+}
+
 @MainActor
 final class HistoryPreviewViewModel: ObservableObject {
     @Published private(set) var state: HistoryPreviewLoadState = .idle
@@ -36,8 +45,16 @@ final class HistoryPreviewViewModel: ObservableObject {
     /// preview shows a placeholder instead of the intermediate source text.
     @Published private(set) var isRenderingSVG = false
     /// Per-entry user choice to let the SVG preview load external images and
-    /// fonts.  Resets on navigation and starts disabled.
+    /// fonts.  Resets on navigation and starts disabled.  Enabling is
+    /// transactional: the flag turns true only after a trusted re-render
+    /// successfully installs a new snapshot, so a failed render never leaves
+    /// the UI claiming trust it did not deliver.
     @Published private(set) var svgExternalResourcesTrusted = false
+    /// Set when the current SVG must stay in the source viewer; nil while a
+    /// visual render is still possible or a snapshot is installed.  Only
+    /// `renderFailed` is retryable — active markup and oversized payloads
+    /// fail deterministically.
+    @Published private(set) var svgVisualFallback: HistoryPreviewSVGVisualFallback?
 
     /// Host disclosure for the trust confirmation: which hosts enabling
     /// trust would contact, and which references can never be trusted
@@ -170,17 +187,33 @@ final class HistoryPreviewViewModel: ObservableObject {
 
     /// Explicit user choice to (stop) letting the current SVG preview load
     /// external resources.  Only affects the current entry and re-renders it;
-    /// scripts stay disabled either way.
+    /// scripts stay disabled either way.  Enabling trust is transactional:
+    /// the flag flips only after the trusted re-render succeeds.
     func setSVGExternalResourcesTrusted(_ trusted: Bool) {
         guard trusted != svgExternalResourcesTrusted,
               case .ready(let payload, _, let format) = state,
-              format == .svg else { return }
+              format == .svg,
+              svgVisualFallback == nil else { return }
         if trusted {
             guard let source = String(data: payload.data, encoding: .utf8) else { return }
             let summary = HistoryPreviewWebViewSVGRenderer.externalReferenceSummary(for: source)
             guard summary.rejectedHosts.isEmpty else { return }
+        } else {
+            svgExternalResourcesTrusted = false
         }
-        svgExternalResourcesTrusted = trusted
+        startSVGRender(payload: payload, trusting: trusted)
+    }
+
+    /// Retry the visual render after a `renderFailed` fallback.  Documents
+    /// blocked for active markup or size are not retryable.
+    func retrySVGVisualRender() {
+        guard case .ready(let payload, _, let format) = state,
+              format == .svg,
+              svgVisualFallback == .renderFailed,
+              let source = String(data: payload.data, encoding: .utf8),
+              payload.data.count <= HistoryPreviewWebSVGLimits.maximumInputBytes,
+              HistoryPreviewWebViewSVGRenderer.isSVGVisualEligible(source) else { return }
+        svgVisualFallback = nil
         startSVGRender(payload: payload)
     }
 
@@ -188,7 +221,7 @@ final class HistoryPreviewViewModel: ObservableObject {
     /// result upgrades the base source-text material; a failure keeps
     /// whatever material is currently installed (escaped source, or the
     /// previous snapshot when re-rendering after a trust change).
-    private func startSVGRender(payload: HistoryPreviewData) {
+    private func startSVGRender(payload: HistoryPreviewData, trusting: Bool? = nil) {
         svgRenderTask?.cancel()
         svgWebRenderer.cancel()
         // Set before publishing anything the placeholder must cover: the
@@ -196,7 +229,7 @@ final class HistoryPreviewViewModel: ObservableObject {
         // could otherwise show the intermediate source or stale snapshot.
         isRenderingSVG = true
         let requestGeneration = generation
-        let trustingExternalResources = svgExternalResourcesTrusted
+        let trustingExternalResources = trusting ?? svgExternalResourcesTrusted
         svgRenderTask = Task { [weak self] in
             await self?.renderSVG(
                 payload: payload,
@@ -222,7 +255,7 @@ final class HistoryPreviewViewModel: ObservableObject {
         if trustingExternalResources {
             // Second enforcement point behind the UI gate: even if the
             // confirmation was bypassed, refuse to render a trusted document
-            // whose references include non-HTTPS or non-public targets.
+            // whose references include ineligible targets.
             let summary = HistoryPreviewWebViewSVGRenderer.externalReferenceSummary(for: source)
             guard summary.rejectedHosts.isEmpty else {
                 svgExternalResourcesTrusted = false
@@ -237,14 +270,34 @@ final class HistoryPreviewViewModel: ObservableObject {
             try Task.checkCancellation()
             guard requestGeneration == generation else { return }
             guard let image = NSImage(data: png), !image.representations.isEmpty else {
+                markSVGRenderFailure()
                 return
             }
             let material = HistoryPreviewImageMaterial(data: png, image: image)
             session.install(payload, material: .image(material))
             state = .ready(payload: payload, material: .image(material), format: .svg)
+            svgVisualFallback = nil
+            if trustingExternalResources {
+                // Transactional commit: trust is only claimed once the
+                // trusted snapshot is actually installed.
+                svgExternalResourcesTrusted = true
+            }
         } catch {
             // Cancellation, timeout, or a render failure: the currently
             // installed material remains the visible state.
+            markSVGRenderFailure()
+        }
+    }
+
+    /// Record a render failure for the fallback notice.  A failed trust
+    /// re-render keeps the previous (untrusted) snapshot visible and must
+    /// not leave the trusted flag set; a failed initial render leaves the
+    /// escaped source as the only material.
+    private func markSVGRenderFailure() {
+        if !svgExternalResourcesTrusted,
+           case .ready(_, .text, let format) = state,
+           format == .svg {
+            svgVisualFallback = .renderFailed
         }
     }
 
@@ -266,6 +319,7 @@ final class HistoryPreviewViewModel: ObservableObject {
         restoreState = .idle
         isRenderingSVG = false
         svgExternalResourcesTrusted = false
+        svgVisualFallback = nil
         items = []
         currentIndex = 0
     }
@@ -319,6 +373,7 @@ final class HistoryPreviewViewModel: ObservableObject {
         svgWebRenderer.cancel()
         isRenderingSVG = false
         svgExternalResourcesTrusted = false
+        svgVisualFallback = nil
         session.close()
         state = .loading
         let batchLookup = item.resolvesBatchFirst ? item.batchId : nil
@@ -348,8 +403,23 @@ final class HistoryPreviewViewModel: ObservableObject {
                 // SVG materializes as its escaped source; the locked-down
                 // browser-engine snapshot upgrades it to a rasterized image
                 // while the load task (and its generation) still govern it.
+                // Documents with active markup or oversized payloads never
+                // reach a web view: they classify straight to the source
+                // viewer with an explicit reason, matching Windows.
                 if format == .svg {
-                    startSVGRender(payload: payload)
+                    if let source = String(data: payload.data, encoding: .utf8) {
+                        if payload.data.count > HistoryPreviewWebSVGLimits.maximumInputBytes {
+                            svgVisualFallback = .tooLarge
+                        } else if !HistoryPreviewWebViewSVGRenderer.isSVGVisualEligible(source) {
+                            svgVisualFallback = .blockedContent
+                        } else {
+                            startSVGRender(payload: payload)
+                        }
+                    } else {
+                        // Invalid UTF-8 SVG never reaches the materializer's
+                        // text path either; the load fails with invalidText.
+                        svgVisualFallback = .blockedContent
+                    }
                 }
             } catch is CancellationError {
                 if let preparedMaterial {

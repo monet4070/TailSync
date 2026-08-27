@@ -13,6 +13,7 @@ import { useModifierWheelZoom, zoomFromWheel } from "../previewPreferences";
 import { TextPreview } from "./TextPreview";
 
 type SVGMode = "visual" | "source";
+type SVGTrustGrant = { identity: string; data: Uint8Array };
 
 export function SvgPreview({
   payload,
@@ -38,7 +39,13 @@ export function SvgPreview({
   const viewport = useMemo(() => svgViewport(source), [source]);
   const summary = useMemo(() => summarizeExternalReferences(source), [source]);
   const [mode, setMode] = useState<SVGMode>(canRenderVisual ? "visual" : "source");
-  const [trustedState, setTrustedState] = useState<{ identity: string; data: Uint8Array } | null>(null);
+  const [trustedState, setTrustedState] = useState<SVGTrustGrant | null>(null);
+  // Transactional trust: the dialog allows a *pending* re-render; trust only
+  // commits when the trusted document actually loads, and a failure or
+  // timeout rolls it back so the UI never claims trust it did not deliver.
+  // The grant carries the entry identity and data object so a replacement
+  // entry cannot inherit it during the render before reset effects run.
+  const [pendingTrustState, setPendingTrustState] = useState<SVGTrustGrant | null>(null);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
   const [rendering, setRendering] = useState(canRenderVisual);
   const [failed, setFailed] = useState(!canRenderVisual);
@@ -59,18 +66,23 @@ export function SvgPreview({
 
   const validSVG = decodedSource !== null && /<svg\b/i.test(source);
   const trusted = trustedState?.identity === previewIdentity && trustedState.data === payload.data;
+  const pendingTrust = pendingTrustState?.identity === previewIdentity && pendingTrustState.data === payload.data;
+  // A pending trust re-render loads the trusted document; trust only
+  // *commits* (and renders as trusted) after that document finishes loading.
+  const trustedDocument = trusted || pendingTrust;
   const canTrust = visualEligible && summary.rejectedHosts.length === 0 && summary.allowedHosts.length > 0;
   const stageRef = useModifierWheelZoom<HTMLDivElement>((deltaY) => {
     setZoom((value) => zoomFromWheel(value, deltaY, 0.1, 8));
   });
   const documentHTML = useMemo(
-    () => buildSVGDocument(source, trusted),
-    [source, trusted],
+    () => buildSVGDocument(source, trustedDocument),
+    [source, trustedDocument],
   );
 
   useEffect(() => {
     setMode(canRenderVisual ? "visual" : "source");
     setTrustedState(null);
+    setPendingTrustState(null);
     setTrustDialogOpen(false);
     setZoom(1);
     setRotation(0);
@@ -99,18 +111,28 @@ export function SvgPreview({
       setRendering(false);
       setFailed(true);
       setMode("source");
+      // Watchdog rollback mirrors failRender: a trusted document that never
+      // finished loading leaves trust uncommitted.
+      setPendingTrustState(null);
+      setTrustedState(null);
     }, SVG_PREVIEW_TIMEOUT_MS);
     return () => {
       if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     };
-  }, [canRenderVisual, failed, mode, previewIdentity, retry, source, trusted]);
+  }, [canRenderVisual, failed, mode, previewIdentity, retry, source, trustedDocument]);
 
   const finishRender = () => {
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = null;
     setRendering(false);
     setFailed(false);
+    // Transactional commit: a pending trust only becomes visible trust once
+    // the trusted document actually finished loading.
+    if (pendingTrust) {
+      setTrustedState({ identity: previewIdentity, data: payload.data });
+      setPendingTrustState(null);
+    }
   };
 
   const failRender = () => {
@@ -119,6 +141,10 @@ export function SvgPreview({
     setRendering(false);
     setFailed(true);
     setMode("source");
+    // Rollback: the trusted document never loaded, so trust stays off and
+    // the previous untrusted render (or the source fallback) remains shown.
+    setPendingTrustState(null);
+    setTrustedState(null);
   };
 
   const changeZoom = (value: number) => setZoom(Math.min(8, Math.max(0.1, Number(value.toFixed(2)))));
@@ -184,7 +210,7 @@ export function SvgPreview({
         style={{ transform: `translate(${offset.x}px, ${offset.y}px) rotate(${rotation}deg) scale(${zoom})` }}
       >
         <iframe
-          key={`${previewIdentity}-${retry}-${trusted ? "trusted" : "locked"}`}
+          key={`${previewIdentity}-${retry}-${trustedDocument ? "trusted" : "locked"}`}
           className="preview-svg-frame"
           title={t("history.preview.svgVisual")}
           sandbox=""
@@ -254,7 +280,7 @@ export function SvgPreview({
           </>
         )}
         <span className="preview-svg-toolbar-spacer" />
-        {canTrust && !trusted && (
+        {canTrust && !trusted && !pendingTrust && (
           <button type="button" className="preview-secondary-button preview-svg-trust-button" onClick={() => setTrustDialogOpen(true)}>
             <Lock size={14} aria-hidden="true" />
             {t("history.preview.svgTrustExternal")}
@@ -343,7 +369,7 @@ export function SvgPreview({
                 {t("history.preview.svgTrustAlertDeny")}
               </button>
               {canTrust && (
-                <button type="button" className="preview-primary-button" onClick={() => { setTrustDialogOpen(false); setTrustedState({ identity: previewIdentity, data: payload.data }); }}>
+                <button type="button" className="preview-primary-button" onClick={() => { setTrustDialogOpen(false); setPendingTrustState({ identity: previewIdentity, data: payload.data }); }}>
                   {t("history.preview.svgTrustAlertAllow")}
                 </button>
               )}

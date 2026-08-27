@@ -138,39 +138,83 @@ final class HistoryPreviewWebViewSVGRenderer: HistoryPreviewWebSVGRendering {
         for source: String,
         trustingExternalResources: Bool
     ) -> String {
-        let contentSecurityPolicy: String
-        if trustingExternalResources {
-            var seenSources = Set<String>()
-            let hostSources = externalReferences(in: source)
-                .filter(isTrustEligibleURL)
-                .compactMap(trustedCSPSource)
-                .filter { seenSources.insert($0).inserted }
-                .joined(separator: " ")
-            let hostTail = hostSources.isEmpty ? "" : " \(hostSources)"
-            contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:\(hostTail); font-src data:\(hostTail); script-src 'none'; base-uri 'none'; form-action 'none'"
-        } else {
-            contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; script-src 'none'; base-uri 'none'; form-action 'none'"
-        }
+        let origins = trustingExternalResources
+            ? externalReferenceSummary(for: source).allowedOrigins
+            : []
+        let policy = cspPolicy(allowedOrigins: origins)
         return """
         <!DOCTYPE html><html><head><meta charset="utf-8">\
-        <meta http-equiv="Content-Security-Policy" content="\(contentSecurityPolicy)">\
+        <meta http-equiv="Content-Security-Policy" content="\(policy)">\
         <style>html,body{margin:0;padding:0;background:transparent;overflow:hidden}</style>\
         </head><body>\(source)</body></html>
         """
     }
 
+    /// One pure constructor for every CSP the preview emits, mirroring the
+    /// Windows `cspPolicy` directive-for-directive so the shared policy
+    /// fixtures can assert byte-identical output on both platforms.
+    /// `allowedOrigins` are the exact disclosure-approved endpoints; an
+    /// empty list yields a fully offline document.  `navigate-to` is
+    /// declarative hardening only — WebKit never shipped it, and top-level
+    /// navigation remains the navigation delegate's responsibility.
+    static func cspPolicy(allowedOrigins: [String]) -> String {
+        let imageSources = allowedOrigins.isEmpty
+            ? "data:"
+            : "data: " + allowedOrigins.joined(separator: " ")
+        return [
+            "default-src 'none'",
+            "style-src 'unsafe-inline'",
+            "img-src \(imageSources)",
+            "font-src \(imageSources)",
+            "media-src 'none'",
+            "object-src 'none'",
+            "frame-src 'none'",
+            "child-src 'none'",
+            "worker-src 'none'",
+            "connect-src 'none'",
+            "manifest-src 'none'",
+            "script-src 'none'",
+            "navigate-to 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+        ].joined(separator: "; ")
+    }
+
     // MARK: - External reference extraction (trust gate)
 
     /// Summary of the external references an SVG carries, used both for the
-    /// user-facing trust disclosure and for the eligibility check.
+    /// user-facing trust disclosure and for the trusted CSP enumeration.
+    /// Host and origin strings use WHATWG URL shapes (lowercase, bracketed
+    /// IPv6 literals, explicit non-default ports kept) so the values match
+    /// the Windows implementation and the shared policy fixtures exactly.
     struct ExternalReferenceSummary: Equatable {
-        /// Distinct hosts that trust would allow (HTTPS, public literal IPs
-        /// or hostnames).
+        /// Distinct hosts that trust would allow, with port (for example
+        /// `cdn.example.com:8443`).
         var allowedHosts: [String] = []
-        /// Distinct hosts that trust must refuse: non-HTTPS schemes,
-        /// literal private/loopback/link-local IP hosts, or unparsable
-        /// targets.
+        /// Exact origins the trusted CSP enumerates (`https://host:port`).
+        var allowedOrigins: [String] = []
+        /// Distinct hosts trust must refuse: non-HTTPS schemes, embedded
+        /// credentials, private/loopback/link-local literal IPs, `localhost`
+        /// spellings, or unparsable targets.
         var rejectedHosts: [String] = []
+    }
+
+    /// Host string in the same shape `URL.host` produces in browsers:
+    /// lowercase, IPv6 literals bracketed, explicit non-default ports kept.
+    static func displayHost(for url: URL) -> String {
+        guard let host = url.host?.lowercased() else { return "(invalid)" }
+        let bracketed = host.contains(":") ? "[\(host)]" : host
+        if let port = url.port, port != 443 {
+            return "\(bracketed):\(port)"
+        }
+        return bracketed
+    }
+
+    /// Origin string in the same shape `URL.origin` produces in browsers.
+    /// Only HTTPS URLs have one here.
+    static func displayOrigin(for url: URL) -> String? {
+        guard url.scheme?.lowercased() == "https" else { return nil }
+        return "https://\(displayHost(for: url))"
     }
 
     /// Collects every external http(s) URL the document references through
@@ -184,42 +228,61 @@ final class HistoryPreviewWebViewSVGRenderer: HistoryPreviewWebSVGRendering {
     /// disclosure accuracy depends on it.
     static func externalReferences(in source: String) -> [URL] {
         var targets: [String] = []
-        let attributePattern = #"(?:href|xlink:href|src|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#
-        let cssPattern = #"url\(\s*(?:'([^']*)'|"([^"]*)"|([^)]*))"#
-        for pattern in [attributePattern, cssPattern] {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-                continue
-            }
-            let range = NSRange(source.startIndex..., in: source)
+        let range = NSRange(source.startIndex..., in: source)
+        let attributePattern = #"(?:^|[\s<])(href|xlink:href|srcset|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#
+        if let regex = try? NSRegularExpression(
+            pattern: attributePattern,
+            options: [.caseInsensitive]
+        ) {
             for match in regex.matches(in: source, range: range) {
-                for group in 1..<regex.numberOfCaptureGroups + 1 {
+                guard let nameRange = Range(match.range(at: 1), in: source) else {
+                    continue
+                }
+                var raw: String?
+                for group in 2...4 {
                     guard let groupRange = Range(match.range(at: group), in: source) else {
                         continue
                     }
-                    let raw = String(source[groupRange])
-                    if pattern == attributePattern {
-                        // srcset values are comma-separated `URL descriptor`
-                        // candidates; every URL token is a loadable target.
-                        for candidate in raw.split(separator: ",") {
-                            if let urlToken = candidate.split(whereSeparator: { $0.isWhitespace }).first {
-                                targets.append(String(urlToken))
-                            }
+                    raw = String(source[groupRange])
+                    break
+                }
+                guard let raw else { continue }
+                if source[nameRange].lowercased() == "srcset" {
+                    // Only srcset is a comma-separated candidate list.  A
+                    // comma in ordinary href/src belongs to that one URL.
+                    for candidate in raw.split(separator: ",") {
+                        if let urlToken = candidate.split(whereSeparator: { $0.isWhitespace }).first {
+                            targets.append(String(urlToken))
                         }
-                    } else {
-                        targets.append(raw)
                     }
+                } else {
+                    targets.append(raw)
                 }
             }
         }
-        var seen = Set<String>()
+
+        let cssPattern = #"url\(\s*(?:'([^']*)'|"([^"]*)"|([^)]*))"#
+        if let regex = try? NSRegularExpression(
+            pattern: cssPattern,
+            options: [.caseInsensitive]
+        ) {
+            for match in regex.matches(in: source, range: range) {
+                for group in 1...3 {
+                    guard let groupRange = Range(match.range(at: group), in: source) else {
+                        continue
+                    }
+                    targets.append(String(source[groupRange]))
+                    break
+                }
+            }
+        }
         var urls: [URL] = []
         for target in targets.map({ decodeHTMLEntities($0).trimmingCharacters(in: .whitespacesAndNewlines) }) {
             guard let url = URL(string: target),
                   let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https",
                   let host = url.host?.lowercased(),
-                  !host.isEmpty,
-                  seen.insert("\(scheme)://\(host):\(url.port.map(String.init) ?? "default")").inserted else {
+                  !host.isEmpty else {
                 continue
             }
             urls.append(url)
@@ -274,27 +337,35 @@ final class HistoryPreviewWebViewSVGRenderer: HistoryPreviewWebSVGRendering {
         return result
     }
 
-    /// Trust eligibility for one external URL: HTTPS scheme and a
-    /// non-private host.  Literal IP hosts are checked against private,
-    /// loopback, and link-local ranges; the `localhost` and `.local`/
-    /// `.localhost` hostnames are refused as well.  Other plain hostnames
-    /// are accepted — resolving them ahead of the render would mean
-    /// performing DNS for untrusted input, which is its own request leak.
+    /// Trust eligibility for one external URL: HTTPS scheme, no embedded
+    /// credentials, and a non-private host.  Literal IP hosts are checked
+    /// against private, loopback, and link-local ranges; `localhost` and
+    /// `.local`/`.localhost` hostnames are refused as well.  Other plain
+    /// hostnames are accepted — resolving them ahead of the render would
+    /// mean performing DNS for untrusted input, which is its own request
+    /// leak.
     static func isTrustEligibleURL(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "https",
-              let host = url.host?.lowercased() else {
+              let host = url.host?.lowercased(),
+              (url.user ?? "").isEmpty,
+              (url.password ?? "").isEmpty,
+              !isPrivateLiteralHost(host) else {
             return false
         }
-        return !isPrivateLiteralHost(host)
+        return true
     }
 
     static func externalReferenceSummary(for source: String) -> ExternalReferenceSummary {
         var summary = ExternalReferenceSummary()
         for url in externalReferences(in: source) {
-            let host = (url.host?.lowercased()) ?? "(invalid)"
+            let host = displayHost(for: url)
             if isTrustEligibleURL(url) {
                 if !summary.allowedHosts.contains(host) {
                     summary.allowedHosts.append(host)
+                }
+                if let origin = displayOrigin(for: url),
+                   !summary.allowedOrigins.contains(origin) {
+                    summary.allowedOrigins.append(origin)
                 }
             } else if !summary.rejectedHosts.contains(host) {
                 summary.rejectedHosts.append(host)
@@ -303,20 +374,26 @@ final class HistoryPreviewWebViewSVGRenderer: HistoryPreviewWebSVGRendering {
         return summary
     }
 
-    /// A CSP host-source is an origin-shaped value.  Preserve an explicit
-    /// non-default port and bracket IPv6 literals so the trusted policy
-    /// grants exactly the endpoint the SVG disclosed.
-    private static func trustedCSPSource(for url: URL) -> String? {
-        guard url.scheme?.lowercased() == "https",
-              let host = url.host?.lowercased(),
-              !host.isEmpty else {
-            return nil
+    /// Documents carrying active or navigation markup route to the source
+    /// viewer before any web view exists, mirroring the Windows
+    /// `isSVGVisualEligible` gate so both platforms classify the same
+    /// documents as visual.  The sandbox (disabled JavaScript, CSP, and the
+    /// navigation delegate) remains the security boundary; this regex is a
+    /// classification gate only and deliberately matches the Windows list.
+    static func isSVGVisualEligible(_ source: String) -> Bool {
+        let fullRange = NSRange(source.startIndex..., in: source)
+        guard let svgRoot = try? NSRegularExpression(pattern: #"<svg\b"#, options: [.caseInsensitive]),
+              svgRoot.firstMatch(in: source, range: fullRange) != nil else {
+            return false
         }
-        let cspHost = host.contains(":") ? "[\(host)]" : host
-        if let port = url.port {
-            return "https://\(cspHost):\(port)"
+        let activeMarkupPattern = #"(?:<(?:animate|animateMotion|animateTransform|base|embed|form|frame|iframe|link|meta|object|script|set)\b|@(?:-webkit-)?keyframes\b|\banimation(?:-name|-duration|-delay|-iteration-count|-timing-function|-fill-mode|\s*:))"#
+        guard let activeMarkup = try? NSRegularExpression(
+            pattern: activeMarkupPattern,
+            options: [.caseInsensitive]
+        ) else {
+            return true
         }
-        return "https://\(cspHost)"
+        return activeMarkup.firstMatch(in: source, range: fullRange) == nil
     }
 
     /// Literal-IP check for private, loopback, link-local, and other

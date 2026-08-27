@@ -64,18 +64,43 @@ loading all batch payloads into memory.
   render in progress shows a placeholder instead of intermediate content.
   This replaces the earlier bundled Rust resvg helper, which has been removed.
 - The preview may load external images and fonts only after the user
-  explicitly accepts per-host confirmation for the current entry; the choice
-  resets on navigation and is off by default. The confirmation lists the
-  exact HTTPS hosts the preview would contact, requires Allow as the explicit
-  second button, and refuses trust entirely when the document references
-  non-HTTPS targets, literal private/loopback/link-local IP hosts, or
-  non-public ranges, including browser-compatible alternate IPv4 spellings.
-  Trusted mode relaxes passive HTTPS image and font loading only, by listing
-  the approved exact origins (including explicit ports) in `img-src` and
-  `font-src` — external
+  explicitly accepts per-origin confirmation for the current entry; the choice
+  resets on navigation and is off by default, and turning it on is
+  transactional — the trusted flag only commits after a trusted re-render
+  completes (installing the macOS snapshot or loading the Windows iframe), so
+  a failed or timed-out render never leaves the UI claiming trust it did not
+  deliver. A pending grant is bound to the current entry identity and payload,
+  preventing a replacement entry from inheriting network access during the
+  render before reset effects run. The confirmation lists the exact
+  HTTPS origins (with ports) the preview would contact, requires Allow as
+  the explicit second button, and refuses trust entirely when the document
+  references non-HTTPS targets, embedded URL credentials, literal
+  private/loopback/link-local IP hosts, or non-public ranges, including
+  browser-compatible alternate IPv4 spellings and trailing-root-dot aliases
+  such as `localhost.` or `printer.local.`. Trusted mode relaxes passive
+  HTTPS image and font loading only, by listing the approved exact origins
+  (including explicit ports) in `img-src` and `font-src` — external
   stylesheets, media, plain HTTP, blob URLs, scripts, forms, and connections
   stay blocked, and the renderer re-checks reference eligibility before
   rendering so a bypassed dialog cannot widen it.
+- Both platforms share one SVG policy: a visual-eligibility gate routes
+  documents with active or navigation markup (scripts, meta refresh, frames,
+  SMIL or CSS animation) to the source viewer before any web view or iframe
+  exists, oversized documents classify the same way, and a transient render
+  failure offers a retry. The WKNavigationDelegate (macOS) and the sandboxed
+  iframe (Windows) remain the actual security boundaries; the regex gate is
+  a classification layer shared for cross-platform consistency. The trust
+  gate, reference extractor, eligibility rules, and CSP construction are
+  pinned by `shared/svg-preview-policy-fixtures.json`, which both the XCTest
+  and vitest suites assert against — including byte-identical CSP output —
+  so the two implementations cannot drift apart silently. The
+  cross-platform sync script validates the fixture file itself.
+- The two visual renderers differ by design: macOS snapshots into a bounded
+  raster (4,096-pixel dimension, 16-million-pixel budget), while Windows
+  displays a live sandboxed vector iframe that scales to the viewport. The
+  security policy is identical on both platforms; large or deeply scaled
+  documents can look different, which is an accepted trade-off rather than
+  a defect.
 - Oversized metadata is rejected before decryption and the decoded payload is
   checked again before it reaches a renderer.
 

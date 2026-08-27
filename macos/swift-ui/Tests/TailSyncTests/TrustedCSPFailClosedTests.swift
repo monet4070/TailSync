@@ -27,10 +27,10 @@ final class TrustedCSPFailClosedTests: XCTestCase {
 """##
 
         // Sanity: the summary classifies the probe as rejected and lists
-        // no approved origin.
+        // no approved origin.  Host strings carry their explicit port.
         let summary = HistoryPreviewWebViewSVGRenderer.externalReferenceSummary(for: source)
         XCTAssertTrue(summary.allowedHosts.isEmpty)
-        XCTAssertTrue(summary.rejectedHosts.contains("127.0.0.1"))
+        XCTAssertTrue(summary.rejectedHosts.contains { $0.hasPrefix("127.0.0.1:") })
 
         let renderer = HistoryPreviewWebViewSVGRenderer()
         _ = try await renderer.renderPNG(

@@ -99,9 +99,11 @@ final class HistoryPreviewWebViewSVGRendererTests: XCTestCase {
         let summary = HistoryPreviewWebViewSVGRenderer.externalReferenceSummary(for: source)
         // All reference forms are disclosed: the loopback hostname (both via
         // srcset and the entity-encoded href) is refused, while the public
-        // hosts — plain srcset and hex-entity-encoded — are allowed.
-        XCTAssertEqual(summary.rejectedHosts, ["localhost"])
+        // hosts — plain srcset and hex-entity-encoded — are allowed.  Host
+        // strings keep their explicit port, matching WHATWG URL shapes.
+        XCTAssertEqual(summary.rejectedHosts, ["localhost:9443"])
         XCTAssertEqual(Set(summary.allowedHosts), ["hex-entity.example.com", "srcset.example.org"])
+        XCTAssertEqual(summary.allowedOrigins, ["https://hex-entity.example.com", "https://srcset.example.org"])
 
         // The entity-encoded forms must be recognized as URLs at all.
         let hosts = Set(

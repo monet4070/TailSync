@@ -18,6 +18,14 @@ function payload(source: string): PreviewPayload {
   };
 }
 
+function currentFrame(): HTMLIFrameElement {
+  const frame = document.querySelector("iframe");
+  if (!(frame instanceof HTMLIFrameElement)) {
+    throw new Error("expected SVG preview iframe");
+  }
+  return frame;
+}
+
 describe("SvgPreview", () => {
   it("renders SVG in a sandboxed iframe and exposes a loading state", async () => {
     const onCorrupt = vi.fn();
@@ -123,10 +131,63 @@ describe("SvgPreview", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("cdn.example.com:8443");
     expect(screen.getByRole("dialog")).toHaveTextContent("history.preview.svgTrustAlertMessage");
 
+    // Allow starts a pending trusted re-render: the document is already
+    // loaded with the trusted CSP, but trust is not committed until the
+    // frame finishes loading.
     fireEvent.click(screen.getByRole("button", { name: "history.preview.svgTrustAlertAllow" }));
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: "history.preview.svgTrustedExternal" })).toBeNull();
+    expect(document.querySelector("iframe")).toHaveAttribute(
+      "srcdoc",
+      expect.stringContaining("img-src data: https://cdn.example.com:8443"),
+    );
+
+    fireEvent.load(currentFrame());
     expect(screen.getByRole("button", { name: "history.preview.svgTrustedExternal" })).toBeInTheDocument();
-    expect(document.querySelector("iframe")).toHaveAttribute("srcdoc", expect.stringContaining("https://cdn.example.com:8443"));
+  });
+
+  it("rolls back a pending trust when the trusted render times out", async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <SvgPreview
+          payload={payload(`<svg><image href="https://cdn.example.com:8443/logo.png"/></svg>`)}
+          t={t}
+          onCorrupt={vi.fn()}
+        />,
+      );
+      // Establish the untrusted visual render before attempting trust.
+      fireEvent.load(currentFrame());
+
+      fireEvent.click(screen.getByRole("button", { name: "history.preview.svgTrustExternal" }));
+      fireEvent.click(screen.getByRole("button", { name: "history.preview.svgTrustAlertAllow" }));
+      expect(document.querySelector("iframe")).toHaveAttribute(
+        "srcdoc",
+        expect.stringContaining("img-src data: https://cdn.example.com:8443"),
+      );
+
+      // The trusted document never loads: trust must roll back to off and the
+      // source fallback must be shown.  Retrying visual mode starts from the
+      // offline policy instead of silently preserving the failed approval.
+      await act(async () => {
+        vi.advanceTimersByTime(4_000);
+      });
+      expect(screen.queryByRole("button", { name: "history.preview.svgTrustedExternal" })).toBeNull();
+      expect(document.querySelector("iframe")).toBeNull();
+      expect(screen.getByTestId("preview-text")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "history.preview.retry" }));
+      expect(document.querySelector("iframe")).toHaveAttribute(
+        "srcdoc",
+        expect.stringContaining("img-src data:;"),
+      );
+      expect(document.querySelector("iframe")).not.toHaveAttribute(
+        "srcdoc",
+        expect.stringContaining("img-src data: https://cdn.example.com:8443"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not carry external trust into a replacement entry", () => {
@@ -137,6 +198,7 @@ describe("SvgPreview", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "history.preview.svgTrustExternal" }));
     fireEvent.click(screen.getByRole("button", { name: "history.preview.svgTrustAlertAllow" }));
+    fireEvent.load(currentFrame());
     expect(screen.getByRole("button", { name: "history.preview.svgTrustedExternal" })).toBeInTheDocument();
 
     const second = payload(`<svg><image href="https://second.example.com/logo.png"/></svg>`);
@@ -144,6 +206,57 @@ describe("SvgPreview", () => {
     const frame = document.querySelector("iframe");
     expect(frame).toHaveAttribute("srcdoc", expect.stringContaining("img-src data:"));
     expect(frame).not.toHaveAttribute("srcdoc", expect.stringContaining("img-src data: https://second.example.com"));
+  });
+
+  it("never applies a pending trust grant to a replacement entry", async () => {
+    const first = payload(`<svg><image href="https://first.example.com/logo.png"/></svg>`);
+    const { container, rerender } = render(
+      <SvgPreview payload={first} t={t} onCorrupt={vi.fn()} />,
+    );
+    fireEvent.load(currentFrame());
+    fireEvent.click(screen.getByRole("button", { name: "history.preview.svgTrustExternal" }));
+    fireEvent.click(screen.getByRole("button", { name: "history.preview.svgTrustAlertAllow" }));
+    expect(document.querySelector("iframe")).toHaveAttribute(
+      "srcdoc",
+      expect.stringContaining("img-src data: https://first.example.com"),
+    );
+
+    // Observe every intermediate iframe commit.  Looking only at the final
+    // DOM would miss a trusted replacement frame created before the reset
+    // effect runs — enough time for the browser to start a network request.
+    const committedDocuments: string[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof HTMLIFrameElement) {
+            committedDocuments.push(node.getAttribute("srcdoc") ?? "");
+          }
+          if (node instanceof Element) {
+            for (const frame of node.querySelectorAll("iframe")) {
+              committedDocuments.push(frame.getAttribute("srcdoc") ?? "");
+            }
+          }
+        }
+      }
+    });
+    observer.observe(container, { childList: true, subtree: true });
+
+    const second = payload(`<svg><image href="https://second.example.com/logo.png"/></svg>`);
+    rerender(<SvgPreview payload={{ ...second, entry_id: 43 }} t={t} onCorrupt={vi.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    observer.disconnect();
+
+    expect(committedDocuments).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("img-src data: https://second.example.com"),
+      ]),
+    );
+    expect(document.querySelector("iframe")).toHaveAttribute(
+      "srcdoc",
+      expect.stringContaining("img-src data:;"),
+    );
   });
 
   it("shows refused targets and never offers approval for a mixed unsafe document", () => {

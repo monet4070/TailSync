@@ -322,6 +322,137 @@ final class HistoryPreviewViewModelTests: XCTestCase {
             return XCTFail("a failed trusted re-render must keep the previous snapshot")
         }
         XCTAssertFalse(model.isRenderingSVG)
+        // Transactional trust: the flag must not claim trust the failed
+        // re-render did not deliver, and no retry fallback is published
+        // because the previous snapshot is still the visible state.
+        XCTAssertFalse(model.svgExternalResourcesTrusted)
+        XCTAssertNil(model.svgVisualFallback)
+    }
+
+    /// Transactional trust commit: the flag only turns true once the
+    /// trusted snapshot is installed.
+    func testTrustEnableCommitsOnlyAfterSuccessfulRender() async throws {
+        let payload = Self.svgPayload(id: 83)
+        let webRenderer = StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        let model = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+        model.present(Self.request(id: 83, name: "vector.svg"))
+        try await waitUntil {
+            if case .ready(_, .image, _) = model.state { return true }
+            return false
+        }
+        XCTAssertFalse(model.svgExternalResourcesTrusted)
+
+        model.setSVGExternalResourcesTrusted(true)
+        try await waitUntil { webRenderer.renderCount == 2 }
+        try await waitUntil {
+            if case .ready(_, .image, _) = model.state { return true }
+            return false
+        }
+        XCTAssertEqual(webRenderer.trustedFlags.last, true)
+        XCTAssertTrue(model.svgExternalResourcesTrusted)
+    }
+
+    /// Active markup is classified before any web view exists: the renderer
+    /// is never called and the source viewer explains why.
+    func testActiveMarkupSVGNeverReachesTheWebRenderer() async throws {
+        let source = ##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><script>alert(1)</script><rect width="2" height="2"/></svg>"##
+        let data = Data(source.utf8)
+        let payload = HistoryPreviewData(
+            kind: "file",
+            name: "active.svg",
+            sizeBytes: Int64(data.count),
+            data: data,
+            entryId: 84
+        )
+        let webRenderer = StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        let model = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+        model.present(Self.request(id: 84, name: "active.svg"))
+        try await waitUntil { model.isReady }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(webRenderer.renderCount, 0, "active markup must not reach a web view")
+        XCTAssertEqual(model.svgVisualFallback, .blockedContent)
+        guard case .ready(_, .text, _) = model.state else {
+            return XCTFail("active markup stays in the source viewer")
+        }
+        // Trust cannot be enabled for a document with no visual render.
+        model.setSVGExternalResourcesTrusted(true)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(webRenderer.renderCount, 0)
+        XCTAssertFalse(model.svgExternalResourcesTrusted)
+    }
+
+    func testOversizedSVGClassifiesToTooLargeWithoutRendering() async throws {
+        let header = Data("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><rect width=\"2\" height=\"2\"/>".utf8)
+        let oversized = header
+            + Data(repeating: 0x20, count: HistoryPreviewWebSVGLimits.maximumInputBytes)
+            + Data("</svg>".utf8)
+        let payload = HistoryPreviewData(
+            kind: "file",
+            name: "huge.svg",
+            sizeBytes: Int64(oversized.count),
+            data: oversized,
+            entryId: 85
+        )
+        let webRenderer = StubSVGWebRenderer(result: .success(try Self.pngFixture()))
+        let model = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+        model.present(Self.request(id: 85, name: "huge.svg"))
+        try await waitUntil { model.isReady }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(webRenderer.renderCount, 0)
+        XCTAssertEqual(model.svgVisualFallback, .tooLarge)
+        guard case .ready(_, .text, _) = model.state else {
+            return XCTFail("oversized SVG stays in the source viewer")
+        }
+    }
+
+    /// A transient render failure publishes the retryable fallback, and the
+    /// retry recovers the visual render.
+    func testRenderFailureFallsBackAndRetryRecovers() async throws {
+        let payload = Self.svgPayload(id: 86)
+        let webRenderer = StubSVGWebRenderer(
+            result: .failure(HistoryPreviewWebSVGRendererError.timedOut)
+        )
+        let model = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { _, _ in payload },
+                restore: { _ in }
+            ),
+            svgWebRenderer: webRenderer
+        )
+        model.present(Self.request(id: 86, name: "vector.svg"))
+        try await waitUntil { model.isReady }
+        try await waitUntil { model.svgVisualFallback == .renderFailed }
+        guard case .ready(_, .text, _) = model.state else {
+            return XCTFail("a failed initial render keeps the source viewer")
+        }
+
+        webRenderer.result = .success(try Self.pngFixture())
+        model.retrySVGVisualRender()
+        try await waitUntil {
+            if case .ready(_, .image, _) = model.state { return true }
+            return false
+        }
+        XCTAssertNil(model.svgVisualFallback)
     }
 
     func testRejectedExternalTargetCannotEnableTrustOrLeaveRendererBusy() async throws {

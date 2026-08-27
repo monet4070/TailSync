@@ -1,0 +1,122 @@
+{
+  "$comment": "Shared SVG preview policy fixtures. Both the macOS (Swift) and Windows (TypeScript) test suites assert against this file, so the two implementations of the trust gate, reference extractor, visual eligibility gate, and CSP construction cannot drift apart silently. Keep every entry deterministic: URLs must be absolute, extraction fixtures must avoid ambiguous ordering, and expectedCSP must be the exact CSP text both platforms emit.",
+  "trustEligibility": [
+    { "url": "https://cdn.example.com/a.png", "eligible": true },
+    { "url": "https://cdn.example.com:8443/a.png", "eligible": true },
+    { "url": "https://[2001:4860:4860::8888]/a.png", "eligible": true },
+    { "url": "https://sub.cdn.example.com/a.png", "eligible": true },
+    { "url": "http://cdn.example.com/a.png", "eligible": false },
+    { "url": "https://user:pass@cdn.example.com/a.png", "eligible": false },
+    { "url": "https://:token@cdn.example.com/a.png", "eligible": false },
+    { "url": "https://user@cdn.example.com/a.png", "eligible": false },
+    { "url": "https://user:@cdn.example.com/a.png", "eligible": false },
+    { "url": "https://localhost:9443/a.png", "eligible": false },
+    { "url": "https://localhost/a.png", "eligible": false },
+    { "url": "https://localhost./a.png", "eligible": false },
+    { "url": "https://printer.local/a.png", "eligible": false },
+    { "url": "https://printer.local./a.png", "eligible": false },
+    { "url": "https://a.localhost/a.png", "eligible": false },
+    { "url": "https://a.localhost./a.png", "eligible": false },
+    { "url": "https://127.0.0.1/a.png", "eligible": false },
+    { "url": "https://10.0.0.5/a.png", "eligible": false },
+    { "url": "https://172.16.4.2/a.png", "eligible": false },
+    { "url": "https://172.31.9.9/a.png", "eligible": false },
+    { "url": "https://192.168.1.10/a.png", "eligible": false },
+    { "url": "https://169.254.7.7/a.png", "eligible": false },
+    { "url": "https://100.64.1.2/a.png", "eligible": false },
+    { "url": "https://0.0.0.1/a.png", "eligible": false },
+    { "url": "https://192.0.2.1/a.png", "eligible": false },
+    { "url": "https://198.18.0.1/a.png", "eligible": false },
+    { "url": "https://198.51.100.5/a.png", "eligible": false },
+    { "url": "https://203.0.113.5/a.png", "eligible": false },
+    { "url": "https://224.0.0.1/a.png", "eligible": false },
+    { "url": "https://2130706433/a.png", "eligible": false },
+    { "url": "https://0x7f000001/a.png", "eligible": false },
+    { "url": "https://0177.0.0.1/a.png", "eligible": false },
+    { "url": "https://127.1/a.png", "eligible": false },
+    { "url": "https://127.0.1/a.png", "eligible": false },
+    { "url": "https://[::1]/a.png", "eligible": false },
+    { "url": "https://[fd00::1]/a.png", "eligible": false },
+    { "url": "https://[fe80::1]/a.png", "eligible": false },
+    { "url": "https://[2001:db8::1]/a.png", "eligible": false },
+    { "url": "https://[::ffff:127.0.0.1]/a.png", "eligible": false },
+    { "url": "https://[ff02::1]/a.png", "eligible": false }
+  ],
+  "referenceExtraction": [
+    {
+      "source": "<image srcset=\"https://localhost:9443/a.png 1x, https://cdn.example.com:8443/a.png 2x\" href=\"https&#58;//localhost:9443/b.png\"/>",
+      "allowedHosts": ["cdn.example.com:8443"],
+      "allowedOrigins": ["https://cdn.example.com:8443"],
+      "rejectedHosts": ["localhost:9443"]
+    },
+    {
+      "source": "<svg xmlns=\"http://www.w3.org/2000/svg\"><style>.x{background:url('https&#58;//fonts.example.net:9443/c.png')}</style><image href=\"http://plain.example.org/d.png\"/></svg>",
+      "allowedHosts": ["fonts.example.net:9443"],
+      "allowedOrigins": ["https://fonts.example.net:9443"],
+      "rejectedHosts": ["plain.example.org"]
+    },
+    {
+      "source": "<svg><image href=\"https://127.0.0.1:8443/a.png\"/><image href=\"https&#x3a;//alt.example.com/b.png\"/><image href=\"data:image/png;base64,AAAA\"/><use href=\"#fragment\"/></svg>",
+      "allowedHosts": ["alt.example.com"],
+      "allowedOrigins": ["https://alt.example.com"],
+      "rejectedHosts": ["127.0.0.1:8443"]
+    },
+    {
+      "source": "<svg><image href=\"https://cdn.example.com/x.png\"/><image href=\"https://user:pass@cdn.example.com/y.png\"/></svg>",
+      "allowedHosts": ["cdn.example.com"],
+      "allowedOrigins": ["https://cdn.example.com"],
+      "rejectedHosts": ["cdn.example.com"]
+    },
+    {
+      "source": "<svg><image href=\"https://user:pass@cdn.example.com/y.png\"/><image href=\"https://cdn.example.com/x.png\"/></svg>",
+      "allowedHosts": ["cdn.example.com"],
+      "allowedOrigins": ["https://cdn.example.com"],
+      "rejectedHosts": ["cdn.example.com"]
+    },
+    {
+      "source": "<svg><image href=\"https://cdn.example.com/x.png\"/><image href=\"https://cdn.example.com/x.png\"/></svg>",
+      "allowedHosts": ["cdn.example.com"],
+      "allowedOrigins": ["https://cdn.example.com"],
+      "rejectedHosts": []
+    },
+    {
+      "source": "<svg data-href=\"https://metadata.example.com/a.png\"><image src=\"https://first.example.com/a,https://second.example.com/b\"/></svg>",
+      "allowedHosts": ["first.example.com"],
+      "allowedOrigins": ["https://first.example.com"],
+      "rejectedHosts": []
+    }
+  ],
+  "visualEligibility": [
+    { "source": "<svg><script>alert(1)</script></svg>", "eligible": false },
+    { "source": "<svg><meta http-equiv='refresh' content='0;url=https://example.com'/></svg>", "eligible": false },
+    { "source": "<svg><iframe src='https://example.com'></iframe></svg>", "eligible": false },
+    { "source": "<svg><animate attributeName='x' from='0' to='1'/></svg>", "eligible": false },
+    { "source": "<svg><animateTransform attributeName='transform'/></svg>", "eligible": false },
+    { "source": "<svg><set attributeName='x' to='1'/></svg>", "eligible": false },
+    { "source": "<svg><style>@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}</style></svg>", "eligible": false },
+    { "source": "<svg><style>.a{animation:spin 2s linear infinite}</style></svg>", "eligible": false },
+    { "source": "<svg><style>.a{animation-name:spin}</style></svg>", "eligible": false },
+    { "source": "<svg><form action='https://example.com'></form></svg>", "eligible": false },
+    { "source": "<svg><link rel='stylesheet' href='https://example.com'/></svg>", "eligible": false },
+    { "source": "<svg><foreignObject><div>safe</div></foreignObject></svg>", "eligible": true },
+    { "source": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\"/></svg>", "eligible": true },
+    { "source": "plain text without svg root", "eligible": false }
+  ],
+  "csp": [
+    {
+      "source": "<svg><image href=\"https://cdn.example.com:8443/a.png\"/><image href=\"http://plain.example.com/b.png\"/></svg>",
+      "trusted": true,
+      "expectedCSP": "default-src 'none'; style-src 'unsafe-inline'; img-src data: https://cdn.example.com:8443; font-src data: https://cdn.example.com:8443; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; connect-src 'none'; manifest-src 'none'; script-src 'none'; navigate-to 'none'; base-uri 'none'; form-action 'none'"
+    },
+    {
+      "source": "<svg><image href=\"https://cdn.example.com/a.png\"/></svg>",
+      "trusted": false,
+      "expectedCSP": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; connect-src 'none'; manifest-src 'none'; script-src 'none'; navigate-to 'none'; base-uri 'none'; form-action 'none'"
+    },
+    {
+      "source": "<svg><image srcset=\"https://a.example.com:9000/x.png 1x, https://b.example.com/y.png 2x\"/></svg>",
+      "trusted": true,
+      "expectedCSP": "default-src 'none'; style-src 'unsafe-inline'; img-src data: https://a.example.com:9000 https://b.example.com; font-src data: https://a.example.com:9000 https://b.example.com; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; connect-src 'none'; manifest-src 'none'; script-src 'none'; navigate-to 'none'; base-uri 'none'; form-action 'none'"
+    }
+  ]
+}

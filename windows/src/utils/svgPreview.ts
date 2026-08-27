@@ -93,10 +93,15 @@ function cssTargets(source: string): string[] {
   return targets;
 }
 
-/** Returns distinct absolute HTTP(S) subresource references in source order. */
+/**
+ * Returns every absolute HTTP(S) subresource reference in source order, with
+ * no origin-level deduplication.  Deduplicating here would let a credential
+ * URL be dropped after its clean sibling was seen, bypassing the eligibility
+ * refusal; the summary deduplicates each final host/origin array instead,
+ * after eligibility has been decided per URL.
+ */
 export function externalReferences(source: string): URL[] {
   const targets = [...attributeTargets(source), ...cssTargets(source)];
-  const seen = new Set<string>();
   const references: URL[] = [];
   for (const raw of targets) {
     const target = decodeHtmlEntities(raw).trim();
@@ -107,8 +112,7 @@ export function externalReferences(source: string): URL[] {
       continue;
     }
     if (url.protocol !== "http:" && url.protocol !== "https:") continue;
-    if (!url.hostname || seen.has(url.origin)) continue;
-    seen.add(url.origin);
+    if (!url.hostname) continue;
     references.push(url);
   }
   return references;
@@ -179,7 +183,13 @@ function parseIPv6(host: string): number[] | null {
 }
 
 function isNonPublicLiteralHost(host: string): boolean {
-  const normalized = host.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  // A trailing DNS root dot does not change where a hostname resolves:
+  // `localhost.` and `printer.local.` must receive the same local-address
+  // classification as their ordinary spellings.
+  const normalized = host.toLowerCase()
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .replace(/\.+$/, "");
   if (
     normalized === "localhost" ||
     normalized.endsWith(".localhost") ||

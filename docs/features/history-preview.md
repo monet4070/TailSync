@@ -84,14 +84,33 @@ bytes never touch disk or Quick Look.
 A per-entry "trust external links" switch, off by default and reset on
 navigation, lets the user opt the current preview into loading external
 images and fonts — always through a confirmation dialog listing the exact
-HTTPS hosts, with Allow as an explicit second button. References to
-non-HTTPS targets or literal private/loopback/link-local IP hosts are
-disclosed as refused and block trust entirely. Browser-compatible decimal,
-octal, hexadecimal, and shortened IPv4 spellings receive the same non-public
-classification as their canonical addresses. Trusted mode lists only the
-approved exact HTTPS origins in `img-src` and `font-src` (preserving explicit
-ports), so an undisclosed host remains blocked even if extraction misses its
-syntax; the renderer also re-checks eligibility before rendering.
+HTTPS origins (with ports), with Allow as an explicit second button.
+References to non-HTTPS targets, URLs with embedded credentials, or literal
+private/loopback/link-local IP hosts are disclosed as refused and block trust
+entirely. Browser-compatible decimal, octal, hexadecimal, and shortened IPv4
+spellings receive the same non-public classification as their canonical
+addresses, as do trailing-root-dot local names such as `localhost.` and
+`printer.local.`. Trusted mode lists only the approved exact HTTPS origins in
+`img-src` and `font-src` (preserving explicit ports), so an undisclosed host
+remains blocked even if extraction misses its syntax; the renderer also
+re-checks eligibility before rendering. Enabling trust is transactional: the
+trusted state commits only after the trusted re-render completes (installing
+the macOS snapshot or loading the Windows iframe), so a failed or timed-out
+render never leaves the UI claiming trust it did not deliver. Pending trust is
+bound to the current entry identity and payload, so replacing an entry cannot
+inherit network access before navigation-reset effects run.
+
+Both platforms share one SVG policy, pinned by
+`shared/svg-preview-policy-fixtures.json`: the same trust eligibility rules,
+reference extraction (srcset, HTML-entity-encoded URLs, CSS `url()`), visual
+eligibility gate, and byte-identical CSP construction are asserted by the
+XCTest and vitest suites against the same fixture file, and the
+cross-platform sync script validates the fixtures themselves. Documents
+containing active or navigation markup (scripts, meta refresh, frames, SMIL
+or CSS animation) are classified to the source viewer on both platforms
+before any web view or iframe is created, with a notice explaining why;
+oversized documents classify the same way, and only transient render
+failures offer a retry.
 
 On Windows, the SVG is kept in memory and placed in a `srcdoc` document inside
 an iframe with an empty sandbox (no scripts, forms, top navigation, or host
@@ -100,8 +119,10 @@ styles and `data:` images/fonts; trusted mode adds only the exact approved
 public HTTPS origins to the image/font policy. The same 8 MiB input,
 4,096-pixel dimension, 16-million-pixel output, and four-second watchdog
 limits apply, and a timeout falls back to the in-memory source viewer.
-Documents containing active or navigation markup are also kept in the source
-viewer instead of being loaded into the visual frame.
+The visual renderers differ by design: macOS snapshots into a bounded
+raster while Windows displays a live sandboxed vector iframe, so very large
+or deeply scaled documents can look different across platforms while
+receiving identical security treatment.
 
 Windows keeps decrypted preview bytes in memory and revokes Blob URLs on item
 replacement and window close. macOS creates a plaintext temporary file only
