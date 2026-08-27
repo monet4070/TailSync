@@ -451,10 +451,10 @@ pub async fn test_connection(address: &str) -> Result<RouteLatency, String> {
 mod tests {
     use super::{
         acquire_peer_file_batch, bind_tcp_listener, cached_discover_peers, clear_peer_cache,
-        connection_task, merge_tailscale_heartbeat, queue_peer_frame, race_connect_and_handshake,
-        record_protocol_compatibility_error, secure, store_peer_cache, ConnectionInterface,
-        ConnectionLimiter, ConnectionPool, PeerCandidate, PeerStatus, PoolSender, QueuedFrame,
-        ResolvedCandidate, ResolvedTarget, POOL_CHANNEL_SIZE,
+        connection_task, merge_paired_peers, merge_tailscale_heartbeat, prewarm_connections,
+        queue_peer_frame, race_connect_and_handshake, record_protocol_compatibility_error, secure,
+        store_peer_cache, ConnectionInterface, ConnectionLimiter, ConnectionPool, PeerCandidate,
+        PeerStatus, PoolSender, QueuedFrame, ResolvedCandidate, ResolvedTarget, POOL_CHANNEL_SIZE,
     };
     use crate::crypto::{self, Settings};
     use crate::identity::DeviceIdentity;
@@ -650,6 +650,71 @@ mod tests {
             current_address: None,
             status: PeerStatus::Online,
         }
+    }
+
+    #[tokio::test]
+    async fn prewarm_recreates_a_trusted_connection_after_pool_disconnect() {
+        let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let pool = Arc::new(Mutex::new(ConnectionPool::new(identity, settings)));
+        let mut trusted = discovered_peer(
+            "prewarm-mode-switch-test",
+            "192.168.252.40",
+            ConnectionInterface::Lan,
+        );
+        trusted.trusted = true;
+
+        prewarm_connections(pool.clone(), vec![trusted.clone()]).await;
+        assert_eq!(pool.lock().await.senders.len(), 1);
+
+        pool.lock().await.disconnect_all();
+        assert!(pool.lock().await.senders.is_empty());
+
+        prewarm_connections(pool.clone(), vec![trusted]).await;
+        assert_eq!(pool.lock().await.senders.len(), 1);
+
+        let untrusted = discovered_peer(
+            "untrusted-prewarm-test",
+            "192.168.252.41",
+            ConnectionInterface::Lan,
+        );
+        pool.lock().await.disconnect_all();
+        prewarm_connections(pool.clone(), vec![untrusted]).await;
+        assert!(pool.lock().await.senders.is_empty());
+    }
+
+    /// The restart scenario from the Windows/macOS behavior gap: after a
+    /// daemon restart, discovery may not have seen the paired peer yet, but
+    /// the remembered LAN address must still produce a dialed connection.
+    #[tokio::test]
+    async fn remembered_trusted_peer_is_prewarmed_without_discovery() {
+        let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let mut settings = Settings::default();
+        settings.trusted_peer_keys.insert(
+            "restarted-peer".into(),
+            STANDARD.encode(identity.public_key()),
+        );
+        settings
+            .trusted_peer_addresses
+            .entry("restarted-peer".into())
+            .or_default()
+            .insert("lan".into(), "192.168.253.7".into());
+        let settings = Arc::new(Mutex::new(settings));
+        let pool = Arc::new(Mutex::new(ConnectionPool::new(
+            identity.clone(),
+            settings.clone(),
+        )));
+
+        // Discovery returned nothing this round; merge_paired_peers must
+        // still rebuild the trusted peer from its remembered address, and
+        // prewarm must dial it.
+        let snapshot = settings.lock().await.clone();
+        let peers = merge_paired_peers(&snapshot, "lan_only", Vec::new());
+        assert_eq!(peers.len(), 1);
+        assert!(peers[0].trusted);
+
+        prewarm_connections(pool.clone(), peers).await;
+        assert_eq!(pool.lock().await.senders.len(), 1);
     }
 
     #[test]

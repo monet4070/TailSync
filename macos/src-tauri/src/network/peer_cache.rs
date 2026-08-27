@@ -124,6 +124,7 @@ pub async fn request_peer_refresh_and_wait() -> Result<(), String> {
 
 pub async fn peer_cache_refresh_loop(
     settings: Arc<Mutex<crypto::Settings>>,
+    pool: Arc<Mutex<ConnectionPool>>,
     app_handle: Option<tauri::AppHandle>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -132,9 +133,11 @@ pub async fn peer_cache_refresh_loop(
             return;
         }
         let mode = settings.lock().await.connection_mode.clone();
+        let mut discovered: Vec<tailscale::PeerInfo> = Vec::new();
         match refresh_peer_cache(&mode).await {
             Ok((_, peers)) => {
-                let observations = peers.iter().flat_map(|peer| {
+                discovered = peers;
+                let observations = discovered.iter().flat_map(|peer| {
                     peer.candidates.iter().filter_map(|candidate| {
                         candidate.latency.map(|latency_ms| {
                             (
@@ -148,14 +151,23 @@ pub async fn peer_cache_refresh_loop(
                         })
                     })
                 });
-                record_probe_round(&mode, &peers, observations);
-                remember_peer_addresses(&settings, &mode, &peers).await;
+                record_probe_round(&mode, &discovered, observations);
+                remember_peer_addresses(&settings, &mode, &discovered).await;
             }
             Err(error) => {
                 update_peer_health_for_failed_round(&mode);
                 debug!("Peer cache refresh failed for {mode} mode: {error}");
             }
         }
+        // Redial trusted peers every round, mirroring the Windows health
+        // monitor: merge_paired_peers fills in remembered addresses for
+        // paired peers that discovery missed, so a restarted daemon
+        // reconnects on its own instead of waiting for user action.
+        // prewarm_connections itself only touches enabled && trusted peers,
+        // and a pooled worker is reused while its channels stay open.
+        let snapshot = settings.lock().await.clone();
+        let prewarm_peers = merge_paired_peers(&snapshot, &mode, discovered);
+        prewarm_connections(pool.clone(), prewarm_peers).await;
         peer_refresh_generation().send_modify(|generation| {
             *generation = generation.wrapping_add(1);
         });

@@ -485,6 +485,7 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
         &background_tasks,
         tauri::async_runtime::spawn(network::peer_cache_refresh_loop(
             settings,
+            pool.clone(),
             None,
             shutdown_rx.clone(),
         )),
@@ -728,6 +729,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             track_task(&tasks_for_setup, discovery_task);
             let health_task = tauri::async_runtime::spawn(network::peer_cache_refresh_loop(
                 settings_for_discovery,
+                pool_for_setup.clone(),
                 Some(handle.clone()),
                 shutdown_for_setup.clone(),
             ));
