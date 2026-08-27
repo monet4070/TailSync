@@ -200,19 +200,20 @@ impl PairingManager {
     }
 
     pub async fn enable(self: &Arc<Self>) -> PairingStatus {
-        let old_control = {
+        let (old_control, generation, deadline) = {
             let mut state = self.state.lock().await;
             let old_control = state.control.take();
+            let deadline = Instant::now() + self.window_duration;
             state.enabled = true;
             state.phase = PairingPhase::Waiting;
-            state.deadline = Some(Instant::now() + self.window_duration);
+            state.deadline = Some(deadline);
             state.expires_at = Some(unix_timestamp_after(self.window_duration));
             state.failed_attempts = 0;
             state.peer = None;
             state.error = None;
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
-            old_control
+            (old_control, state.generation, deadline)
         };
         if let Some(control) = old_control {
             let _ = control.send(PairingAction::Cancel).await;
@@ -227,20 +228,14 @@ impl PairingManager {
             });
         }
 
-        let generation = self.state.lock().await.generation;
-        self.schedule_expiration(generation);
+        self.schedule_expiration(generation, deadline);
         self.status().await
     }
 
-    fn schedule_expiration(self: &Arc<Self>, generation: u64) {
+    fn schedule_expiration(self: &Arc<Self>, generation: u64, deadline: Instant) {
         let manager = Arc::downgrade(self);
         tokio::spawn(async move {
-            tokio::time::sleep(
-                manager
-                    .upgrade()
-                    .map_or(DEFAULT_PAIRING_WINDOW, |manager| manager.window_duration),
-            )
-            .await;
+            tokio::time::sleep_until(deadline).await;
             if let Some(manager) = manager.upgrade() {
                 manager.expire(generation).await;
             }
@@ -445,11 +440,12 @@ impl PairingManager {
                     (control, true, None)
                 } else {
                     state.phase = PairingPhase::Waiting;
-                    state.deadline = Some(Instant::now() + self.window_duration);
+                    let deadline = Instant::now() + self.window_duration;
+                    state.deadline = Some(deadline);
                     state.expires_at = Some(unix_timestamp_after(self.window_duration));
                     state.generation = state.generation.wrapping_add(1);
                     state.session_id = state.session_id.wrapping_add(1);
-                    (control, false, Some(state.generation))
+                    (control, false, Some((state.generation, deadline)))
                 }
             } else {
                 state.enabled = false;
@@ -468,8 +464,8 @@ impl PairingManager {
         if let Some(control) = control {
             let _ = control.send(PairingAction::Cancel).await;
         }
-        if let Some(generation) = next_generation {
-            self.schedule_expiration(generation);
+        if let Some((generation, deadline)) = next_generation {
+            self.schedule_expiration(generation, deadline);
         }
     }
 
@@ -820,12 +816,18 @@ mod tests {
             5,
             false,
         );
+        let mut window = manager.subscribe_window();
         assert!(!manager.status().await.pairing_enabled);
 
         let enabled = manager.enable().await;
         assert!(enabled.pairing_enabled);
         assert_eq!(enabled.phase, PairingPhase::Waiting);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(*window.borrow_and_update());
+        tokio::time::timeout(Duration::from_secs(1), window.changed())
+            .await
+            .expect("pairing window did not expire")
+            .expect("pairing window signal closed");
+        assert!(!*window.borrow_and_update());
 
         let expired = manager.status().await;
         assert!(!expired.pairing_enabled);
