@@ -9,9 +9,9 @@
 //!
 //! - Unix: directories `0o700`, files `0o600`, applied at creation time via
 //!   `OpenOptionsExt::mode` (no create-wide-then-chmod window).
-//! - Windows: a protected DACL (owner, SYSTEM, administrators only) on
-//!   app-managed objects; directory ACEs are inheritable so children
-//!   created afterwards pick them up automatically.
+//! - Windows: a protected DACL (process user, owner, SYSTEM and
+//!   administrators only) on app-managed objects; directory ACEs are
+//!   inheritable so children created afterwards pick them up automatically.
 //!
 //! User-selected custom storage roots are deliberately *not* restricted:
 //! only directories the application itself creates are locked.
@@ -447,20 +447,72 @@ fn path_with_suffix(path: &Path, suffix: &str) -> std::path::PathBuf {
 #[cfg(windows)]
 fn set_private_windows_acl(path: &Path, directory: bool) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SDDL_REVISION_1,
     };
     use windows_sys::Win32::Security::{
-        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        GetTokenInformation, SetFileSecurityW, TokenUser, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
     };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    // OW is the Windows Owner Rights SID. The protected DACL permits only the
-    // object owner, SYSTEM and administrators; directory ACEs inherit.
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let user_sid = (|| -> io::Result<String> {
+        let mut required = 0;
+        unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+        }
+        if required == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut buffer = vec![0usize; (required as usize).div_ceil(std::mem::size_of::<usize>())];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let token_user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+        let mut string_sid = std::ptr::null_mut();
+        if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut string_sid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let length = unsafe {
+            let mut length = 0;
+            while *string_sid.add(length) != 0 {
+                length += 1;
+            }
+            length
+        };
+        let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(string_sid, length) })
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+        unsafe {
+            LocalFree(string_sid.cast());
+        }
+        sid
+    })();
+    unsafe {
+        CloseHandle(token);
+    }
+    let user_sid = user_sid?;
+
+    // OW is the Windows Owner Rights SID. An explicit process-user ACE keeps
+    // ACL updates idempotent when Windows assigns a group as the object owner.
     let sddl = if directory {
-        "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)"
+        format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;OW)")
     } else {
-        "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)"
+        format!("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{user_sid})(A;;FA;;;OW)")
     };
     let sddl = sddl
         .encode_utf16()
@@ -562,6 +614,25 @@ mod tests {
         assert_eq!(mode_of(&path), 0o600);
         assert!(create_private_file(&path).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_windows_acl_can_be_reapplied() {
+        let root = temporary_root("windows-acl-idempotence");
+        let directory = root.join("managed");
+        create_private_dir_all(&directory).unwrap();
+        restrict_private_dir(&directory).unwrap();
+        restrict_private_dir(&directory).unwrap();
+
+        let path = directory.join("secret.bin");
+        drop(create_private_file(&path).unwrap());
+        restrict_private_file(&path).unwrap();
+        restrict_private_file(&path).unwrap();
+        std::fs::write(&path, b"still accessible").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"still accessible");
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
