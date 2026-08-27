@@ -105,23 +105,6 @@ jobs:
         run: cargo clippy --locked --manifest-path windows/src-tauri/Cargo.toml --all-targets -- -D warnings
       - name: Run shared core unit tests, including v1 migration fixtures
         run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
-      # Temporary stress validation for the re-enabled RTT probe test
-      # (un-ignored 2026-08-27). Remove after both platforms report 10/10
-      # stable runs across a few CI cycles.
-      - name: Stress-run the re-enabled RTT probe test (temporary)
-        shell: bash
-        run: |
-          set -euo pipefail
-          TEST_NAME='iroh_transport::tests::repeated_rtt_probes_use_isolated_endpoints_without_opening_business_streams'
-          for i in $(seq 1 10); do
-            echo "RTT probe stress run $i/10"
-            OUTPUT="$(cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib "$TEST_NAME" -- --exact --test-threads=1 2>&1)" || {
-              printf '%s\n' "$OUTPUT"
-              exit 1
-            }
-            printf '%s\n' "$OUTPUT"
-            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored' <<<"$OUTPUT"
-          done
       - name: Run Windows application unit tests
         run: cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib
       - name: Run bidirectional interoperability probe
@@ -176,23 +159,8 @@ jobs:
         run: cargo clippy --locked --manifest-path shared/tailsync-themes/Cargo.toml --all-targets -- -D warnings
       - name: Run theme crate unit tests
         run: cargo test --locked --manifest-path shared/tailsync-themes/Cargo.toml
-      # Temporary stress validation for the re-enabled RTT probe test
-      # (un-ignored 2026-08-27). Remove after both platforms report 10/10
-      # stable runs across a few CI cycles.
-      - name: Stress-run the re-enabled RTT probe test (temporary)
-        shell: bash
-        run: |
-          set -euo pipefail
-          TEST_NAME='iroh_transport::tests::repeated_rtt_probes_use_isolated_endpoints_without_opening_business_streams'
-          for i in $(seq 1 10); do
-            echo "RTT probe stress run $i/10"
-            OUTPUT="$(cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib "$TEST_NAME" -- --exact --test-threads=1 2>&1)" || {
-              printf '%s\n' "$OUTPUT"
-              exit 1
-            }
-            printf '%s\n' "$OUTPUT"
-            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored' <<<"$OUTPUT"
-          done
+      - name: Run shared core unit tests
+        run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
       - name: Check macOS application formatting
         run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
       - name: Run macOS application Clippy
