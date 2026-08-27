@@ -211,12 +211,11 @@ impl DiscoveryAdmission {
         AdmissionDecision::Allow
     }
 
-    /// Expire sources idle past the TTL. Runs when the cleanup interval
-    /// has elapsed or the table is full; never per packet.
+    /// Expire sources idle past the TTL. The caller invokes this only under
+    /// capacity pressure, and the interval guard amortises the O(n) scan so
+    /// a full-table flood cannot force one scan per packet.
     fn cleanup(&mut self, now: Instant) {
-        if now.saturating_duration_since(self.last_cleanup) < self.policy.cleanup_interval
-            && self.sources.len() < self.policy.max_tracked_sources
-        {
+        if now.saturating_duration_since(self.last_cleanup) < self.policy.cleanup_interval {
             return;
         }
         self.sources.retain(|_, state| {
@@ -413,6 +412,31 @@ mod tests {
         // Existing sources are unaffected.
         assert!(admission.should_reply(lan_source(0), t0).is_allowed());
         assert_eq!(admission.tracked_sources(), 4);
+    }
+
+    #[test]
+    fn full_table_does_not_rescan_before_cleanup_interval() {
+        let policy = DiscoveryPolicy {
+            source_burst: 2.0,
+            source_refill_per_sec: 2.0,
+            global_burst: 1000.0,
+            global_refill_per_sec: 1000.0,
+            max_tracked_sources: 1,
+            idle_ttl: Duration::from_millis(1),
+            cleanup_interval: Duration::from_secs(60),
+        };
+        let t0 = Instant::now();
+        let mut admission = DiscoveryAdmission::with_policy(policy, t0);
+        assert!(admission.should_reply(lan_source(1), t0).is_allowed());
+
+        // Even though the entry is now technically idle, a table-full flood
+        // must not force an O(table-size) retain scan on every packet. It is
+        // reclaimed only once the amortised cleanup interval is due.
+        assert_eq!(
+            admission.should_reply(lan_source(2), t0 + Duration::from_millis(2)),
+            AdmissionDecision::Deny(DenyReason::TableFull)
+        );
+        assert_eq!(admission.tracked_sources(), 1);
     }
 
     #[test]

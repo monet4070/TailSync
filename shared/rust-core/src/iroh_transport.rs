@@ -456,11 +456,9 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    // Re-enabled 2026-08-27: the localhost QUIC environment regression that
-    // caused the isolated-endpoint connect to hit Iroh's 30 s timeout has
-    // recovered (11/11 consecutive local runs pass). The two connects carry
-    // explicit 10 s outer timeouts so a future environment regression fails
-    // fast instead of stalling the suite for Iroh's internal timeout.
+    // Each accepted probe is drained before the next connection attempt. This
+    // keeps the repeated-connect assertion focused on isolated endpoint/ALPN
+    // behavior instead of racing the previous QUIC close handshake.
     #[tokio::test]
     async fn repeated_rtt_probes_use_isolated_endpoints_without_opening_business_streams() {
         let server = IrohEndpoint {
@@ -478,6 +476,7 @@ mod tests {
             for _ in 0..2 {
                 let accepted = server.accept().await.unwrap().unwrap();
                 assert!(accepted.is_rtt_probe());
+                accepted.wait_for_close().await;
             }
         });
 

@@ -95,6 +95,15 @@ test('expired exception fails', () => {
   }
 });
 
+test('invalid calendar expiry date fails', () => {
+  const root = fixture({ exceptions: [entry({ expires: '2099-99-99' })] });
+  try {
+    assert.throws(() => checkRustsecExceptions(root), /valid calendar date/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('entries missing required fields fail', () => {
   for (const field of ['reason', 'upstream', 'owner', 'expires', 'issue']) {
     const incomplete = entry();
@@ -112,6 +121,21 @@ test('duplicate registry ids fail', () => {
   const root = fixture({ exceptions: [entry(), entry()] });
   try {
     assert.throws(() => checkRustsecExceptions(root), /Duplicate exception ids/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('duplicate deny.toml ignore ids fail', () => {
+  const root = fixture({
+    exceptions: [entry()],
+    denyToml: DENY_TOML.replace(
+      'ignore = ["RUSTSEC-2024-0001"]',
+      'ignore = ["RUSTSEC-2024-0001", "RUSTSEC-2024-0001"]',
+    ),
+  });
+  try {
+    assert.throws(() => checkRustsecExceptions(root), /Duplicate deny.toml ignore ids/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

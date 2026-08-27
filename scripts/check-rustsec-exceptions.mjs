@@ -62,6 +62,13 @@ function validateEntry(entry) {
   if (typeof expires !== 'string' || !ISO_DATE.test(expires)) {
     fail(`Exception ${id} expires field must be an ISO date (YYYY-MM-DD)`);
   }
+  const parsedExpiry = new Date(`${expires}T00:00:00.000Z`);
+  if (
+    Number.isNaN(parsedExpiry.getTime()) ||
+    parsedExpiry.toISOString().slice(0, 10) !== expires
+  ) {
+    fail(`Exception ${id} expires field must be a valid calendar date`);
+  }
   const today = new Date().toISOString().slice(0, 10);
   if (expires <= today) {
     fail(
@@ -86,6 +93,10 @@ export function checkRustsecExceptions(root) {
 
   const denyPath = resolve(root, 'deny.toml');
   const denyIds = extractDenyIgnoreIds(readFileSync(denyPath, 'utf8'));
+  const duplicateDenyIds = denyIds.filter((id, index) => denyIds.indexOf(id) !== index);
+  if (duplicateDenyIds.length > 0) {
+    fail(`Duplicate deny.toml ignore ids: ${[...new Set(duplicateDenyIds)].join(', ')}`);
+  }
 
   const onlyInDeny = denyIds.filter((id) => !ids.includes(id));
   const onlyInRegistry = ids.filter((id) => !denyIds.includes(id));
