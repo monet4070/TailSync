@@ -456,15 +456,12 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    // IGNORED (environment regression, not a code defect): since 2026-08-14
-    // the isolated-endpoint connect on this machine reliably hits the 30 s
-    // Iroh connect timeout, while every other iroh_transport test (including
-    // the same isolated-endpoint mechanism in
-    // reverse_direction_rtt_probe_does_not_close_an_existing_business_stream)
-    // passes. Re-enable once the local UDP/QUIC stack recovers; the
-    // isolation behavior it covers is still exercised by that sibling test.
+    // Re-enabled 2026-08-27: the localhost QUIC environment regression that
+    // caused the isolated-endpoint connect to hit Iroh's 30 s timeout has
+    // recovered (11/11 consecutive local runs pass). The two connects carry
+    // explicit 10 s outer timeouts so a future environment regression fails
+    // fast instead of stalling the suite for Iroh's internal timeout.
     #[tokio::test]
-    #[ignore = "environment regression: localhost QUIC connect times out on this machine"]
     async fn repeated_rtt_probes_use_isolated_endpoints_without_opening_business_streams() {
         let server = IrohEndpoint {
             endpoint: Endpoint::builder(presets::Minimal)
@@ -484,12 +481,24 @@ mod tests {
             }
         });
 
-        let first = client.connect_rtt_addr(server_addr.clone()).await.unwrap();
+        let first = tokio::time::timeout(
+            Duration::from_secs(10),
+            client.connect_rtt_addr(server_addr.clone()),
+        )
+        .await
+        .expect("first isolated RTT connect timed out")
+        .unwrap();
         assert!(first
             .measure_rtt(Duration::from_millis(100))
             .await
             .is_some());
-        let second = client.connect_rtt_addr(server_addr).await.unwrap();
+        let second = tokio::time::timeout(
+            Duration::from_secs(10),
+            client.connect_rtt_addr(server_addr),
+        )
+        .await
+        .expect("second isolated RTT connect timed out")
+        .unwrap();
         assert!(second
             .measure_rtt(Duration::from_millis(100))
             .await

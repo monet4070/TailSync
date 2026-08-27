@@ -64,5 +64,6 @@ test --no-run），Windows 原生编译/打包/运行由 CI 负责。注意 host
 
 ## 已知缺口
 
-- `iroh_transport` 的 `repeated_rtt_probes` 测试因本机 QUIC 环境回归已 `#[ignore]`（2026-08-14 起记录）。
+- `iroh_transport` 的 `repeated_rtt_probes` 测试已于 2026-08-27 解除 `#[ignore]`（本机 11/11 通过，
+  两端 connect 各带 10 秒外层超时）；若 CI 再次出现环境相关失败，退路是确定性状态测试 + 定时真实 QUIC 测试。
 - Android 客户端不在 v4 协议兼容范围。
