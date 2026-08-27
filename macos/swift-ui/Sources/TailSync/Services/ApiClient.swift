@@ -299,15 +299,39 @@ final class ApiClient: @unchecked Sendable {
     }
 
     func checkForUpdate() async throws -> UpdateInfo? {
-        let response = try await request(["cmd": "check_for_update"], timeoutSeconds: 30)
-        guard response["ok"] as? Bool == true else {
-            throw ApiError.serverError(response["error"] as? String ?? "Update check failed")
+        // The headless daemon starts its API socket just before Tauri finishes
+        // registering the updater AppHandle. Retry only that short startup
+        // window; feed/network failures must still surface immediately rather
+        // than being hidden behind a long fixed delay.
+        for attempt in 0..<8 {
+            do {
+                let response = try await request(["cmd": "check_for_update"], timeoutSeconds: 30)
+                guard response["ok"] as? Bool == true else {
+                    throw ApiError.serverError(response["error"] as? String ?? "Update check failed")
+                }
+                guard let value = response["data"], !(value is NSNull) else { return nil }
+                return try JSONDecoder().decode(
+                    UpdateInfo.self,
+                    from: JSONSerialization.data(withJSONObject: value)
+                )
+            } catch {
+                guard attempt < 7, Self.shouldRetryUpdateCheck(error) else { throw error }
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
         }
-        guard let value = response["data"], !(value is NSNull) else { return nil }
-        return try JSONDecoder().decode(
-            UpdateInfo.self,
-            from: JSONSerialization.data(withJSONObject: value)
-        )
+        return nil
+    }
+
+    private static func shouldRetryUpdateCheck(_ error: Error) -> Bool {
+        guard let error = error as? ApiError else { return false }
+        switch error {
+        case .connectionFailed:
+            return true
+        case .serverError(let message):
+            return message.localizedCaseInsensitiveContains("still starting")
+        default:
+            return false
+        }
     }
 
     func installUpdate() async throws -> Bool {

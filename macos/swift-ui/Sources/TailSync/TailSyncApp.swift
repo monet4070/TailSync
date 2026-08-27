@@ -51,6 +51,17 @@ enum StatusItemImagePolicy {
     }
 }
 
+enum TailSyncAppVersion {
+    private static let developmentFallback = "2.2.2"
+
+    static var current: String {
+        let info = Bundle.main.infoDictionary
+        return (info?["CFBundleShortVersionString"] as? String)
+            ?? (info?["CFBundleVersion"] as? String)
+            ?? developmentFallback
+    }
+}
+
 @main
 struct TailSyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -490,10 +501,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateCheckRunning = true
         Task { @MainActor [weak self] in
             defer { self?.updateCheckRunning = false }
-            for _ in 0..<20 {
-                if await ApiClient.shared.ping() { break }
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            }
             do {
                 guard let update = try await ApiClient.shared.checkForUpdate() else {
                     if showWhenCurrent { self?.showUpdateMessage(Loc.t("update.current")) }
@@ -537,15 +544,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard response == .alertFirstButtonReturn else { return }
             Task { @MainActor [weak self] in
                 do {
-                    guard try await ApiClient.shared.installUpdate() else { return }
-                    await Self.stopDaemonForRestart()
-                    try Self.scheduleUpdatedAppRelaunch()
-                    NSApp.terminate(nil)
+                    _ = try await Self.installAvailableUpdateAndRelaunch()
                 } catch {
                     self?.showUpdateMessage(error.localizedDescription, error: true)
                 }
             }
         }
+    }
+
+    @MainActor
+    static func installAvailableUpdateAndRelaunch() async throws -> Bool {
+        guard try await ApiClient.shared.installUpdate() else { return false }
+        await stopDaemonForRestart()
+        try scheduleUpdatedAppRelaunch()
+        NSApp.terminate(nil)
+        return true
     }
 
     private func showUpdateMessage(_ message: String, error: Bool = false) {
