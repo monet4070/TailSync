@@ -69,6 +69,7 @@ fn break_hard_link(path: &Path) -> io::Result<()> {
         io::copy(&mut input, &mut output)?;
         output.sync_all()?;
         drop(output);
+        drop(input);
         replace_file_atomic(&temporary, path)
     })();
     if result.is_err() {
@@ -762,9 +763,9 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn enforce_private_tree_breaks_legacy_hard_links_without_touching_the_source() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
         let root = temporary_root("enforce-legacy-hard-link");
@@ -772,14 +773,18 @@ mod tests {
         std::fs::create_dir(&managed).unwrap();
         let source = root.join("user-file.txt");
         std::fs::write(&source, b"original").unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).unwrap();
         let legacy = managed.join("legacy-link.txt");
         std::fs::hard_link(&source, &legacy).unwrap();
 
         enforce_private_tree(&managed).unwrap();
 
-        assert_eq!(mode_of(&source), 0o644);
-        assert_eq!(mode_of(&legacy), 0o600);
+        #[cfg(unix)]
+        {
+            assert_eq!(mode_of(&source), 0o644);
+            assert_eq!(mode_of(&legacy), 0o600);
+        }
         std::fs::write(&legacy, b"managed copy").unwrap();
         assert_eq!(std::fs::read(&source).unwrap(), b"original");
 
