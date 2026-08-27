@@ -2,7 +2,7 @@ use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -338,7 +338,8 @@ impl SyncEngine {
                 "global active file batch limit ({MAX_ACTIVE_BATCHES_GLOBAL}) reached"
             ));
         }
-        fs::create_dir_all(incoming_dir).map_err(|error| error.to_string())?;
+        crate::private_fs::create_private_dir_all(incoming_dir)
+            .map_err(|error| error.to_string())?;
         let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
         let mut files = vec![None; manifest.files.len()];
         if let Ok(data) = fs::read(&manifest_path) {
@@ -640,7 +641,7 @@ impl SyncEngine {
         let parent = file_path
             .parent()
             .ok_or_else(|| "incoming file path has no parent".to_string())?;
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        crate::private_fs::create_private_dir_all(parent).map_err(|error| error.to_string())?;
         let id = transfer_id.as_hex();
         let tmp_path = if resumable {
             parent.join(format!("{id}.part"))
@@ -667,12 +668,7 @@ impl SyncEngine {
             }
         }
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(!resumable)
-            .open(&tmp_path)
+        let mut file = crate::private_fs::open_private_file(&tmp_path, !resumable)
             .map_err(|error| format!("cannot open {}: {error}", tmp_path.display()))?;
         let received = file.metadata().map_err(|error| error.to_string())?.len();
         if received > meta.size {

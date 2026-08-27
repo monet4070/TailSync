@@ -1,6 +1,6 @@
 # TailSync 实用指南
 
-> 适用版本：TailSync 2.2.0，线协议 v4，数据库 schema v9
+> 适用版本：TailSync 2.2.2，线协议 v4，数据库 schema v9
 > 支持平台：macOS、Windows
 
 TailSync 用来在自己的 macOS 和 Windows 设备之间同步剪贴板。两端配对后，在一台设备上复制文本、图片或文件，内容会自动写入另一台设备的系统剪贴板，并保存在各自的本地历史中。

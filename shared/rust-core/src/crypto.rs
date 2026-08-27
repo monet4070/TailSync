@@ -440,11 +440,10 @@ fn migrate_legacy_theme_fields(
 }
 
 /// Atomic write: temp file then rename, so a crash or error never leaves a
-/// truncated config file behind.
+/// truncated config file behind. The temp file is owner-only from creation
+/// and synced before the rename.
 fn write_atomic(path: &std::path::Path, json: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)?;
+    crate::private_fs::write_private_file(path, json.as_bytes())?;
     Ok(())
 }
 
@@ -1062,7 +1061,7 @@ impl KeyStore for SystemKeyStore {
                 operation: "creating the Windows key file",
                 message: "the key file has no parent directory".to_string(),
             })?;
-            std::fs::create_dir_all(parent).map_err(|source| {
+            crate::private_fs::create_private_dir_all(parent).map_err(|source| {
                 classify_io_error("creating the Windows data directory", source)
             })?;
 
@@ -1073,11 +1072,7 @@ impl KeyStore for SystemKeyStore {
                         std::process::id(),
                         rand::random::<u64>()
                     ));
-                    match std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&candidate)
-                    {
+                    match crate::private_fs::create_private_file(&candidate) {
                         Ok(file) => Some(Ok((candidate, file))),
                         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
                         Err(error) => Some(Err(classify_io_error(

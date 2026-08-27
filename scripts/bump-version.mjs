@@ -4,8 +4,10 @@
 // Writes the new version into all version-bearing files (#1-#12 in
 // VERSION_MATRIX), keeps the Cargo.lock files in sync without
 // re-resolving dependencies, and self-verifies through the existing
-// validate-release-version.mjs. README badges (#13) are intentionally not
-// touched unless --readme is passed.
+// validate-release-version.mjs. The "current product version" markers in
+// README/CONTEXT/USER_GUIDE/THEMING are part of the same matrix: each
+// marker must appear exactly once and match the manifest version, so
+// `--check` (run in CI) fails on doc drift.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -126,6 +128,89 @@ const LOCK_ROOTS = [
 
 const PACKAGE_LOCK_FILES = ['windows/package-lock.json', 'site/package-lock.json'];
 
+// "Current product version" markers in prose docs. Each entry's pattern must
+// match exactly once in the file; bump rewrites the capture and --check pins
+// it to the manifest version. Examples in RELEASE.md and test fixtures
+// deliberately use other versions and stay out of this matrix.
+const DOC_VERSION_MARKERS = [
+  {
+    relative: 'README.md',
+    // Version badge label and link target: both must carry the same version.
+    pattern: /\[!\[Version\]\(https:\/\/img\.shields\.io\/badge\/Version-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-D5684B\)\]\(https:\/\/github\.com\/monet4070\/TailSync\/tree\/v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\)/,
+    build: (version) =>
+      `[![Version](https://img.shields.io/badge/Version-v${version}-D5684B)](https://github.com/monet4070/TailSync/tree/v${version})`,
+  },
+  {
+    relative: 'README.md',
+    pattern: /> TailSync (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?) 目前处于积极开发阶段/,
+    build: (version) => `> TailSync ${version} 目前处于积极开发阶段`,
+  },
+  {
+    relative: 'README.md',
+    pattern: /当前产品版本为 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，数据库 schema 为/,
+    build: (version) => `当前产品版本为 ${version}，数据库 schema 为`,
+  },
+  {
+    relative: 'CONTEXT.md',
+    pattern: /线协议 v4；产品版本 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)；数据库 schema v9/,
+    build: (version) => `线协议 v4；产品版本 ${version}；数据库 schema v9`,
+  },
+  {
+    relative: 'docs/USER_GUIDE.zh-CN.md',
+    pattern: /> 适用版本：TailSync (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，线协议 v4/,
+    build: (version) => `> 适用版本：TailSync ${version}，线协议 v4`,
+  },
+  {
+    relative: 'docs/THEMING.md',
+    pattern: /> 适用版本：产品 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，Theme V2/,
+    build: (version) => `> 适用版本：产品 ${version}，Theme V2`,
+  },
+  {
+    relative: 'docs/THEMING.md',
+    pattern: /SemVer，且 ≤ 当前 Core 版本（(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)），否则包被拒绝/,
+    build: (version) => `SemVer，且 ≤ 当前 Core 版本（${version}），否则包被拒绝`,
+  },
+];
+
+function globalPattern(pattern) {
+  return pattern.flags.includes('g') ? pattern : new RegExp(pattern.source, `${pattern.flags}g`);
+}
+
+function bumpDocMarkers(root, version, written, dryRun) {
+  for (const marker of DOC_VERSION_MARKERS) {
+    const path = resolve(root, marker.relative);
+    const content = readFileSync(path, 'utf8');
+    const matches = [...content.matchAll(globalPattern(marker.pattern))];
+    if (matches.length !== 1) {
+      fail(`Expected exactly one version marker in ${marker.relative}, found ${matches.length}`);
+    }
+    const expected = marker.build(version);
+    writeIfChanged(
+      path,
+      content.replace(marker.pattern, () => expected),
+      written,
+      dryRun,
+    );
+  }
+}
+
+function verifyDocMarkers(root, version) {
+  for (const marker of DOC_VERSION_MARKERS) {
+    const content = readFileSync(resolve(root, marker.relative), 'utf8');
+    const matches = [...content.matchAll(globalPattern(marker.pattern))];
+    if (matches.length !== 1) {
+      fail(`Expected exactly one version marker in ${marker.relative}, found ${matches.length}`);
+    }
+    for (const [index, captured] of matches[0].slice(1).entries()) {
+      if (captured !== version) {
+        fail(
+          `${marker.relative} marker ${index + 1} pins the product version to ${captured}, expected ${version}`,
+        );
+      }
+    }
+  }
+}
+
 function requireFiles(root, relatives) {
   for (const relative of relatives) {
     if (!existsSync(resolve(root, relative))) fail(`Missing version file: ${relative}`);
@@ -138,6 +223,7 @@ export function bumpRepositoryVersions(root, version, dryRun = false) {
     ...JSON_VERSION_FILES,
     ...CARGO_TOML_FILES,
     ...PACKAGE_LOCK_FILES,
+    ...DOC_VERSION_MARKERS.map((marker) => marker.relative),
     ...LOCK_ROOTS.map(([relative]) => relative),
   ]);
   const written = [];
@@ -162,6 +248,7 @@ export function bumpRepositoryVersions(root, version, dryRun = false) {
       }
     }, written, dryRun);
   }
+  bumpDocMarkers(root, expected, written, dryRun);
   return written;
 }
 
@@ -189,6 +276,7 @@ export function verifyRepositoryVersions(root, version) {
       fail(`${relative} is not at version ${expected}`);
     }
   }
+  verifyDocMarkers(root, expected);
   return releaseChannel(tag);
 }
 

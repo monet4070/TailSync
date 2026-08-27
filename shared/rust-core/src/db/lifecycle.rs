@@ -21,7 +21,7 @@ fn clear_history_directory_with<F>(directory: &Path, remove_entry: &mut F) -> st
 where
     F: FnMut(&Path) -> std::io::Result<()>,
 {
-    std::fs::create_dir_all(directory)?;
+    crate::private_fs::create_private_dir_all(directory)?;
     let mut first_error = None;
     for entry in std::fs::read_dir(directory)? {
         match entry {

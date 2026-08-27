@@ -46,26 +46,21 @@ pub(crate) fn persist_transfer_state(
         final_path: state.final_path.clone(),
         updated_at: chrono::Utc::now().timestamp(),
     };
-    let temp = path.with_extension("json.tmp");
-    fs::write(
-        &temp,
-        serde_json::to_vec_pretty(&saved).map_err(|error| ResumeError::Serde(error.to_string()))?,
-    )
-    .map_err(|error| ResumeError::Io(error.to_string()))?;
-    fs::rename(&temp, path).map_err(|error| ResumeError::Io(error.to_string()))
+    let encoded =
+        serde_json::to_vec_pretty(&saved).map_err(|error| ResumeError::Serde(error.to_string()))?;
+    crate::private_fs::write_private_file(path, &encoded)
+        .map_err(|error| ResumeError::Io(error.to_string()))
 }
 
 pub(crate) fn persist_incoming_batch(
     path: &Path,
     batch: &PersistedIncomingBatch,
 ) -> Result<(), ResumeError> {
-    let temp = path.with_extension("json.tmp");
-    fs::write(
-        &temp,
-        serde_json::to_vec_pretty(batch).map_err(|error| ResumeError::Serde(error.to_string()))?,
+    crate::private_fs::write_private_file(
+        path,
+        &serde_json::to_vec_pretty(batch).map_err(|error| ResumeError::Serde(error.to_string()))?,
     )
-    .map_err(|error| ResumeError::Io(error.to_string()))?;
-    fs::rename(&temp, path).map_err(|error| ResumeError::Io(error.to_string()))
+    .map_err(|error| ResumeError::Io(error.to_string()))
 }
 
 pub(crate) fn restore_persisted_received_file(
@@ -195,6 +190,41 @@ mod tests {
         let restored: PersistedIncomingBatch =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(restored.source, "peer");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_transfer_state_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = test_directory("private-transfer-state");
+        fs::create_dir_all(&directory).unwrap();
+        let state_path = directory.join("payload.resume.json");
+        let tmp_path = directory.join("payload.part");
+        let state = FileReceiveState {
+            meta: FileMeta {
+                transfer_id: Some(TransferId::random()),
+                name: "payload.bin".to_string(),
+                size: 0,
+                hash: blake3::hash(b"").to_hex().to_string(),
+                chunk_size: FILE_CHUNK_SIZE as u32,
+                batch: None,
+            },
+            session_epoch: 1,
+            tmp_path: tmp_path.clone(),
+            final_path: directory.join("payload.bin"),
+            state_path: Some(state_path.clone()),
+            writer: BufWriter::new(File::create(tmp_path).unwrap()),
+            hasher: blake3::Hasher::new(),
+            received: 0,
+            requires_full_hash: false,
+        };
+
+        persist_transfer_state(&state, "peer").unwrap();
+
+        let mode = fs::metadata(&state_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
         fs::remove_dir_all(directory).unwrap();
     }
 

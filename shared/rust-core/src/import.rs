@@ -12,7 +12,7 @@ use crate::protocol::{MAX_IMAGE_PAYLOAD_SIZE, MAX_TEXT_PAYLOAD_SIZE};
 use base64::Engine;
 use chrono::DateTime;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -171,7 +171,8 @@ pub fn begin_import(
         })
         .transpose()?;
 
-    std::fs::create_dir_all(incoming_dir).map_err(|error| ImportError::Io(error.to_string()))?;
+    crate::private_fs::create_private_dir_all(incoming_dir)
+        .map_err(|error| ImportError::Io(error.to_string()))?;
     let now = Instant::now();
     registry.prune(now);
     if registry.sessions.len() >= API_MAX_IMPORTS {
@@ -181,7 +182,7 @@ pub fn begin_import(
     for _ in 0..8 {
         let import_id = hex::encode(rand::random::<[u8; 16]>());
         let path = incoming_dir.join(format!("api-import-{import_id}.part"));
-        let file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+        let file = match crate::private_fs::create_private_file(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(ImportError::CreateFileFailed(error.to_string())),
@@ -479,6 +480,17 @@ mod tests {
         let opened =
             begin_import(&mut registry, &dir, &params("text", payload, Some(&hash))).unwrap();
         assert_eq!(opened.next_offset, 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let session = registry.sessions.get(&opened.import_id).unwrap();
+            let mode = std::fs::metadata(&session.path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
 
         let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
         let next = append_import_chunk(&mut registry, &opened.import_id, 0, &b64).unwrap();

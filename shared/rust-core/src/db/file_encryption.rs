@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
@@ -321,13 +321,10 @@ fn encrypt_reader_atomic(
     let parent = target
         .parent()
         .ok_or("file-history target has no parent directory")?;
-    std::fs::create_dir_all(parent)?;
+    crate::private_fs::create_private_dir_all(parent)?;
     let temporary = temporary_path(target)?;
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
+        let mut output = crate::private_fs::create_private_file(&temporary)?;
         write_container(reader, &mut output, plaintext_size, data_hash)?;
         drop(output);
         replace_file_atomic(&temporary, target)?;
@@ -374,10 +371,7 @@ pub(super) fn ensure_file_encrypted(
     let temporary = temporary_path(path)?;
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut input = File::open(path)?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
+        let mut output = crate::private_fs::create_private_file(&temporary)?;
         write_container(&mut input, &mut output, plaintext_size, data_hash)?;
         drop(output);
         drop(input);
@@ -456,10 +450,9 @@ pub(super) fn decrypt_file_to_path(
     source: &Path,
     target: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)?;
+    // The decrypted payload is plaintext on disk (e.g. a restored clipboard
+    // file): it must be owner-only from the moment it is created.
+    let mut output = crate::private_fs::create_private_file(target)?;
     let result = decrypt_to_writer(source, &mut output).and_then(|_| {
         output.sync_all()?;
         Ok(())

@@ -115,7 +115,7 @@ pub(super) fn persist_history_file_at(
     original_name: &str,
     data: &[u8],
 ) -> Result<(Vec<u8>, PathBuf), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(directory)?;
+    crate::private_fs::create_private_dir_all(directory)?;
     let safe_name = sanitize_history_file_name(original_name);
     let file_name = format!("{data_hash}-{safe_name}");
     let target = directory.join(&file_name);
@@ -135,17 +135,15 @@ pub(super) fn persist_image_at(
     data_hash: &str,
     data: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(directory)?;
+    crate::private_fs::create_private_dir_all(directory)?;
     let file_name = format!("{data_hash}.bin");
     let target = directory.join(&file_name);
     if !target.is_file() {
         let encrypted = crypto::encrypt(data)?;
-        let temporary = directory.join(format!("{file_name}.{}.tmp", std::process::id()));
-        std::fs::write(&temporary, encrypted)?;
-        if target.exists() {
-            std::fs::remove_file(&target)?;
-        }
-        std::fs::rename(temporary, target)?;
+        // write_private_file uses a random temporary suffix (a fixed
+        // process-id name would collide between concurrent writers) and
+        // creates the container owner-only before the atomic rename.
+        crate::private_fs::write_private_file(&target, &encrypted)?;
     }
     encode_image_reference(&file_name)
 }
@@ -158,7 +156,7 @@ pub(super) fn persist_history_file_from_path_at(
     size: u64,
     move_source: bool,
 ) -> Result<(Vec<u8>, PathBuf), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(directory)?;
+    crate::private_fs::create_private_dir_all(directory)?;
     let safe_name = sanitize_history_file_name(original_name);
     let file_name = format!("{data_hash}-{safe_name}");
     let target = directory.join(&file_name);
@@ -182,26 +180,30 @@ pub(super) fn materialize_clipboard_file_at(
     source: &Path,
     original_name: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    materialize_clipboard_file_at_inner(directory, source, original_name, false)
+    materialize_clipboard_file_at_inner(directory, source, original_name)
 }
 
 fn materialize_clipboard_file_at_inner(
     directory: &Path,
     source: &Path,
     original_name: &str,
-    force_copy: bool,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if !source.is_file() {
+    if !std::fs::symlink_metadata(source)
+        .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
         return Err(format!("Clipboard source file is missing: {}", source.display()).into());
     }
     let safe_name = sanitize_history_file_name(original_name);
     let transfer_directory = directory.join(format!("{:016x}", rand::random::<u64>()));
-    std::fs::create_dir_all(&transfer_directory)?;
+    crate::private_fs::create_private_dir_all(&transfer_directory)?;
     let target = transfer_directory.join(safe_name);
     if file_encryption::is_encrypted_file(source)? {
         file_encryption::decrypt_file_to_path(source, &target)?;
-    } else if force_copy || std::fs::hard_link(source, &target).is_err() {
-        std::fs::copy(source, &target)?;
+    } else {
+        // Never hard-link a user file into managed storage: permissions and
+        // later writes are inode-wide and would mutate the original source.
+        crate::private_fs::copy_private_file(source, &target)?;
     }
     Ok(target)
 }
@@ -236,7 +238,7 @@ pub(super) fn materialize_remote_clipboard_file_at(
     original_name: &str,
     source_peer: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let target = materialize_clipboard_file_at_inner(directory, source, original_name, true)?;
+    let target = materialize_clipboard_file_at_inner(directory, source, original_name)?;
     mark_as_remote_origin(&target, source_peer);
     Ok(target)
 }
@@ -333,12 +335,9 @@ pub(super) fn materialize_clipboard_bytes_at(
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let safe_name = sanitize_history_file_name(original_name);
     let transfer_directory = directory.join(format!("{:016x}", rand::random::<u64>()));
-    std::fs::create_dir_all(&transfer_directory)?;
+    crate::private_fs::create_private_dir_all(&transfer_directory)?;
     let target = transfer_directory.join(safe_name);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target)?;
+    let mut file = crate::private_fs::create_private_file(&target)?;
     file.write_all(data)?;
     file.flush()?;
     file.sync_all()?;

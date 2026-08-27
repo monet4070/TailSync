@@ -21,7 +21,10 @@ pub fn get_data_dir() -> PathBuf {
                         .unwrap_or_else(|_| ".".to_string());
                     PathBuf::from(home).join(".tailsync")
                 });
-            std::fs::create_dir_all(&directory).ok();
+            // The default data directory is app-owned: lock it to the user.
+            // (Custom storage roots configured later are deliberately left
+            // untouched — only directories the app creates get restricted.)
+            let _ = crate::private_fs::create_private_dir_all(&directory);
             directory
         })
         .clone()
@@ -47,14 +50,15 @@ pub fn configure_storage_dir(path: Option<&Path>) -> Result<PathBuf, String> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *current = directory.clone();
     drop(current);
-    std::fs::create_dir_all(&directory)
+    crate::private_fs::create_private_dir_all(&directory)
         .map_err(|error| format!("Could not create {}: {error}", directory.display()))?;
     Ok(directory)
 }
 
 pub fn configure_storage_parent(parent: &Path) -> Result<PathBuf, String> {
     validate_storage_dir(parent)?;
-    configure_storage_dir(Some(&parent.join(STORAGE_DIRECTORY_NAME)))
+    let child = parent.join(STORAGE_DIRECTORY_NAME);
+    configure_storage_dir(Some(&child))
 }
 
 pub fn get_storage_dir() -> PathBuf {

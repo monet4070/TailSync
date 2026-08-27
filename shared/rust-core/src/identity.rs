@@ -221,7 +221,7 @@ fn persist_encrypted_create_only(
     let parent = path.parent().ok_or_else(|| {
         IdentityError::Corrupt("the identity path has no parent directory".to_string())
     })?;
-    std::fs::create_dir_all(parent)
+    crate::private_fs::create_private_dir_all(parent)
         .map_err(|error| IdentityError::io("creating the identity directory", error))?;
     restrict_private_directory(parent)?;
 
@@ -269,22 +269,8 @@ fn create_private_temporary_file(parent: &Path) -> Result<(PathBuf, std::fs::Fil
             std::process::id(),
             rand::random::<u64>()
         ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&candidate) {
-            Ok(file) => {
-                if let Err(error) = restrict_private_file(&candidate) {
-                    drop(file);
-                    let _ = std::fs::remove_file(&candidate);
-                    return Err(error);
-                }
-                return Ok((candidate, file));
-            }
+        match crate::private_fs::create_private_file(&candidate) {
+            Ok(file) => return Ok((candidate, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(IdentityError::io(
@@ -303,96 +289,14 @@ fn create_private_temporary_file(parent: &Path) -> Result<(PathBuf, std::fs::Fil
     })
 }
 
-#[cfg(unix)]
 pub(crate) fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    crate::private_fs::restrict_private_dir(path)
         .map_err(|error| IdentityError::io("restricting the identity directory", error))
 }
 
-#[cfg(windows)]
-pub(crate) fn restrict_private_directory(path: &Path) -> Result<(), IdentityError> {
-    set_private_windows_acl(path, true)
-        .map_err(|error| IdentityError::io("restricting the identity directory", error))
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn restrict_private_directory(_path: &Path) -> Result<(), IdentityError> {
-    Ok(())
-}
-
-#[cfg(unix)]
 fn restrict_private_file(path: &Path) -> Result<(), IdentityError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    crate::private_fs::restrict_private_file(path)
         .map_err(|error| IdentityError::io("restricting the identity file", error))
-}
-
-#[cfg(windows)]
-fn restrict_private_file(path: &Path) -> Result<(), IdentityError> {
-    set_private_windows_acl(path, false)
-        .map_err(|error| IdentityError::io("restricting the identity file", error))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn restrict_private_file(_path: &Path) -> Result<(), IdentityError> {
-    Ok(())
-}
-
-#[cfg(windows)]
-fn set_private_windows_acl(path: &Path, directory: bool) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
-    use windows_sys::Win32::Security::{
-        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    };
-
-    // OW is the Windows Owner Rights SID. The protected DACL permits only the
-    // object owner, SYSTEM and administrators; directory ACEs inherit.
-    let sddl = if directory {
-        "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)"
-    } else {
-        "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)"
-    };
-    let sddl = sddl
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let path = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let mut descriptor = std::ptr::null_mut();
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    let result = unsafe {
-        SetFileSecurityW(
-            path.as_ptr(),
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            descriptor,
-        )
-    };
-    unsafe {
-        LocalFree(descriptor);
-    }
-    if result == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 #[cfg(unix)]

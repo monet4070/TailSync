@@ -172,17 +172,8 @@ fn write_report_atomic(
     let parent = path
         .parent()
         .ok_or("legacy migration report has no parent")?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(
-        ".{REPORT_FILE_NAME}.{}-{:016x}.tmp",
-        std::process::id(),
-        rand::random::<u64>()
-    ));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(report)?)?;
-    if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    std::fs::rename(temporary, path)?;
+    crate::private_fs::create_private_dir_all(parent)?;
+    crate::private_fs::write_private_file(path, &serde_json::to_vec_pretty(report)?)?;
     Ok(())
 }
 
@@ -332,6 +323,16 @@ mod tests {
         assert_eq!(report.total_rows, 3);
         assert_eq!(report.imported_rows, 3);
         assert!(report.failures.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&report_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         drop(database);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -7,6 +7,7 @@ pub mod import;
 pub mod iroh_transport;
 pub mod pairing;
 pub mod peer;
+pub mod private_fs;
 pub mod protocol;
 pub mod secure;
 pub mod sync;

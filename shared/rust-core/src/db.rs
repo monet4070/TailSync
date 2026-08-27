@@ -216,7 +216,13 @@ impl HistoryDB {
     }
 
     pub(crate) fn open_at(storage_dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        std::fs::create_dir_all(storage_dir)?;
+        // The storage tree may predate the owner-only permission policy
+        // (or hold files SQLite created under the process umask): repair it
+        // on every open. App-created directories are locked by
+        // create_private_dir_all; user-selected roots are left to
+        // enforce_private_tree, which only touches app-managed content.
+        crate::private_fs::create_private_dir_all(storage_dir)?;
+        crate::private_fs::enforce_private_tree(storage_dir)?;
         let db_path = storage_dir.join("history-v2.db");
         info!("Opening database at {}", db_path.display());
 
@@ -232,17 +238,21 @@ impl HistoryDB {
 
         schema::initialize(&conn)?;
 
+        // SQLite creates -wal/-shm under the umask; lock them down now that
+        // they exist (and again on every later open via enforce_private_tree).
+        crate::private_fs::enforce_private_database(&db_path)?;
+
         // Run migrations
         Self::migrate(&conn, &file_history_dir, &image_history_dir)?;
 
         // Resumable transfers and clipboard materializations deliberately
         // survive restarts. Expired unreferenced files are cleaned separately.
         let incoming = storage_dir.join("incoming");
-        std::fs::create_dir_all(&incoming)?;
         let clipboard_files = storage_dir.join("clipboard-files");
-        std::fs::create_dir_all(&clipboard_files)?;
-        std::fs::create_dir_all(&file_history_dir)?;
-        std::fs::create_dir_all(&image_history_dir)?;
+        crate::private_fs::create_private_dir_all(&incoming)?;
+        crate::private_fs::create_private_dir_all(&clipboard_files)?;
+        crate::private_fs::create_private_dir_all(&file_history_dir)?;
+        crate::private_fs::create_private_dir_all(&image_history_dir)?;
 
         let mut database = HistoryDB {
             conn,
@@ -1648,6 +1658,67 @@ mod tests {
     }
 
     #[test]
+    fn open_at_locks_the_managed_storage_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-private-open-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = HistoryDB::open_at(&root).unwrap();
+        drop(db);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&root), 0o700, "storage root");
+            assert_eq!(mode(&root.join("incoming")), 0o700);
+            assert_eq!(mode(&root.join("clipboard-files")), 0o700);
+            assert_eq!(mode(&root.join("file-history")), 0o700);
+            assert_eq!(mode(&root.join("image-history")), 0o700);
+            assert_eq!(mode(&root.join("history-v2.db")), 0o600, "sqlite main file");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn open_at_repairs_pre_existing_wide_permissions() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-private-repair-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(root.join("incoming")).unwrap();
+        std::fs::write(root.join("history-v2.db"), b"legacy-wide-file").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(
+                root.join("incoming"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                root.join("history-v2.db"),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
+        }
+        // The wide "database" is not a valid SQLite file; opening fails after
+        // the permission repair has already run, which is what we assert.
+        assert!(HistoryDB::open_at(&root).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&root), 0o700);
+            assert_eq!(mode(&root.join("incoming")), 0o700);
+            assert_eq!(mode(&root.join("history-v2.db")), 0o600);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn explicit_delete_truncates_the_write_ahead_log() {
         let root = std::env::temp_dir().join(format!(
             "tailsync-delete-checkpoint-{}-{}",
@@ -2019,6 +2090,35 @@ mod tests {
 
         assert_eq!(clipboard_path.file_name().unwrap(), "report.pdf");
         assert_eq!(std::fs::read(clipboard_path).unwrap(), data);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plaintext_clipboard_materialization_does_not_change_the_source_inode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "tailsync-clipboard-source-permissions-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let source = directory.join("source.txt");
+        let clipboard_directory = directory.join("clipboard-files");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let target =
+            materialize_clipboard_file_at(&clipboard_directory, &source, "source.txt").unwrap();
+
+        let source_mode = std::fs::metadata(&source).unwrap().permissions().mode() & 0o777;
+        let target_mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(source_mode, 0o644);
+        assert_eq!(target_mode, 0o600);
+        std::fs::write(&target, b"clipboard copy").unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), b"source");
+
         std::fs::remove_dir_all(directory).unwrap();
     }
 

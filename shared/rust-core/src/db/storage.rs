@@ -232,7 +232,7 @@ impl HistoryDB {
             ".tailsync-migrating-{:016x}",
             rand::random::<u64>()
         ));
-        fs::create_dir(&staging)?;
+        crate::private_fs::create_private_dir_all(&staging)?;
 
         let migration = (|| -> Result<(), Box<dyn std::error::Error>> {
             copy_bulk_storage_verified(&old_root, &staging)?;
@@ -324,9 +324,7 @@ fn load_or_create_owner_id() -> Result<String, Box<dyn std::error::Error>> {
         Err(_) => {}
     }
     let value = hex::encode(rand::random::<[u8; 16]>());
-    let temporary = path.with_extension("tmp");
-    fs::write(&temporary, value.as_bytes())?;
-    fs::rename(temporary, path)?;
+    crate::private_fs::write_private_file(&path, value.as_bytes())?;
     Ok(value)
 }
 
@@ -354,7 +352,7 @@ fn write_marker(root: &Path, owner_id: &str) -> Result<(), Box<dyn std::error::E
     let marker = serde_json::to_vec_pretty(&StorageMarker {
         owner_id: owner_id.to_string(),
     })?;
-    fs::write(root.join(STORAGE_MARKER_NAME), marker)?;
+    crate::private_fs::write_private_file(&root.join(STORAGE_MARKER_NAME), &marker)?;
     Ok(())
 }
 
@@ -377,12 +375,25 @@ fn copy_directory_verified(source: &Path, target: &Path) -> Result<(), Box<dyn s
             continue;
         }
         let target_path = target.join(entry.file_name());
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            fs::create_dir(&target_path)?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "Storage migration refuses symbolic link {}",
+                source_path.display()
+            )
+            .into());
+        }
+        if file_type.is_dir() {
+            crate::private_fs::create_private_dir_all(&target_path)?;
             copy_directory_verified(&source_path, &target_path)?;
-        } else if metadata.is_file() {
+        } else if file_type.is_file() {
             copy_file_verified(&source_path, &target_path)?;
+        } else {
+            return Err(format!(
+                "Storage migration refuses unsupported entry {}",
+                source_path.display()
+            )
+            .into());
         }
     }
     Ok(())
@@ -410,11 +421,25 @@ fn copy_bulk_storage_verified(
             continue;
         }
         let target_path = target.join(name);
-        if source_path.is_dir() {
-            fs::create_dir(&target_path)?;
+        let metadata = fs::symlink_metadata(&source_path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Storage migration refuses symbolic link {}",
+                source_path.display()
+            )
+            .into());
+        }
+        if metadata.is_dir() {
+            crate::private_fs::create_private_dir_all(&target_path)?;
             copy_directory_verified(&source_path, &target_path)?;
-        } else {
+        } else if metadata.is_file() {
             copy_file_verified(&source_path, &target_path)?;
+        } else {
+            return Err(format!(
+                "Storage migration refuses unsupported entry {}",
+                source_path.display()
+            )
+            .into());
         }
     }
     Ok(())
@@ -439,7 +464,7 @@ fn bulk_storage_size(root: &Path) -> std::io::Result<u64> {
 
 fn copy_file_verified(source: &Path, target: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = BufReader::new(fs::File::open(source)?);
-    let mut writer = fs::File::create(target)?;
+    let mut writer = crate::private_fs::create_private_file(target)?;
     let mut source_hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
     loop {
@@ -555,6 +580,39 @@ mod tests {
             fs::read(target.join("file-history").join("payload.bin")).unwrap(),
             b"payload"
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&target.join("file-history")), 0o700);
+            assert_eq!(
+                mode(&target.join("file-history").join("payload.bin")),
+                0o600
+            );
+            assert_eq!(mode(&target.join("history-v2.db")), 0o600);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_storage_copy_rejects_symlink_entries() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-symlink-migration-{:016x}",
+            rand::random::<u64>()
+        ));
+        let source = root.join("source");
+        let target = root.join("target");
+        let outside = root.join("outside.bin");
+        fs::create_dir_all(source.join("file-history")).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&outside, b"outside").unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("file-history").join("linked.bin"))
+            .unwrap();
+
+        assert!(copy_bulk_storage_verified(&source, &target).is_err());
+        assert!(!target.join("file-history").join("linked.bin").exists());
+
         fs::remove_dir_all(root).unwrap();
     }
 

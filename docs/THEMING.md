@@ -1,6 +1,6 @@
 # TailSync 主题指南（Theme V2：包格式、内置主题与本地选择）
 
-> 适用版本：产品 2.2.0，Theme V2（`shared/rust-core/src/themes_v2.rs` 是唯一实现）。
+> 适用版本：产品 2.2.2，Theme V2（`shared/rust-core/src/themes_v2.rs` 是唯一实现）。
 > 本文档描述 V2 主题包格式、内置主题 ID、本地选择语义、旧版迁移规则与全部实际限额。
 
 ## 0. 先读这一段：主题系统如何工作
@@ -112,7 +112,7 @@ themes-v2/
 | `formatVersion` | ✅ | 必须为 `2` |
 | `id` | ✅ | `custom:<author>.<name>`（§1.1 规则） |
 | `version` | ✅ | SemVer（含预发布标识符） |
-| `minCoreVersion` | ✅ | SemVer，且 ≤ 当前 Core 版本（2.2.0），否则包被拒绝 |
+| `minCoreVersion` | ✅ | SemVer，且 ≤ 当前 Core 版本（2.2.2），否则包被拒绝 |
 | `name` | ✅ | 语言名映射，至少含 `"en"` 键 |
 | `extends` | ✅ | 仅允许 `"builtin:canvas@1"`（只继承 Canvas） |
 | `requiredCapabilities` | ❌ | 白名单：`theme-v2`、`high-contrast`、`platform-overrides`；声明不支持的
