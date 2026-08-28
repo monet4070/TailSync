@@ -25,7 +25,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-snow = "0.9"
+snow = "0.10"
 tailsync-history-classifier = { path = "../tailsync-history-classifier" }
 tailsync-protocol = { path = "../tailsync-protocol" }
 tailsync-themes = { path = "../tailsync-themes" }
@@ -34,7 +34,7 @@ tokio = { version = "1", features = ["full"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

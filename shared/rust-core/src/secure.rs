@@ -554,7 +554,7 @@ fn build_handshake(
     initiator: bool,
 ) -> Result<HandshakeState, Box<dyn std::error::Error + Send + Sync>> {
     let params = NOISE_PROTOCOL.parse()?;
-    let builder = Builder::new(params).local_private_key(identity.private_key());
+    let builder = Builder::new(params).local_private_key(identity.private_key())?;
     if initiator {
         Ok(builder.build_initiator()?)
     } else {
