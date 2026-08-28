@@ -8,7 +8,7 @@ license = "MIT"
 [dependencies]
 blake3 = "1"
 hex = "0.4"
-rand = "0.8"
+rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 

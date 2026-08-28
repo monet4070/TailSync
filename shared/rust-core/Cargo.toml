@@ -19,7 +19,7 @@ hex = "0.4"
 # are deliberate PRs driven by the monthly Dependabot bump, never silent.
 iroh = "=1.1.0"
 log = "0.4"
-rand = "0.8"
+rand = "0.10"
 ring = "0.17"
 rusqlite = { version = "0.40", features = ["bundled"] }
 schemars = "1.2"
