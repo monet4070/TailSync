@@ -45,7 +45,7 @@ directories = "6"
 rand = "0.8"
 socket2 = "0.5"
 libc = "0.2"
-mdns-sd = "0.20.2"
+mdns-sd = "0.21.0"
 if-addrs = "0.15"
 
 [dev-dependencies]
