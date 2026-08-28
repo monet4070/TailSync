@@ -26,7 +26,7 @@
     "dompurify": "^3.4.13",
     "highlight.js": "^11.12.0",
     "lucide-react": "^1.34.0",
-    "marked": "^18.0.9",
+    "marked": "^18.0.11",
     "pdfjs-dist": "^5.4.624",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
