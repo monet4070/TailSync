@@ -54,11 +54,15 @@ updates:
         applies-to: version-updates
         patterns:
           - "*"
-          # pdfjs-dist changes its TypeScript API inside minor releases
-          # (5.4 -> 5.7 removed getDocument's isEvalSupported), so it must
-          # not break the whole maintenance group. It arrives as an
-          # individual PR where breakage is isolated and attributable.
-          - "!pdfjs-dist"
+        # pdfjs-dist changes its TypeScript API inside minor releases
+        # (5.4 -> 5.7 removed getDocument's isEvalSupported), so it must
+        # not break the whole maintenance group. It arrives as an
+        # individual PR where breakage is isolated and attributable.
+        # Exclusion uses the documented exclude-patterns field: a `!`
+        # prefix inside patterns is not supported syntax and silently
+        # matches nothing.
+        exclude-patterns:
+          - "pdfjs-dist"
         update-types:
           - patch
           - minor
