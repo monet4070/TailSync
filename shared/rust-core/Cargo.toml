@@ -25,7 +25,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-snow = "0.9"
+snow = "0.10"
 tailsync-history-classifier = { path = "../tailsync-history-classifier" }
 tailsync-protocol = { path = "../tailsync-protocol" }
 tailsync-themes = { path = "../tailsync-themes" }
