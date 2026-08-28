@@ -54,6 +54,11 @@ updates:
         applies-to: version-updates
         patterns:
           - "*"
+          # pdfjs-dist changes its TypeScript API inside minor releases
+          # (5.4 -> 5.7 removed getDocument's isEvalSupported), so it must
+          # not break the whole maintenance group. It arrives as an
+          # individual PR where breakage is isolated and attributable.
+          - "!pdfjs-dist"
         update-types:
           - patch
           - minor

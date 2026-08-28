@@ -165,7 +165,10 @@ Once per quarter:
 
 - `iroh` is exactly pinned because network behavior needs real cross-device
   verification.
-- `pdfjs-dist` major upgrades require real PDF rendering regression tests.
+- `pdfjs-dist` changes its TypeScript API inside minor releases (5.4 -> 5.7
+  removed `getDocument`'s `isEvalSupported`), so it is excluded from the
+  grouped npm maintenance PR; every update needs real PDF rendering
+  regression tests, not only majors.
 - TypeScript and Node type-definition majors follow the selected Node/toolchain
   baseline.
 - Release-only GitHub Actions majors require release-path validation.
