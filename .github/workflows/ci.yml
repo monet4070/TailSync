@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -194,6 +197,8 @@ jobs:
         run: node scripts/check-production-features.mjs .
       - name: Validate RustSec exception registry
         run: node scripts/check-rustsec-exceptions.mjs .
+      - name: Validate dependency update policy
+        run: ruby scripts/check-dependabot-policy.rb
       - name: Validate updater trust anchor and endpoints
         run: node scripts/validate-updater-config.mjs --root .
       - name: Validate checked-in application versions
