@@ -40,8 +40,8 @@
     "history_limit": {
       "default": 100,
       "format": "uint32",
-      "maximum": 500.0,
-      "minimum": 10.0,
+      "maximum": 500,
+      "minimum": 10,
       "type": "integer"
     },
     "history_shortcut": {
@@ -62,7 +62,7 @@
         "type": "string"
       },
       "default": {},
-      "description": "Address used for the explicit pairing confirmation. Device identity is still pinned by public key so trusted peers can safely change routes.",
+      "description": "Address used for the explicit pairing confirmation. Device identity is\nstill pinned by public key so trusted peers can safely change routes.",
       "type": "object"
     },
     "progress_bar_enabled": {
@@ -72,13 +72,13 @@
     "storage_quota_bytes": {
       "default": 10737418240,
       "format": "uint64",
-      "maximum": 17592186044416.0,
-      "minimum": 1073741824.0,
+      "maximum": 17592186044416,
+      "minimum": 1073741824,
       "type": "integer"
     },
     "storage_root": {
       "default": null,
-      "description": "Bulk history and transfer storage. None keeps bulk data in the system application-data directory.",
+      "description": "Bulk history and transfer storage. None keeps bulk data in the system\napplication-data directory.",
       "type": [
         "string",
         "null"
@@ -102,7 +102,7 @@
         "type": "object"
       },
       "default": {},
-      "description": "Last known hostname -> IP mapping, used to reconnect paired devices when LAN broadcast discovery is unavailable during startup or sending.",
+      "description": "Last known hostname -> IP mapping, used to reconnect paired devices\nwhen LAN broadcast discovery is unavailable during startup or sending.",
       "type": "object"
     },
     "trusted_peer_keys": {
