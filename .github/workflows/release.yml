@@ -245,7 +245,7 @@ jobs:
           EOF
       - name: Publish stable release
         if: ${{ !contains(github.ref_name, '-') }}
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           body_path: release-notes.md
           generate_release_notes: true
@@ -275,7 +275,7 @@ jobs:
             --platforms windows-x86_64,darwin-aarch64,darwin-x86_64
       - name: Publish prerelease without a stable updater manifest
         if: ${{ contains(github.ref_name, '-') }}
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           body_path: release-notes.md
           generate_release_notes: true
