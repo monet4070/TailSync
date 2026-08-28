@@ -104,7 +104,7 @@ jobs:
         shell: pwsh
         run: ./windows/scripts/package-windows.ps1 -Release -ReleaseTier $env:TAILSYNC_RELEASE_TIER
       - name: Upload Windows release files
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tailsync-windows-release
           path: windows/release/*
@@ -185,7 +185,7 @@ jobs:
       - name: Verify packaged macOS bundle and daemon
         run: bash macos/scripts/verify_macos_bundle.sh
       - name: Upload macOS release files
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tailsync-macos-release
           path: macos/release/*
