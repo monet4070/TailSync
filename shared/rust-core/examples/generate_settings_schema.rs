@@ -3,7 +3,12 @@ use std::collections::BTreeSet;
 use tailsync_core::crypto::Settings;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let schema = schemars::schema_for!(Settings);
+    // Keep the public Settings contract on JSON Schema Draft 7. Schemars 1.x
+    // defaults to Draft 2020-12, which would rename `definitions` to `$defs`
+    // and silently change the schema consumed by the desktop generators.
+    let schema = schemars::generate::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<Settings>();
     let mut document = serde_json::to_value(schema)?;
     let object = document
         .as_object_mut()

@@ -1,9 +1,9 @@
 # Dependabot configuration (2026-08 security-audit follow-up).
 #
 # Monthly version updates across all six dependency surfaces. High-risk
-# dependencies (iroh, windows-sys, Tauri) get their own PRs by default —
-# no grouping — because upgrades require the full device test matrix, not
-# just a compile. Never enable auto-merge for this repository.
+# dependencies (iroh, windows-sys, Tauri) still get their own PRs by name.
+# Matching dependencies are grouped only across manifest directories so one
+# logical upgrade updates all lockfiles atomically. Never enable auto-merge.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -14,6 +14,9 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    groups:
+      cross-workspace-dependencies:
+        group-by: dependency-name
     commit-message:
       prefix: "chore(deps)"
 
@@ -24,6 +27,12 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    groups:
+      cross-project-dependencies:
+        group-by: dependency-name
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
 
