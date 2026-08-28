@@ -1,52 +1,114 @@
-# Dependabot configuration (2026-08 security-audit follow-up).
+# TailSync dependency maintenance policy.
 #
-# Monthly version updates across all six dependency surfaces. High-risk
-# dependencies (iroh, windows-sys, Tauri) still get their own PRs by name.
-# Matching dependencies are grouped only across manifest directories so one
-# logical upgrade updates all lockfiles atomically. Never enable auto-merge.
+# Security updates remain enabled in repository settings and are not limited
+# by the ordinary version-update policy below.
+#
+# Never add `ignore` or `versioning-strategy: lockfile-only` without reviewing
+# their impact on Dependabot security updates.
 version: 2
+
 updates:
+  # Cargo ordinary version updates are disabled.
+  #
+  # Reasons:
+  # - TailSync has three independent Cargo.lock files.
+  # - Rust 0.x minor releases can contain breaking changes.
+  # - protocol, persistence and native-platform dependencies require
+  #   compatibility or packaged-application validation.
+  #
+  # Dependabot security updates remain enabled because
+  # open-pull-requests-limit applies only to version updates.
   - package-ecosystem: cargo
     directories:
       - /
       - /windows/src-tauri
       - /macos/src-tauri
     schedule:
-      interval: monthly
-    open-pull-requests-limit: 5
-    groups:
-      cross-workspace-dependencies:
-        group-by: dependency-name
-    ignore:
-      - dependency-name: "rand"
-        update-types: ["version-update:semver-major"]
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 0
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "fix(deps)"
 
+  # Windows product and frontend toolchain.
+  # All patch/minor version updates are combined into one weekly PR.
+  # Major security updates are still allowed because allow.update-types
+  # limits version updates only.
   - package-ecosystem: npm
-    directories:
-      - /windows
-      - /site
+    directory: /windows
     schedule:
-      interval: monthly
-    open-pull-requests-limit: 5
+      interval: weekly
+      day: monday
+      time: "09:15"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
     groups:
-      cross-project-dependencies:
-        group-by: dependency-name
-    ignore:
-      - dependency-name: "@types/node"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "typescript"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "pdfjs-dist"
-        update-types: ["version-update:semver-major"]
+      windows-maintenance:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - patch
+          - minor
     commit-message:
       prefix: "chore(deps)"
 
+  # Marketing/product site.
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:30"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+    groups:
+      site-maintenance:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - patch
+          - minor
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Workflow actions.
+  #
+  # Ordinary major updates are manual events. Security updates may still
+  # cross a major boundary when that is the first patched release.
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: monthly
-    open-pull-requests-limit: 5
+      interval: weekly
+      day: monday
+      time: "09:45"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+    groups:
+      actions-maintenance:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - patch
+          - minor
     commit-message:
       prefix: "chore(ci)"
