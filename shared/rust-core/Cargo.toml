@@ -16,7 +16,8 @@ hex = "0.4"
 # Exact pin: iroh's network behavior across versions needs explicit
 # verification (macOS/Windows device pairing over LAN and Tailscale, plus
 # the iroh_transport RTT tests) — a compile pass is not enough. Upgrades
-# are deliberate PRs driven by the monthly Dependabot bump, never silent.
+# are deliberate, event-driven maintenance PRs with macOS/Windows
+# pairing and RTT validation; ordinary Cargo version updates are disabled.
 iroh = "=1.1.0"
 log = "0.4"
 rand = "0.8"
