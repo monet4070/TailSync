@@ -32,10 +32,10 @@ updates:
     commit-message:
       prefix: "fix(deps)"
 
-  # Windows product and frontend toolchain.
-  # All patch/minor version updates are combined into one weekly PR.
-  # Major security updates are still allowed because allow.update-types
-  # limits version updates only.
+  # Windows ordinary version updates are disabled. Product/runtime and
+  # frontend-toolchain upgrades are reviewed together during planned
+  # maintenance. Dependabot security updates remain enabled because this
+  # pull-request limit applies only to version updates.
   - package-ecosystem: npm
     directory: /windows
     schedule:
@@ -43,33 +43,12 @@ updates:
       day: monday
       time: "09:15"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 1
-    allow:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-patch"
-          - "version-update:semver-minor"
-    groups:
-      windows-maintenance:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        # pdfjs-dist changes its TypeScript API inside minor releases
-        # (5.4 -> 5.7 removed getDocument's isEvalSupported), so it must
-        # not break the whole maintenance group. It arrives as an
-        # individual PR where breakage is isolated and attributable.
-        # Exclusion uses the documented exclude-patterns field: a `!`
-        # prefix inside patterns is not supported syntax and silently
-        # matches nothing.
-        exclude-patterns:
-          - "pdfjs-dist"
-        update-types:
-          - patch
-          - minor
+    open-pull-requests-limit: 0
     commit-message:
       prefix: "chore(deps)"
 
-  # Marketing/product site.
+  # Site ordinary version updates are disabled. They are handled during the
+  # same planned maintenance review as the Windows frontend.
   - package-ecosystem: npm
     directory: /site
     schedule:
@@ -77,27 +56,14 @@ updates:
       day: monday
       time: "09:30"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 1
-    allow:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-patch"
-          - "version-update:semver-minor"
-    groups:
-      site-maintenance:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - patch
-          - minor
+    open-pull-requests-limit: 0
     commit-message:
       prefix: "chore(deps)"
 
   # Workflow actions.
   #
-  # Ordinary major updates are manual events. Security updates may still
-  # cross a major boundary when that is the first patched release.
+  # Ordinary updates are manual events because release-only actions cannot be
+  # fully exercised by pull-request CI. Security updates remain enabled.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -105,19 +71,6 @@ updates:
       day: monday
       time: "09:45"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 1
-    allow:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-patch"
-          - "version-update:semver-minor"
-    groups:
-      actions-maintenance:
-        applies-to: version-updates
-        patterns:
-          - "*"
-        update-types:
-          - patch
-          - minor
+    open-pull-requests-limit: 0
     commit-message:
       prefix: "chore(ci)"

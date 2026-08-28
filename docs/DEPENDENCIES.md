@@ -18,7 +18,14 @@ The Dependabot configuration must not use `ignore` or
 `versioning-strategy: lockfile-only` unless the security-update impact has been
 explicitly reviewed.
 
-## 2. Ordinary automated updates
+## 2. Ordinary dependency updates
+
+Ordinary Dependabot version updates are disabled for every configured package
+ecosystem. Setting `open-pull-requests-limit: 0` suppresses version-update pull
+requests without limiting Dependabot security-update pull requests.
+
+Routine upgrades are collected into the quarterly review or an explicit
+maintenance event instead of creating continuous automated pull requests.
 
 ### Cargo
 
@@ -39,19 +46,18 @@ All applicable Cargo.lock files must be updated in one pull request:
 
 ### npm
 
-The `/windows` and `/site` projects each receive one weekly grouped pull request
-containing patch and minor updates.
+Ordinary updates for `/windows` and `/site` are manual maintenance events. A
+single reviewed change should update the applicable manifests and lockfiles and
+must pass the frontend builds plus the packaged-application jobs.
 
-Ordinary major updates are manual migrations. Dependabot security updates may
-still cross a major boundary when required to reach the first patched release.
+Dependabot security updates remain enabled and may cross a major boundary when
+required to reach the first patched release.
 
 ### GitHub Actions
 
-Patch and minor updates are grouped into one weekly pull request.
-
-Ordinary major updates require manual review. Actions used only during tagged
+All ordinary updates require manual review. Actions used only during tagged
 releases require a release rehearsal or a documented comparison of inputs,
-outputs and permissions.
+outputs and permissions. Dependabot security updates remain enabled.
 
 ## 3. Manual migration classes
 
@@ -166,9 +172,8 @@ Once per quarter:
 - `iroh` is exactly pinned because network behavior needs real cross-device
   verification.
 - `pdfjs-dist` changes its TypeScript API inside minor releases (5.4 -> 5.7
-  removed `getDocument`'s `isEvalSupported`), so it is excluded from the
-  grouped npm maintenance PR; every update needs real PDF rendering
-  regression tests, not only majors.
+  removed `getDocument`'s `isEvalSupported`), so every ordinary update is a
+  manual migration requiring real PDF rendering regression tests.
 - TypeScript and Node type-definition majors follow the selected Node/toolchain
   baseline.
 - Release-only GitHub Actions majors require release-path validation.

@@ -62,22 +62,9 @@ unless npm_directories == ["/site", "/windows"]
   fail_policy("npm must cover /windows and /site with separate entries")
 end
 
-expected_update_types = [
-  "version-update:semver-minor",
-  "version-update:semver-patch"
-].sort
-
 npm_entries.each do |entry|
-  allow_rule = Array(entry["allow"]).find do |rule|
-    rule["dependency-name"] == "*"
-  end
-
-  fail_policy("#{entry['directory']} must allow all dependency names") unless allow_rule
-
-  actual_types = Array(allow_rule["update-types"]).sort
-
-  unless actual_types == expected_update_types
-    fail_policy("#{entry['directory']} must allow only patch/minor version updates")
+  unless entry["open-pull-requests-limit"] == 0
+    fail_policy("ordinary npm version updates must remain disabled for #{entry['directory']}")
   end
 end
 
@@ -87,14 +74,8 @@ end
 
 fail_policy("GitHub Actions configuration is missing") unless actions
 
-actions_allow = Array(actions["allow"]).find do |rule|
-  rule["dependency-name"] == "*"
+unless actions["open-pull-requests-limit"] == 0
+  fail_policy("ordinary GitHub Actions version updates must remain disabled")
 end
 
-fail_policy("GitHub Actions wildcard allow rule is missing") unless actions_allow
-
-unless Array(actions_allow["update-types"]).sort == expected_update_types
-  fail_policy("GitHub Actions must allow only patch/minor version updates")
-end
-
-puts "OK: Dependabot policy preserves unrestricted security updates."
+puts "OK: ordinary version updates are disabled; security updates remain enabled."
