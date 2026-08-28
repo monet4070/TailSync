@@ -78,8 +78,15 @@ struct HistoryEntry: Codable, Identifiable {
     }
 
     var formattedSize: String {
-        if size_bytes > 1024 {
-            return String(format: "%.1f KB", Double(size_bytes) / 1024)
+        let bytes = Double(size_bytes)
+        if size_bytes >= 1024 * 1024 * 1024 {
+            return String(format: "%.1f GB", bytes / 1024 / 1024 / 1024)
+        }
+        if size_bytes >= 1024 * 1024 {
+            return String(format: "%.1f MB", bytes / 1024 / 1024)
+        }
+        if size_bytes >= 1024 {
+            return String(format: "%.1f KB", bytes / 1024)
         }
         return "\(size_bytes) B"
     }

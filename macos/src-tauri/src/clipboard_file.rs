@@ -9,6 +9,8 @@ use std::io::{Read, Write};
 #[cfg(target_os = "macos")]
 use std::process::{Child, Command, ExitStatus, Stdio};
 #[cfg(target_os = "macos")]
+use std::sync::mpsc::{sync_channel, TryRecvError};
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
@@ -44,13 +46,12 @@ pub fn write_clipboard_text(text: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("Could not run clipboard text helper: {error}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| "Clipboard text helper stdin was unavailable".to_string())?
-        .write_all(text.as_bytes())
-        .map_err(|error| format!("Could not write clipboard text: {error}"))?;
-    let (status, _) = wait_for_child(child, CLIPBOARD_HELPER_TIMEOUT)?;
+    let started = Instant::now();
+    write_child_stdin_with_timeout(&mut child, text.as_bytes(), CLIPBOARD_HELPER_TIMEOUT)?;
+    let remaining = CLIPBOARD_HELPER_TIMEOUT
+        .saturating_sub(started.elapsed())
+        .max(Duration::from_millis(100));
+    let (status, _) = wait_for_child(child, remaining)?;
     if !status.success() {
         return Err(format!("Clipboard text helper exited with status {status}"));
     }
@@ -75,13 +76,12 @@ pub fn write_clipboard_image(width: u32, height: u32, rgba: &[u8]) -> Result<(),
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("Could not run clipboard image helper: {error}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| "Clipboard image helper stdin was unavailable".to_string())?
-        .write_all(rgba)
-        .map_err(|error| format!("Could not write clipboard image: {error}"))?;
-    let (status, _) = wait_for_child(child, CLIPBOARD_IMAGE_HELPER_TIMEOUT)?;
+    let started = Instant::now();
+    write_child_stdin_with_timeout(&mut child, rgba, CLIPBOARD_IMAGE_HELPER_TIMEOUT)?;
+    let remaining = CLIPBOARD_IMAGE_HELPER_TIMEOUT
+        .saturating_sub(started.elapsed())
+        .max(Duration::from_millis(100));
+    let (status, _) = wait_for_child(child, remaining)?;
     if !status.success() {
         return Err(format!(
             "Clipboard image helper exited with status {status}"
@@ -274,6 +274,50 @@ fn wait_for_child(mut child: Child, timeout: Duration) -> Result<(ExitStatus, Ve
 }
 
 #[cfg(target_os = "macos")]
+fn write_child_stdin_with_timeout(
+    child: &mut Child,
+    bytes: &[u8],
+    timeout: Duration,
+) -> Result<(), String> {
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Clipboard helper stdin was unavailable".to_string())?;
+    let payload = bytes.to_vec();
+    let (done_tx, done_rx) = sync_channel(1);
+    std::thread::spawn(move || {
+        let result = stdin.write_all(&payload);
+        let _ = done_tx.send(result);
+    });
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match done_rx.try_recv() {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => return Err(format!("Could not write clipboard data: {error}")),
+            Err(TryRecvError::Disconnected) => {
+                return Err("Clipboard helper stdin writer stopped unexpectedly".to_string())
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!(
+                "Clipboard helper exited before reading stdin: {status}"
+            ));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Clipboard helper stdin write timed out after {} ms",
+                timeout.as_millis()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn collect_child_output(
     reader: Option<std::thread::JoinHandle<std::io::Result<Vec<u8>>>>,
 ) -> Result<Vec<u8>, String> {
@@ -288,6 +332,14 @@ fn collect_child_output(
 
 #[cfg(target_os = "macos")]
 fn resolve_clipboard_helper() -> Option<PathBuf> {
+    // Production bundles place the helper beside the daemon. Prefer that
+    // signed location so a writable working directory cannot shadow it.
+    if let Ok(exe) = std::env::current_exe() {
+        let p = exe.parent()?.join("clipboard-helper");
+        if p.is_file() {
+            return p.canonicalize().ok();
+        }
+    }
     let candidates = [
         "src-tauri/clipboard-helper",
         "../src-tauri/clipboard-helper",
@@ -299,13 +351,6 @@ fn resolve_clipboard_helper() -> Option<PathBuf> {
             if path.is_file() {
                 return Some(path);
             }
-        }
-    }
-    // Try alongside the executable
-    if let Ok(exe) = std::env::current_exe() {
-        let p = exe.parent()?.join("clipboard-helper");
-        if p.exists() {
-            return Some(p);
         }
     }
     None

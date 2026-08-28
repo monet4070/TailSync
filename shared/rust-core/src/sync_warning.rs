@@ -28,6 +28,10 @@ pub fn record_delivery_shutdown(peer: &str) {
     record(peer, "delivery_shutdown");
 }
 
+pub fn record_delivery_expired(peer: &str) {
+    record(peer, "delivery_expired");
+}
+
 fn record(peer: &str, kind: &'static str) {
     *latest_warning()
         .lock()
@@ -78,5 +82,13 @@ mod tests {
         let warning = take().unwrap();
         assert_eq!(warning.kind, "delivery_shutdown");
         assert_eq!(warning.peer, "Desktop");
+    }
+
+    #[test]
+    fn delivery_expired_records_its_own_kind() {
+        let _ = take();
+        record_delivery_expired("Desktop");
+        let warning = take().unwrap();
+        assert_eq!(warning.kind, "delivery_expired");
     }
 }

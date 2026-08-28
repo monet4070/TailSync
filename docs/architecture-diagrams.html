@@ -193,7 +193,7 @@
 flowchart TB
     subgraph macOS ["macOS Runtime (原生 + 守护进程)"]
         SW["SwiftUI 菜单栏应用\n(Menu Bar UI)"]
-        API["Localhost TCP API (127.0.0.1:19889)\nJSON Lines 协议 + Watch Channel"]
+        API["Private Unix Socket API (tailsyncd.sock)\nJSON Lines 协议 + Watch Channel"]
         DAEMON["Rust 守护进程\n(tailsync-daemon)"]
         CH["clipboard-helper\n(NSPasteboard 监听)"]
 

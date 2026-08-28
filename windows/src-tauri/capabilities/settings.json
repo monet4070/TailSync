@@ -1,0 +1,7 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/main/crates/tauri-config-schema/capabilities/default.json",
+  "identifier": "settings",
+  "description": "File and folder chooser access for the settings window",
+  "windows": ["settings"],
+  "permissions": ["dialog:allow-open"]
+}

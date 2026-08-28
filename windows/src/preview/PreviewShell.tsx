@@ -61,6 +61,7 @@ export function PreviewShell({
   t: (key: string) => string;
 }) {
   const [restoreState, setRestoreState] = useState<"idle" | "restoring" | "restored" | "failed">("idle");
+  const [rendererAttempt, setRendererAttempt] = useState(0);
   const title = payload?.name ?? t("history.preview.title");
   const position = payload?.batch
     ? `${payload.batch.item_index + 1} / ${payload.batch.item_count}`
@@ -74,6 +75,7 @@ export function PreviewShell({
 
   useEffect(() => {
     setRestoreState("idle");
+    setRendererAttempt(0);
   }, [payload?.entry_id]);
 
   useEffect(() => {
@@ -124,7 +126,18 @@ export function PreviewShell({
             {failure.retryable && <button type="button" className="preview-primary-button" onClick={onRetry}><RefreshCw size={14} aria-hidden="true" />{t("history.preview.retry")}</button>}
           </div>
         )}
-        {!loading && !failure && payload && <PreviewContent payload={payload} t={t} onCorrupt={onCorrupt} />}
+        {!loading && !failure && payload && (
+          <PreviewContent
+            payload={payload}
+            t={t}
+            onCorrupt={onCorrupt}
+            resetKey={`${payload.entry_id ?? 0}-${payload.name}-${rendererAttempt}`}
+            onRetry={() => {
+              setRendererAttempt((value) => value + 1);
+              onRetry();
+            }}
+          />
+        )}
         {!loading && !failure && !payload && <div className="preview-state">{t("history.preview.loading")}</div>}
       </section>
 

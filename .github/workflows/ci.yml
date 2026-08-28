@@ -191,8 +191,8 @@ jobs:
         run: python -m py_compile windows/scripts/migrate.py macos/scripts/migrate.py shared/scripts/migrate_v1.py
       - name: Run manual v1 recovery functional tests
         run: python -m unittest shared/scripts/test_migrate_v1.py
-      - name: Test signed updater manifest generation
-        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs scripts/verify-published-update.test.mjs scripts/check-production-features.test.mjs scripts/check-rustsec-exceptions.test.mjs
+      - name: Run script regression tests
+        run: node --test scripts/*.test.mjs
       - name: Guard dev-only crate features
         run: node scripts/check-production-features.mjs .
       - name: Validate RustSec exception registry
@@ -201,6 +201,8 @@ jobs:
         run: ruby scripts/check-dependabot-policy.rb
       - name: Validate updater trust anchor and endpoints
         run: node scripts/validate-updater-config.mjs --root .
+      - name: Validate versioned theme packages
+        run: python scripts/validate-theme-packages.py --root .
       - name: Validate checked-in application versions
         run: |
           RELEASE_VERSION="$(node -p "require('./windows/src-tauri/tauri.conf.json').version")"

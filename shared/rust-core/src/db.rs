@@ -290,6 +290,13 @@ impl HistoryDB {
         self.storage_available = false;
     }
 
+    /// Return the last known storage availability without walking the managed
+    /// tree. UI status indicators should use this cheap health bit; callers
+    /// that need quota accounting can still request [`storage_status`].
+    pub fn is_storage_available(&self) -> bool {
+        self.storage_available
+    }
+
     /// Add a text entry to history. Duplicate: delete old, insert new at top.
     pub fn add_text(
         &mut self,

@@ -141,9 +141,7 @@ fn read_files_windows() -> Option<Vec<PathBuf>> {
 pub fn write_clipboard_files(paths: &[PathBuf]) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::GlobalFree;
-    use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
-    };
+    use windows_sys::Win32::System::DataExchange::{EmptyClipboard, SetClipboardData};
     use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
 
     if paths.is_empty() {
@@ -158,22 +156,17 @@ pub fn write_clipboard_files(paths: &[PathBuf]) -> Result<(), String> {
     let header_size = std::mem::size_of::<DropFilesHeader>();
     let total_size = header_size + wide_paths.len() * std::mem::size_of::<u16>();
     unsafe {
-        if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return Err("Could not open the Windows clipboard".to_string());
-        }
+        let _clipboard = open_clipboard_with_retry()?;
         if EmptyClipboard() == 0 {
-            CloseClipboard();
             return Err("Could not clear the Windows clipboard".to_string());
         }
         let handle = GlobalAlloc(GHND, total_size);
         if handle.is_null() {
-            CloseClipboard();
             return Err("Could not allocate Windows clipboard memory".to_string());
         }
         let pointer = GlobalLock(handle) as *mut u8;
         if pointer.is_null() {
             GlobalFree(handle);
-            CloseClipboard();
             return Err("Could not lock Windows clipboard memory".to_string());
         }
         let header = DropFilesHeader {
@@ -191,12 +184,114 @@ pub fn write_clipboard_files(paths: &[PathBuf]) -> Result<(), String> {
         GlobalUnlock(handle);
         if SetClipboardData(15, handle).is_null() {
             GlobalFree(handle);
-            CloseClipboard();
             return Err("Could not publish files to the Windows clipboard".to_string());
         }
-        CloseClipboard();
     }
     Ok(())
+}
+
+/// Write an RGBA image using CF_DIB when the high-level clipboard backend is
+/// temporarily unavailable. All Win32 failures are returned to the caller;
+/// successful SetClipboardData transfers ownership of the global handle.
+#[cfg(target_os = "windows")]
+pub fn write_clipboard_image(width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{EmptyClipboard, SetClipboardData};
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
+
+    let dib = rgba_to_dib(rgba, width, height)?;
+    unsafe {
+        let _clipboard = open_clipboard_with_retry()?;
+        if EmptyClipboard() == 0 {
+            return Err("Could not clear the Windows clipboard".to_string());
+        }
+        let handle = GlobalAlloc(GHND, dib.len());
+        if handle.is_null() {
+            return Err("Could not allocate Windows clipboard memory".to_string());
+        }
+        let pointer = GlobalLock(handle) as *mut u8;
+        if pointer.is_null() {
+            GlobalFree(handle);
+            return Err("Could not lock Windows clipboard memory".to_string());
+        }
+        std::ptr::copy_nonoverlapping(dib.as_ptr(), pointer, dib.len());
+        GlobalUnlock(handle);
+        if SetClipboardData(8, handle).is_null() {
+            GlobalFree(handle);
+            return Err("Could not publish the image to the Windows clipboard".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn open_clipboard_with_retry() -> Result<ClipboardGuard, String> {
+    use windows_sys::Win32::System::DataExchange::OpenClipboard;
+    const ATTEMPTS: usize = 10;
+    const DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+    for attempt in 0..ATTEMPTS {
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) != 0 {
+                return Ok(ClipboardGuard);
+            }
+        }
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(DELAY);
+        }
+    }
+    Err("Could not open the Windows clipboard after bounded retries".to_string())
+}
+
+#[cfg(target_os = "windows")]
+struct ClipboardGuard;
+
+#[cfg(target_os = "windows")]
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::System::DataExchange::CloseClipboard();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn rgba_to_dib(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let row_size = usize::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| "Image dimensions are too large".to_string())?;
+    let pixel_data_size = row_size
+        .checked_mul(usize::try_from(height).map_err(|_| "Image height is too large")?)
+        .ok_or_else(|| "Image dimensions are too large".to_string())?;
+    if rgba.len() != pixel_data_size {
+        return Err("Image RGBA data does not match its dimensions".to_string());
+    }
+    let dib_size = 40usize
+        .checked_add(pixel_data_size)
+        .ok_or_else(|| "Image dimensions are too large".to_string())?;
+    let width_i32 = i32::try_from(width).map_err(|_| "Image width is too large")?;
+    let height_i32 = i32::try_from(height).map_err(|_| "Image height is too large")?;
+    let pixel_data_size_u32 =
+        u32::try_from(pixel_data_size).map_err(|_| "Image dimensions are too large")?;
+    let mut dib = Vec::with_capacity(dib_size);
+    dib.extend_from_slice(&40u32.to_le_bytes());
+    dib.extend_from_slice(&width_i32.to_le_bytes());
+    dib.extend_from_slice(&height_i32.to_le_bytes());
+    dib.extend_from_slice(&1u16.to_le_bytes());
+    dib.extend_from_slice(&32u16.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes());
+    dib.extend_from_slice(&pixel_data_size_u32.to_le_bytes());
+    dib.extend_from_slice(&2835i32.to_le_bytes());
+    dib.extend_from_slice(&2835i32.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes());
+    dib.extend_from_slice(&0u32.to_le_bytes());
+    for y in (0..height as usize).rev() {
+        let row = &rgba[y * row_size..(y + 1) * row_size];
+        for pixel in row.chunks_exact(4) {
+            dib.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+        }
+    }
+    Ok(dib)
 }
 
 #[repr(C)]

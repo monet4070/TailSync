@@ -133,7 +133,7 @@ export interface MigrationDiagnostics {
 }
 
 export interface SyncWarning {
-  kind: "expired_event";
+  kind: "expired_event" | "delivery_stalled" | "delivery_shutdown" | "delivery_expired";
   peer: string;
   occurred_at_ms: number;
 }

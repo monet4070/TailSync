@@ -342,6 +342,8 @@ impl SyncEngine {
             .map_err(|error| error.to_string())?;
         let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
         let mut files = vec![None; manifest.files.len()];
+        let mut local_generation = self.clipboard_generation.wrapping_add(1).max(1);
+        let mut restored_generation = false;
         if let Ok(data) = fs::read(&manifest_path) {
             if let Ok(saved) = serde_json::from_slice::<PersistedIncomingBatch>(&data) {
                 if saved.source != source || saved.manifest != manifest {
@@ -352,6 +354,8 @@ impl SyncEngine {
                 if saved.files.len() != manifest.files.len() {
                     return Err("Persisted file batch state has an invalid file count".to_string());
                 }
+                local_generation = saved.local_generation;
+                restored_generation = true;
                 for (index, file) in saved.files.into_iter().enumerate() {
                     if let Some(file) = file {
                         if let Some(file) = restore_persisted_received_file(
@@ -371,10 +375,13 @@ impl SyncEngine {
                 source: source.clone(),
                 manifest: manifest.clone(),
                 files: files.clone(),
+                local_generation,
             },
         )
         .map_err(|error| error.to_string())?;
-        let local_generation = self.supersede_file_clipboard();
+        if !restored_generation {
+            self.clipboard_generation = local_generation;
+        }
         self.incoming_batches.insert(
             key,
             IncomingBatch {
@@ -885,9 +892,60 @@ impl SyncEngine {
             ..
         } = pending;
         if let Some(batch_ref) = meta.batch {
+            let batch_key = (source.to_string(), batch_ref.batch_id);
+            if !self.incoming_batches.contains_key(&batch_key) {
+                // A receive task may finish its off-thread hash after the
+                // connection guard has suspended in-memory state. Rehydrate
+                // the durable manifest so verified bytes remain resumable.
+                let incoming_dir = received_file
+                    .path
+                    .parent()
+                    .ok_or_else(|| "Received file path has no parent".to_string())?;
+                let manifest_path =
+                    incoming_dir.join(format!("{}.batch.json", batch_ref.batch_id.as_hex()));
+                let data = fs::read(&manifest_path)
+                    .map_err(|error| format!("File batch state disappeared: {error}"))?;
+                let saved: PersistedIncomingBatch = serde_json::from_slice(&data)
+                    .map_err(|error| format!("Invalid persisted file batch state: {error}"))?;
+                if saved.source != source || saved.manifest.batch_id != batch_ref.batch_id {
+                    return Err(
+                        "Persisted file batch state belongs to another source or batch".to_string(),
+                    );
+                }
+                if saved.files.len() != saved.manifest.files.len() {
+                    return Err("Persisted file batch state has an invalid file count".to_string());
+                }
+                let manifest = saved.manifest;
+                let saved_source = saved.source;
+                let local_generation = saved.local_generation;
+                let mut files = vec![None; manifest.files.len()];
+                for (index, file) in saved.files.into_iter().enumerate() {
+                    if let Some(file) = file {
+                        if let Some(file) = restore_persisted_received_file(
+                            &file,
+                            &manifest.files[index],
+                            incoming_dir,
+                        ) {
+                            files[index] = Some(file);
+                        }
+                    }
+                }
+                let session_epoch = self.receive_epoch(source);
+                self.incoming_batches.insert(
+                    batch_key.clone(),
+                    IncomingBatch {
+                        manifest,
+                        source: saved_source,
+                        session_epoch,
+                        local_generation,
+                        files,
+                        manifest_path,
+                    },
+                );
+            }
             let batch = self
                 .incoming_batches
-                .get_mut(&(source.to_string(), batch_ref.batch_id))
+                .get_mut(&batch_key)
                 .ok_or_else(|| "File batch state disappeared before completion".to_string())?;
             let mut files = batch.files.clone();
             let slot = files
@@ -898,6 +956,7 @@ impl SyncEngine {
                 source: batch.source.clone(),
                 manifest: batch.manifest.clone(),
                 files: files.clone(),
+                local_generation: batch.local_generation,
             };
             persist_incoming_batch(&batch.manifest_path, &persisted)
                 .map_err(|error| error.to_string())?;
@@ -1166,8 +1225,9 @@ impl SyncEngine {
 }
 
 /// Verifies a completed inbound file off the async path and commits it
-/// (T108 migration). On verification failure the temp file is removed and
-/// the receive is discarded; on commit failure the temp file is removed.
+/// (T108 migration). On verification failure the completed file is removed;
+/// a commit failure preserves verified bytes so a later reconnect can recover
+/// from the durable batch manifest.
 pub async fn verify_and_commit_received_file(
     sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
     source: &str,
@@ -1184,9 +1244,6 @@ pub async fn verify_and_commit_received_file(
                 .lock()
                 .await
                 .commit_received_file(source, verified);
-            if result.is_err() {
-                let _ = std::fs::remove_file(&path);
-            }
             result
         }
         Err(error) => {

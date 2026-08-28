@@ -14,7 +14,7 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout, Duration, Instant};
 
 use crate::peer::types::{
     ActiveRoute, ConnectionInterface, DeliveryReceipt, ResolvedCandidate, ResolvedTarget,
@@ -146,6 +146,7 @@ pub struct QueuedFrame {
     payload: Payload,
     acknowledgement: AckExpectation,
     completion: Option<oneshot::Sender<Result<DeliveryReceipt, DeliveryError>>>,
+    enqueued_at: Instant,
 }
 
 impl QueuedFrame {
@@ -198,6 +199,7 @@ impl QueuedFrame {
             payload,
             acknowledgement,
             completion: None,
+            enqueued_at: Instant::now(),
         })
     }
 
@@ -220,6 +222,7 @@ impl QueuedFrame {
             payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::Event(envelope.message_id),
             completion: None,
+            enqueued_at: Instant::now(),
         })
     }
 
@@ -249,6 +252,7 @@ impl QueuedFrame {
             payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::File(transfer_id),
             completion: Some(completion),
+            enqueued_at: Instant::now(),
         })
     }
 
@@ -274,6 +278,7 @@ impl QueuedFrame {
             payload: Payload::Owned(payload),
             acknowledgement: AckExpectation::Batch(batch_id),
             completion: Some(completion),
+            enqueued_at: Instant::now(),
         })
     }
 }
@@ -339,6 +344,7 @@ impl SharedEvent {
             payload: Payload::Shared(self.payload.clone()),
             acknowledgement: AckExpectation::Event(self.message_id),
             completion: None,
+            enqueued_at: Instant::now(),
         }
     }
 }
@@ -371,6 +377,10 @@ impl PendingFrame {
         self.sequence
     }
 
+    fn is_expired(&self, ttl: Duration) -> bool {
+        self.queued.enqueued_at.elapsed() >= ttl
+    }
+
     /// Report the delivery result to the enqueuer, if one is waiting.
     pub fn complete(mut self, result: Result<DeliveryReceipt, DeliveryError>) {
         self.undelivered_peer = None;
@@ -397,10 +407,17 @@ impl Drop for PendingFrame {
 
 /// Record a platform warning for permanent delivery failures that carry
 /// domain meaning (currently: expired event timestamps).
-pub fn record_permanent_delivery_warning(hostname: &str, error: &str) {
-    if error.contains("event timestamp is outside the accepted window") {
+pub fn record_permanent_delivery_warning(hostname: &str, error: &DeliveryError) {
+    if matches!(error, DeliveryError::Expired(_)) {
         crate::sync_warning::record_expired_event(hostname);
     }
+}
+
+fn complete_expired_frame(frame: PendingFrame, hostname: &str) {
+    crate::sync_warning::record_delivery_expired(hostname);
+    frame.complete(Err(DeliveryError::Timeout(
+        "queued frame expired before delivery".to_string(),
+    )));
 }
 
 /// Typed outcome of a delivery attempt. Retry policy is expressed through
@@ -410,6 +427,9 @@ pub fn record_permanent_delivery_warning(hostname: &str, error: &str) {
 pub enum DeliveryError {
     /// The peer rejected the payload outright (permanent, do not retry).
     Rejected(String),
+    /// The event was validly signed but outside the protocol's freshness
+    /// window (permanent, do not retry).
+    Expired(String),
     /// The acknowledgement window expired (retry with backoff).
     Timeout(String),
     /// The transport failed while writing or reading (reconnect and retry).
@@ -422,6 +442,7 @@ impl std::fmt::Display for DeliveryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rejected(message) => write!(formatter, "peer rejected: {message}"),
+            Self::Expired(message) => write!(formatter, "event expired: {message}"),
             Self::Timeout(message) => write!(formatter, "delivery timed out: {message}"),
             Self::Transport(message) => write!(formatter, "transport failed: {message}"),
             Self::Protocol(message) => write!(formatter, "protocol mismatch: {message}"),
@@ -431,13 +452,18 @@ impl std::fmt::Display for DeliveryError {
 
 impl DeliveryError {
     /// Whether a retry (after backoff or reconnect) can plausibly succeed.
-    /// Only outright peer rejections are permanent.
+    /// Peer rejections and expired events are permanent; transport, timeout,
+    /// and protocol failures are retried while the frame remains fresh.
     pub fn is_retryable(&self) -> bool {
-        !matches!(self, Self::Rejected(_))
+        !matches!(self, Self::Rejected(_) | Self::Expired(_))
     }
 
     fn rejected(message: impl Into<String>) -> Self {
         Self::Rejected(message.into())
+    }
+
+    fn expired(message: impl Into<String>) -> Self {
+        Self::Expired(message.into())
     }
 
     fn protocol(message: impl Into<String>) -> Self {
@@ -657,10 +683,11 @@ async fn deliver_event_frame<T: DeliveryConnection>(
                 return Ok(());
             }
             Ok(Ok(frame)) if frame.command == Command::PeerError => {
-                return Err(DeliveryError::rejected(format!(
-                    "event: {}",
-                    String::from_utf8_lossy(&frame.payload)
-                )));
+                let message = String::from_utf8_lossy(&frame.payload).to_string();
+                if message.contains("event timestamp is outside the accepted window") {
+                    return Err(DeliveryError::expired(message));
+                }
+                return Err(DeliveryError::rejected(format!("event: {message}")));
             }
             Ok(Ok(frame)) => {
                 return Err(DeliveryError::protocol(format!(
@@ -792,6 +819,10 @@ pub struct WorkerConfig {
     /// would park before ever reaching `connect` and the link could never
     /// self-heal. Bounding it guarantees the loop always makes forward progress.
     pub refresh_timeout: Duration,
+    /// Maximum time a frame may wait across disconnects. This is aligned with
+    /// the protocol's five-minute event timestamp window and also bounds file
+    /// frames whose caller has already timed out.
+    pub pending_frame_ttl: Duration,
     pub delivery: DeliveryConfig,
 }
 
@@ -802,6 +833,7 @@ impl Default for WorkerConfig {
             heartbeat_ack_timeout: Duration::from_secs(10),
             reconnect_delay: Duration::from_secs(5),
             refresh_timeout: Duration::from_secs(5),
+            pending_frame_ttl: Duration::from_secs(5 * 60),
             delivery: DeliveryConfig::DEFAULT,
         }
     }
@@ -900,6 +932,44 @@ async fn receive_scheduled_frame(
     }
 }
 
+/// Pull one frame while the worker is offline, dropping stale frames and
+/// retaining the first live frame for the next connection attempt. This is a
+/// non-blocking maintenance pass: fresh frames remain ordered within each
+/// queue, while a full queue can no longer be occupied forever by an old
+/// frame that has no chance of being accepted by the peer.
+fn maintain_offline_queue(
+    priority_rx: &mut mpsc::Receiver<QueuedFrame>,
+    bulk_rx: &mut mpsc::Receiver<QueuedFrame>,
+    pending: &mut Option<PendingFrame>,
+    next_sequence: &mut u32,
+    hostname: &str,
+    ttl: Duration,
+) {
+    if pending.is_some() {
+        return;
+    }
+    loop {
+        let queued = match priority_rx.try_recv() {
+            Ok(frame) => Some(frame),
+            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => {
+                match bulk_rx.try_recv() {
+                    Ok(frame) => Some(frame),
+                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
+                }
+            }
+        };
+        let Some(queued) = queued else { return };
+        let frame = PendingFrame::new_for_peer(queued, *next_sequence, hostname);
+        *next_sequence = next_sequence.wrapping_add(1).max(1);
+        if frame.is_expired(ttl) {
+            complete_expired_frame(frame, hostname);
+        } else {
+            *pending = Some(frame);
+            return;
+        }
+    }
+}
+
 /// Background worker for one pooled connection: connects and handshakes,
 /// serves queued frames with heartbeat keepalive, reconnects transparently
 /// on transient failures, and keeps the in-flight frame across reconnects so
@@ -923,6 +993,14 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
     let mut next_sequence = 1u32;
     let mut priority_streak = 0usize;
     loop {
+        maintain_offline_queue(
+            &mut priority_rx,
+            &mut bulk_rx,
+            &mut pending,
+            &mut next_sequence,
+            &hostname,
+            config.pending_frame_ttl,
+        );
         if timeout(
             config.refresh_timeout,
             adapter.refresh_candidates(&hostname, &mut candidates),
@@ -1013,6 +1091,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
         // Keep that frame across reconnects so transient breaks do not lose
         // clipboard content silently.
         if let Some(frame) = pending.take() {
+            if frame.is_expired(config.pending_frame_ttl) {
+                complete_expired_frame(frame, &hostname);
+                continue;
+            }
             let delivery = tokio::select! {
                 biased;
                 _ = wait_for_shutdown(&mut shutdown) => {
@@ -1023,8 +1105,8 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
             };
             match delivery {
                 Ok(receipt) => frame.complete(Ok(receipt)),
-                Err(error @ DeliveryError::Rejected(_)) => {
-                    record_permanent_delivery_warning(&hostname, &error.to_string());
+                Err(error) if !error.is_retryable() => {
+                    record_permanent_delivery_warning(&hostname, &error);
                     log::warn!("Dropping event rejected by remote peer: {error}");
                     log::debug!("Rejected event route: {target}");
                     frame.complete(Err(error));
@@ -1089,6 +1171,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 Ok(Some(queued)) => {
                     let frame = PendingFrame::new_for_peer(queued, next_sequence, &hostname);
                     next_sequence = next_sequence.wrapping_add(1).max(1);
+                    if frame.is_expired(config.pending_frame_ttl) {
+                        complete_expired_frame(frame, &hostname);
+                        continue;
+                    }
                     let delivery = tokio::select! {
                         biased;
                         _ = wait_for_shutdown(&mut shutdown) => {
@@ -1099,8 +1185,8 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     };
                     match delivery {
                         Ok(receipt) => frame.complete(Ok(receipt)),
-                        Err(error @ DeliveryError::Rejected(_)) => {
-                            record_permanent_delivery_warning(&hostname, &error.to_string());
+                        Err(error) if !error.is_retryable() => {
+                            record_permanent_delivery_warning(&hostname, &error);
                             log::warn!("Dropping event rejected by remote peer: {error}");
                             log::debug!("Rejected event route: {target}");
                             frame.complete(Err(error));
@@ -1286,6 +1372,13 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn pending_frame_ttl_is_checked_from_enqueue_time() {
+        let frame = PendingFrame::new(QueuedFrame::new(Command::Heartbeat, vec![1]).unwrap(), 1);
+        assert!(frame.is_expired(Duration::ZERO));
+        assert!(!frame.is_expired(Duration::from_secs(60)));
+    }
+
     #[tokio::test]
     async fn scheduler_serves_bulk_after_a_bounded_priority_burst() {
         let (priority_tx, mut priority_rx) = mpsc::channel(PRIORITY_BURST_LIMIT + 2);
@@ -1342,12 +1435,17 @@ mod tests {
     #[test]
     fn delivery_error_retryability_is_typed() {
         assert!(!DeliveryError::Rejected("bad".into()).is_retryable());
+        assert!(!DeliveryError::Expired("stale".into()).is_retryable());
         assert!(DeliveryError::Timeout("window".into()).is_retryable());
         assert!(DeliveryError::Transport("reset".into()).is_retryable());
         assert!(DeliveryError::Protocol("mismatch".into()).is_retryable());
         assert_eq!(
             DeliveryError::Rejected("bad".into()).to_string(),
             "peer rejected: bad"
+        );
+        assert_eq!(
+            DeliveryError::Expired("stale".into()).to_string(),
+            "event expired: stale"
         );
     }
 
@@ -1681,6 +1779,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_event_rejection_is_typed_and_permanent() {
+        let server_identity = server_identity();
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+
+        let server_task = tokio::spawn(async move {
+            let frame = server.read_frame().await.unwrap();
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::PeerError,
+                        0,
+                        frame.sequence,
+                        b"event timestamp is outside the accepted window".to_vec(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let pending = PendingFrame::new(
+            QueuedFrame::new(Command::TextPayload, b"hello".to_vec()).unwrap(),
+            4,
+        );
+        let err = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DeliveryError::Expired(_)));
+        assert!(!err.is_retryable());
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn event_ack_for_another_message_is_a_protocol_error() {
         let server_identity = server_identity();
         let client_identity = DeviceIdentity::generate_for_test();
@@ -1945,6 +2077,7 @@ mod tests {
             heartbeat_ack_timeout: Duration::from_millis(100),
             reconnect_delay: Duration::from_millis(10),
             refresh_timeout: Duration::from_secs(5),
+            pending_frame_ttl: Duration::from_secs(5 * 60),
             delivery: DeliveryConfig::DEFAULT,
         }
     }

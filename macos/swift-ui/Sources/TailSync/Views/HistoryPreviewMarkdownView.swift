@@ -450,20 +450,22 @@ enum HistoryMarkdownRenderer {
 
 struct HistoryMarkdownPreviewView: View {
     let source: String
+    private let showsToolbar: Bool
     private let document: HistoryMarkdownDocument
 
     @Environment(\.tailSyncPalette) private var palette
     @AppStorage(HistoryPreviewPreferences.textFontSizeKey)
     private var fontSize = HistoryPreviewPreferences.defaultTextFontSize
 
-    init(source: String) {
+    init(source: String, showsToolbar: Bool = true) {
         self.source = source
+        self.showsToolbar = showsToolbar
         document = HistoryMarkdownRenderer.document(source)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            markdownToolbar
+            if showsToolbar { markdownToolbar }
             ScrollView {
                 HistoryMarkdownBlocksView(
                     blocks: document.blocks,

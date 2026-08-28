@@ -4,6 +4,7 @@ import SwiftUI
 enum HistoryPreviewTextMode: String, CaseIterable, Identifiable {
     case plain
     case code
+    case markdown
 
     var id: String { rawValue }
 }
@@ -40,15 +41,21 @@ struct HistoryPreviewTextView: View {
                 find: find,
                 copyAll: copyAll
             )
-            HistoryPreviewTextEditor(
-                text: text,
-                isCode: mode == .code,
-                wrapsLines: wrapsLines,
-                fontSize: CGFloat(HistoryPreviewPreferences.clampedTextFontSize(fontSize)),
-                searchQuery: query,
-                searchRevision: searchRevision,
-                searchDirection: searchDirection
-            )
+            Group {
+                if mode == .markdown {
+                    HistoryMarkdownPreviewView(source: text, showsToolbar: false)
+                } else {
+                    HistoryPreviewTextEditor(
+                        text: text,
+                        isCode: mode == .code,
+                        wrapsLines: wrapsLines,
+                        fontSize: CGFloat(HistoryPreviewPreferences.clampedTextFontSize(fontSize)),
+                        searchQuery: query,
+                        searchRevision: searchRevision,
+                        searchDirection: searchDirection
+                    )
+                }
+            }
             .clipped()
             Divider().overlay(palette.dividerColor)
             HStack(spacing: 12) {

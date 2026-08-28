@@ -255,11 +255,7 @@ pub async fn clear_history(state: State<'_, AppState>) -> Result<(), String> {
 /// Restore a history entry back to clipboard.
 /// Handles text (as text), images (as Image), and files (via CF_HDROP).
 #[command]
-pub async fn restore_entry(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<(), String> {
+pub async fn restore_entry(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let db = state.db.lock().await;
     let entry_type = db.get_type(id).map_err(|e| e.to_string())?;
     let file_path = if entry_type == "file" {
@@ -279,64 +275,9 @@ pub async fn restore_entry(
     };
     drop(db);
 
-    let clipboard = app
-        .try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>()
-        .ok_or("Clipboard not available")?;
-
     if entry_type == "image" {
         let data = data.as_ref().ok_or("Image history data is unavailable")?;
-        let image = crate::protocol::PackedImage::try_from(data.as_slice())
-            .map_err(|error| error.to_string())?;
-        let w = image.width;
-        let h = image.height;
-        let rgba = image.rgba;
-
-        // Shadow filter to prevent re-broadcast
-        {
-            let mut sync = state.sync_engine.lock().await;
-            sync.add_image_shadow_filter(data);
-        }
-
-        // Try arboard write_image first.
-        // Fallback: bypass arboard and set CF_DIB directly via Win32 API.
-        let img = tauri::image::Image::new(rgba, w, h);
-        match clipboard.write_image(&img) {
-            Ok(()) => {
-                info!(
-                    "Restored entry {} (image {}×{}) to clipboard via arboard",
-                    id, w, h
-                );
-            }
-            Err(_e) => {
-                info!("write_image failed for entry {} — using raw CF_DIB", id);
-                let bmp_dib = rgba_to_dib(rgba, w, h);
-                if bmp_dib.is_empty() {
-                    state
-                        .sync_engine
-                        .lock()
-                        .await
-                        .remove_image_shadow_filter(data);
-                    return Err("DIB encode failed".into());
-                }
-                #[cfg(target_os = "windows")]
-                {
-                    set_clipboard_dib(&bmp_dib);
-                    info!(
-                        "Restored entry {} (image {}×{}) to clipboard via CF_DIB",
-                        id, w, h
-                    );
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    state
-                        .sync_engine
-                        .lock()
-                        .await
-                        .remove_image_shadow_filter(data);
-                    return Err("write_image failed and no fallback on this platform".into());
-                }
-            }
-        }
+        state.sync_engine.lock().await.restore_image(data)?;
     } else if entry_type == "file" {
         if let Some(path) = file_path {
             crate::api::restore_file_path_to_clipboard(
@@ -359,16 +300,7 @@ pub async fn restore_entry(
         // Text entry (or fallback for unknown types)
         let text = String::from_utf8_lossy(data.as_deref().unwrap_or_default()).to_string();
 
-        // Shadow filter to prevent re-broadcast
-        {
-            let mut sync = state.sync_engine.lock().await;
-            sync.add_shadow_filter(&text);
-        }
-
-        if let Err(error) = clipboard.write_text(text.clone()) {
-            state.sync_engine.lock().await.remove_shadow_filter(&text);
-            return Err(format!("Clipboard text write failed: {}", error));
-        }
+        state.sync_engine.lock().await.restore_text(&text)?;
 
         info!(
             "Restored entry {} to clipboard ({} chars)",
@@ -866,26 +798,45 @@ pub async fn get_preview(
 // rather than re-validating JSON in a platform renderer.
 fn v2_package(path: &str) -> Result<Vec<u8>, Box<tailsync_core::themes_v2::ThemeError>> {
     if !path.ends_with(".tailsync-theme") {
-        return Err(Box::new(tailsync_core::themes_v2::ThemeError {
-            code: "THEME_EXTENSION".into(),
-            message: "theme package must end in .tailsync-theme".into(),
-            json_pointer: "/path".into(),
-            platforms: vec!["windows".into(), "macos".into()],
-            severity: "error".into(),
-            recoverable: true,
-            fallback_applied: false,
-        }));
+        return Err(theme_path_error(
+            "THEME_EXTENSION",
+            "theme package must end in .tailsync-theme",
+        ));
     }
-    std::fs::read(path).map_err(|e| {
-        Box::new(tailsync_core::themes_v2::ThemeError {
-            code: "THEME_IO".into(),
-            message: e.to_string(),
-            json_pointer: "/path".into(),
-            platforms: vec!["windows".into(), "macos".into()],
-            severity: "error".into(),
-            recoverable: true,
-            fallback_applied: false,
-        })
+    const MAX_THEME_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
+    let path = std::path::Path::new(path);
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| theme_path_error("THEME_IO", error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(theme_path_error(
+            "THEME_PATH",
+            "theme package must be a regular file, not a symbolic link",
+        ));
+    }
+    if metadata.len() > MAX_THEME_PACKAGE_BYTES {
+        return Err(theme_path_error(
+            "THEME_TOO_LARGE",
+            "theme package exceeds the 64 MiB import limit",
+        ));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| theme_path_error("THEME_IO", error.to_string()))?;
+    std::fs::read(canonical).map_err(|error| theme_path_error("THEME_IO", error.to_string()))
+}
+
+fn theme_path_error(
+    code: &str,
+    message: impl Into<String>,
+) -> Box<tailsync_core::themes_v2::ThemeError> {
+    Box::new(tailsync_core::themes_v2::ThemeError {
+        code: code.into(),
+        message: message.into(),
+        json_pointer: "/path".into(),
+        platforms: vec!["windows".into(), "macos".into()],
+        severity: "error".into(),
+        recoverable: true,
+        fallback_applied: false,
     })
 }
 
@@ -1082,7 +1033,7 @@ pub async fn change_storage_location(
         }
     };
     let notify: Option<&(dyn Fn() + Send + Sync)> = Some(&show);
-    db::migrate_storage_with_rollback(
+    let result = db::migrate_storage_with_rollback(
         &state.db,
         &state.settings,
         &parent,
@@ -1109,7 +1060,10 @@ pub async fn change_storage_location(
                 "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
             )
         }
-    })
+    })?;
+    *state.pending_storage_cleanup.lock().await =
+        Some(std::path::PathBuf::from(result.old_root.clone()));
+    Ok(result)
 }
 
 #[command]
@@ -1129,12 +1083,39 @@ pub async fn set_history_pinned(
 }
 
 #[command]
-pub async fn delete_old_storage(path: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        db::delete_old_storage(std::path::Path::new(&path)).map_err(|error| error.to_string())
+pub async fn delete_old_storage(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let requested = std::path::PathBuf::from(path);
+    let authorized = state
+        .pending_storage_cleanup
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|expected| paths_equivalent(expected, &requested));
+    if !authorized {
+        return Err(
+            "The requested storage directory was not issued by a completed migration".into(),
+        );
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        db::delete_old_storage(&requested).map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    if result.is_ok() {
+        *state.pending_storage_cleanup.lock().await = None;
+    }
+    result
+}
+
+fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
 }
 
 #[command]
@@ -1233,73 +1214,6 @@ pub async fn check_for_update(
 #[command]
 pub async fn install_update(app: AppHandle) -> Result<bool, String> {
     crate::updates::install_available_update(&app).await
-}
-
-/// Convert RGBA to CF_DIB clipboard format (BITMAPINFOHEADER + bottom-up BGRA pixels).
-/// No file header — this is what Windows stores in the clipboard as CF_DIB.
-fn rgba_to_dib(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
-    let w = w as i32;
-    let h = h as i32;
-    let row_size = w * 4; // 32 bpp, naturally 4-byte aligned
-    let pixel_data_size = (row_size * h) as u32;
-    let dib_size = 40 + pixel_data_size as usize;
-
-    let mut dib = Vec::with_capacity(dib_size);
-
-    // BITMAPINFOHEADER (40 bytes)
-    dib.extend_from_slice(&(40u32).to_le_bytes());
-    dib.extend_from_slice(&w.to_le_bytes());
-    dib.extend_from_slice(&h.to_le_bytes());
-    dib.extend_from_slice(&(1u16).to_le_bytes()); // planes
-    dib.extend_from_slice(&(32u16).to_le_bytes()); // bpp = 32
-    dib.extend_from_slice(&(0u32).to_le_bytes()); // BI_RGB (no compression)
-    dib.extend_from_slice(&pixel_data_size.to_le_bytes());
-    dib.extend_from_slice(&(2835i32).to_le_bytes()); // 72 DPI
-    dib.extend_from_slice(&(2835i32).to_le_bytes());
-    dib.extend_from_slice(&0u32.to_le_bytes());
-    dib.extend_from_slice(&0u32.to_le_bytes());
-
-    // Pixels: bottom-up, RGBA → BGRA
-    for y in (0..h).rev() {
-        let src_start = (y * w * 4) as usize;
-        let src_end = src_start + (w * 4) as usize;
-        if src_end > rgba.len() {
-            break;
-        }
-        let row = &rgba[src_start..src_end];
-        for x in 0..w as usize {
-            dib.push(row[x * 4 + 2]); // B
-            dib.push(row[x * 4 + 1]); // G
-            dib.push(row[x * 4]); // R
-            dib.push(row[x * 4 + 3]); // A
-        }
-    }
-
-    dib
-}
-
-/// Set CF_DIB data on the Windows clipboard (raw Win32, no file involved).
-#[cfg(target_os = "windows")]
-fn set_clipboard_dib(dib: &[u8]) {
-    use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
-    };
-    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
-
-    unsafe {
-        if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return;
-        }
-        EmptyClipboard();
-        let h = GlobalAlloc(GHND, dib.len());
-        if !h.is_null() {
-            let ptr = GlobalLock(h) as *mut u8;
-            std::ptr::copy_nonoverlapping(dib.as_ptr(), ptr, dib.len());
-            GlobalUnlock(h);
-            SetClipboardData(8, h); // CF_DIB = 8
-        }
-        CloseClipboard();
-    }
 }
 
 #[cfg(test)]

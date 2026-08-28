@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { pathToFileURL } from 'node:url';
+import { validateTauriSignature } from './generate-update-manifest.mjs';
 
 const DEFAULT_PLATFORMS = ['windows-x86_64', 'darwin-aarch64', 'darwin-x86_64'];
 
@@ -37,8 +38,10 @@ export function validatePublishedManifest(manifest, { version, platforms = DEFAU
     if (typeof entry.url !== 'string' || !entry.url.startsWith('https://')) {
       fail(`Published updater manifest has an invalid URL for ${platform}.`);
     }
-    if (typeof entry.signature !== 'string' || !entry.signature.trim()) {
-      fail(`Published updater manifest has an empty signature for ${platform}.`);
+    try {
+      validateTauriSignature(entry.signature, `published ${platform}`);
+    } catch (error) {
+      fail(error.message);
     }
   }
 

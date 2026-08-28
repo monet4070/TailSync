@@ -342,9 +342,14 @@ async fn handle_accepted_connection(
                 )
                 .await
                 {
+                    if error.is_retryable() {
+                        warn!("Temporarily unable to apply text event from remote peer: {error}");
+                        debug!("Transient text event failure address: {peer_addr}");
+                        continue;
+                    }
                     warn!("Rejected text event from remote peer: {error}");
                     debug!("Rejected text event address: {peer_addr}");
-                    secure::write_error(&mut stream, &error).await?;
+                    secure::write_error(&mut stream, &error.to_string()).await?;
                 }
             }
             Command::ImagePayload => {
@@ -359,9 +364,14 @@ async fn handle_accepted_connection(
                 )
                 .await
                 {
+                    if error.is_retryable() {
+                        warn!("Temporarily unable to apply image event from remote peer: {error}");
+                        debug!("Transient image event failure address: {peer_addr}");
+                        continue;
+                    }
                     warn!("Rejected image event from remote peer: {error}");
                     debug!("Rejected image event address: {peer_addr}");
-                    secure::write_error(&mut stream, &error).await?;
+                    secure::write_error(&mut stream, &error.to_string()).await?;
                 }
             }
             Command::FileBatchStart => {

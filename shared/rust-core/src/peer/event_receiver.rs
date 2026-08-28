@@ -2,10 +2,10 @@
 //!
 //! Shared by the macOS and Windows network layers (T106 migration). A
 //! reliable text/image event is decoded, timestamp-checked, de-duplicated,
-//! applied (history write plus clipboard side effect via the sync engine),
-//! and acknowledged. `on_applied` lets the caller run platform side effects
-//! (clipboard version bump) at the exact position of the original server
-//! code — before the acknowledgement is written.
+//! applied (clipboard side effect via the sync engine followed by the history
+//! write), and acknowledged. `on_applied` lets the caller run platform side
+//! effects (clipboard version bump) at the exact position of the original
+//! server code — before the acknowledgement is written.
 
 use crate::db::HistoryDB;
 use crate::protocol::{unix_timestamp_ms, Command, EventEnvelope, Frame};
@@ -22,6 +22,38 @@ pub enum ReliableEventOutcome {
     Duplicate,
 }
 
+/// Failure while applying an event.  Permanent protocol/data failures are
+/// sent back as a PeerError; transient clipboard or storage failures leave
+/// the frame unacknowledged so the sender's normal timeout/retry path can
+/// make progress without permanently dropping a fresh clipboard event.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReliableEventError {
+    Permanent(String),
+    Retryable(String),
+}
+
+impl ReliableEventError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Retryable(_))
+    }
+
+    fn permanent(message: impl Into<String>) -> Self {
+        Self::Permanent(message.into())
+    }
+
+    fn retryable(message: impl Into<String>) -> Self {
+        Self::Retryable(message.into())
+    }
+}
+
+impl std::fmt::Display for ReliableEventError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Permanent(message) | Self::Retryable(message) => f.write_str(message),
+        }
+    }
+}
+
 /// Processes one inbound reliable event frame and writes its acknowledgement.
 ///
 /// Error strings are part of the observable wire contract (the caller
@@ -34,21 +66,22 @@ pub async fn process_reliable_event(
     database: &Arc<Mutex<HistoryDB>>,
     last_sequence: &mut Option<u32>,
     on_applied: impl FnOnce(),
-) -> Result<ReliableEventOutcome, String> {
-    let envelope = EventEnvelope::decode(&frame.payload).map_err(|error| error.to_string())?;
+) -> Result<ReliableEventOutcome, ReliableEventError> {
+    let envelope = EventEnvelope::decode(&frame.payload)
+        .map_err(|error| ReliableEventError::permanent(error.to_string()))?;
     envelope
         .validate_timestamp(unix_timestamp_ms())
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ReliableEventError::permanent(error.to_string()))?;
 
     let duplicate = sync_engine
         .lock()
         .await
         .has_seen_message(source, envelope.message_id);
     if last_sequence.is_some_and(|last| frame.sequence <= last) && !duplicate {
-        return Err(format!(
+        return Err(ReliableEventError::permanent(format!(
             "replayed or out-of-order event sequence {}",
             frame.sequence
-        ));
+        )));
     }
 
     let outcome = if !duplicate {
@@ -56,10 +89,10 @@ pub async fn process_reliable_event(
             Command::TextPayload => "text",
             Command::ImagePayload => "image",
             _ => {
-                return Err(format!(
+                return Err(ReliableEventError::permanent(format!(
                     "{:?} is not a reliable event command",
                     frame.command
-                ))
+                )))
             }
         };
         process_event_content(
@@ -91,11 +124,11 @@ pub async fn process_reliable_event(
         frame.sequence,
         envelope.message_id.ack_payload(),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| ReliableEventError::permanent(error.to_string()))?;
     stream
         .write_frame(&ack)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ReliableEventError::retryable(error.to_string()))?;
     Ok(outcome)
 }
 
@@ -105,52 +138,63 @@ async fn process_event_content(
     source: &str,
     sync_engine: &Arc<Mutex<SyncEngine>>,
     database: &Arc<Mutex<HistoryDB>>,
-) -> Result<(), String> {
+) -> Result<(), ReliableEventError> {
     match command {
         Command::TextPayload => {
             let text = String::from_utf8(content.to_vec())
-                .map_err(|_| "text event is not valid UTF-8".to_string())?;
+                .map_err(|_| ReliableEventError::permanent("text event is not valid UTF-8"))?;
+            sync_engine
+                .lock()
+                .await
+                .handle_incoming_text(&text, source.to_string())
+                .await
+                .map_err(ReliableEventError::retryable)?;
+
             let db = database.clone();
             let db_text = text.clone();
             let db_source = source.to_string();
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 db.blocking_lock()
                     .add_text(&db_text, &db_source)
                     .map_err(|error| error.to_string())
             })
             .await
-            .map_err(|error| error.to_string())??;
+            .map_err(|error| ReliableEventError::retryable(error.to_string()))?;
+            result.map_err(ReliableEventError::retryable)?;
 
             info!("Received text from {}: {} chars", source, text.len());
-            sync_engine
-                .lock()
-                .await
-                .handle_incoming_text(&text, source.to_string())
-                .await?;
         }
         Command::ImagePayload => {
             crate::protocol::PackedImage::try_from(content)
                 .map(|_| ())
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| ReliableEventError::permanent(error.to_string()))?;
+            sync_engine
+                .lock()
+                .await
+                .handle_incoming_image(content, source.to_string())
+                .await
+                .map_err(ReliableEventError::retryable)?;
+
             let db = database.clone();
             let image = content.to_vec();
             let db_source = source.to_string();
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 db.blocking_lock()
                     .add_image(&image, &db_source)
                     .map_err(|error| error.to_string())
             })
             .await
-            .map_err(|error| error.to_string())??;
+            .map_err(|error| ReliableEventError::retryable(error.to_string()))?;
+            result.map_err(ReliableEventError::retryable)?;
 
             info!("Received image from {}: {} bytes", source, content.len());
-            sync_engine
-                .lock()
-                .await
-                .handle_incoming_image(content, source.to_string())
-                .await?;
         }
-        _ => return Err(format!("{:?} is not a reliable event command", command)),
+        _ => {
+            return Err(ReliableEventError::permanent(format!(
+                "{:?} is not a reliable event command",
+                command
+            )))
+        }
     }
     Ok(())
 }
@@ -162,14 +206,27 @@ mod tests {
     use crate::protocol::TransferId;
     use crate::secure::{self, PeerIdentity};
     use crate::sync::{FileBatchProgress, ReceivedFile, SyncPlatform};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    #[derive(Default)]
     struct TestPlatform {
         writes: std::sync::Mutex<Vec<String>>,
+        fail_text: AtomicBool,
+    }
+
+    impl Default for TestPlatform {
+        fn default() -> Self {
+            Self {
+                writes: std::sync::Mutex::new(Vec::new()),
+                fail_text: AtomicBool::new(false),
+            }
+        }
     }
 
     impl SyncPlatform for TestPlatform {
         fn write_text(&self, text: &str) -> Result<(), String> {
+            if self.fail_text.load(Ordering::Relaxed) {
+                return Err("clipboard unavailable".to_string());
+            }
             self.writes.lock().unwrap().push(text.to_string());
             Ok(())
         }
@@ -296,6 +353,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transient_clipboard_failure_does_not_persist_or_deduplicate_event() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let (engine, platform) = test_engine().await;
+        platform.fail_text.store(true, Ordering::Relaxed);
+
+        let envelope = EventEnvelope::new(b"retry me".to_vec());
+        let frame = text_frame(1, &envelope);
+        client.write_frame(&frame).await.unwrap();
+
+        let mut last_sequence = None;
+        let error = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is_retryable());
+        assert_eq!(
+            db.lock()
+                .await
+                .count_all_filtered(None, None, None, None)
+                .unwrap(),
+            0
+        );
+        assert!(!engine
+            .lock()
+            .await
+            .has_seen_message("client", envelope.message_id));
+
+        platform.fail_text.store(false, Ordering::Relaxed);
+        let outcome = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReliableEventOutcome::Applied);
+        let _ = client.read_frame().await.unwrap();
+        assert_eq!(
+            db.lock()
+                .await
+                .count_all_filtered(None, None, None, None)
+                .unwrap(),
+            1
+        );
+        assert_eq!(platform.writes.lock().unwrap().as_slice(), ["retry me"]);
+    }
+
+    #[tokio::test]
     async fn duplicate_event_is_acknowledged_without_reapply() {
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
@@ -379,7 +498,9 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("replayed or out-of-order event sequence 1"));
+        assert!(error
+            .to_string()
+            .contains("replayed or out-of-order event sequence 1"));
     }
 
     #[tokio::test]
@@ -407,7 +528,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("timestamp"));
+        assert!(error.to_string().contains("timestamp"));
     }
 
     #[tokio::test]
@@ -434,6 +555,8 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("Heartbeat is not a reliable event command"));
+        assert!(error
+            .to_string()
+            .contains("Heartbeat is not a reliable event command"));
     }
 }

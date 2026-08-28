@@ -82,6 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationHistoryVersion: UInt64?
     private var notificationEventId: UInt64 = 0
     private var consecutiveWatchdogFailures = 0
+    private var watchdogBackoffSeconds: TimeInterval = 0
+    private var watchdogRetryAfter: Date?
+    private var daemonBuildInProgress = false
     private var terminationInProgress = false
     private var watchdogCheckRunning = false
     private var activeRouteSummary = ""
@@ -101,6 +104,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DaemonLifecyclePolicy.allowsDaemonActivity(
             terminationInProgress: terminationInProgress
         )
+    }
+
+    private func scheduleWatchdogRetry() {
+        watchdogBackoffSeconds = min(
+            watchdogBackoffSeconds > 0 ? watchdogBackoffSeconds * 2 : 3,
+            60
+        )
+        watchdogRetryAfter = Date().addingTimeInterval(watchdogBackoffSeconds)
+        print("[TailSync] daemon watchdog backing off for \(Int(watchdogBackoffSeconds))s")
+    }
+
+    private func resetWatchdogBackoff() {
+        watchdogBackoffSeconds = 0
+        watchdogRetryAfter = nil
     }
 
     /// Force the process to be UIElement (no Dock icon) at the Carbon/CGRemote level.
@@ -577,21 +594,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let binPath = resolveDaemonPath() {
             startDaemonProcess(binPath)
         } else {
+            guard !daemonBuildInProgress else { return }
             print("[TailSync] daemon binary not found, trying cargo build...")
-            let task = Process()
-            task.launchPath = "/usr/bin/env"
-            task.arguments = ["cargo", "build"]
             // Try common locations for Cargo.toml
             let cargoDirs = ["." + "/src-tauri", ".." + "/src-tauri"]
-            task.currentDirectoryPath = cargoDirs.first(where: {
+            guard let cargoDirectory = cargoDirs.first(where: {
                 FileManager.default.fileExists(atPath: $0 + "/Cargo.toml")
-            }) ?? FileManager.default.currentDirectoryPath
-            task.launch()
-            task.waitUntilExit()
-            if let found = resolveDaemonPath() {
-                startDaemonProcess(found)
-            } else {
-                print("[TailSync] could not find or build daemon")
+            }) else {
+                print("[TailSync] could not find daemon Cargo.toml")
+                return
+            }
+            daemonBuildInProgress = true
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                task.arguments = ["cargo", "build"]
+                task.currentDirectoryURL = URL(fileURLWithPath: cargoDirectory)
+                do {
+                    try task.run()
+                    task.waitUntilExit()
+                    if task.terminationStatus != 0 {
+                        print("[TailSync] cargo build exited with status \(task.terminationStatus)")
+                    }
+                } catch {
+                    print("[TailSync] cargo build failed: \(error)")
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.daemonBuildInProgress = false
+                    guard self.daemonActivityAllowed else { return }
+                    if let found = self.resolveDaemonPath() {
+                        self.startDaemonProcess(found)
+                    } else {
+                        print("[TailSync] could not find or build daemon")
+                    }
+                }
             }
         }
     }
@@ -599,9 +636,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startDaemonProcess(_ binPath: String) {
         Self.stopDaemon()
         let proc = Process()
-        proc.launchPath = URL(fileURLWithPath: binPath).absoluteURL.path
+        proc.executableURL = URL(fileURLWithPath: binPath).absoluteURL
         var environment = ProcessInfo.processInfo.environment
         environment["TAILSYNC_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        environment["TAILSYNC_API_SOCKET"] = ApiClient.apiSocketPathForDaemon()
         environment.removeValue(forKey: "TAILSYNC_API_TOKEN")
         environment["TAILSYNC_API_TOKEN_STDIN"] = "1"
         proc.environment = environment
@@ -619,6 +657,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         proc.standardInput = tokenPipe
         do {
             try proc.run()
+            Self.daemonProcess = proc
+            ApiClient.shared.setExpectedDaemonPID(pid_t(proc.processIdentifier))
             let token = Data("\(ApiClient.shared.capabilityToken)\n".utf8)
             tokenPipe.fileHandleForWriting.write(token)
             tokenPipe.fileHandleForWriting.closeFile()
@@ -627,7 +667,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("[TailSync] daemon launch failed: \(error)")
             return
         }
-        Self.daemonProcess = proc
         print("[TailSync] daemon started (pid=\(proc.processIdentifier))")
     }
 
@@ -753,6 +792,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watchdogTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.daemonActivityAllowed, !self.watchdogCheckRunning else { return }
+                if let retryAfter = self.watchdogRetryAfter, Date() < retryAfter { return }
                 self.watchdogCheckRunning = true
                 defer { self.watchdogCheckRunning = false }
                 // A zero revision requests an immediate consolidated snapshot;
@@ -766,6 +806,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         guard self.daemonActivityAllowed else { return }
                         self.launchDaemon()
                         self.consecutiveWatchdogFailures = 0
+                        self.scheduleWatchdogRetry()
                     }
                     return
                 }
@@ -813,6 +854,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // listener alone do not prove synchronization is working.
                 if status.alive && status.tcpServerHealthy && status.clipboardMonitorHealthy {
                     self.consecutiveWatchdogFailures = 0
+                    self.resetWatchdogBackoff()
                 } else {
                     let reason: String
                     if !status.alive {
@@ -830,6 +872,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         guard self.daemonActivityAllowed else { return }
                         self.launchDaemon()
                         self.consecutiveWatchdogFailures = 0
+                        self.scheduleWatchdogRetry()
                     }
                 }
             }

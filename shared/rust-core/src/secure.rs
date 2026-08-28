@@ -2,14 +2,17 @@ use serde::de::Error as DeserializeError;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snow::{Builder, HandshakeState, TransportState};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
+use tokio::time::timeout;
 
 use crate::identity::{self, DeviceIdentity, NOISE_PROTOCOL};
 use crate::protocol::{self, Command, Frame, ProtocolError};
 
 const MAX_TRANSPORT_RECORD: usize = u16::MAX as usize;
 const MAX_TRANSPORT_PLAINTEXT: usize = MAX_TRANSPORT_RECORD - 16;
+const TRANSPORT_WRITE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct PeerIdentity {
@@ -161,10 +164,10 @@ impl SecureConnection {
             encrypted.truncate(length);
             let record_length = u16::try_from(encrypted.len())
                 .map_err(|_| "Encrypted transport record is too large")?;
-            self.stream.write_all(&record_length.to_be_bytes()).await?;
-            self.stream.write_all(&encrypted).await?;
+            write_all_with_timeout(&mut self.stream, &record_length.to_be_bytes()).await?;
+            write_all_with_timeout(&mut self.stream, &encrypted).await?;
         }
-        self.stream.flush().await?;
+        flush_with_timeout(&mut self.stream).await?;
         Ok(())
     }
 
@@ -421,9 +424,16 @@ async fn accept_inner<S>(
 where
     S: SessionIo + 'static,
 {
+    const ACCEPT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
     let mut handshake = build_handshake(identity, false)?;
     let mut output = vec![0u8; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
-    let request = match read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE).await {
+    let request_result = timeout(
+        ACCEPT_HANDSHAKE_TIMEOUT,
+        read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE),
+    )
+    .await
+    .map_err(|_| "secure handshake request timed out")?;
+    let request = match request_result {
         Ok(request) => request,
         Err(ProtocolError::UnsupportedVersion(peer_version)) => {
             let message = ProtocolError::UnsupportedVersion(peer_version).to_string();
@@ -463,14 +473,23 @@ where
     write_plain_frame(&mut stream, ack_command, &output[..length]).await?;
 
     let finish = if purpose == HandshakePurpose::Pairing {
-        read_pairing_frame(
-            &mut stream,
-            protocol::MAX_HANDSHAKE_PAYLOAD_SIZE,
-            pairing_enabled.as_mut(),
+        timeout(
+            ACCEPT_HANDSHAKE_TIMEOUT,
+            read_pairing_frame(
+                &mut stream,
+                protocol::MAX_HANDSHAKE_PAYLOAD_SIZE,
+                pairing_enabled.as_mut(),
+            ),
         )
-        .await?
+        .await
+        .map_err(|_| "secure pairing handshake timed out")??
     } else {
-        read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE).await?
+        timeout(
+            ACCEPT_HANDSHAKE_TIMEOUT,
+            read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE),
+        )
+        .await
+        .map_err(|_| "secure handshake finish timed out")??
     };
     let expected_finish = match purpose {
         HandshakePurpose::Connection => Command::HandshakeFinish,
@@ -594,8 +613,8 @@ where
         .into());
     }
     let frame = Frame::try_new(command, 0, 0, payload.to_vec())?;
-    stream.write_all(&frame.encode()).await?;
-    stream.flush().await?;
+    write_all_with_timeout(stream, &frame.encode()).await?;
+    flush_with_timeout(stream).await?;
     Ok(())
 }
 
@@ -628,11 +647,37 @@ where
         .into());
     }
     let frame = Frame::try_new(command, 0, 0, payload.to_vec())?;
-    stream
-        .write_all(&frame.encode_with_version(version))
-        .await?;
-    stream.flush().await?;
+    write_all_with_timeout(stream, &frame.encode_with_version(version)).await?;
+    flush_with_timeout(stream).await?;
     Ok(())
+}
+
+async fn write_all_with_timeout<S>(stream: &mut S, bytes: &[u8]) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin + ?Sized,
+{
+    timeout(TRANSPORT_WRITE_IDLE_TIMEOUT, stream.write_all(bytes))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out writing transport data",
+            )
+        })?
+}
+
+async fn flush_with_timeout<S>(stream: &mut S) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin + ?Sized,
+{
+    timeout(TRANSPORT_WRITE_IDLE_TIMEOUT, stream.flush())
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out flushing transport data",
+            )
+        })?
 }
 
 async fn read_plain_frame<S>(stream: &mut S, max_payload: usize) -> Result<Frame, ProtocolError>
@@ -695,10 +740,44 @@ mod tests {
     use super::*;
     use crate::identity::DeviceIdentity;
     use crate::pairing::derive_verification_code;
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use std::time::Duration;
     use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::Notify;
+
+    struct StalledWriter;
+
+    impl AsyncRead for StalledWriter {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for StalledWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     fn transport_pair() -> (TransportState, TransportState) {
         let initiator_identity = DeviceIdentity::generate_for_test();
@@ -897,6 +976,39 @@ mod tests {
     #[tokio::test]
     async fn encrypted_record_read_resumes_after_ciphertext_cancellation() {
         assert_read_resumes_after_cancellation(7).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn encrypted_frame_write_does_not_wait_forever_for_a_stalled_peer() {
+        let (_, transport) = transport_pair();
+        let mut secure = SecureConnection {
+            stream: Box::new(StalledWriter),
+            transport,
+            read_buffer: Vec::new(),
+            partial_header: [0; 2],
+            partial_header_len: 0,
+            partial_record: Vec::new(),
+            partial_expected: None,
+            peer_identity: PeerIdentity {
+                hostname: "stalled-peer".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+        };
+        let frame = Frame::try_new(Command::TextPayload, 0, 1, b"stalled".to_vec()).unwrap();
+
+        let mut write = Box::pin(secure.write_frame(&frame));
+        let result = tokio::select! {
+            result = &mut write => Some(result),
+            _ = tokio::time::sleep(Duration::from_secs(31)) => None,
+        };
+        let error = result
+            .expect("write_frame remained pending after the idle deadline")
+            .expect_err("stalled writer unexpectedly accepted the frame");
+        assert_eq!(
+            error.downcast_ref::<io::Error>().map(io::Error::kind),
+            Some(io::ErrorKind::TimedOut)
+        );
     }
 
     #[tokio::test]

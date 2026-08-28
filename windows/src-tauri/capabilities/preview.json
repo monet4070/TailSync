@@ -1,0 +1,7 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/main/crates/tauri-config-schema/capabilities/default.json",
+  "identifier": "preview",
+  "description": "Open explicitly validated web links from the preview window",
+  "windows": ["preview"],
+  "permissions": ["shell:allow-open"]
+}

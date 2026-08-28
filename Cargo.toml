@@ -5,5 +5,6 @@ members = [
     "shared/tailsync-history-classifier",
     "shared/tailsync-protocol",
     "shared/tailsync-themes",
+    "tools/updater-verify",
 ]
 exclude = ["windows/src-tauri", "macos/src-tauri"]

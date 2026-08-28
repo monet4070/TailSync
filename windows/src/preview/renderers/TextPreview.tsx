@@ -24,6 +24,7 @@ import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 import { previewFileExtension } from "../../utils/historyPreview";
 import { useModifierWheelZoom, usePreviewTextFontSize, zoomFromWheel } from "../previewPreferences";
+import { MarkdownPreview } from "./MarkdownPreview";
 
 hljs.registerLanguage("bash", bash);
 hljs.registerLanguage("cpp", cpp);
@@ -118,7 +119,10 @@ export function TextPreview({
 }) {
   const source = useMemo(() => new TextDecoder("utf-8").decode(data), [data]);
   const extensionLanguage = LANGUAGE_BY_EXTENSION[previewFileExtension(name)];
-  const [codeMode, setCodeMode] = useState(forceCode || Boolean(extensionLanguage) || likelyCode(source));
+  const [mode, setMode] = useState<"text" | "code" | "markdown">(
+    forceCode || Boolean(extensionLanguage) || likelyCode(source) ? "code" : "text",
+  );
+  const codeMode = mode === "code";
   const [wrap, setWrap] = useState(true);
   const [fontSize, setFontSize] = usePreviewTextFontSize();
   const [query, setQuery] = useState("");
@@ -164,11 +168,11 @@ export function TextPreview({
           />
           {query && <span>{matches}</span>}
         </label>
-        <div className="preview-segmented" aria-label={t("history.preview.mode") }>
+        <div className="preview-segmented" aria-label={t("history.preview.mode")}>
           <button
             type="button"
-            className={!codeMode ? "is-active" : ""}
-            onClick={() => setCodeMode(false)}
+            className={mode === "text" ? "is-active" : ""}
+            onClick={() => setMode("text")}
             title={t("history.preview.textMode")}
           >
             <Type size={14} aria-hidden="true" />
@@ -176,10 +180,18 @@ export function TextPreview({
           <button
             type="button"
             className={codeMode ? "is-active" : ""}
-            onClick={() => setCodeMode(true)}
+            onClick={() => setMode("code")}
             title={t("history.preview.codeMode")}
           >
             <Code2 size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={mode === "markdown" ? "is-active" : ""}
+            onClick={() => setMode("markdown")}
+            title={t("history.preview.markdownMode")}
+          >
+            MD
           </button>
         </div>
         <button
@@ -211,7 +223,9 @@ export function TextPreview({
         ref={sourceScrollRef}
         className="preview-source-scroll"
       >
-        {codeMode ? (
+        {mode === "markdown" ? (
+          <MarkdownPreview data={data} />
+        ) : codeMode ? (
           <div className={wrap ? "preview-code-layout is-wrapped" : "preview-code-layout"} style={{ fontSize }}>
             <ol className="preview-code-lines" aria-hidden="true">
               {source.split("\n").map((_, index) => <li key={index} />)}

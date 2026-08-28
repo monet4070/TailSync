@@ -30,6 +30,7 @@ pub struct AppState {
     pub pool: Arc<Mutex<network::ConnectionPool>>,
     pub pairing: Arc<pairing::PairingManager>,
     pub shutdown: watch::Sender<bool>,
+    pub pending_storage_cleanup: Arc<Mutex<Option<std::path::PathBuf>>>,
 }
 
 fn track_task(tasks: &BackgroundTasks, task: tauri::async_runtime::JoinHandle<()>) {
@@ -398,6 +399,7 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
         settings.clone(),
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
+    let pending_storage_cleanup = Arc::new(Mutex::new(None));
     let runtime = clipboard::ClipboardRuntime::Headless;
     sync_engine
         .lock()
@@ -417,6 +419,7 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
         pairing: pairing.clone(),
         token: api_token,
         shutdown: shutdown_tx.clone(),
+        pending_storage_cleanup: pending_storage_cleanup.clone(),
         imports: Mutex::new(api::ImportRegistry::default()),
     });
     let api_shutdown = shutdown_rx.clone();
@@ -601,6 +604,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         settings.clone(),
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
+    let pending_storage_cleanup = Arc::new(Mutex::new(None));
     let settings_for_monitor = settings.clone();
     let settings_for_server = settings.clone();
     let settings_for_iroh = settings.clone();
@@ -619,6 +623,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         pairing: pairing.clone(),
         token: api_token,
         shutdown: shutdown_tx.clone(),
+        pending_storage_cleanup: pending_storage_cleanup.clone(),
         imports: Mutex::new(api::ImportRegistry::default()),
     });
     let api_shutdown = shutdown_rx.clone();
@@ -670,6 +675,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 pool: pool_for_setup.clone(),
                 pairing: pairing.clone(),
                 shutdown: shutdown_for_state,
+                pending_storage_cleanup,
             };
             app.manage(state);
 

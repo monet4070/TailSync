@@ -273,6 +273,7 @@ function formatTime(iso: string) {
 }
 
 function formatSize(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
@@ -656,8 +657,16 @@ export function History() {
       lastVersion.current = snapshot.history_version;
       await loadHistory();
     }
-    if (snapshot.sync_warning?.kind === "expired_event") {
-      flashSyncWarning(t("history.syncExpired").replace("{peer}", snapshot.sync_warning.peer));
+    if (snapshot.sync_warning) {
+      const key = {
+        expired_event: "history.syncExpired",
+        delivery_stalled: "history.syncStalled",
+        delivery_shutdown: "history.syncShutdown",
+        delivery_expired: "history.syncDeliveryExpired",
+      }[snapshot.sync_warning.kind];
+      if (key) {
+        flashSyncWarning(t(key).replace("{peer}", snapshot.sync_warning.peer));
+      }
     }
     if (!progressBarEnabled) {
       setFileProgress(null);
@@ -1046,7 +1055,7 @@ export function History() {
       {loading && entries.length === 0 ? (
         /* Skeleton on initial load */
         <div className="skeleton-list">
-          {[0, 1, 2, 4].map((i) => (
+          {[0, 1, 2, 3].map((i) => (
             <div className="skeleton-item" key={i}>
               <div className="skeleton-icon" />
               <div className="skeleton-lines">

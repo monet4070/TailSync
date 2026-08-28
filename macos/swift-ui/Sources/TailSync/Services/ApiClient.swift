@@ -62,10 +62,13 @@ enum ThemeResolvedPairDecoder {
 
 final class ApiClient: @unchecked Sendable {
     static let shared = ApiClient()
-    private let port: UInt16 = 19889
+    private let socketPath: String
     let capabilityToken: String
+    private let daemonPIDLock = NSLock()
+    private var expectedDaemonPID: pid_t?
 
     private init() {
+        socketPath = Self.apiSocketPath()
         if let configured = ProcessInfo.processInfo.environment["TAILSYNC_API_TOKEN"],
            Self.isValidCapabilityToken(configured) {
             capabilityToken = configured.lowercased()
@@ -77,6 +80,39 @@ final class ApiClient: @unchecked Sendable {
             fatalError("TailSync could not generate its local API capability token")
         }
         capabilityToken = bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func apiSocketPathForDaemon() -> String {
+        apiSocketPath()
+    }
+
+    func setExpectedDaemonPID(_ pid: pid_t?) {
+        daemonPIDLock.lock()
+        expectedDaemonPID = pid
+        daemonPIDLock.unlock()
+    }
+
+    private func expectedDaemonProcessIdentifier() -> pid_t? {
+        daemonPIDLock.lock()
+        defer { daemonPIDLock.unlock() }
+        return expectedDaemonPID
+    }
+
+    private static func apiSocketPath() -> String {
+        if let configured = ProcessInfo.processInfo.environment["TAILSYNC_API_SOCKET"],
+           !configured.isEmpty {
+            return configured
+        }
+        let supportDirectory = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("TailSync", isDirectory: true)
+        return supportDirectory?
+            .appendingPathComponent("tailsyncd.sock", isDirectory: false)
+            .path
+            ?? FileManager.default.temporaryDirectory
+                .appendingPathComponent("TailSync/tailsyncd.sock", isDirectory: false)
+                .path
     }
 
     private static func isValidCapabilityToken(_ value: String) -> Bool {
@@ -97,29 +133,45 @@ final class ApiClient: @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let sock = socket(AF_INET, SOCK_STREAM, 0)
+                let sock = socket(AF_UNIX, SOCK_STREAM, 0)
                 guard sock >= 0 else {
                     continuation.resume(throwing: ApiError.connectionFailed)
                     return
                 }
                 defer { close(sock) }
 
-                var address = sockaddr_in()
-                address.sin_family = sa_family_t(AF_INET)
-                address.sin_port = CFSwapInt16HostToBig(self.port)
-                inet_pton(AF_INET, "127.0.0.1", &address.sin_addr)
+                var address = sockaddr_un()
+                address.sun_family = sa_family_t(AF_UNIX)
+                let pathBytes = Array(self.socketPath.utf8) + [0]
+                guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
+                    continuation.resume(throwing: ApiError.connectionFailed)
+                    return
+                }
+                withUnsafeMutableBytes(of: &address.sun_path) { destination in
+                    destination.initializeMemory(as: UInt8.self, repeating: 0)
+                    pathBytes.withUnsafeBytes { source in
+                        destination.copyBytes(from: source)
+                    }
+                }
                 var timeout = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
                 setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
                 setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
                 let connected = withUnsafePointer(to: &address) {
                     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                        connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                        connect(sock, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
                     }
                 }
                 guard connected == 0 else {
                     continuation.resume(throwing: ApiError.connectionFailed)
                     return
+                }
+
+                if let expectedPID = self.expectedDaemonProcessIdentifier() {
+                    guard let peerPID = Self.peerProcessIdentifier(sock), peerPID == expectedPID else {
+                        continuation.resume(throwing: ApiError.connectionFailed)
+                        return
+                    }
                 }
 
                 var sentTotal = 0
@@ -162,6 +214,15 @@ final class ApiClient: @unchecked Sendable {
                 continuation.resume(returning: response)
             }
         }
+    }
+
+    private static func peerProcessIdentifier(_ socket: Int32) -> pid_t? {
+        var peerPID: pid_t = 0
+        var length = socklen_t(MemoryLayout<pid_t>.size)
+        let result = withUnsafeMutablePointer(to: &peerPID) { pointer in
+            getsockopt(socket, SOL_LOCAL, LOCAL_PEERPID, pointer, &length)
+        }
+        return result == 0 ? peerPID : nil
     }
 
     func getVersion() async -> UInt64? {

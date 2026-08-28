@@ -72,7 +72,7 @@ flowchart LR
         S[SwiftUI 菜单栏应用]
         D[Rust 守护进程]
         H[clipboard-helper]
-        S <-->|JSON Lines<br/>127.0.0.1:19889| D
+        S <-->|JSON Lines<br/>private Unix socket| D
         H --> D
     end
 
@@ -145,9 +145,9 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 |---|---|---|
 | `19889` | UDP | LAN / Tailscale 发现与健康心跳 |
 | `19890` | TCP | 配对、认证和剪贴板数据传输 |
-| `127.0.0.1:19889` | TCP，仅 macOS 本机 | SwiftUI 外壳与 Rust 守护进程通信 |
+| macOS Application Support 下的 `tailsyncd.sock` | Unix socket，仅本机 | SwiftUI 外壳与 Rust 守护进程通信；校验连接对端 PID 和能力令牌 |
 
-局域网发现使用 mDNS 服务名 `_tailsync._tcp.local.`。macOS 本地 API 只应绑定 loopback，不要通过端口转发暴露到其他设备。
+局域网发现使用 mDNS 服务名 `_tailsync._tcp.local.`。macOS 本地 API 使用用户专属目录下的 Unix socket，不监听本地 TCP 端口；Windows 本地 API 仍使用 `127.0.0.1:19889`，不要通过端口转发暴露到其他设备。
 
 ## 从源码运行
 
@@ -247,7 +247,7 @@ node windows/scripts/check_cross_platform_sync.mjs \
   --core-root shared/rust-core
 ```
 
-macOS 打包后完整验证（前端、Rust、SwiftUI、Bonjour 声明、`19889`/`19890` 监听、本地 API 与剪贴板辅助进程）：
+macOS 打包后完整验证（前端、Rust、SwiftUI、Bonjour 声明、`19890` 监听、Unix socket API 与剪贴板辅助进程）：
 
 ```bash
 bash macos/scripts/verify_macos_release.sh "$PWD/windows"
@@ -280,7 +280,7 @@ macOS 与 Windows 的平台 UI 可以按系统体验分别演进；共享业务�
 ## 当前限制
 
 - 未完成文件批次可跨应用重启续传，`incoming/` 中的明文 `.part` 文件和续传状态最多保留 24 小时；`clipboard-files/` 中恢复到剪贴板的明文文件也属于瞬态数据。
-- macOS 本地 JSON-lines API 绑定 loopback，并对每个请求强制校验 256 位能力令牌；请求上限为 1 MiB，读写超时为 5 秒。仍不应通过端口转发暴露 `19889`。
+- macOS 本地 JSON-lines API 使用用户专属 Unix socket，并对连接对端 PID 及每个请求强制校验 256 位能力令牌；请求上限为 1 MiB，读写超时为 5 秒。Windows 本地 API 才使用 `127.0.0.1:19889`，仍不应通过端口转发暴露。
 - 历史正文与图片/文件负载由应用数据密钥加密；类型、时间戳等数据库元数据不加密，系统磁盘加密仍可提供额外的整盘保护。
 - 默认 tag 产物是 Community Release：macOS 使用 ad-hoc 签名且未公证，Windows 不含商业 Authenticode 签名，因此首次打开会出现 Gatekeeper 或 SmartScreen 警告；不要通过关闭系统安全功能来规避警告。
 - updater 签名、稳定通道 manifest 和降级保护已经接入，但尚未在本仓库凭据下完成首次线上更新及完整真实设备回归矩阵。预发布 tag 不进入稳定更新通道。

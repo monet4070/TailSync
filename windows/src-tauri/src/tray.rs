@@ -331,7 +331,7 @@ fn initial_tray_menu_state(app: &AppHandle, language: String) -> TrayMenuState {
                 .db
                 .try_lock()
                 .ok()
-                .map(|db| !db.storage_status().available)
+                .map(|db| !db.is_storage_available())
         })
         .unwrap_or(false);
     let sync_enabled = app
@@ -380,7 +380,10 @@ pub fn start_tray(app_handle: AppHandle) {
             };
             let settings_snapshot = settings.lock().await.clone();
             let language = settings_snapshot.language;
-            let storage_unavailable = !db.lock().await.storage_status().available;
+            // The tray only needs the health bit. `storage_status()` walks the
+            // complete managed tree to calculate quota usage, which is far too
+            // expensive for a one-second progress refresh.
+            let storage_unavailable = !db.lock().await.is_storage_available();
             let mut next_state =
                 TrayMenuState::from_current_progress(language, storage_unavailable);
             next_state.sync_enabled = settings_snapshot.sync_enabled;

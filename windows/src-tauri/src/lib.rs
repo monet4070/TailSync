@@ -29,6 +29,9 @@ pub struct AppState {
     pub pool: Arc<Mutex<network::ConnectionPool>>,
     pub pairing: Arc<pairing::PairingManager>,
     pub shutdown: watch::Sender<bool>,
+    /// The exact old root returned by the most recent successful migration.
+    /// Cleanup is one-shot and cannot be redirected by an arbitrary IPC path.
+    pub pending_storage_cleanup: Arc<Mutex<Option<std::path::PathBuf>>>,
 }
 
 fn track_task(tasks: &BackgroundTasks, task: tauri::async_runtime::JoinHandle<()>) {
@@ -436,6 +439,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         settings.clone(),
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
+    let pending_storage_cleanup = Arc::new(Mutex::new(None));
     let settings_for_monitor = settings.clone();
     #[cfg(target_os = "windows")]
     let settings_for_notifications = settings.clone();
@@ -457,6 +461,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         token: api_token,
         shutdown: shutdown_tx.clone(),
         imports: Mutex::new(api::ImportRegistry::default()),
+        pending_storage_cleanup: pending_storage_cleanup.clone(),
     });
     let api_shutdown = shutdown_rx.clone();
     let api_task = tauri::async_runtime::spawn(async move {
@@ -521,6 +526,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 pool: pool_for_setup.clone(),
                 pairing: pairing.clone(),
                 shutdown: shutdown_for_state,
+                pending_storage_cleanup,
             };
             let initial_shortcuts = state.settings.blocking_lock().clone();
             app.manage(state);

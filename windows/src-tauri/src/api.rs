@@ -464,6 +464,7 @@ pub struct ApiState {
     pub pairing: Arc<crate::pairing::PairingManager>,
     pub token: ApiToken,
     pub shutdown: watch::Sender<bool>,
+    pub pending_storage_cleanup: Arc<Mutex<Option<std::path::PathBuf>>>,
     pub(crate) imports: Mutex<ImportRegistry>,
 }
 

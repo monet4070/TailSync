@@ -41,4 +41,11 @@ describe("TextPreview", () => {
     expect(container.querySelector(".hljs-number")).not.toBeNull();
     expect(container.querySelector(".hljs-string")).not.toBeNull();
   });
+
+  it("lets users render clipboard text as sanitized Markdown", () => {
+    render(<TextPreview data={new TextEncoder().encode("# Heading")} name="note.txt" t={t} />);
+
+    fireEvent.click(screen.getByTitle("history.preview.markdownMode"));
+    expect(screen.getByRole("heading", { name: "Heading" })).toBeInTheDocument();
+  });
 });

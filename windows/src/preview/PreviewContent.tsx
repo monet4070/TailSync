@@ -1,6 +1,7 @@
 import { lazy, Suspense, useMemo } from "react";
 import { useTheme } from "../hooks/useTheme";
 import { previewRendererFor, type PreviewPayload } from "../utils/historyPreview";
+import { PreviewErrorBoundary } from "./ErrorBoundary";
 
 // Keep PDF, DOCX and syntax-highlighting code out of the history window's
 // initial bundle. The renderer is loaded only after the user opens that type.
@@ -15,10 +16,14 @@ export function PreviewContent({
   payload,
   t,
   onCorrupt,
+  resetKey,
+  onRetry,
 }: {
   payload: PreviewPayload;
   t: (key: string) => string;
   onCorrupt: () => void;
+  resetKey?: string | number;
+  onRetry?: () => void;
 }) {
   const { themeAssetSlots } = useTheme();
   const renderer = useMemo(() => previewRendererFor(payload), [payload]);
@@ -50,5 +55,16 @@ export function PreviewContent({
         );
     }
   })();
-  return <Suspense fallback={<div className="preview-render-loading" data-testid="preview-render-loading" />}>{content}</Suspense>;
+  const boundaryKey = resetKey ?? `${payload.entry_id ?? 0}-${payload.name}`;
+  return (
+    <PreviewErrorBoundary
+      key={boundaryKey}
+      t={t}
+      onRetry={onRetry ?? (() => undefined)}
+    >
+      <Suspense fallback={<div className="preview-render-loading" data-testid="preview-render-loading" />}>
+        {content}
+      </Suspense>
+    </PreviewErrorBoundary>
+  );
 }

@@ -9,7 +9,10 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Only one publisher may mutate the repository's stable/latest feed at a
+  # time. Tag-specific jobs can still build in parallel, but publication and
+  # verification must be serialized globally.
+  group: release-publisher
   cancel-in-progress: false
 
 env:
@@ -227,6 +230,17 @@ jobs:
             --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --notes "TailSync $RELEASE_TAG"
           node --test scripts/generate-update-manifest.test.mjs
+      - name: Cryptographically verify local updater artifacts
+        if: ${{ !contains(github.ref_name, '-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for fragment in release/release-*.json; do
+            artifact=$(node -e 'const fs=require("node:fs"); const f=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(f.artifact)' "$fragment")
+            signature=$(node -e 'const fs=require("node:fs"); const f=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(f.signatureFile)' "$fragment")
+            cargo run --locked --quiet --manifest-path tools/updater-verify/Cargo.toml -- \
+              --public-key shared/updater.pub --artifact "release/$artifact" --signature "release/$signature"
+          done
       - name: Write community release notice
         if: env.TAILSYNC_RELEASE_TIER == 'community'
         run: |
@@ -270,7 +284,7 @@ jobs:
         run: |
           RELEASE_VERSION="${RELEASE_TAG#v}"
           node scripts/verify-published-update.mjs \
-            --endpoint "https://github.com/${RELEASE_REPOSITORY}/releases/latest/download/latest.json" \
+            --endpoint "https://github.com/${RELEASE_REPOSITORY}/releases/download/${RELEASE_TAG}/latest.json" \
             --version "$RELEASE_VERSION" \
             --platforms windows-x86_64,darwin-aarch64,darwin-x86_64
       - name: Publish prerelease without a stable updater manifest

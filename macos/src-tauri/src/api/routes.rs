@@ -1,5 +1,55 @@
 use super::*;
 
+const MAX_THEME_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+fn theme_path_error(
+    code: &str,
+    message: impl Into<String>,
+) -> tailsync_core::themes_v2::ThemeError {
+    tailsync_core::themes_v2::ThemeError {
+        code: code.into(),
+        message: message.into(),
+        json_pointer: "/path".into(),
+        platforms: vec!["macos".into()],
+        severity: "error".into(),
+        recoverable: true,
+        fallback_applied: false,
+    }
+}
+
+// Keep the structured ThemeError by value: these errors are immediately
+// serialized into the JSON API response, and boxing them would add an
+// allocation to every validation failure. The large error is intentional at
+// this narrow boundary.
+#[allow(clippy::result_large_err)]
+fn read_theme_package(path: &str) -> Result<Vec<u8>, tailsync_core::themes_v2::ThemeError> {
+    if !path.ends_with(".tailsync-theme") {
+        return Err(theme_path_error(
+            "THEME_EXTENSION",
+            "theme package must end in .tailsync-theme",
+        ));
+    }
+    let path = std::path::Path::new(path);
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| theme_path_error("THEME_IO", error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(theme_path_error(
+            "THEME_PATH",
+            "theme package must be a regular file, not a symbolic link",
+        ));
+    }
+    if metadata.len() > MAX_THEME_PACKAGE_BYTES {
+        return Err(theme_path_error(
+            "THEME_TOO_LARGE",
+            "theme package exceeds the 64 MiB import limit",
+        ));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| theme_path_error("THEME_IO", error.to_string()))?;
+    std::fs::read(canonical).map_err(|error| theme_path_error("THEME_IO", error.to_string()))
+}
+
 pub(crate) fn peer_snapshot_data(
     identity: &DeviceIdentity,
     settings: &crypto::Settings,
@@ -793,6 +843,8 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             .await
             {
                 Ok(result) => {
+                    *state.pending_storage_cleanup.lock().await =
+                        Some(std::path::PathBuf::from(result.old_root.clone()));
                     bump_runtime_revision();
                     Response {
                         ok: true,
@@ -825,14 +877,28 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
         }
 
         "delete_old_storage" => {
-            let result = req
-                .path
-                .as_deref()
-                .ok_or_else(|| "missing path".to_string())
-                .and_then(|path| {
-                    db::delete_old_storage(std::path::Path::new(path))
-                        .map_err(|error| error.to_string())
-                });
+            let result = match req.path.as_deref() {
+                None => Err("missing path".to_string()),
+                Some(path) => {
+                    let requested = std::path::PathBuf::from(path);
+                    let authorized = state
+                        .pending_storage_cleanup
+                        .lock()
+                        .await
+                        .as_ref()
+                        .is_some_and(|expected| paths_equivalent(expected, &requested));
+                    if !authorized {
+                        Err("The requested storage directory was not issued by a completed migration".to_string())
+                    } else {
+                        let result =
+                            db::delete_old_storage(&requested).map_err(|error| error.to_string());
+                        if result.is_ok() {
+                            *state.pending_storage_cleanup.lock().await = None;
+                        }
+                        result
+                    }
+                }
+            };
             Response {
                 ok: result.is_ok(),
                 data: None,
@@ -1220,11 +1286,22 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
         }
 
         "validate_theme" => {
-            let result = req
+            let result: Result<
+                tailsync_core::themes_v2::ThemeValidation,
+                tailsync_core::themes_v2::ThemeError,
+            > = req
                 .path
                 .as_deref()
-                .ok_or_else(|| "missing path".to_string())
-                .and_then(|path| std::fs::read(path).map_err(|error| error.to_string()))
+                .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
+                    code: "THEME_PATH".into(),
+                    message: "missing path".into(),
+                    json_pointer: "/path".into(),
+                    platforms: vec!["macos".into()],
+                    severity: "error".into(),
+                    recoverable: true,
+                    fallback_applied: false,
+                })
+                .and_then(read_theme_package)
                 .map(|bytes| {
                     tailsync_core::themes_v2::validate_theme_for_platform(
                         &bytes,
@@ -1244,7 +1321,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     data: Some(
                         serde_json::to_value(tailsync_core::themes_v2::ThemeError {
                             code: "THEME_IO".into(),
-                            message: error.clone(),
+                            message: error.to_string(),
                             json_pointer: "/path".into(),
                             platforms: vec!["macos".into()],
                             severity: "error".into(),
@@ -1253,7 +1330,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                         })
                         .unwrap_or(Value::Null),
                     ),
-                    error: Some(error),
+                    error: Some(error.to_string()),
                 },
             }
         }
@@ -1286,16 +1363,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                         fallback_applied: false,
                     }
                 })?;
-                let bytes =
-                    std::fs::read(path).map_err(|e| tailsync_core::themes_v2::ThemeError {
-                        code: "THEME_IO".into(),
-                        message: e.to_string(),
-                        json_pointer: "/path".into(),
-                        platforms: vec!["macos".into()],
-                        severity: "error".into(),
-                        recoverable: true,
-                        fallback_applied: false,
-                    })?;
+                let bytes = read_theme_package(path)?;
                 if req.cmd == "install_theme" {
                     tailsync_core::themes_v2::install_theme(&bytes, digest)
                 } else {
@@ -1491,17 +1559,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     recoverable: true,
                     fallback_applied: false,
                 })
-                .and_then(|path| {
-                    std::fs::read(path).map_err(|error| tailsync_core::themes_v2::ThemeError {
-                        code: "THEME_IO".into(),
-                        message: error.to_string(),
-                        json_pointer: "/path".into(),
-                        platforms: vec!["macos".into()],
-                        severity: "error".into(),
-                        recoverable: true,
-                        fallback_applied: false,
-                    })
-                })
+                .and_then(read_theme_package)
                 .and_then(|bytes| {
                     let digest = req.expected_digest.as_deref().ok_or_else(|| {
                         tailsync_core::themes_v2::ThemeError {
@@ -1560,6 +1618,17 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             data: None,
             error: Some(format!("unknown command: {}", req.cmd)),
         },
+    }
+}
+
+fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
     }
 }
 

@@ -65,9 +65,23 @@ impl SyncPlatform for TauriSyncPlatform {
 
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
         let image = tauri::image::Image::new(rgba, width, height);
-        self.clipboard()?
-            .write_image(&image)
-            .map_err(|error| format!("write_image failed: {error}"))
+        match self.clipboard()?.write_image(&image) {
+            Ok(()) => Ok(()),
+            Err(primary) => {
+                #[cfg(target_os = "windows")]
+                {
+                    clipboard_file::write_clipboard_image(width, height, rgba).map_err(|fallback| {
+                        format!(
+                            "write_image failed ({primary}); CF_DIB fallback failed ({fallback})"
+                        )
+                    })
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    Err(format!("write_image failed: {primary}"))
+                }
+            }
+        }
     }
 
     fn set_file_progress(&self, name: &str, received: u64, total: u64) {

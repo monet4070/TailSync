@@ -18,6 +18,8 @@ struct HistoryPreviewTextToolbar: View {
                     .tag(HistoryPreviewTextMode.plain)
                 Text(Loc.t("history.preview.code"))
                     .tag(HistoryPreviewTextMode.code)
+                Text(Loc.t("history.preview.markdown"))
+                    .tag(HistoryPreviewTextMode.markdown)
             }
             .labelsHidden()
             .pickerStyle(.segmented)

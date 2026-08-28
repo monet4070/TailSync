@@ -21,6 +21,10 @@ pub(crate) struct PersistedIncomingBatch {
     pub(crate) source: String,
     pub(crate) manifest: FileBatchManifest,
     pub(crate) files: Vec<Option<ReceivedFile>>,
+    /// Generation captured when the batch was admitted. Older sidecars
+    /// default to zero, which safely prevents activating stale batches.
+    #[serde(default)]
+    pub(crate) local_generation: u64,
 }
 
 /// Resume-persistence failures (T352 migration). Display strings match the
@@ -181,6 +185,7 @@ mod tests {
                 files: Vec::new(),
             },
             files: Vec::new(),
+            local_generation: 0,
         };
 
         persist_incoming_batch(&path, &batch).unwrap();

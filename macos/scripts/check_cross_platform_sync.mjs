@@ -122,6 +122,7 @@ function assertTreeMatch(relativeDirectory, allowedDrift = []) {
 assertTreeMatch('src-tauri/src', [
   'api.rs',
   'api/routes.rs',
+  'api/transport.rs',
   'clipboard.rs',
   'clipboard_change.rs',
   'clipboard_file.rs',
@@ -236,11 +237,10 @@ const macPeerPort = constant(read(macRoot, 'src-tauri/src/network/mod.rs'),
 const winApiPort = constant(read(winRoot, 'src-tauri/src/api.rs'),
   /pub const API_PORT: u16 = (\d+);/, 'Windows daemon API port');
 const macApiSource = read(macRoot, 'src-tauri/src/api.rs');
+const macApiTransportSource = read(macRoot, 'src-tauri/src/api/transport.rs');
 const macApiRoutesSource = read(macRoot, 'src-tauri/src/api/routes.rs');
 const macApiContractSource = `${macApiSource}\n${macApiRoutesSource}`;
 const winApiContractSource = `${read(winRoot, 'src-tauri/src/api.rs')}\n${read(winRoot, 'src-tauri/src/api/routes.rs')}`;
-const macApiPort = constant(macApiSource,
-  /pub const API_PORT: u16 = (\d+);/, 'macOS daemon API port');
 const swiftSource = read(macRoot, 'swift-ui/Sources/TailSync/Services/ApiClient.swift');
 const swiftAppSource = read(macRoot, 'swift-ui/Sources/TailSync/TailSyncApp.swift');
 if (/environment\["TAILSYNC_API_TOKEN"\]\s*=/.test(swiftAppSource) ||
@@ -249,13 +249,18 @@ if (/environment\["TAILSYNC_API_TOKEN"\]\s*=/.test(swiftAppSource) ||
     !/TAILSYNC_API_TOKEN_STDIN/.test(macApiSource)) {
   fail('macOS must pass the local API token through the daemon stdin pipe, not its environment.');
 }
-const swiftApiPort = constant(swiftSource,
-  /private let port: UInt16 = (\d+)/, 'SwiftUI API port');
 if (winPeerPort !== 19890 || macPeerPort !== 19890) {
   fail(`Peer TCP port must be 19890 (Windows=${winPeerPort}, macOS=${macPeerPort}).`);
 }
-if (winApiPort !== 19889 || macApiPort !== 19889 || swiftApiPort !== 19889) {
-  fail(`Local API port must be 19889 (Windows=${winApiPort}, macOS=${macApiPort}, SwiftUI=${swiftApiPort}).`);
+if (winApiPort !== 19889) {
+  fail(`Windows local API port must be 19889 (Windows=${winApiPort}).`);
+}
+for (const [description, source, markers] of [
+  ['macOS API transport', macApiTransportSource, ['UnixListener', 'LOCAL_PEERPID', 'TAILSYNC_API_SOCKET']],
+  ['SwiftUI API client', swiftSource, ['AF_UNIX', 'LOCAL_PEERPID', 'TAILSYNC_API_SOCKET']],
+]) {
+  const missing = markers.filter((marker) => !source.includes(marker));
+  if (missing.length) fail(`${description} is missing Unix-socket security markers: ${missing.join(', ')}`);
 }
 
 const rustCommands = new Set();
@@ -512,9 +517,9 @@ for (const pattern of [
 ]) if (!pattern.test(macSourceCheck)) fail(`macOS source verifier is missing required check: ${pattern}`);
 for (const pattern of [
   /codesign --verify --deep --strict/,
-  /19889/,
   /19890/,
+  /-U.*TAILSYNC_API_SOCKET|TAILSYNC_API_SOCKET.*-U|tailsyncd\.sock/,
   /get_version/,
 ]) if (!pattern.test(macVerifier)) fail(`macOS release verifier is missing required check: ${pattern}`);
 
-console.log(`Cross-platform contract passed: shared Rust core, ${swiftCommands.size} Swift API commands, Swift JSON models, TCP 19890, API 19889, and macOS release requirements.`);
+console.log(`Cross-platform contract passed: shared Rust core, ${swiftCommands.size} Swift API commands, Swift JSON models, TCP 19890, Windows API 19889, macOS Unix-socket API, and macOS release requirements.`);

@@ -484,6 +484,8 @@ struct HistoryView: View {
                     switch warning.kind {
                     case "expired_event": messageKey = "history.syncExpired"
                     case "delivery_stalled": messageKey = "history.syncStalled"
+                    case "delivery_shutdown": messageKey = "history.syncShutdown"
+                    case "delivery_expired": messageKey = "history.syncDeliveryExpired"
                     default: messageKey = nil
                     }
                     if let messageKey {

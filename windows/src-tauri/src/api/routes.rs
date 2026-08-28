@@ -666,11 +666,15 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             )
             .await
             {
-                Ok(result) => Response {
-                    ok: true,
-                    data: serde_json::to_value(result).ok(),
-                    error: None,
-                },
+                Ok(result) => {
+                    *state.pending_storage_cleanup.lock().await =
+                        Some(std::path::PathBuf::from(result.old_root.clone()));
+                    Response {
+                        ok: true,
+                        data: serde_json::to_value(result).ok(),
+                        error: None,
+                    }
+                }
                 Err(failure) => Response {
                     ok: false,
                     data: None,
@@ -696,14 +700,28 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
         }
 
         "delete_old_storage" => {
-            let result = req
-                .path
-                .as_deref()
-                .ok_or_else(|| "missing path".to_string())
-                .and_then(|path| {
-                    db::delete_old_storage(std::path::Path::new(path))
-                        .map_err(|error| error.to_string())
-                });
+            let result = match req.path.as_deref() {
+                None => Err("missing path".to_string()),
+                Some(path) => {
+                    let requested = std::path::PathBuf::from(path);
+                    let authorized = state
+                        .pending_storage_cleanup
+                        .lock()
+                        .await
+                        .as_ref()
+                        .is_some_and(|expected| paths_equivalent(expected, &requested));
+                    if !authorized {
+                        Err("The requested storage directory was not issued by a completed migration".to_string())
+                    } else {
+                        let result =
+                            db::delete_old_storage(&requested).map_err(|error| error.to_string());
+                        if result.is_ok() {
+                            *state.pending_storage_cleanup.lock().await = None;
+                        }
+                        result
+                    }
+                }
+            };
             Response {
                 ok: result.is_ok(),
                 data: None,
@@ -1055,6 +1073,17 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             data: None,
             error: Some(format!("unknown command: {}", req.cmd)),
         },
+    }
+}
+
+fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
     }
 }
 

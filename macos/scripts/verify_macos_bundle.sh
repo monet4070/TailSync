@@ -3,12 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 APP_PATH="$PWD/TailSync.app"
-API_PORT=19889
 PEER_PORT=19890
 DAEMON_STARTED=0
 DAEMON_PROCESS_PID=''
 DAEMON_LOG=''
 API_TOKEN=''
+API_SOCKET_ROOT="$(mktemp -d -t tailsync-api.XXXXXX)"
+API_SOCKET="$API_SOCKET_ROOT/tailsyncd.sock"
 RELEASE_TIER="${TAILSYNC_RELEASE_TIER:-community}"
 
 cleanup() {
@@ -18,8 +19,8 @@ cleanup() {
             wait "$DAEMON_PROCESS_PID" >/dev/null 2>&1 || true
         fi
         for _ in {1..50}; do
-            if ! /usr/sbin/lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1 &&
-                ! /usr/sbin/lsof -nP -iTCP:"$PEER_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+            if ! /usr/sbin/lsof -nP -iTCP:"$PEER_PORT" -sTCP:LISTEN >/dev/null 2>&1 &&
+                [ ! -S "$API_SOCKET" ]; then
                 break
             fi
             sleep 0.1
@@ -27,6 +28,9 @@ cleanup() {
     fi
     if [[ -n "$DAEMON_LOG" ]]; then
         rm -f "$DAEMON_LOG"
+    fi
+    if [[ -n "$API_SOCKET_ROOT" && -d "$API_SOCKET_ROOT" ]]; then
+        rm -rf "$API_SOCKET_ROOT"
     fi
 }
 trap cleanup EXIT
@@ -38,7 +42,7 @@ report_daemon_failure() {
     fi
 }
 
-for port in "$API_PORT" "$PEER_PORT"; do
+for port in "$PEER_PORT"; do
     if /usr/sbin/lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
         echo "Port $port is already occupied; quit TailSync before verification." >&2
         exit 1
@@ -77,12 +81,13 @@ rm -f "$helper_probe"
 echo '[2/3] Launching the packaged daemon from the app bundle...'
 API_TOKEN="$(/usr/bin/openssl rand -hex 32)"
 DAEMON_LOG="$(mktemp -t tailsync-daemon.XXXXXX)"
-TAILSYNC_API_TOKEN="$API_TOKEN" "$APP_PATH/Contents/MacOS/tailsyncd" >"$DAEMON_LOG" 2>&1 &
+TAILSYNC_API_TOKEN="$API_TOKEN" TAILSYNC_API_SOCKET="$API_SOCKET" \
+    "$APP_PATH/Contents/MacOS/tailsyncd" >"$DAEMON_LOG" 2>&1 &
 DAEMON_PROCESS_PID=$!
 DAEMON_STARTED=1
 api_ready=0
 for _ in {1..100}; do
-    if /usr/sbin/lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1 &&
+    if [ -S "$API_SOCKET" ] &&
         /usr/sbin/lsof -nP -iTCP:"$PEER_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
         api_ready=1
         break
@@ -93,13 +98,13 @@ for _ in {1..100}; do
     sleep 0.1
 done
 if [ "$api_ready" -ne 1 ]; then
-    echo 'Packaged daemon did not listen on both API 19889 and peer 19890 ports.' >&2
+    echo "Packaged daemon did not create $API_SOCKET or listen on peer TCP 19890." >&2
     report_daemon_failure
     exit 1
 fi
 
 echo '[3/3] Verifying the JSON-lines API...'
-response="$(printf '{\"cmd\":\"get_version\",\"token\":\"%s\"}\n' "$API_TOKEN" | /usr/bin/nc -w 3 127.0.0.1 "$API_PORT")"
+response="$(printf '{\"cmd\":\"get_version\",\"token\":\"%s\"}\n' "$API_TOKEN" | /usr/bin/nc -w 3 -U "$API_SOCKET")"
 response_ok="$(printf '%s\n' "$response" | /usr/bin/plutil -extract ok raw -o - - 2>/dev/null || true)"
 response_data="$(printf '%s\n' "$response" | /usr/bin/plutil -extract data raw -o - - 2>/dev/null || true)"
 if [[ "$response_ok" != "true" || ! "$response_data" =~ ^[0-9]+$ ]]; then
@@ -107,7 +112,7 @@ if [[ "$response_ok" != "true" || ! "$response_data" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-unauthorized_response="$(printf '{\"cmd\":\"get_version\"}\n' | /usr/bin/nc -w 3 127.0.0.1 "$API_PORT")"
+unauthorized_response="$(printf '{\"cmd\":\"get_version\"}\n' | /usr/bin/nc -w 3 -U "$API_SOCKET")"
 unauthorized_ok="$(printf '%s\n' "$unauthorized_response" | /usr/bin/plutil -extract ok raw -o - - 2>/dev/null || true)"
 unauthorized_error="$(printf '%s\n' "$unauthorized_response" | /usr/bin/plutil -extract error raw -o - - 2>/dev/null || true)"
 if [[ "$unauthorized_ok" != "false" || "$unauthorized_error" != "unauthorized" ]]; then

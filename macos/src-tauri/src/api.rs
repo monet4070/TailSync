@@ -1,4 +1,4 @@
-//! JSON-line TCP API server for the SwiftUI frontend.
+//! JSON-line local API server for the SwiftUI frontend.
 //!
 //! Protocol: one JSON object per line, terminated by `\n`.
 //! Request:  `{"cmd": "...", ...params}`
@@ -464,6 +464,7 @@ pub fn thumbnail_rgba(
     (tw, th, out)
 }
 
+#[cfg(not(target_os = "macos"))]
 pub const API_PORT: u16 = 19889;
 const MAX_API_LINE: usize = 1024 * 1024;
 const API_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -537,6 +538,7 @@ pub struct ApiState {
     pub pairing: Arc<crate::pairing::PairingManager>,
     pub token: ApiToken,
     pub shutdown: watch::Sender<bool>,
+    pub pending_storage_cleanup: Arc<Mutex<Option<std::path::PathBuf>>>,
     pub(crate) imports: Mutex<ImportRegistry>,
 }
 

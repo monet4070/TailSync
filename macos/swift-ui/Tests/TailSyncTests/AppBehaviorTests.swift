@@ -270,6 +270,7 @@ final class AppBehaviorTests: XCTestCase {
             "history.preview.unknownType",
             "history.preview.plainText",
             "history.preview.code",
+            "history.preview.markdown",
             "history.preview.search",
             "history.preview.previousMatch",
             "history.preview.nextMatch",

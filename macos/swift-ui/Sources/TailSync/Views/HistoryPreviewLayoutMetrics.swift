@@ -6,5 +6,5 @@ enum HistoryPreviewLayoutMetrics {
     static let imageToolbarHeight: CGFloat = 44
     static let regularControlSize: CGFloat = 32
     static let compactControlSize: CGFloat = 28
-    static let segmentedControlWidth: CGFloat = 132
+    static let segmentedControlWidth: CGFloat = 168
 }

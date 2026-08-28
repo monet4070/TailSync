@@ -642,7 +642,7 @@ pub async fn change_storage_location(
         }
     };
     let notify: Option<&(dyn Fn() + Send + Sync)> = Some(&show);
-    db::migrate_storage_with_rollback(
+    let result = db::migrate_storage_with_rollback(
         &state.db,
         &state.settings,
         &parent,
@@ -669,7 +669,10 @@ pub async fn change_storage_location(
                 "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
             )
         }
-    })
+    })?;
+    *state.pending_storage_cleanup.lock().await =
+        Some(std::path::PathBuf::from(result.old_root.clone()));
+    Ok(result)
 }
 
 #[command]
@@ -689,12 +692,39 @@ pub async fn set_history_pinned(
 }
 
 #[command]
-pub async fn delete_old_storage(path: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        db::delete_old_storage(std::path::Path::new(&path)).map_err(|error| error.to_string())
+pub async fn delete_old_storage(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let requested = std::path::PathBuf::from(path);
+    let authorized = state
+        .pending_storage_cleanup
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|expected| paths_equivalent(expected, &requested));
+    if !authorized {
+        return Err(
+            "The requested storage directory was not issued by a completed migration".into(),
+        );
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        db::delete_old_storage(&requested).map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    if result.is_ok() {
+        *state.pending_storage_cleanup.lock().await = None;
+    }
+    result
+}
+
+fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
 }
 
 #[command]
