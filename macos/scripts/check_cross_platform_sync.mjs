@@ -122,6 +122,21 @@ function assertTreeMatch(relativeDirectory, allowedDrift = []) {
 assertTreeMatch('src-tauri/src', [
   'api.rs',
   'api/routes.rs',
+  'api/routes/history.rs',
+  'api/routes/peers.rs',
+  'api/routes/settings.rs',
+  'api/routes/theme.rs',
+  'api/tests.rs',
+  'clipboard/transfer.rs',
+  'commands/history.rs',
+  'commands/peers.rs',
+  'commands/platform.rs',
+  'commands/preview.rs',
+  'commands/settings.rs',
+  'commands/storage.rs',
+  'commands/tests.rs',
+  'commands/themes.rs',
+  'network/tests.rs',
   'api/transport.rs',
   'clipboard.rs',
   'clipboard_change.rs',
@@ -238,10 +253,22 @@ const winApiPort = constant(read(winRoot, 'src-tauri/src/api.rs'),
   /pub const API_PORT: u16 = (\d+);/, 'Windows daemon API port');
 const macApiSource = read(macRoot, 'src-tauri/src/api.rs');
 const macApiTransportSource = read(macRoot, 'src-tauri/src/api/transport.rs');
-const macApiRoutesSource = read(macRoot, 'src-tauri/src/api/routes.rs');
+const macApiRoutesSource = [
+  read(macRoot, 'src-tauri/src/api/routes.rs'),
+  ...treeFiles(macRoot, 'src-tauri/src/api/routes').values().map((path) => readFileSync(path, 'utf8')),
+].join('\n');
 const macApiContractSource = `${macApiSource}\n${macApiRoutesSource}`;
-const winApiContractSource = `${read(winRoot, 'src-tauri/src/api.rs')}\n${read(winRoot, 'src-tauri/src/api/routes.rs')}`;
-const swiftSource = read(macRoot, 'swift-ui/Sources/TailSync/Services/ApiClient.swift');
+const winApiRoutesSource = [
+  read(winRoot, 'src-tauri/src/api/routes.rs'),
+  ...treeFiles(winRoot, 'src-tauri/src/api/routes').values().map((path) => readFileSync(path, 'utf8')),
+].join('\n');
+const winApiContractSource = `${read(winRoot, 'src-tauri/src/api.rs')}\n${winApiRoutesSource}`;
+const swiftApiDirectory = join(macRoot, 'swift-ui/Sources/TailSync/Services');
+const swiftSource = readdirSync(swiftApiDirectory)
+  .filter((name) => /^ApiClient.*\.swift$/.test(name))
+  .sort()
+  .map((name) => readFileSync(join(swiftApiDirectory, name), 'utf8'))
+  .join('\n');
 const swiftAppSource = read(macRoot, 'swift-ui/Sources/TailSync/TailSyncApp.swift');
 if (/environment\["TAILSYNC_API_TOKEN"\]\s*=/.test(swiftAppSource) ||
     !/TAILSYNC_API_TOKEN_STDIN/.test(swiftAppSource) ||
@@ -479,7 +506,7 @@ for (const marker of [
   /case latencyMs = "latency_ms"/,
   /case pairingEndpoint = "pairing_endpoint"/,
   /case rttCapable = "rtt_capable"/,
-  /rttCapable = try values.decodeIfPresent\(Bool.self, forKey: \.rttCapable\)/,
+  /rttCapable\s*=\s*try\s+values\.decodeIfPresent\(Bool\.self,\s*forKey:\s*\.rttCapable\)/,
 ]) if (!marker.test(swiftSource)) fail('SwiftUI peer route DTO is missing normalized route fields.');
 
 const infoPlist = read(macRoot, 'src-tauri/Info.plist');

@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useRef, type CSSProperties } from "react";
+import { useCallback, useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTheme, type ThemePreference } from "../hooks/useTheme";
@@ -24,12 +24,10 @@ import {
   setSyncShortcut,
   updateSettings,
   type PeerDevice,
-  type PeerRoute,
   type StorageMigrationResult,
   type StorageStatus,
   type ThemeV2Descriptor,
 } from "../tailsyncClient";
-import { ThemePackagePreview } from "../components/ThemePackagePreview";
 import {
   applyThemePackageOperation,
   validateThemePackageForPreview,
@@ -45,285 +43,19 @@ import {
   useShortcutRecorder,
 } from "../hooks/useShortcutRecorder";
 import { useUpdater } from "../hooks/useUpdater";
-import {
-  Activity,
-  Check,
-  ChevronDown,
-  FolderOpen,
-  Grid2X2,
-  HardDrive,
-  Keyboard,
-  Monitor,
-  Moon,
-  Pencil,
-  RefreshCw,
-  RotateCcw,
-  Settings2,
-  Sun,
-  Trash2,
-  Upload,
-  Wifi,
-  X,
-} from "lucide-react";
+import { X } from "lucide-react";
 import { ThemeLogo } from "../ThemeLogo";
-import { shortcutKeycaps } from "../utils/shortcut";
-import { pairingAddressForPeer } from "../utils/pairingAddress";
-import { routeSupportsLatencyTest } from "../utils/peerRoute";
+import { GIB } from "./settings/SettingsFormatters";
+import { ShortcutRecorderDialog } from "./settings/SettingsShortcutControls";
+import { SettingsConnectionsSection } from "./settings/SettingsConnectionsSection";
+import { SettingsGeneralSection } from "./settings/SettingsGeneralSection";
+import { SettingsHistorySection } from "./settings/SettingsHistorySection";
+import { SettingsStorageSection } from "./settings/SettingsStorageSection";
+import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection";
+import { SettingsUpdateSection } from "./settings/SettingsUpdateSection";
+import { PairingDialog, ThemeImportDialog } from "./settings/SettingsDialogs";
 
 /* ── Types ──────────────────────────────────────────────────────── */
-
-const routeInterfaceLabel = (routeInterface: PeerRoute["interface"]) => {
-  if (routeInterface === "lan") return "LAN";
-  if (routeInterface === "iroh") return "Iroh";
-  return "Tailscale";
-};
-
-const palettePreviewClass = (themeId: string) => {
-  switch (themeId) {
-    case "builtin:flux@1": return "ocean";
-    case "builtin:ledger@1": return "forest";
-    case "builtin:aura@1": return "rose";
-    case "builtin:mono@1": return "high-contrast";
-    case "builtin:canvas@1": return "tailsync";
-    default: return "custom";
-  }
-};
-
-const palettePreviewTitle = (themeId: string) =>
-  themeId === "builtin:flux@1" || themeId === "builtin:mono@1"
-    ? "TAILSYNC"
-    : "TailSync";
-
-const themeToken = (
-  tokens: Record<string, unknown> | undefined,
-  path: string[],
-): string | undefined => {
-  let current: unknown = tokens;
-  for (const key of path) {
-    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
-    current = (current as Record<string, unknown>)[key];
-  }
-  return typeof current === "string" ? current : undefined;
-};
-
-const themeTokenFamilies = (
-  tokens: Record<string, unknown> | undefined,
-  path: string[],
-): string | undefined => {
-  let current: unknown = tokens;
-  for (const key of path) {
-    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
-    current = (current as Record<string, unknown>)[key];
-  }
-  return Array.isArray(current) && current.every((value) => typeof value === "string")
-    ? current.join(", ")
-    : undefined;
-};
-
-const palettePreviewStyle = (entry: ThemeV2Descriptor): CSSProperties | undefined => {
-  const tokens = entry.resolvedLight?.tokens;
-  if (!tokens) return undefined;
-  const values: Record<string, string | undefined> = {
-    "--preview-bg": themeToken(tokens, ["colors", "background", "canvas"]),
-    "--preview-surface": themeToken(tokens, ["colors", "background", "surface"]),
-    "--preview-ink": themeToken(tokens, ["colors", "text", "primary"]),
-    "--preview-secondary": themeToken(tokens, ["colors", "text", "secondary"]),
-    "--preview-line": themeToken(tokens, ["colors", "border", "default"]),
-    "--preview-border-strong": themeToken(tokens, ["colors", "border", "strong"]),
-    "--preview-accent": themeToken(tokens, ["colors", "accent", "default"]),
-    "--preview-accent-soft": themeToken(tokens, ["colors", "accent", "soft"]),
-    "--preview-input": themeToken(tokens, ["colors", "background", "input"]),
-    "--preview-title-font": themeTokenFamilies(tokens, ["typography", "display", "families"]),
-  };
-  return Object.fromEntries(
-    Object.entries(values).filter(([, value]) => value !== undefined),
-  ) as CSSProperties;
-};
-
-const peerCanSync = (peer: PeerDevice) =>
-  peer.trusted && peer.enabled && (
-    Boolean(peer.current_interface)
-    || peer.online
-    || Boolean(peer.address)
-    || Boolean(peer.tailscale_ip)
-    || Boolean(peer.routes?.some((route) => Boolean(route.address)))
-  );
-
-const GIB = 1024 * 1024 * 1024;
-
-function formatStorageSize(bytes: number) {
-  return `${(bytes / GIB).toFixed(bytes >= GIB ? 1 : 2)} GiB`;
-}
-
-type ShortcutRecorder = ReturnType<typeof useShortcutRecorder>;
-
-function ShortcutSettingRow({
-  recorder,
-  currentShortcut,
-  defaultShortcut,
-  title,
-  description,
-  recordLabel,
-  t,
-  disabled = false,
-}: {
-  recorder: ShortcutRecorder;
-  currentShortcut: string;
-  defaultShortcut: string;
-  title: string;
-  description: string;
-  recordLabel: string;
-  t: (key: string) => string;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="setting-row shortcut-row">
-      <div className="setting-row-info">
-        <span>{title}</span>
-        <small>{description}</small>
-      </div>
-      <div className="shortcut-control">
-        <button
-          ref={recorder.shortcutTriggerRef}
-          type="button"
-          className="shortcut-recorder"
-          disabled={disabled || recorder.shortcutBusy}
-          onClick={() => void recorder.startShortcutRecording()}
-          aria-haspopup="dialog"
-          aria-expanded={recorder.shortcutRecording}
-          aria-label={recordLabel}
-        >
-          <Keyboard size={16} strokeWidth={1.7} aria-hidden="true" />
-          {shortcutKeycaps(recorder.shortcutDraft).length > 0 ? (
-            <span className="shortcut-keycaps" aria-label={recorder.shortcutDraft}>
-              {shortcutKeycaps(recorder.shortcutDraft).map((key, index) => (
-                <kbd key={`${key}-${index}`}>{key}</kbd>
-              ))}
-            </span>
-          ) : (
-            <span className="shortcut-empty">{t("settings.shortcutDisabled")}</span>
-          )}
-          <Pencil className="shortcut-edit-icon" size={13} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="shortcut-icon-button"
-          disabled={disabled || recorder.shortcutBusy || recorder.shortcutRecording || recorder.shortcutDraft === defaultShortcut}
-          onClick={() => {
-            recorder.setShortcutDraft(defaultShortcut);
-            void recorder.commitShortcut(defaultShortcut);
-          }}
-          title={t("settings.shortcutReset")}
-          aria-label={t("settings.shortcutReset")}
-        >
-          <RotateCcw size={15} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="shortcut-icon-button"
-          disabled={disabled || recorder.shortcutBusy || recorder.shortcutRecording || !currentShortcut}
-          onClick={() => {
-            recorder.setShortcutDraft("");
-            void recorder.commitShortcut("");
-          }}
-          title={t("settings.shortcutClear")}
-          aria-label={t("settings.shortcutClear")}
-        >
-          <X size={15} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ShortcutRecorderDialog({
-  recorder,
-  title,
-  prompt,
-  t,
-}: {
-  recorder: ShortcutRecorder;
-  title: string;
-  prompt: string;
-  t: (key: string) => string;
-}) {
-  if (!recorder.shortcutRecording) return null;
-  const titleId = `shortcut-dialog-title-${title.replace(/\s+/g, "-")}`;
-  return (
-    <div className="dialog-backdrop" onMouseDown={() => void recorder.cancelShortcutRecording()}>
-      <div
-        className="shortcut-dialog"
-        ref={recorder.shortcutDialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        tabIndex={-1}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="shortcut-dialog-header">
-          <div className="shortcut-dialog-icon">
-            <Keyboard size={20} strokeWidth={1.7} aria-hidden="true" />
-          </div>
-          <div>
-            <h2 id={titleId}>{title}</h2>
-            <p>{prompt}</p>
-          </div>
-        </div>
-        <button
-          ref={recorder.shortcutCaptureRef}
-          type="button"
-          className={`shortcut-capture-target${recorder.shortcutCaptureActive ? " active" : " captured"}`}
-          onClick={recorder.restartShortcutCapture}
-          onKeyDown={recorder.handleShortcutCaptureEvent}
-          disabled={recorder.shortcutBusy}
-          aria-label={recorder.shortcutCaptureActive
-            ? t("settings.shortcutRecording")
-            : t("settings.shortcutRecordAgain")}
-        >
-          {recorder.shortcutPreviewKeys.length > 0 ? (
-            <span className="shortcut-keycaps shortcut-dialog-keycaps">
-              {recorder.shortcutPreviewKeys.map((key, index) => (
-                <kbd key={`${key}-${index}`}>{key}</kbd>
-              ))}
-            </span>
-          ) : (
-            <span className="shortcut-capture-placeholder">{t("settings.shortcutRecording")}</span>
-          )}
-          {!recorder.shortcutCaptureActive && (
-            <span className="shortcut-capture-again">{t("settings.shortcutRecordAgain")}</span>
-          )}
-        </button>
-        <div className="shortcut-dialog-message" aria-live="polite">
-          {recorder.shortcutDialogError && (
-            <span className="error" role="alert">{recorder.shortcutDialogError}</span>
-          )}
-          {!recorder.shortcutDialogError && recorder.shortcutCandidate && (
-            <span className="ready">{t("settings.shortcutCaptured")}</span>
-          )}
-        </div>
-        <div className="shortcut-dialog-actions">
-          <button
-            type="button"
-            onClick={() => void recorder.cancelShortcutRecording()}
-            disabled={recorder.shortcutBusy}
-          >
-            {t("settings.shortcutCancel")}
-          </button>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void recorder.confirmShortcut()}
-            disabled={!recorder.shortcutCandidate || recorder.shortcutBusy}
-          >
-            {t("settings.shortcutSave")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Component ──────────────────────────────────────────────────── */
 
 export function Settings() {
   const [v2Themes, setV2Themes] = useState<ThemeV2Descriptor[]>([]);
@@ -693,6 +425,13 @@ export function Settings() {
     }
   };
 
+  const changeLanguage = async (language: SettingsData["language"]) => {
+    const savedLanguage = await update({ language });
+    if (!savedLanguage) {
+      setLocale(settingsRef.current?.language ?? settings?.language ?? language);
+    }
+  };
+
   const appClassName = `app settings-window ${theme}`;
 
   if (!settings) {
@@ -740,611 +479,77 @@ export function Settings() {
 
       {/* ── Settings content ── */}
       <div className="settings-content">
-        {/* Connections and devices */}
-        <section className="setting-group connection-group">
-          <div className="setting-group-header section-header-with-action">
-            <div>
-              <h3>{t("settings.connectionsTitle")}</h3>
-              <p>{t("settings.connectionsDescription")}</p>
-            </div>
-            <button
-              type="button"
-              className="icon-button"
-              onClick={refreshDevices}
-              disabled={devicesLoading}
-              title={t("settings.refreshDevices")}
-              aria-label={t("settings.refreshDevices")}
-            >
-              <RefreshCw className={devicesLoading ? "spin" : ""} size={16} strokeWidth={1.7} aria-hidden="true" />
-            </button>
-          </div>
-
-          <div className="connection-mode" role="radiogroup" aria-label={t("settings.connectionMode")}>
-            <button
-              type="button"
-              className={settings.connection_mode === "auto" ? "active" : ""}
-              onClick={() => handleConnectionMode("auto")}
-              role="radio"
-              aria-checked={settings.connection_mode === "auto"}
-            >
-              {t("settings.modeAuto")}
-            </button>
-            <button
-              type="button"
-              className={settings.connection_mode === "lan_only" ? "active" : ""}
-              onClick={() => handleConnectionMode("lan_only")}
-              role="radio"
-              aria-checked={settings.connection_mode === "lan_only"}
-            >
-              <Wifi size={15} strokeWidth={1.7} aria-hidden="true" />
-              {t("settings.modeLan")}
-            </button>
-            <button
-              type="button"
-              className={settings.connection_mode === "tailscale_only" ? "active" : ""}
-              onClick={() => handleConnectionMode("tailscale_only")}
-              role="radio"
-              aria-checked={settings.connection_mode === "tailscale_only"}
-            >
-              <Grid2X2 size={15} strokeWidth={1.7} aria-hidden="true" />
-              Tailscale
-            </button>
-          </div>
-
-          <div className="pairing-window-row">
-            <div>
-              <strong>{t("settings.devicePairing")}</strong>
-              <span>
-                {pairingStatus?.pairing_enabled
-                  ? `${t("settings.waiting")} · ${pairingStatus.remaining_seconds}s · ${pairingStatus.failed_attempts}/${pairingStatus.max_failures}`
-                  : t("settings.pairingClosed")}
-              </span>
-            </div>
-            <button
-              type="button"
-              className={pairingStatus?.pairing_enabled ? "pairing-window-close" : "pair-device-action"}
-              disabled={pairingBusy}
-              onClick={() => pairingStatus?.pairing_enabled ? void closePairing() : void handleEnablePairing()}
-            >
-              {t(pairingStatus?.pairing_enabled
-                ? "settings.closePairing"
-                : "settings.allowPairing")}
-            </button>
-          </div>
-
-          <div className="device-list" aria-live="polite">
-            {devices && (
-              <div className="device-row local-device">
-                <div className="device-avatar self">{devices.self.hostname.slice(0, 1).toUpperCase()}</div>
-                <div className="device-info">
-                  <div className="device-name">
-                    <span className="device-name-text">{devices.self.hostname}</span>
-                    <span>{t("settings.thisDevice")}</span>
-                  </div>
-                  <div className="device-fingerprint">{devices.self.fingerprint}</div>
-                  {devices.self.iroh_endpoint_id && (
-                    <div className="device-fingerprint" title={devices.self.iroh_endpoint_id}>
-                      iroh: {devices.self.iroh_endpoint_id}
-                    </div>
-                  )}
-                  <div className="peer-route-list local-route-list">
-                    {(devices.self.routes?.length
-                      ? devices.self.routes
-                      : devices.self.tailscale_ip
-                        ? [{
-                          interface: devices.self.connection_mode === "tailscale_only" ? "tailscale" : "lan",
-                          address: devices.self.tailscale_ip,
-                          status: "connected",
-                          online: true,
-                          connected: true,
-                          latency_ms: null,
-                        } satisfies PeerRoute]
-                        : []).map((route) => (
-                          <div className="peer-route" key={`${route.interface}-${route.address}`}>
-                            <span className="peer-route-address">{route.address}</span>
-                            <span className={`peer-route-interface ${route.interface}`}>
-                              {routeInterfaceLabel(route.interface)}
-                            </span>
-                            <span className="peer-route-status positive">
-                              {t("settings.online")}
-                            </span>
-                          </div>
-                        ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {devices?.peers.map((peer) => {
-              const routes = peer.routes?.length
-                ? peer.routes
-                : (peer.address || peer.tailscale_ip)
-                  ? [{
-                    interface: peer.current_interface ?? (peer.connection_mode === "tailscale" ? "tailscale" : "lan"),
-                    address: peer.address || peer.tailscale_ip,
-                    status: peer.current_interface ? "connected" : peer.online ? "online" : "offline",
-                    online: peer.online,
-                    connected: Boolean(peer.current_interface),
-                    latency_ms: null,
-                    rtt_capable: peer.current_interface !== "iroh",
-                  } satisfies PeerRoute]
-                  : [];
-              const pairingAddress = pairingAddressForPeer(peer);
-              return (
-                <div className="device-row peer-device-row" key={peer.hostname}>
-                  <div className="device-avatar">{peer.hostname.slice(0, 1).toUpperCase()}</div>
-                  <div className="device-info">
-                    <div className="device-name">
-                      <span className="device-name-text">{peer.hostname}</span>
-                      <span className={peer.trusted ? "peer-badge paired" : "peer-badge unpaired"}>
-                        {t(peer.trusted ? "settings.paired" : "settings.notPaired")}
-                      </span>
-                    </div>
-                    <div className="device-fingerprint">
-                      {peer.trusted ? peer.fingerprint : t("settings.waitingSecurePairing")}
-                    </div>
-                    <div className={`peer-sync-state ${peerCanSync(peer) ? "ready" : "blocked"}`}>
-                      {peerCanSync(peer)
-                        ? t("settings.syncReady")
-                        : !peer.trusted
-                          ? t("settings.syncNeedsPairing")
-                          : !peer.enabled
-                            ? t("settings.syncPeerPaused")
-                            : t("settings.syncNoRoute")}
-                    </div>
-                    {peer.required_protocol_version != null && (
-                      <div className="peer-protocol-warning" role="status">
-                        {t("settings.protocolUpgradeRequired").replace(
-                          "{version}",
-                          String(peer.required_protocol_version),
-                        )}
-                      </div>
-                    )}
-                    {routes.length > 0 ? (
-                      <div className="peer-route-list">
-                        {routes.map((route) => {
-                          const testKey = `${peer.hostname}|${route.interface}|${route.address}`;
-                          const test = connectionTests[testKey];
-                          const reachabilityStatus = route.status === "connected" ? "online" : route.status;
-                          return (
-                            <div className="peer-route" key={`${route.interface}-${route.address}`}>
-                              <span className="peer-route-address" title={route.address}>{route.address}</span>
-                              <span className={`peer-route-interface ${route.interface}`}>
-                                {routeInterfaceLabel(route.interface)}
-                              </span>
-                              <span className={`peer-route-status health-${reachabilityStatus}`}>
-                                {reachabilityStatus === "online"
-                                  ? `${t("settings.online")}${route.latency_ms != null ? ` · ${route.latency_ms} ms` : ""}`
-                                  : reachabilityStatus === "confirming"
-                                    ? t("settings.confirming")
-                                    : reachabilityStatus === "discovered"
-                                      ? t("settings.discovered")
-                                      : t("settings.offline")}
-                              </span>
-                              <span className={`peer-route-connection ${route.connected ? "connected" : "idle"}`}>
-                                {t(route.connected ? "settings.connected" : "settings.notConnected")}
-                              </span>
-                              <button
-                                type="button"
-                                className="connection-test-button"
-                                disabled={test?.status === "testing"
-                                  || !routeSupportsLatencyTest(route)}
-                                onClick={() => void handleTestConnection(peer, route)}
-                                title={!routeSupportsLatencyTest(route)
-                                  ? t("settings.testRouteRediscover")
-                                  : t(route.interface === "iroh" ? "settings.testRoute" : "settings.testTcpPort")}
-                                aria-label={`${t("settings.testAddress")}: ${route.address}`}
-                              >
-                                {test?.status === "testing"
-                                  ? <RefreshCw className="spin" size={16} strokeWidth={1.7} aria-hidden="true" />
-                                  : <Activity size={16} strokeWidth={1.7} aria-hidden="true" />}
-                              </button>
-                              {test?.status === "success" && (
-                                <span className="connection-test-result success">
-                                  {test.latency_ms} ms
-                                  {test.path === "relay" && ` · ${t("settings.relayPath")}`}
-                                </span>
-                              )}
-                              {test?.status === "error" && (
-                                <span className="connection-test-result error">
-                                  {t("settings.failed")}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="device-address">
-                        {t("settings.pairedWaiting")}
-                      </div>
-                    )}
-                  </div>
-                  <div className="device-actions">
-                    {peer.trusted ? (
-                      <>
-                        <label className="toggle" title={t(peer.enabled ? "settings.disableSync" : "settings.enableSync")}>
-                          <input
-                            type="checkbox"
-                            checked={peer.enabled}
-                            onChange={(event) => handlePeerToggle(peer, event.target.checked)}
-                          />
-                          <div className="toggle-track" />
-                        </label>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          onClick={() => handleForget(peer)}
-                          title={t("settings.forgetPairing")}
-                          aria-label={t("settings.forgetPairing")}
-                        >
-                          <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        className="pair-device-action"
-                        onClick={() => void openPairing(peer)}
-                        disabled={!pairingAddress}
-                        title={pairingAddress ? undefined : t("settings.pairUnavailable")}
-                      >
-                        {t("settings.pair")}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-
-            {devicesLoading && !devices && (
-              <div className="device-list-state">{t("settings.discoveringDevices")}</div>
-            )}
-            {!devicesLoading && devices && devices.peers.length === 0 && (
-              <div className="device-list-state">
-                {t("settings.noDevices")}
-              </div>
-            )}
-            {!devicesLoading && devicesError && (
-              <div className="device-list-state error">
-                {t(settings.connection_mode === "tailscale_only"
-                  ? "settings.tailscaleUnavailable"
-                  : "settings.lanUnavailable")}
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* General */}
-        <section className="setting-group">
-          <div className="setting-group-header">
-            <h3>{t("settings.general")}</h3>
-            <p>{t("settings.generalDescription")}</p>
-          </div>
-
-          <div
-            className="setting-row setting-row--toggle"
-            onClick={() => void setGlobalSync(!settings.sync_enabled)}
-          >
-            <div className="setting-row-info">
-              <span>{t("settings.syncEnabled")}</span>
-              <small>{t("settings.syncEnabledDescription")}</small>
-            </div>
-            <label className="toggle" onClick={(event) => event.stopPropagation()}>
-              <input
-                type="checkbox"
-                checked={settings.sync_enabled}
-                onChange={(event) => void setGlobalSync(event.target.checked)}
-              />
-              <div className="toggle-track" />
-            </label>
-          </div>
-
-          <ShortcutSettingRow
-            recorder={syncShortcutRecorder}
-            currentShortcut={settings.sync_shortcut}
-            defaultShortcut={DEFAULT_SYNC_SHORTCUT}
-            title={t("settings.syncShortcut")}
-            description={t("settings.syncShortcutDescription")}
-            recordLabel={t("settings.shortcutRecord")}
-            t={t}
-            disabled={historyShortcutRecorder.shortcutRecording}
-          />
-
-          <ShortcutSettingRow
-            recorder={historyShortcutRecorder}
-            currentShortcut={settings.history_shortcut}
-            defaultShortcut={DEFAULT_HISTORY_SHORTCUT}
-            title={t("settings.historyShortcut")}
-            description={t("settings.historyShortcutDescription")}
-            recordLabel={t("settings.historyShortcutRecord")}
-            t={t}
-            disabled={syncShortcutRecorder.shortcutRecording}
-          />
-
-          <div
-            className="setting-row setting-row--toggle"
-            onClick={() =>
-              update({
-                notifications_enabled: !settings.notifications_enabled,
-              })
-            }
-          >
-            <div className="setting-row-info">
-              <span>{t("settings.notifications")}</span>
-              <small>{t("settings.notificationsDescription")}</small>
-            </div>
-            <label className="toggle" onClick={(e) => e.stopPropagation()}>
-              <input
-                type="checkbox"
-                checked={settings.notifications_enabled}
-                onChange={(e) =>
-                  update({ notifications_enabled: e.target.checked })
-                }
-              />
-              <div className="toggle-track" />
-            </label>
-          </div>
-
-          <div
-            className="setting-row setting-row--toggle"
-            onClick={() =>
-              update({
-                progress_bar_enabled: !settings.progress_bar_enabled,
-              })
-            }
-          >
-            <div className="setting-row-info">
-              <span>{t("settings.progressBar")}</span>
-              <small>{t("settings.progressDescription")}</small>
-            </div>
-            <label className="toggle" onClick={(e) => e.stopPropagation()}>
-              <input
-                type="checkbox"
-                checked={settings.progress_bar_enabled}
-                onChange={(e) =>
-                  update({ progress_bar_enabled: e.target.checked })
-                }
-              />
-              <div className="toggle-track" />
-            </label>
-          </div>
-        </section>
-
-        {/* History */}
-        <section className="setting-group">
-          <div className="setting-group-header">
-            <h3>{t("settings.history")}</h3>
-            <p>{t("settings.historyDescription")}</p>
-          </div>
-
-          <div className="setting-row">
-            <div className="setting-row-info">
-              <span>{t("settings.historyLimit")}</span>
-              <small>
-                {t("settings.historyLimitDescriptionPrefix")} {historyLimitDraft}{" "}
-                {t("settings.historyLimitDescriptionSuffix")}
-              </small>
-            </div>
-            <input
-              type="range"
-              min={10}
-              max={500}
-              value={historyLimitDraft}
-              aria-label={t("settings.historyLimit")}
-              onChange={(e) => setHistoryLimitDraft(Number(e.target.value))}
-              onPointerUp={() => void commitHistoryLimit()}
-              onBlur={() => void commitHistoryLimit()}
-              onKeyUp={(event) => {
-                if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-                  void commitHistoryLimit();
-                }
-              }}
-            />
-            <span className="range-value">{historyLimitDraft}</span>
-          </div>
-        </section>
-
-        {/* Appearance */}
-        <section className="setting-group">
-          <div className="setting-group-header">
-            <h3>{t("settings.storage")}</h3>
-            <p>{t("settings.storageDescription")}</p>
-          </div>
-          <div className="setting-row storage-row">
-            <HardDrive size={17} strokeWidth={1.7} aria-hidden="true" />
-            <div className="setting-row-info storage-location">
-              <span title={storageStatus?.root}>{storageStatus?.root ?? settings.storage_root ?? ""}</span>
-              <small>
-                {storageStatus?.available === false
-                  ? storageStatus.error
-                  : `${formatStorageSize(storageStatus?.used_bytes ?? 0)} / ${formatStorageSize(settings.storage_quota_bytes)}`}
-              </small>
-            </div>
-            <button className="storage-change" type="button" onClick={() => void changeStorage()} disabled={storageBusy}>
-              <FolderOpen size={15} strokeWidth={1.8} aria-hidden="true" />
-              <span>{storageBusy ? t("settings.storageMoving") : t("settings.storageChange")}</span>
-            </button>
-          </div>
-          <div className="setting-row storage-quota-row">
-            <div className="setting-row-info">
-              <span>{t("settings.storageQuota")}</span>
-            </div>
-            <input
-              className="storage-quota-input"
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={storageQuotaDraft}
-              onChange={(event) => {
-                setStorageQuotaDraft(event.target.value.replace(/\D/g, "").slice(0, 5));
-              }}
-              onBlur={() => void commitStorageQuota()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  event.currentTarget.blur();
-                }
-              }}
-              aria-label={t("settings.storageQuota")}
-            />
-            <span className="storage-quota-unit">GiB</span>
-          </div>
-          {oldStorage && oldStorage.old_root !== oldStorage.new_root && (
-            <div className="old-storage-row">
-              <span>{t("settings.storageOldData")} ({formatStorageSize(oldStorage.old_size_bytes)})</span>
-              <div>
-                <button type="button" onClick={() => void handleDeleteOldStorage()}>{t("settings.storageDeleteOld")}</button>
-                <button type="button" onClick={() => setOldStorage(null)}>{t("settings.storageKeepOld")}</button>
-              </div>
-            </div>
-          )}
-        </section>
-
-        {/* Appearance */}
-        <section className="setting-group">
-          <div className="setting-group-header">
-            <h3>{t("settings.appearance")}</h3>
-            <p>{t("settings.appearanceDescription")}</p>
-          </div>
-
-          <div className="setting-row">
-            <div className="setting-row-info">
-              <span>{t("settings.colorMode")}</span>
-            </div>
-            <div className="theme-cards" role="group" aria-label={t("settings.colorMode")}>
-              <button
-                type="button"
-                className={`theme-card${themePreference === "system" ? " active" : ""}`}
-                onClick={() => void handleThemeChange("system")}
-                aria-pressed={themePreference === "system"}
-              >
-                <Monitor className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
-                <span>{t("settings.themeSystem")}</span>
-              </button>
-              <button
-                type="button"
-                className={`theme-card${themePreference === "light" ? " active" : ""}`}
-                onClick={() => void handleThemeChange("light")}
-                aria-pressed={themePreference === "light"}
-              >
-                <Sun className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
-                <span>{t("settings.themeLight")}</span>
-              </button>
-              <button
-                type="button"
-                className={`theme-card${themePreference === "dark" ? " active" : ""}`}
-                onClick={() => void handleThemeChange("dark")}
-                aria-pressed={themePreference === "dark"}
-              >
-                <Moon className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
-                <span>{t("settings.themeDark")}</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="setting-row palette-setting-row">
-            <div className="setting-row-info">
-              <span>{t("settings.colorTheme")}</span>
-              <small>{t("settings.colorThemeDescription")}</small>
-            </div>
-            <div className="theme-cards palette-cards" role="group" aria-label={t("settings.colorTheme")}>
-              {v2Themes.map((entry) => {
-                const active = entry.id === v2Active;
-                const label = entry.name[locale] ?? entry.name.en ?? entry.id;
-                return <button type="button" key={entry.id} aria-disabled={entry.status !== "valid"}
-                  className={`theme-card palette-card ${palettePreviewClass(entry.id)}${active ? " active" : ""}${entry.status !== "valid" ? " is-invalid" : ""}`}
-                  style={palettePreviewStyle(entry)}
-                  onClick={() => { if (entry.status === "valid") void selectV2Theme(entry.id); }} aria-pressed={active} title={entry.diagnostics.map((x) => x.message).join("\n") || label}>
-                  <div
-                    className={`palette-card-preview ${palettePreviewClass(entry.id)}${entry.status !== "valid" ? " invalid" : ""}`}
-                    aria-hidden="true"
-                  >
-                    <span className="palette-preview-rail" />
-                    <span className="palette-preview-title">{entry.status === "valid" ? palettePreviewTitle(entry.id) : "!"}</span>
-                    <span className="palette-preview-swatch swatch-accent" />
-                    <span className="palette-preview-swatch swatch-secondary" />
-                    <span className="palette-preview-swatch swatch-border" />
-                    <span className="palette-preview-rule" />
-                    <span className="palette-preview-control control-input"><i /></span>
-                    <span className="palette-preview-control control-action"><i /></span>
-                  </div>
-                  <span className="palette-card-label">
-                    <strong>{label}</strong>
-                    <small>{entry.source === "builtin" ? t("settings.themePackageBuiltIn") : entry.version}</small>
-                  </span>
-                  {active && <Check className="palette-card-check" size={13} strokeWidth={2} aria-hidden="true" />}
-                  {(entry.source === "custom" || entry.status === "invalid") && <span className="theme-card-tools">
-                    {entry.source === "custom" && entry.status === "valid" && <>
-                      <span role="button" tabIndex={0} className="theme-card-tool" onClick={(event) => { event.stopPropagation(); void handleUpdateTheme(entry); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); void handleUpdateTheme(entry); } }} title={t("settings.customThemeUpdate")} aria-label={`${t("settings.customThemeUpdate")} ${label}`}><RefreshCw size={12} strokeWidth={1.8} aria-hidden="true" /></span>
-                      <span role="button" tabIndex={0} className="theme-card-tool" onClick={(event) => { event.stopPropagation(); void rollbackV2Theme(entry); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); void rollbackV2Theme(entry); } }} title={t("settings.customThemeRollback")} aria-label={`${t("settings.customThemeRollback")} ${label}`}><RotateCcw size={12} strokeWidth={1.8} aria-hidden="true" /></span>
-                    </>}
-                    <span role="button" tabIndex={0} className="theme-card-tool custom-theme-delete" onClick={(event) => { event.stopPropagation(); void deleteV2Theme(entry); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); void deleteV2Theme(entry); } }} title={t("settings.customThemeDelete")} aria-label={`${t("settings.customThemeDelete")} ${label}`}><Trash2 size={12} strokeWidth={1.8} aria-hidden="true" /></span>
-                  </span>}
-                </button>;
-              })}
-            </div>
-            <div className="custom-themes-actions"><button type="button" className="custom-theme-action" onClick={() => void handleImportTheme()}><Upload size={13} strokeWidth={1.8} aria-hidden="true" />{t("settings.customThemeImport")}</button></div>
-          </div>
-
-          <div className="setting-row">
-            <div className="setting-row-info">
-              <span>{t("settings.language")}</span>
-            </div>
-            <div className="select-shell">
-              <select
-                value={settings.language}
-                onChange={(e) => {
-                  const language = e.target.value as SettingsData["language"];
-                  setLocale(language);
-                  void update({ language }).then((savedLanguage) => {
-                    if (!savedLanguage) {
-                      setLocale(settingsRef.current?.language ?? settings.language);
-                    }
-                  });
-                }}
-              >
-                <option value="zh-CN">简体中文</option>
-                <option value="en">English</option>
-              </select>
-              <ChevronDown size={14} strokeWidth={1.7} aria-hidden="true" />
-            </div>
-          </div>
-        </section>
-
-        <section className="setting-group update-group">
-          <div className="setting-group-header">
-            <h3>{t("settings.updates")}</h3>
-            <p>{t("settings.updatesDescription")}</p>
-          </div>
-          <div className="setting-row update-row">
-            <div className="setting-row-info update-version">
-              <span>TailSync {updateStatus?.current_version ?? "-"}</span>
-              <small className={updatePhase === "error" ? "update-status error" : "update-status"}>
-                {updateMessage}
-              </small>
-            </div>
-            <button
-              className="update-action"
-              type="button"
-              onClick={() => void (availableUpdate ? handleInstallUpdate() : handleCheckForUpdate())}
-              disabled={
-                updateBusy
-                || updatePhase === "loading"
-                || updatePhase === "disabled"
-                || updatePhase === "installed"
-              }
-            >
-              <RefreshCw
-                size={15}
-                strokeWidth={1.8}
-                className={updateBusy ? "spin" : undefined}
-                aria-hidden="true"
-              />
-              <span>{availableUpdate ? t("settings.updateInstall") : t("settings.updateCheck")}</span>
-            </button>
-          </div>
-        </section>
+        <SettingsConnectionsSection
+          settings={settings}
+          t={t}
+          devices={devices}
+          devicesLoading={devicesLoading}
+          devicesError={devicesError}
+          pairingStatus={pairingStatus}
+          pairingBusy={pairingBusy}
+          connectionTests={connectionTests}
+          refreshDevices={refreshDevices}
+          handleConnectionMode={handleConnectionMode}
+          closePairing={closePairing}
+          handleEnablePairing={handleEnablePairing}
+          handleTestConnection={handleTestConnection}
+          handlePeerToggle={handlePeerToggle}
+          handleForget={handleForget}
+          openPairing={openPairing}
+        />
+        <SettingsGeneralSection
+          settings={settings}
+          t={t}
+          syncShortcutRecorder={syncShortcutRecorder}
+          historyShortcutRecorder={historyShortcutRecorder}
+          setGlobalSync={setGlobalSync}
+          update={update}
+        />
+        <SettingsHistorySection
+          t={t}
+          historyLimitDraft={historyLimitDraft}
+          setHistoryLimitDraft={setHistoryLimitDraft}
+          commitHistoryLimit={commitHistoryLimit}
+        />
+        <SettingsStorageSection
+          settings={settings}
+          t={t}
+          storageStatus={storageStatus}
+          storageBusy={storageBusy}
+          storageQuotaDraft={storageQuotaDraft}
+          oldStorage={oldStorage}
+          setStorageQuotaDraft={setStorageQuotaDraft}
+          setOldStorage={setOldStorage}
+          changeStorage={changeStorage}
+          commitStorageQuota={commitStorageQuota}
+          handleDeleteOldStorage={handleDeleteOldStorage}
+        />
+        <SettingsAppearanceSection
+          settings={settings}
+          t={t}
+          locale={locale}
+          themePreference={themePreference}
+          v2Themes={v2Themes}
+          v2Active={v2Active}
+          setLocale={setLocale}
+          changeThemePreference={handleThemeChange}
+          selectV2Theme={selectV2Theme}
+          handleImportTheme={handleImportTheme}
+          handleUpdateTheme={handleUpdateTheme}
+          rollbackV2Theme={rollbackV2Theme}
+          deleteV2Theme={deleteV2Theme}
+          changeLanguage={changeLanguage}
+        />
+        <SettingsUpdateSection
+          t={t}
+          updateStatus={updateStatus}
+          updatePhase={updatePhase}
+          availableUpdate={availableUpdate}
+          updateMessage={updateMessage}
+          updateBusy={updateBusy}
+          handleCheckForUpdate={handleCheckForUpdate}
+          handleInstallUpdate={handleInstallUpdate}
+        />
       </div>
 
       <ShortcutRecorderDialog
@@ -1360,126 +565,24 @@ export function Settings() {
         t={t}
       />
 
-      {pairingOpen && (
-        <div className="dialog-backdrop" onMouseDown={() => void closePairing()}>
-          <div
-            className="pair-dialog"
-            ref={pairDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="pair-dialog-title"
-            aria-describedby="pair-dialog-status"
-            tabIndex={-1}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="confirm-dialog-icon pair-dialog-icon">
-              <Settings2 size={22} strokeWidth={1.6} aria-hidden="true" />
-            </div>
-            <h2 id="pair-dialog-title">
-              {t("settings.devicePairing")}
-              {(pairingStatus?.peer?.hostname || pairingTarget?.hostname) && ` · ${pairingStatus?.peer?.hostname || pairingTarget?.hostname}`}
-            </h2>
-            {pairingStatus?.peer ? (
-              <>
-                <div className="pairing-code" aria-label={t("settings.pairingCode")}>
-                  {pairingStatus.peer.verification_code}
-                </div>
-                <p className="pairing-check-copy" id="pair-dialog-status">
-                  {t("settings.compareCode")}
-                </p>
-                <div className="pairing-peer-fingerprint">{pairingStatus.peer.fingerprint}</div>
-                {pairingStatus.phase === "finalizing" ? (
-                  <p className="pairing-progress">{t("settings.pairingFinalizing")}</p>
-                ) : pairingStatus.phase === "waiting_for_peer" && (
-                  <p className="pairing-progress">{t("settings.waitingPeerConfirm")}</p>
-                )}
-              </>
-            ) : (
-              <div className="pairing-waiting">
-                {pairingBusy || pairingStatus?.phase === "handshaking" ? (
-                  <>
-                    <span className="pairing-spinner" />
-                    <p id="pair-dialog-status">{t("settings.secureHandshake")}</p>
-                  </>
-                ) : (
-                  <div className="pairing-instruction">
-                    <span>{t("settings.pairingReady")}</span>
-                    <strong id="pair-dialog-status">{t("settings.pairingInstruction")}</strong>
-                    <small>
-                      {t("settings.pairingExpiresPrefix")} {pairingStatus?.remaining_seconds ?? 0}{" "}
-                      {t("settings.pairingExpiresSuffix")}
-                    </small>
-                  </div>
-                )}
-              </div>
-            )}
-            {(pairingError || pairingStatus?.error) && (
-              <p className="pair-dialog-error" role="alert">{pairingError || pairingStatus?.error}</p>
-            )}
-            <div className="confirm-dialog-actions">
-              <button type="button" onClick={() => void closePairing()} disabled={pairingBusy}>
-                {t("settings.cancel")}
-              </button>
-              <button
-                type="button"
-                className="pair-submit"
-                onClick={() => void handlePair()}
-                disabled={pairingBusy || pairingStatus?.phase === "finalizing" || !pairingStatus?.peer || pairingStatus.peer.local_confirmed}
-              >
-                {t(pairingStatus?.peer?.local_confirmed
-                  ? "settings.confirmed"
-                  : "settings.codesMatch")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <PairingDialog
+        t={t}
+        pairingOpen={pairingOpen}
+        pairingStatus={pairingStatus}
+        pairingTarget={pairingTarget}
+        pairingError={pairingError}
+        pairingBusy={pairingBusy}
+        pairDialogRef={pairDialogRef}
+        closePairing={closePairing}
+        handlePair={handlePair}
+      />
 
-      {pendingThemeImport && (
-        <div className="dialog-backdrop" onMouseDown={() => setPendingThemeImport(null)}>
-          <div className="shortcut-dialog theme-import-dialog" role="dialog" aria-modal="true" aria-label={t("settings.themePreviewTitle")} onMouseDown={(event) => event.stopPropagation()}>
-            <div className="shortcut-dialog-header"><div><h2>{t("settings.themePreviewTitle")}</h2></div></div>
-             <div className="theme-package-preview-modes">
-               {[{
-                 label: t("settings.themePreviewLight"),
-                 resolved: pendingThemeImport.previews.light,
-               }, {
-                 label: t("settings.themePreviewDark"),
-                 resolved: pendingThemeImport.previews.dark,
-               }, {
-                 label: t("settings.themePreviewHighContrastLight"),
-                 resolved: pendingThemeImport.previews.highContrastLight,
-               }, {
-                 label: t("settings.themePreviewHighContrastDark"),
-                 resolved: pendingThemeImport.previews.highContrastDark,
-               }].map(({ label, resolved }) => (
-                 <ThemePackagePreview
-                   key={label}
-                   label={label}
-                   resolved={resolved}
-                   path={pendingThemeImport.path}
-                   digest={pendingThemeImport.digest}
-                   stateLabels={{
-                     default: t("settings.themePreviewStateDefault"),
-                     hover: t("settings.themePreviewStateHover"),
-                     active: t("settings.themePreviewStateActive"),
-                     selected: t("settings.themePreviewStateSelected"),
-                     disabled: t("settings.themePreviewStateDisabled"),
-                     focus: t("settings.themePreviewStateFocus"),
-                   }}
-                 />
-               ))}
-             </div>
-            <div className="shortcut-dialog-message" role="status">
-              {pendingThemeImport.operation.kind === "update"
-                ? `${pendingThemeImport.operation.installedVersion} → ${pendingThemeImport.candidateVersion}`
-                : `${t("settings.customThemeCandidateVersion")}: ${pendingThemeImport.candidateVersion}`}
-            </div>
-            {pendingThemeImport.diagnostics.length > 0 && <div className="shortcut-dialog-message" role="status">{pendingThemeImport.diagnostics.map((diagnostic) => <div key={`${diagnostic.code}-${diagnostic.message}`}>{diagnostic.message}</div>)}</div>}
-            <div className="confirm-dialog-actions"><button type="button" onClick={() => setPendingThemeImport(null)}>{t("settings.cancel")}</button><button type="button" className="pair-submit" onClick={() => void confirmThemeImport()}>{t(pendingThemeImport.operation.kind === "install" ? "settings.customThemeInstall" : "settings.customThemeUpdate")}</button></div>
-          </div>
-        </div>
-      )}
+      <ThemeImportDialog
+        t={t}
+        pendingThemeImport={pendingThemeImport}
+        setPendingThemeImport={setPendingThemeImport}
+        confirmThemeImport={confirmThemeImport}
+      />
 
       {/* ── Toast ── */}
       {errorMessage ? (

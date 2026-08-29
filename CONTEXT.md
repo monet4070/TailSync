@@ -9,24 +9,68 @@ Windows（React + Tauri）之间同步文本、图片和文件，优先局域网
 
 ## 分层与契约面
 
+TailSync 的代码按 Module、Interface、Implementation 和 Adapter 分层。跨平台
+业务规则优先落在 shared Core；平台层只负责把系统 I/O、全局单例、窗口和传输协议接到
+Core 的 Interface。每个新 Module 必须有明确的 Seam（输入/输出边界），避免通过全局状态
+或隐式副作用耦合。
+
 ```
-shared/rust-core/           共享深模块（单一事实来源，跨平台共用）
-  peer/types.rs             设备/路由/投递的类型契约（serde 字段名是 JSON 契约，改动需过漂移检查）
-  peer/directory.rs         发现合并、候选补全/排序、模式与地址判定（纯规则）
-  peer/health.rs            健康状态机 + 认证会话记账（纯状态机）
-  peer/delivery.rs          可靠投递：帧记账、ACK 校验、投递执行、连接竞速与连接生命周期 worker
-  private_fs.rs             私有存储权限策略（Unix 0700/0600、Windows 受保护 DACL）：身份/设置/数据库/
-                            加密容器/incoming/剪贴板恢复文件统一走这里，勿再各写一套
-macos|windows/src-tauri/    平台层：接线（全局单例、薄包装）+ 适配器（socket/mDNS/Tailscale/Iroh/剪贴板）
+shared/
+  rust-core/                 共享深模块（跨平台单一事实来源）
+    crypto.rs + crypto/      密钥存储与加密边界
+    db.rs + db/              数据库生命周期、查询、迁移、文件存储、预览
+    pairing.rs + pairing/    配对状态机与测试
+    peer/                    types/directory/health/delivery 等设备与可靠投递规则
+    secure.rs + secure/      握手、认证与安全会话
+    sync.rs + sync/          同步编排、批次、接收、恢复与状态
+    themes_v2.rs             对 tailsync-themes 的数据目录 Adapter
+  tailsync-protocol/         线协议类型、编解码与契约测试
+  tailsync-history-classifier/
+    model.rs                 分类模型、类别常量与公开结果
+    website.rs/paths.rs      纯规则检测器
+    command.rs/code.rs       命令与代码检测器
+  tailsync-themes/           主题包格式、验证、解析、存储与读取策略
+    package_io.rs             用户选包的扩展名/普通文件/符号链接/64 MiB 门禁
+
+macos|windows/src-tauri/
+  api/                        Tauri/Unix socket API 接线与 transport Adapter
+    routes/{history,peers,settings,theme}.rs
+  commands/                   Tauri 命令接线；平台 I/O 只留在 Adapter
+  clipboard/                  跨平台剪贴板传输实现与测试
+  network/                    LAN/mDNS/Tailscale/Iroh 的平台 Adapter
+
+macos/swift-ui/
+  Services/ApiClient.swift    Swift API façade；Transport/History/Peers/Runtime/
+                              StorageSettings/Themes 承载具体实现
+  Views/SettingsView.swift    设置页面 façade；各功能 section 承载视图实现
+  Views/HistoryView.swift     历史页面 façade；HistoryRow 与交互/预览模块独立
+
+windows/
+  src/pages/Settings.tsx      设置页面 façade；settings/ 按连接/常规/历史/存储/
+                              外观/更新/对话框拆分
+  src/pages/History.tsx       历史页面 façade；history/ 按 header/list/main/footer 拆分
+  src/hooks/                  可复用的设备、配对、快捷键、更新、缩略图与运行时状态
 ```
 
-- 平台 `network/*` 中**被漂移检查强制逐字节一致**的文件：`build.rs`、`examples/interop_probe.rs`、
-  `network/types.rs`、`network/server.rs`、`scripts/check_cross_platform_sync.mjs|ps1`、
-  `scripts/test_cross_project_interop.ps1`。修改这些文件必须两端同步。
+- shared Core 的纯规则和状态机是 Leverage 最高的 Module；平台 Adapter 不得复制规则。
+  新逻辑先考虑 Core，再决定在哪个 Adapter 绑定系统能力。
+- 文件拆分以 Seam 和 Locality 为准：页面 façade 只编排状态/副作用；子 Module 通过显式、
+  可测试的 Interface 接收数据和回调。不要为了缩短行数引入没有独立职责的薄包装。
+- `themes_v2::read_theme_package_file` 是两端共用的主题文件读取策略；响应编码仍属于
+  transport Adapter。macOS 有 Unix socket JSON routes，Windows 有 Tauri commands，
+  不为表面结构对称而复制路由。
+- Windows 的 `commands/preview.rs` 保留独立文件是有意设计，原始 ArrayBuffer 预览协议
+  见 `docs/adr/ADR-002-independent-history-preview-window.md`。
+- 平台 `network/*` 中**被漂移检查强制逐字节一致**的文件：`build.rs`、
+  `examples/interop_probe.rs`、`network/types.rs`、`network/server.rs`、
+  `scripts/check_cross_platform_sync.mjs|ps1`、`scripts/test_cross_project_interop.ps1`。
+  修改这些文件必须两端同步。
 - `network/mod.rs`、`network/health.rs`、`network/pool.rs`、`network/tailscale.rs`、
-  `network/lan.rs`、`network/mdns.rs`、`network/peer_cache.rs` 等仍允许平台差异（编排与适配器），
-  但共享逻辑一旦迁入 core，平台文件应只剩接线/适配，新逻辑一律先考虑 core。
-
+  `network/lan.rs`、`network/mdns.rs`、`network/peer_cache.rs` 等仍允许平台差异
+  （编排与 Adapter），但共享逻辑一旦迁入 Core，平台文件应只剩接线/适配。
+- macOS API route 的 `handles()` 与 `handle()` 必须同增同删；主题 route 有专门的
+  dispatch 回归测试。跨平台契约检查只校验共享协议字段，不替代各平台的 route/command
+  dispatch 测试。
 ## 领域词汇（以 README 与代码为准）
 
 | 术语 | 含义 |

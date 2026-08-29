@@ -129,28 +129,21 @@ struct HistorySearchControl: View {
                     .foregroundColor(inputTokens?.iconColor ?? palette.tertiaryColor)
                     .frame(width: 15, height: 18)
 
-                ZStack(alignment: .leading) {
-                    if keyword.isEmpty {
-                        Text(Loc.t("history.search"))
-                            .font(searchFont)
-                            .foregroundColor(inputTokens?.secondaryTextColor ?? palette.tertiaryColor)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.65)
-                            .allowsTightening(true)
-                            .allowsHitTesting(false)
-                    }
-                    TextField("", text: $keyword)
-                        .textFieldStyle(.plain)
-                        .font(searchFont)
-                        .foregroundColor(inputTokens?.foregroundColor ?? palette.primaryColor)
-                        .lineLimit(1)
-                        .focused($focused)
-                        .onSubmit(onSubmit)
-                        .accessibilityLabel(Loc.t("history.search"))
-                }
-                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: controlHeight)
-                .clipped()
-                .layoutPriority(1)
+                TextField(Loc.t("history.search"), text: $keyword)
+                    .textFieldStyle(.plain)
+                    .font(searchFont)
+                    .foregroundColor(inputTokens?.foregroundColor ?? palette.primaryColor)
+                    // Leave lineLimit unset: on macOS, lineLimit(1) enables
+                    // NSTextFieldCell's fixed control-size baseline. That
+                    // baseline ignores custom font metrics and lifts the
+                    // large Songti prompt above the visual centre. NSTextField
+                    // is already a single-line control and keeps wrapping off.
+                    .focused($focused)
+                    .onSubmit(onSubmit)
+                    .accessibilityLabel(Loc.t("history.search"))
+                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: controlHeight)
+                    .clipped()
+                    .layoutPriority(1)
 
                 if !keyword.isEmpty {
                     Button {

@@ -152,7 +152,7 @@ final class FilterBarRenderTests: XCTestCase {
     }
 
     @MainActor
-    func testSearchTextFieldStaysInsideItsControlAtMaximumAccessibilityScale() throws {
+    func testSearchTextFieldUsesNativePromptAndFontAwareBaselineAtMaximumAccessibilityScale() throws {
         _ = NSApplication.shared
         let selection = TailSyncThemeSelection(
             builtin: .tailsync,
@@ -173,6 +173,17 @@ final class FilterBarRenderTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
 
         let textField = try XCTUnwrap(firstDescendant(of: NSTextField.self, in: host))
+        let cell = try XCTUnwrap(textField.cell)
+        XCTAssertEqual(
+            textField.placeholderString,
+            Loc.t("history.search"),
+            "The search prompt must be owned by NSTextField so IME marked text can replace it."
+        )
+        XCTAssertFalse(
+            cell.usesSingleLineMode,
+            "The fixed single-line AppKit baseline ignores custom font metrics and misaligns the prompt."
+        )
+        XCTAssertFalse(cell.wraps, "The search field must remain non-wrapping while using font-aware baseline layout.")
         let frame = textField.convert(textField.bounds, to: host)
         XCTAssertGreaterThanOrEqual(frame.minX, host.bounds.minX)
         XCTAssertLessThanOrEqual(frame.maxX, host.bounds.maxX)

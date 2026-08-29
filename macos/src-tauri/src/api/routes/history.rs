@@ -1,0 +1,244 @@
+use super::*;
+
+pub(super) fn handles(command: &str) -> bool {
+    matches!(
+        command,
+        "get_history" | "get_preview_data" | "delete_entry" | "restore_entry"
+    )
+}
+
+pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
+    match req.cmd.as_str() {
+        "get_history" => {
+            let db = state.db.lock().await;
+            // Consume before await for Send safety
+            let result = db
+                .get_all_filtered(
+                    req.keyword.as_deref(),
+                    req.category.as_deref(),
+                    req.start_time.as_deref(),
+                    req.end_time.as_deref(),
+                    req.limit.unwrap_or(30),
+                    req.offset.unwrap_or(0),
+                )
+                .map_err(|e| e.to_string());
+            drop(db);
+            match result {
+                Ok(entries) => Response {
+                    ok: true,
+                    data: Some(serde_json::to_value(entries).unwrap_or_default()),
+                    error: None,
+                },
+                Err(e) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(e),
+                },
+            }
+        }
+
+        "get_preview_data" => {
+            let Some(id) = req.id else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing id".into()),
+                };
+            };
+
+            // Keep the decrypted payload in memory only.  The core preview
+            // accessor deliberately avoids materialising file entries to a
+            // plaintext path, which is important for the macOS Quick Look
+            // caller and for text/image previews alike.
+            let db = state.db.lock().await;
+            let preview_id = match req.batch_id.as_deref() {
+                Some(batch_id) => db
+                    .get_preview_batch_navigation(batch_id, id)
+                    .map(|navigation| navigation.first_entry_id),
+                None => Ok(id),
+            };
+            let result = preview_id.and_then(|preview_id| {
+                let metadata = db.get_preview_metadata(preview_id)?;
+                let payload = db.get_preview_payload(preview_id)?;
+                Ok((metadata, payload))
+            });
+            drop(db);
+
+            let result = result.map(|(metadata, payload)| {
+                use base64::Engine;
+                serde_json::json!({
+                    "entry_id": metadata.entry_id,
+                    "kind": payload.kind,
+                    "name": payload.name,
+                    "size_bytes": payload.size_bytes,
+                    "batch": metadata.batch,
+                    "data_b64": base64::engine::general_purpose::STANDARD
+                        .encode(payload.data),
+                })
+            });
+
+            match result {
+                Ok(data) => Response {
+                    ok: true,
+                    data: Some(data),
+                    error: None,
+                },
+                Err(error) => {
+                    let failure = db::PreviewErrorInfo::from(error);
+                    let encoded =
+                        serde_json::to_string(&failure).unwrap_or_else(|_| failure.message.clone());
+                    Response {
+                        ok: false,
+                        data: None,
+                        error: Some(encoded),
+                    }
+                }
+            }
+        }
+
+        "delete_entry" => {
+            let Some(id) = req.id else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing id".into()),
+                };
+            };
+            let mut db = state.db.lock().await;
+            match db.delete(id) {
+                Ok(()) => {
+                    bump_clipboard_version();
+                    Response {
+                        ok: true,
+                        data: None,
+                        error: None,
+                    }
+                }
+                Err(e) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        "clear_history" | "clear_all" => {
+            let mut db = state.db.lock().await;
+            match db.clear_all() {
+                Ok(()) => {
+                    bump_clipboard_version();
+                    Response {
+                        ok: true,
+                        data: None,
+                        error: None,
+                    }
+                }
+                Err(e) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        "restore_entry" => {
+            let Some(id) = req.id else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing id".into()),
+                };
+            };
+            let db = state.db.lock().await;
+            let entry_type = db
+                .get_type(id)
+                .map_err(|e| e.to_string())
+                .unwrap_or_default();
+            let file_path = if entry_type == "file" {
+                db.get_file_path(id).map_err(|e| e.to_string())
+            } else {
+                Ok(None)
+            };
+            let file_name = if entry_type == "file" {
+                db.get_description(id)
+                    .unwrap_or_else(|_| "restored_file".into())
+            } else {
+                String::new()
+            };
+            let data_result = match &file_path {
+                Ok(Some(_)) => Ok(None),
+                Ok(None) => db.get_data(id).map(Some).map_err(|e| e.to_string()),
+                Err(error) => Err(error.clone()),
+            };
+            drop(db);
+            match (data_result, file_path) {
+                (Ok(data), Ok(file_path)) => {
+                    if entry_type == "image" {
+                        let Some(data) = data.as_ref() else {
+                            return Response {
+                                ok: false,
+                                data: None,
+                                error: Some("image history data is unavailable".into()),
+                            };
+                        };
+                        if let Err(error) = state.sync_engine.lock().await.restore_image(data) {
+                            return Response {
+                                ok: false,
+                                data: None,
+                                error: Some(error),
+                            };
+                        }
+                    } else if entry_type == "file" {
+                        if let Some(path) = file_path {
+                            if let Err(error) = restore_file_path_to_clipboard(&path, &file_name) {
+                                return Response {
+                                    ok: false,
+                                    data: None,
+                                    error: Some(error),
+                                };
+                            }
+                        } else if let Some(data) = data.as_deref() {
+                            if let Err(error) = restore_file_to_clipboard(data, &file_name) {
+                                return Response {
+                                    ok: false,
+                                    data: None,
+                                    error: Some(error),
+                                };
+                            }
+                        } else {
+                            return Response {
+                                ok: false,
+                                data: None,
+                                error: Some("file history data is unavailable".into()),
+                            };
+                        }
+                    } else {
+                        let text = String::from_utf8_lossy(data.as_deref().unwrap_or_default())
+                            .to_string();
+                        if let Err(error) = state.sync_engine.lock().await.restore_text(&text) {
+                            return Response {
+                                ok: false,
+                                data: None,
+                                error: Some(error),
+                            };
+                        }
+                    }
+
+                    crate::api::bump_clipboard_version();
+                    Response {
+                        ok: true,
+                        data: None,
+                        error: None,
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(e),
+                },
+            }
+        }
+
+        _ => unreachable!("history command dispatch was checked before routing"),
+    }
+}
