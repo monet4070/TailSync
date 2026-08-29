@@ -135,7 +135,10 @@ img {
   border-bottom: 1px solid var(--hairline);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
-  transition: border-color 0.35s ease, box-shadow 0.35s ease;
+  transition:
+    border-color var(--m-dur-quick, 0.35s) var(--m-ease-snap, ease),
+    box-shadow var(--m-dur-quick, 0.35s) var(--m-ease-snap, ease),
+    background-color 0.6s ease;
 }
 
 .site-header.is-scrolled {
@@ -185,7 +188,7 @@ img {
   color: var(--ink-2);
   font-size: 13px;
   font-weight: 500;
-  transition: color 0.25s ease, background 0.25s ease;
+  transition: color var(--m-dur-micro, 0.25s) var(--m-ease-snap, ease), background var(--m-dur-micro, 0.25s) var(--m-ease-snap, ease);
 }
 
 .site-nav > a:hover {
@@ -210,7 +213,7 @@ img {
   color: #fff !important;
   font-size: 13px;
   font-weight: 500;
-  transition: background 0.25s ease, transform 0.25s var(--ease-apple);
+  transition: background var(--m-dur-micro, 0.25s) var(--m-ease-snap, ease), transform var(--m-dur-micro, 0.25s) var(--m-ease-press, var(--ease-apple));
 }
 
 .nav-cta:hover {
@@ -261,7 +264,7 @@ img {
   border-radius: 8px;
   background: var(--elevated);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12), 0 0 0 0.5px var(--hairline);
-  transition: transform 0.5s var(--ease-apple);
+  transition: transform var(--m-dur-indicator, 0.5s) var(--m-ease-indicator, var(--ease-apple));
 }
 
 .preference-auto .theme-switch-indicator {
@@ -299,8 +302,12 @@ img {
   letter-spacing: 0.01em;
   line-height: 1;
   padding: 14px 26px;
-  transition: background 0.25s ease, color 0.25s ease, transform 0.25s var(--ease-apple),
-    box-shadow 0.25s ease, border-color 0.25s ease;
+  transition:
+    background var(--m-dur-micro, 0.25s) var(--m-ease-snap, ease),
+    color var(--m-dur-micro, 0.25s) var(--m-ease-snap, ease),
+    transform var(--m-dur-press, 0.25s) var(--m-ease-press, var(--ease-apple)),
+    box-shadow var(--m-dur-micro, 0.25s) var(--m-ease-snap, ease),
+    border-color var(--m-dur-micro, 0.25s) var(--m-ease-snap, ease);
 }
 
 .button:active {

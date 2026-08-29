@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "react";
+import { useReducedMotion } from "../hooks/useReducedMotion";
 
 type TimeTheme = "light" | "dark";
 
 export function SyncField({ theme }: { theme: TimeTheme }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -12,9 +14,6 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    const reducedMotion = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
     const pointer = { x: -1000, y: -1000, active: false };
     const lightTheme = theme === "light";
     // Warm atelier palette: coral / warm-orange / amber / warm ink.
@@ -33,6 +32,7 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
     let height = 0;
     let frame = 0;
     let start = performance.now();
+    let elapsedWhenPaused = 0;
 
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
@@ -111,6 +111,7 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
     const draw = (time: number) => {
       context.clearRect(0, 0, width, height);
       const elapsed = reducedMotion ? 0 : time - start;
+      elapsedWhenPaused = elapsed;
       const leftX = Math.max(88, width * 0.16);
       const rightX = Math.min(width - 88, width * 0.84);
       const centerY = height * 0.54;
@@ -206,23 +207,71 @@ export function SyncField({ theme }: { theme: TimeTheme }) {
         context.stroke();
       }
 
-      frame = window.requestAnimationFrame(draw);
+      if (!reducedMotion) frame = window.requestAnimationFrame(draw);
     };
 
     resize();
     window.addEventListener("resize", resize);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerleave", onPointerLeave);
-    frame = window.requestAnimationFrame(draw);
+
+    // Under reduced motion every frame is identical, so draw once and stop
+    // rather than re-rasterising a static image forever.
+    if (reducedMotion) {
+      frame = window.requestAnimationFrame(draw);
+      return () => {
+        window.removeEventListener("resize", resize);
+        canvas.removeEventListener("pointermove", onPointerMove);
+        canvas.removeEventListener("pointerleave", onPointerLeave);
+        window.cancelAnimationFrame(frame);
+      };
+    }
+
+    // The hero fills the first viewport, so once the reader is past it the
+    // particle field is painting 52 arcs a frame that nobody can see.
+    let onStage = true;
+    let hidden = document.visibilityState !== "visible";
+
+    const stop = () => {
+      window.cancelAnimationFrame(frame);
+      frame = 0;
+    };
+    const play = () => {
+      if (frame || !onStage || hidden) return;
+      // Rebase the clock so the field resumes where it left off instead of
+      // jumping forward by however long it was parked.
+      start = performance.now() - elapsedWhenPaused;
+      frame = window.requestAnimationFrame(draw);
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) onStage = entry.isIntersecting;
+        if (onStage) play();
+        else stop();
+      },
+      { threshold: 0 },
+    );
+    observer.observe(canvas);
+
+    const handleVisibilityChange = () => {
+      hidden = document.visibilityState !== "visible";
+      if (hidden) stop();
+      else play();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    play();
 
     return () => {
       window.removeEventListener("resize", resize);
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerleave", onPointerLeave);
-      window.cancelAnimationFrame(frame);
-      start = 0;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      observer.disconnect();
+      stop();
     };
-  }, [theme]);
+  }, [reducedMotion, theme]);
 
   return <canvas ref={canvasRef} className="sync-field" aria-hidden="true" />;
 }

@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Activity, ArrowRight, Braces, CalendarDays, Check, Code2, Database, File, Folder, Globe2, ImageIcon, Search, Tags, Terminal, Type } from "lucide-react";
+import { usePhaseCycle } from "../hooks/usePhaseCycle";
 import { MAC_INSTALLER_NAME, RELEASE_TAG_URL } from "../product";
 
 type HistoryCategory =
@@ -117,17 +118,12 @@ const historyDateFilters = [
 ];
 
 export function HistoryIntelligence() {
-  const [activeSample, setActiveSample] = useState(0);
+  const {
+    phase: activeSample,
+    setPhase: setActiveSample,
+    ref,
+  } = usePhaseCycle<HTMLDivElement>(historySamples.length, 2_400);
   const [activeDate, setActiveDate] = useState("today");
-
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const timer = window.setInterval(
-      () => setActiveSample((current) => (current + 1) % historySamples.length),
-      2_400,
-    );
-    return () => window.clearInterval(timer);
-  }, []);
 
   const sample = historySamples[activeSample];
   const category = historyCategories.find((item) => item.id === sample.category) ?? historyCategories[0];
@@ -161,14 +157,14 @@ export function HistoryIntelligence() {
             TailSync 在本地识别八类剪贴板内容，为一条记录保留主标签、次标签与置信度；再用完整日期范围，把需要的那一条迅速找回来。
           </p>
         </div>
-        <div className="history-intro-stats" aria-label="智能历史能力摘要">
+        <div className="history-intro-stats" aria-label="智能历史能力摘要" data-cascade>
           <div><strong>08</strong><span>内容分类</span></div>
           <div><strong>V4</strong><span>分类器版本</span></div>
           <div><strong>100%</strong><span>本地处理</span></div>
         </div>
       </div>
 
-      <div className="history-console" data-reveal>
+      <div className="history-console" data-reveal ref={ref}>
         <div className="history-console-head">
           <span><Database size={15} /> HISTORY INTELLIGENCE</span>
           <div className="history-console-live"><i /> INDEX ONLINE</div>
@@ -243,7 +239,7 @@ export function HistoryIntelligence() {
                   <strong>{sample.confidence}%</strong>
                 </div>
                 <span className="history-confidence-track">
-                  <i style={{ width: `${sample.confidence}%` }} />
+                  <i style={{ "--confidence": sample.confidence / 100 } as React.CSSProperties} />
                 </span>
               </div>
               <div className="history-feature-strip" aria-hidden="true">

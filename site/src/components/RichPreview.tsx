@@ -16,7 +16,7 @@ const formats = [
 
 export function RichPreview() {
   return (
-    <div className="preview-sheet" data-reveal aria-label="六种格式的富预览示例">
+    <div className="preview-sheet" data-reveal data-cascade aria-label="六种格式的富预览示例">
       {formats.map((f) => {
         const Icon = f.icon;
         return (

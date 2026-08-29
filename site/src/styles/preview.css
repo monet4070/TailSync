@@ -83,7 +83,10 @@
   border-radius: var(--radius-card);
   background: var(--elevated);
   box-shadow: var(--shadow-card);
-  transition: transform 0.35s var(--ease-apple), box-shadow 0.35s ease, border-color 0.35s ease;
+  transition:
+    transform var(--m-dur-quick, 0.35s) var(--m-ease-hover, var(--ease-apple)),
+    box-shadow var(--m-dur-quick, 0.35s) var(--m-ease-snap, ease),
+    border-color var(--m-dur-quick, 0.35s) var(--m-ease-snap, ease);
 }
 
 .preview-card:hover {

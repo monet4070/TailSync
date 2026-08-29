@@ -1,7 +1,12 @@
 @import "./styles/base.css";
+@import "./styles/hero-manifesto.css";
 @import "./styles/sync-flow.css";
+@import "./styles/history.css";
 @import "./styles/history-security.css";
+@import "./styles/product-architecture.css";
 @import "./styles/product-recovery.css";
 @import "./styles/preview.css";
 @import "./styles/themes.css";
 @import "./styles/responsive.css";
+/* Last on purpose — see the header comment in motion.css. */
+@import "./styles/motion.css";

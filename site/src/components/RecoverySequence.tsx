@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { Activity, Power, RefreshCw, ShieldCheck, Waves, WifiOff, Zap } from "lucide-react";
+import { usePhaseCycle } from "../hooks/usePhaseCycle";
 
 const recoverySteps = [
   { label: "SLEEP", title: "系统休眠", detail: "SOCKET SUSPENDED", icon: WifiOff },
@@ -10,16 +10,7 @@ const recoverySteps = [
 ];
 
 export function RecoverySequence() {
-  const [phase, setPhase] = useState(0);
-
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const timer = window.setInterval(
-      () => setPhase((current) => (current + 1) % recoverySteps.length),
-      1_300,
-    );
-    return () => window.clearInterval(timer);
-  }, []);
+  const { phase, setPhase, ref } = usePhaseCycle<HTMLDivElement>(recoverySteps.length, 1_300);
 
   const current = recoverySteps[phase];
 
@@ -35,14 +26,14 @@ export function RecoverySequence() {
         <p>
           Windows 或 macOS 从休眠中唤醒后，TailSync 主动探测对端、重建加密会话并恢复剪贴板监听。恢复的文件不会再回传给原发送端，链路重新上线，也不会形成回环。
         </p>
-        <div className="recovery-facts">
+        <div className="recovery-facts" data-cascade>
           <span><Activity size={16} /> 唤醒后主动健康检查</span>
           <span><RefreshCw size={16} /> 自动重建安全会话</span>
           <span><ShieldCheck size={16} /> 来源标记阻止文件回传</span>
         </div>
       </div>
 
-      <div className="recovery-console" data-reveal>
+      <div className="recovery-console" data-reveal ref={ref}>
         <div className="recovery-console-head">
           <span><Waves size={15} /> SESSION RECOVERY MONITOR</span>
           <strong><i /> {current.label}</strong>
@@ -66,7 +57,7 @@ export function RecoverySequence() {
           </div>
         </div>
 
-        <div className="recovery-timeline" role="group" aria-label="休眠唤醒恢复阶段">
+        <div className="recovery-timeline" role="group" aria-label="休眠唤醒恢复阶段" data-cascade>
           {recoverySteps.map((step, index) => {
             const Icon = step.icon;
             const state = index < phase ? "complete" : index === phase ? "active" : "pending";

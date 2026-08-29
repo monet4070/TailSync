@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { Check, Fingerprint, LockKeyhole, ScanLine, ShieldCheck } from "lucide-react";
+import { usePhaseCycle } from "../hooks/usePhaseCycle";
 
 const handshakeSteps = [
   { label: "IDENTITY", icon: Fingerprint },
@@ -11,19 +11,10 @@ const handshakeSteps = [
 const handshakePhaseLabels = ["IDENTITY PROOF", "CODE MATCH", "NOISE XX", "TRUST PINNED"];
 
 export function SecurityHandshake() {
-  const [phase, setPhase] = useState(0);
-
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const timer = window.setInterval(
-      () => setPhase((current) => (current + 1) % handshakeSteps.length),
-      1_150,
-    );
-    return () => window.clearInterval(timer);
-  }, []);
+  const { phase, ref } = usePhaseCycle<HTMLDivElement>(handshakeSteps.length, 1_150);
 
   return (
-    <div className={`handshake handshake-phase-${phase}`} data-reveal>
+    <div className={`handshake handshake-phase-${phase}`} data-reveal ref={ref}>
       <div className="handshake-head">
         <span>SECURE PAIRING / <b>{handshakePhaseLabels[phase]}</b></span>
         <span className="handshake-live-status">
@@ -61,7 +52,7 @@ export function SecurityHandshake() {
         </div>
       </div>
 
-      <div className="handshake-steps">
+      <div className="handshake-steps" data-cascade>
         {handshakeSteps.map((step, index) => {
           const Icon = step.icon;
           const state = index < phase ? "complete" : index === phase ? "active" : "pending";

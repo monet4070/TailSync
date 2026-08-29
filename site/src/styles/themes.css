@@ -80,9 +80,15 @@ html[data-theme="dark"] body {
   color: var(--ink);
 }
 
-/* smooth surface morph when the theme flips */
+/* smooth surface morph when the theme flips.
+
+   `.site-header` and `.recovery-timeline button` are deliberately NOT in this
+   group. Both already declare a `transition` of their own, and because this rule
+   loads later the shorthand reset their `transition-property` wholesale — which
+   silently disabled `.site-header`'s `box-shadow` transition (base.css:143) and
+   retimed its border to 0.6s. They carry `background-color` in their own
+   declarations instead. */
 body,
-.site-header,
 .manifesto,
 .flow-section,
 .recovery-section,
@@ -97,7 +103,6 @@ body,
 .history-sample,
 .product-window,
 .recovery-console,
-.recovery-timeline button,
 .architecture-diagram > div {
   transition: background-color 0.6s ease, border-color 0.6s ease;
 }

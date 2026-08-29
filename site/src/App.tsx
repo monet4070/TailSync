@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowRight,
@@ -31,11 +31,14 @@ import {
 } from "lucide-react";
 import { ClipboardPreview } from "./components/ClipboardPreview";
 import { HistoryIntelligence } from "./components/HistoryIntelligence";
+import { MotionSwitcher } from "./components/MotionSwitcher";
 import { ProductWindow } from "./components/ProductWindow";
 import { RecoverySequence } from "./components/RecoverySequence";
 import { RichPreview } from "./components/RichPreview";
 import { SecurityHandshake } from "./components/SecurityHandshake";
 import { SyncField } from "./components/SyncField";
+import { useOffstageGate } from "./hooks/useOffstageGate";
+import { useScrollDriver } from "./hooks/useScrollDriver";
 import {
   GITHUB_URL,
   MAC_INSTALLER_NAME,
@@ -163,10 +166,13 @@ function App() {
   const [activeFlow, setActiveFlow] = useState<ClipboardKind>("text");
   const [themePreference, setThemePreference] = useState<ThemePreference>(getInitialThemePreference);
   const [automaticTheme, setAutomaticTheme] = useState<TimeTheme>(getAutomaticTheme);
-  const [scrollProgress, setScrollProgress] = useState(0);
+  const headerRef = useRef<HTMLElement>(null);
   const currentRoute = routeCopy[routeMode];
   const currentFlow = flowData[activeFlow];
   const timeTheme = themePreference === "auto" ? automaticTheme : themePreference;
+
+  useScrollDriver(headerRef);
+  useOffstageGate();
 
   const year = useMemo(() => new Date().getFullYear(), []);
 
@@ -208,34 +214,35 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const updateProgress = () => {
-      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-      setScrollProgress(maxScroll > 0 ? window.scrollY / maxScroll : 0);
-    };
-    updateProgress();
-    window.addEventListener("scroll", updateProgress, { passive: true });
-    window.addEventListener("resize", updateProgress);
-    return () => {
-      window.removeEventListener("scroll", updateProgress);
-      window.removeEventListener("resize", updateProgress);
-    };
-  }, []);
-
-  useEffect(() => {
     const elements = [...document.querySelectorAll<HTMLElement>("[data-reveal]")];
+    const timers = new Set<number>();
+
+    // `will-change` on 20 large subtrees is worth it for the ~1s the reveal
+    // runs and pure cost forever after, so retire the hint once each element
+    // has landed. The timer is the belt to transitionend's braces: variants
+    // that reveal with an animation or a scroll timeline never fire it.
+    const settle = (element: HTMLElement) => {
+      element.dataset.settled = "true";
+    };
+
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.setAttribute("data-visible", "true");
-            observer.unobserve(entry.target);
-          }
+          if (!entry.isIntersecting) return;
+          const element = entry.target as HTMLElement;
+          element.setAttribute("data-visible", "true");
+          observer.unobserve(element);
+          element.addEventListener("transitionend", () => settle(element), { once: true });
+          timers.add(window.setTimeout(() => settle(element), 1_600));
         });
       },
       { threshold: 0.14 },
     );
     elements.forEach((element) => observer.observe(element));
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
   }, []);
 
   const closeMenu = () => setMenuOpen(false);
@@ -257,13 +264,9 @@ function App() {
 
   return (
     <div className={`landing-shell theme-${timeTheme}`} id="top">
-      <div
-        className="scroll-progress"
-        style={{ transform: `scaleX(${scrollProgress})` }}
-        aria-hidden="true"
-      />
+      <div className="scroll-progress" aria-hidden="true" />
 
-      <header className="site-header">
+      <header className="site-header" ref={headerRef}>
         <a className="brand" href="#top" onClick={closeMenu}>
           <img src={tailsyncIcon} alt="TailSync" />
           <span>TailSync</span>
@@ -375,7 +378,7 @@ function App() {
           </a>
         </section>
 
-        <div className="stat-band" data-reveal>
+        <div className="stat-band" data-reveal data-cascade>
           {heroStats.map((stat) => (
             <div key={stat.label}>
               <strong>{stat.value}</strong>
@@ -435,7 +438,7 @@ function App() {
                   </div>
                 </div>
               </div>
-              <div className="relay-footer">
+              <div className="relay-footer" data-cascade>
                 <span><Check size={13} /> VERIFIED PATH</span>
                 <span>ACK / RECEIPT</span>
                 <span>NO CLOUD HOP</span>
@@ -457,7 +460,7 @@ function App() {
               <RadioTower size={17} />
               <span>{currentRoute.interface}</span>
             </div>
-            <div className="route-switcher" role="group" aria-label="连接路径">
+            <div className="route-switcher" role="group" aria-label="连接路径" data-cascade>
               <button
                 className={routeMode === "auto" ? "active" : ""}
                 type="button"
@@ -507,7 +510,7 @@ function App() {
                 <small>{routeMode === "lan" ? "DISABLED" : routeMode === "tailscale" ? "ACTIVE" : "READY"}</small>
               </span>
             </div>
-            <div className="lab-status">
+            <div className="lab-status" data-cascade>
               <span><i /> AUTHENTICATED</span>
               <span>NOISE XX</span>
               <span>HEALTH CHECK / 5S</span>
@@ -529,7 +532,7 @@ function App() {
           </div>
 
           <div className="flow-workbench" data-reveal>
-            <div className="flow-tabs" role="tablist" aria-label="同步内容类型">
+            <div className="flow-tabs" role="tablist" aria-label="同步内容类型" data-cascade>
               {(Object.keys(flowData) as ClipboardKind[]).map((kind) => {
                 const item = flowData[kind];
                 const Icon = kind === "text" ? FileText : kind === "image" ? ImageIcon : File;
@@ -583,7 +586,7 @@ function App() {
               历史里的每一条，都能在一个独立的预览窗口里原样打开——不打断列表的搜索、筛选与恢复。
               图片、文本、代码、Markdown、PDF 与 docx，六种格式各有各的读法。
             </p>
-            <div className="preview-facts">
+            <div className="preview-facts" data-cascade>
               <span><Eye size={15} /> 独立非模态窗口</span>
               <span><ShieldCheck size={15} /> 负载上限 64 MiB</span>
               <span><Check size={15} /> Markdown 净化渲染</span>
@@ -593,7 +596,7 @@ function App() {
           <RichPreview />
 
           <div className="preview-more" data-reveal>
-            <div className="preview-keys">
+            <div className="preview-keys" data-cascade>
               <Keyboard size={16} />
               <span><kbd>空格</kbd> 打开 / 关闭</span>
               <span><kbd>双击</kbd> 恢复到剪贴板</span>
@@ -623,7 +626,7 @@ function App() {
               <p>
                 每台设备生成持久 X25519 身份。首次连接需要限时配对、六位验证码和双端确认，之后通过 Noise XX 建立加密会话。
               </p>
-              <div className="security-facts">
+              <div className="security-facts" data-cascade>
                 <span><Check size={14} /> 不降级到明文协议</span>
                 <span><Check size={14} /> 固定设备公钥</span>
                 <span><Check size={14} /> ChaCha20-Poly1305</span>
@@ -644,7 +647,7 @@ function App() {
             <p>
               TailSync 在后台监听、同步、分类与确认。打开历史时，内容类型、多标签、置信度和日期范围都已经就位，找回记录不再依赖逐条翻看。
             </p>
-            <div className="product-points">
+            <div className="product-points" data-cascade>
               <span><Tags size={17} /> 八类内容与多标签识别</span>
               <span><CalendarDays size={17} /> 七种日期范围与自定义筛选</span>
               <span><RadioTower size={17} /> 真实在线状态与路径延迟</span>
@@ -687,7 +690,7 @@ function App() {
             <span>ONE PROTOCOL / TWO NATIVE EXPERIENCES</span>
             <h2>SwiftUI on Mac.<br />Tauri on Windows.<br /><b>Rust at the core.</b></h2>
           </div>
-          <div className="architecture-diagram" data-reveal>
+          <div className="architecture-diagram" data-reveal data-cascade>
             <div><Laptop size={26} /><span>macOS</span><small>SwiftUI</small></div>
             <i />
             <div className="core-node"><Code2 size={28} /><span>Core</span><small>Rust / main</small></div>
@@ -705,7 +708,7 @@ function App() {
             <span>LATEST RELEASE / {PRODUCT_VERSION}</span>
             <h2>你的剪贴板，<br />应该跟着你。</h2>
             <p>macOS 与 Windows。开源。MIT License。</p>
-            <div className="download-actions">
+            <div className="download-actions" data-cascade>
               <a className="button button-download" href={RELEASE_URL} target="_blank" rel="noreferrer">
                 <Monitor size={18} />
                 下载 Windows
@@ -738,6 +741,8 @@ function App() {
         <p>智能本地历史 · 弹性直连同步 · 只为你信任的设备而建</p>
         <span>© {year} TAILSYNC · MIT</span>
       </footer>
+
+      <MotionSwitcher />
     </div>
   );
 }

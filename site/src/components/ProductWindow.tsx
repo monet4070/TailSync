@@ -1,62 +1,62 @@
-import { useEffect, useState } from "react";
 import { ArrowRight, Braces, CalendarDays, Check, Copy, Database, File, Globe2, Search, Tags, Terminal } from "lucide-react";
+import { usePhaseCycle } from "../hooks/usePhaseCycle";
 import { MAC_INSTALLER_NAME } from "../product";
 const tailsyncIcon = "/tailsync-icon.png";
 
-export function ProductWindow() {
-  const entries = [
-    {
-      icon: Globe2,
-      type: "WEBSITE",
-      title: "github.com/monet4070/TailSync",
-      meta: "MacBook Pro · 刚刚",
-      tags: ["网站", "文本"],
-      confidence: 98,
-      color: "lime",
-    },
-    {
-      icon: Terminal,
-      type: "COMMAND",
-      title: "cargo test --workspace",
-      meta: "Windows Studio · 1 分钟前",
-      color: "coral",
-      tags: ["命令", "代码"],
-      confidence: 97,
-    },
-    {
-      icon: Braces,
-      type: "DATA",
-      title: '{"trusted":true,"route":"lan"}',
-      meta: "MacBook Pro · 4 分钟前",
-      color: "cyan",
-      tags: ["结构化数据", "代码"],
-      confidence: 94,
-    },
-    {
-      icon: File,
-      type: "FILE",
-      title: MAC_INSTALLER_NAME,
-      meta: "Windows Studio · 8 分钟前",
-      color: "paper",
-      tags: ["文件"],
-      confidence: 100,
-    },
-  ];
-  const [activeEntry, setActiveEntry] = useState(0);
+// Module scope, matching the other three sequences. Declared inside the
+// component body this was a fresh array identity every render, which made the
+// old `[entries.length]` effect dep correct only because `.length` is a
+// primitive rather than because the dep was right.
+const entries = [
+  {
+    icon: Globe2,
+    type: "WEBSITE",
+    title: "github.com/monet4070/TailSync",
+    meta: "MacBook Pro · 刚刚",
+    tags: ["网站", "文本"],
+    confidence: 98,
+    color: "lime",
+  },
+  {
+    icon: Terminal,
+    type: "COMMAND",
+    title: "cargo test --workspace",
+    meta: "Windows Studio · 1 分钟前",
+    color: "coral",
+    tags: ["命令", "代码"],
+    confidence: 97,
+  },
+  {
+    icon: Braces,
+    type: "DATA",
+    title: '{"trusted":true,"route":"lan"}',
+    meta: "MacBook Pro · 4 分钟前",
+    color: "cyan",
+    tags: ["结构化数据", "代码"],
+    confidence: 94,
+  },
+  {
+    icon: File,
+    type: "FILE",
+    title: MAC_INSTALLER_NAME,
+    meta: "Windows Studio · 8 分钟前",
+    color: "paper",
+    tags: ["文件"],
+    confidence: 100,
+  },
+];
 
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const timer = window.setInterval(
-      () => setActiveEntry((current) => (current + 1) % entries.length),
-      1_650,
-    );
-    return () => window.clearInterval(timer);
-  }, [entries.length]);
+export function ProductWindow() {
+  const {
+    phase: activeEntry,
+    setPhase: setActiveEntry,
+    ref,
+  } = usePhaseCycle<HTMLDivElement>(entries.length, 1_650);
 
   const active = entries[activeEntry];
 
   return (
-    <div className="product-window">
+    <div className="product-window" ref={ref}>
       <div className="product-window-scan" aria-hidden="true" />
       <div className="product-titlebar">
         <div className="product-title">
