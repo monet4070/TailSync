@@ -5,6 +5,8 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 export const LONG_PRESS_GRACE_MS = 220;
 /** The visible charge follows the 0.42 s motion specified by the feature. */
 export const LONG_PRESS_CHARGE_MS = 420;
+/** Match macOS: keep the completion stamp briefly before an unfavorite fades. */
+export const FAVORITE_STAMP_VISIBLE_MS = 550;
 const MOVE_CANCEL_DISTANCE_PX = 8;
 
 interface ActivePointer {
@@ -41,6 +43,7 @@ export function useLongPressFavorite(
   const activePointer = useRef<ActivePointer | null>(null);
   const graceTimer = useRef<number | null>(null);
   const commitTimer = useRef<number | null>(null);
+  const stampTimer = useRef<number | null>(null);
   const triggeredRef = useRef(false);
   const [progress, setProgress] = useState(0);
   const [isCharging, setIsCharging] = useState(false);
@@ -57,6 +60,13 @@ export function useLongPressFavorite(
     }
   }, []);
 
+  const clearStampTimer = useCallback(() => {
+    if (stampTimer.current !== null) {
+      window.clearTimeout(stampTimer.current);
+      stampTimer.current = null;
+    }
+  }, []);
+
   const cancel = useCallback(() => {
     clearTimers();
     activePointer.current = null;
@@ -70,6 +80,7 @@ export function useLongPressFavorite(
     if (target.closest("button, a, [role='button']")) return;
 
     clearTimers();
+    clearStampTimer();
     triggeredRef.current = false;
     setIsTriggered(false);
     setIsCharging(false);
@@ -93,9 +104,13 @@ export function useLongPressFavorite(
         setIsCharging(false);
         setIsTriggered(true);
         onComplete();
+        stampTimer.current = window.setTimeout(() => {
+          stampTimer.current = null;
+          setIsTriggered(false);
+        }, FAVORITE_STAMP_VISIBLE_MS);
       }, LONG_PRESS_CHARGE_MS);
     }, LONG_PRESS_GRACE_MS);
-  }, [clearTimers, enabled, onComplete]);
+  }, [clearStampTimer, clearTimers, enabled, onComplete]);
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     const pointer = activePointer.current;
@@ -123,7 +138,10 @@ export function useLongPressFavorite(
     [],
   );
 
-  useEffect(() => () => clearTimers(), [clearTimers]);
+  useEffect(() => () => {
+    clearTimers();
+    clearStampTimer();
+  }, [clearStampTimer, clearTimers]);
 
   return {
     progress,

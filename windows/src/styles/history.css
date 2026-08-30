@@ -661,6 +661,12 @@ html, body {
   opacity: 1;
 }
 
+.history-item.favorite-triggered:not(.is-favorite) .favorite-press-progress {
+  transform: scaleX(0);
+  opacity: 1;
+  transition: transform 0.42s linear, opacity 0.12s ease-out 0.42s;
+}
+
 .favorite-stamp {
   position: static;
   display: grid;
@@ -668,10 +674,11 @@ html, body {
   width: 18px;
   height: 18px;
   flex: 0 0 18px;
-  margin-left: 1px;
+  margin-left: auto;
   color: var(--brand);
   opacity: 0;
   transform: scale(0.72) rotate(-12deg);
+  transition: opacity 0.18s ease-out, transform 0.18s ease-out;
   pointer-events: none;
 }
 
@@ -681,7 +688,9 @@ html, body {
 }
 
 .history-item.favorite-triggered .favorite-stamp {
-  animation: favorite-stamp-pop 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+  opacity: 0.9;
+  transform: scale(1) rotate(0deg);
+  animation: favorite-stamp-pop 0.36s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes favorite-stamp-pop {
@@ -739,22 +748,6 @@ html, body {
 
 .batch-incomplete {
   color: var(--orange);
-}
-
-.pin-entry {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-}
-
-.pin-entry.active {
-  color: var(--brand);
 }
 
 .item-preview {

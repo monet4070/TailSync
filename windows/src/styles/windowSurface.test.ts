@@ -46,21 +46,34 @@ describe("favorite history-row surface", () => {
     const progress = rules.find((candidate) =>
       candidate.selectorText === ".favorite-press-progress",
     );
+    const releasing = rules.find((candidate) =>
+      candidate.selectorText === ".history-item.favorite-triggered:not(.is-favorite) .favorite-press-progress",
+    );
 
     expect(favorite).toBeDefined();
     expect(favorite?.style.transform).toBe("scaleX(1)");
     expect(favorite?.style.opacity).toBe("1");
     expect(progress?.style.transition).toContain("transform 0.42s linear");
+    expect(releasing?.style.transform).toBe("scaleX(0)");
+    expect(releasing?.style.opacity).toBe("1");
+    expect(releasing?.style.transition).toContain("opacity 0.12s ease-out 0.42s");
   });
 
-  it("keeps the favorite stamp in the metadata flow instead of overlaying text", () => {
-    const stamp = rulesFrom("src/styles/history.css").find((candidate) =>
+  it("keeps one animated favorite stamp aligned to the footer edge", () => {
+    const rules = rulesFrom("src/styles/history.css");
+    const stamp = rules.find((candidate) =>
       candidate.selectorText === ".favorite-stamp",
+    );
+    const triggered = rules.find((candidate) =>
+      candidate.selectorText === ".history-item.favorite-triggered .favorite-stamp",
     );
 
     expect(stamp).toBeDefined();
     expect(stamp?.style.position).toBe("static");
     expect(stamp?.style.flex).toBe("0 0 18px");
+    expect(stamp?.style.marginLeft).toBe("auto");
+    expect(stamp?.style.transition).toContain("opacity");
+    expect(triggered?.style.animation).toContain("favorite-stamp-pop");
   });
 });
 

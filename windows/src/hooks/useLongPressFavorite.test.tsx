@@ -64,6 +64,26 @@ describe("useLongPressFavorite", () => {
     expect(onComplete).toHaveBeenCalledOnce();
   });
 
+  it("ends the transient completion stamp without re-enabling the same click", () => {
+    const onComplete = vi.fn();
+    const onClick = vi.fn();
+    render(<Harness onComplete={onComplete} onClick={onClick} />);
+    const row = screen.getByTestId("row");
+
+    fireEvent.pointerDown(row, { button: 0, pointerId: 6, clientX: 20, clientY: 20 });
+    act(() => vi.advanceTimersByTime(LONG_PRESS_GRACE_MS + LONG_PRESS_CHARGE_MS));
+    expect(row).toHaveAttribute("data-triggered", "true");
+
+    act(() => vi.advanceTimersByTime(549));
+    expect(row).toHaveAttribute("data-triggered", "true");
+    act(() => vi.advanceTimersByTime(1));
+    expect(row).toHaveAttribute("data-triggered", "false");
+
+    fireEvent.pointerUp(row, { pointerId: 6 });
+    fireEvent.click(row);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
   it("cancels when the pointer moves before completion", () => {
     const onComplete = vi.fn();
     render(<Harness onComplete={onComplete} />);

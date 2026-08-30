@@ -176,25 +176,47 @@ describe("History item actions", () => {
     });
   });
 
-  it("reveals the favorite action only after a completed long press", async () => {
+  it("uses one footer stamp for favorite state and long-press feedback", async () => {
     render(<History />);
 
     const row = (await screen.findByText(entry.description))
       .closest<HTMLElement>(".history-item");
     expect(row).not.toBeNull();
     expect(screen.queryByRole("button", { name: "history.pin" })).toBeNull();
-    expect(row?.querySelector(".favorite-stamp")).toBeNull();
+    expect(row?.querySelectorAll(".favorite-stamp")).toHaveLength(1);
+    const footer = row!.querySelector<HTMLElement>(".item-footer");
+    const stamp = row!.querySelector<HTMLElement>(".favorite-stamp");
+    expect(footer).toContainElement(stamp);
+    expect(row?.querySelector(".item-meta .favorite-stamp")).toBeNull();
 
     vi.useFakeTimers();
     completeLongPress(row!, 21);
 
     expect(row).toHaveClass("is-favorite");
-    expect(screen.getByRole("button", { name: "history.unpin" })).toBeInTheDocument();
-    const meta = row!.querySelector<HTMLElement>(".item-meta");
-    const stamp = row!.querySelector<HTMLElement>(".favorite-stamp");
-    expect(stamp).not.toBeNull();
-    expect(meta).toContainElement(stamp);
-    expect(row?.querySelector(".item-content > .favorite-stamp")).toBeNull();
+    expect(row).toHaveClass("favorite-triggered");
+    expect(row?.querySelectorAll(".favorite-stamp")).toHaveLength(1);
+    expect(row?.querySelector(".pin-entry")).toBeNull();
+    expect(screen.queryByRole("button", { name: "history.unpin" })).toBeNull();
+  });
+
+  it("keeps the footer stamp transient while an unfavorite fades out", async () => {
+    defaultEntryPinned = true;
+    render(<History />);
+
+    const row = (await screen.findByText(entry.description))
+      .closest<HTMLElement>(".history-item");
+    expect(row).not.toBeNull();
+    expect(row).toHaveClass("is-favorite");
+
+    vi.useFakeTimers();
+    completeLongPress(row!, 22);
+
+    expect(row).not.toHaveClass("is-favorite");
+    expect(row).toHaveClass("favorite-triggered");
+    act(() => vi.advanceTimersByTime(549));
+    expect(row).toHaveClass("favorite-triggered");
+    act(() => vi.advanceTimersByTime(1));
+    expect(row).not.toHaveClass("favorite-triggered");
   });
 
   it("protects a favorite from the history context-menu deletion path", async () => {
@@ -285,9 +307,10 @@ describe("History item actions", () => {
       });
     });
     await waitFor(() => {
-      expect(screen.getAllByTitle("history.unpin")).toHaveLength(1);
+      expect(document.querySelectorAll(".history-item.is-favorite")).toHaveLength(2);
     });
     expect(sibling).toHaveClass("is-favorite");
+    expect(document.querySelector(".pin-entry")).toBeNull();
 
     // A refresh started while the mutation is pending can still return the
     // pre-mutation database snapshot. It must not visually undo the completed
@@ -303,7 +326,6 @@ describe("History item actions", () => {
         .filter(([command]) => command === "get_history_page").length)
         .toBeGreaterThan(historyCallCountBeforeRefresh);
     });
-    expect(screen.queryByTitle("history.unpin")).toBeNull();
     expect(sibling).toHaveClass("is-favorite");
 
     fireEvent.contextMenu(sibling!);
@@ -311,7 +333,7 @@ describe("History item actions", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("delete_favorite_entry", { id: 9 });
 
     resolveFavorite({ affected_ids: [8, 9], favorite: true });
-    expect(screen.queryByTitle("history.unpin")).toBeNull();
+    expect(document.querySelector(".pin-entry")).toBeNull();
   });
 
   it("reverts the optimistic favorite tint when the update fails", async () => {
@@ -356,13 +378,14 @@ describe("History item actions", () => {
     vi.useRealTimers();
     await waitFor(() => {
       expect(row).toHaveClass("is-favorite");
-      expect(screen.getByTitle("history.unpin")).toBeInTheDocument();
+      expect(row).toHaveClass("favorite-triggered");
     });
 
     rejectFavorite(new Error("write failed"));
     await waitFor(() => {
       expect(row).not.toHaveClass("is-favorite");
-      expect(screen.getByTitle("history.pin")).toBeInTheDocument();
+      expect(row?.querySelector(".favorite-stamp")).not.toBeNull();
+      expect(row?.querySelector(".pin-entry")).toBeNull();
       expect(screen.getByText("history.actionFailed")).toBeInTheDocument();
     });
     expect(consoleError).toHaveBeenCalledWith(
@@ -774,8 +797,9 @@ describe("History item actions", () => {
       });
     });
     await waitFor(() => {
-      expect(screen.getAllByTitle("history.unpin")).toHaveLength(1);
+      expect(document.querySelectorAll(".history-item.is-favorite")).toHaveLength(2);
     });
+    expect(document.querySelector(".pin-entry")).toBeNull();
   });
 
   it("collapses file batches to two rows and expands them on demand", async () => {
