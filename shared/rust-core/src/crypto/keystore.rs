@@ -1,13 +1,13 @@
 #[cfg(not(test))]
 use log::info;
-#[cfg(target_os = "windows")]
+#[cfg(all(not(test), target_os = "windows"))]
 use log::warn;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::sync::{Mutex as StdMutex, OnceLock};
 use thiserror::Error;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(not(test), target_os = "windows"))]
 use crate::db;
 
 // ─── OS Keychain Integration ──────────────────────────────────────
