@@ -1,49 +1,22 @@
 /* ============================================================
-   TailSync Landing — motion layer
-   ============================================================
-   Imported LAST from landing.css. Three rules govern this file:
+   TailSync Landing — unified motion language
 
-   1. Every variant selector is prefixed `:root[data-motion="…"]` (0,2,0) so it
-      outranks the `:root` (0,1,0) and `[data-reveal][data-visible="true"]`
-      (0,2,0) rules it needs to beat. Import position then stops being
-      load-bearing — appending another @import after this one cannot break it.
+   One production motion system replaces the former A/B variants:
+   - weighted spring entrances give large surfaces mass and small objects lift;
+   - drafting gestures draw the instrument-like set pieces as they enter.
 
-   2. Overrides use `transition-duration` / `transition-timing-function`
-      longhands, never the `transition` shorthand. The shorthand resets
-      `transition-property` wholesale, which is exactly how themes.css:102
-      silently disabled `.site-header`'s box-shadow transition for so long.
-
-   3. Tokens are consumed as `var(--m-x, <current literal>)` at the call site in
-      the section files. So `base` declares no tokens at all — every fallback
-      fires and the page renders exactly as it shipped. A variant is then a short
-      list of token values plus its own signature moves.
-
-   Languages, chosen by `data-motion` on <html> (useMotionVariant, dev-only):
-
-     base        what ships today — the reference to compare against
-     restrained  fewer moves, shorter, smaller
-     draft       the page draws itself: 24° wipes, self-inking strokes
-     weighted    real springs, mass tiers, directional entrances
-     scrolled    scroll position is the timeline — scrubbed and reversible
+   This file is imported last so the motion layer can safely refine component
+   transitions without making the individual section styles load-order aware.
    ============================================================ */
 
 :root {
-  /* ---- easing vocabulary -----------------------------------------------
-     base.css:21-22 declares --ease-apple and --ease-out as byte-identical
-     copies of one curve — a system in name only. These are five curves that
-     actually differ, named for the job. */
+  --m-ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
+  --m-ease-exit: cubic-bezier(0.55, 0, 0.85, 0.3);
+  --m-ease-snap: cubic-bezier(0.3, 0, 0.2, 1);
+  --m-ease-loop: cubic-bezier(0.45, 0, 0.55, 1);
+  --m-ease-firm: cubic-bezier(0.16, 1, 0.3, 1);
 
-  --m-ease-enter: cubic-bezier(0.22, 1, 0.36, 1);        /* arriving */
-  --m-ease-exit: cubic-bezier(0.55, 0, 0.85, 0.3);       /* leaving, dismissed */
-  --m-ease-snap: cubic-bezier(0.3, 0, 0.2, 1);           /* hover, press, tabs */
-  --m-ease-loop: cubic-bezier(0.45, 0, 0.55, 1);         /* returns to start */
-  --m-ease-firm: cubic-bezier(0.16, 1, 0.3, 1);          /* text — never bounces */
-
-  /* Springs as linear() samples. A cubic-bezier is confined to 0–1 on the
-     output axis, so it can ease but can never overshoot; linear() can, which is
-     the whole difference between "quick" and "physical". */
-
-  /* ~15% overshoot — small, light objects: chips, tags, medallions */
+  /* Lively spring for chips, tags and other small objects. */
   --m-spring-light: linear(
     0, 0.0039 1.95%, 0.0157, 0.0352, 0.0625 7.8%, 0.1407 11.7%, 0.2483 15.6%,
     0.5121 23.4%, 0.6296, 0.7359, 0.8296 35.2%, 0.9099 39.1%, 0.9769 43%,
@@ -51,430 +24,21 @@
     1.1486 66.4%, 1.15 70.3%, 1.1472 74.2%, 1.1415 78.1%, 1.134 82%,
     1.1258 85.9%, 1.1177 89.8%, 1.1103 93.7%, 1.1041 97.6%, 1.1
   );
-  /* ~4% overshoot — large surfaces, where 15% reads as sloppy rather than alive */
+
+  /* Heavily damped spring for panels that carry readable copy. */
   --m-spring-heavy: linear(
     0, 0.0033, 0.0132, 0.0294, 0.0517, 0.1177, 0.2073, 0.4265, 0.5245, 0.6127,
     0.6903, 0.7572, 0.8135, 0.8597, 0.8969, 0.9261, 0.9485, 0.9652, 0.9773,
     0.9857, 0.9915, 0.9953, 0.9976, 0.999, 0.9997, 1
   );
 
-  /* The signature 24° instrument tick from base.css:345-357, reused as the
-     wipe axis in `draft` so the motion is cut in the same hand as the marks. */
   --m-tick-angle: 24deg;
-}
 
-/* ============================================================
-   Baseline corrections — apply to every variant, `base` included
-   ============================================================
-   None of these is a taste call; each is a defect with one right answer.
-   ============================================================ */
-
-/* Reveal, re-expressed through tokens. Fallbacks reproduce base.css:385-395
-   exactly, so this changes nothing until a variant sets a token. */
-[data-reveal] {
-  opacity: 0;
-  transform: translateY(var(--m-reveal-shift, 32px)) scale(var(--m-reveal-scale, 0.985));
-  transition:
-    opacity var(--m-reveal-dur, 1s) var(--m-reveal-ease, var(--ease-apple)),
-    transform var(--m-reveal-dur, 1s) var(--m-reveal-ease, var(--ease-apple));
-  will-change: opacity, transform;
-}
-
-[data-reveal][data-visible="true"] {
-  opacity: 1;
-  transform: none;
-}
-
-/* base.css hints `will-change` on all 20 reveal containers — several of them
-   large subtrees — and never withdraws it, so the compositor holds ~20 layers
-   for the rest of the session to serve animations that each ran once for a
-   second. App.tsx marks each element settled when its reveal ends. */
-[data-reveal][data-settled="true"] {
-  will-change: auto;
-}
-
-/* .stat-band matched [data-reveal] *and* declared its own child stagger, so the
-   band translated 32px and scaled while its four children independently
-   translated 16px inside it — two reveals fighting over the same pixels. The
-   children own the entrance; the container only relays `data-visible`. */
-.stat-band[data-reveal] {
-  opacity: 1;
-  transform: none;
-  transition: none;
-  will-change: auto;
-}
-
-/* Ambient loops stand down off stage. useOffstageGate marks each top-level
-   block; one rule then reaches every animated descendant AND pseudo-element,
-   which per-element bookkeeping cannot. Paused rather than cancelled, so phase
-   survives and a section resumes mid-orbit instead of snapping back to 0%. */
-[data-offstage="true"] *,
-[data-offstage="true"] *::before,
-[data-offstage="true"] *::after {
-  animation-play-state: paused !important;
-}
-
-/* Progress bar reads --scroll-progress, published by useScrollDriver from a
-   rAF-throttled listener. This was React state, which re-rendered the entire
-   landing tree every scroll frame in order to move one 2.5px bar. */
-.scroll-progress {
-  transform: scaleX(var(--scroll-progress, 0));
-}
-
-/* ============================================================
-   Shared: per-child cascade
-   ============================================================
-   The page reveals 20 monolithic blocks. Inside each sit rows, chips, tabs and
-   tiles that have a real reading order and all arrive at once anyway. Containers
-   worth cascading carry `data-cascade` in the markup — an explicit marker rather
-   than a selector list, because several of them (.stat-band, .preview-sheet,
-   .architecture-diagram) ARE the reveal root while the rest are nested inside
-   one, and a depth-based selector cannot cover both without stating the list
-   twice. `base` opts out, so this is scoped to the variants that want it.
-   ============================================================ */
-
-/* Index assignment. Shared by every variant; each just sets --m-stagger. */
-[data-cascade] > *:nth-child(1) { --m-i: 0; }
-[data-cascade] > *:nth-child(2) { --m-i: 1; }
-[data-cascade] > *:nth-child(3) { --m-i: 2; }
-[data-cascade] > *:nth-child(4) { --m-i: 3; }
-[data-cascade] > *:nth-child(5) { --m-i: 4; }
-[data-cascade] > *:nth-child(6) { --m-i: 5; }
-[data-cascade] > *:nth-child(n + 7) { --m-i: 6; }
-
-/* Resting state. `transition-delay` has to live in THIS rule, not a separate
-   one: the `transition` shorthand resets delay to 0s, and any lower-specificity
-   rule setting it would be silently discarded — the same trap that disabled
-   .site-header's box-shadow transition in themes.css. */
-:root:is([data-motion="restrained"], [data-motion="draft"], [data-motion="weighted"])
-  :is([data-reveal] [data-cascade], [data-reveal][data-cascade]) > * {
-  opacity: 0;
-  transform: translateY(var(--m-cascade-shift, 10px));
-  transition:
-    opacity var(--m-cascade-dur, 420ms) var(--m-cascade-ease, var(--m-ease-enter)),
-    transform var(--m-cascade-dur, 420ms) var(--m-cascade-ease, var(--m-ease-enter));
-  transition-delay: calc(var(--m-stagger, 0ms) * var(--m-i, 0));
-}
-
-/* Landed, once the reveal that owns the container has fired. */
-:root:is([data-motion="restrained"], [data-motion="draft"], [data-motion="weighted"])
-  :is(
-    [data-reveal][data-visible="true"] [data-cascade],
-    [data-reveal][data-visible="true"][data-cascade]
-  ) > * {
-  opacity: 1;
-  transform: none;
-}
-
-/* ============================================================
-   V1 — restrained
-   ============================================================
-   Thesis: motion as punctuation, not wallpaper.
-
-   Today every one of the 20 blocks enters identically — 32px up, scaled from
-   0.985, over a full second. Twelve sections of the same gesture reads as a
-   template, and the scale means text arrives very slightly soft. So: halve the
-   distance, drop the scale off text entirely, cut the duration roughly in half,
-   and spend the recovered attention on cascading a panel's contents in reading
-   order instead. Ambient loops slow down and shrink until they read as life
-   rather than activity.
-   ============================================================ */
-
-:root[data-motion="restrained"] {
-  --m-reveal-dur: 480ms;
-  --m-reveal-shift: 14px;
-  --m-reveal-scale: 1;            /* no scale — keeps type crisp on arrival */
-  --m-reveal-ease: var(--m-ease-firm);
-
-  --m-stagger: 42ms;
-  --m-cascade-shift: 8px;
-  --m-cascade-dur: 340ms;
-  --m-cascade-ease: var(--m-ease-firm);
-
-  /* interaction gets faster, not slower — the UI should feel answerable */
-  --m-dur-micro: 120ms;
-  --m-dur-quick: 170ms;
-  --m-dur-press: 110ms;
-  --m-dur-swap: 300ms;
-  --m-ease-hover: var(--m-ease-snap);
-  --m-ease-press: var(--m-ease-snap);
-  --m-dur-indicator: 320ms;
-  --m-ease-indicator: var(--m-ease-snap);
-
-  --m-dur-seal: 520ms;
-  --m-dur-meter: 480ms;
-  --m-dur-trace: 700ms;
-
-  /* ambient: longer periods, so nothing competes with reading */
-  --m-dur-glow: 26s;
-  --m-dur-cue: 3.4s;
-  --m-dur-orbit: 40s;
-  --m-dur-orbit-slow: 52s;
-  --m-dur-marquee: 52s;
-  --m-dur-drift: 11s;
-  --m-dur-sweep: 6s;
-}
-
-/* Amplitude, not just tempo. A 10px levitate at half speed is still a 10px
-   distraction, so the loops that exist purely as texture get quieter. */
-:root[data-motion="restrained"] .image-pixels span,
-:root[data-motion="restrained"] .text-scan,
-:root[data-motion="restrained"] .image-scan,
-:root[data-motion="restrained"] .history-analysis-scan {
-  animation: none;
-}
-
-/* A keyframe's amplitude cannot be dialled down from outside it — there is no
-   `animation-amplitude`, and composing a `scale`/`translate` on top only adds
-   more motion. So the texture loops are swapped for shorter-travel versions:
-   same gesture, roughly a third of the distance, and `icon-levitate`'s
-   box-shadow pulse dropped since it repaints rather than composites. */
-:root[data-motion="restrained"] .file-icon-wrap {
-  animation-name: m-levitate-soft;
-}
-
-:root[data-motion="restrained"] .route-float,
-:root[data-motion="restrained"] .transfer-float {
-  animation-name: m-drift-soft;
-}
-
-:root[data-motion="restrained"] .image-plane-a {
-  animation-name: m-plane-soft-a;
-}
-
-:root[data-motion="restrained"] .image-plane-b {
-  animation-name: m-plane-soft-b;
-}
-
-@keyframes m-levitate-soft {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-3px); }
-}
-
-@keyframes m-drift-soft {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-3px); }
-}
-
-@keyframes m-plane-soft-a {
-  0%, 100% { transform: rotate(-5deg) translateY(0); }
-  50% { transform: rotate(-5deg) translateY(-3.5px); }
-}
-
-@keyframes m-plane-soft-b {
-  0%, 100% { transform: rotate(4deg) translateY(0); }
-  50% { transform: rotate(4deg) translateY(3px); }
-}
-
-:root[data-motion="restrained"] .orrery::before,
-:root[data-motion="restrained"] .orrery::after {
-  animation-duration: 9s;
-  opacity: 0.6;
-}
-
-/* The hero blob is a 1100px blurred surface being scaled 6% forever, which
-   forces a re-raster of the blur every frame. Fade it instead of scaling it. */
-:root[data-motion="restrained"] .hero::before {
-  animation-name: m-glow-fade;
-}
-
-@keyframes m-glow-fade {
-  0%, 100% { opacity: 0.72; }
-  50% { opacity: 0.95; }
-}
-
-/* ============================================================
-   V2 — draft
-   ============================================================
-   Thesis: the page is an instrument, so let it draw itself.
-
-   The copy already commits to this — LIVE ROUTE LAB, SESSION RECOVERY MONITOR,
-   INDEX ONLINE, DEVICE FINGERPRINT — and base.css:345 sets a 24° coral tick as
-   the house mark. This variant makes the motion agree: panels wipe in along that
-   same 24° axis, strokes ink themselves, mono labels type, and readings roll up
-   like a mechanical counter. Nothing floats; everything is drafted.
-   ============================================================ */
-
-:root[data-motion="draft"] {
-  --m-reveal-dur: 720ms;
-  --m-reveal-shift: 0px;          /* wipe replaces the translate entirely */
-  --m-reveal-scale: 1;
-  --m-reveal-ease: var(--m-ease-firm);
-
-  --m-stagger: 52ms;
-  --m-cascade-shift: 0px;
-  --m-cascade-dur: 380ms;
-
-  --m-dur-micro: 130ms;
-  --m-dur-quick: 190ms;
-  --m-ease-hover: var(--m-ease-snap);
-  --m-ease-press: var(--m-ease-snap);
-  --m-dur-indicator: 380ms;
-  --m-dur-swap: 420ms;
-  --m-dur-trace: 1.4s;            /* the ECG gets time to actually draw */
-  --m-dur-seal: 900ms;
-  --m-dur-meter: 900ms;
-
-  --m-dur-glow: 20s;
-  --m-dur-orbit: 30s;
-  --m-dur-orbit-slow: 34s;
-}
-
-/* The 24° wipe.
-
-   Registered so it can be transitioned — a plain custom property is a token
-   stream to the interpolator and would jump rather than sweep. */
-@property --m-wipe {
-  syntax: "<percentage>";
-  inherits: false;
-  initial-value: 0%;
-}
-
-/* A MASK, not a clip-path, and that is not a stylistic preference.
-   `clip-path` participates in intersection geometry: clipping a panel to zero
-   area makes IntersectionObserver report intersectionRatio 0, so `data-visible`
-   never gets set, so the wipe never opens — the section stays blank forever.
-   Verified in-browser: same element, clip-path → ratio 0, mask → ratio 1.
-   A gradient mask also buys a soft leading edge, which reads more like ink
-   spreading than a hard cut. 114deg = 90 + the house 24° tick angle, so the
-   wipe edge is raked to match the marks in base.css:345. */
-:root[data-motion="draft"] [data-reveal] {
-  --m-wipe: 0%;
-  -webkit-mask-image: linear-gradient(
-    114deg,
-    #000 calc(var(--m-wipe) - 26%),
-    transparent var(--m-wipe)
-  );
-  mask-image: linear-gradient(
-    114deg,
-    #000 calc(var(--m-wipe) - 26%),
-    transparent var(--m-wipe)
-  );
-  transition: --m-wipe var(--m-reveal-dur) var(--m-reveal-ease);
-  opacity: 1;
-  transform: none;
-}
-
-:root[data-motion="draft"] [data-reveal][data-visible="true"] {
-  --m-wipe: 152%;
-}
-
-/* Retire the mask layer once it is fully open — at that point it is uniformly
-   opaque, so dropping it is visually a no-op and saves a composited layer. */
-:root[data-motion="draft"] [data-reveal][data-settled="true"] {
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
-/* Wipes cannot nest — an inner clip-path is intersected by the parent's, so a
-   cascading child inside a wiping panel is clipped twice and stutters. Inside
-   `draft`, cascading children fade only. */
-:root[data-motion="draft"] :is([data-reveal] [data-cascade], [data-reveal][data-cascade]) > * {
-  transform: none;
-}
-
-/* Self-inking strokes, applied only where the stroke has no dash pattern of its
-   own to destroy. Three deliberate exclusions:
-
-   · .ecg-line already drives stroke-dashoffset via transition off the phase
-     class (product-recovery.css:809-820); an animation on the same property
-     outranks a transition and would silently kill the recovery sequence.
-   · .seal-guide-dash's dashes ARE its stroke-dasharray (`2 9`), and it rotates.
-   · .route-sketch is the dashed pencil guide (`3 7`) — the whole point of it. */
-:root[data-motion="draft"] .seal-arc,
-:root[data-motion="draft"] .seal-guide:not(.seal-guide-dash) {
-  stroke-dasharray: var(--m-ink-length, 1200);
-  animation: m-ink 1.6s var(--m-ease-firm) both;
-}
-
-/* The route map draws instead, wiping 本机 → 对端. Same gesture as inking, but
-   it leaves both roads' dash patterns intact. */
-:root[data-motion="draft"] [data-reveal] .route-map {
-  clip-path: inset(0 100% 0 0);
-  transition: clip-path 1.5s var(--m-ease-firm) 180ms;
-}
-
-:root[data-motion="draft"] [data-reveal][data-visible="true"] .route-map {
-  clip-path: inset(0 0 0 0);
-}
-
-:root[data-motion="draft"] .seal-arc-b {
-  animation-delay: 0.18s;
-}
-
-@keyframes m-ink {
-  from { stroke-dashoffset: var(--m-ink-length, 1200); }
-  to { stroke-dashoffset: 0; }
-}
-
-/* Mono labels type in. Monospace makes a `ch`-width animation land exactly on
-   glyph boundaries, so it reads as a typewriter rather than a squeeze. */
-:root[data-motion="draft"] [data-reveal][data-visible="true"] .section-marker small,
-:root[data-motion="draft"] [data-reveal][data-visible="true"] .history-eyebrow,
-:root[data-motion="draft"] [data-reveal][data-visible="true"] .recovery-eyebrow {
-  display: inline-block;
-  overflow: hidden;
-  white-space: nowrap;
-  animation: m-type 700ms steps(22, end) 220ms both;
-}
-
-@keyframes m-type {
-  from { max-width: 0; }
-  to { max-width: 24ch; }
-}
-
-/* The tick itself draws down before the label types, so the mark reads as the
-   instrument being set before it takes a reading. */
-:root[data-motion="draft"] [data-reveal] .section-marker::before {
-  transform: rotate(var(--m-tick-angle)) scaleY(0);
-  transform-origin: bottom center;
-  transition: transform 420ms var(--m-ease-firm);
-}
-
-:root[data-motion="draft"] [data-reveal][data-visible="true"] .section-marker::before {
-  transform: rotate(var(--m-tick-angle)) scaleY(1);
-}
-
-/* Readings roll up behind a clip, like a split-flap counter settling. Applies
-   to the stat band and the history summary — the two places the page states a
-   figure and expects you to believe it. */
-:root[data-motion="draft"] .stat-band > div,
-:root[data-motion="draft"] .history-intro-stats > div {
-  overflow: hidden;
-}
-
-:root[data-motion="draft"] .stat-band > div > strong,
-:root[data-motion="draft"] .history-intro-stats > div > strong {
-  display: block;
-  transform: translateY(105%);
-  transition: transform 620ms var(--m-ease-firm);
-  transition-delay: calc(var(--m-stagger) * var(--m-i, 0));
-}
-
-:root[data-motion="draft"] .stat-band[data-visible="true"] > div > strong,
-:root[data-motion="draft"] [data-visible="true"] .history-intro-stats > div > strong {
-  transform: none;
-}
-
-/* ============================================================
-   V3 — weighted
-   ============================================================
-   Thesis: things have mass, and they come from where they belong.
-
-   Two ideas the current page has none of. First, mass: a 900px console and a
-   20px tag arrive on the same curve today, so neither feels like an object.
-   Here weight buys damping — big surfaces settle with ~4% overshoot, small ones
-   snap with ~15%, and body text gets none at all because bouncing type forces
-   the reader to re-fixate. Second, direction: 本机 is on the left of every
-   diagram on this page and 对端 on the right, so entrances honour that.
-   ============================================================ */
-
-:root[data-motion="weighted"] {
+  /* Weighted foundation. */
   --m-reveal-dur: 820ms;
   --m-reveal-shift: 26px;
   --m-reveal-scale: 0.994;
   --m-reveal-ease: var(--m-spring-heavy);
-
   --m-stagger: 58ms;
   --m-cascade-shift: 14px;
   --m-cascade-dur: 620ms;
@@ -492,319 +56,315 @@
   --m-ease-seal: var(--m-spring-heavy);
   --m-dur-meter: 820ms;
   --m-ease-meter: var(--m-spring-heavy);
-  --m-dur-trace: 1.1s;
-
-  --m-dur-glow: 16s;
+  --m-dur-trace: 1.4s;
+  --m-dur-glow: 18s;
+  --m-dur-orbit: 30s;
+  --m-dur-orbit-slow: 34s;
   --m-dur-drift: 7s;
 }
 
-/* Why the panels get the *heavy* spring and not the lively one: body copy rides
-   along inside them. --m-spring-heavy overshoots ~4%, which on a 26px entrance
-   is about one pixel — invisible. --m-spring-light overshoots ~15%, which on the
-   same distance is 4px of vertical bounce under a paragraph, and that is enough
-   to make a reader re-fixate mid-sentence. So the light spring is reserved for
-   [data-cascade] children: chips, tags, medallions, step tiles. Small objects
-   where overshoot reads as personality, and never a block of text. */
+/* ---------- scroll-triggered weighted entrances ---------- */
 
-/* Directional entrances. Left is this machine, right is the peer — every diagram
-   on the page already reads that way, so the motion should too.
-
-   .route-float and .transfer-float are deliberately absent: both already carry
-   the `float-drift` loop, and an animation outranks a transition, so a
-   directional transform on them would be dead CSS. */
-:root[data-motion="weighted"] [data-reveal] .route-tag-lan,
-:root[data-motion="weighted"] [data-reveal] .seal-caption-a {
-  transform: translateX(-28px);
+[data-reveal] {
   opacity: 0;
+  transform: translateY(var(--m-reveal-shift)) scale(var(--m-reveal-scale));
   transition:
-    transform 760ms var(--m-spring-light),
-    opacity 460ms var(--m-ease-enter);
+    opacity var(--m-reveal-dur) var(--m-reveal-ease),
+    transform var(--m-reveal-dur) var(--m-reveal-ease);
+  will-change: opacity, transform;
 }
 
-:root[data-motion="weighted"] [data-reveal] .route-tag-tail,
-:root[data-motion="weighted"] [data-reveal] .seal-caption-b {
-  transform: translateX(28px);
-  opacity: 0;
-  transition:
-    transform 760ms var(--m-spring-light),
-    opacity 460ms var(--m-ease-enter);
-}
-
-:root[data-motion="weighted"] [data-reveal][data-visible="true"] .route-tag-lan,
-:root[data-motion="weighted"] [data-reveal][data-visible="true"] .route-tag-tail,
-:root[data-motion="weighted"] [data-reveal][data-visible="true"] .seal-caption-a,
-:root[data-motion="weighted"] [data-reveal][data-visible="true"] .seal-caption-b {
-  transform: none;
+[data-reveal][data-visible="true"] {
   opacity: 1;
+  transform: none;
 }
 
-/* Press reads as mass: a heavier surface gives less. */
-:root[data-motion="weighted"] .button:active {
-  transform: scale(0.978);
+[data-reveal][data-settled="true"] {
+  will-change: auto;
 }
 
-:root[data-motion="weighted"] .flow-tabs button:active,
-:root[data-motion="weighted"] .recovery-timeline button:active,
-:root[data-motion="weighted"] .history-category-rail button:active {
-  transform: scale(0.99);
-  transition-duration: 90ms;
-}
-
-/* Instrument panels tilt very slightly toward the reader on hover — enough to
-   suggest a held object, well short of a novelty 3D card. */
-:root[data-motion="weighted"] .route-lab,
-:root[data-motion="weighted"] .relay-visual,
-:root[data-motion="weighted"] .recovery-console {
-  transform-style: preserve-3d;
-  transition: transform 620ms var(--m-spring-heavy);
-}
-
-@media (hover: hover) {
-  :root[data-motion="weighted"] .route-lab:hover,
-  :root[data-motion="weighted"] .relay-visual:hover,
-  :root[data-motion="weighted"] .recovery-console:hover {
-    transform: perspective(1400px) rotateX(1.1deg) rotateY(-1.4deg) translateZ(6px);
-  }
-}
-
-/* ============================================================
-   V4 — scrolled
-   ============================================================
-   Thesis: the scroll wheel is the timeline.
-
-   Everywhere else on this page — and in the other three variants — scroll is a
-   trigger: cross a threshold, fire a one-second animation, unobserve, done.
-   Scroll back up and nothing happens, because App.tsx:231 already unobserved
-   the element. Here scroll is the clock instead. Progress is scrubbed, so the
-   page runs backwards when you do, and the reader controls the pace.
-
-   POLARITY IS DELIBERATE. The resting state below is fully visible, and motion
-   is layered on top inside two guards. Written the other way round — hidden by
-   default, revealed by animation — this variant would render blank sections in
-   two separate situations:
-
-     · No `animation-timeline` support: nothing ever reveals it.
-     · prefers-reduced-motion: base.css:441 forces `animation-duration: 0.01ms
-       !important`, which does NOT detach the timeline. A filling keyframe still
-       contributes from the Animation origin, which outranks the normal-author
-       `opacity: 1` in base.css:433 — so the safety net loses and the from-state
-       sticks. Never opt out of motion; only ever opt in.
-   ============================================================ */
-
-:root[data-motion="scrolled"] {
-  --m-dur-glow: 18s;
-  --m-dur-orbit: 26s;
-  --m-dur-quick: 200ms;
-  --m-ease-hover: var(--m-ease-snap);
-}
-
-/* 1 — unconditional resting state: visible, unhinted, untransitioned. This is
-   what a browser without scroll timelines gets, and what reduced motion gets. */
-:root[data-motion="scrolled"] [data-reveal] {
+/* The children own this entrance; translating the container as well would make
+   the four readings travel twice. */
+.stat-band[data-reveal] {
   opacity: 1;
   transform: none;
   transition: none;
   will-change: auto;
 }
 
-/* 2 — the enhancement, gated on both motion preference and actual support. */
-@media (prefers-reduced-motion: no-preference) {
-  @supports (animation-timeline: view()) {
-    :root[data-motion="scrolled"] [data-reveal] {
-      /* The `animation` shorthand RESETS animation-timeline to auto, so the
-         timeline and range must be declared after it — otherwise this silently
-         falls back to the document timeline and plays once on load. */
-      animation: m-scrub-in 1ms linear both;
-      animation-timeline: view();
-      animation-range: entry 8% cover 34%;
-    }
+[data-cascade] > *:nth-child(1) { --m-i: 0; }
+[data-cascade] > *:nth-child(2) { --m-i: 1; }
+[data-cascade] > *:nth-child(3) { --m-i: 2; }
+[data-cascade] > *:nth-child(4) { --m-i: 3; }
+[data-cascade] > *:nth-child(5) { --m-i: 4; }
+[data-cascade] > *:nth-child(6) { --m-i: 5; }
+[data-cascade] > *:nth-child(n + 7) { --m-i: 6; }
 
-    /* Set pieces scrub over a longer range so they assemble as you travel
-       through them rather than snapping complete at the viewport edge. */
-    :root[data-motion="scrolled"] .route-lab,
-    :root[data-motion="scrolled"] .history-console,
-    :root[data-motion="scrolled"] .recovery-console,
-    :root[data-motion="scrolled"] .product-stage,
-    :root[data-motion="scrolled"] .preview-sheet {
-      animation: m-scrub-settle 1ms linear both;
-      animation-timeline: view();
-      animation-range: entry 0% cover 46%;
-    }
+:is([data-reveal] [data-cascade], [data-reveal][data-cascade]) > * {
+  opacity: 0;
+  transform: translateY(var(--m-cascade-shift));
+  transition:
+    opacity var(--m-cascade-dur) var(--m-cascade-ease),
+    transform var(--m-cascade-dur) var(--m-cascade-ease);
+  transition-delay: calc(var(--m-stagger) * var(--m-i, 0));
+}
 
-    /* The orrery is driven by distance travelled instead of elapsed time, so
-       the relay advances because you moved, not because you waited. */
-    :root[data-motion="scrolled"] .orrery-arm {
-      animation: orrery-spin 1ms linear both;
-      animation-timeline: view();
-      animation-range: cover 0% cover 100%;
-    }
+:is(
+  [data-reveal][data-visible="true"] [data-cascade],
+  [data-reveal][data-visible="true"][data-cascade]
+) > * {
+  opacity: 1;
+  transform: none;
+}
 
-    /* PRIVATE and the download grid drift against the scroll for depth. */
-    :root[data-motion="scrolled"] .security-word,
-    :root[data-motion="scrolled"] .history-kinetic-word {
-      animation: m-drift 1ms linear both;
-      animation-timeline: view();
-      animation-range: cover 0% cover 100%;
-    }
+/* Local and peer labels arrive from the side they represent. */
+[data-reveal] .route-tag-lan,
+[data-reveal] .seal-caption-a {
+  opacity: 0;
+  transform: translateX(-28px);
+  transition:
+    transform 760ms var(--m-spring-light),
+    opacity 460ms var(--m-ease-enter);
+}
+
+[data-reveal] .route-tag-tail,
+[data-reveal] .seal-caption-b {
+  opacity: 0;
+  transform: translateX(28px);
+  transition:
+    transform 760ms var(--m-spring-light),
+    opacity 460ms var(--m-ease-enter);
+}
+
+[data-reveal][data-visible="true"] :is(
+  .route-tag-lan,
+  .route-tag-tail,
+  .seal-caption-a,
+  .seal-caption-b
+) {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---------- drafting gestures on the instrument set pieces ---------- */
+
+@property --m-wipe {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
+
+/* Keep the weighted movement, then add a 24-degree drafting wipe only to the
+   visual instruments. Copy remains crisp and readable while the set pieces
+   feel constructed in place. A mask preserves IntersectionObserver geometry. */
+:is(
+  .route-lab,
+  .history-console,
+  .recovery-console,
+  .product-stage,
+  .preview-sheet,
+  .architecture-diagram
+)[data-reveal] {
+  --m-wipe: 0%;
+  -webkit-mask-image: linear-gradient(
+    114deg,
+    #000 calc(var(--m-wipe) - 26%),
+    transparent var(--m-wipe)
+  );
+  mask-image: linear-gradient(
+    114deg,
+    #000 calc(var(--m-wipe) - 26%),
+    transparent var(--m-wipe)
+  );
+  transition:
+    opacity var(--m-reveal-dur) var(--m-reveal-ease),
+    transform var(--m-reveal-dur) var(--m-reveal-ease),
+    --m-wipe 900ms var(--m-ease-firm);
+}
+
+:is(
+  .route-lab,
+  .history-console,
+  .recovery-console,
+  .product-stage,
+  .preview-sheet,
+  .architecture-diagram
+)[data-reveal][data-visible="true"] {
+  --m-wipe: 152%;
+}
+
+:is(
+  .route-lab,
+  .history-console,
+  .recovery-console,
+  .product-stage,
+  .preview-sheet,
+  .architecture-diagram
+)[data-reveal][data-settled="true"] {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* Strokes ink themselves only when their reveal owner enters the viewport. */
+[data-reveal] .seal-arc,
+[data-reveal] .seal-guide:not(.seal-guide-dash) {
+  stroke-dasharray: var(--m-ink-length, 1200);
+  stroke-dashoffset: var(--m-ink-length, 1200);
+}
+
+[data-reveal][data-visible="true"] .seal-arc,
+[data-reveal][data-visible="true"] .seal-guide:not(.seal-guide-dash) {
+  animation: m-ink 1.6s var(--m-ease-firm) both;
+}
+
+[data-reveal][data-visible="true"] .seal-arc-b {
+  animation-delay: 180ms;
+}
+
+@keyframes m-ink {
+  from { stroke-dashoffset: var(--m-ink-length, 1200); }
+  to { stroke-dashoffset: 0; }
+}
+
+[data-reveal] .route-map {
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 1.5s var(--m-ease-firm) 180ms;
+}
+
+[data-reveal][data-visible="true"] .route-map {
+  clip-path: inset(0 0 0 0);
+}
+
+[data-reveal][data-visible="true"] .section-marker small,
+[data-reveal][data-visible="true"] .history-eyebrow,
+[data-reveal][data-visible="true"] .recovery-eyebrow {
+  display: inline-block;
+  max-width: 24ch;
+  overflow: hidden;
+  white-space: nowrap;
+  animation: m-type 700ms steps(22, end) 220ms both;
+}
+
+@keyframes m-type {
+  from { max-width: 0; }
+  to { max-width: 24ch; }
+}
+
+[data-reveal] .section-marker::before {
+  transform: rotate(var(--m-tick-angle)) scaleY(0);
+  transform-origin: bottom center;
+  transition: transform 420ms var(--m-ease-firm);
+}
+
+[data-reveal][data-visible="true"] .section-marker::before {
+  transform: rotate(var(--m-tick-angle)) scaleY(1);
+}
+
+.stat-band > div,
+.history-intro-stats > div {
+  overflow: hidden;
+}
+
+.stat-band > div > strong,
+.history-intro-stats > div > strong {
+  display: block;
+  transform: translateY(105%);
+  transition: transform 620ms var(--m-ease-firm);
+  transition-delay: calc(var(--m-stagger) * var(--m-i, 0));
+}
+
+.stat-band[data-visible="true"] > div > strong,
+[data-visible="true"] .history-intro-stats > div > strong {
+  transform: none;
+}
+
+/* ---------- tactile interaction ---------- */
+
+.button:active {
+  transform: scale(0.978);
+}
+
+.flow-tabs button:active,
+.recovery-timeline button:active,
+.history-category-rail button:active {
+  transform: scale(0.99);
+  transition-duration: 90ms;
+}
+
+.route-lab,
+.relay-visual,
+.recovery-console {
+  transform-style: preserve-3d;
+  transition: transform 620ms var(--m-spring-heavy);
+}
+
+@media (hover: hover) {
+  .route-lab:hover,
+  .relay-visual:hover,
+  .recovery-console:hover {
+    transform: perspective(1400px) rotateX(1.1deg) rotateY(-1.4deg) translateZ(6px);
   }
 }
 
-/* The offstage gate pauses animations to stop time-driven loops burning cycles
-   below the fold. A view()-driven animation is advanced by scroll position, not
-   by a clock, so there is nothing to save — and pausing one freezes it at
-   whatever progress it happened to hold, which is a way to strand a panel
-   mid-fade. These opt back out.
+/* ---------- shared performance and accessibility ---------- */
 
-   Today the gate's 120px rootMargin means a section unpauses before its view()
-   range starts producing visible output, so nothing is stranded in practice.
-   That is a coincidence of two numbers agreeing, not a guarantee; this makes it
-   one. */
-:root[data-motion="scrolled"] [data-offstage="true"] :is(
-  [data-reveal], .orrery-arm, .security-word, .history-kinetic-word
-),
-:root[data-motion="scrolled"] [data-offstage="true"]:is([data-reveal], [data-cascade]) {
-  animation-play-state: running !important;
+[data-offstage="true"] *,
+[data-offstage="true"] *::before,
+[data-offstage="true"] *::after {
+  animation-play-state: paused !important;
 }
 
-@keyframes m-scrub-in {
-  from { opacity: 0; transform: translateY(30px); }
-  to { opacity: 1; transform: none; }
+.scroll-progress {
+  transform: scaleX(var(--scroll-progress, 0));
 }
-
-@keyframes m-scrub-settle {
-  from { opacity: 0; transform: translateY(46px) scale(0.982); }
-  to { opacity: 1; transform: none; }
-}
-
-@keyframes m-drift {
-  from { transform: translateY(-8%); }
-  to { transform: translateY(8%); }
-}
-
-/* The hero dissolves as it leaves. Driven by --hero-progress from
-   useScrollDriver rather than a scroll timeline, so it works identically in
-   every engine and costs one custom-property read. */
-:root[data-motion="scrolled"] .sync-field {
-  opacity: calc(0.85 - var(--hero-progress, 0) * 0.85);
-  transform: translateY(calc(var(--hero-progress, 0) * -60px)) scale(calc(1 + var(--hero-progress, 0) * 0.06));
-}
-
-:root[data-motion="scrolled"] .hero-copy {
-  opacity: calc(1 - var(--hero-progress, 0) * 1.15);
-  transform: translateY(calc(var(--hero-progress, 0) * -34px));
-}
-
-/* ============================================================
-   Reduced motion
-   ============================================================
-   base.css:427-445 already neutralises durations and iteration counts. It does
-   NOT reach two things this file introduces, so they are handled here rather
-   than by widening that block.
-   ============================================================ */
 
 @media (prefers-reduced-motion: reduce) {
-  /* FIRST, restore the reveal.
-
-     base.css:432-436 already says `[data-reveal] { opacity: 1; transform: none }`
-     under reduce. That rule no longer wins: this file re-declares `[data-reveal]`
-     at the same (0,1,0) specificity and loads later, so the resting `opacity: 0`
-     beats the accessibility override — a regression introduced by the token
-     rewrite, not by base.css.
-
-     Restating it here fixes the order. `!important` because a media query adds no
-     specificity, so the variant blocks above would otherwise still outrank it,
-     and because content visibility is not something to leave to a rule count.
-
-     This also has to hold with JavaScript switched off entirely: the point of the
-     reduce path is that nothing waits on the observer. */
   [data-reveal] {
     opacity: 1 !important;
     transform: none !important;
     transition: none !important;
     will-change: auto !important;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
   }
 
-  /* A compressed duration does not detach a progress-based timeline, so sever
-     the timeline outright — and then remove the animation as well.
-
-     Detaching alone is not enough. A filling keyframe still contributes from the
-     Animation origin, which outranks every normal author declaration including
-     base.css:433's `opacity: 1`, so the from-state can win and the panel stays
-     invisible. Where it lands is engine-dependent. `animation-name: none` ends
-     the argument. */
-  * {
-    animation-timeline: auto !important;
-    animation-range: normal !important;
-  }
-
-  :root[data-motion="scrolled"] :is(
-    [data-reveal], .route-lab, .history-console, .recovery-console,
-    .product-stage, .preview-sheet, .orrery-arm, .security-word,
-    .history-kinetic-word
-  ) {
-    animation-name: none !important;
-    opacity: 1 !important;
-    transform: none !important;
-  }
-
-  /* The `draft` wipe is a clip-path, which base.css neutralises the *timing* of
-     but not the *value* — a 0.01ms transition still leaves the element clipped
-     to nothing. Restore the full shape. */
-  :root[data-motion="draft"] [data-reveal] {
-    -webkit-mask-image: none;
-    mask-image: none;
-    opacity: 1;
-  }
-
-  :root[data-motion="draft"] [data-reveal] .route-map {
-    clip-path: none;
-  }
-
-  :root[data-motion="draft"] [data-reveal] .section-marker::before {
-    transform: rotate(var(--m-tick-angle)) scaleY(1);
-  }
-
-  :root[data-motion="draft"] .stat-band > div > strong,
-  :root[data-motion="draft"] .history-intro-stats > div > strong,
-  :root[data-motion="draft"] .section-marker small,
-  :root[data-motion="draft"] .history-eyebrow,
-  :root[data-motion="draft"] .recovery-eyebrow {
-    transform: none;
-    max-width: none;
-    animation: none;
-  }
-
-  /* Same for the directional offsets in `weighted`. */
-  :root[data-motion="weighted"] [data-reveal] :is(
-    .route-tag-lan, .route-tag-tail, .seal-caption-a, .seal-caption-b
-  ) {
-    transform: none;
-    opacity: 1;
-  }
-
-  /* And the scroll-linked hero, which reads a property no timing rule touches. */
-  :root[data-motion="scrolled"] .sync-field {
-    opacity: 0.85;
-    transform: none;
-  }
-
-  :root[data-motion="scrolled"] .hero-copy {
-    opacity: 1;
-    transform: none;
-  }
-
-  /* Cascade children must not be stranded at opacity 0. `!important` earns its
-     place here: the resting rule above is (0,4,0) and this is a safety net, so
-     it has to win outright rather than by a specificity count that a later edit
-     could quietly overturn. base.css:438-444 sets the same precedent.
-
-     It also has to hold WITHOUT JavaScript. Under reduced motion base.css makes
-     every panel visible on its own, not once the observer says so; the cascade
-     children need the same guarantee, or a page where IntersectionObserver never
-     fires would keep 45 of 58 of them at opacity 0 permanently. */
   [data-cascade] > * {
     opacity: 1 !important;
     transform: none !important;
     transition-delay: 0s !important;
+  }
+
+  [data-reveal] :is(
+    .route-tag-lan,
+    .route-tag-tail,
+    .seal-caption-a,
+    .seal-caption-b
+  ) {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  [data-reveal] .route-map {
+    clip-path: none !important;
+  }
+
+  [data-reveal] .section-marker::before {
+    transform: rotate(var(--m-tick-angle)) scaleY(1) !important;
+  }
+
+  .stat-band > div > strong,
+  .history-intro-stats > div > strong,
+  .section-marker small,
+  .history-eyebrow,
+  .recovery-eyebrow {
+    max-width: none !important;
+    transform: none !important;
+    animation: none !important;
+  }
+
+  [data-reveal] .seal-arc,
+  [data-reveal] .seal-guide:not(.seal-guide-dash) {
+    stroke-dashoffset: 0 !important;
+    animation: none !important;
   }
 }

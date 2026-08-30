@@ -18,11 +18,11 @@ export function RecoverySequence() {
     <section className={`recovery-section recovery-phase-${phase}`} id="recovery">
       <div className="recovery-copy" data-reveal>
         <div className="section-marker">
-          <span>08</span>
+          <span>09</span>
           <small>WAKE RECOVERY / MAIN</small>
         </div>
         <span className="recovery-eyebrow"><RefreshCw size={15} /> RESILIENT SESSION</span>
-        <h2>睡一觉，醒来<br /><strong>同步仍在继续。</strong></h2>
+        <h2>设备唤醒后，<br /><strong>同步会自动恢复。</strong></h2>
         <p>
           Windows 或 macOS 从休眠中唤醒后，TailSync 主动探测对端、重建加密会话并恢复剪贴板监听。恢复的文件不会再回传给原发送端，链路重新上线，也不会形成回环。
         </p>

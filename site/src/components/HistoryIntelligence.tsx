@@ -148,16 +148,16 @@ export function HistoryIntelligence() {
       <div className="history-intro" data-reveal>
         <div className="section-marker">
           <span>04</span>
-          <small>SMART HISTORY / V4</small>
+          <small>HISTORY / V4</small>
         </div>
         <div className="history-intro-copy">
           <span className="history-eyebrow"><Tags size={15} /> LOCAL CLASSIFIER / MULTI-LABEL</span>
-          <h2>历史不再只是<br /><strong>按时间堆叠。</strong></h2>
+          <h2>按关键词、类型和日期<br /><strong>找到需要的记录。</strong></h2>
           <p>
-            TailSync 在本地识别八类剪贴板内容，为一条记录保留主标签、次标签与置信度；再用完整日期范围，把需要的那一条迅速找回来。
+            TailSync 在本地把剪贴板历史分为八类，并保存标签和置信度。你可以按关键词、内容类型和日期筛选，常用的记录再长按收藏。
           </p>
         </div>
-        <div className="history-intro-stats" aria-label="智能历史能力摘要" data-cascade>
+        <div className="history-intro-stats" aria-label="历史记录功能摘要" data-cascade>
           <div><strong>08</strong><span>内容分类</span></div>
           <div><strong>V4</strong><span>分类器版本</span></div>
           <div><strong>100%</strong><span>本地处理</span></div>
@@ -166,7 +166,7 @@ export function HistoryIntelligence() {
 
       <div className="history-console" data-reveal ref={ref}>
         <div className="history-console-head">
-          <span><Database size={15} /> HISTORY INTELLIGENCE</span>
+          <span><Database size={15} /> HISTORY INDEX</span>
           <div className="history-console-live"><i /> INDEX ONLINE</div>
           <small>DATABASE / LOCAL / INDEXED</small>
         </div>

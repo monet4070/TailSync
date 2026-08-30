@@ -28,7 +28,7 @@ const formatDetails = [
     zh: "图片",
     en: "IMAGE",
     icon: ImageIcon,
-    lead: "剪贴板位图与图片文件都能直接看。",
+    lead: "直接预览剪贴板位图和常见图片文件。",
     points: [
       "PNG、JPEG、GIF、WebP 文件；剪贴板位图按原始像素绘制",
       "首帧居中适配，最高 8× 缩放，视图旋转，透明棋盘格",
@@ -52,7 +52,7 @@ const formatDetails = [
     zh: "代码",
     en: "CODE",
     icon: Code2,
-    lead: "保守识别的源码，带行号与语法高亮。",
+    lead: "识别为源码后显示行号和语法高亮。",
     points: [
       "内置语法高亮：Windows 覆盖 20 种语言语法，macOS 原生着色",
       "左侧行号栏，纯文本 / 源码手动切换",
@@ -64,7 +64,7 @@ const formatDetails = [
     zh: "Markdown",
     en: "MARKDOWN",
     icon: Hash,
-    lead: "渲染成文章视图，而不是给你看源码。",
+    lead: "按排版后的内容显示，不必阅读 Markdown 源码。",
     points: [
       "标题、段落、嵌套列表 / 任务项、引用、围栏与缩进代码、分割线、竖线表格",
       "净化渲染：不自动加载远程图片、媒体、框架、脚本或样式",
@@ -76,7 +76,7 @@ const formatDetails = [
     zh: "PDF",
     en: "DOCUMENT",
     icon: FileType2,
-    lead: "完整的文档阅读，不只是首页缩图。",
+    lead: "可以翻页、搜索和缩放，不只显示首页缩略图。",
     points: [
       "翻页、可选中文本、按需缩略图导航",
       "异步全文搜索，修饰键 + 滚轮缩放",
@@ -88,7 +88,7 @@ const formatDetails = [
     zh: "docx",
     en: "WORD",
     icon: FileType,
-    lead: "Word 文档两套原生实现，各扬所长。",
+    lead: "Windows 在应用内渲染，macOS 使用系统 Quick Look。",
     points: [
       "Windows 在应用内渲染：页眉、页脚、脚注、分页",
       "macOS 走系统原生 Quick Look 预览路径",
@@ -171,13 +171,13 @@ export function PreviewApp() {
             HISTORY PREVIEW · 06 FORMATS · LOCAL ONLY
           </div>
           <h1 className="preview-hero-title">
-            回头看时，
+            不用先恢复到剪贴板，
             <br />
-            <span>每种内容都完整呈现。</span>
+            <span>直接查看历史内容。</span>
           </h1>
           <p className="preview-hero-lead">
-            剪贴板历史里的每一条，都能在一个独立的预览窗口里原样打开。列表的搜索、筛选、分页、恢复与删除始终不被预览遮挡——
-            图片、文本、代码、Markdown、PDF 与 docx，六种格式各有各的读法，全程本地，负载上限 64 MiB。
+            在历史或收藏中选中一条记录，按空格即可打开独立预览窗口，原列表仍可继续使用。
+            支持图片、文本、代码、Markdown、PDF 和 docx；内容在本地处理，单次预览负载上限为 64 MiB。
           </p>
         </section>
 
@@ -220,9 +220,9 @@ export function PreviewApp() {
               <MousePointerClick size={15} />
               INTERACTION
             </span>
-            <h2>一个键，看完一批。</h2>
+            <h2>用键盘打开和切换预览</h2>
             <p>
-              预览窗口非模态，也不会全局置顶：它随历史窗口一起关闭、跟随最小化，窗口位置按渲染族记忆并约束在当前显示器的可用区域内。标题栏显示当前文件名与位置，例如
+              预览窗口不会挡住历史列表，也不会一直置顶。关闭或最小化历史窗口时，预览窗口会一起响应；应用还会记住不同类型预览窗口的位置。标题栏会显示当前文件名和批次位置，例如
               <code>2 / 6</code>。
             </p>
           </div>
@@ -249,10 +249,10 @@ export function PreviewApp() {
               <ShieldCheck size={15} />
               TRUST &amp; LIMITS
             </span>
-            <h2>看得清楚，也看得安心。</h2>
+            <h2>预览失败时会说明具体原因</h2>
             <p>
-              加载中、超限、不支持、损坏、解密失败与临时传输故障分别呈现，只有可重试的错误才提供重试；
-              无法预览的类型（例如 XLSX）仍给出元数据与恢复入口。
+              超过大小限制、格式不支持、文件损坏、解密失败和临时传输故障会分别提示。
+              无法预览的类型（例如 XLSX）仍会显示元数据，并保留恢复到剪贴板的入口。
             </p>
           </div>
           <div className="preview-guarantee-grid">
@@ -270,7 +270,7 @@ export function PreviewApp() {
         </section>
 
         <section className="preview-cta" data-reveal>
-          <h2>你复制过的一切，都值得被看清。</h2>
+          <h2>下载 TailSync，试试历史预览</h2>
           <div className="preview-cta-actions">
             <a className="button button-primary" href={RELEASE_URL} target="_blank" rel="noreferrer">
               获取 TailSync
@@ -288,7 +288,7 @@ export function PreviewApp() {
           <ArrowLeft size={14} />
           <span>TAILSYNC</span>
         </a>
-        <p>历史富预览 · 全程本地 · 只为你信任的设备而建</p>
+        <p>历史记录预览 · 本地处理 · macOS 与 Windows</p>
         <a href={GITHUB_URL} target="_blank" rel="noreferrer">
           GitHub
           <ArrowUpRight size={13} />
