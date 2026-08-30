@@ -132,6 +132,19 @@ pub(super) async fn receive_scheduled_frame(
     }
 }
 
+pub(super) fn should_reselect_route_after_receipt(
+    command: Command,
+    receipt: &DeliveryReceipt,
+    route: &ResolvedCandidate,
+    candidates: &[ResolvedCandidate],
+) -> bool {
+    command == Command::FileChunk
+        && receipt.resume_required
+        && candidates
+            .iter()
+            .any(|candidate| candidate.candidate.priority < route.candidate.priority)
+}
+
 /// Pull one frame while the worker is offline, dropping stale frames and
 /// retaining the first live frame for the next connection attempt. This is a
 /// non-blocking maintenance pass: fresh frames remain ordered within each
@@ -192,7 +205,7 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
     let mut pending: Option<PendingFrame> = None;
     let mut next_sequence = 1u32;
     let mut priority_streak = 0usize;
-    loop {
+    'connection: loop {
         maintain_offline_queue(
             &mut priority_rx,
             &mut bulk_rx,
@@ -304,7 +317,21 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 result = deliver_pending_frame(&mut stream, &frame, &config.delivery) => result,
             };
             match delivery {
-                Ok(receipt) => frame.complete(Ok(receipt)),
+                Ok(receipt) => {
+                    let reselect_route = should_reselect_route_after_receipt(
+                        frame.queued.command(),
+                        &receipt,
+                        &route,
+                        &candidates,
+                    );
+                    frame.complete(Ok(receipt));
+                    if reselect_route {
+                        log::debug!(
+                            "Receiver requested file batch replay over fallback route {target}; reselecting preferred path"
+                        );
+                        continue 'connection;
+                    }
+                }
                 Err(error) if !error.is_retryable() => {
                     record_permanent_delivery_warning(&hostname, &error);
                     log::warn!("Dropping event rejected by remote peer: {error}");
@@ -384,7 +411,21 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                         result = deliver_pending_frame(&mut stream, &frame, &config.delivery) => result,
                     };
                     match delivery {
-                        Ok(receipt) => frame.complete(Ok(receipt)),
+                        Ok(receipt) => {
+                            let reselect_route = should_reselect_route_after_receipt(
+                                frame.queued.command(),
+                                &receipt,
+                                &route,
+                                &candidates,
+                            );
+                            frame.complete(Ok(receipt));
+                            if reselect_route {
+                                log::debug!(
+                                    "Receiver requested file batch replay over fallback route {target}; reselecting preferred path"
+                                );
+                                continue 'connection;
+                            }
+                        }
                         Err(error) if !error.is_retryable() => {
                             record_permanent_delivery_warning(&hostname, &error);
                             log::warn!("Dropping event rejected by remote peer: {error}");

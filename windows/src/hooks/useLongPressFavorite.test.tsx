@@ -10,17 +10,20 @@ function Harness({
   onComplete,
   onClick = () => {},
   onContextAction = () => {},
+  isFavorite = false,
 }: {
   onComplete: () => void;
   onClick?: () => void;
   onContextAction?: () => void;
+  isFavorite?: boolean;
 }) {
-  const gesture = useLongPressFavorite(onComplete);
+  const gesture = useLongPressFavorite(onComplete, true, isFavorite);
   return (
     <div
       data-testid="row"
       data-charging={gesture.isCharging ? "true" : "false"}
       data-triggered={gesture.isTriggered ? "true" : "false"}
+      data-triggered-action={gesture.triggeredAction ?? "none"}
       onPointerDown={gesture.onPointerDown}
       onPointerMove={gesture.onPointerMove}
       onPointerUp={gesture.onPointerUp}
@@ -59,9 +62,22 @@ describe("useLongPressFavorite", () => {
     act(() => vi.advanceTimersByTime(1));
     expect(onComplete).toHaveBeenCalledOnce();
     expect(row).toHaveAttribute("data-triggered", "true");
+    expect(row).toHaveAttribute("data-triggered-action", "favorite");
 
     fireEvent.pointerUp(row, { pointerId: 1 });
     expect(onComplete).toHaveBeenCalledOnce();
+  });
+
+  it("retains the unfavorite direction for the macOS-style release animation", () => {
+    const onComplete = vi.fn();
+    render(<Harness onComplete={onComplete} isFavorite />);
+    const row = screen.getByTestId("row");
+
+    fireEvent.pointerDown(row, { button: 0, pointerId: 7, clientX: 20, clientY: 20 });
+    act(() => vi.advanceTimersByTime(LONG_PRESS_GRACE_MS + LONG_PRESS_CHARGE_MS));
+
+    expect(onComplete).toHaveBeenCalledOnce();
+    expect(row).toHaveAttribute("data-triggered-action", "unfavorite");
   });
 
   it("ends the transient completion stamp without re-enabling the same click", () => {

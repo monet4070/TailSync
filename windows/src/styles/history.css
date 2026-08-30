@@ -609,19 +609,16 @@ html, body {
 /* Keyboard-selected row.  This is separate from `.restored`, which is a
    short-lived acknowledgement after a double-click restore. */
 .history-item.focused {
-  background: var(--theme-history-focus-background, var(--bg-card));
-  color: var(--theme-history-focus-foreground, var(--text-primary));
-  box-shadow:
-    inset 0 0 0 1px var(--theme-history-focus-border, var(--brand)),
-    0 0 0 1px color-mix(
-      in srgb,
-      var(--theme-history-focus-focus-ring, var(--brand)) 36%,
-      transparent
-    );
+  background: var(--theme-history-default-background, transparent);
+  color: var(--theme-history-default-foreground, var(--text-primary));
+  outline-width: 1px;
+  outline-style: solid;
+  outline-color: var(--theme-history-focus-focus-ring, var(--brand));
+  outline-offset: -1px;
 }
 
 .history-item.focused:hover {
-  background: var(--theme-history-focus-background, var(--bg-card));
+  background: var(--theme-history-default-background, transparent);
 }
 
 .history-item:focus-visible {
@@ -661,10 +658,14 @@ html, body {
   opacity: 1;
 }
 
-.history-item.favorite-triggered:not(.is-favorite) .favorite-press-progress {
-  transform: scaleX(0);
+.history-item.favorite-triggered-unfavorite:not(.is-favorite) .favorite-press-progress {
   opacity: 1;
-  transition: transform 0.42s linear, opacity 0.12s ease-out 0.42s;
+  animation: favorite-fill-release 0.42s linear both;
+}
+
+@keyframes favorite-fill-release {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
 }
 
 .favorite-stamp {
@@ -687,10 +688,15 @@ html, body {
   transform: scale(1) rotate(0deg);
 }
 
-.history-item.favorite-triggered .favorite-stamp {
+.history-item.favorite-triggered-favorite .favorite-stamp {
   opacity: 0.9;
   transform: scale(1) rotate(0deg);
   animation: favorite-stamp-pop 0.36s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.history-item.favorite-triggered-unfavorite .favorite-stamp {
+  opacity: 0.9;
+  transform: scale(1) rotate(0deg);
 }
 
 @keyframes favorite-stamp-pop {

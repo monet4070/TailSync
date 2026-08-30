@@ -194,6 +194,7 @@ describe("History item actions", () => {
 
     expect(row).toHaveClass("is-favorite");
     expect(row).toHaveClass("favorite-triggered");
+    expect(row).toHaveClass("favorite-triggered-favorite");
     expect(row?.querySelectorAll(".favorite-stamp")).toHaveLength(1);
     expect(row?.querySelector(".pin-entry")).toBeNull();
     expect(screen.queryByRole("button", { name: "history.unpin" })).toBeNull();
@@ -213,6 +214,7 @@ describe("History item actions", () => {
 
     expect(row).not.toHaveClass("is-favorite");
     expect(row).toHaveClass("favorite-triggered");
+    expect(row).toHaveClass("favorite-triggered-unfavorite");
     act(() => vi.advanceTimersByTime(549));
     expect(row).toHaveClass("favorite-triggered");
     act(() => vi.advanceTimersByTime(1));

@@ -47,16 +47,15 @@ describe("favorite history-row surface", () => {
       candidate.selectorText === ".favorite-press-progress",
     );
     const releasing = rules.find((candidate) =>
-      candidate.selectorText === ".history-item.favorite-triggered:not(.is-favorite) .favorite-press-progress",
+      candidate.selectorText === ".history-item.favorite-triggered-unfavorite:not(.is-favorite) .favorite-press-progress",
     );
 
     expect(favorite).toBeDefined();
     expect(favorite?.style.transform).toBe("scaleX(1)");
     expect(favorite?.style.opacity).toBe("1");
     expect(progress?.style.transition).toContain("transform 0.42s linear");
-    expect(releasing?.style.transform).toBe("scaleX(0)");
     expect(releasing?.style.opacity).toBe("1");
-    expect(releasing?.style.transition).toContain("opacity 0.12s ease-out 0.42s");
+    expect(releasing?.style.animation).toContain("favorite-fill-release 0.42s linear");
   });
 
   it("keeps one animated favorite stamp aligned to the footer edge", () => {
@@ -64,8 +63,11 @@ describe("favorite history-row surface", () => {
     const stamp = rules.find((candidate) =>
       candidate.selectorText === ".favorite-stamp",
     );
-    const triggered = rules.find((candidate) =>
-      candidate.selectorText === ".history-item.favorite-triggered .favorite-stamp",
+    const favoriteTriggered = rules.find((candidate) =>
+      candidate.selectorText === ".history-item.favorite-triggered-favorite .favorite-stamp",
+    );
+    const unfavoriteTriggered = rules.find((candidate) =>
+      candidate.selectorText === ".history-item.favorite-triggered-unfavorite .favorite-stamp",
     );
 
     expect(stamp).toBeDefined();
@@ -73,7 +75,9 @@ describe("favorite history-row surface", () => {
     expect(stamp?.style.flex).toBe("0 0 18px");
     expect(stamp?.style.marginLeft).toBe("auto");
     expect(stamp?.style.transition).toContain("opacity");
-    expect(triggered?.style.animation).toContain("favorite-stamp-pop");
+    expect(favoriteTriggered?.style.animation).toContain("favorite-stamp-pop");
+    expect(unfavoriteTriggered?.style.opacity).toBe("0.9");
+    expect(unfavoriteTriggered?.style.animation).toBe("");
   });
 });
 
@@ -89,10 +93,12 @@ describe("focused history-row surface", () => {
     );
 
     expect(focused).toBeDefined();
-    expect(focused?.style.background).toContain("--theme-history-focus-background");
-    expect(focused?.style.boxShadow).toContain("--theme-history-focus-border");
+    expect(focused?.style.background).toContain("--theme-history-default-background");
+    expect(focused?.style.background).not.toContain("--theme-history-focus-background");
+    expect(focused?.style.outlineWidth).toBe("1px");
+    expect(focused?.style.outlineOffset).toBe("-1px");
     expect(selected).toBeDefined();
-    expect(selected?.style.background).toContain("--theme-history-focus-background");
-    expect(selected?.style.color).toContain("--theme-history-focus-foreground");
+    expect(selected?.style.background).toContain("--theme-history-default-background");
+    expect(selected?.style.color).toContain("--theme-history-default-foreground");
   });
 });

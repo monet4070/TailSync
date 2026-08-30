@@ -1004,6 +1004,157 @@ async fn worker_delivers_frames_and_registers_session() {
 }
 
 #[tokio::test]
+async fn worker_reselects_the_preferred_route_after_receiver_requests_batch_replay() {
+    let (fallback_client, fallback_server) = tokio::io::duplex(64 * 1024);
+    let (preferred_client, preferred_server) = tokio::io::duplex(64 * 1024);
+    let fallback = resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2");
+    let preferred = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    let adapter = std::sync::Arc::new(scripted_adapter(vec![
+        Ok((
+            MemoryConnection {
+                io: fallback_client,
+            },
+            fallback.clone(),
+        )),
+        Ok((
+            MemoryConnection {
+                io: preferred_client,
+            },
+            preferred.clone(),
+        )),
+    ]));
+
+    // The receiver has restarted and no longer has the in-memory batch
+    // transaction. It asks the sender to replay the batch from its persisted
+    // offset while the first route race has temporarily landed on Tailscale.
+    let fallback_task = tokio::spawn(async move {
+        let mut server = MemoryConnection {
+            io: fallback_server,
+        };
+        let frame = server.read_frame().await.unwrap();
+        assert_eq!(frame.command, Command::FileChunk);
+        let resume = FileOffset {
+            transfer_id: TransferId([0x44; 16]),
+            next_offset: 4096,
+        };
+        server
+            .write_frame(
+                &Frame::try_new(Command::FileResume, 0, frame.sequence, resume.encode()).unwrap(),
+            )
+            .await
+            .unwrap();
+        std::future::pending::<()>().await;
+    });
+    let preferred_task = tokio::spawn(async move {
+        let _server = MemoryConnection {
+            io: preferred_server,
+        };
+        std::future::pending::<()>().await;
+    });
+
+    let (priority_tx, priority_rx) = mpsc::channel(4);
+    let (bulk_tx, bulk_rx) = mpsc::channel(4);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    let adapter_for_worker = adapter.clone();
+    let worker = tokio::spawn(async move {
+        run_connection_worker(
+            adapter_for_worker.as_ref(),
+            &fast_worker_config(),
+            vec![preferred, fallback],
+            "peer".into(),
+            priority_rx,
+            bulk_rx,
+            shutdown_rx,
+        )
+        .await
+    });
+
+    let (completion_tx, mut completion_rx) = oneshot::channel();
+    priority_tx
+        .send(
+            QueuedFrame::confirmed_file(
+                Command::FileChunk,
+                vec![0u8; 8],
+                TransferId([0x44; 16]),
+                completion_tx,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let receipt = timeout(Duration::from_secs(2), &mut completion_rx)
+        .await
+        .expect("receiver resume receipt")
+        .unwrap()
+        .unwrap();
+    assert!(receipt.resume_required);
+    timeout(Duration::from_millis(500), async {
+        while adapter.sessions.lock().unwrap().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a receiver replay request must trigger a fresh preferred-route race");
+
+    {
+        let sessions = adapter.sessions.lock().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].1, ConnectionInterface::Tailscale);
+        assert_eq!(sessions[1].1, ConnectionInterface::Lan);
+    }
+
+    drop(priority_tx);
+    drop(bulk_tx);
+    timeout(Duration::from_secs(2), worker)
+        .await
+        .unwrap()
+        .unwrap();
+    fallback_task.abort();
+    preferred_task.abort();
+}
+
+#[test]
+fn receiver_replay_reselects_only_file_chunks_sent_over_a_fallback_route() {
+    let preferred = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    let fallback = resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2");
+    let candidates = [preferred.clone(), fallback.clone()];
+    let replay = DeliveryReceipt {
+        next_offset: Some(4096),
+        resume_required: true,
+    };
+    let accepted = DeliveryReceipt {
+        next_offset: Some(4096),
+        resume_required: false,
+    };
+
+    assert!(super::worker::should_reselect_route_after_receipt(
+        Command::FileChunk,
+        &replay,
+        &fallback,
+        &candidates,
+    ));
+    assert!(!super::worker::should_reselect_route_after_receipt(
+        Command::FileMeta,
+        &replay,
+        &fallback,
+        &candidates,
+    ));
+    assert!(!super::worker::should_reselect_route_after_receipt(
+        Command::FileChunk,
+        &replay,
+        &preferred,
+        &candidates,
+    ));
+    assert!(!super::worker::should_reselect_route_after_receipt(
+        Command::FileChunk,
+        &accepted,
+        &fallback,
+        &candidates,
+    ));
+}
+
+#[tokio::test]
 async fn worker_reaches_connect_when_refresh_hangs() {
     // Regression: a wedged candidate refresh (settings-lock contention or a
     // stalled settings task) must not park the worker before it connects.

@@ -13,12 +13,16 @@ interface ActivePointer {
   id: number;
   x: number;
   y: number;
+  action: FavoriteTriggerAction;
 }
+
+export type FavoriteTriggerAction = "favorite" | "unfavorite";
 
 export interface LongPressFavoriteResult {
   progress: number;
   isCharging: boolean;
   isTriggered: boolean;
+  triggeredAction: FavoriteTriggerAction | null;
   suppressClick: () => boolean;
   suppressContextMenu: () => boolean;
   cancel: () => void;
@@ -39,6 +43,7 @@ export interface LongPressFavoriteResult {
 export function useLongPressFavorite(
   onComplete: () => void,
   enabled = true,
+  isFavorite = false,
 ): LongPressFavoriteResult {
   const activePointer = useRef<ActivePointer | null>(null);
   const graceTimer = useRef<number | null>(null);
@@ -47,7 +52,7 @@ export function useLongPressFavorite(
   const triggeredRef = useRef(false);
   const [progress, setProgress] = useState(0);
   const [isCharging, setIsCharging] = useState(false);
-  const [isTriggered, setIsTriggered] = useState(false);
+  const [triggeredAction, setTriggeredAction] = useState<FavoriteTriggerAction | null>(null);
 
   const clearTimers = useCallback(() => {
     if (graceTimer.current !== null) {
@@ -82,13 +87,14 @@ export function useLongPressFavorite(
     clearTimers();
     clearStampTimer();
     triggeredRef.current = false;
-    setIsTriggered(false);
+    setTriggeredAction(null);
     setIsCharging(false);
     setProgress(0);
     activePointer.current = {
       id: event.pointerId,
       x: event.clientX,
       y: event.clientY,
+      action: isFavorite ? "unfavorite" : "favorite",
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
 
@@ -102,15 +108,15 @@ export function useLongPressFavorite(
         if (!current || current.id !== event.pointerId) return;
         triggeredRef.current = true;
         setIsCharging(false);
-        setIsTriggered(true);
+        setTriggeredAction(current.action);
         onComplete();
         stampTimer.current = window.setTimeout(() => {
           stampTimer.current = null;
-          setIsTriggered(false);
+          setTriggeredAction(null);
         }, FAVORITE_STAMP_VISIBLE_MS);
       }, LONG_PRESS_CHARGE_MS);
     }, LONG_PRESS_GRACE_MS);
-  }, [clearStampTimer, clearTimers, enabled, onComplete]);
+  }, [clearStampTimer, clearTimers, enabled, isFavorite, onComplete]);
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     const pointer = activePointer.current;
@@ -146,7 +152,8 @@ export function useLongPressFavorite(
   return {
     progress,
     isCharging,
-    isTriggered,
+    isTriggered: triggeredAction !== null,
+    triggeredAction,
     suppressClick,
     suppressContextMenu,
     cancel,

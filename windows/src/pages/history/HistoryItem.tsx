@@ -65,6 +65,8 @@ export function HistoryItem({
   const CategoryIcon = CATEGORY_ICONS[category];
   const longPress = useLongPressFavorite(
     () => void handleFavoriteChange(entry),
+    true,
+    entry.pinned,
   );
   const rowStyle: FavoriteStyle = {
     animationDelay: isExpandedBatchReveal
@@ -85,6 +87,8 @@ export function HistoryItem({
         entry.pinned && "is-favorite",
         longPress.isCharging && "favorite-charging",
         longPress.isTriggered && "favorite-triggered",
+        longPress.triggeredAction === "favorite" && "favorite-triggered-favorite",
+        longPress.triggeredAction === "unfavorite" && "favorite-triggered-unfavorite",
         isExpandedBatchReveal && "batch-expanded-item",
         isPageEnterItem && "page-enter-item",
       ].filter(Boolean).join(" ")}
