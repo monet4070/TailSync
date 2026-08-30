@@ -154,31 +154,34 @@ export function HistoryItem({
             <ArrowLeftRight className="item-peer-icon" size={11} strokeWidth={1.8} aria-hidden="true" />
             {entry.source_peer}
           </span>
+          {(entry.pinned || longPress.isTriggered) && (
+            <span className="favorite-stamp" aria-hidden="true">
+              <Star size={13} fill="currentColor" />
+            </span>
+          )}
         </div>
         <div className="item-desc" title={entry.description}>
           {entry.description}
         </div>
         <div className="item-footer">
           <span className="item-size">{formatSize(entry.size_bytes)}</span>
-          <button
-            className={`pin-entry${entry.pinned ? " active" : ""}`}
-            type="button"
-            title={entry.pinned ? t("history.unpin") : t("history.pin")}
-            aria-label={entry.pinned ? t("history.unpin") : t("history.pin")}
-            aria-pressed={entry.pinned}
-            onClick={(event) => {
-              event.stopPropagation();
-              void handleFavoriteChange(entry);
-            }}
-          >
-            <Star size={12} fill={entry.pinned ? "currentColor" : "none"} aria-hidden="true" />
-          </button>
+          {longPress.isTriggered && (
+            <button
+              className={`pin-entry${entry.pinned ? " active" : ""}`}
+              type="button"
+              title={entry.pinned ? t("history.unpin") : t("history.pin")}
+              aria-label={entry.pinned ? t("history.unpin") : t("history.pin")}
+              aria-pressed={entry.pinned}
+              onClick={(event) => {
+                event.stopPropagation();
+                void handleFavoriteChange(entry);
+              }}
+            >
+              <Star size={12} fill={entry.pinned ? "currentColor" : "none"} aria-hidden="true" />
+            </button>
+          )}
         </div>
       </div>
-
-      <span className="favorite-stamp" aria-hidden="true">
-        <Star size={13} fill="currentColor" />
-      </span>
     </article>
   );
 }

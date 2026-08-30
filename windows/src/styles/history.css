@@ -655,15 +655,13 @@ html, body {
 }
 
 .favorite-stamp {
-  position: absolute;
-  top: 5px;
-  right: 7px;
-  z-index: 2;
+  position: static;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin-left: 1px;
   color: var(--brand);
   opacity: 0;
   transform: scale(0.72) rotate(-12deg);

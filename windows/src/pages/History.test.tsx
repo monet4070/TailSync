@@ -1,6 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Favorites, History } from "./History";
+import {
+  LONG_PRESS_CHARGE_MS,
+  LONG_PRESS_GRACE_MS,
+} from "../hooks/useLongPressFavorite";
 
 const {
   invokeMock,
@@ -46,7 +50,22 @@ const entry = {
 };
 let defaultEntryPinned = false;
 
+function completeLongPress(row: HTMLElement, pointerId: number) {
+  fireEvent.pointerDown(row, {
+    button: 0,
+    pointerId,
+    clientX: 20,
+    clientY: 20,
+  });
+  act(() => {
+    vi.advanceTimersByTime(LONG_PRESS_GRACE_MS + LONG_PRESS_CHARGE_MS);
+  });
+  fireEvent.pointerUp(row, { pointerId });
+}
+
 describe("History item actions", () => {
+  afterEach(() => vi.useRealTimers());
+
   beforeEach(() => {
     localStorage.clear();
     defaultEntryPinned = false;
@@ -141,6 +160,8 @@ describe("History item actions", () => {
     expect(document.querySelector(".item-actions")).toBeNull();
     expect(screen.queryByRole("button", { name: /history\.restoreEntry/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /history\.deleteEntry/ })).toBeNull();
+    expect(item?.querySelector(".pin-entry")).toBeNull();
+    expect(screen.queryByRole("button", { name: "history.pin" })).toBeNull();
 
     invokeMock.mockClear();
     fireEvent.doubleClick(item!);
@@ -153,6 +174,27 @@ describe("History item actions", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("delete_entry", { id: entry.id });
     });
+  });
+
+  it("reveals the favorite action only after a completed long press", async () => {
+    render(<History />);
+
+    const row = (await screen.findByText(entry.description))
+      .closest<HTMLElement>(".history-item");
+    expect(row).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "history.pin" })).toBeNull();
+    expect(row?.querySelector(".favorite-stamp")).toBeNull();
+
+    vi.useFakeTimers();
+    completeLongPress(row!, 21);
+
+    expect(row).toHaveClass("is-favorite");
+    expect(screen.getByRole("button", { name: "history.unpin" })).toBeInTheDocument();
+    const meta = row!.querySelector<HTMLElement>(".item-meta");
+    const stamp = row!.querySelector<HTMLElement>(".favorite-stamp");
+    expect(stamp).not.toBeNull();
+    expect(meta).toContainElement(stamp);
+    expect(row?.querySelector(".item-content > .favorite-stamp")).toBeNull();
   });
 
   it("protects a favorite from the history context-menu deletion path", async () => {
@@ -231,7 +273,11 @@ describe("History item actions", () => {
     render(<History />);
     const sibling = (await screen.findByText("pending-b.txt"))
       .closest<HTMLElement>(".history-item");
-    fireEvent.click(screen.getAllByTitle("history.pin")[0]);
+    const firstRow = (await screen.findByText("pending-a.txt"))
+      .closest<HTMLElement>(".history-item");
+    vi.useFakeTimers();
+    completeLongPress(firstRow!, 22);
+    vi.useRealTimers();
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_history_favorite", {
         id: 8,
@@ -239,7 +285,7 @@ describe("History item actions", () => {
       });
     });
     await waitFor(() => {
-      expect(screen.getAllByTitle("history.unpin")).toHaveLength(2);
+      expect(screen.getAllByTitle("history.unpin")).toHaveLength(1);
     });
     expect(sibling).toHaveClass("is-favorite");
 
@@ -257,7 +303,7 @@ describe("History item actions", () => {
         .filter(([command]) => command === "get_history_page").length)
         .toBeGreaterThan(historyCallCountBeforeRefresh);
     });
-    expect(screen.getAllByTitle("history.unpin")).toHaveLength(2);
+    expect(screen.queryByTitle("history.unpin")).toBeNull();
     expect(sibling).toHaveClass("is-favorite");
 
     fireEvent.contextMenu(sibling!);
@@ -265,7 +311,7 @@ describe("History item actions", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("delete_favorite_entry", { id: 9 });
 
     resolveFavorite({ affected_ids: [8, 9], favorite: true });
-    expect(screen.getAllByTitle("history.unpin")).toHaveLength(2);
+    expect(screen.queryByTitle("history.unpin")).toBeNull();
   });
 
   it("reverts the optimistic favorite tint when the update fails", async () => {
@@ -305,7 +351,9 @@ describe("History item actions", () => {
       .closest<HTMLElement>(".history-item");
     expect(row).not.toBeNull();
 
-    fireEvent.click(screen.getByTitle("history.pin"));
+    vi.useFakeTimers();
+    completeLongPress(row!, 23);
+    vi.useRealTimers();
     await waitFor(() => {
       expect(row).toHaveClass("is-favorite");
       expect(screen.getByTitle("history.unpin")).toBeInTheDocument();
@@ -520,17 +568,7 @@ describe("History item actions", () => {
     }
     expect(invokeMock).not.toHaveBeenCalledWith("open_preview_window", expect.anything());
 
-    const pin = screen.getByTitle("history.pin");
-    pin.focus();
-    const buttonSpace = new KeyboardEvent("keydown", {
-      key: " ",
-      code: "Space",
-      bubbles: true,
-      cancelable: true,
-    });
-    pin.dispatchEvent(buttonSpace);
-    expect(buttonSpace.defaultPrevented).toBe(false);
-    expect(invokeMock).not.toHaveBeenCalledWith("open_preview_window", expect.anything());
+    expect(screen.queryByTitle("history.pin")).toBeNull();
   });
 
   it("keeps search and filters in one compact toolbar", async () => {
@@ -724,7 +762,11 @@ describe("History item actions", () => {
     });
 
     invokeMock.mockClear();
-    fireEvent.click(screen.getAllByTitle("history.pin")[0]);
+    const firstRow = (await screen.findByText("report.pdf"))
+      .closest<HTMLElement>(".history-item");
+    vi.useFakeTimers();
+    completeLongPress(firstRow!, 24);
+    vi.useRealTimers();
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("set_history_favorite", {
         id: 11,
@@ -732,7 +774,7 @@ describe("History item actions", () => {
       });
     });
     await waitFor(() => {
-      expect(screen.getAllByTitle("history.unpin")).toHaveLength(2);
+      expect(screen.getAllByTitle("history.unpin")).toHaveLength(1);
     });
   });
 

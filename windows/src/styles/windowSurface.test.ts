@@ -52,4 +52,14 @@ describe("favorite history-row surface", () => {
     expect(favorite?.style.opacity).toBe("1");
     expect(progress?.style.transition).toContain("transform 0.42s linear");
   });
+
+  it("keeps the favorite stamp in the metadata flow instead of overlaying text", () => {
+    const stamp = rulesFrom("src/styles/history.css").find((candidate) =>
+      candidate.selectorText === ".favorite-stamp",
+    );
+
+    expect(stamp).toBeDefined();
+    expect(stamp?.style.position).toBe("static");
+    expect(stamp?.style.flex).toBe("0 0 18px");
+  });
 });
