@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUpRight,
+  CalendarDays,
   Check,
   ClipboardCopy,
   Clock3,
@@ -88,23 +89,23 @@ const routeCopy: Record<
 > = {
   auto: {
     eyebrow: "AUTO / ROUTE 01",
-    title: "自动选择连接方式",
+    title: "先走最快的路。",
     description:
-      "两台设备在同一局域网时优先直连；局域网不可用时，如果它们在同一 Tailnet，TailSync 会自动改走 Tailscale。",
+      "TailSync 持续验证 LAN 与 Tailscale 路径。局域网可达时优先直连，离开同一网络后自动切换。",
     interface: "LAN 优先 · Tailscale 待命",
   },
   lan: {
     eyebrow: "LAN ONLY / ROUTE 02",
-    title: "只在局域网内同步",
+    title: "留在你的网络里。",
     description:
-      "设备发现和内容传输都留在当前局域网，适合只在家里或办公室使用。",
+      "仅在局域网发现设备与传输内容。路径更短，也不会把数据交给一个额外的云端中转层。",
     interface: "mDNS / DNS-SD · TCP 19890",
   },
   tailscale: {
     eyebrow: "TAILSCALE / ROUTE 03",
-    title: "不在同一网络也能同步",
+    title: "跨过网络边界。",
     description:
-      "两台设备加入同一 Tailnet 后即可连接。TailSync 会检查应用是否真的可用，不只看设备是否在线。",
+      "通过同一 Tailnet 连接远端设备。TailSync 仍会主动检查应用服务，而不是只相信设备在线状态。",
     interface: "Tailnet · 主动健康检查",
   },
 };
@@ -122,7 +123,7 @@ const flowData: Record<
   text: {
     label: "文本",
     index: "01",
-    title: "文本直接到另一台设备",
+    title: "一段想法，瞬间接力。",
     meta: "ACK · 去重 · 本地历史",
     description:
       "复制代码、链接或段落。另一台设备收到确认后写入剪贴板，并保留可搜索、可恢复的本地历史。",
@@ -130,7 +131,7 @@ const flowData: Record<
   image: {
     label: "图片",
     index: "02",
-    title: "截图和图片按原图同步",
+    title: "像素保持完整。",
     meta: "原图同步 · 本地缩略图",
     description:
       "截图和图片以原始内容同步，历史预览在本地生成。无需先保存文件，也无需经过聊天窗口。",
@@ -138,7 +139,7 @@ const flowData: Record<
   file: {
     label: "文件",
     index: "03",
-    title: "文件断线后可以继续传",
+    title: "大文件也知道从哪继续。",
     meta: "1 MiB 分块 · Blake3 校验",
     description:
       "文件按块传输、逐段确认。运行期间短暂断线后可以从已确认偏移继续，而不是重新开始。",
@@ -150,11 +151,11 @@ const flowData: Record<
 // codebase supports — LAN latency depends entirely on the user's network, so
 // publishing a fixed number was a falsifiable claim for no benefit.
 const heroStats = [
-  { value: "03", label: "历史 · 收藏 · 预览窗口" },
+  { value: PRODUCT_FACTS.batchBytesLabel, label: "单次原子文件批次上限" },
   { value: "0", label: "云端中转 · 数据不出网" },
   {
     value: String(PRODUCT_FACTS.categoryCount).padStart(2, "0"),
-    label: "本地内容分类",
+    label: "本地智能内容分类",
   },
   { value: "E2E", label: "Noise XX 端到端加密" },
 ];
@@ -326,8 +327,8 @@ function App() {
               <span>深色</span>
             </button>
           </div>
-          <a href="#routing" onClick={closeMenu}>连接</a>
-          <a href="#history" onClick={closeMenu}>历史</a>
+          <a href="#routing" onClick={closeMenu}>智能路由</a>
+          <a href="#history" onClick={closeMenu}>智能历史</a>
           <a href="#favorites" onClick={closeMenu}>收藏</a>
           <a href="#security" onClick={closeMenu}>安全</a>
           <a href="/themes.html">主题工坊</a>
@@ -348,24 +349,20 @@ function App() {
           <div className="hero-copy">
             <div className="hero-kicker">
               <span className="live-dot" />
-              TailSync {PRODUCT_VERSION} · Mac 与 Windows 剪贴板同步
+              TailSync {PRODUCT_VERSION} · 本地优先的跨设备剪贴板
             </div>
-            <h1 id="hero-title">
-              在一台设备复制，
-              <br />
-              <span>另一台直接粘贴。</span>
-            </h1>
+            <h1 id="hero-title">复制。<span>穿过设备边界。</span></h1>
             <p>
-              TailSync 在 Mac 和 Windows 之间同步文本、图片和文件。内容可以从本地历史找回，也可以长按收藏。
-              局域网可用时直连，远程时通过 Tailscale，数据不经过 TailSync 的云端服务器。
+              TailSync 让文本、图片和文件在 Mac 与 Windows 之间直接流动。
+              局域网优先，Tailscale 兜底；智能历史自动分类，休眠唤醒后自动恢复，全程加密且不依赖云端剪贴板。
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href={RELEASE_URL} target="_blank" rel="noreferrer">
                 <Download size={17} />
-                下载 TailSync
+                获取 TailSync
               </a>
-              <a className="button button-quiet" href="#favorites">
-                了解收藏功能
+              <a className="button button-quiet" href="#routing">
+                了解如何工作
                 <ArrowDown size={15} />
               </a>
             </div>
@@ -394,14 +391,14 @@ function App() {
                 <small>WHY TAILSYNC</small>
               </div>
               <p className="manifesto-lead">
-                如果你经常在 Mac 和 Windows 之间切换，
-                <strong>复制内容不该还要靠聊天软件或临时文件。</strong>
+                剪贴板本来就该像你的手一样，
+                <strong>跟着你，而不是困在某一台设备里。</strong>
               </p>
               <div className="manifesto-note">
                 <CloudOff size={26} strokeWidth={1.5} />
                 <p>
-                  TailSync 不提供云端收件箱。内容只在你的设备之间传输，
-                  同一网络时走局域网，远程连接时使用你自己的 Tailscale 网络。
+                  没有云端收件箱，也没有把内容发给自己的临时聊天。
+                  TailSync 在你拥有的网络与设备之间建立一条可信通道。
                 </p>
               </div>
             </div>
@@ -523,11 +520,7 @@ function App() {
               <span>03</span>
               <small>ONE CLIPBOARD</small>
             </div>
-            <h2>
-              文本、图片和文件，
-              <br />
-              <span>使用各自合适的同步方式。</span>
-            </h2>
+            <h2>不只是一行字。<span>每种内容，都有自己的传输逻辑。</span></h2>
           </div>
 
           <div className="flow-workbench" data-reveal>
@@ -578,14 +571,10 @@ function App() {
               <span>06</span>
               <small>RICH PREVIEW</small>
             </div>
-            <h2>
-              从历史记录直接打开预览
-              <br />
-              <span>支持六种常用格式。</span>
-            </h2>
+            <h2>同步之后，回头看。<span>每种内容，都完整呈现。</span></h2>
             <p>
-              在历史或收藏中选中一条记录，按空格即可打开独立预览窗口，原来的列表仍可继续使用。
-              支持图片、文本、代码、Markdown、PDF 和 docx。
+              历史里的每一条，都能在一个独立的预览窗口里原样打开——不打断列表的搜索、筛选与恢复。
+              图片、文本、代码、Markdown、PDF 与 docx，六种格式各有各的读法。
             </p>
             <div className="preview-facts" data-cascade>
               <span><Eye size={15} /> 独立非模态窗口</span>
@@ -619,11 +608,7 @@ function App() {
                 <span>07</span>
                 <small>TRUST, EXPLICITLY</small>
               </div>
-              <h2>
-                首次配对需要两台设备确认
-                <br />
-                <span>之后的连接全程加密。</span>
-              </h2>
+              <h2>安全不是一个开关。<span>它是整条路径。</span></h2>
               <p>
                 每台设备生成持久 X25519 身份。首次连接需要限时配对、六位验证码和双端确认，之后通过 Noise XX 建立加密会话。
               </p>
@@ -642,16 +627,16 @@ function App() {
           <div className="product-copy" data-reveal>
             <div className="section-marker">
               <span>08</span>
-              <small>NATIVE WORKSPACE</small>
+              <small>INTELLIGENCE, IN CONTEXT</small>
             </div>
-            <h2>历史、收藏和预览<br />分别使用独立窗口。</h2>
+            <h2>安静常驻。需要时，历史已经整理好。</h2>
             <p>
-              TailSync 平时在后台同步。需要找内容时打开历史，长期保留的内容放进收藏，查看图片或文档时再打开预览；三个窗口可以单独关闭和移动。
+              TailSync 在后台监听、同步、分类与确认。打开历史时，内容类型、多标签、置信度和日期范围都已经就位，找回记录不再依赖逐条翻看。
             </p>
             <div className="product-points" data-cascade>
-              <span><Tags size={17} /> 历史：搜索、分类与日期筛选</span>
-              <span><ShieldCheck size={17} /> 收藏：保护记录与明确删除出口</span>
-              <span><Eye size={17} /> 预览：独立非模态阅读窗口</span>
+              <span><Tags size={17} /> 八类内容与多标签识别</span>
+              <span><CalendarDays size={17} /> 七种日期范围与自定义筛选</span>
+              <span><RadioTower size={17} /> 真实在线状态与路径延迟</span>
             </div>
           </div>
 
@@ -707,8 +692,8 @@ function App() {
           <div className="download-copy" data-reveal>
             <img src={tailsyncIcon} alt="" />
             <span>LATEST RELEASE / {PRODUCT_VERSION}</span>
-            <h2>下载 TailSync，<br />开始在两台设备间复制粘贴。</h2>
-            <p>支持 macOS 与 Windows，代码开源，使用 MIT License。</p>
+            <h2>你的剪贴板，应该跟着你。</h2>
+            <p>macOS 与 Windows。开源。MIT License。</p>
             <div className="download-actions" data-cascade>
               <a className="button button-download" href={RELEASE_URL} target="_blank" rel="noreferrer">
                 <Monitor size={18} />
@@ -723,7 +708,7 @@ function App() {
             </div>
             <p className="download-note">
               <ShieldCheck size={14} />
-              这是社区版本。更新包会验证 TailSync 签名和 SHA-256；但 macOS 包尚未公证，Windows 包也没有商业代码签名，因此首次启动时系统会显示 Gatekeeper 或 SmartScreen 提醒。
+              当前为 Community Release：更新包由 TailSync 私钥签名并做 SHA-256 校验，但 macOS 未公证、Windows 无商业代码签名，首次打开会看到 Gatekeeper / SmartScreen 提示，属正常现象。
             </p>
             <a className="source-link" href={GITHUB_URL} target="_blank" rel="noreferrer">
               <GitFork size={16} />
@@ -739,7 +724,7 @@ function App() {
           <img src={tailsyncIcon} alt="" />
           <span>TailSync</span>
         </div>
-        <p>Mac 与 Windows 剪贴板同步 · 本地历史 · 端到端加密</p>
+        <p>智能本地历史 · 弹性直连同步 · 只为你信任的设备而建</p>
         <span>© {year} TAILSYNC · MIT</span>
       </footer>
 

@@ -117,28 +117,43 @@
   transform: none;
 }
 
-/* Local and peer labels arrive from the side they represent. */
-[data-reveal] .route-tag-lan,
-[data-reveal] .seal-caption-a {
+/* Local and peer labels arrive from the side they represent. Route tags are
+   absolutely positioned at left: 50%, so their reveal transform must retain
+   the base -50% centering offset instead of replacing it. */
+[data-reveal] :is(
+  .route-tag-lan,
+  .route-tag-tail,
+  .seal-caption-a,
+  .seal-caption-b
+) {
   opacity: 0;
-  transform: translateX(-28px);
   transition:
     transform 760ms var(--m-spring-light),
     opacity 460ms var(--m-ease-enter);
 }
 
-[data-reveal] .route-tag-tail,
+[data-reveal] .route-tag-lan {
+  transform: translateX(calc(-50% - 28px));
+}
+
+[data-reveal] .route-tag-tail {
+  transform: translateX(calc(-50% + 28px));
+}
+
+[data-reveal] .seal-caption-a {
+  transform: translateX(-28px);
+}
+
 [data-reveal] .seal-caption-b {
-  opacity: 0;
   transform: translateX(28px);
-  transition:
-    transform 760ms var(--m-spring-light),
-    opacity 460ms var(--m-ease-enter);
+}
+
+[data-reveal][data-visible="true"] :is(.route-tag-lan, .route-tag-tail) {
+  opacity: 1;
+  transform: translateX(-50%);
 }
 
 [data-reveal][data-visible="true"] :is(
-  .route-tag-lan,
-  .route-tag-tail,
   .seal-caption-a,
   .seal-caption-b
 ) {
@@ -334,12 +349,12 @@
     transition-delay: 0s !important;
   }
 
-  [data-reveal] :is(
-    .route-tag-lan,
-    .route-tag-tail,
-    .seal-caption-a,
-    .seal-caption-b
-  ) {
+  [data-reveal] :is(.route-tag-lan, .route-tag-tail) {
+    opacity: 1 !important;
+    transform: translateX(-50%) !important;
+  }
+
+  [data-reveal] :is(.seal-caption-a, .seal-caption-b) {
     opacity: 1 !important;
     transform: none !important;
   }

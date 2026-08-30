@@ -162,7 +162,7 @@ export function FavoritesWorkflow() {
         </div>
         <div>
           <span className="favorites-eyebrow"><Star size={15} /> KEEP WHAT MATTERS</span>
-          <h2>长按一条记录，<br /><strong>就能把它收藏起来。</strong></h2>
+          <h2>长按一条记录，<strong>就能把它收藏起来。</strong></h2>
         </div>
         <p>
           按住约 0.6 秒，主题色会从左到右铺满整行。收藏完成后颜色和星标会保留；

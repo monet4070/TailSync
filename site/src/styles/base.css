@@ -69,6 +69,11 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+h1,
+h2 {
+  text-wrap: balance;
+}
+
 button {
   font-family: inherit;
   color: inherit;

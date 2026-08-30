@@ -131,17 +131,13 @@ export function ThemesApp() {
         <section className="atelier-hero">
           <div className="atelier-hero-kicker">
             <span className="atelier-live-dot" />
-            THEME V2 · 05 THEMES · LIGHT / DARK
+            THEME V2 · ENHANCED EDITION · 05 STUDIES
           </div>
-          <h1 className="atelier-title">
-            选择一套更顺手的界面
-            <br />
-            <span>五种主题都能直接导入。</span>
-          </h1>
+          <h1 className="atelier-title">五种性格，<span>各就其位。</span></h1>
           <p className="atelier-lead">
-            这里提供 Canvas、Flux、Ledger、Aura 和 Mono 五套主题的扩展版本。
-            每套都包含浅色与深色配色、字体、圆角、阴影和组件状态。下载
-            .tailsync-theme 文件后，可以直接在 TailSync 设置中导入。
+            基于 Canvas、Flux、Ledger、Aura、Mono 五套内置主题的增强版本。
+            每一套都是完整定义了双模式调色板、字体、形状与组件六态的
+            .tailsync-theme 主题包——可直接导入，立即可用。
           </p>
 
           <nav className="atelier-index" aria-label="主题索引">
@@ -190,10 +186,10 @@ export function ThemesApp() {
           <div className="import-inner">
             <div className="import-head">
               <span className="import-eyebrow">IMPORT / 30 秒</span>
-              <h2>下载后，在设置里导入</h2>
+              <h2>装入你的设备。</h2>
               <p>
-                主题包只包含颜色、字体、圆角等配置，不会执行代码，也不会联网。
-                导入前会由 Rust Core 校验，选择结果只保存在当前设备。
+                主题包是纯声明式数据：不含代码、不触网络，经共享 Rust Core
+                校验后安装。选择只保存在本机，不随设置同步。
               </p>
             </div>
 
@@ -202,22 +198,22 @@ export function ThemesApp() {
                 <span className="import-step-icon">
                   <Download size={18} />
                 </span>
-                <strong>下载文件</strong>
-                <p>从上方主题介绍或下方清单下载 .tailsync-theme 文件。</p>
+                <strong>下载主题包</strong>
+                <p>从上方五个章节或下方清单获取 .tailsync-theme 文件。</p>
               </li>
               <li>
                 <span className="import-step-icon">
                   <Settings2 size={18} />
                 </span>
-                <strong>在 TailSync 中导入</strong>
-                <p>打开“设置 → 外观 → 导入主题包”，选择刚下载的文件。</p>
+                <strong>导入主题</strong>
+                <p>打开 设置 → 外观 → 导入主题包，选择下载的文件。</p>
               </li>
               <li>
                 <span className="import-step-icon">
                   <Check size={18} />
                 </span>
-                <strong>预览后使用</strong>
-                <p>确认四种预览状态没有问题后安装，选中主题即可应用。</p>
+                <strong>即刻生效</strong>
+                <p>预览四种模式确认无误后安装，选择主题立即应用。</p>
               </li>
             </ol>
 
@@ -257,8 +253,8 @@ export function ThemesApp() {
             </div>
 
             <p className="import-note">
-              每个主题包通过 <code>extends: builtin:canvas@1</code> 继承基础配置，只覆盖需要调整的令牌。
-              文件不超过 1.4 KB，校验、安装和回滚都由共享 Core 处理。
+              自定义主题包经 <code>extends: builtin:canvas@1</code> 继承基线令牌，仅覆盖性格所在的部分；
+              包体不超过 1.4 KB，校验、安装与回滚全部由共享 Core 完成。
             </p>
           </div>
         </section>

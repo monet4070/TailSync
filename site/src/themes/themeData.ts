@@ -321,9 +321,9 @@ const THEME_META: ThemeMeta[] = [
     packageFile: 'canvas-atelier-2.0.1.tailsync-theme',
     icon: Feather,
     nameZh: '纸上工坊',
-    tagline: '暖色纸面，适合长时间阅读。',
+    tagline: '暖纸、活字与留白。',
     description:
-      '在 Canvas 基础上使用更暖的背景、更深的文字、更大的衬线标题和较柔和的阴影。适合喜欢纸张质感和宽松排版的用户。',
+      '默认 Canvas 的编辑级强化：更暖的纸面、更浓的墨色、更大的衬线标题与更柔和的远距离投影。每一次搜索，都像翻开一本装订考究的杂志。',
     traits: ['暖纸底色', '衬线大标题', '柔和大投影'],
   },
   {
@@ -333,9 +333,9 @@ const THEME_META: ThemeMeta[] = [
     packageFile: 'flux-circuit-2.0.1.tailsync-theme',
     icon: CircuitBoard,
     nameZh: '流电矩阵',
-    tagline: '紧凑、清晰，信息密度更高。',
+    tagline: '信号干净，走线笔直。',
     description:
-      '使用几何无衬线字体、较紧凑的间距和短促动效，青色作为重点色。适合希望一屏看到更多内容的用户。',
+      'Flux 的工程化极致：几何无衬线、紧凑密度与干脆的 ease-in-out 动效。青色 accent 像示波器上的一道波形，为追求效率的双手而生。',
     traits: ['几何无衬线', '紧凑密度', '敏捷动效'],
   },
   {
@@ -345,9 +345,9 @@ const THEME_META: ThemeMeta[] = [
     packageFile: 'ledger-archive-2.0.1.tailsync-theme',
     icon: BookOpen,
     nameZh: '绿档账房',
-    tagline: '更像档案和账簿的排版。',
+    tagline: '每一笔，都有据可查。',
     description:
-      '使用书籍式衬线字体、小圆角和大写章节标题，绿色用于重点状态。整体更规整，适合偏好传统文档界面的用户。',
+      'Ledger 的档案化演绎：书籍式衬线、小圆角与大写节标题构成账簿的骨架，克制的绿色 accent 如同馆藏标签，沉稳、规整、可信。',
     traits: ['账簿大写节标题', '小圆角', '书籍衬线'],
   },
   {
@@ -357,10 +357,10 @@ const THEME_META: ThemeMeta[] = [
     packageFile: 'aura-bloom-2.0.1.tailsync-theme',
     icon: Flower2,
     nameZh: '绮光绽放',
-    tagline: '更大的圆角和更柔和的配色。',
+    tagline: '柔软，但不失分寸。',
     description:
-      '控件和窗口使用更大的圆角，搭配玫红重点色和较柔和的阴影。界面更轻松，但文字对比度和信息层级保持不变。',
-    traits: ['最大圆角', '玫红重点色', '柔和大阴影'],
+      'Aura 的柔美上限：全线加大的圆角、缎面质感的玫红 accent 与棉花般蓬松的投影。工具软件也可以有呼吸感，而不牺牲任何可读性。',
+    traits: ['最大圆角', '缎面玫红', '棉花投影'],
   },
   {
     slug: 'strict',
@@ -369,9 +369,9 @@ const THEME_META: ThemeMeta[] = [
     packageFile: 'mono-strict-2.0.1.tailsync-theme',
     icon: Terminal,
     nameZh: '白纸黑律',
-    tagline: '只保留黑白灰和必要的状态色。',
+    tagline: '零装饰，零妥协。',
     description:
-      '使用灰阶语义色、零圆角、零阴影和等宽字体，选中项采用反白显示。装饰最少，重点放在内容和可读性上。',
+      'Mono 的无障碍极致：纯灰阶语义色、零圆角、零阴影、全等宽字体与反白选中态。瑞士网格般的秩序感，为专注与可读性而设。',
     traits: ['零圆角', '全等宽字体', '反白选中'],
   },
 ]

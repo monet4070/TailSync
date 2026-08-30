@@ -10,7 +10,7 @@
 }
 
 .preview-heading {
-  max-width: 760px;
+  max-width: var(--content-max);
   margin: 0 auto 60px;
   text-align: center;
 }
