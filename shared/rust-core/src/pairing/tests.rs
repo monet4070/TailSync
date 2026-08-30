@@ -125,6 +125,47 @@ async fn session_timeouts_count_toward_pairing_lockout() {
     assert_eq!(status.phase, PairingPhase::Locked);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stalled_pairing_session_releases_the_window_before_window_expiry() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_secs(120),
+        5,
+        false,
+    );
+    manager.enable().await;
+    let (_client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    manager
+        .install_session(PendingPairing {
+            connection: server,
+            hostname: "client".into(),
+            remote_public_key: client_identity.public_key().to_vec(),
+            handshake_hash: vec![7; 32],
+            address: "192.168.1.5".into(),
+            interface: "lan".into(),
+        })
+        .await
+        .unwrap();
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(PAIRING_SESSION_TIMEOUT + Duration::from_secs(1)).await;
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+
+    let status = manager.status().await;
+    assert!(status.pairing_enabled);
+    assert_eq!(status.phase, PairingPhase::Waiting);
+    assert_eq!(status.failed_attempts, 1);
+    assert!(status
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("timed out")));
+}
+
 #[tokio::test]
 async fn both_confirmations_save_both_peer_keys_and_close_windows() {
     const IROH_ENDPOINT_ID: &str =

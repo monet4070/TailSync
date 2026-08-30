@@ -23,6 +23,7 @@ describe("useRuntimeSnapshots", () => {
         history_version: 3,
         progress: null,
         sync_warning: null,
+        notifications: [],
       })
       .mockImplementationOnce(() => new Promise((resolve) => {
         resolveSecond = () => resolve({
@@ -30,6 +31,7 @@ describe("useRuntimeSnapshots", () => {
           history_version: 3,
           progress: null,
           sync_warning: null,
+          notifications: [],
         });
       }));
     const onSnapshot = vi.fn(async () => undefined);
@@ -39,8 +41,8 @@ describe("useRuntimeSnapshots", () => {
     await waitFor(() => expect(waitRuntimeSnapshotMock).toHaveBeenCalledTimes(2));
 
     expect(waitRuntimeSnapshotMock.mock.calls).toEqual([
-      [0, 2500],
-      [7, 2500],
+      [0, 2500, 0],
+      [7, 2500, 0],
     ]);
     unmount();
     resolveSecond?.();

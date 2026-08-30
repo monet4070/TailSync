@@ -331,7 +331,13 @@ impl PairingManager {
             let state = self.state.lock().await;
             state.deadline.unwrap_or_else(Instant::now)
         };
-        let timeout = tokio::time::sleep_until(deadline);
+        // The user-controlled pairing window may stay open for two minutes,
+        // but an unauthenticated connection must not occupy the sole
+        // verification slot for that entire time. The window expiration task
+        // still owns the outer lifetime; this shorter deadline only releases
+        // the current session and returns the window to Waiting.
+        let session_deadline = Instant::now() + PAIRING_SESSION_TIMEOUT;
+        let timeout = tokio::time::sleep_until(deadline.min(session_deadline));
         tokio::pin!(timeout);
         let mut local_confirmed = false;
         let mut remote_confirmed = false;
@@ -550,14 +556,63 @@ impl PairingManager {
     }
 
     async fn expire_current_session(self: &Arc<Self>, session_id: u64) {
-        let generation = {
+        let (generation, session_timed_out) = {
             let state = self.state.lock().await;
             if state.session_id != session_id {
                 return;
             }
-            state.generation
+            let window_deadline = state.deadline.unwrap_or_else(Instant::now);
+            (
+                state.generation,
+                Instant::now() < window_deadline && state.control.is_some(),
+            )
         };
-        self.expire(generation).await;
+        if session_timed_out {
+            self.expire_session(session_id).await;
+        } else {
+            self.expire(generation).await;
+        }
+    }
+
+    async fn expire_session(&self, session_id: u64) {
+        let (control, close_window) = {
+            let mut state = self.state.lock().await;
+            if !state.enabled || state.session_id != session_id || state.control.is_none() {
+                return;
+            }
+            let control = state.control.take();
+            let message = "Pairing session timed out".to_string();
+            state.failed_attempts = state.failed_attempts.saturating_add(1);
+            state.peer = None;
+            state.error = Some(message.clone());
+            if crate::diagnostics::is_collected() {
+                crate::diagnostics::record(crate::diagnostics::Record {
+                    event: crate::diagnostics::Event::PairingFailed,
+                    peer: None,
+                    session: None,
+                    error: crate::diagnostics::error_ref("PairingError::session_timeout", &message),
+                });
+            }
+            if state.failed_attempts >= self.max_failures {
+                state.enabled = false;
+                state.phase = PairingPhase::Locked;
+                state.deadline = None;
+                state.expires_at = None;
+                state.generation = state.generation.wrapping_add(1);
+                state.session_id = state.session_id.wrapping_add(1);
+                (control, true)
+            } else {
+                state.phase = PairingPhase::Waiting;
+                state.session_id = state.session_id.wrapping_add(1);
+                (control, false)
+            }
+        };
+        if close_window {
+            self.window_signal.send_replace(false);
+        }
+        if let Some(control) = control {
+            let _ = control.send(PairingAction::Cancel).await;
+        }
     }
 }
 

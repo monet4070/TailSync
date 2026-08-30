@@ -9,6 +9,12 @@ const OWNER_FILE_NAME: &str = "storage-owner-v1";
 const STORAGE_MARKER_NAME: &str = ".tailsync-storage-v1";
 const STORAGE_FREE_SPACE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Serializes storage-tree migration with the background file-encryption
+/// worker. Both operations use an independent SQLite connection and therefore
+/// cannot rely on `HistoryDB`'s application mutex for a consistent snapshot.
+pub(super) static STORAGE_MAINTENANCE_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
 /// Platform hooks for [`migrate_storage_with_rollback`]. Everything that
 /// lives outside the core crate (transfer-progress state, notifications,
 /// settings persistence) is injected so the orchestration stays testable.
@@ -67,6 +73,9 @@ pub async fn migrate_storage_with_rollback(
     let parent = parent.to_path_buf();
     let database_for_migration = database.clone();
     let migrated = tokio::task::spawn_blocking(move || {
+        let _maintenance_guard = STORAGE_MAINTENANCE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         database_for_migration
             .blocking_lock()
             .migrate_storage_parent(&parent)
@@ -183,7 +192,15 @@ impl HistoryDB {
                 .into());
             };
             let ids = self.expand_batch_groups(vec![id])?;
+            let used_before_cleanup = used;
             self.delete_entries(&ids)?;
+            let used_after_cleanup = bulk_storage_size(&get_storage_dir())?;
+            if used_after_cleanup >= used_before_cleanup {
+                return Err(
+                    "Storage cleanup removed history but reclaimed no storage; file transfer is paused"
+                        .into(),
+                );
+            }
         }
     }
 

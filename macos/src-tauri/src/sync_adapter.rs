@@ -5,7 +5,9 @@ use tokio::sync::Mutex;
 use crate::clipboard::{self, ClipboardRuntime};
 use crate::{api, clipboard_file, crypto, db};
 use tailsync_core::protocol::TransferId;
-use tailsync_core::sync::{FileBatchProgress, ReceivedFile, SyncPlatform};
+use tailsync_core::sync::{
+    FileBatchProgress, FileReceiveCommit, PlatformResultFuture, SyncPlatform,
+};
 
 pub struct TauriSyncPlatform {
     runtime: ClipboardRuntime,
@@ -87,20 +89,22 @@ impl SyncPlatform for TauriSyncPlatform {
         });
     }
 
-    fn files_received(
-        &self,
-        batch_id: Option<TransferId>,
-        files: Vec<ReceivedFile>,
-        batch_total: usize,
-        batch_complete: bool,
-        activate_clipboard: bool,
-        device: String,
-    ) {
+    fn files_received(&self, commit: FileReceiveCommit) -> PlatformResultFuture {
+        let FileReceiveCommit {
+            batch_id,
+            files,
+            batch_total,
+            batch_complete,
+            activate_clipboard,
+            device,
+            source_device_id,
+            manifest_hash,
+        } = commit;
         let db = self.db.clone();
         let runtime = self.runtime.clone();
         let settings = self.settings.clone();
         let activation_version = api::get_clipboard_version();
-        tauri::async_runtime::spawn(async move {
+        Box::pin(async move {
             let _progress_cleanup = FileProgressCleanup {
                 batch_id: batch_id.map(TransferId::as_hex),
                 device: device.clone(),
@@ -122,8 +126,22 @@ impl SyncPlatform for TauriSyncPlatform {
             let history_batch_id = batch_id.unwrap_or_else(TransferId::random).as_hex();
             let db_source_peer = device.clone();
             let stored_paths = match tokio::task::spawn_blocking(move || {
-                db.blocking_lock()
-                    .add_file_batch_with_status(
+                let mut database = db.blocking_lock();
+                let result = if let Some(manifest_hash) = manifest_hash.as_deref() {
+                    database.add_file_batch_with_receipt(
+                        &history_batch_id,
+                        &history_files,
+                        db::FileBatchWriteOptions {
+                            expected_total: batch_total,
+                            source_peer: &db_source_peer,
+                            move_sources: true,
+                            complete: batch_complete,
+                            source_device_id: Some(&source_device_id),
+                            manifest_hash: Some(manifest_hash),
+                        },
+                    )
+                } else {
+                    database.add_file_batch_with_status(
                         &history_batch_id,
                         &history_files,
                         batch_total,
@@ -131,21 +149,19 @@ impl SyncPlatform for TauriSyncPlatform {
                         true,
                         batch_complete,
                     )
-                    .map_err(|error| error.to_string())
+                };
+                result.map_err(|error| error.to_string())
             })
             .await
             {
                 Ok(Ok(paths)) => paths,
                 Ok(Err(error)) => {
                     log::error!("DB save file batch failed: {error}");
-                    if notifications_enabled {
-                        notify(&runtime, &format!("File batch failed: {error}"), true);
-                    }
-                    return;
+                    return Err(error);
                 }
                 Err(error) => {
                     log::error!("DB file batch task failed: {error}");
-                    return;
+                    return Err(error.to_string());
                 }
             };
 
@@ -166,7 +182,7 @@ impl SyncPlatform for TauriSyncPlatform {
                                     true,
                                 );
                             }
-                            return;
+                            return Ok(());
                         }
                     }
                 }
@@ -181,14 +197,15 @@ impl SyncPlatform for TauriSyncPlatform {
                             true,
                         );
                     }
-                    return;
+                    return Ok(());
                 }
             }
             if batch_complete && notifications_enabled {
                 let body = format!("Received {} file(s)", names.len());
                 notify(&runtime, &body, false);
             }
-        });
+            Ok(())
+        })
     }
 
     fn file_batch_failed(&self, _batch_id: Option<TransferId>, message: &str) {

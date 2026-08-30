@@ -43,14 +43,15 @@ pub use storage::{
     StorageMigrationHooks,
 };
 pub use types::{
-    FavoriteMutation, FileEncryptionMigrationBatch, HistoryCollection, HistoryEntry,
-    HistoryFileInput, HistoryMutationError, HistoryQuery, HistoryQueryPage, MigrationDiagnostics,
-    MigrationIssue, PreviewBatchNavigation, PreviewErrorCode, PreviewErrorInfo, PreviewKind,
-    PreviewMetadata, PreviewPayload, StorageMigrationResult, StorageStatus,
+    FavoriteMutation, FileBatchWriteOptions, FileEncryptionMigrationBatch, HistoryCollection,
+    HistoryEntry, HistoryFileInput, HistoryMutationError, HistoryQuery, HistoryQueryPage,
+    MigrationDiagnostics, MigrationIssue, PreviewBatchNavigation, PreviewErrorCode,
+    PreviewErrorInfo, PreviewKind, PreviewMetadata, PreviewPayload, StorageMigrationResult,
+    StorageStatus,
 };
 
 /// Database schema version
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 /// Maximum amount of decrypted data a preview request may materialise.
 pub const PREVIEW_MAX_BYTES: u64 = 64 * 1024 * 1024;

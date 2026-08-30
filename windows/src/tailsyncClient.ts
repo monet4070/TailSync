@@ -161,11 +161,18 @@ export interface FileProgress {
   can_stop: boolean;
 }
 
+export interface RuntimeNotification {
+  id: number;
+  level: string;
+  message: string;
+}
+
 export interface RuntimeSnapshot {
   revision: number;
   history_version: number;
   progress: FileProgress | null;
   sync_warning: SyncWarning | null;
+  notifications: RuntimeNotification[];
 }
 
 export type HistoryPageQuery = {
@@ -279,8 +286,13 @@ export function getVersion(): Promise<{ version: number }> {
 export function waitRuntimeSnapshot(
   sinceRevision: number,
   waitMs = 2_500,
+  sinceNotificationId = 0,
 ): Promise<RuntimeSnapshot> {
-  return invoke<RuntimeSnapshot>("wait_runtime_snapshot", { sinceRevision, waitMs });
+  return invoke<RuntimeSnapshot>("wait_runtime_snapshot", {
+    sinceRevision,
+    waitMs,
+    sinceNotificationId,
+  });
 }
 
 export function getSyncWarning(): Promise<SyncWarning | null> {

@@ -468,7 +468,14 @@ mod tests {
                 .await
                 .unwrap(),
         };
-        let server_addr = server.endpoint.addr();
+        let server_port = server.endpoint.addr().ip_addrs().next().unwrap().port();
+        let server_addr = EndpointAddr::from_parts(
+            server.endpoint.id(),
+            [iroh::TransportAddr::Ip(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                server_port,
+            )))],
+        );
         let client = IrohEndpoint {
             endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
         };

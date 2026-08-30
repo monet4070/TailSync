@@ -10,6 +10,8 @@ impl SyncEngine {
             incoming_batches: HashMap::new(),
             cancelled_batches: HashMap::new(),
             completed_batches: HashMap::new(),
+            completed_batch_manifests: HashMap::new(),
+            peer_device_ids: HashMap::new(),
             receive_epochs: HashMap::new(),
             clipboard_generation: 0,
             shadow_filter: ShadowFilter::new(),
@@ -20,6 +22,13 @@ impl SyncEngine {
 
     pub fn set_platform(&mut self, platform: Arc<dyn SyncPlatform>) {
         self.platform = Some(platform);
+    }
+
+    /// Bind the authenticated public-key fingerprint to the display hostname
+    /// used by the in-memory receive maps. Hostnames can change; the
+    /// fingerprint is the durable identity used by receive receipts.
+    pub fn set_peer_device_identity(&mut self, source: &str, device_id: String) {
+        self.peer_device_ids.insert(source.to_string(), device_id);
     }
 
     // ── Text ─────────────────────────────────────────────────────

@@ -128,6 +128,7 @@ fn completion_reports_the_result_to_the_enqueuer() {
 
 #[test]
 fn dropping_an_in_flight_frame_reports_worker_shutdown() {
+    let _warning_guard = crate::sync_warning::test_lock();
     let _ = crate::sync_warning::take();
     drop(PendingFrame::new_for_peer(
         QueuedFrame::new(Command::TextPayload, b"in flight".to_vec()).unwrap(),

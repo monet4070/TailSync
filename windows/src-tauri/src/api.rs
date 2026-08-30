@@ -36,6 +36,62 @@ use tokio::sync::{watch, Mutex, Semaphore};
 use tokio::time::timeout;
 
 static RUNTIME_REVISION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(1).0);
+const MAX_RUNTIME_NOTIFICATIONS: usize = 32;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RuntimeNotification {
+    pub id: u64,
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Default)]
+struct RuntimeNotificationBuffer {
+    next_id: u64,
+    entries: VecDeque<RuntimeNotification>,
+}
+
+impl RuntimeNotificationBuffer {
+    fn push(&mut self, level: &str, message: String) -> u64 {
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        let id = self.next_id;
+        self.entries.push_back(RuntimeNotification {
+            id,
+            level: level.to_string(),
+            message,
+        });
+        while self.entries.len() > MAX_RUNTIME_NOTIFICATIONS {
+            self.entries.pop_front();
+        }
+        id
+    }
+
+    fn since(&self, id: u64) -> Vec<RuntimeNotification> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.id > id)
+            .cloned()
+            .collect()
+    }
+}
+
+static RUNTIME_NOTIFICATIONS: LazyLock<StdMutex<RuntimeNotificationBuffer>> =
+    LazyLock::new(|| StdMutex::new(RuntimeNotificationBuffer::default()));
+
+pub fn push_runtime_notification(level: &str, message: impl Into<String>) {
+    if let Ok(mut notifications) = RUNTIME_NOTIFICATIONS.lock() {
+        notifications.push(level, message.into());
+        drop(notifications);
+        bump_runtime_revision();
+    }
+}
+
+pub fn get_runtime_notifications_since(id: u64) -> Vec<RuntimeNotification> {
+    RUNTIME_NOTIFICATIONS
+        .lock()
+        .map(|notifications| notifications.since(id))
+        .unwrap_or_default()
+}
 
 pub fn get_runtime_revision() -> u64 {
     *RUNTIME_REVISION.borrow()

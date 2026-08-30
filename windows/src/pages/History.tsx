@@ -356,6 +356,11 @@ export function History({ collection = "all" }: HistoryProps) {
         flashSyncWarning(t(key).replace("{peer}", snapshot.sync_warning.peer));
       }
     }
+    for (const notification of snapshot.notifications ?? []) {
+      if (notification.level === "error") {
+        flashSyncWarning(notification.message);
+      }
+    }
     if (!progressBarEnabled) {
       setFileProgress(null);
       return;

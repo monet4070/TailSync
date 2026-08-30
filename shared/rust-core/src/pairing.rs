@@ -15,6 +15,7 @@ const PAIRING_CODE_CONTEXT: &[u8] = b"tailsync pairing verification code v1";
 const X25519_PUBLIC_KEY_LENGTH: usize = 32;
 const DEFAULT_PAIRING_WINDOW: Duration = Duration::from_secs(120);
 const DEFAULT_MAX_FAILURES: u8 = 5;
+const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 const PAIRING_FINALIZE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Pairing state-machine errors (T351 migration). The `Display` strings are

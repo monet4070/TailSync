@@ -484,6 +484,7 @@ describe("History item actions", () => {
     expect(invokeMock).toHaveBeenCalledWith("wait_runtime_snapshot", {
       sinceRevision: 0,
       waitMs: 2500,
+      sinceNotificationId: 0,
     });
     expect(invokeMock).not.toHaveBeenCalledWith("get_version");
     expect(invokeMock).not.toHaveBeenCalledWith("get_file_progress");

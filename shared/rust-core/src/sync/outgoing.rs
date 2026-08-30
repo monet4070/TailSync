@@ -12,6 +12,8 @@ use crate::db;
 const OUTGOING_BATCH_VERSION: u8 = 1;
 const OUTGOING_BATCH_SUFFIX: &str = ".outgoing.json";
 const OUTGOING_SELECTION_SUFFIX: &str = ".outgoing-pending.json";
+const OUTGOING_RETRY_DELAYS_SECONDS: [i64; 5] = [2, 10, 30, 120, 600];
+const OUTGOING_ERROR_MAX_BYTES: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum OutgoingTransferKey {
@@ -66,6 +68,14 @@ pub struct PersistedOutgoingSelection {
     pub generation: u64,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(default)]
+    pub attempt_count: u32,
+    #[serde(default)]
+    pub next_attempt_at: i64,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_notified_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,14 +91,29 @@ pub struct PersistedOutgoingBatch {
     pub manifest: FileBatchManifest,
     pub files: Vec<PersistedOutgoingFile>,
     pub peers: Vec<String>,
+    /// Stable authenticated peer identities aligned with `peers`.
+    /// Empty entries are legacy hostname-only records.
+    #[serde(default)]
+    pub peer_fingerprints: Vec<String>,
     #[serde(default)]
     pub selection_id: Option<TransferId>,
     #[serde(default)]
     pub completed_peers: Vec<String>,
+    /// Stable identities aligned with `completed_peers`.
+    #[serde(default)]
+    pub completed_peer_fingerprints: Vec<String>,
     #[serde(default)]
     pub local_history_saved: bool,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(default)]
+    pub attempt_count: u32,
+    #[serde(default)]
+    pub next_attempt_at: i64,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_notified_at: i64,
 }
 
 impl PersistedOutgoingBatch {
@@ -96,22 +121,64 @@ impl PersistedOutgoingBatch {
         self.manifest.batch_id
     }
 
-    pub fn pending_peers<'a>(&'a self, candidates: &'a [String]) -> Vec<&'a String> {
+    pub fn pending_peers<'a>(&'a self, candidates: &'a [(String, String)]) -> Vec<&'a String> {
         candidates
             .iter()
-            .filter(|peer| self.peers.iter().any(|known| known == *peer))
-            .filter(|peer| !self.completed_peers.iter().any(|done| done == *peer))
+            .filter_map(|(hostname, fingerprint)| {
+                let index = self.peer_index(hostname, fingerprint)?;
+                (!self.is_peer_completed_at(index)).then_some(hostname)
+            })
             .collect()
     }
 
     pub fn is_peer_completed(&self, peer: &str) -> bool {
-        self.completed_peers
+        self.peers
             .iter()
-            .any(|completed| completed == peer)
+            .position(|known| known == peer)
+            .is_some_and(|index| self.is_peer_completed_at(index))
     }
 
     pub fn all_peers_completed(&self) -> bool {
-        self.peers.iter().all(|peer| self.is_peer_completed(peer))
+        !self.peers.is_empty()
+            && (0..self.peers.len()).all(|index| self.is_peer_completed_at(index))
+    }
+
+    fn peer_index(&self, hostname: &str, fingerprint: &str) -> Option<usize> {
+        self.peers.iter().enumerate().find_map(|(index, known)| {
+            let known_fingerprint = self
+                .peer_fingerprints
+                .get(index)
+                .filter(|fingerprint| !fingerprint.is_empty());
+            if let Some(known_fingerprint) = known_fingerprint {
+                (!fingerprint.is_empty() && known_fingerprint == fingerprint).then_some(index)
+            } else {
+                (known == hostname).then_some(index)
+            }
+        })
+    }
+
+    fn is_peer_completed_at(&self, index: usize) -> bool {
+        let Some(hostname) = self.peers.get(index) else {
+            return false;
+        };
+        let fingerprint = self
+            .peer_fingerprints
+            .get(index)
+            .filter(|fingerprint| !fingerprint.is_empty());
+        if let Some(fingerprint) = fingerprint {
+            self.completed_peer_fingerprints
+                .iter()
+                .any(|completed| completed == fingerprint)
+                || (self.completed_peer_fingerprints.is_empty()
+                    && self
+                        .completed_peers
+                        .iter()
+                        .any(|completed| completed == hostname))
+        } else {
+            self.completed_peers
+                .iter()
+                .any(|completed| completed == hostname)
+        }
     }
 
     pub fn prepared_file_batch(&self) -> Result<PreparedFileBatch, String> {
@@ -196,6 +263,19 @@ fn persist_outgoing_batch_at(
     peers: &[String],
     selection_id: Option<TransferId>,
 ) -> Result<(), String> {
+    let targets = peers
+        .iter()
+        .map(|hostname| (hostname.clone(), String::new()))
+        .collect::<Vec<_>>();
+    persist_outgoing_batch_at_with_identities(directory, prepared, &targets, selection_id)
+}
+
+fn persist_outgoing_batch_at_with_identities(
+    directory: &Path,
+    prepared: &PreparedFileBatch,
+    peers: &[(String, String)],
+    selection_id: Option<TransferId>,
+) -> Result<(), String> {
     validate_for_persistence(prepared)?;
     crate::private_fs::create_private_dir_all(directory).map_err(|error| error.to_string())?;
     let timestamp = now();
@@ -213,14 +293,24 @@ fn persist_outgoing_batch_at(
             .collect(),
         peers: peers
             .iter()
-            .filter(|peer| !peer.is_empty())
-            .cloned()
+            .filter(|(hostname, _)| !hostname.is_empty())
+            .map(|(hostname, _)| hostname.clone())
+            .collect(),
+        peer_fingerprints: peers
+            .iter()
+            .filter(|(hostname, _)| !hostname.is_empty())
+            .map(|(_, fingerprint)| fingerprint.clone())
             .collect(),
         selection_id,
         completed_peers: Vec::new(),
+        completed_peer_fingerprints: Vec::new(),
         local_history_saved: false,
         created_at: timestamp,
         updated_at: timestamp,
+        attempt_count: 0,
+        next_attempt_at: 0,
+        last_error: None,
+        last_notified_at: 0,
     };
     let data = serde_json::to_vec_pretty(&journal).map_err(|error| error.to_string())?;
     crate::private_fs::write_private_file(&batch_path(directory, prepared.manifest.batch_id), &data)
@@ -240,6 +330,56 @@ pub fn persist_outgoing_batch_for_selection(
     selection_id: TransferId,
 ) -> Result<(), String> {
     persist_outgoing_batch_at(&outgoing_dir(), prepared, peers, Some(selection_id))
+}
+
+pub fn persist_outgoing_batch_with_identities(
+    prepared: &PreparedFileBatch,
+    peers: &[(String, String)],
+) -> Result<(), String> {
+    persist_outgoing_batch_at_with_identities(&outgoing_dir(), prepared, peers, None)
+}
+
+pub fn persist_outgoing_batch_for_selection_with_identities(
+    prepared: &PreparedFileBatch,
+    peers: &[(String, String)],
+    selection_id: TransferId,
+) -> Result<(), String> {
+    persist_outgoing_batch_at_with_identities(&outgoing_dir(), prepared, peers, Some(selection_id))
+}
+
+/// Populate the target list for a journal that was created while no eligible
+/// peer was available. A batch with an explicit target list keeps that list
+/// stable across retries; an empty list means the initial clipboard event had
+/// nowhere to go and may adopt the currently eligible trusted peers on the
+/// next recovery pass.
+pub fn enroll_outgoing_batch_peers(
+    batch_id: TransferId,
+    peers: &[(String, String)],
+) -> Result<(), String> {
+    let directory = outgoing_dir();
+    enroll_outgoing_batch_peers_at(&directory, batch_id, peers)
+}
+
+fn enroll_outgoing_batch_peers_at(
+    directory: &Path,
+    batch_id: TransferId,
+    peers: &[(String, String)],
+) -> Result<(), String> {
+    let mut batch = read_outgoing_batch_at(directory, batch_id)?;
+    if !batch.peers.is_empty() {
+        return Ok(());
+    }
+    for (hostname, fingerprint) in peers {
+        if hostname.is_empty() {
+            continue;
+        }
+        batch.peers.push(hostname.clone());
+        batch.peer_fingerprints.push(fingerprint.clone());
+    }
+    if !batch.peers.is_empty() {
+        write_outgoing_batch_at(directory, &mut batch)?;
+    }
+    Ok(())
 }
 
 pub fn persist_outgoing_selection(
@@ -262,6 +402,10 @@ pub fn persist_outgoing_selection(
         generation,
         created_at: timestamp,
         updated_at: timestamp,
+        attempt_count: 0,
+        next_attempt_at: 0,
+        last_error: None,
+        last_notified_at: 0,
     };
     let data = serde_json::to_vec_pretty(&selection).map_err(|error| error.to_string())?;
     crate::private_fs::write_private_file(&selection_path(&directory, selection_id), &data)
@@ -278,11 +422,58 @@ pub fn remove_outgoing_selection(selection_id: TransferId) -> Result<(), String>
     }
 }
 
+pub fn outgoing_retry_due(next_attempt_at: i64) -> bool {
+    next_attempt_at <= now()
+}
+
+fn retry_delay_seconds(attempt_count: u32) -> i64 {
+    let index = usize::try_from(attempt_count.saturating_sub(1))
+        .unwrap_or(usize::MAX)
+        .min(OUTGOING_RETRY_DELAYS_SECONDS.len() - 1);
+    OUTGOING_RETRY_DELAYS_SECONDS[index]
+}
+
+fn normalized_outgoing_error(error: &str) -> String {
+    error.chars().take(OUTGOING_ERROR_MAX_BYTES).collect()
+}
+
+fn retry_state(
+    attempt_count: &mut u32,
+    next_attempt_at: &mut i64,
+    last_error: &mut Option<String>,
+    last_notified_at: &mut i64,
+    error: &str,
+) -> bool {
+    let now = now();
+    let error = normalized_outgoing_error(error);
+    let error_changed = last_error.as_deref() != Some(error.as_str());
+    let previous_attempt = *attempt_count;
+    *attempt_count = attempt_count.saturating_add(1);
+    *next_attempt_at = now.saturating_add(retry_delay_seconds(*attempt_count));
+    let notify = error_changed
+        || now.saturating_sub(*last_notified_at)
+            >= retry_delay_seconds(previous_attempt.saturating_add(1));
+    *last_error = Some(error);
+    if notify {
+        *last_notified_at = now;
+    }
+    notify
+}
+
 fn read_outgoing_batch_at(
     directory: &Path,
     batch_id: TransferId,
 ) -> Result<PersistedOutgoingBatch, String> {
     let path = batch_path(directory, batch_id);
+    let data = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    serde_json::from_slice(&data).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn read_outgoing_selection_at(
+    directory: &Path,
+    selection_id: TransferId,
+) -> Result<PersistedOutgoingSelection, String> {
+    let path = selection_path(directory, selection_id);
     let data = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     serde_json::from_slice(&data).map_err(|error| format!("{}: {error}", path.display()))
 }
@@ -297,14 +488,75 @@ fn write_outgoing_batch_at(
         .map_err(|error| error.to_string())
 }
 
-pub fn mark_outgoing_peer_completed(batch_id: TransferId, peer: &str) -> Result<(), String> {
+fn write_outgoing_selection_at(
+    directory: &Path,
+    selection: &mut PersistedOutgoingSelection,
+) -> Result<(), String> {
+    selection.updated_at = now();
+    let data = serde_json::to_vec_pretty(selection).map_err(|error| error.to_string())?;
+    crate::private_fs::write_private_file(&selection_path(directory, selection.selection_id), &data)
+        .map_err(|error| error.to_string())
+}
+
+pub fn schedule_outgoing_selection_retry(
+    selection_id: TransferId,
+    error: &str,
+) -> Result<bool, String> {
+    let directory = outgoing_dir();
+    let mut selection = read_outgoing_selection_at(&directory, selection_id)?;
+    let notify = retry_state(
+        &mut selection.attempt_count,
+        &mut selection.next_attempt_at,
+        &mut selection.last_error,
+        &mut selection.last_notified_at,
+        error,
+    );
+    write_outgoing_selection_at(&directory, &mut selection)?;
+    Ok(notify)
+}
+
+pub fn schedule_outgoing_batch_retry(batch_id: TransferId, error: &str) -> Result<bool, String> {
     let directory = outgoing_dir();
     let mut batch = read_outgoing_batch_at(&directory, batch_id)?;
-    if !batch.peers.iter().any(|known| known == peer) {
+    let notify = retry_state(
+        &mut batch.attempt_count,
+        &mut batch.next_attempt_at,
+        &mut batch.last_error,
+        &mut batch.last_notified_at,
+        error,
+    );
+    write_outgoing_batch_at(&directory, &mut batch)?;
+    Ok(notify)
+}
+
+pub fn mark_outgoing_peer_completed(batch_id: TransferId, peer: &str) -> Result<(), String> {
+    mark_outgoing_peer_completed_with_identity(batch_id, peer, "")
+}
+
+pub fn mark_outgoing_peer_completed_with_identity(
+    batch_id: TransferId,
+    peer: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let directory = outgoing_dir();
+    let mut batch = read_outgoing_batch_at(&directory, batch_id)?;
+    let Some(index) = batch.peer_index(peer, fingerprint) else {
         return Err(format!("peer {peer} is not part of outgoing batch"));
+    };
+    if batch
+        .peer_fingerprints
+        .get(index)
+        .is_some_and(|known| !known.is_empty() && known != fingerprint)
+    {
+        return Err(format!(
+            "peer {peer} identity does not match outgoing batch"
+        ));
     }
-    if !batch.is_peer_completed(peer) {
+    if !batch.is_peer_completed_at(index) {
         batch.completed_peers.push(peer.to_string());
+        batch
+            .completed_peer_fingerprints
+            .push(fingerprint.to_string());
     }
     write_outgoing_batch_at(&directory, &mut batch)
 }
@@ -369,7 +621,12 @@ fn load_outgoing_batches_at(directory: &Path) -> Vec<PersistedOutgoingBatch> {
                 continue;
             }
         };
-        if timestamp.saturating_sub(batch.updated_at) > INCOMPLETE_TRANSFER_RETENTION_SECONDS as i64
+        let retention_anchor = if batch.created_at > 0 {
+            batch.created_at
+        } else {
+            batch.updated_at
+        };
+        if timestamp.saturating_sub(retention_anchor) > INCOMPLETE_TRANSFER_RETENTION_SECONDS as i64
         {
             let _ = fs::remove_file(&path);
             continue;
@@ -441,8 +698,12 @@ fn load_outgoing_selections_at(directory: &Path) -> Vec<PersistedOutgoingSelecti
             );
             continue;
         }
-        if timestamp.saturating_sub(selection.updated_at)
-            > INCOMPLETE_TRANSFER_RETENTION_SECONDS as i64
+        let retention_anchor = if selection.created_at > 0 {
+            selection.created_at
+        } else {
+            selection.updated_at
+        };
+        if timestamp.saturating_sub(retention_anchor) > INCOMPLETE_TRANSFER_RETENTION_SECONDS as i64
         {
             let _ = fs::remove_file(&path);
             continue;
@@ -523,7 +784,10 @@ mod tests {
         );
         assert_eq!(
             restored
-                .pending_peers(&["peer-a".into(), "peer-b".into()])
+                .pending_peers(&[
+                    ("peer-a".into(), String::new()),
+                    ("peer-b".into(), String::new()),
+                ])
                 .len(),
             2
         );
@@ -533,8 +797,107 @@ mod tests {
         let restored = load_outgoing_batches_at(&journal_dir).pop().unwrap();
         assert!(restored.is_peer_completed("peer-a"));
         assert_eq!(
-            restored.pending_peers(&["peer-a".into(), "peer-b".into()]),
+            restored.pending_peers(&[
+                ("peer-a".into(), String::new()),
+                ("peer-b".into(), String::new()),
+            ]),
             vec![&"peer-b".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
+    }
+
+    #[test]
+    fn peer_rename_is_matched_by_the_persisted_fingerprint() {
+        let source = test_directory("peer-rename-source");
+        let journal_dir = test_directory("peer-rename-journal");
+        let batch = prepared(&source);
+        let targets = vec![("old-name".into(), "peer-key".into())];
+        persist_outgoing_batch_at_with_identities(&journal_dir, &batch, &targets, None).unwrap();
+
+        let mut restored = load_outgoing_batches_at(&journal_dir).pop().unwrap();
+        assert_eq!(
+            restored.pending_peers(&[("new-name".into(), "peer-key".into())]),
+            vec![&"new-name".to_string()]
+        );
+        assert!(restored
+            .pending_peers(&[("new-name".into(), "different-key".into())])
+            .is_empty());
+
+        restored.completed_peers.push("new-name".into());
+        restored.completed_peer_fingerprints.push("peer-key".into());
+        assert!(restored.all_peers_completed());
+
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
+    }
+
+    #[test]
+    fn an_outgoing_batch_without_peers_is_not_marked_complete() {
+        let source = test_directory("no-peers-source");
+        let batch = prepared(&source);
+        let journal = PersistedOutgoingBatch {
+            version: OUTGOING_BATCH_VERSION,
+            manifest: batch.manifest,
+            files: batch
+                .files
+                .into_iter()
+                .map(|file| PersistedOutgoingFile {
+                    path: file.path,
+                    modified_nanos: file.modified_nanos,
+                    entry: file.entry,
+                })
+                .collect(),
+            peers: Vec::new(),
+            peer_fingerprints: Vec::new(),
+            selection_id: None,
+            completed_peers: Vec::new(),
+            completed_peer_fingerprints: Vec::new(),
+            local_history_saved: false,
+            created_at: now(),
+            updated_at: now(),
+            attempt_count: 0,
+            next_attempt_at: 0,
+            last_error: None,
+            last_notified_at: 0,
+        };
+        assert!(!journal.all_peers_completed());
+        let _ = fs::remove_dir_all(source);
+    }
+
+    #[test]
+    fn an_outgoing_batch_without_peers_adopts_recovered_targets_once() {
+        let source = test_directory("enroll-source");
+        let journal_dir = test_directory("enroll-journal");
+        let batch = prepared(&source);
+        persist_outgoing_batch_at_with_identities(&journal_dir, &batch, &[], None).unwrap();
+
+        enroll_outgoing_batch_peers_at(
+            &journal_dir,
+            batch.manifest.batch_id,
+            &[
+                ("peer-a".into(), "key-a".into()),
+                ("peer-b".into(), "key-b".into()),
+            ],
+        )
+        .unwrap();
+        enroll_outgoing_batch_peers_at(
+            &journal_dir,
+            batch.manifest.batch_id,
+            &[("peer-c".into(), "key-c".into())],
+        )
+        .unwrap();
+
+        let restored = load_outgoing_batches_at(&journal_dir).pop().unwrap();
+        assert_eq!(restored.peers, ["peer-a", "peer-b"]);
+        assert_eq!(restored.peer_fingerprints, ["key-a", "key-b"]);
+        assert_eq!(
+            restored.pending_peers(&[
+                ("peer-a".into(), "key-a".into()),
+                ("peer-b".into(), "key-b".into()),
+            ]),
+            vec![&"peer-a".to_string(), &"peer-b".to_string()]
         );
 
         let _ = fs::remove_dir_all(source);
@@ -550,6 +913,7 @@ mod tests {
         let path = batch_path(&journal_dir, batch.manifest.batch_id);
         let mut saved: PersistedOutgoingBatch =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved.created_at = now() - INCOMPLETE_TRANSFER_RETENTION_SECONDS as i64 - 1;
         saved.updated_at = now() - INCOMPLETE_TRANSFER_RETENTION_SECONDS as i64 - 1;
         fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
 
@@ -573,6 +937,10 @@ mod tests {
             generation: 9,
             created_at: now(),
             updated_at: now(),
+            attempt_count: 0,
+            next_attempt_at: 0,
+            last_error: None,
+            last_notified_at: 0,
         };
         let path = selection_path(&journal_dir, selection_id);
         crate::private_fs::write_private_file(&path, &serde_json::to_vec(&selection).unwrap())
@@ -583,9 +951,46 @@ mod tests {
         assert_eq!(restored[0].generation, 9);
 
         selection.updated_at = now() - INCOMPLETE_TRANSFER_RETENTION_SECONDS as i64 - 1;
+        selection.created_at = now() - INCOMPLETE_TRANSFER_RETENTION_SECONDS as i64 - 1;
         fs::write(&path, serde_json::to_vec(&selection).unwrap()).unwrap();
         assert!(load_outgoing_selections_at(&journal_dir).is_empty());
         assert!(!path.exists());
         let _ = fs::remove_dir_all(journal_dir);
+    }
+
+    #[test]
+    fn retry_state_applies_backoff_and_throttles_duplicate_notifications() {
+        let mut attempt_count = 0;
+        let mut next_attempt_at = 0;
+        let mut last_error = None;
+        let mut last_notified_at = now();
+
+        assert!(retry_state(
+            &mut attempt_count,
+            &mut next_attempt_at,
+            &mut last_error,
+            &mut last_notified_at,
+            "peer unavailable"
+        ));
+        assert_eq!(attempt_count, 1);
+        assert!(next_attempt_at > now());
+        assert_eq!(last_error.as_deref(), Some("peer unavailable"));
+
+        last_notified_at = now();
+        assert!(!retry_state(
+            &mut attempt_count,
+            &mut next_attempt_at,
+            &mut last_error,
+            &mut last_notified_at,
+            "peer unavailable"
+        ));
+        assert_eq!(attempt_count, 2);
+        assert!(retry_state(
+            &mut attempt_count,
+            &mut next_attempt_at,
+            &mut last_error,
+            &mut last_notified_at,
+            "storage unavailable"
+        ));
     }
 }

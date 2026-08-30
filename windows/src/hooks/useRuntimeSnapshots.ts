@@ -24,6 +24,7 @@ export function useRuntimeSnapshots(
   useEffect(() => {
     let disposed = false;
     let revision = 0;
+    let notificationId = 0;
     let retryTimer = 0;
     let finishRetry: (() => void) | undefined;
 
@@ -38,10 +39,14 @@ export function useRuntimeSnapshots(
     const run = async () => {
       while (!disposed) {
         try {
-          const snapshot = await waitRuntimeSnapshot(revision, waitMs);
+          const snapshot = await waitRuntimeSnapshot(revision, waitMs, notificationId);
           if (disposed) return;
           if (!validSnapshot(snapshot)) throw new Error("Invalid runtime snapshot");
           revision = snapshot.revision;
+          notificationId = snapshot.notifications.reduce(
+            (latest, notification) => Math.max(latest, notification.id),
+            notificationId,
+          );
           await callbackRef.current(snapshot);
         } catch (error) {
           if (disposed) return;

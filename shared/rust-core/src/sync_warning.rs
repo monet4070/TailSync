@@ -9,6 +9,17 @@ pub struct SyncWarning {
 
 static LATEST_WARNING: OnceLock<Mutex<Option<SyncWarning>>> = OnceLock::new();
 
+#[cfg(test)]
+static TEST_WARNING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_WARNING_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn latest_warning() -> &'static Mutex<Option<SyncWarning>> {
     LATEST_WARNING.get_or_init(|| Mutex::new(None))
 }
@@ -55,6 +66,7 @@ mod tests {
 
     #[test]
     fn warning_contains_no_clipboard_content_and_is_consumed_once() {
+        let _guard = test_lock();
         let _ = take();
         record_expired_event("Laptop");
         let warning = take().unwrap();
@@ -66,6 +78,7 @@ mod tests {
 
     #[test]
     fn delivery_stalled_records_its_own_kind() {
+        let _guard = test_lock();
         let _ = take();
         record_delivery_stalled("Desktop");
         let warning = take().unwrap();
@@ -77,6 +90,7 @@ mod tests {
 
     #[test]
     fn delivery_shutdown_records_its_own_kind() {
+        let _guard = test_lock();
         let _ = take();
         record_delivery_shutdown("Desktop");
         let warning = take().unwrap();
@@ -86,6 +100,7 @@ mod tests {
 
     #[test]
     fn delivery_expired_records_its_own_kind() {
+        let _guard = test_lock();
         let _ = take();
         record_delivery_expired("Desktop");
         let warning = take().unwrap();

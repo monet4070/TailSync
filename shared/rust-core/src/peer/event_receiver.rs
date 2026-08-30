@@ -205,7 +205,7 @@ mod tests {
     use crate::identity::DeviceIdentity;
     use crate::protocol::TransferId;
     use crate::secure::{self, PeerIdentity};
-    use crate::sync::{FileBatchProgress, ReceivedFile, SyncPlatform};
+    use crate::sync::{FileBatchProgress, FileReceiveCommit, SyncPlatform};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct TestPlatform {
@@ -241,15 +241,8 @@ mod tests {
 
         fn set_file_batch_progress(&self, _progress: FileBatchProgress) {}
 
-        fn files_received(
-            &self,
-            _batch_id: Option<TransferId>,
-            _files: Vec<ReceivedFile>,
-            _batch_total: usize,
-            _batch_complete: bool,
-            _activate_clipboard: bool,
-            _device: String,
-        ) {
+        fn files_received(&self, _commit: FileReceiveCommit) -> crate::sync::PlatformResultFuture {
+            Box::pin(async { Ok(()) })
         }
 
         fn file_batch_failed(&self, _batch_id: Option<TransferId>, _message: &str) {}

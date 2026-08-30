@@ -65,6 +65,28 @@ pub(super) async fn send_file_batch_to_peers(
         info!("Sync is paused; keeping clipboard files local");
         return;
     }
+    let storage_status = database.lock().await.storage_status();
+    if !storage_status.available {
+        let message = storage_status
+            .error
+            .unwrap_or_else(|| "Configured storage is unavailable; file transfer is paused".into());
+        let should_notify = match selection_id {
+            Some(selection_id) => {
+                match sync::schedule_outgoing_selection_retry(selection_id, &message) {
+                    Ok(should_notify) => should_notify,
+                    Err(error) => {
+                        warn!("Could not persist outgoing selection retry state: {error}");
+                        true
+                    }
+                }
+            }
+            None => true,
+        };
+        if should_notify {
+            notify_file_batch_error(&runtime, &settings, &message).await;
+        }
+        return;
+    }
     let prepared = match tokio::task::spawn_blocking(move || {
         sync::prepare_file_batch(paths, generation)
     })
@@ -86,14 +108,6 @@ pub(super) async fn send_file_batch_to_peers(
             return;
         }
     };
-    let storage_status = database.lock().await.storage_status();
-    if !storage_status.available {
-        let message = storage_status
-            .error
-            .unwrap_or_else(|| "Configured storage is unavailable; file transfer is paused".into());
-        notify_file_batch_error(&runtime, &settings, &message).await;
-        return;
-    }
     let batch_id = prepared.manifest.batch_id;
     let batch_id_hex = batch_id.as_hex();
     let Some(_batch_claim) = sync::try_claim_outgoing_batch(batch_id) else {
@@ -105,19 +119,41 @@ pub(super) async fn send_file_batch_to_peers(
         .into_iter()
         .filter(peer_is_transfer_eligible)
         .collect::<Vec<_>>();
-    let peer_names = peers
+    let peer_targets = peers
         .iter()
-        .map(|peer| peer.hostname.clone())
+        .map(|peer| (peer.hostname.clone(), peer.fingerprint.clone()))
         .collect::<Vec<_>>();
     let persist_result = selection_id.map_or_else(
-        || sync::persist_outgoing_batch(&prepared, &peer_names),
+        || sync::persist_outgoing_batch_with_identities(&prepared, &peer_targets),
         |selection_id| {
-            sync::persist_outgoing_batch_for_selection(&prepared, &peer_names, selection_id)
+            sync::persist_outgoing_batch_for_selection_with_identities(
+                &prepared,
+                &peer_targets,
+                selection_id,
+            )
         },
     );
     if let Err(error) = persist_result {
         warn!("Could not persist outgoing file batch {batch_id_hex}: {error}");
-    } else if let Some(selection_id) = selection_id {
+        let message = format!("Could not persist outgoing file batch: {error}");
+        let should_notify = match selection_id {
+            Some(selection_id) => {
+                match sync::schedule_outgoing_selection_retry(selection_id, &message) {
+                    Ok(should_notify) => should_notify,
+                    Err(error) => {
+                        warn!("Could not persist outgoing selection retry state: {error}");
+                        true
+                    }
+                }
+            }
+            None => true,
+        };
+        if should_notify {
+            notify_file_batch_error(&runtime, &settings, &message).await;
+        }
+        return;
+    }
+    if let Some(selection_id) = selection_id {
         if let Err(error) = sync::remove_outgoing_selection(selection_id) {
             warn!("Could not remove prepared outgoing selection: {error}");
         }
@@ -137,27 +173,55 @@ pub(super) async fn send_file_batch_to_peers(
         can_stop: true,
     });
 
-    let (delivered_peers, failures) =
+    let no_eligible_peers = peers.is_empty();
+    let (delivered_peers, mut failures) =
         deliver_prepared_batch_to_peers(prepared.clone(), peers, pool.clone()).await;
+    if no_eligible_peers {
+        failures.push((
+            "TailSync".to_string(),
+            "No eligible peers are currently available".to_string(),
+        ));
+    }
     let delivered = delivered_peers.len();
-    for hostname in &delivered_peers {
-        if let Err(error) = sync::mark_outgoing_peer_completed(batch_id, hostname) {
+    for (hostname, fingerprint) in &delivered_peers {
+        if let Err(error) =
+            sync::mark_outgoing_peer_completed_with_identity(batch_id, hostname, fingerprint)
+        {
             warn!("Could not update outgoing file batch {batch_id_hex}: {error}");
         }
     }
-    if !failures.is_empty() {
-        let message = summarize_file_batch_failures(&failures);
-        notify_file_batch_error(&runtime, &settings, &message).await;
-    }
-
-    let history_saved =
+    let history_error =
         match save_local_file_batch_history(database.clone(), &prepared, &batch_id_hex).await {
-            Ok(()) => true,
+            Ok(()) => None,
             Err(error) => {
                 error!("Could not save local file batch history: {error}");
-                false
+                Some(error)
             }
         };
+    let history_saved = history_error.is_none();
+    let retry_message = match (failures.is_empty(), history_error) {
+        (false, Some(history_error)) => Some(format!(
+            "{}; local history also failed: {history_error}",
+            summarize_file_batch_failures(&failures)
+        )),
+        (false, None) => Some(summarize_file_batch_failures(&failures)),
+        (true, Some(history_error)) => Some(format!(
+            "Could not save local file batch history: {history_error}"
+        )),
+        (true, None) => None,
+    };
+    if let Some(message) = retry_message {
+        let should_notify = match sync::schedule_outgoing_batch_retry(batch_id, &message) {
+            Ok(should_notify) => should_notify,
+            Err(error) => {
+                warn!("Could not persist outgoing file batch retry state: {error}");
+                true
+            }
+        };
+        if should_notify {
+            notify_file_batch_error(&runtime, &settings, &message).await;
+        }
+    }
     if history_saved {
         if let Err(error) = sync::mark_outgoing_history_saved(batch_id) {
             warn!("Could not mark outgoing file batch history as saved: {error}");
@@ -179,10 +243,11 @@ async fn deliver_prepared_batch_to_peers(
     prepared: Arc<sync::PreparedFileBatch>,
     peers: Vec<network::tailscale::PeerInfo>,
     pool: Arc<Mutex<network::ConnectionPool>>,
-) -> (Vec<String>, Vec<(String, String)>) {
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let mut tasks = tokio::task::JoinSet::new();
     for peer in peers {
         let hostname = peer.hostname.clone();
+        let fingerprint = peer.fingerprint.clone();
         let peer_batch = prepared.clone();
         let peer_pool = pool.clone();
         tasks.spawn(async move {
@@ -195,16 +260,16 @@ async fn deliver_prepared_batch_to_peers(
                     .await
                     .disconnect_hostname(&recovery_peer.hostname);
             }
-            (hostname, result)
+            (hostname, fingerprint, result)
         });
     }
     let mut delivered = Vec::new();
     let mut failures = Vec::new();
     while let Some(result) = tasks.join_next().await {
         match result {
-            Ok((hostname, Ok(()))) => delivered.push(hostname),
-            Ok((_, Err(error))) if error == "cancelled" => {}
-            Ok((hostname, Err(error))) => {
+            Ok((hostname, fingerprint, Ok(()))) => delivered.push((hostname, fingerprint)),
+            Ok((_, _, Err(error))) if error == "cancelled" => {}
+            Ok((hostname, _, Err(error))) => {
                 warn!("File batch delivery to {hostname} failed: {error}");
                 failures.push((hostname, error));
             }
@@ -299,6 +364,9 @@ async fn resume_outgoing_file_batches_once(
             }
             continue;
         }
+        if !sync::outgoing_retry_due(selection.next_attempt_at) {
+            continue;
+        }
         send_file_batch_to_peers(
             selection.paths,
             selection.generation,
@@ -323,14 +391,17 @@ async fn resume_outgoing_file_batches_once(
         .into_iter()
         .filter(peer_is_transfer_eligible)
         .collect::<Vec<_>>();
-    let peer_names = peers
+    let peer_targets = peers
         .iter()
-        .map(|peer| peer.hostname.clone())
+        .map(|peer| (peer.hostname.clone(), peer.fingerprint.clone()))
         .collect::<Vec<_>>();
 
     for journal in batches {
         let batch_id = journal.batch_id();
         let batch_id_hex = batch_id.as_hex();
+        if !sync::outgoing_retry_due(journal.next_attempt_at) {
+            continue;
+        }
         let Some(_batch_claim) = sync::try_claim_outgoing_batch(batch_id) else {
             continue;
         };
@@ -341,8 +412,18 @@ async fn resume_outgoing_file_batches_once(
                 continue;
             }
         };
+        if journal.peers.is_empty() && !peer_targets.is_empty() {
+            if let Err(error) = sync::enroll_outgoing_batch_peers(batch_id, &peer_targets) {
+                warn!("Could not enroll recovered peers for outgoing file batch {batch_id_hex}: {error}");
+                continue;
+            }
+        }
+        let journal = sync::load_outgoing_batches()
+            .into_iter()
+            .find(|saved| saved.batch_id() == batch_id)
+            .unwrap_or(journal);
         let pending_names = journal
-            .pending_peers(&peer_names)
+            .pending_peers(&peer_targets)
             .into_iter()
             .map(|peer| (*peer).clone())
             .collect::<std::collections::HashSet<_>>();
@@ -353,6 +434,7 @@ async fn resume_outgoing_file_batches_once(
             .collect::<Vec<_>>();
 
         let mut all_peers_completed = journal.all_peers_completed();
+        let mut retry_message = None;
         if !pending_peers.is_empty() {
             crate::api::set_file_batch_progress(crate::api::FileProgress {
                 batch_id: batch_id_hex.clone(),
@@ -371,8 +453,12 @@ async fn resume_outgoing_file_batches_once(
             let (delivered_peers, failures) =
                 deliver_prepared_batch_to_peers(prepared.clone(), pending_peers, pool.clone())
                     .await;
-            for hostname in &delivered_peers {
-                if let Err(error) = sync::mark_outgoing_peer_completed(batch_id, hostname) {
+            for (hostname, fingerprint) in &delivered_peers {
+                if let Err(error) = sync::mark_outgoing_peer_completed_with_identity(
+                    batch_id,
+                    hostname,
+                    fingerprint,
+                ) {
                     warn!("Could not update resumed file batch {batch_id_hex}: {error}");
                 }
             }
@@ -381,12 +467,15 @@ async fn resume_outgoing_file_batches_once(
                     "Resumed file batch {batch_id_hex} remains pending on {} peer(s)",
                     failures.len()
                 );
+                retry_message = Some(summarize_file_batch_failures(&failures));
             }
             crate::api::clear_file_progress_scope(Some(&batch_id_hex), None);
             all_peers_completed = sync::load_outgoing_batches()
                 .into_iter()
                 .find(|saved| saved.batch_id() == batch_id)
                 .is_some_and(|saved| saved.all_peers_completed());
+        } else if !all_peers_completed {
+            retry_message = Some("No eligible peers are currently available".to_string());
         }
 
         if all_peers_completed {
@@ -402,6 +491,8 @@ async fn resume_outgoing_file_batches_once(
                     }
                     Err(error) => {
                         error!("Could not save resumed file batch history: {error}");
+                        retry_message =
+                            Some(format!("Could not save local file batch history: {error}"));
                         false
                     }
                 }
@@ -410,6 +501,18 @@ async fn resume_outgoing_file_batches_once(
                 if let Err(error) = sync::remove_outgoing_batch(batch_id) {
                     warn!("Could not remove resumed file batch {batch_id_hex}: {error}");
                 }
+            }
+        }
+        if let Some(message) = retry_message {
+            let should_notify = match sync::schedule_outgoing_batch_retry(batch_id, &message) {
+                Ok(should_notify) => should_notify,
+                Err(error) => {
+                    warn!("Could not persist resumed file batch retry state: {error}");
+                    true
+                }
+            };
+            if should_notify {
+                notify_file_batch_error(&runtime, &settings, &message).await;
             }
         }
     }
@@ -489,6 +592,7 @@ pub(super) async fn send_batch_to_peer(
     }
     let manifest = serde_json::to_vec(&prepared.manifest).map_err(|error| error.to_string())?;
     let mut resume_attempts = 0_u8;
+    let mut reported_bytes = 0_u64;
 
     // A FileChunk is only meaningful after the receiver has accepted the
     // batch and its FileMeta. If the receiver process or connection session
@@ -550,6 +654,22 @@ pub(super) async fn send_batch_to_peer(
                     peer.hostname
                 ));
             }
+            let progress_bytes = completed_bytes.saturating_add(confirmed);
+            reported_bytes = reported_bytes.max(progress_bytes);
+            crate::api::set_file_batch_progress(crate::api::FileProgress {
+                batch_id: batch_id_hex.clone(),
+                name: meta.name.clone(),
+                sent: reported_bytes,
+                total: prepared.manifest.total_bytes,
+                active: true,
+                direction: "sending".into(),
+                device: peer.hostname.clone(),
+                completed_files: file_index,
+                total_files: prepared.files.len(),
+                speed_bytes_per_second: 0,
+                status: "transferring".into(),
+                can_stop: true,
+            });
             let mut file = tokio::fs::File::open(&prepared_file.path)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -607,10 +727,12 @@ pub(super) async fn send_batch_to_peer(
                 file.seek(std::io::SeekFrom::Start(confirmed))
                     .await
                     .map_err(|error| error.to_string())?;
+                let progress_bytes = completed_bytes.saturating_add(confirmed);
+                reported_bytes = reported_bytes.max(progress_bytes);
                 crate::api::set_file_batch_progress(crate::api::FileProgress {
                     batch_id: batch_id_hex.clone(),
                     name: meta.name.clone(),
-                    sent: completed_bytes.saturating_add(confirmed),
+                    sent: reported_bytes,
                     total: prepared.manifest.total_bytes,
                     active: true,
                     direction: "sending".into(),

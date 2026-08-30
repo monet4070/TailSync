@@ -29,6 +29,32 @@ impl SyncEngine {
             if self.cancelled_batches.contains_key(&batch_key) {
                 return Err("File batch was cancelled".to_string());
             }
+            self.prune_completed_batches();
+            if self.completed_batches.contains_key(&batch_key) {
+                let completed_manifest = self
+                    .completed_batch_manifests
+                    .get(&batch_key)
+                    .ok_or_else(|| "Completed file batch metadata is unavailable".to_string())?;
+                let expected = completed_manifest
+                    .files
+                    .get(usize::from(batch_ref.index))
+                    .ok_or_else(|| "File batch index is out of range".to_string())?;
+                if expected.transfer_id != transfer_id
+                    || expected.name != meta.name
+                    || expected.size != meta.size
+                    || expected.hash != meta.hash
+                    || expected.chunk_size != meta.chunk_size
+                {
+                    return Err(
+                        "File metadata does not match the completed batch manifest".to_string()
+                    );
+                }
+                return Ok(FileReceiveProgress {
+                    transfer_id,
+                    next_offset: meta.size,
+                    completed: None,
+                });
+            }
             let batch = self.incoming_batches.get(&batch_key).ok_or_else(|| {
                 "File batch manifest must be accepted before file data".to_string()
             })?;
@@ -331,7 +357,7 @@ impl SyncEngine {
             meta: state.meta,
         };
         if pending.hash_verified {
-            self.commit_received_file(source, pending)?;
+            self.commit_received_file(source, pending).await?;
             Ok(None)
         } else {
             info!(
@@ -342,7 +368,7 @@ impl SyncEngine {
         }
     }
 
-    pub fn commit_received_file(
+    pub async fn commit_received_file(
         &mut self,
         source: &str,
         pending: PendingReceivedFile,
@@ -386,6 +412,14 @@ impl SyncEngine {
                 let manifest = saved.manifest;
                 let saved_source = saved.source;
                 let local_generation = saved.local_generation;
+                let source_device_id = if saved.source_device_id.is_empty() {
+                    self.peer_device_ids
+                        .get(source)
+                        .cloned()
+                        .unwrap_or_else(|| source.to_string())
+                } else {
+                    saved.source_device_id
+                };
                 let mut files = vec![None; manifest.files.len()];
                 for (index, file) in saved.files.into_iter().enumerate() {
                     if let Some(file) = file {
@@ -404,6 +438,7 @@ impl SyncEngine {
                     IncomingBatch {
                         manifest,
                         source: saved_source,
+                        source_device_id,
                         session_epoch,
                         local_generation,
                         files,
@@ -422,6 +457,7 @@ impl SyncEngine {
             *slot = Some(received_file);
             let persisted = PersistedIncomingBatch {
                 source: batch.source.clone(),
+                source_device_id: batch.source_device_id.clone(),
                 manifest: batch.manifest.clone(),
                 files: files.clone(),
                 local_generation: batch.local_generation,
@@ -447,8 +483,27 @@ impl SyncEngine {
                     total_bytes: batch.manifest.total_bytes,
                 });
             }
-        } else if let Some(platform) = self.platform.as_ref() {
-            platform.files_received(None, vec![received_file], 1, true, true, source.to_string());
+        } else {
+            let platform = self
+                .platform
+                .clone()
+                .ok_or_else(|| "Clipboard platform is unavailable".to_string())?;
+            platform
+                .files_received(FileReceiveCommit {
+                    batch_id: None,
+                    files: vec![received_file],
+                    batch_total: 1,
+                    batch_complete: true,
+                    activate_clipboard: true,
+                    device: source.to_string(),
+                    source_device_id: self
+                        .peer_device_ids
+                        .get(source)
+                        .cloned()
+                        .unwrap_or_else(|| source.to_string()),
+                    manifest_hash: None,
+                })
+                .await?;
         }
         self.completed_transfers.insert(
             (source.to_string(), ReceiveKey::from(meta.transfer_id)),

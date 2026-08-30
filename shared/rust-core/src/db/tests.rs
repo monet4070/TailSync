@@ -33,6 +33,17 @@ fn test_database(root: &Path) -> HistoryDB {
         );",
     )
     .unwrap();
+    conn.execute_batch(
+        "CREATE TABLE received_file_batches (
+            source_device_id TEXT NOT NULL,
+            batch_id TEXT NOT NULL,
+            manifest_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            completed_at TEXT,
+            UNIQUE(source_device_id, batch_id)
+        );",
+    )
+    .unwrap();
     HistoryDB {
         conn,
         max_history: 100,
@@ -232,6 +243,77 @@ fn migration_v10_normalizes_partial_favorite_batches() {
         )
         .unwrap();
     assert_eq!(index_count, 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn migration_v11_repairs_duplicate_file_batch_identities_before_indexing() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-file-batch-migration-{:016x}",
+        rand::random::<u64>()
+    ));
+    let file_dir = root.join("file-history");
+    let image_dir = root.join("image-history");
+    std::fs::create_dir_all(&file_dir).unwrap();
+    std::fs::create_dir_all(&image_dir).unwrap();
+    let conn = Connection::open_in_memory().unwrap();
+    schema::initialize(&conn).unwrap();
+    conn.execute("INSERT INTO schema_version (version) VALUES (10)", [])
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO history
+            (timestamp, type, description, data, size_bytes, source_peer, data_hash,
+             batch_id, batch_index, batch_total, batch_status, pinned)
+         VALUES
+            ('2026-01-01T00:00:00Z', 'file', 'same.txt', X'01', 1, 'peer', 'same-hash',
+             'same-batch', 0, 2, 'complete', 0),
+            ('2026-01-01T00:00:00Z', 'file', 'same.txt', X'01', 1, 'peer', 'same-hash',
+             'same-batch', 0, 2, 'complete', 1),
+            ('2026-01-01T00:00:00Z', 'file', 'other.txt', X'02', 1, 'peer', 'other-hash',
+             'same-batch', 1, 2, 'complete', 0),
+            ('2026-01-01T00:00:00Z', 'file', 'conflict-a.txt', X'03', 1, 'peer', 'conflict-a',
+             'conflict-batch', 0, 1, 'complete', 0),
+            ('2026-01-01T00:00:00Z', 'file', 'conflict-b.txt', X'04', 1, 'peer', 'conflict-b',
+             'conflict-batch', 0, 1, 'complete', 0);",
+    )
+    .unwrap();
+
+    HistoryDB::migrate(&conn, &file_dir, &image_dir).unwrap();
+
+    let same_batch_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM history WHERE batch_id = 'same-batch'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(same_batch_count, 2);
+    let kept_pinned: i64 = conn
+        .query_row(
+            "SELECT pinned FROM history WHERE batch_id = 'same-batch' AND batch_index = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept_pinned, 1);
+    let detached_conflict_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM history
+             WHERE batch_id IS NULL AND description = 'conflict-b.txt'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(detached_conflict_count, 1);
+    let unique_index_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_history_file_batch_identity'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unique_index_count, 1);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1095,6 +1177,109 @@ fn complete_file_batch_lookup_supports_idempotent_recovery() {
 
     assert!(db.has_complete_file_batch("batch-recovery").unwrap());
     assert!(!db.has_complete_file_batch("other-batch").unwrap());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn received_file_batch_receipt_makes_replays_idempotent() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-received-batch-replay-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("source.bin");
+    std::fs::write(&source, b"recovered").unwrap();
+    let input = [HistoryFileInput {
+        name: "source.bin".into(),
+        path: source.clone(),
+        data_hash: blake3::hash(b"recovered").to_hex().to_string(),
+        size: 9,
+    }];
+    let mut db = test_database(&root);
+
+    db.add_file_batch_with_receipt(
+        "batch-receipt",
+        &input,
+        FileBatchWriteOptions {
+            expected_total: 1,
+            source_peer: "renamed-peer",
+            move_sources: false,
+            complete: true,
+            source_device_id: Some("noise-fingerprint"),
+            manifest_hash: Some("manifest-hash"),
+        },
+    )
+    .unwrap();
+    db.add_file_batch_with_receipt(
+        "batch-receipt",
+        &input,
+        FileBatchWriteOptions {
+            expected_total: 1,
+            source_peer: "renamed-peer-again",
+            move_sources: false,
+            complete: true,
+            source_device_id: Some("noise-fingerprint"),
+            manifest_hash: Some("manifest-hash"),
+        },
+    )
+    .unwrap();
+
+    let row_count: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM history WHERE batch_id = 'batch-receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(row_count, 1);
+    let receipt: (String, String) = db
+        .conn
+        .query_row(
+            "SELECT status, manifest_hash FROM received_file_batches
+             WHERE source_device_id = 'noise-fingerprint' AND batch_id = 'batch-receipt'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        receipt,
+        ("complete".to_string(), "manifest-hash".to_string())
+    );
+    assert_eq!(
+        db.received_file_batch_receipt("noise-fingerprint", "batch-receipt")
+            .unwrap(),
+        Some(("manifest-hash".to_string(), "complete".to_string()))
+    );
+    assert!(db
+        .has_received_file_batch("noise-fingerprint", "batch-receipt", "manifest-hash")
+        .unwrap());
+    assert!(!db
+        .has_received_file_batch("other-device", "batch-receipt", "manifest-hash")
+        .unwrap());
+    let source_peer: String = db
+        .conn
+        .query_row(
+            "SELECT source_peer FROM history WHERE batch_id = 'batch-receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(source_peer, "renamed-peer-again");
+
+    let mismatch = db.add_file_batch_with_receipt(
+        "batch-receipt",
+        &input,
+        FileBatchWriteOptions {
+            expected_total: 1,
+            source_peer: "renamed-peer",
+            move_sources: false,
+            complete: true,
+            source_device_id: Some("noise-fingerprint"),
+            manifest_hash: Some("different-manifest"),
+        },
+    );
+    assert!(mismatch.is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
 

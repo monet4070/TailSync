@@ -14,6 +14,7 @@ pub struct RuntimeSnapshot {
     history_version: u64,
     progress: Option<crate::api::FileProgress>,
     sync_warning: Option<tailsync_core::sync_warning::SyncWarning>,
+    notifications: Vec<crate::api::RuntimeNotification>,
 }
 
 /// Wait until history or transfer state changes, then return one coherent
@@ -23,6 +24,7 @@ pub struct RuntimeSnapshot {
 pub async fn wait_runtime_snapshot(
     since_revision: u64,
     wait_ms: Option<u64>,
+    since_notification_id: Option<u64>,
 ) -> Result<RuntimeSnapshot, String> {
     let wait_ms = wait_ms.unwrap_or(2_500).clamp(50, 15_000);
     let _ = crate::api::wait_for_runtime_revision(
@@ -36,6 +38,9 @@ pub async fn wait_runtime_snapshot(
         history_version: crate::api::get_clipboard_version(),
         progress: crate::api::get_file_progress(),
         sync_warning: tailsync_core::sync_warning::take(),
+        notifications: crate::api::get_runtime_notifications_since(
+            since_notification_id.unwrap_or_default(),
+        ),
     })
 }
 

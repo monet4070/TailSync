@@ -35,6 +35,14 @@ pub(super) fn initialize(connection: &Connection) -> Result<(), rusqlite::Error>
             ON history(description) WHERE type <> 'text';
         CREATE INDEX IF NOT EXISTS idx_history_hash
             ON history(data_hash);
+        CREATE TABLE IF NOT EXISTS received_file_batches (
+            source_device_id TEXT NOT NULL,
+            batch_id TEXT NOT NULL,
+            manifest_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            completed_at TEXT,
+            UNIQUE(source_device_id, batch_id)
+        );
         CREATE TABLE IF NOT EXISTS migration_issues (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             history_id INTEGER NOT NULL,

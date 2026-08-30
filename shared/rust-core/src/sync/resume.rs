@@ -19,6 +19,10 @@ pub(crate) struct PersistedTransfer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PersistedIncomingBatch {
     pub(crate) source: String,
+    /// Stable Noise public-key fingerprint. Older sidecars omit this field
+    /// and are rebound to the authenticated peer during recovery.
+    #[serde(default)]
+    pub(crate) source_device_id: String,
     pub(crate) manifest: FileBatchManifest,
     pub(crate) files: Vec<Option<ReceivedFile>>,
     /// Generation captured when the batch was admitted. Older sidecars
@@ -202,6 +206,7 @@ mod tests {
         let path = directory.join("batch.batch.json");
         let batch = PersistedIncomingBatch {
             source: "peer".to_string(),
+            source_device_id: "peer-key".to_string(),
             manifest: FileBatchManifest {
                 batch_id: TransferId::random(),
                 generation: 0,

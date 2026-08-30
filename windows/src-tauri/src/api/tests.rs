@@ -2,7 +2,7 @@ use super::{
     bind_api_listener, bump_runtime_revision, clear_file_progress, clear_file_progress_scope,
     get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
     read_request_with_limits, set_file_batch_progress, wait_for_runtime_revision, ApiToken,
-    FileProgress, Request,
+    FileProgress, Request, RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS,
 };
 use crate::crypto::Settings;
 use crate::identity::DeviceIdentity;
@@ -38,6 +38,22 @@ fn progress_scope_keeps_other_concurrent_devices_visible() {
     assert_eq!(remaining.batch_id, "batch-a");
     assert_eq!(remaining.device, "peer-a");
     clear_file_progress();
+}
+
+#[test]
+fn runtime_notification_buffer_is_bounded_and_cursored() {
+    let mut buffer = RuntimeNotificationBuffer::default();
+    let first = buffer.push("error", "first failure".into());
+    for index in 0..MAX_RUNTIME_NOTIFICATIONS {
+        buffer.push("error", format!("failure {index}"));
+    }
+
+    assert_eq!(buffer.entries.len(), MAX_RUNTIME_NOTIFICATIONS);
+    assert!(buffer
+        .since(first)
+        .iter()
+        .all(|notification| notification.id > first));
+    assert_eq!(buffer.since(first).len(), MAX_RUNTIME_NOTIFICATIONS);
 }
 
 #[tokio::test]

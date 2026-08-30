@@ -286,10 +286,115 @@ impl HistoryDB {
             )?;
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",
+                params![10_i64],
+            )?;
+        }
+
+        if version < 11 {
+            info!("Running database migration v11 (deduplicating file batch identities)...");
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS received_file_batches (
+                    source_device_id TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    manifest_hash TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    completed_at TEXT,
+                    UNIQUE(source_device_id, batch_id)
+                );",
+            )?;
+            Self::repair_duplicate_file_batch_rows(conn)?;
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_history_file_batch_identity
+                 ON history(batch_id, batch_index)
+                 WHERE type = 'file' AND batch_id IS NOT NULL AND batch_index IS NOT NULL;",
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
                 params![SCHEMA_VERSION],
             )?;
         }
 
+        Ok(())
+    }
+
+    /// Repair rows written by a pre-idempotency file-batch implementation
+    /// before installing the `(batch_id, batch_index)` uniqueness guarantee.
+    /// Identical retries keep one row; conflicting content is detached as a
+    /// standalone history entry so migration never silently discards data.
+    fn repair_duplicate_file_batch_rows(
+        conn: &Connection,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let duplicate_groups = conn
+            .prepare(
+                "SELECT batch_id, batch_index
+                 FROM history
+                 WHERE type = 'file' AND batch_id IS NOT NULL AND batch_index IS NOT NULL
+                 GROUP BY batch_id, batch_index
+                 HAVING COUNT(*) > 1",
+            )?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (batch_id, batch_index) in duplicate_groups {
+            let rows = conn
+                .prepare(
+                    "SELECT id, data_hash, description, size_bytes, source_peer, data,
+                            batch_total, batch_status, pinned
+                     FROM history
+                     WHERE type = 'file' AND batch_id = ?1 AND batch_index = ?2
+                     ORDER BY CASE WHEN batch_status = 'complete' THEN 0 ELSE 1 END,
+                              id ASC",
+                )?
+                .query_map(params![batch_id, batch_index], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let Some((keep, duplicates)) = rows.split_first() else {
+                continue;
+            };
+
+            if duplicates.iter().all(|row| {
+                row.1 == keep.1
+                    && row.2 == keep.2
+                    && row.3 == keep.3
+                    && row.4 == keep.4
+                    && row.5 == keep.5
+                    && row.6 == keep.6
+                    && row.7 == keep.7
+            }) {
+                if duplicates.iter().any(|row| row.8 != 0) && keep.8 == 0 {
+                    conn.execute(
+                        "UPDATE history SET pinned = 1 WHERE id = ?1",
+                        params![keep.0],
+                    )?;
+                }
+                for duplicate in duplicates {
+                    conn.execute("DELETE FROM history WHERE id = ?1", params![duplicate.0])?;
+                }
+            } else {
+                for duplicate in duplicates {
+                    conn.execute(
+                        "UPDATE history
+                         SET batch_id = NULL, batch_index = NULL, batch_total = NULL,
+                             batch_status = 'complete'
+                         WHERE id = ?1",
+                        params![duplicate.0],
+                    )?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -553,6 +658,9 @@ impl HistoryDB {
         if limit == 0 {
             return Err("file-encryption migration batch size must be positive".into());
         }
+        let _maintenance_guard = storage::STORAGE_MAINTENANCE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let db_path = get_history_db_path();
         let conn = Connection::open(db_path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;

@@ -1,4 +1,10 @@
 use super::*;
+use rusqlite::Transaction;
+
+pub(super) struct ExternalHistoryPayload {
+    pub(super) stored: Vec<u8>,
+    pub(super) path: PathBuf,
+}
 
 impl HistoryDB {
     /// Add a text entry to history. Duplicate: delete old, insert new at top.
@@ -8,16 +14,19 @@ impl HistoryDB {
         source_peer: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let data_hash = blake3::hash(text.as_bytes()).to_hex().to_string();
-        // Delete old entry with same hash so the new one is at the top
+        // Replace the duplicate and insert the new row in one SQLite
+        // transaction so a process exit cannot leave the history gap between
+        // those two operations.
         let duplicate_ids = self.unfavorited_duplicate_ids(&self.entry_ids_by_hash(&data_hash)?)?;
-        self.delete_entries(&duplicate_ids)?;
 
         let encrypted = crypto::encrypt(text.as_bytes())?;
         let timestamp = chrono::Utc::now().to_rfc3339();
         let classification = history_classifier::classify_text(text);
         let categories = serde_json::to_string(&classification.categories())?;
 
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        Self::delete_rows_in_transaction(&tx, &duplicate_ids)?;
+        tx.execute(
             "INSERT INTO history
                 (timestamp, type, description, data, size_bytes, source_peer, data_hash,
                  category, categories, category_confidence, classifier_version)
@@ -35,6 +44,7 @@ impl HistoryDB {
                 history_classifier::CLASSIFIER_VERSION,
             ],
         )?;
+        tx.commit()?;
 
         self.trim("text")?;
         Ok(())
@@ -48,15 +58,21 @@ impl HistoryDB {
     ) -> Result<(), Box<dyn std::error::Error>> {
         crate::protocol::PackedImage::try_from(image_data)?;
         let data_hash = blake3::hash(image_data).to_hex().to_string();
-        // Delete old entry so the new copy appears at the top
+        // Keep the payload outside SQLite, but make row replacement and row
+        // insertion atomic. Old payloads are removed only after commit.
         let duplicate_ids = self.unfavorited_duplicate_ids(&self.entry_ids_by_hash(&data_hash)?)?;
-        self.delete_entries(&duplicate_ids)?;
-
         let reference = persist_image_at(&self.image_history_dir, &data_hash, image_data)?;
+        let new_path = decode_image_reference(&reference)
+            .map(|reference| resolve_file_reference_at(&self.image_history_dir, &reference))
+            .transpose()?
+            .ok_or("Could not resolve persisted image reference")?;
+        let old_payloads = self.external_payloads_for_ids(&duplicate_ids)?;
         let timestamp = chrono::Utc::now().to_rfc3339();
         let description = format!("Image {} bytes", image_data.len());
 
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        Self::delete_rows_in_transaction(&tx, &duplicate_ids)?;
+        let write_result = tx.execute(
             "INSERT INTO history
                 (timestamp, type, description, data, size_bytes, source_peer, data_hash,
                  category, categories, category_confidence, classifier_version)
@@ -70,7 +86,27 @@ impl HistoryDB {
                 data_hash,
                 history_classifier::CLASSIFIER_VERSION,
             ],
-        )?;
+        );
+        if let Err(error) = write_result {
+            drop(tx);
+            let mut payloads = old_payloads;
+            payloads.push(ExternalHistoryPayload {
+                stored: reference,
+                path: new_path,
+            });
+            self.cleanup_external_payloads(&payloads, None);
+            return Err(error.into());
+        }
+        if let Err(error) = tx.commit() {
+            let mut payloads = old_payloads;
+            payloads.push(ExternalHistoryPayload {
+                stored: reference,
+                path: new_path.clone(),
+            });
+            self.cleanup_external_payloads(&payloads, None);
+            return Err(error.into());
+        }
+        self.cleanup_external_payloads(&old_payloads, Some(&new_path));
 
         self.trim("image")?;
         Ok(())
@@ -117,5 +153,96 @@ impl HistoryDB {
             }
         }
         crypto::decrypt(&stored)
+    }
+
+    pub(super) fn external_payloads_for_ids(
+        &self,
+        ids: &[i64],
+    ) -> Result<Vec<ExternalHistoryPayload>, Box<dyn std::error::Error>> {
+        let mut payloads = Vec::new();
+        for id in ids {
+            let stored = self.conn.query_row(
+                "SELECT type, data FROM history WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            );
+            let Ok((entry_type, stored)) = stored else {
+                continue;
+            };
+            let reference = match entry_type.as_str() {
+                "file" => decode_file_reference(&stored),
+                "image" => decode_image_reference(&stored),
+                _ => None,
+            };
+            if let Some(reference) = reference {
+                let directory = if entry_type == "file" {
+                    &self.file_history_dir
+                } else {
+                    &self.image_history_dir
+                };
+                payloads.push(ExternalHistoryPayload {
+                    stored,
+                    path: resolve_file_reference_at(directory, &reference)?,
+                });
+            }
+        }
+        Ok(payloads)
+    }
+
+    pub(super) fn delete_rows_in_transaction(
+        tx: &Transaction<'_>,
+        ids: &[i64],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut affected_batches = std::collections::BTreeSet::new();
+        for id in ids {
+            let batch_id: Option<String> = tx.query_row(
+                "SELECT batch_id FROM history WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            if let Some(batch_id) = batch_id {
+                affected_batches.insert(batch_id);
+            }
+            tx.execute("DELETE FROM history WHERE id = ?1", params![id])?;
+        }
+        for batch_id in affected_batches {
+            tx.execute(
+                "UPDATE history SET batch_status = 'incomplete'
+                 WHERE batch_id = ?1
+                   AND (SELECT COUNT(*) FROM history WHERE batch_id = ?1) < batch_total",
+                params![batch_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn cleanup_external_payloads(
+        &self,
+        payloads: &[ExternalHistoryPayload],
+        preserve_path: Option<&Path>,
+    ) {
+        for payload in payloads {
+            if preserve_path == Some(payload.path.as_path()) {
+                continue;
+            }
+            let remaining = self.conn.query_row(
+                "SELECT COUNT(*) FROM history WHERE data = ?1",
+                params![&payload.stored],
+                |row| row.get::<_, i64>(0),
+            );
+            if matches!(remaining, Ok(0)) {
+                if let Err(error) = std::fs::remove_file(&payload.path) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        warn!(
+                            "Could not remove unreferenced history payload {}: {error}",
+                            payload.path.display()
+                        );
+                    }
+                }
+            }
+        }
     }
 }

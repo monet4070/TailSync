@@ -183,6 +183,21 @@ pub struct HistoryFileInput {
     pub size: u64,
 }
 
+/// Options shared by complete and partial file-batch writes.
+///
+/// The optional receipt fields are populated only for authenticated remote
+/// receives. Keeping them with the write options makes it hard for callers to
+/// persist history and its idempotency identity inconsistently.
+#[derive(Debug, Clone, Copy)]
+pub struct FileBatchWriteOptions<'a> {
+    pub expected_total: usize,
+    pub source_peer: &'a str,
+    pub move_sources: bool,
+    pub complete: bool,
+    pub source_device_id: Option<&'a str>,
+    pub manifest_hash: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StorageStatus {
     pub root: String,

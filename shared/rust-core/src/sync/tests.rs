@@ -1,14 +1,15 @@
 use super::{
     normalize_transferred_file_name, persisted_file_resume_offset, prepare_file_batch,
     validate_incoming_file_meta, verify_and_commit_received_file, FileBatchEntry,
-    FileBatchManifest, FileBatchProgress, FileBatchRef, FileMeta, FileReceiveError,
-    PendingReceivedFile, ReceiveSuspendGuard, ReceivedFile, SyncEngine, SyncPlatform,
-    CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS, MAX_ACTIVE_BATCHES_GLOBAL,
-    MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES, MAX_FILE_BATCH_COUNT, MAX_FILE_SIZE,
-    SEEN_MESSAGE_MAX_ENTRIES,
+    FileBatchManifest, FileBatchProgress, FileBatchRef, FileMeta, FileReceiveCommit,
+    FileReceiveError, PendingReceivedFile, ReceiveSuspendGuard, ReceivedFile, SyncEngine,
+    SyncPlatform, CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS,
+    MAX_ACTIVE_BATCHES_GLOBAL, MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES,
+    MAX_FILE_BATCH_COUNT, MAX_FILE_SIZE, SEEN_MESSAGE_MAX_ENTRIES,
 };
 use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -126,6 +127,7 @@ async fn stale_receive_metadata_cannot_downgrade_active_epoch() {
         batch: None,
     };
     let mut engine = SyncEngine::new();
+    engine.set_platform(Arc::new(TestPlatform::default()));
     let old_epoch = engine.start_receive_session("peer");
     engine
         .begin_file_receive_at_epoch(
@@ -184,6 +186,7 @@ struct ReceivedBatchEvent {
 #[derive(Default)]
 struct TestPlatform {
     received: Mutex<Vec<ReceivedBatchEvent>>,
+    fail_receives: AtomicBool,
 }
 
 impl TestPlatform {
@@ -207,15 +210,16 @@ impl SyncPlatform for TestPlatform {
 
     fn set_file_batch_progress(&self, _progress: FileBatchProgress) {}
 
-    fn files_received(
-        &self,
-        batch_id: Option<TransferId>,
-        files: Vec<ReceivedFile>,
-        batch_total: usize,
-        batch_complete: bool,
-        activate_clipboard: bool,
-        device: String,
-    ) {
+    fn files_received(&self, commit: FileReceiveCommit) -> crate::sync::PlatformResultFuture {
+        let FileReceiveCommit {
+            batch_id,
+            files,
+            batch_total,
+            batch_complete,
+            activate_clipboard,
+            device,
+            ..
+        } = commit;
         self.received.lock().unwrap().push(ReceivedBatchEvent {
             batch_id,
             files,
@@ -224,6 +228,14 @@ impl SyncPlatform for TestPlatform {
             activate_clipboard,
             device,
         });
+        let fail_receives = self.fail_receives.load(Ordering::Relaxed);
+        Box::pin(async move {
+            if fail_receives {
+                Err("history persistence failed".to_string())
+            } else {
+                Ok(())
+            }
+        })
     }
 
     fn file_batch_failed(&self, _batch_id: Option<TransferId>, _message: &str) {}
@@ -430,7 +442,9 @@ async fn batch_updates_clipboard_only_after_all_files_and_completion() {
     receive_empty_file(&mut sync, &manifest, 1, directory.path(), "peer").await;
     assert!(platform.received().is_empty());
 
-    sync.finish_file_batch("peer", manifest.batch_id).unwrap();
+    sync.finish_file_batch("peer", manifest.batch_id)
+        .await
+        .unwrap();
     let events = platform.received();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].batch_id, Some(manifest.batch_id));
@@ -452,9 +466,74 @@ async fn completed_file_batch_is_idempotent() {
         .unwrap();
     receive_empty_file(&mut sync, &manifest, 0, directory.path(), "peer").await;
 
-    sync.finish_file_batch("peer", manifest.batch_id).unwrap();
-    sync.finish_file_batch("peer", manifest.batch_id).unwrap();
+    sync.finish_file_batch("peer", manifest.batch_id)
+        .await
+        .unwrap();
+    sync.finish_file_batch("peer", manifest.batch_id)
+        .await
+        .unwrap();
     assert_eq!(platform.received().len(), 1);
+}
+
+#[tokio::test]
+async fn completed_file_batch_replay_skips_receive_and_preserves_the_manifest_on_failure() {
+    let directory = TestDirectory::new("batch-replay-and-failure");
+    let manifest = manifest_with_sizes(&[0]);
+    let platform = Arc::new(TestPlatform::default());
+    let mut sync = SyncEngine::new();
+    sync.set_platform(platform.clone());
+    sync.begin_file_batch(manifest.clone(), "peer".to_string(), directory.path())
+        .unwrap();
+    receive_empty_file(&mut sync, &manifest, 0, directory.path(), "peer").await;
+
+    platform.fail_receives.store(true, Ordering::Relaxed);
+    let error = sync
+        .finish_file_batch("peer", manifest.batch_id)
+        .await
+        .expect_err("a failed persistence callback must reject completion");
+    assert_eq!(error, "history persistence failed");
+    assert!(sync.has_file_batch("peer", manifest.batch_id));
+    assert!(directory
+        .path()
+        .join(format!("{}.batch.json", manifest.batch_id.as_hex()))
+        .is_file());
+
+    platform.fail_receives.store(false, Ordering::Relaxed);
+    sync.finish_file_batch("peer", manifest.batch_id)
+        .await
+        .unwrap();
+    assert_eq!(platform.received().len(), 2);
+
+    // A replayed Start + Meta + Complete is acknowledged from the in-memory
+    // completion record without invoking the platform a second time.
+    sync.begin_file_batch(manifest.clone(), "peer".to_string(), directory.path())
+        .unwrap();
+    receive_empty_file(&mut sync, &manifest, 0, directory.path(), "peer").await;
+    sync.finish_file_batch("peer", manifest.batch_id)
+        .await
+        .unwrap();
+    assert_eq!(platform.received().len(), 2);
+}
+
+#[tokio::test]
+async fn durable_completion_seed_shortcuts_a_replayed_batch() {
+    let directory = TestDirectory::new("durable-completion-seed");
+    let manifest = manifest_with_sizes(&[0]);
+    let mut sync = SyncEngine::new();
+    sync.remember_completed_file_batch(manifest.clone(), "peer".to_string())
+        .unwrap();
+
+    sync.begin_file_batch(manifest.clone(), "peer".to_string(), directory.path())
+        .unwrap();
+    receive_empty_file(&mut sync, &manifest, 0, directory.path(), "peer").await;
+    sync.finish_file_batch("peer", manifest.batch_id)
+        .await
+        .unwrap();
+
+    assert!(!directory
+        .path()
+        .join(format!("{}.batch.json", manifest.batch_id.as_hex()))
+        .exists());
 }
 
 #[tokio::test]
@@ -469,7 +548,9 @@ async fn newer_clipboard_generation_prevents_old_batch_activation() {
     receive_empty_file(&mut sync, &manifest, 0, directory.path(), "peer").await;
 
     sync.supersede_file_clipboard();
-    sync.finish_file_batch("peer", manifest.batch_id).unwrap();
+    sync.finish_file_batch("peer", manifest.batch_id)
+        .await
+        .unwrap();
     let events = platform.received();
     assert_eq!(events.len(), 1);
     assert!(events[0].batch_complete);
@@ -516,6 +597,7 @@ async fn completed_batch_files_resume_after_engine_restart() {
     receive_empty_file(&mut restored, &manifest, 1, directory.path(), "peer").await;
     restored
         .finish_file_batch("peer", manifest.batch_id)
+        .await
         .unwrap();
 
     let events = platform.received();
@@ -829,6 +911,7 @@ async fn completed_transfer_shortcut_requires_matching_hash() {
         batch: None,
     };
     let mut sync = SyncEngine::new();
+    sync.set_platform(Arc::new(TestPlatform::default()));
     sync.begin_file_receive(
         original_meta,
         &directory.path().join("original.bin"),
@@ -922,7 +1005,10 @@ async fn resumed_file_is_verified_before_commit() {
         .unwrap();
     assert!(platform.received().is_empty());
     let verified = progress.completed.unwrap().verify_hash().unwrap();
-    restored.commit_received_file("peer", verified).unwrap();
+    restored
+        .commit_received_file("peer", verified)
+        .await
+        .unwrap();
     assert_eq!(platform.received().len(), 1);
 }
 

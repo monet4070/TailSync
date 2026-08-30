@@ -300,6 +300,10 @@ async fn clipboard_loop(
                                 settings.clone(),
                             ));
                         }
+                        // A file clipboard event is authoritative. Windows
+                        // can expose the same file list as text, so do not
+                        // fall through and broadcast a second text event.
+                        continue;
                     }
                     Err(error) => {
                         warn!("{error}; trying other clipboard representations");

@@ -3,8 +3,10 @@ use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
+use std::future::Future;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -27,9 +29,12 @@ pub use prepare::{
 };
 mod outgoing;
 pub use outgoing::{
-    load_outgoing_batches, load_outgoing_selections, mark_outgoing_history_saved,
-    mark_outgoing_peer_completed, persist_outgoing_batch, persist_outgoing_batch_for_selection,
-    persist_outgoing_selection, remove_outgoing_batch, remove_outgoing_selection,
+    enroll_outgoing_batch_peers, load_outgoing_batches, load_outgoing_selections,
+    mark_outgoing_history_saved, mark_outgoing_peer_completed,
+    mark_outgoing_peer_completed_with_identity, outgoing_retry_due, persist_outgoing_batch,
+    persist_outgoing_batch_for_selection, persist_outgoing_batch_for_selection_with_identities,
+    persist_outgoing_batch_with_identities, persist_outgoing_selection, remove_outgoing_batch,
+    remove_outgoing_selection, schedule_outgoing_batch_retry, schedule_outgoing_selection_retry,
     try_claim_outgoing_batch, try_claim_outgoing_selection, OutgoingTransferClaim,
     PersistedOutgoingBatch, PersistedOutgoingFile, PersistedOutgoingSelection,
 };
@@ -75,6 +80,23 @@ pub struct ReceivedFile {
     pub path: PathBuf,
 }
 
+/// Durable history work produced by the receive pipeline.
+///
+/// Keeping the batch identity, authenticated source, and post-commit UI
+/// policy together prevents platform adapters from accidentally mixing the
+/// values when a receive is retried after a process restart.
+#[derive(Debug, Clone)]
+pub struct FileReceiveCommit {
+    pub batch_id: Option<TransferId>,
+    pub files: Vec<ReceivedFile>,
+    pub batch_total: usize,
+    pub batch_complete: bool,
+    pub activate_clipboard: bool,
+    pub device: String,
+    pub source_device_id: String,
+    pub manifest_hash: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FileBatchProgress {
     pub batch_id: String,
@@ -87,21 +109,26 @@ pub struct FileBatchProgress {
     pub total_bytes: u64,
 }
 
+/// Result future returned by platform receive adapters.
+///
+/// The receive path awaits this future before sending a batch acceptance. This
+/// keeps the network acknowledgement coupled to durable history persistence
+/// without forcing the core crate to know which platform database is used.
+pub type PlatformResultFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+
 pub trait SyncPlatform: Send + Sync {
     fn write_text(&self, text: &str) -> Result<(), String>;
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String>;
     fn set_file_progress(&self, name: &str, received: u64, total: u64);
     fn clear_file_progress(&self, batch_id: Option<TransferId>, device: Option<&str>);
     fn set_file_batch_progress(&self, progress: FileBatchProgress);
-    fn files_received(
-        &self,
-        batch_id: Option<TransferId>,
-        files: Vec<ReceivedFile>,
-        batch_total: usize,
-        batch_complete: bool,
-        activate_clipboard: bool,
-        device: String,
-    );
+    /// Persist a completed receive before the network layer acknowledges it.
+    ///
+    /// Implementations may perform the database/file work on a blocking
+    /// thread, but the future must not resolve successfully until the history
+    /// record is durable. Clipboard activation and notifications may happen
+    /// afterwards and must not turn a durable receive into a failed transfer.
+    fn files_received(&self, commit: FileReceiveCommit) -> PlatformResultFuture;
     fn file_batch_failed(&self, batch_id: Option<TransferId>, message: &str);
 }
 
@@ -210,6 +237,7 @@ impl From<Option<TransferId>> for ReceiveKey {
 struct IncomingBatch {
     manifest: FileBatchManifest,
     source: String,
+    source_device_id: String,
     session_epoch: u64,
     local_generation: u64,
     files: Vec<Option<ReceivedFile>>,
@@ -227,6 +255,8 @@ pub struct SyncEngine {
     incoming_batches: HashMap<(String, TransferId), IncomingBatch>,
     cancelled_batches: HashMap<(String, TransferId), i64>,
     completed_batches: HashMap<(String, TransferId), i64>,
+    completed_batch_manifests: HashMap<(String, TransferId), FileBatchManifest>,
+    peer_device_ids: HashMap<String, String>,
     receive_epochs: HashMap<String, u64>,
     clipboard_generation: u64,
     /// Shadow-packet filter for text (echo suppression)
@@ -266,7 +296,8 @@ pub async fn verify_and_commit_received_file(
             let result = sync_engine
                 .lock()
                 .await
-                .commit_received_file(source, verified);
+                .commit_received_file(source, verified)
+                .await;
             result
         }
         Err(error) => {

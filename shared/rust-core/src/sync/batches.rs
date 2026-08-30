@@ -13,13 +13,36 @@ impl SyncEngine {
         incoming_dir: &Path,
     ) -> Result<(), String> {
         let session_epoch = self.receive_epoch(&source);
-        self.begin_file_batch_at_epoch(manifest, source, incoming_dir, session_epoch)
+        self.begin_file_batch_at_epoch_with_identity(
+            manifest,
+            source.clone(),
+            source,
+            incoming_dir,
+            session_epoch,
+        )
     }
 
     pub fn begin_file_batch_at_epoch(
         &mut self,
         manifest: FileBatchManifest,
         source: String,
+        incoming_dir: &Path,
+        session_epoch: u64,
+    ) -> Result<(), String> {
+        self.begin_file_batch_at_epoch_with_identity(
+            manifest,
+            source.clone(),
+            source,
+            incoming_dir,
+            session_epoch,
+        )
+    }
+
+    pub fn begin_file_batch_at_epoch_with_identity(
+        &mut self,
+        manifest: FileBatchManifest,
+        source: String,
+        source_device_id: String,
         incoming_dir: &Path,
         session_epoch: u64,
     ) -> Result<(), String> {
@@ -30,6 +53,17 @@ impl SyncEngine {
         self.prune_cancelled_batches();
         if self.cancelled_batches.contains_key(&key) {
             return Err("File batch was cancelled; copy the files again to retry".to_string());
+        }
+        self.prune_completed_batches();
+        if self.completed_batches.contains_key(&key) {
+            if self
+                .completed_batch_manifests
+                .get(&key)
+                .is_some_and(|completed| completed != &manifest)
+            {
+                return Err("Batch ID was reused with a different manifest".to_string());
+            }
+            return Ok(());
         }
         if let Some(existing) = self.incoming_batches.get_mut(&key) {
             if existing.manifest == manifest {
@@ -58,6 +92,7 @@ impl SyncEngine {
         let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
         let mut files = vec![None; manifest.files.len()];
         let mut local_generation = self.clipboard_generation.wrapping_add(1).max(1);
+        let mut persisted_source_device_id = source_device_id.clone();
         let mut restored_generation = false;
         if let Ok(data) = fs::read(&manifest_path) {
             if let Ok(saved) = serde_json::from_slice::<PersistedIncomingBatch>(&data) {
@@ -70,6 +105,9 @@ impl SyncEngine {
                     return Err("Persisted file batch state has an invalid file count".to_string());
                 }
                 local_generation = saved.local_generation;
+                if !saved.source_device_id.is_empty() {
+                    persisted_source_device_id = saved.source_device_id.clone();
+                }
                 restored_generation = true;
                 for (index, file) in saved.files.into_iter().enumerate() {
                     if let Some(file) = file {
@@ -88,6 +126,7 @@ impl SyncEngine {
             &manifest_path,
             &PersistedIncomingBatch {
                 source: source.clone(),
+                source_device_id: persisted_source_device_id.clone(),
                 manifest: manifest.clone(),
                 files: files.clone(),
                 local_generation,
@@ -102,6 +141,7 @@ impl SyncEngine {
             IncomingBatch {
                 manifest,
                 source,
+                source_device_id: persisted_source_device_id,
                 session_epoch,
                 local_generation,
                 files,
@@ -113,6 +153,11 @@ impl SyncEngine {
 
     pub fn has_file_batch(&self, source: &str, batch_id: TransferId) -> bool {
         self.incoming_batches
+            .contains_key(&(source.to_string(), batch_id))
+    }
+
+    pub fn is_file_batch_completed(&self, source: &str, batch_id: TransferId) -> bool {
+        self.completed_batches
             .contains_key(&(source.to_string(), batch_id))
     }
 
@@ -154,12 +199,14 @@ impl SyncEngine {
         }
     }
 
-    pub fn finish_file_batch(&mut self, source: &str, batch_id: TransferId) -> Result<(), String> {
+    pub async fn finish_file_batch(
+        &mut self,
+        source: &str,
+        batch_id: TransferId,
+    ) -> Result<(), String> {
         let key = (source.to_string(), batch_id);
         let now = chrono::Utc::now().timestamp();
-        self.completed_batches.retain(|_, completed_at| {
-            now.saturating_sub(*completed_at) <= SEEN_MESSAGE_RETENTION_SECONDS
-        });
+        self.prune_completed_batches();
         let Some(batch) = self.incoming_batches.get(&key) else {
             self.prune_cancelled_batches();
             if self.completed_batches.contains_key(&key)
@@ -175,24 +222,49 @@ impl SyncEngine {
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| "File batch is incomplete".to_string())?;
+        let total = batch.manifest.files.len();
+        let activate_clipboard = batch.local_generation == self.clipboard_generation;
+        let source_device_id = batch.source_device_id.clone();
+        let manifest_hash = Self::file_batch_manifest_hash(&batch.manifest)?;
+        let platform = self
+            .platform
+            .clone()
+            .ok_or_else(|| "Clipboard platform is unavailable".to_string())?;
+
+        // The platform adapter owns the SQLite/file-history transaction. Do
+        // not discard the durable receive manifest or acknowledge the batch
+        // until that transaction has completed successfully. If it fails,
+        // the sender keeps its journal and can retry the same batch.
+        platform
+            .files_received(FileReceiveCommit {
+                batch_id: Some(batch_id),
+                files,
+                batch_total: total,
+                batch_complete: true,
+                activate_clipboard,
+                device: source.to_string(),
+                source_device_id,
+                manifest_hash: Some(manifest_hash),
+            })
+            .await?;
+
         let batch = self
             .incoming_batches
             .remove(&key)
             .ok_or_else(|| "File batch state disappeared".to_string())?;
         let _ = fs::remove_file(batch.manifest_path);
-        let activate_clipboard = batch.local_generation == self.clipboard_generation;
-        if let Some(platform) = self.platform.as_ref() {
-            platform.files_received(
-                Some(batch_id),
-                files,
-                batch.manifest.files.len(),
-                true,
-                activate_clipboard,
-                source.to_string(),
-            );
-        }
-        self.completed_batches.insert(key, now);
+        self.completed_batches.insert(key.clone(), now);
+        self.completed_batch_manifests.insert(key, batch.manifest);
         Ok(())
+    }
+
+    pub(super) fn prune_completed_batches(&mut self) {
+        let now = chrono::Utc::now().timestamp();
+        self.completed_batches.retain(|_, completed_at| {
+            now.saturating_sub(*completed_at) <= SEEN_MESSAGE_RETENTION_SECONDS
+        });
+        self.completed_batch_manifests
+            .retain(|key, _| self.completed_batches.contains_key(key));
     }
 
     pub async fn cancel_file_batch(&mut self, source: &str, batch_id: TransferId) {
@@ -204,15 +276,24 @@ impl SyncEngine {
             let _ = fs::remove_file(batch.manifest_path);
             let completed = batch.files.into_iter().flatten().collect::<Vec<_>>();
             if !completed.is_empty() {
-                if let Some(platform) = self.platform.as_ref() {
-                    platform.files_received(
-                        Some(batch_id),
-                        completed,
-                        batch.manifest.files.len(),
-                        false,
-                        false,
-                        source.to_string(),
-                    );
+                if let Some(platform) = self.platform.clone() {
+                    let source_device_id = batch.source_device_id.clone();
+                    let manifest_hash = Self::file_batch_manifest_hash(&batch.manifest).ok();
+                    if let Err(error) = platform
+                        .files_received(FileReceiveCommit {
+                            batch_id: Some(batch_id),
+                            files: completed,
+                            batch_total: batch.manifest.files.len(),
+                            batch_complete: false,
+                            activate_clipboard: false,
+                            device: source.to_string(),
+                            source_device_id,
+                            manifest_hash,
+                        })
+                        .await
+                    {
+                        platform.file_batch_failed(Some(batch_id), &error);
+                    }
                 }
             } else {
                 self.clear_file_progress(Some(batch_id), Some(source));
@@ -242,6 +323,28 @@ impl SyncEngine {
                 }
             }
         }
+    }
+
+    pub fn file_batch_manifest_hash(manifest: &FileBatchManifest) -> Result<String, String> {
+        let encoded = serde_json::to_vec(manifest).map_err(|error| error.to_string())?;
+        Ok(blake3::hash(&encoded).to_hex().to_string())
+    }
+
+    /// Seed the in-memory completion cache from a durable receipt so a replay
+    /// after process restart can answer every file with its final offset
+    /// without recreating receive sidecars or rewriting the payload.
+    pub fn remember_completed_file_batch(
+        &mut self,
+        manifest: FileBatchManifest,
+        source: String,
+    ) -> Result<(), String> {
+        manifest.validate().map_err(|error| error.to_string())?;
+        self.prune_completed_batches();
+        let key = (source, manifest.batch_id);
+        self.completed_batches
+            .insert(key.clone(), chrono::Utc::now().timestamp());
+        self.completed_batch_manifests.insert(key, manifest);
+        Ok(())
     }
 
     pub async fn cancel_file_batch_local(&mut self, batch_id: TransferId) -> Option<String> {

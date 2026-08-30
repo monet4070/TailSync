@@ -209,6 +209,7 @@ async fn handle_accepted_connection(
     let mut stream = accepted.connection;
     let peer_info = accepted.peer_identity;
     let peer_public_key = accepted.remote_public_key;
+    let source_device_id = secure::fingerprint(&peer_public_key);
     let peer_addr = source.description();
     let source_address = source.address();
     let source_interface = source.interface()?;
@@ -238,10 +239,7 @@ async fn handle_accepted_connection(
 
     info!(
         "Authenticated peer {} ({}) connected as {} [{}]",
-        peer_addr,
-        peer_info.tailscale_ip,
-        peer_info.hostname,
-        secure::fingerprint(&peer_public_key)
+        peer_addr, peer_info.tailscale_ip, peer_info.hostname, source_device_id
     );
     {
         let mut settings = settings.lock().await;
@@ -271,10 +269,11 @@ async fn handle_accepted_connection(
     secure::write_ready(&mut stream).await?;
     let _active_guard =
         register_active_session(&peer_info.hostname, source_interface, &source_address, 0);
-    let receive_epoch = sync_engine
-        .lock()
-        .await
-        .start_receive_session(&peer_info.hostname);
+    let receive_epoch = {
+        let mut sync = sync_engine.lock().await;
+        sync.set_peer_device_identity(&peer_info.hostname, source_device_id.clone());
+        sync.start_receive_session(&peer_info.hostname)
+    };
     let _receive_guard = sync::ReceiveSuspendGuard::new(
         sync_engine.clone(),
         peer_info.hostname.clone(),
@@ -381,32 +380,70 @@ async fn handle_accepted_connection(
                     match manifest.validate() {
                         Err(error) => Err(error.to_string()),
                         Ok(()) => {
+                            let manifest_hash =
+                                sync::SyncEngine::file_batch_manifest_hash(&manifest)
+                                    .map_err(|error| error.to_string())?;
                             let (already_active, pending_bytes) = {
                                 let engine = sync_engine.lock().await;
                                 (
-                                    engine.has_file_batch(&peer_info.hostname, manifest.batch_id),
+                                    engine.has_file_batch(&peer_info.hostname, manifest.batch_id)
+                                        || engine.is_file_batch_completed(
+                                            &peer_info.hostname,
+                                            manifest.batch_id,
+                                        ),
                                     engine.pending_file_batch_bytes(),
                                 )
                             };
-                            let preflight = if !already_active {
+                            let receipt = {
+                                let database = database.lock().await;
                                 database
-                                    .lock()
-                                    .await
-                                    .reserve_for_file_batch(
-                                        manifest.total_bytes.saturating_add(pending_bytes),
+                                    .received_file_batch_receipt(
+                                        &source_device_id,
+                                        &manifest.batch_id.as_hex(),
                                     )
-                                    .map_err(|error| error.to_string())
-                            } else {
-                                Ok(())
+                                    .map_err(|error| error.to_string())?
                             };
-                            match preflight {
-                                Ok(()) => sync_engine.lock().await.begin_file_batch_at_epoch(
-                                    manifest.clone(),
-                                    peer_info.hostname.clone(),
-                                    &db::get_incoming_dir(),
-                                    receive_epoch,
-                                ),
+                            let durable_complete = match receipt {
+                                Some((stored_hash, _status)) if stored_hash != manifest_hash => {
+                                    Err("Batch ID was reused with a different manifest".to_string())
+                                }
+                                Some((_, status)) => Ok(status == "complete"),
+                                None => Ok(false),
+                            };
+                            match durable_complete {
                                 Err(error) => Err(error),
+                                Ok(durable_complete) => {
+                                    let preflight = if !already_active && !durable_complete {
+                                        database
+                                            .lock()
+                                            .await
+                                            .reserve_for_file_batch(
+                                                manifest.total_bytes.saturating_add(pending_bytes),
+                                            )
+                                            .map_err(|error| error.to_string())
+                                    } else {
+                                        Ok(())
+                                    };
+                                    match preflight {
+                                        Ok(()) if durable_complete => {
+                                            sync_engine.lock().await.remember_completed_file_batch(
+                                                manifest.clone(),
+                                                peer_info.hostname.clone(),
+                                            )
+                                        }
+                                        Ok(()) => sync_engine
+                                            .lock()
+                                            .await
+                                            .begin_file_batch_at_epoch_with_identity(
+                                                manifest.clone(),
+                                                peer_info.hostname.clone(),
+                                                source_device_id.clone(),
+                                                &db::get_incoming_dir(),
+                                                receive_epoch,
+                                            ),
+                                        Err(error) => Err(error),
+                                    }
+                                }
                             }
                         }
                     }
@@ -443,7 +480,8 @@ async fn handle_accepted_connection(
                 let result = sync_engine
                     .lock()
                     .await
-                    .finish_file_batch(&peer_info.hostname, batch_id);
+                    .finish_file_batch(&peer_info.hostname, batch_id)
+                    .await;
                 if let Err(error) = &result {
                     sync_engine
                         .lock()

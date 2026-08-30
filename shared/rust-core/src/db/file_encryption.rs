@@ -437,11 +437,14 @@ fn decrypt_to_writer(
 }
 
 pub(super) fn decrypt_file_to_vec(source: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let capacity = probe_header(source)?
-        .ok_or("file-history file is not encrypted")?
-        .plaintext_size
-        .try_into()?;
-    let mut output = Vec::with_capacity(capacity);
+    // Do not reserve based on the unauthenticated header. The header size is
+    // validated structurally first, but its authenticity is only established
+    // inside `decrypt_to_writer`; reserving here would let a damaged local
+    // container request a multi-gigabyte allocation before that check.
+    if probe_header(source)?.is_none() {
+        return Err("file-history file is not encrypted".into());
+    }
+    let mut output = Vec::new();
     decrypt_to_writer(source, &mut output)?;
     Ok(output)
 }
