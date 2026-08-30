@@ -1,7 +1,9 @@
 use super::{
-    files_to_broadcast, peer_is_transfer_eligible, summarize_file_batch_failures,
-    ClipboardEventGate, IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS,
+    files_to_broadcast, peer_is_transfer_eligible, run_outgoing_recovery_loop,
+    summarize_file_batch_failures, ClipboardEventGate, IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS,
 };
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
 fn transfer_peer(
@@ -85,6 +87,39 @@ fn file_batch_failures_are_summarized_once() {
         ]),
         "File transfer failed on 2 devices: Mac, Laptop"
     );
+}
+
+#[tokio::test]
+async fn outgoing_recovery_retries_pending_work_after_the_peer_returns() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let recovery_attempts = attempts.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let worker = tokio::spawn(run_outgoing_recovery_loop(
+        shutdown_rx,
+        Duration::from_millis(1),
+        Duration::from_secs(60),
+        move || {
+            let attempts = recovery_attempts.clone();
+            async move {
+                // The first pass models the receiver being offline. Keeping
+                // the journal pending must schedule a second pass, where the
+                // peer has returned and the transfer succeeds.
+                attempts.fetch_add(1, Ordering::SeqCst) == 0
+            }
+        },
+    ));
+
+    tokio::time::timeout(Duration::from_millis(250), async {
+        while attempts.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("recovery worker did not retry pending work");
+    shutdown_tx.send(true).unwrap();
+    worker.await.unwrap();
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 
 #[test]

@@ -188,7 +188,7 @@ impl SyncEngine {
         &mut self,
         chunk: &FileChunkPayload,
         source: String,
-    ) -> Result<FileReceiveProgress, String> {
+    ) -> Result<FileReceiveProgress, FileReceiveError> {
         self.handle_file_chunk_with_key(chunk, source, ReceiveKey::Resumable(chunk.transfer_id))
             .await
     }
@@ -198,7 +198,7 @@ impl SyncEngine {
         chunk: &FileChunkPayload,
         source: String,
         receive_key: ReceiveKey,
-    ) -> Result<FileReceiveProgress, String> {
+    ) -> Result<FileReceiveProgress, FileReceiveError> {
         let key = (source.clone(), receive_key);
         if let Some(completed) = self.completed_transfers.get(&key) {
             return Ok(FileReceiveProgress {
@@ -207,10 +207,12 @@ impl SyncEngine {
                 completed: None,
             });
         }
-        let state = self
-            .active_receives
-            .get_mut(&key)
-            .ok_or_else(|| "file transfer metadata is not available".to_string())?;
+        let state =
+            self.active_receives
+                .get_mut(&key)
+                .ok_or(FileReceiveError::MetadataUnavailable {
+                    transfer_id: chunk.transfer_id,
+                })?;
 
         if chunk.offset != state.received {
             return Ok(FileReceiveProgress {
@@ -220,19 +222,23 @@ impl SyncEngine {
             });
         }
         if state.received.saturating_add(chunk.data.len() as u64) > state.meta.size {
-            return Err(format!(
+            return Err(FileReceiveError::Failed(format!(
                 "file chunk exceeds declared size for {}",
                 state.meta.name
-            ));
+            )));
         }
         state
             .writer
             .write_all(&chunk.data)
-            .map_err(|error| error.to_string())?;
-        state.writer.flush().map_err(|error| error.to_string())?;
+            .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
+        state
+            .writer
+            .flush()
+            .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
         state.hasher.update(&chunk.data);
         state.received += chunk.data.len() as u64;
-        persist_transfer_state(state, &source).map_err(|error| error.to_string())?;
+        persist_transfer_state(state, &source)
+            .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
         let next_offset = state.received;
         let completed = state.received == state.meta.size;
         let progress_name = state.meta.name.clone();
@@ -245,11 +251,13 @@ impl SyncEngine {
         }
 
         if completed {
-            let state = self
-                .active_receives
-                .remove(&key)
-                .ok_or_else(|| "completed transfer state disappeared".to_string())?;
-            let completed = self.finish_file_receive(state, &source).await?;
+            let state = self.active_receives.remove(&key).ok_or_else(|| {
+                FileReceiveError::Failed("completed transfer state disappeared".to_string())
+            })?;
+            let completed = self
+                .finish_file_receive(state, &source)
+                .await
+                .map_err(FileReceiveError::Failed)?;
             return Ok(FileReceiveProgress {
                 transfer_id: chunk.transfer_id,
                 next_offset,

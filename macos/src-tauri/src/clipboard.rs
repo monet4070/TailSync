@@ -111,6 +111,14 @@ pub fn start_monitor(
             let peers = configured_peers(&warm_settings).await;
             network::prewarm_connections(warm_pool, peers).await;
         });
+        let resume_runtime = runtime.clone();
+        tauri::async_runtime::spawn(resume_outgoing_file_batches(
+            resume_runtime,
+            database.clone(),
+            pool.clone(),
+            settings.clone(),
+            shutdown.clone(),
+        ));
         let mut consecutive_failures = 0_u32;
         loop {
             let worker_started = tokio::time::Instant::now();
@@ -267,9 +275,25 @@ async fn clipboard_loop(
                             info!("Clipboard files: {} file(s)", outbound_paths.len());
                             let generation = sync_engine.lock().await.supersede_file_clipboard();
                             crate::api::bump_clipboard_version();
+                            let selection_id = if settings.lock().await.sync_enabled {
+                                match sync::persist_outgoing_selection(&outbound_paths, generation)
+                                {
+                                    Ok(selection_id) => {
+                                        request_outgoing_recovery();
+                                        Some(selection_id)
+                                    }
+                                    Err(error) => {
+                                        warn!("Could not persist outgoing file selection: {error}");
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
                             tokio::spawn(send_file_batch_to_peers(
                                 outbound_paths,
                                 generation,
+                                selection_id,
                                 runtime.clone(),
                                 pool.clone(),
                                 database.clone(),

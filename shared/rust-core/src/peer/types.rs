@@ -260,10 +260,14 @@ pub struct LocalInfo {
 }
 
 /// Result of delivering one reliable frame: a file offset ACK when the peer
-/// acknowledged a chunk.
+/// acknowledged a chunk. `resume_required` is set when the peer received a
+/// file frame but no longer has the preceding transfer metadata (for example
+/// after its process restarted). The file sender must replay the batch and
+/// file metadata before sending another chunk.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeliveryReceipt {
     pub next_offset: Option<u64>,
+    pub resume_required: bool,
 }
 
 /// A resolved transport target for one candidate route.

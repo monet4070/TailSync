@@ -1071,6 +1071,34 @@ fn failed_batch_persistence_does_not_leave_partial_database_rows() {
 }
 
 #[test]
+fn complete_file_batch_lookup_supports_idempotent_recovery() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-complete-batch-lookup-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("source.bin");
+    std::fs::write(&source, b"recovered").unwrap();
+    let mut db = test_database(&root);
+    db.add_file_batch(
+        "batch-recovery",
+        &[HistoryFileInput {
+            name: "source.bin".into(),
+            path: source,
+            data_hash: blake3::hash(b"recovered").to_hex().to_string(),
+            size: 9,
+        }],
+        "self",
+        false,
+    )
+    .unwrap();
+
+    assert!(db.has_complete_file_batch("batch-recovery").unwrap());
+    assert!(!db.has_complete_file_batch("other-batch").unwrap());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn oversized_history_file_is_rejected_before_persistence() {
     assert!(validate_history_file_size(FILE_HISTORY_BYTE_LIMIT as u64).is_ok());
     let error = validate_history_file_size(FILE_HISTORY_BYTE_LIMIT as u64 + 1)

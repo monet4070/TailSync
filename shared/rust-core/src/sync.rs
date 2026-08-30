@@ -8,12 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
+use thiserror::Error;
 
 mod resume;
 pub use resume::cleanup_expired_transfers;
 use resume::{
-    persist_incoming_batch, persist_transfer_state, restore_persisted_received_file,
-    PersistedIncomingBatch, PersistedTransfer,
+    persist_incoming_batch, persist_transfer_state, persisted_transfer_offset,
+    restore_persisted_received_file, PersistedIncomingBatch, PersistedTransfer,
 };
 mod shadow;
 use shadow::ShadowFilter;
@@ -23,6 +24,14 @@ pub use prepare::{
     clipboard_files_are_readable, normalize_transferred_file_name, prepare_file_batch,
     revalidate_prepared_file, validate_incoming_file_meta, FileBatchEntry, FileBatchManifest,
     FileBatchRef, FileMeta, PreparedFile, PreparedFileBatch, MAX_FILE_SIZE,
+};
+mod outgoing;
+pub use outgoing::{
+    load_outgoing_batches, load_outgoing_selections, mark_outgoing_history_saved,
+    mark_outgoing_peer_completed, persist_outgoing_batch, persist_outgoing_batch_for_selection,
+    persist_outgoing_selection, remove_outgoing_batch, remove_outgoing_selection,
+    try_claim_outgoing_batch, try_claim_outgoing_selection, OutgoingTransferClaim,
+    PersistedOutgoingBatch, PersistedOutgoingFile, PersistedOutgoingSelection,
 };
 
 const SEEN_MESSAGE_RETENTION_SECONDS: i64 = 10 * 60;
@@ -45,6 +54,17 @@ static FILE_BATCH_ADMISSION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
 /// check before either one inserts its batch state.
 pub fn file_batch_admission_lock() -> &'static tokio::sync::Mutex<()> {
     &FILE_BATCH_ADMISSION_LOCK
+}
+
+/// Return the last durable byte offset for a transfer whose in-memory receive
+/// state disappeared. The sidecar is bound to the authenticated source and
+/// transfer ID before its `.part` length is trusted.
+pub fn persisted_file_resume_offset(
+    source: &str,
+    transfer_id: TransferId,
+    incoming_dir: &Path,
+) -> Option<u64> {
+    persisted_transfer_offset(source, transfer_id, incoming_dir)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +162,30 @@ pub struct FileReceiveProgress {
     pub transfer_id: TransferId,
     pub next_offset: u64,
     pub completed: Option<PendingReceivedFile>,
+}
+
+/// A resumable receive can lose its in-memory metadata when the authenticated
+/// connection or daemon goes away. The sender must distinguish that recoverable
+/// condition from a permanent validation or I/O failure so it can replay the
+/// batch and file metadata instead of cancelling the transfer.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum FileReceiveError {
+    #[error("file transfer metadata is not available")]
+    MetadataUnavailable { transfer_id: TransferId },
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl FileReceiveError {
+    pub fn is_metadata_unavailable(&self) -> bool {
+        matches!(self, Self::MetadataUnavailable { .. })
+    }
+}
+
+impl From<String> for FileReceiveError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
 }
 
 #[derive(Debug, Clone)]

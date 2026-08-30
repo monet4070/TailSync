@@ -207,6 +207,24 @@ impl HistoryDB {
         )
     }
 
+    /// Check whether a batch has already been committed as a complete history
+    /// group. Outbound recovery can crash after this commit and before its
+    /// private journal is marked, so callers must be able to retry idempotently.
+    pub fn has_complete_file_batch(
+        &self,
+        batch_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let exists: i64 = self.conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM history
+                 WHERE batch_id = ?1 AND type = 'file' AND batch_status = 'complete'
+             )",
+            params![batch_id],
+            |row| row.get(0),
+        )?;
+        Ok(exists != 0)
+    }
+
     pub fn add_file_batch_with_status(
         &mut self,
         batch_id: &str,

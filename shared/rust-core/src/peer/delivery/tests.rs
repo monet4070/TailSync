@@ -120,6 +120,7 @@ fn completion_reports_the_result_to_the_enqueuer() {
     };
     pending.complete(Ok(DeliveryReceipt {
         next_offset: Some(3),
+        resume_required: false,
     }));
     let receipt = rx.try_recv().unwrap().unwrap();
     assert_eq!(receipt.next_offset, Some(3));
@@ -262,6 +263,7 @@ fn file_ack_must_match_transfer_and_returns_offset() {
     let good = Frame::try_new(Command::FileAck, 0, 5, payload).unwrap();
     let receipt = validate_file_ack(&good, &pending, transfer).unwrap();
     assert_eq!(receipt.next_offset, Some(42));
+    assert!(!receipt.resume_required);
 
     let mut wrong_payload = Vec::new();
     wrong_payload.extend_from_slice(&TransferId([10u8; 16]).0);
@@ -692,6 +694,40 @@ async fn delivers_file_chunk_with_offset_ack() {
         .await
         .unwrap();
     assert_eq!(receipt.next_offset, Some(4096));
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn file_resume_ack_marks_batch_replay_required() {
+    let server_identity = server_identity();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+    let transfer = TransferId([0xAC; 16]);
+
+    let server_task = tokio::spawn(async move {
+        let frame = server.read_frame().await.unwrap();
+        let ack = FileOffset {
+            transfer_id: transfer,
+            next_offset: 4096,
+        };
+        server
+            .write_frame(
+                &Frame::try_new(Command::FileResume, 0, frame.sequence, ack.encode()).unwrap(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let (tx, _rx) = oneshot::channel();
+    let pending = PendingFrame::new(
+        QueuedFrame::confirmed_file(Command::FileChunk, vec![0u8; 8], transfer, tx).unwrap(),
+        6,
+    );
+    let receipt = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+        .await
+        .unwrap();
+    assert_eq!(receipt.next_offset, Some(4096));
+    assert!(receipt.resume_required);
     server_task.await.unwrap();
 }
 

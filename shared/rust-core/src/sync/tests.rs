@@ -1,10 +1,11 @@
 use super::{
-    normalize_transferred_file_name, prepare_file_batch, validate_incoming_file_meta,
-    verify_and_commit_received_file, FileBatchEntry, FileBatchManifest, FileBatchProgress,
-    FileBatchRef, FileMeta, PendingReceivedFile, ReceiveSuspendGuard, ReceivedFile, SyncEngine,
-    SyncPlatform, CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS,
-    MAX_ACTIVE_BATCHES_GLOBAL, MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES,
-    MAX_FILE_BATCH_COUNT, MAX_FILE_SIZE, SEEN_MESSAGE_MAX_ENTRIES,
+    normalize_transferred_file_name, persisted_file_resume_offset, prepare_file_batch,
+    validate_incoming_file_meta, verify_and_commit_received_file, FileBatchEntry,
+    FileBatchManifest, FileBatchProgress, FileBatchRef, FileMeta, FileReceiveError,
+    PendingReceivedFile, ReceiveSuspendGuard, ReceivedFile, SyncEngine, SyncPlatform,
+    CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS, MAX_ACTIVE_BATCHES_GLOBAL,
+    MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES, MAX_FILE_BATCH_COUNT, MAX_FILE_SIZE,
+    SEEN_MESSAGE_MAX_ENTRIES,
 };
 use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
 use std::path::{Path, PathBuf};
@@ -580,6 +581,80 @@ async fn connection_suspend_releases_handles_and_preserves_partial_offset() {
     assert_eq!(offset, 6);
 }
 
+#[tokio::test]
+async fn process_restart_reopens_batch_manifest_before_orphaned_chunk() {
+    let directory = TestDirectory::new("batch-process-restart");
+    let transfer_id = TransferId([45; 16]);
+    let batch_id = TransferId([201; 16]);
+    let data = b"first-second";
+    let manifest = FileBatchManifest {
+        batch_id,
+        generation: 1,
+        total_bytes: data.len() as u64,
+        files: vec![FileBatchEntry {
+            transfer_id,
+            index: 0,
+            name: "received.bin".to_string(),
+            source_parent: "Source".to_string(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+        }],
+    };
+    manifest.validate().unwrap();
+    let meta = FileMeta {
+        transfer_id: Some(transfer_id),
+        name: "received.bin".to_string(),
+        size: data.len() as u64,
+        hash: manifest.files[0].hash.clone(),
+        chunk_size: FILE_CHUNK_SIZE as u32,
+        batch: Some(FileBatchRef { batch_id, index: 0 }),
+    };
+
+    let mut initial = SyncEngine::new();
+    initial
+        .begin_file_batch(manifest.clone(), "peer".to_string(), directory.path())
+        .unwrap();
+    initial
+        .begin_file_receive(
+            meta.clone(),
+            &directory.path().join("received.bin"),
+            "peer".to_string(),
+        )
+        .await
+        .unwrap();
+    initial
+        .handle_resumable_file_chunk(
+            &FileChunkPayload {
+                transfer_id,
+                offset: 0,
+                data: data[..6].to_vec(),
+            },
+            "peer".to_string(),
+        )
+        .await
+        .unwrap();
+    initial.suspend_receive("peer");
+    drop(initial);
+
+    let mut restored = SyncEngine::new();
+    restored
+        .begin_file_batch(manifest, "peer".to_string(), directory.path())
+        .unwrap();
+    assert_eq!(
+        restored
+            .begin_file_receive(
+                meta,
+                &directory.path().join("renamed-by-peer.bin"),
+                "peer".to_string(),
+            )
+            .await
+            .unwrap()
+            .next_offset,
+        6
+    );
+}
+
 #[test]
 fn reliable_message_dedup_is_scoped_to_the_peer() {
     let mut sync = SyncEngine::new();
@@ -1107,7 +1182,14 @@ async fn receive_suspend_guard_suspends_active_receives_on_drop() {
         )
         .await
         .unwrap_err();
-    assert!(error.contains("file transfer metadata is not available"));
+    assert!(matches!(
+        error,
+        FileReceiveError::MetadataUnavailable { transfer_id: id } if id == transfer_id
+    ));
+    assert_eq!(
+        persisted_file_resume_offset("peer", transfer_id, directory.path()),
+        Some(6)
+    );
 }
 
 #[test]

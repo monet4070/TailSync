@@ -36,6 +36,9 @@ pub(crate) async fn cancel_file_batch_impl(
             log::warn!("Could not notify {source} that file batch was cancelled: {error}");
         }
     } else {
+        if let Err(error) = crate::sync::remove_outgoing_batch(batch_id) {
+            log::warn!("Could not remove cancelled outgoing file batch {batch_id_hex}: {error}");
+        }
         crate::api::request_file_batch_cancel(&batch_id_hex);
     }
 }

@@ -574,6 +574,7 @@ async fn handle_accepted_connection(
                                         )
                                         .await
                                         .map(|()| progress)
+                                        .map_err(sync::FileReceiveError::from)
                                     } else {
                                         Ok(progress)
                                     }
@@ -599,14 +600,34 @@ async fn handle_accepted_connection(
                                     )?;
                                     stream.write_frame(&response).await?;
                                 }
+                                Err(error) if error.is_metadata_unavailable() => {
+                                    let next_offset = sync::persisted_file_resume_offset(
+                                        &peer_info.hostname,
+                                        chunk.transfer_id,
+                                        &db::get_incoming_dir(),
+                                    )
+                                    .unwrap_or(0);
+                                    let response = Frame::try_new(
+                                        Command::FileResume,
+                                        0,
+                                        frame.sequence,
+                                        FileOffset {
+                                            transfer_id: chunk.transfer_id,
+                                            next_offset,
+                                        }
+                                        .encode(),
+                                    )?;
+                                    stream.write_frame(&response).await?;
+                                }
                                 Err(error) => {
+                                    let error_message = error.to_string();
                                     let mut sync = sync_engine.lock().await;
-                                    sync.notify_file_batch_failed(chunk_batch_id, &error);
+                                    sync.notify_file_batch_failed(chunk_batch_id, &error_message);
                                     if let Some(batch_id) = chunk_batch_id {
                                         sync.cancel_file_batch(&peer_info.hostname, batch_id).await;
                                     }
                                     drop(sync);
-                                    secure::write_error(&mut stream, &error).await?;
+                                    secure::write_error(&mut stream, &error_message).await?;
                                 }
                             }
                         }

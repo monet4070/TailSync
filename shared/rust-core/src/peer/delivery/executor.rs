@@ -38,6 +38,7 @@ pub(crate) fn validate_file_ack(
     }
     Ok(DeliveryReceipt {
         next_offset: Some(offset.next_offset),
+        resume_required: ack.command == Command::FileResume,
     })
 }
 

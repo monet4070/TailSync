@@ -97,12 +97,36 @@ pub(crate) fn restore_persisted_received_file(
     })
 }
 
+/// Read a durable resumable-transfer offset after the in-memory receive state
+/// was dropped. Only sidecars created for the authenticated source and exact
+/// transfer ID are accepted; the partial file must be a regular file and may
+/// never advertise bytes beyond the declared size.
+pub(crate) fn persisted_transfer_offset(
+    source: &str,
+    transfer_id: TransferId,
+    incoming_dir: &Path,
+) -> Option<u64> {
+    let state_path = incoming_dir.join(format!("{}.resume.json", transfer_id.as_hex()));
+    let data = fs::read(state_path).ok()?;
+    let saved = serde_json::from_slice::<PersistedTransfer>(&data).ok()?;
+    if saved.source != source || saved.meta.transfer_id != Some(transfer_id) {
+        return None;
+    }
+    let part_path = incoming_dir.join(format!("{}.part", transfer_id.as_hex()));
+    let metadata = fs::symlink_metadata(part_path).ok()?;
+    if !metadata.is_file() || metadata.len() > saved.meta.size {
+        return None;
+    }
+    Some(metadata.len())
+}
+
 pub fn cleanup_expired_transfers() {
     let incoming = crate::db::get_incoming_dir();
     cleanup_expired_transfers_in(
         &incoming,
         Duration::from_secs(INCOMPLETE_TRANSFER_RETENTION_SECONDS),
     );
+    super::outgoing::cleanup_expired_outgoing_batches();
 }
 
 pub(crate) fn cleanup_expired_transfers_in(incoming: &Path, retention: Duration) {
