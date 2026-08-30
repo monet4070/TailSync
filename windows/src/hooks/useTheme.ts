@@ -20,6 +20,9 @@ export function useTheme() {
   const [themePreference, setThemeState] = useState<ThemePreference>("system");
   const [colorTheme, setColorThemeState] = useState<ColorTheme>("builtin:canvas@1");
   const [highContrastPreference, setHighContrastPreference] = useState(false);
+  const [systemTheme, setSystemTheme] = useState<"light" | "dark">(() =>
+    window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+  );
   const [systemHighContrast, setSystemHighContrast] = useState(() => window.matchMedia("(forced-colors: active)").matches);
   const [systemReduceTransparency, setSystemReduceTransparency] = useState(() => window.matchMedia("(prefers-reduced-transparency: reduce)").matches);
   const [themeAssetSlots, setThemeAssetSlots] = useState<Record<string, boolean>>({});
@@ -29,8 +32,7 @@ export function useTheme() {
     void listen<{ activeThemeId: string; appearance: ThemePreference; highContrast: boolean }>("theme_changed", ({ payload }) => { if (!active) return; setColorThemeState(payload.activeThemeId || "builtin:canvas@1"); if (isThemePreference(payload.appearance)) setThemeState(payload.appearance); setHighContrastPreference(Boolean(payload.highContrast)); }).then((stop) => { if (active) unlisten = stop; else stop(); });
     return () => { active = false; unlisten?.(); };
   }, []);
-  const getEffectiveTheme = useCallback((): "light" | "dark" => themePreference === "system" ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : themePreference, [themePreference]);
-  const [effective, setEffective] = useState(getEffectiveTheme);
+  const effective = themePreference === "system" ? systemTheme : themePreference;
   const highContrast = systemHighContrast || highContrastPreference;
   useLayoutEffect(() => {
     let cancelled = false; const app = document.querySelector<HTMLElement>(".app"); if (!app) return;
@@ -42,7 +44,7 @@ export function useTheme() {
         : await resolveThemeV2(colorTheme, effective);
       if (cancelled) return;
       themeV2CssProperties.forEach(name => app.style.removeProperty(name));
-      for (const [name, value] of themeV2CssPairs(resolved.tokens as Record<string, any>, { reduceTransparency: systemReduceTransparency, mode: effective, themeId: colorTheme })) app.style.setProperty(name, value);
+      for (const [name, value] of themeV2CssPairs(resolved.tokens, { reduceTransparency: systemReduceTransparency, mode: effective, themeId: colorTheme })) app.style.setProperty(name, value);
       syncDocumentSurface();
       app.toggleAttribute("data-theme-high-contrast", highContrast);
       const slotProperties: Record<string, string> = { logo: "--theme-logo-image", emptyState: "--theme-empty-state-image", previewPlaceholder: "--theme-preview-placeholder-image" };
@@ -86,8 +88,7 @@ export function useTheme() {
     handler(); mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);
-  useEffect(() => { setEffective(getEffectiveTheme()); }, [themePreference, getEffectiveTheme]);
-  useEffect(() => { const mq = window.matchMedia("(prefers-color-scheme: dark)"); const handler = () => { if (themePreference === "system") setEffective(mq.matches ? "dark" : "light"); }; mq.addEventListener("change", handler); return () => mq.removeEventListener("change", handler); }, [themePreference]);
+  useEffect(() => { const mq = window.matchMedia("(prefers-color-scheme: dark)"); const handler = () => setSystemTheme(mq.matches ? "dark" : "light"); mq.addEventListener("change", handler); return () => mq.removeEventListener("change", handler); }, []);
   const persist = useCallback((activeThemeId: string, appearance: ThemePreference) => { void setLocalThemeSettingsV2({ activeThemeId, appearance, highContrast: highContrastPreference }).catch(() => { setThemeState("system"); setColorThemeState("builtin:canvas@1"); }); }, [highContrastPreference]);
   const setTheme = useCallback((appearance: ThemePreference) => { setThemeState(appearance); persist(colorTheme, appearance); }, [colorTheme, persist]);
   const setColorTheme = useCallback((activeThemeId: ColorTheme) => { setColorThemeState(activeThemeId); persist(activeThemeId, themePreference); }, [persist, themePreference]);

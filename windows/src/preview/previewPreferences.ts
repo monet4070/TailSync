@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type RefObject } from "react";
 
 export const PREVIEW_TEXT_FONT_SIZE_KEY = "tailsync-preview-text-font-size";
 export const DEFAULT_PREVIEW_TEXT_FONT_SIZE = 18;
@@ -60,8 +60,7 @@ export function useModifierWheelZoom<T extends HTMLElement>(
   onZoom: (deltaY: number) => void,
 ): RefObject<T | null> {
   const elementRef = useRef<T>(null);
-  const callbackRef = useRef(onZoom);
-  callbackRef.current = onZoom;
+  const handleZoom = useEffectEvent(onZoom);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -69,7 +68,7 @@ export function useModifierWheelZoom<T extends HTMLElement>(
     const handleWheel = (event: WheelEvent) => {
       if (!isModifierZoomGesture(event)) return;
       event.preventDefault();
-      callbackRef.current(event.deltaY);
+      handleZoom(event.deltaY);
     };
     element.addEventListener("wheel", handleWheel, { passive: false });
     return () => element.removeEventListener("wheel", handleWheel);

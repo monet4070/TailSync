@@ -67,6 +67,16 @@ final class ApiClient: @unchecked Sendable {
       }
   }
 
+  func jsonDictionary<Value: Encodable>(_ value: Value) throws -> [String: Any] {
+    let encoded = try JSONEncoder().encode(value)
+    guard
+      let dictionary = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    else {
+      throw ApiError.invalidJson
+    }
+    return dictionary
+  }
+
   func request(
     _ json: [String: Any],
     timeoutSeconds: Int = 3,

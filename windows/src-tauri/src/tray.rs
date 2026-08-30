@@ -1,14 +1,17 @@
+#[cfg(not(target_os = "macos"))]
 use log::info;
-#[cfg(target_os = "macos")]
-use std::process::{Child, Command};
+#[cfg(not(target_os = "macos"))]
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     AppHandle, Manager, Runtime,
 };
 
+#[cfg(not(target_os = "macos"))]
 const TRAY_ID: &str = "tailsync-tray";
+#[cfg(not(target_os = "macos"))]
 static TRANSPARENT_TRAY_RGBA: [u8; 32 * 32 * 4] = [0; 32 * 32 * 4];
 
+#[cfg(not(target_os = "macos"))]
 fn request_shutdown<R: Runtime>(app: &AppHandle<R>) {
     if let Some(state) = app.try_state::<crate::AppState>() {
         let _ = state.shutdown.send(true);
@@ -17,6 +20,7 @@ fn request_shutdown<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 #[derive(Debug, PartialEq, Eq)]
 struct TrayLabels {
     history: &'static str,
@@ -24,6 +28,7 @@ struct TrayLabels {
     quit: &'static str,
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn tray_labels(language: &str) -> TrayLabels {
     if language == "zh-CN" {
         TrayLabels {
@@ -40,6 +45,7 @@ fn tray_labels(language: &str) -> TrayLabels {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrayTransferState {
     summary: String,
@@ -48,6 +54,7 @@ struct TrayTransferState {
     can_stop: bool,
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrayMenuState {
     language: String,
@@ -56,8 +63,8 @@ struct TrayMenuState {
     transfer: Option<TrayTransferState>,
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 struct TrayMenuStructure {
     language: String,
     sync_enabled: bool,
@@ -65,7 +72,9 @@ struct TrayMenuStructure {
     transfer_visible: bool,
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 impl TrayMenuState {
+    #[cfg(not(target_os = "macos"))]
     fn from_current_progress(language: String, storage_unavailable: bool) -> Self {
         let transfer = crate::api::get_file_progress()
             .filter(|progress| progress.active)
@@ -94,7 +103,6 @@ impl TrayMenuState {
         }
     }
 
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn structure(&self) -> TrayMenuStructure {
         TrayMenuStructure {
             language: self.language.clone(),
@@ -105,7 +113,7 @@ impl TrayMenuState {
     }
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg(not(target_os = "macos"))]
 struct BuiltTrayMenu<R: Runtime> {
     menu: Menu<R>,
     state: TrayMenuState,
@@ -115,6 +123,7 @@ struct BuiltTrayMenu<R: Runtime> {
     sync_item: MenuItem<R>,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn build_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     state: TrayMenuState,
@@ -249,7 +258,7 @@ fn build_tray_menu<R: Runtime>(
     })
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg(not(target_os = "macos"))]
 fn refresh_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     built: &mut BuiltTrayMenu<R>,
@@ -323,6 +332,7 @@ fn refresh_tray_menu<R: Runtime>(
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn initial_tray_menu_state(app: &AppHandle, language: String) -> TrayMenuState {
     let storage_unavailable = app
         .try_state::<crate::AppState>()
@@ -395,79 +405,10 @@ pub fn start_tray(app_handle: AppHandle) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Swift helper spawn (macOS only)
-// ═══════════════════════════════════════════════════════════════════
-
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn spawn_helper(app_handle: &AppHandle) -> Result<Child, Box<dyn std::error::Error>> {
-    let _ = app_handle; // reserved for future use (e.g. writing config for helper)
-
-    // Kill any stale helpers from previous runs
-    let _ = Command::new("pkill").arg("-f").arg("TrayHelper").status();
-
-    // Resolve the compiled binary.  In dev mode it lives in the SPM
-    // build directory; in production it would be inside the .app bundle.
-    let bin_path = resolve_helper_path()?;
-    info!("Launching tray helper: {}", bin_path.display());
-
-    // Write language setting so the helper can read it
-    let lang = crate::crypto::Settings::load()
-        .map(|s| s.language)
-        .unwrap_or_else(|_| "en".into());
-
-    let child = Command::new(&bin_path)
-        .arg("--lang")
-        .arg(&lang)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-
-    Ok(child)
-}
-
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn resolve_helper_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    // Try several locations — SPM debug build, release build, alongside binary
-    let candidates = [
-        // Dev: SPM .build/debug/
-        "src-tauri/tray-helper/.build/debug/TrayHelper",
-        // Dev: absolute from project root
-        "../src-tauri/tray-helper/.build/debug/TrayHelper",
-        // Prod: inside .app bundle Resources/
-        "TrayHelper",
-    ];
-
-    // Start from the current executable's directory
-    if let Ok(exe) = std::env::current_exe() {
-        let exe_dir = exe.parent().unwrap_or_else(|| std::path::Path::new("."));
-
-        for rel in &candidates {
-            let p = exe_dir.join(rel);
-            if p.exists() {
-                return Ok(p);
-            }
-        }
-
-        // Also try relative to CWD
-        for rel in &candidates {
-            let p = std::path::Path::new(rel);
-            if p.exists() {
-                return Ok(p.to_path_buf());
-            }
-        }
-    }
-
-    Err("TrayHelper binary not found.  Run: cd src-tauri/tray-helper && swift build".into())
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // Tauri tray fallback (non-macOS)
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
 fn create_tauri_tray(app: &AppHandle) -> Result<BuiltTrayMenu<tauri::Wry>, String> {
     use tauri::{
         image::Image,
@@ -555,59 +496,6 @@ fn create_tauri_tray(app: &AppHandle) -> Result<BuiltTrayMenu<tauri::Wry>, Strin
 
     info!("Tauri tray created (non-macOS)");
     Ok(menu)
-}
-
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn create_tauri_tray(app: &AppHandle) -> Result<(), String> {
-    // On macOS this is only called as a fallback when the Swift helper
-    // fails to start, so we do create a Tauri tray.
-    use tauri::{image::Image, tray::TrayIconBuilder};
-
-    let language = crate::crypto::Settings::load()
-        .map(|settings| settings.language)
-        .unwrap_or_else(|_| "en".into());
-    let state = initial_tray_menu_state(app, language);
-    let menu = build_tray_menu(app, state).map_err(|error| error.to_string())?;
-
-    let icon = Image::from_bytes(include_bytes!("../icons/icon.png")).unwrap_or_else(|error| {
-        log::error!("Bundled tray icon is invalid: {error}");
-        Image::new(&TRANSPARENT_TRAY_RGBA, 32, 32)
-    });
-
-    let _tray = TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon)
-        .menu(&menu.menu)
-        .tooltip("TailSync")
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" | "history" => {
-                let h = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = crate::commands::open_history_window(h).await;
-                });
-            }
-            "settings" => {
-                let h = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = crate::commands::open_settings_window(h).await;
-                });
-            }
-            "sync_toggle" => {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) = crate::commands::toggle_sync_for_app(&app).await {
-                        log::warn!("Could not toggle sync from fallback tray: {error}");
-                    }
-                });
-            }
-            "quit" => request_shutdown(app),
-            _ => {}
-        })
-        .build(app)
-        .map_err(|error| error.to_string())?;
-
-    info!("Tauri tray created (fallback)");
-    Ok(())
 }
 
 #[cfg(test)]

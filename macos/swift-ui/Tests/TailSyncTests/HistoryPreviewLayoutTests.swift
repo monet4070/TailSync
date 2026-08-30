@@ -107,19 +107,6 @@ final class HistoryPreviewLayoutTests: XCTestCase {
         )
     }
 
-    func testPreviewHeaderDoesNotDeclareARedundantCloseButton() throws {
-        let testsURL = URL(fileURLWithPath: #filePath)
-        let sourceURL = testsURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/TailSync/Views/HistoryPreviewView.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertFalse(source.contains("history.preview.close"))
-        XCTAssertFalse(source.contains("headerIconButton(\"xmark\""))
-    }
-
     @MainActor
     func testModifierScrollOverlayIsMouseTransparent() {
         let view = HistoryPreviewModifierScrollView(

@@ -71,8 +71,7 @@ extension ApiClient {
   }
 
   func updateSettings(_ settings: AppSettings) async throws {
-    let encoded = try JSONEncoder().encode(settings)
-    let object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+    let object = try jsonDictionary(settings)
     let response = try await request(["cmd": "update_settings", "settings": object])
     guard response["ok"] as? Bool == true else {
       throw ApiError.serverError(response["error"] as? String ?? "unknown")

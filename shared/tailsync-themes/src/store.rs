@@ -181,16 +181,21 @@ fn set_local_theme_settings_at_unlocked(
             }
         }
     }
-    atomic(&settings_path(base), &serde_json::to_vec(&s).unwrap())
+    let encoded = serde_json::to_vec(&s)
+        .map_err(|error| ThemeError::new("THEME_IO", error.to_string(), ""))?;
+    atomic(&settings_path(base), &encoded)
 }
 fn atomic(path: &Path, bytes: &[u8]) -> Result<(), ThemeError> {
     let parent = path
         .parent()
         .ok_or_else(|| ThemeError::new("THEME_IO", "path has no parent", ""))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| ThemeError::new("THEME_IO", "path has no file name", ""))?;
     fs::create_dir_all(parent).map_err(|e| ThemeError::new("THEME_IO", e.to_string(), ""))?;
     let tmp = parent.join(format!(
         ".{}.tmp-{}-{:x}",
-        path.file_name().unwrap().to_string_lossy(),
+        file_name.to_string_lossy(),
         std::process::id(),
         rand::random::<u64>()
     ));
@@ -872,10 +877,9 @@ where
     }
     if let Err(error) = remover(&dir) {
         if active {
-            let _ = atomic(
-                &settings_path(base),
-                &serde_json::to_vec(&original_settings).unwrap(),
-            );
+            if let Ok(encoded) = serde_json::to_vec(&original_settings) {
+                let _ = atomic(&settings_path(base), &encoded);
+            }
         }
         return Err(ThemeError::new("THEME_IO", error.to_string(), ""));
     }

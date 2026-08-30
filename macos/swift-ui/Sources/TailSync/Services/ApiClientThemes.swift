@@ -104,8 +104,7 @@ extension ApiClient {
       LocalThemeSettings.self, from: JSONSerialization.data(withJSONObject: data))
   }
   func setLocalThemeSettings(_ settings: LocalThemeSettings) async throws {
-    let data =
-      try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as! [String: Any]
+    let data = try jsonDictionary(settings)
     let response = try await request(["cmd": "set_local_theme_settings", "settings": data])
     guard response["ok"] as? Bool == true else {
       throw themeApiError(response, fallback: "unknown")

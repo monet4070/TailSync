@@ -8,6 +8,7 @@ export interface ThemeV2CssOptions {
 }
 
 export type HistoryFontRole = "display" | "reading";
+type JsonObject = Record<string, unknown>;
 
 /**
  * Keep the history-row font selection aligned with macOS HistoryRow.
@@ -59,9 +60,11 @@ const opaqueCssColor = (token: string, backdrop: ParsedColor): string => {
   return `rgb(${Math.round(opaque.red)}, ${Math.round(opaque.green)}, ${Math.round(opaque.blue)})`;
 };
 
-const value = (root: Record<string, any> | undefined, path: string[]) =>
-  path.reduce<any>((current, key) => current && typeof current === "object" ? current[key] : undefined, root);
-const color = (tokens: Record<string, any>, path: string[]) => value(tokens, path);
+const isJsonObject = (candidate: unknown): candidate is JsonObject =>
+  candidate !== null && typeof candidate === "object" && !Array.isArray(candidate);
+const value = (root: JsonObject | undefined, path: string[]): unknown =>
+  path.reduce<unknown>((current, key) => isJsonObject(current) ? current[key] : undefined, root);
+const color = (tokens: JsonObject, path: string[]) => value(tokens, path);
 const cssColor = (token: string): string => token === "system" ? "AccentColor" : token;
 const componentNames = ["search", "history", "section", "panel", "button", "input", "toast"] as const;
 const componentStates = ["default", "hover", "active", "selected", "disabled", "focus"] as const;
@@ -72,35 +75,39 @@ const componentProperty = (component: string, state: string, field: string) =>
 
 const appendComponentPairs = (
   pairs: CssPair[],
-  tokens: Record<string, any>,
+  tokens: JsonObject,
   mapColor: (token: string) => string,
   removeShadows: boolean,
 ) => {
   for (const component of componentNames) for (const state of componentStates) {
     const root = value(tokens, ["components", component, state]);
-    if (!root || typeof root !== "object") continue;
+    if (!isJsonObject(root)) continue;
     for (const field of componentColorFields) {
       if (typeof root[field] === "string") pairs.push([componentProperty(component, state, field), mapColor(root[field])]);
     }
     for (const field of ["radius", "padding", "spacing"] as const) {
       if (typeof root[field] === "number") pairs.push([componentProperty(component, state, field), `${root[field]}px`]);
     }
-    if (root.typography && typeof root.typography === "object") {
+    if (isJsonObject(root.typography)) {
       if (typeof root.typography.size === "number") pairs.push([componentProperty(component, state, "font-size"), `${root.typography.size}px`]);
       if (typeof root.typography.weight === "number") pairs.push([componentProperty(component, state, "font-weight"), String(root.typography.weight)]);
     }
-    if (root.shadow && typeof root.shadow === "object" && [root.shadow.radius, root.shadow.y, root.shadow.opacity].every(item => typeof item === "number")) {
-      pairs.push([componentProperty(component, state, "shadow"), removeShadows ? "none" : `0 ${root.shadow.y}px ${root.shadow.radius}px rgba(0, 0, 0, ${root.shadow.opacity})`]);
+    if (isJsonObject(root.shadow)) {
+      const { radius, y, opacity } = root.shadow;
+      if (typeof radius === "number" && typeof y === "number" && typeof opacity === "number") {
+        pairs.push([componentProperty(component, state, "shadow"), removeShadows ? "none" : `0 ${y}px ${radius}px rgba(0, 0, 0, ${opacity})`]);
+      }
     }
   }
 };
 
 /** Converts the fully resolved, data-only V2 token tree to the app's CSS contract. */
-export function themeV2CssPairs(tokens: Record<string, any>, options: ThemeV2CssOptions = {}): CssPair[] {
+export function themeV2CssPairs(tokens: JsonObject, options: ThemeV2CssOptions = {}): CssPair[] {
   const fallback = options.mode === "dark"
     ? { red: 0, green: 0, blue: 0, alpha: 1 }
     : { red: 255, green: 255, blue: 255, alpha: 1 };
-  const canvas = parseColor(value(tokens, ["colors", "background", "canvas"])) ?? fallback;
+  const canvasToken = value(tokens, ["colors", "background", "canvas"]);
+  const canvas = typeof canvasToken === "string" ? parseColor(canvasToken) ?? fallback : fallback;
   const opaqueCanvas = canvas.alpha < 1 ? composite(canvas, fallback) : canvas;
   const mapColor = options.reduceTransparency
     ? (token: string) => opaqueCssColor(token, opaqueCanvas)
@@ -122,7 +129,7 @@ export function themeV2CssPairs(tokens: Record<string, any>, options: ThemeV2Css
   if (typeof value(tokens,["typography","search","useDisplayFont"]) === "boolean") pairs.push(["--search-font-family", value(tokens,["typography","search","useDisplayFont"]) ? "var(--font-display)" : "var(--font-ui)"]);
   if (typeof value(tokens,["typography","section","uppercase"]) === "boolean") pairs.push(["--section-title-transform", value(tokens,["typography","section","uppercase"]) ? "uppercase" : "none"]);
   number("--radius-sm", ["shape","controlRadius"]); number("--radius-md", ["shape","surfaceRadius"]); number("--window-radius", ["shape","windowRadius"]); number("--history-row-padding-y", ["density","row"]); number("--setting-row-padding-y", ["density","control"]);
-  const radius=value(tokens,["effects","shadow","radius"]), y=value(tokens,["effects","shadow","y"]), opacity=value(tokens,["effects","shadow","opacity"]); if ([radius,y,opacity].every(x=>typeof x === "number")) pairs.push(["--shadow-md", options.reduceTransparency ? "none" : `0 ${y}px ${radius}px rgba(0, 0, 0, ${opacity})`]);
+  const radius=value(tokens,["effects","shadow","radius"]), y=value(tokens,["effects","shadow","y"]), opacity=value(tokens,["effects","shadow","opacity"]); if (typeof radius === "number" && typeof y === "number" && typeof opacity === "number") pairs.push(["--shadow-md", options.reduceTransparency ? "none" : `0 ${y}px ${radius}px rgba(0, 0, 0, ${opacity})`]);
   number("--motion-fast", ["effects","motion","fast"], "ms"); number("--motion-slow", ["effects","motion","slow"], "ms");
   number("--art-fast", ["effects","motion","fast"], "ms"); number("--art-slow", ["effects","motion","slow"], "ms");
   const easing=value(tokens,["effects","motion","easing"]); if (typeof easing === "string") pairs.push(["--motion-easing", easing], ["--art-spring", easing]);

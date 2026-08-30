@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent } from "react";
 import {
   waitRuntimeSnapshot,
   type RuntimeSnapshot,
@@ -18,8 +18,7 @@ export function useRuntimeSnapshots(
   onSnapshot: (snapshot: RuntimeSnapshot) => void | Promise<void>,
   waitMs: number,
 ): void {
-  const callbackRef = useRef(onSnapshot);
-  callbackRef.current = onSnapshot;
+  const handleSnapshot = useEffectEvent(onSnapshot);
 
   useEffect(() => {
     let disposed = false;
@@ -47,7 +46,7 @@ export function useRuntimeSnapshots(
             (latest, notification) => Math.max(latest, notification.id),
             notificationId,
           );
-          await callbackRef.current(snapshot);
+          await handleSnapshot(snapshot);
         } catch (error) {
           if (disposed) return;
           console.error("Runtime snapshot wait failed:", error);

@@ -8,7 +8,7 @@
 //   - applyShortcut: write the new shortcut into the settings hub
 //   - showSavedToast / showError: transient UI feedback
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   resumeSyncShortcut,
@@ -52,8 +52,6 @@ export function useShortcutRecorder(
   const shortcutDialogRef = useRef<HTMLDivElement>(null);
   const shortcutCaptureRef = useRef<HTMLButtonElement>(null);
   const shortcutPreviousFocus = useRef<HTMLElement | null>(null);
-  const cancelShortcutHandlerRef = useRef<() => Promise<void>>(async () => undefined);
-  const shortcutCaptureHandlerRef = useRef<(event: KeyboardEvent) => void>(() => undefined);
   const shortcutRecordingRef = useRef(false);
 
   // Unmount: restore the shortcut if recording was abandoned.
@@ -191,8 +189,8 @@ export function useShortcutRecorder(
       setShortcutCaptureActive(false);
     }
   };
-  cancelShortcutHandlerRef.current = cancelShortcutRecording;
-  shortcutCaptureHandlerRef.current = handleShortcutCaptureEvent;
+  const cancelShortcut = useEffectEvent(cancelShortcutRecording);
+  const captureShortcutEvent = useEffectEvent(handleShortcutCaptureEvent);
 
   useEffect(() => {
     if (!shortcutRecording) return;
@@ -215,7 +213,7 @@ export function useShortcutRecorder(
       ) {
         event.preventDefault();
         event.stopPropagation();
-        void cancelShortcutHandlerRef.current();
+        void cancelShortcut();
         return;
       }
       if (event.key !== "Tab") return;
@@ -248,7 +246,7 @@ export function useShortcutRecorder(
       }
     };
     const handleShortcutKeyDown = (event: KeyboardEvent) => {
-      shortcutCaptureHandlerRef.current(event);
+      captureShortcutEvent(event);
     };
     window.addEventListener("keydown", handleShortcutKeyDown, true);
     window.addEventListener("keyup", handleShortcutKeyUp, true);

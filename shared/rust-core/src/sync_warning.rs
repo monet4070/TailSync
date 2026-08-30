@@ -12,6 +12,9 @@ static LATEST_WARNING: OnceLock<Mutex<Option<SyncWarning>>> = OnceLock::new();
 #[cfg(test)]
 static TEST_WARNING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Serialize tests that observe the process-global warning slot. Production
+/// intentionally exposes only one latest warning, so tests in other Modules
+/// must not consume each other's value while the Rust harness runs in parallel.
 #[cfg(test)]
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     TEST_WARNING_LOCK
@@ -65,45 +68,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warning_contains_no_clipboard_content_and_is_consumed_once() {
-        let _guard = test_lock();
-        let _ = take();
-        record_expired_event("Laptop");
-        let warning = take().unwrap();
-        assert_eq!(warning.kind, "expired_event");
-        assert_eq!(warning.peer, "Laptop");
-        assert!(warning.occurred_at_ms > 0);
-        assert_eq!(take(), None);
-    }
+    fn warning_variants_are_bounded_and_consumed_once() {
+        type WarningRecorder = fn(&str);
 
-    #[test]
-    fn delivery_stalled_records_its_own_kind() {
         let _guard = test_lock();
         let _ = take();
-        record_delivery_stalled("Desktop");
-        let warning = take().unwrap();
-        assert_eq!(warning.kind, "delivery_stalled");
-        assert_eq!(warning.peer, "Desktop");
-        assert!(warning.occurred_at_ms > 0);
-        assert_eq!(take(), None);
-    }
+        let peer = "x".repeat(300);
+        let variants: [(&str, WarningRecorder); 4] = [
+            ("expired_event", record_expired_event),
+            ("delivery_stalled", record_delivery_stalled),
+            ("delivery_shutdown", record_delivery_shutdown),
+            ("delivery_expired", record_delivery_expired),
+        ];
 
-    #[test]
-    fn delivery_shutdown_records_its_own_kind() {
-        let _guard = test_lock();
-        let _ = take();
-        record_delivery_shutdown("Desktop");
-        let warning = take().unwrap();
-        assert_eq!(warning.kind, "delivery_shutdown");
-        assert_eq!(warning.peer, "Desktop");
-    }
-
-    #[test]
-    fn delivery_expired_records_its_own_kind() {
-        let _guard = test_lock();
-        let _ = take();
-        record_delivery_expired("Desktop");
-        let warning = take().unwrap();
-        assert_eq!(warning.kind, "delivery_expired");
+        for (kind, record_variant) in variants {
+            record_variant(&peer);
+            let warning = take().expect("recorded warning");
+            assert_eq!(warning.kind, kind);
+            assert_eq!(warning.peer.len(), 255);
+            assert!(warning.occurred_at_ms > 0);
+            assert_eq!(take(), None);
+        }
     }
 }

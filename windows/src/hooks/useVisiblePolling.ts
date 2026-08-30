@@ -1,11 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent } from "react";
 
 export function useVisiblePolling(
   task: () => void | Promise<void>,
   intervalMs: number,
 ): void {
-  const taskRef = useRef(task);
-  taskRef.current = task;
+  const runTask = useEffectEvent(task);
 
   useEffect(() => {
     let active = true;
@@ -22,7 +21,7 @@ export function useVisiblePolling(
       if (!active || busy || document.visibilityState !== "visible") return;
       busy = true;
       try {
-        await taskRef.current();
+        await runTask();
       } finally {
         busy = false;
         schedule();

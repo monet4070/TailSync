@@ -27,7 +27,6 @@ const POOL_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const FILE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Reconnect back-off
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
-pub(crate) use tailsync_core::sync::MAX_FILE_SIZE;
 const PEER_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PEER_INITIAL_CACHE_WAIT: Duration = Duration::from_secs(2);
 const PEER_MANUAL_REFRESH_WAIT: Duration = Duration::from_secs(5);
@@ -109,9 +108,8 @@ pub use tailsync_core::peer::directory::{
 };
 pub(crate) use tailsync_core::secure;
 
-/// Platform-bound wrappers over the shared Peer Directory rules: they bind
-/// platform capabilities (Iroh RTT probing) and constants (peer TCP port)
-/// while keeping the external signatures stable for callers.
+/// Platform-bound wrapper over the shared Peer Directory rules. It binds the
+/// local Iroh RTT capability while keeping the caller-facing shape stable.
 pub fn merge_paired_peers(
     settings: &crypto::Settings,
     mode: &str,
@@ -122,9 +120,6 @@ pub fn merge_paired_peers(
     })
 }
 
-pub fn peer_socket_addr(peer: &tailscale::PeerInfo) -> Result<SocketAddr, String> {
-    tailsync_core::peer::directory::peer_socket_addr(peer, TCP_PORT)
-}
 pub mod tailscale;
 mod types;
 pub use types::{ConnectionInterface, PeerCandidate, PeerStatus};

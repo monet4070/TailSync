@@ -2,11 +2,11 @@
 //
 // Owns the pairing dialog state machine, the 1s status polling that
 // auto-opens the dialog during verification, the dialog focus trap, and
-  // the enable/start/cancel/confirm handlers. The devices refresh that must
+// the enable/start/cancel/confirm handlers. The devices refresh that must
 // run after a successful pairing is injected through options so the hook
 // stays independent of the settings page's device list.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import {
   cancelPairing,
   confirmPairing,
@@ -33,8 +33,7 @@ export function usePairing(options: PairingOptions) {
   const pairingBusyRef = useRef(pairingBusy);
   const pairDialogRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
-  const refreshDevicesRef = useRef(refreshDevices);
-  refreshDevicesRef.current = refreshDevices;
+  const refreshDeviceList = useEffectEvent(refreshDevices);
 
   useEffect(() => {
     pairingBusyRef.current = pairingBusy;
@@ -174,7 +173,7 @@ export function usePairing(options: PairingOptions) {
         if (status.phase === "paired" && previousPairingPhase.current !== "paired") {
           setPairingOpen(false);
           setPairingTarget(null);
-          void refreshDevicesRef.current();
+          void refreshDeviceList();
         }
         previousPairingPhase.current = status.phase;
       } catch (error) {

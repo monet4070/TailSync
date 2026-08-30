@@ -147,18 +147,18 @@ const DOC_VERSION_MARKERS = [
   },
   {
     relative: 'README.md',
-    pattern: /当前产品版本为 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，数据库 schema 为/,
-    build: (version) => `当前产品版本为 ${version}，数据库 schema 为`,
+    pattern: /当前产品版本为 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，数据库 schema 为 v11/,
+    build: (version) => `当前产品版本为 ${version}，数据库 schema 为 v11`,
   },
   {
     relative: 'CONTEXT.md',
-    pattern: /线协议 v4；产品版本 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)；数据库 schema v10/,
-    build: (version) => `线协议 v4；产品版本 ${version}；数据库 schema v10`,
+    pattern: /线协议 v4；产品版本 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)；数据库 schema v11/,
+    build: (version) => `线协议 v4；产品版本 ${version}；数据库 schema v11`,
   },
   {
     relative: 'docs/USER_GUIDE.zh-CN.md',
-    pattern: /> 适用版本：TailSync (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，线协议 v4/,
-    build: (version) => `> 适用版本：TailSync ${version}，线协议 v4`,
+    pattern: /> 适用版本：TailSync (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，线协议 v4，数据库 schema v11/,
+    build: (version) => `> 适用版本：TailSync ${version}，线协议 v4，数据库 schema v11`,
   },
   {
     relative: 'docs/THEMING.md',
