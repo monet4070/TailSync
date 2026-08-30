@@ -100,9 +100,13 @@
   color: var(--theme-button-focus-icon, var(--brand));
 }
 .app .history-item[aria-selected="true"] {
-  background: var(--theme-history-selected-background, var(--brand-soft));
-  color: var(--theme-history-selected-foreground, var(--text-primary));
-  border-color: var(--theme-history-selected-border, transparent);
+  background: var(--theme-history-focus-background, var(--bg-card));
+  color: var(--theme-history-focus-foreground, var(--text-primary));
+  border-color: var(--theme-history-focus-border, transparent);
+}
+.app .history-item[aria-selected="true"]:hover {
+  background: var(--theme-history-focus-background, var(--bg-card));
+  color: var(--theme-history-focus-foreground, var(--text-primary));
 }
 .app .history-item.restored {
   background: var(--theme-history-active-background, var(--bg-active));

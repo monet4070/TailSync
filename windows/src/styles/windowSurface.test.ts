@@ -63,3 +63,23 @@ describe("favorite history-row surface", () => {
     expect(stamp?.style.flex).toBe("0 0 18px");
   });
 });
+
+describe("focused history-row surface", () => {
+  it("keeps selection on the focus semantic and gives it a visible frame", () => {
+    const historyRules = rulesFrom("src/styles/history.css");
+    const utilityRules = rulesFrom("src/styles/utilities.css");
+    const focused = historyRules.find((candidate) =>
+      candidate.selectorText === ".history-item.focused",
+    );
+    const selected = utilityRules.find((candidate) =>
+      candidate.selectorText === '.app .history-item[aria-selected="true"]',
+    );
+
+    expect(focused).toBeDefined();
+    expect(focused?.style.background).toContain("--theme-history-focus-background");
+    expect(focused?.style.boxShadow).toContain("--theme-history-focus-border");
+    expect(selected).toBeDefined();
+    expect(selected?.style.background).toContain("--theme-history-focus-background");
+    expect(selected?.style.color).toContain("--theme-history-focus-foreground");
+  });
+});

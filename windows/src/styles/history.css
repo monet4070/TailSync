@@ -609,16 +609,23 @@ html, body {
 /* Keyboard-selected row.  This is separate from `.restored`, which is a
    short-lived acknowledgement after a double-click restore. */
 .history-item.focused {
-  background: var(--brand-soft);
-  box-shadow: inset 0 0 0 1px var(--brand);
+  background: var(--theme-history-focus-background, var(--bg-card));
+  color: var(--theme-history-focus-foreground, var(--text-primary));
+  box-shadow:
+    inset 0 0 0 1px var(--theme-history-focus-border, var(--brand)),
+    0 0 0 1px color-mix(
+      in srgb,
+      var(--theme-history-focus-focus-ring, var(--brand)) 36%,
+      transparent
+    );
 }
 
 .history-item.focused:hover {
-  background: var(--brand-soft);
+  background: var(--theme-history-focus-background, var(--bg-card));
 }
 
 .history-item:focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--theme-history-focus-focus-ring, var(--brand));
   outline-offset: -2px;
 }
 
