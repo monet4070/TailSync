@@ -428,10 +428,17 @@ pub async fn test_connection(address: &str) -> Result<RouteLatency, String> {
         );
     }
     let endpoint = iroh::endpoint().await?;
-    let probe = match timeout(Duration::from_secs(3), endpoint.connect_rtt(&endpoint_id)).await {
+    // Reuse the normal Iroh connection budget. A cold relay/direct path can
+    // legitimately take longer than the three-second TCP route probe.
+    let probe = match timeout(CONNECTION_TIMEOUT, endpoint.connect_rtt(&endpoint_id)).await {
         Ok(Ok(probe)) => probe,
         Ok(Err(error)) => return Err(format!("Connection failed: {error}")),
-        Err(_) => return Err("Connection timed out after 3 seconds".to_string()),
+        Err(_) => {
+            return Err(format!(
+                "Iroh connection timed out after {} seconds",
+                CONNECTION_TIMEOUT.as_secs()
+            ))
+        }
     };
     let sample = probe
         .measure_rtt(Duration::from_millis(500))

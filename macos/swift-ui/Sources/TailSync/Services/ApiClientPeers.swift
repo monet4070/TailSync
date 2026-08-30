@@ -273,7 +273,14 @@ extension ApiClient {
   }
 
   func testConnection(address: String) async -> (latencyMs: Int, path: String, error: String)? {
-    guard let response = try? await request(["cmd": "test_connection", "hostname": address]) else {
+    // Iroh route tests may spend up to ten seconds establishing a cold path,
+    // followed by a short direct-path observation window. Keep the local API
+    // timeout above that backend budget so the UI does not report a false
+    // failure while the daemon is still measuring.
+    guard let response = try? await request(
+      ["cmd": "test_connection", "hostname": address],
+      timeoutSeconds: 12
+    ) else {
       return nil
     }
     if response["ok"] as? Bool == true,

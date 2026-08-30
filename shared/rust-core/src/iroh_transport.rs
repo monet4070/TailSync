@@ -61,7 +61,6 @@ pub struct IrohBiStream {
 
 pub struct IrohRttProbe {
     connection: Connection,
-    endpoint: Endpoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,8 +79,8 @@ pub enum RttPath {
 }
 
 /// A latency sample for the selected route, together with the path that was
-/// measured. The path matters because a freshly bound probe endpoint may still
-/// be on the relay when a direct path would be reachable later.
+/// measured. The path matters because a freshly established probe connection
+/// may still be on the relay when a direct path would be reachable later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RttSample {
     pub rtt: Duration,
@@ -127,20 +126,12 @@ impl IrohEndpoint {
     pub async fn connect_rtt(&self, endpoint_id: &str) -> Result<IrohRttProbe, String> {
         let endpoint_id = EndpointId::from_str(&canonical_endpoint_id(endpoint_id)?)
             .map_err(|error| format!("Invalid Iroh endpoint ID: {error}"))?;
-        let endpoint = Endpoint::builder(presets::N0)
-            .bind()
-            .await
-            .map_err(|error| format!("Could not start isolated Iroh probe: {error}"))?;
-        connect_rtt_from(endpoint, endpoint_id.into()).await
+        connect_rtt_from(&self.endpoint, endpoint_id.into()).await
     }
 
     #[cfg(test)]
     async fn connect_rtt_addr(&self, endpoint_addr: EndpointAddr) -> Result<IrohRttProbe, String> {
-        let endpoint = Endpoint::builder(presets::Minimal)
-            .bind()
-            .await
-            .map_err(|error| format!("Could not start isolated Iroh probe: {error}"))?;
-        connect_rtt_from(endpoint, endpoint_addr).await
+        connect_rtt_from(&self.endpoint, endpoint_addr).await
     }
 
     pub async fn accept(&self) -> Result<Option<AcceptedConnection>, String> {
@@ -199,16 +190,15 @@ impl IrohBiStream {
 }
 
 impl IrohRttProbe {
-    /// Abort the probe immediately without waiting for QUIC drain. This is
-    /// safe for cancellation paths such as a timeout or task drop; the
-    /// endpoint's normal async `close` remains available to measured probes.
+    /// Close only the RTT connection. The endpoint is shared with normal
+    /// TailSync traffic and must stay alive across repeated measurements.
     pub fn close_now(&self) {
         self.connection.close(0u32.into(), b"probe cancelled");
     }
 
     pub async fn measure_rtt(self, direct_path_wait: Duration) -> Option<RttSample> {
         let sample = measure_connection_rtt(&self.connection, direct_path_wait).await;
-        self.endpoint.close().await;
+        self.connection.close(0u32.into(), b"probe complete");
         sample
     }
 }
@@ -220,17 +210,14 @@ impl Drop for IrohRttProbe {
 }
 
 async fn connect_rtt_from(
-    endpoint: Endpoint,
+    endpoint: &Endpoint,
     endpoint_addr: EndpointAddr,
 ) -> Result<IrohRttProbe, String> {
     let connection = endpoint
         .connect(endpoint_addr, RTT_ALPN)
         .await
         .map_err(|error| format!("Iroh connection failed: {error}"))?;
-    Ok(IrohRttProbe {
-        connection,
-        endpoint,
-    })
+    Ok(IrohRttProbe { connection })
 }
 
 fn selected_path_metrics(connection: &Connection) -> Option<SelectedPathMetrics> {
@@ -456,11 +443,11 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    // Each accepted probe is drained before the next connection attempt. This
-    // keeps the repeated-connect assertion focused on isolated endpoint/ALPN
-    // behavior instead of racing the previous QUIC close handshake.
+    // Each accepted probe is drained before the next connection attempt. The
+    // client must reuse its long-lived endpoint so repeated measurements do
+    // not restart relay discovery or race a newly bound endpoint's teardown.
     #[tokio::test]
-    async fn repeated_rtt_probes_use_isolated_endpoints_without_opening_business_streams() {
+    async fn repeated_rtt_probes_reuse_the_persistent_endpoint() {
         let server = IrohEndpoint {
             endpoint: Endpoint::builder(presets::Minimal)
                 .alpns(vec![ALPN.to_vec(), RTT_ALPN.to_vec()])
@@ -479,10 +466,12 @@ mod tests {
         let client = IrohEndpoint {
             endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
         };
+        let client_endpoint_id = client.endpoint_id();
         let server_task = tokio::spawn(async move {
             for _ in 0..2 {
                 let accepted = server.accept().await.unwrap().unwrap();
                 assert!(accepted.is_rtt_probe());
+                assert_eq!(accepted.remote_endpoint_id, client_endpoint_id);
                 accepted.wait_for_close().await;
             }
         });
@@ -492,7 +481,7 @@ mod tests {
             client.connect_rtt_addr(server_addr.clone()),
         )
         .await
-        .expect("first isolated RTT connect timed out")
+        .expect("first RTT connect timed out")
         .unwrap();
         assert!(first
             .measure_rtt(Duration::from_millis(100))
@@ -503,7 +492,7 @@ mod tests {
             client.connect_rtt_addr(server_addr),
         )
         .await
-        .expect("second isolated RTT connect timed out")
+        .expect("second RTT connect timed out")
         .unwrap();
         assert!(second
             .measure_rtt(Duration::from_millis(100))
@@ -535,6 +524,7 @@ mod tests {
         };
         let mac_addr = mac.endpoint.addr();
         let windows_addr = windows.endpoint.addr();
+        let mac_endpoint_id = mac.endpoint_id();
         let mac_for_server = mac.clone();
         let (business_done_tx, business_done_rx) = tokio::sync::oneshot::channel();
         let server_task = tokio::spawn(async move {
@@ -555,6 +545,7 @@ mod tests {
         let probe_task = tokio::spawn(async move {
             let accepted = windows_for_probe.accept().await.unwrap().unwrap();
             assert!(accepted.is_rtt_probe());
+            assert_eq!(accepted.remote_endpoint_id, mac_endpoint_id);
         });
 
         let mut business = windows.connect_addr(mac_addr).await.unwrap();
