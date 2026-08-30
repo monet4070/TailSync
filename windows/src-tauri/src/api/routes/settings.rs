@@ -250,7 +250,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
                     .db
                     .lock()
                     .await
-                    .set_pinned(id, req.pinned.unwrap_or(true))
+                    .set_favorite(id, req.pinned.unwrap_or(true))
                     .map_err(|error| error.to_string()),
                 None => Err("missing id".to_string()),
             };

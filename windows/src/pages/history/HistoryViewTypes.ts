@@ -3,6 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import type {
   FileProgress,
   HistoryCategory,
+  HistoryCollection,
   HistoryEntry,
   MigrationDiagnostics,
 } from "../../tailsyncClient";
@@ -24,6 +25,8 @@ export interface HistoryHeaderProps {
   windowAlwaysOnTopPending: boolean;
   toggleWindowAlwaysOnTop: () => Promise<void>;
   closeHistory: () => Promise<void>;
+  openFavorites: () => Promise<void>;
+  isFavoritesCollection: boolean;
   keywordDraft: string;
   setKeywordDraft: Dispatch<SetStateAction<string>>;
   totalEntries: number | null;
@@ -60,7 +63,9 @@ export interface HistoryListProps {
   handleRestore: (id: number) => Promise<void>;
   handleRestoreBatch: (batchId: string) => Promise<void>;
   handleDelete: (id: number) => Promise<void>;
-  handlePinnedChange: (entry: HistoryEntry) => Promise<void>;
+  handleFavoriteChange: (entry: HistoryEntry) => Promise<void>;
+  handleFavoriteProtected: () => void;
+  collection: HistoryCollection;
 }
 
 export interface HistoryMainContentProps {
@@ -82,7 +87,10 @@ export interface HistoryMainContentProps {
   handleRestore: (id: number) => Promise<void>;
   handleRestoreBatch: (batchId: string) => Promise<void>;
   handleDelete: (id: number) => Promise<void>;
-  handlePinnedChange: (entry: HistoryEntry) => Promise<void>;
+  handleFavoriteChange: (entry: HistoryEntry) => Promise<void>;
+  handleFavoriteProtected: () => void;
+  collection: HistoryCollection;
+  isFavoritesCollection: boolean;
 }
 
 export interface HistoryFooterProps {
@@ -104,4 +112,5 @@ export interface HistoryFooterProps {
   clearing: boolean;
   setShowClearConfirm: Dispatch<SetStateAction<boolean>>;
   handleClearHistory: () => Promise<void>;
+  isFavoritesCollection: boolean;
 }

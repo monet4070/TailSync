@@ -2,16 +2,46 @@ import AppKit
 import Foundation
 import SwiftUI
 
+enum HistoryFavoriteFillPolicy {
+    static func progress(
+        isFavorite: Bool,
+        isPressActive: Bool,
+        pressProgress: CGFloat
+    ) -> CGFloat {
+        if isFavorite { return 1 }
+        guard isPressActive else { return 0 }
+        return min(max(pressProgress, 0), 1)
+    }
+}
+
 struct HistoryRow: View {
     let entry: HistoryEntry
     let isRestored: Bool
     let isFocused: Bool
     let showsMultipleLabels: Bool
+    let favoriteProgress: CGFloat
+    let showsTransientFavoriteStamp: Bool
     @State private var thumbnail: NSImage? = nil
     @State private var hovering = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.tailSyncSelection) private var selection
     @Environment(\.tailSyncPalette) private var palette
+
+    init(
+        entry: HistoryEntry,
+        isRestored: Bool,
+        isFocused: Bool,
+        showsMultipleLabels: Bool,
+        favoriteProgress: CGFloat = 0,
+        showsTransientFavoriteStamp: Bool = false
+    ) {
+        self.entry = entry
+        self.isRestored = isRestored
+        self.isFocused = isFocused
+        self.showsMultipleLabels = showsMultipleLabels
+        self.favoriteProgress = favoriteProgress
+        self.showsTransientFavoriteStamp = showsTransientFavoriteStamp
+    }
 
     private var component: TailSyncThemeComponentTokens? {
         let state = isRestored ? "selected" : (isFocused ? "focus" : (hovering ? "hover" : "default"))
@@ -87,12 +117,30 @@ struct HistoryRow: View {
                     lineWidth: isFocused ? 1 : 0
                 )
         }
+        .overlay {
+            RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous)
+                .fill(palette.accentColor.opacity(0.12))
+                .scaleEffect(x: max(0.001, min(favoriteProgress, 1)), y: 1, anchor: .leading)
+                .opacity(favoriteProgress > 0 ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        .overlay(alignment: .topTrailing) {
+            if entry.pinned || showsTransientFavoriteStamp {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(palette.accentColor)
+                    .padding(4)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
         .accessibilityAddTraits(isFocused ? .isSelected : [])
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.4), value: isRestored)
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.18), value: isFocused)
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+        .animation(Loc.shared.reduceMotion ? nil : .linear(duration: 0.42), value: favoriteProgress)
+        .animation(Loc.shared.reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.68), value: showsTransientFavoriteStamp)
     }
 
     /// Render an image thumbnail at its natural aspect ratio inside the fixed
@@ -111,6 +159,85 @@ struct HistoryRow: View {
             .aspectRatio(contentMode: .fit)
             .frame(width: size.width, height: size.height)
             .clipShape(RoundedRectangle(cornerRadius: selection.metrics.controlRadius, style: .continuous))
+    }
+}
+
+/// Shared row surface for both the history and favorites windows. The
+/// AppKit responder owns the gesture boundary; this view owns only the
+/// declarative progress fill and completion stamp.
+struct HistoryInteractiveRow: View {
+    let entry: HistoryEntry
+    let isRestored: Bool
+    let isFocused: Bool
+    let showsMultipleLabels: Bool
+    let previewRequest: HistoryPreviewRequest?
+    let onSelect: () -> Void
+    let onRestore: () -> Void
+    let onDelete: () -> Void
+    let onFavorite: () -> Void
+    let onPreview: (HistoryPreviewRequest) -> Void
+    let onClosePreview: () -> Void
+    let isPreviewVisible: () -> Bool
+
+    @Environment(\.tailSyncSelection) private var selection
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var favoriteProgress: CGFloat = 0
+    @State private var favoritePressActive = false
+    @State private var showsTransientFavoriteStamp = false
+
+    var body: some View {
+        HistoryRow(
+            entry: entry,
+            isRestored: isRestored,
+            isFocused: isFocused,
+            showsMultipleLabels: showsMultipleLabels,
+            favoriteProgress: HistoryFavoriteFillPolicy.progress(
+                isFavorite: entry.pinned,
+                isPressActive: favoritePressActive,
+                pressProgress: favoriteProgress
+            ),
+            showsTransientFavoriteStamp: showsTransientFavoriteStamp
+        )
+        .contentShape(Rectangle())
+        .overlay {
+            HistoryRowInteraction(
+                previewRequest: previewRequest,
+                onSelect: onSelect,
+                onRestore: onRestore,
+                onDelete: onDelete,
+                onPreview: onPreview,
+                onClosePreview: onClosePreview,
+                isPreviewVisible: isPreviewVisible,
+                onFavorite: commitFavorite,
+                onFavoritePressStarted: {
+                    favoritePressActive = true
+                    withAnimation(reduceMotion ? nil : .linear(duration: 0.42)) {
+                        favoriteProgress = 1
+                    }
+                },
+                onFavoritePressCancelled: {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                        favoriteProgress = 0
+                    }
+                    favoritePressActive = false
+                }
+            )
+        }
+        .accessibilityAction(
+            named: Text(Loc.t(entry.pinned ? "history.unpin" : "history.pin"))
+        ) {
+            commitFavorite()
+        }
+    }
+
+    private func commitFavorite() {
+        favoritePressActive = false
+        favoriteProgress = 0
+        showsTransientFavoriteStamp = true
+        onFavorite()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+            showsTransientFavoriteStamp = false
+        }
     }
 }
 

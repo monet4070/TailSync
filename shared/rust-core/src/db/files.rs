@@ -103,7 +103,7 @@ impl HistoryDB {
         let data_hash = blake3::hash(data).to_hex().to_string();
         let (reference, file_path) =
             persist_history_file_at(&self.file_history_dir, &data_hash, name, data)?;
-        let duplicate_ids = self.entry_ids_by_hash(&data_hash)?;
+        let duplicate_ids = self.unfavorited_duplicate_ids(&self.entry_ids_by_hash(&data_hash)?)?;
         self.delete_entries_except(&duplicate_ids, Some(&file_path))?;
         let timestamp = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -165,7 +165,7 @@ impl HistoryDB {
             size,
             move_source,
         )?;
-        let duplicate_ids = self.entry_ids_by_hash(data_hash)?;
+        let duplicate_ids = self.unfavorited_duplicate_ids(&self.entry_ids_by_hash(data_hash)?)?;
         self.delete_entries_except(&duplicate_ids, Some(&file_path))?;
         let timestamp = chrono::Utc::now().to_rfc3339();
         self.conn.execute(

@@ -96,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationTask: Task<Void, Never>?
     private var watchdogTimer: Timer?
     private static var historyWC: NSWindowController?
+    private static var favoritesWC: NSWindowController?
     private static var settingsWC: NSWindowController?
     private static var daemonProcess: Process?
     private static let daemonStopLock = NSLock()
@@ -544,7 +545,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: Loc.t("update.install"))
         alert.addButton(withTitle: Loc.t("common.cancel"))
 
-        let visibleWindow = [NSApp.keyWindow, Self.settingsWC?.window, Self.historyWC?.window]
+        let visibleWindow = [
+            NSApp.keyWindow,
+            Self.settingsWC?.window,
+            Self.historyWC?.window,
+            Self.favoritesWC?.window,
+        ]
             .compactMap { $0 }
             .first(where: { $0.isVisible })
         if let visibleWindow {
@@ -903,7 +909,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     historyWindowController.detach()
                     historyWC = nil
                     Task { @MainActor in
-                        HistoryPreviewWindowController.shared.attachHistoryWindow(nil)
+                        HistoryPreviewWindowController.shared.registerHostWindow(
+                            nil,
+                            for: .history
+                        )
                     }
                 }
                 historyWC = wc
@@ -913,8 +922,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 completion?(window)
             }
             Task { @MainActor in
-                HistoryPreviewWindowController.shared.attachHistoryWindow(historyWC?.window)
+                HistoryPreviewWindowController.shared.registerHostWindow(
+                    historyWC?.window,
+                    for: .history
+                )
             }
+        }
+    }
+
+    static func showFavorites() {
+        DispatchQueue.main.async {
+            Self.forceAccessory()
+            if let wc = favoritesWC, let window = wc.window {
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                let wc = makeWindow(
+                    title: "Favorites",
+                    content: HistoryView(collection: "favorites"),
+                    size: NSSize(width: 400, height: 600),
+                    minSize: NSSize(width: 300, height: 360),
+                    onVisibilityChange: { isVisible in
+                        NotificationCenter.default.post(
+                            name: .tailSyncFavoritesWindowVisibilityChanged,
+                            object: nil,
+                            userInfo: ["visible": isVisible]
+                        )
+                    }
+                ) {
+                    favoritesWC = nil
+                    Task { @MainActor in
+                        HistoryPreviewWindowController.shared.registerHostWindow(
+                            nil,
+                            for: .favorites
+                        )
+                    }
+                }
+                favoritesWC = wc
+            }
+            Task { @MainActor in
+                HistoryPreviewWindowController.shared.registerHostWindow(
+                    favoritesWC?.window,
+                    for: .favorites
+                )
+            }
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 

@@ -1,23 +1,44 @@
 use super::*;
 
 pub(super) fn handles(command: &str) -> bool {
-    matches!(command, "get_history" | "delete_entry" | "restore_entry")
+    matches!(
+        command,
+        "get_history"
+            | "delete_entry"
+            | "set_history_favorite"
+            | "delete_favorite_entry"
+            | "clear_history"
+            | "clear_all"
+            | "restore_entry"
+    )
 }
 
 pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
     match req.cmd.as_str() {
         "get_history" => {
+            let collection = match db::HistoryCollection::from_wire(req.collection.as_deref()) {
+                Ok(collection) => collection,
+                Err(error) => {
+                    return Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error.to_string()),
+                    };
+                }
+            };
             let db = state.db.lock().await;
             // Consume before await for Send safety
             let result = db
-                .get_all_filtered(
-                    req.keyword.as_deref(),
-                    req.category.as_deref(),
-                    req.start_time.as_deref(),
-                    req.end_time.as_deref(),
-                    req.limit.unwrap_or(30),
-                    req.offset.unwrap_or(0),
-                )
+                .get_page_in_collection(db::HistoryQuery {
+                    collection,
+                    keyword: req.keyword.as_deref(),
+                    category: req.category.as_deref(),
+                    start_time: req.start_time.as_deref(),
+                    end_time: req.end_time.as_deref(),
+                    limit: req.limit.unwrap_or(30),
+                    offset: req.offset.unwrap_or(0),
+                })
+                .map(|page| page.entries)
                 .map_err(|e| e.to_string());
             drop(db);
             match result {
@@ -56,6 +77,58 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
                     ok: false,
                     data: None,
                     error: Some(e.to_string()),
+                },
+            }
+        }
+
+        "set_history_favorite" => {
+            let Some(id) = req.id else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing id".into()),
+                };
+            };
+            let mut db = state.db.lock().await;
+            match db.set_favorite(id, req.favorite.unwrap_or(true)) {
+                Ok(mutation) => {
+                    bump_clipboard_version();
+                    Response {
+                        ok: true,
+                        data: serde_json::to_value(mutation).ok(),
+                        error: None,
+                    }
+                }
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "delete_favorite_entry" => {
+            let Some(id) = req.id else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing id".into()),
+                };
+            };
+            let mut db = state.db.lock().await;
+            match db.delete_favorite(id) {
+                Ok(mutation) => {
+                    bump_clipboard_version();
+                    Response {
+                        ok: true,
+                        data: serde_json::to_value(mutation).ok(),
+                        error: None,
+                    }
+                }
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error.to_string()),
                 },
             }
         }
@@ -178,5 +251,28 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
         }
 
         _ => unreachable!("history command dispatch was checked before routing"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handles;
+
+    #[test]
+    fn every_history_handler_command_is_dispatchable() {
+        for command in [
+            "get_history",
+            "delete_entry",
+            "set_history_favorite",
+            "delete_favorite_entry",
+            "clear_history",
+            "clear_all",
+            "restore_entry",
+        ] {
+            assert!(
+                handles(command),
+                "history route does not dispatch {command}"
+            );
+        }
     }
 }

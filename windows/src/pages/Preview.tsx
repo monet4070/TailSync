@@ -32,7 +32,8 @@ function validSnapshot(snapshot: PreviewWindowSnapshot | null): snapshot is Prev
   return snapshot !== null &&
     Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0 &&
     Number.isSafeInteger(snapshot.entryId) && snapshot.entryId > 0 &&
-    (snapshot.batchId === null || typeof snapshot.batchId === "string");
+    (snapshot.batchId === null || typeof snapshot.batchId === "string") &&
+    (snapshot.owner === "history" || snapshot.owner === "favorites");
 }
 
 export function Preview() {

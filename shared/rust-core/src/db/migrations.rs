@@ -262,6 +262,30 @@ impl HistoryDB {
             // If the process exits first, startup safely repeats this idempotent migration.
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",
+                params![9_i64],
+            )?;
+        }
+
+        if version < 10 {
+            info!("Running database migration v10 (normalizing favorite batches)...");
+            // A file batch is one logical history item. Older versions could
+            // leave only one member pinned, so normalize those batches before
+            // the favorites collection or protected deletion can observe them.
+            conn.execute(
+                "UPDATE history
+                 SET pinned = 1
+                 WHERE batch_id IS NOT NULL
+                   AND batch_id IN (
+                       SELECT batch_id FROM history WHERE pinned <> 0
+                   )",
+                [],
+            )?;
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_history_favorites
+                 ON history(timestamp DESC, id DESC) WHERE pinned = 1;",
+            )?;
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
                 params![SCHEMA_VERSION],
             )?;
         }

@@ -12,7 +12,7 @@ struct HistoryEntry: Codable, Identifiable {
     let categories: [String]
     let category_confidence: Int64
     let classifier_version: Int64
-    let pinned: Bool
+    var pinned: Bool
     let batch_id: String?
     let batch_index: Int?
     let batch_total: Int?

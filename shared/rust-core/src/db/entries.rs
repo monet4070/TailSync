@@ -9,7 +9,7 @@ impl HistoryDB {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let data_hash = blake3::hash(text.as_bytes()).to_hex().to_string();
         // Delete old entry with same hash so the new one is at the top
-        let duplicate_ids = self.entry_ids_by_hash(&data_hash)?;
+        let duplicate_ids = self.unfavorited_duplicate_ids(&self.entry_ids_by_hash(&data_hash)?)?;
         self.delete_entries(&duplicate_ids)?;
 
         let encrypted = crypto::encrypt(text.as_bytes())?;
@@ -49,7 +49,7 @@ impl HistoryDB {
         crate::protocol::PackedImage::try_from(image_data)?;
         let data_hash = blake3::hash(image_data).to_hex().to_string();
         // Delete old entry so the new copy appears at the top
-        let duplicate_ids = self.entry_ids_by_hash(&data_hash)?;
+        let duplicate_ids = self.unfavorited_duplicate_ids(&self.entry_ids_by_hash(&data_hash)?)?;
         self.delete_entries(&duplicate_ids)?;
 
         let reference = persist_image_at(&self.image_history_dir, &data_hash, image_data)?;

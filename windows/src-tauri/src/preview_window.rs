@@ -8,11 +8,21 @@ pub const PREVIEW_CLOSE_EVENT: &str = "tailsync://preview-close";
 
 const MAX_BATCH_ID_CHARS: usize = 256;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewWindowOwner {
+    #[default]
+    History,
+    Favorites,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewWindowRequest {
     pub entry_id: i64,
     pub batch_id: Option<String>,
+    #[serde(default)]
+    pub owner: PreviewWindowOwner,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -21,6 +31,7 @@ pub struct PreviewWindowSnapshot {
     pub revision: u64,
     pub entry_id: i64,
     pub batch_id: Option<String>,
+    pub owner: PreviewWindowOwner,
 }
 
 #[derive(Default)]
@@ -32,7 +43,7 @@ pub struct PreviewWindowController {
 struct PreviewWindowControllerInner {
     revision: u64,
     current: Option<PreviewWindowSnapshot>,
-    minimized_with_history: bool,
+    minimized_with_owner: bool,
 }
 
 impl PreviewWindowRequest {
@@ -62,7 +73,9 @@ impl PreviewWindowController {
             revision: inner.revision,
             entry_id: request.entry_id,
             batch_id: request.batch_id,
+            owner: request.owner,
         };
+        inner.minimized_with_owner = false;
         inner.current = Some(snapshot.clone());
         snapshot
     }
@@ -75,19 +88,28 @@ impl PreviewWindowController {
             .clone()
     }
 
-    fn set_minimized_with_history(&self, value: bool) {
+    fn owns(&self, owner: PreviewWindowOwner) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.owner == owner)
+    }
+
+    fn set_minimized_with_owner(&self, value: bool) {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.minimized_with_history = value;
+        inner.minimized_with_owner = value;
     }
 
-    fn was_minimized_with_history(&self) -> bool {
+    fn was_minimized_with_owner(&self) -> bool {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .minimized_with_history
+            .minimized_with_owner
     }
 }
 
@@ -117,6 +139,7 @@ pub async fn open_preview_window(
     crate::window_lifecycle::mark_window_open(&app, PREVIEW_WINDOW_LABEL);
 
     if let Some(window) = app.get_webview_window(PREVIEW_WINDOW_LABEL) {
+        crate::window_lifecycle::restore_and_focus_window(&window)?;
         window
             .emit(PREVIEW_REQUEST_EVENT, &snapshot)
             .map_err(|error| error.to_string())?;
@@ -154,10 +177,15 @@ pub fn get_preview_window_request(
 /// Hide the reusable preview immediately, then destroy its WebView after a
 /// short idle grace period. Reopening during the grace period cancels release.
 #[command]
-pub fn close_preview_window(app: AppHandle) -> Result<(), String> {
-    if let Some(controller) = app.try_state::<PreviewWindowController>() {
-        controller.set_minimized_with_history(false);
+pub fn close_preview_window(
+    app: AppHandle,
+    controller: State<'_, PreviewWindowController>,
+    owner: Option<PreviewWindowOwner>,
+) -> Result<(), String> {
+    if owner.is_some_and(|owner| !controller.owns(owner)) {
+        return Ok(());
     }
+    controller.set_minimized_with_owner(false);
     if let Some(window) = app.get_webview_window(PREVIEW_WINDOW_LABEL) {
         if let Err(error) = window.emit(PREVIEW_CLOSE_EVENT, ()) {
             log::debug!("Could not notify preview renderer before release: {error}");
@@ -166,15 +194,19 @@ pub fn close_preview_window(app: AppHandle) -> Result<(), String> {
     crate::window_lifecycle::hide_then_release_window(app, PREVIEW_WINDOW_LABEL)
 }
 
-/// Keep the reusable preview window paired with the history window's
-/// minimized state. The marker only records a minimize initiated by this
-/// function, so manually minimizing the preview is never undone later.
+/// Keep the reusable preview paired only with the active source window's
+/// minimized state. The marker records only a minimize initiated here, so a
+/// manually minimized preview is never undone later.
 #[command]
 pub fn sync_preview_window_minimized(
     app: AppHandle,
     controller: State<'_, PreviewWindowController>,
+    owner: PreviewWindowOwner,
     minimized: bool,
 ) -> Result<(), String> {
+    if !controller.owns(owner) {
+        return Ok(());
+    }
     let Some(window) = app.get_webview_window(PREVIEW_WINDOW_LABEL) else {
         return Ok(());
     };
@@ -183,11 +215,11 @@ pub fn sync_preview_window_minimized(
             && !window.is_minimized().map_err(|error| error.to_string())?
         {
             window.minimize().map_err(|error| error.to_string())?;
-            controller.set_minimized_with_history(true);
+            controller.set_minimized_with_owner(true);
         }
-    } else if controller.was_minimized_with_history() {
+    } else if controller.was_minimized_with_owner() {
         window.unminimize().map_err(|error| error.to_string())?;
-        controller.set_minimized_with_history(false);
+        controller.set_minimized_with_owner(false);
     }
     Ok(())
 }
@@ -200,6 +232,7 @@ mod tests {
         PreviewWindowRequest {
             entry_id: id,
             batch_id: None,
+            owner: PreviewWindowOwner::History,
         }
     }
 
@@ -223,12 +256,22 @@ mod tests {
     }
 
     #[test]
-    fn controller_tracks_only_history_owned_minimization() {
+    fn controller_tracks_preview_owner_and_owned_minimization() {
         let controller = PreviewWindowController::default();
-        assert!(!controller.was_minimized_with_history());
-        controller.set_minimized_with_history(true);
-        assert!(controller.was_minimized_with_history());
-        controller.set_minimized_with_history(false);
-        assert!(!controller.was_minimized_with_history());
+        assert!(!controller.was_minimized_with_owner());
+        controller.replace(request(1));
+        assert!(controller.owns(PreviewWindowOwner::History));
+        assert!(!controller.owns(PreviewWindowOwner::Favorites));
+
+        let mut favorites = request(2);
+        favorites.owner = PreviewWindowOwner::Favorites;
+        controller.replace(favorites);
+        assert!(controller.owns(PreviewWindowOwner::Favorites));
+        assert!(!controller.owns(PreviewWindowOwner::History));
+
+        controller.set_minimized_with_owner(true);
+        assert!(controller.was_minimized_with_owner());
+        controller.set_minimized_with_owner(false);
+        assert!(!controller.was_minimized_with_owner());
     }
 }

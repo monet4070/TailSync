@@ -277,6 +277,7 @@ fn history_request_accepts_new_filters_and_legacy_omissions() {
         "category": "text",
         "start_time": "2026-02-01T10:00:00Z",
         "end_time": "2026-02-01T11:00:00Z",
+        "collection": "favorites",
         "limit": 31,
         "offset": 62
     }))
@@ -285,6 +286,7 @@ fn history_request_accepts_new_filters_and_legacy_omissions() {
     assert_eq!(filtered.category.as_deref(), Some("text"));
     assert_eq!(filtered.start_time.as_deref(), Some("2026-02-01T10:00:00Z"));
     assert_eq!(filtered.end_time.as_deref(), Some("2026-02-01T11:00:00Z"));
+    assert_eq!(filtered.collection.as_deref(), Some("favorites"));
     assert_eq!(filtered.limit, Some(31));
     assert_eq!(filtered.offset, Some(62));
 
@@ -294,6 +296,16 @@ fn history_request_accepts_new_filters_and_legacy_omissions() {
     assert!(legacy.category.is_none());
     assert!(legacy.start_time.is_none());
     assert!(legacy.end_time.is_none());
+    assert!(legacy.collection.is_none());
+
+    let favorite: Request = serde_json::from_value(serde_json::json!({
+        "cmd": "set_history_favorite",
+        "id": 17,
+        "favorite": false
+    }))
+    .unwrap();
+    assert_eq!(favorite.id, Some(17));
+    assert_eq!(favorite.favorite, Some(false));
 }
 
 #[test]

@@ -98,6 +98,12 @@ html, body {
   letter-spacing: 0;
 }
 
+.titlebar-context {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: var(--font-weight-strong);
+}
+
 .titlebar-close {
   -webkit-app-region: no-drag;
   width: 22px;
@@ -619,6 +625,64 @@ html, body {
 .history-item:active {
   background: var(--bg-active);
   transform: scale(0.99);
+}
+
+/* Long-press favorite feedback: one composited fill, driven by the row's
+   custom property after the 220 ms grace period. */
+.favorite-press-progress {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+  background: linear-gradient(90deg, var(--brand-soft), color-mix(in srgb, var(--brand) 10%, transparent));
+  transform: scaleX(var(--favorite-progress, 0));
+  transform-origin: left center;
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.42s linear, opacity 0.12s ease-out;
+  z-index: 0;
+}
+
+.history-item.favorite-charging .favorite-press-progress {
+  opacity: 1;
+}
+
+/* The completed fill becomes the durable favorite state. Reusing the same
+   layer prevents a flash back to the ordinary row background when the
+   gesture finishes; removing the favorite lets the tint fade away. */
+.history-item.is-favorite .favorite-press-progress {
+  transform: scaleX(1);
+  opacity: 1;
+}
+
+.favorite-stamp {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: var(--brand);
+  opacity: 0;
+  transform: scale(0.72) rotate(-12deg);
+  pointer-events: none;
+}
+
+.history-item.is-favorite .favorite-stamp {
+  opacity: 0.9;
+  transform: scale(1) rotate(0deg);
+}
+
+.history-item.favorite-triggered .favorite-stamp {
+  animation: favorite-stamp-pop 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes favorite-stamp-pop {
+  0% { opacity: 0; transform: scale(0.55) rotate(-18deg); }
+  65% { opacity: 1; transform: scale(1.18) rotate(4deg); }
+  100% { opacity: 0.9; transform: scale(1) rotate(0deg); }
 }
 
 .history-batch-item {

@@ -5,7 +5,7 @@
 TailSync 是端到端加密的跨平台剪贴板同步工具：macOS（SwiftUI 菜单栏外壳 + Rust 守护进程）与
 Windows（React + Tauri）之间同步文本、图片和文件，优先局域网，必要时经 Tailscale 或 Iroh。
 
-线协议 v4；产品版本 2.2.2；数据库 schema v9。详见 `README.md`。
+线协议 v4；产品版本 2.2.2；数据库 schema v10。详见 `README.md`。
 
 ## 分层与契约面
 
@@ -18,7 +18,7 @@ Core 的 Interface。每个新 Module 必须有明确的 Seam（输入/输出边
 shared/
   rust-core/                 共享深模块（跨平台单一事实来源）
     crypto.rs + crypto/      密钥存储与加密边界
-    db.rs + db/              数据库生命周期、查询、迁移、文件存储、预览
+    db.rs + db/              数据库生命周期、查询、迁移、文件存储、收藏、预览
     pairing.rs + pairing/    配对状态机与测试
     peer/                    types/directory/health/delivery 等设备与可靠投递规则
     secure.rs + secure/      握手、认证与安全会话
@@ -43,13 +43,13 @@ macos/swift-ui/
   Services/ApiClient.swift    Swift API façade；Transport/History/Peers/Runtime/
                               StorageSettings/Themes 承载具体实现
   Views/SettingsView.swift    设置页面 façade；各功能 section 承载视图实现
-  Views/HistoryView.swift     历史页面 façade；HistoryRow 与交互/预览模块独立
+  Views/HistoryView.swift     历史页面 façade；HistoryRow、收藏交互与预览模块独立
 
 windows/
   src/pages/Settings.tsx      设置页面 façade；settings/ 按连接/常规/历史/存储/
                               外观/更新/对话框拆分
-  src/pages/History.tsx       历史页面 façade；history/ 按 header/list/main/footer 拆分
-  src/hooks/                  可复用的设备、配对、快捷键、更新、缩略图与运行时状态
+  src/pages/History.tsx       历史页面 façade；history/ 按 header/list/item/main/footer 拆分
+  src/hooks/                  可复用的设备、配对、快捷键、更新、缩略图、长按与运行时状态
 ```
 
 - shared Core 的纯规则和状态机是 Leverage 最高的 Module；平台 Adapter 不得复制规则。
@@ -61,6 +61,14 @@ windows/
   不为表面结构对称而复制路由。
 - Windows 的 `commands/preview.rs` 保留独立文件是有意设计，原始 ArrayBuffer 预览协议
   见 `docs/adr/ADR-002-independent-history-preview-window.md`。
+- 收藏是历史的一个受保护集合：`shared/rust-core/src/db/favorites.rs` 负责逻辑条目/文件批次的
+  原子收藏、取消收藏与收藏窗口删除；数据库仍使用 `pinned` 字段保持 v8/v9 wire 兼容，v10
+  启动迁移会把旧的部分收藏批次规范化。平台只负责窗口、手势和命令/Unix route Adapter。
+- 历史窗口的右键删除必须经过 Core 的 `delete` 保护；收藏条目只能经
+  `delete_favorite_entry` 从收藏窗口删除。清空历史只删除未收藏条目，不能绕过收藏保护。
+- 长按手势的宽限期为 220 ms、可见充能为 420 ms；Swift 的 AppKit responder 与 Windows 的
+  pointer hook 共享同一时序语义，进度由声明式动画绘制，不使用逐帧计时器；完成后必须抑制
+  同一手势的选择、点击与双击。历史和收藏窗口分别拥有可见性、轮询、关闭与资源释放生命周期。
 - 平台 `network/*` 中**被漂移检查强制逐字节一致**的文件：`build.rs`、
   `examples/interop_probe.rs`、`network/types.rs`、`network/server.rs`、
   `scripts/check_cross_platform_sync.mjs|ps1`、`scripts/test_cross_project_interop.ps1`。

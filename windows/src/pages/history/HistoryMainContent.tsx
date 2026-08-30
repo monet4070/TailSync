@@ -1,4 +1,4 @@
-import { Clipboard, SearchX } from "lucide-react";
+import { Clipboard, SearchX, Star } from "lucide-react";
 import { HistoryList } from "./HistoryList";
 import type { HistoryMainContentProps } from "./HistoryViewTypes";
 
@@ -21,7 +21,10 @@ export function HistoryMainContent({
   handleRestore,
   handleRestoreBatch,
   handleDelete,
-  handlePinnedChange,
+  handleFavoriteChange,
+  handleFavoriteProtected,
+  collection,
+  isFavoritesCollection,
 }: HistoryMainContentProps) {
   if (loading && entries.length === 0) {
     return (
@@ -53,11 +56,19 @@ export function HistoryMainContent({
           </>
         ) : (
           <>
-            <div className={`empty-state-illustration${themeAssetSlots?.emptyState ? " has-theme-image" : ""}`}>
-              {!themeAssetSlots?.emptyState && <Clipboard size={30} strokeWidth={1.35} aria-hidden="true" />}
+            <div className={`empty-state-illustration${!isFavoritesCollection && themeAssetSlots?.emptyState ? " has-theme-image" : ""}`}>
+              {isFavoritesCollection ? (
+                <Star size={30} strokeWidth={1.35} aria-hidden="true" />
+              ) : !themeAssetSlots?.emptyState && (
+                <Clipboard size={30} strokeWidth={1.35} aria-hidden="true" />
+              )}
             </div>
-            <div className="empty-state-title">{t("history.emptyTitle")}</div>
-            <div className="empty-state-desc">{t("history.emptyDescription")}</div>
+            <div className="empty-state-title">
+              {t(isFavoritesCollection ? "favorites.emptyTitle" : "history.emptyTitle")}
+            </div>
+            <div className="empty-state-desc">
+              {t(isFavoritesCollection ? "favorites.emptyDescription" : "history.emptyDescription")}
+            </div>
           </>
         )}
       </div>
@@ -81,7 +92,9 @@ export function HistoryMainContent({
       handleRestore={handleRestore}
       handleRestoreBatch={handleRestoreBatch}
       handleDelete={handleDelete}
-      handlePinnedChange={handlePinnedChange}
+      handleFavoriteChange={handleFavoriteChange}
+      handleFavoriteProtected={handleFavoriteProtected}
+      collection={collection}
     />
   );
 }

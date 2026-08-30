@@ -526,6 +526,10 @@ struct Request {
     path: Option<String>,
     #[serde(default)]
     pinned: Option<bool>,
+    #[serde(default)]
+    favorite: Option<bool>,
+    #[serde(default)]
+    collection: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

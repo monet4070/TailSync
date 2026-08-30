@@ -152,8 +152,8 @@ const DOC_VERSION_MARKERS = [
   },
   {
     relative: 'CONTEXT.md',
-    pattern: /线协议 v4；产品版本 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)；数据库 schema v9/,
-    build: (version) => `线协议 v4；产品版本 ${version}；数据库 schema v9`,
+    pattern: /线协议 v4；产品版本 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)；数据库 schema v10/,
+    build: (version) => `线协议 v4；产品版本 ${version}；数据库 schema v10`,
   },
   {
     relative: 'docs/USER_GUIDE.zh-CN.md',

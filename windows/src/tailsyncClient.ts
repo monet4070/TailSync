@@ -121,6 +121,14 @@ export interface HistoryPageResult {
   has_more: boolean;
 }
 
+export type HistoryCollection = "all" | "favorites";
+export type PreviewWindowOwner = "history" | "favorites";
+
+export interface FavoriteMutation {
+  affected_ids: number[];
+  favorite: boolean;
+}
+
 export interface HistoryCapabilities {
   classifier_version: number;
   categories: HistoryCategory[];
@@ -167,6 +175,7 @@ export type HistoryPageQuery = {
   endTime: string | null;
   limit: number;
   offset: number;
+  collection?: HistoryCollection;
 };
 
 export function getImageData(id: number): Promise<ImageThumbnail> {
@@ -196,14 +205,20 @@ export interface PreviewWindowSnapshot {
   revision: number;
   entryId: number;
   batchId: string | null;
+  owner: PreviewWindowOwner;
 }
 
 export function openPreviewWindow(
   entryId: number,
   batchId?: string | null,
+  owner: HistoryCollection = "all",
 ): Promise<PreviewWindowSnapshot> {
   return invoke<PreviewWindowSnapshot>("open_preview_window", {
-    request: { entryId, batchId: batchId ?? null },
+    request: {
+      entryId,
+      batchId: batchId ?? null,
+      owner: owner === "favorites" ? "favorites" : "history",
+    },
   });
 }
 
@@ -211,20 +226,38 @@ export function getPreviewWindowRequest(): Promise<PreviewWindowSnapshot | null>
   return invoke<PreviewWindowSnapshot | null>("get_preview_window_request");
 }
 
-export function closePreviewWindow(): Promise<void> {
-  return invoke<void>("close_preview_window");
+export function closePreviewWindow(owner?: HistoryCollection): Promise<void> {
+  return owner
+    ? invoke<void>("close_preview_window", {
+        owner: owner === "favorites" ? "favorites" : "history",
+      })
+    : invoke<void>("close_preview_window");
 }
 
 export function closeHistoryWindow(): Promise<void> {
   return invoke<void>("close_history_window");
 }
 
+export function openFavoritesWindow(): Promise<void> {
+  return invoke<void>("open_favorites_window");
+}
+
+export function closeFavoritesWindow(): Promise<void> {
+  return invoke<void>("close_favorites_window");
+}
+
 export function closeSettingsWindow(): Promise<void> {
   return invoke<void>("close_settings_window");
 }
 
-export function syncPreviewWindowMinimized(minimized: boolean): Promise<void> {
-  return invoke<void>("sync_preview_window_minimized", { minimized });
+export function syncPreviewWindowMinimized(
+  minimized: boolean,
+  owner: HistoryCollection = "all",
+): Promise<void> {
+  return invoke<void>("sync_preview_window_minimized", {
+    minimized,
+    owner: owner === "favorites" ? "favorites" : "history",
+  });
 }
 
 export function getMigrationDiagnostics(): Promise<MigrationDiagnostics> {
@@ -272,6 +305,14 @@ export function deleteEntry(id: number): Promise<void> {
 
 export function clearHistory(): Promise<void> {
   return invoke<void>("clear_history");
+}
+
+export function setHistoryFavorite(id: number, favorite: boolean): Promise<FavoriteMutation> {
+  return invoke<FavoriteMutation>("set_history_favorite", { id, favorite });
+}
+
+export function deleteFavoriteEntry(id: number): Promise<FavoriteMutation> {
+  return invoke<FavoriteMutation>("delete_favorite_entry", { id });
 }
 
 export function restoreFileBatch(batchId: string): Promise<void> {

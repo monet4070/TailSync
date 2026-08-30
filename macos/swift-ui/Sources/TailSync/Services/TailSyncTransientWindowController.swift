@@ -4,6 +4,17 @@ extension Notification.Name {
     static let tailSyncHistoryWindowVisibilityChanged = Notification.Name(
         "tailSyncHistoryWindowVisibilityChanged"
     )
+    static let tailSyncFavoritesWindowVisibilityChanged = Notification.Name(
+        "tailSyncFavoritesWindowVisibilityChanged"
+    )
+
+    static func tailSyncHistoryCollectionVisibilityChanged(
+        for collection: String
+    ) -> Notification.Name {
+        collection == "favorites"
+            ? .tailSyncFavoritesWindowVisibilityChanged
+            : .tailSyncHistoryWindowVisibilityChanged
+    }
 }
 
 /// Owns a window only while it is open. Closing the window tears down the

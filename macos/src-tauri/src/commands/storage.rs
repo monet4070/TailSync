@@ -108,7 +108,7 @@ pub async fn set_history_pinned(
         .db
         .lock()
         .await
-        .set_pinned(id, pinned)
+        .set_favorite(id, pinned)
         .map_err(|error| error.to_string())?;
     crate::api::bump_clipboard_version();
     Ok(())

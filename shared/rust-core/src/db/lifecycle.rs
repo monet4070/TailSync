@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 fn remove_history_entry(path: &Path) -> std::io::Result<()> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -17,6 +18,7 @@ fn remove_history_entry(path: &Path) -> std::io::Result<()> {
     }
 }
 
+#[cfg(test)]
 fn clear_history_directory_with<F>(directory: &Path, remove_entry: &mut F) -> std::io::Result<()>
 where
     F: FnMut(&Path) -> std::io::Result<()>,
@@ -44,15 +46,38 @@ where
 impl HistoryDB {
     /// Delete a history entry and its unreferenced external payload.
     pub fn delete(&mut self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
+        self.ensure_logical_item_unfavorited(id)?;
         self.delete_entries_with_batch_policy(&[id], None, true)?;
         Ok(())
     }
 
-    /// Remove every history entry in one transaction.
+    /// Remove every unfavorited history entry while preserving favorites.
     pub fn clear_all(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.clear_all_with(remove_history_entry)
+        let ids = self.unfavorited_ids()?;
+        self.delete_entries(&ids)?;
+        Ok(())
     }
 
+    fn unfavorited_ids(&self) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+        self.conn
+            .prepare(
+                "SELECT id FROM history AS candidate
+                 WHERE candidate.pinned = 0
+                   AND (
+                       candidate.batch_id IS NULL
+                       OR NOT EXISTS (
+                           SELECT 1 FROM history AS batch_entry
+                           WHERE batch_entry.batch_id = candidate.batch_id
+                             AND batch_entry.pinned <> 0
+                       )
+                   )",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    #[cfg(test)]
     fn clear_all_with<F>(&mut self, mut remove_entry: F) -> Result<(), Box<dyn std::error::Error>>
     where
         F: FnMut(&Path) -> std::io::Result<()>,
@@ -213,12 +238,34 @@ impl HistoryDB {
             }
         }
         for batch_id in batch_ids {
-            let group_ids = self
-                .conn
-                .prepare("SELECT id FROM history WHERE batch_id = ?1 AND pinned = 0")?
-                .query_map(params![batch_id], |row| row.get::<_, i64>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            ids.extend(group_ids);
+            let has_favorite: bool = self.conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM history WHERE batch_id = ?1 AND pinned <> 0
+                )",
+                params![batch_id],
+                |row| row.get::<_, i64>(0).map(|value| value != 0),
+            )?;
+            if has_favorite {
+                ids.retain(|candidate| {
+                    self.conn
+                        .query_row(
+                            "SELECT batch_id FROM history WHERE id = ?1",
+                            params![candidate],
+                            |row| row.get::<_, Option<String>>(0),
+                        )
+                        .ok()
+                        .flatten()
+                        .as_deref()
+                        != Some(batch_id.as_str())
+                });
+            } else {
+                let group_ids = self
+                    .conn
+                    .prepare("SELECT id FROM history WHERE batch_id = ?1")?
+                    .query_map(params![batch_id], |row| row.get::<_, i64>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                ids.extend(group_ids);
+            }
         }
         ids.sort_unstable();
         ids.dedup();
@@ -249,7 +296,7 @@ impl HistoryDB {
         self.delete_entries_with_batch_policy(ids, preserve_path, false)
     }
 
-    fn delete_entries_with_batch_policy(
+    pub(super) fn delete_entries_with_batch_policy(
         &mut self,
         ids: &[i64],
         preserve_path: Option<&Path>,

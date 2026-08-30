@@ -1,3 +1,51 @@
+use thiserror::Error;
+
+/// The collection used by a history query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryCollection {
+    All,
+    Favorites,
+}
+
+impl HistoryCollection {
+    pub fn from_wire(value: Option<&str>) -> Result<Self, HistoryMutationError> {
+        match value.unwrap_or("all") {
+            "all" => Ok(Self::All),
+            "favorites" => Ok(Self::Favorites),
+            other => Err(HistoryMutationError::InvalidCollection {
+                collection: other.to_string(),
+            }),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Favorites => "favorites",
+        }
+    }
+}
+
+/// Stable errors for user-initiated history mutations.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum HistoryMutationError {
+    #[error("history entry {id} is unavailable")]
+    EntryNotFound { id: i64 },
+    #[error("history entry {id} is protected because it is favorited")]
+    FavoriteProtected { id: i64 },
+    #[error("history entry {id} is not favorited")]
+    NotFavorite { id: i64 },
+    #[error("unsupported history collection: {collection}")]
+    InvalidCollection { collection: String },
+}
+
+/// Result of changing the favorite state of a logical history item.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FavoriteMutation {
+    pub affected_ids: Vec<i64>,
+    pub favorite: bool,
+}
+
 /// A clipboard history entry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HistoryEntry {
@@ -26,6 +74,18 @@ pub struct HistoryQueryPage {
     pub entries: Vec<HistoryEntry>,
     pub total: Option<usize>,
     pub has_more: bool,
+}
+
+/// Inputs for a paged history collection query.
+#[derive(Debug, Clone)]
+pub struct HistoryQuery<'a> {
+    pub collection: HistoryCollection,
+    pub keyword: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub start_time: Option<&'a str>,
+    pub end_time: Option<&'a str>,
+    pub limit: usize,
+    pub offset: usize,
 }
 
 /// The storage-level kind of a history item that can be previewed.

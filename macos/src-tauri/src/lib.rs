@@ -766,6 +766,8 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::get_migration_diagnostics,
             commands::search_history,
             commands::delete_entry,
+            commands::set_history_favorite,
+            commands::delete_favorite_entry,
             commands::clear_history,
             commands::restore_entry,
             commands::get_peers,

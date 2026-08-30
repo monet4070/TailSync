@@ -268,6 +268,8 @@ struct HistoryFilterBar: View {
     let daemonOnline: Bool
     let onSubmit: () -> Void
     let onFilterChanged: () -> Void
+    let isFavoritesCollection: Bool
+    let onOpenFavorites: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.tailSyncSelection) private var activeTheme
@@ -275,6 +277,36 @@ struct HistoryFilterBar: View {
     @ObservedObject private var historyWindowController = HistoryWindowController.shared
     @State private var dateMenuOpen = false
     @State private var categoryMenuOpen = false
+
+    init(
+        keyword: Binding<String>,
+        selectedCategory: Binding<String>,
+        selectedDateFilter: Binding<HistoryDateFilter>,
+        customStartDate: Binding<Date>,
+        customEndDate: Binding<Date>,
+        categories: [String],
+        categoryFilteringSupported: Bool,
+        dateRangeFilteringSupported: Bool,
+        daemonOnline: Bool,
+        onSubmit: @escaping () -> Void,
+        onFilterChanged: @escaping () -> Void,
+        isFavoritesCollection: Bool = false,
+        onOpenFavorites: @escaping () -> Void = {}
+    ) {
+        self._keyword = keyword
+        self._selectedCategory = selectedCategory
+        self._selectedDateFilter = selectedDateFilter
+        self._customStartDate = customStartDate
+        self._customEndDate = customEndDate
+        self.categories = categories
+        self.categoryFilteringSupported = categoryFilteringSupported
+        self.dateRangeFilteringSupported = dateRangeFilteringSupported
+        self.daemonOnline = daemonOnline
+        self.onSubmit = onSubmit
+        self.onFilterChanged = onFilterChanged
+        self.isFavoritesCollection = isFavoritesCollection
+        self.onOpenFavorites = onOpenFavorites
+    }
 
     private var selectedCategoryLabel: String {
         Loc.t("history.category.\(selectedCategory)")
@@ -292,35 +324,51 @@ struct HistoryFilterBar: View {
                     .frame(width: 7, height: 7)
                     .accessibilityHidden(true)
 
-                Button {
-                    historyWindowController.togglePinned()
-                } label: {
-                    Image(systemName: historyWindowController.isPinned ? "pin.fill" : "pin")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(
-                            historyWindowController.isPinned
-                                ? palette.accentColor
-                                : palette.secondaryColor
-                        )
-                        .frame(width: 28, height: 28)
-                        .background(
-                            historyWindowController.isPinned
-                                ? palette.accentColor.opacity(0.12)
-                                : Color.clear
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                if !isFavoritesCollection {
+                    Button {
+                        historyWindowController.togglePinned()
+                    } label: {
+                        Image(systemName: historyWindowController.isPinned ? "pin.fill" : "pin")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(
+                                historyWindowController.isPinned
+                                    ? palette.accentColor
+                                    : palette.secondaryColor
+                            )
+                            .frame(width: 28, height: 28)
+                            .background(
+                                historyWindowController.isPinned
+                                    ? palette.accentColor.opacity(0.12)
+                                    : Color.clear
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help(Loc.t(
+                        historyWindowController.isPinned
+                            ? "history.windowUnpin"
+                            : "history.windowPin"
+                    ))
+                    .accessibilityLabel(Loc.t(
+                        historyWindowController.isPinned
+                            ? "history.windowUnpin"
+                            : "history.windowPin"
+                    ))
                 }
-                .buttonStyle(.plain)
-                .help(Loc.t(
-                    historyWindowController.isPinned
-                        ? "history.windowUnpin"
-                        : "history.windowPin"
-                ))
-                .accessibilityLabel(Loc.t(
-                    historyWindowController.isPinned
-                        ? "history.windowUnpin"
-                        : "history.windowPin"
-                ))
+
+                if !isFavoritesCollection {
+                    Button(action: onOpenFavorites) {
+                        Image(systemName: "star")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(palette.secondaryColor)
+                            .frame(width: 28, height: 28)
+                            .background(Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help(Loc.t("favorites.open"))
+                    .accessibilityLabel(Loc.t("favorites.open"))
+                }
             }
 
             // Row 2 — category + date filters

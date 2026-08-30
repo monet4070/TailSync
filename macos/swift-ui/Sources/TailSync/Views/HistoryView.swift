@@ -7,7 +7,36 @@ private struct HistoryDateBounds {
     let end: Date?
 }
 
+enum HistoryFavoriteMutationPolicy {
+    static func logicalItemKey(_ entry: HistoryEntry) -> String {
+        entry.batch_id.map { "batch:\($0)" } ?? "entry:\(entry.id)"
+    }
+
+    static func reconcile(
+        _ entries: [HistoryEntry],
+        pendingFavorites: [String: Bool]
+    ) -> [HistoryEntry] {
+        entries.map { entry in
+            var reconciled = entry
+            if let pendingFavorite = pendingFavorites[logicalItemKey(entry)] {
+                reconciled.pinned = pendingFavorite
+            }
+            return reconciled
+        }
+    }
+}
+
 struct HistoryView: View {
+    let collection: String
+    private let visibilityNotification: Notification.Name
+
+    init(collection: String = "all") {
+        self.collection = collection
+        visibilityNotification = .tailSyncHistoryCollectionVisibilityChanged(
+            for: collection
+        )
+    }
+
     @ObservedObject private var loc = Loc.shared
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -20,7 +49,7 @@ struct HistoryView: View {
     @State private var page = 0
     @State private var hasNext = false
     @State private var isLoading = false
-    @State private var historyWindowIsVisible = true
+    @State private var windowIsVisible = true
     @State private var restoredId: Int64? = nil
     // Previewing is independent of restoration: selection chooses a row,
     // Space opens it in the reusable preview window, and double-click retains
@@ -42,8 +71,11 @@ struct HistoryView: View {
     @State private var unresolvedMigrationCount = 0
     @State private var syncWarning: String? = nil
     @State private var syncWarningTask: Task<Void, Never>? = nil
+    @State private var actionMessage: String? = nil
+    @State private var actionMessageTask: Task<Void, Never>? = nil
     @State private var restoreFeedbackTask: Task<Void, Never>? = nil
     @State private var expandedBatchIds: Set<String> = []
+    @State private var favoriteMutations: [String: Bool] = [:]
 
     private let pageSize = 30
     private let collapsedBatchFileLimit = 2
@@ -56,6 +88,12 @@ struct HistoryView: View {
             reduceTransparency: loc.reduceTransparency,
             interfaceScale: TailSyncThemeAccessibilityPolicy.interfaceScale(for: dynamicTypeSize)
         )
+    }
+
+    private var isFavoritesCollection: Bool { collection == "favorites" }
+
+    private var previewOwner: HistoryPreviewOwner {
+        HistoryPreviewOwner(collection: collection)
     }
 
     private var palette: TailSyncThemePalette {
@@ -86,6 +124,10 @@ struct HistoryView: View {
         entry.batch_count ?? entry.batch_total ?? 1
     }
 
+    private func logicalItemKey(_ entry: HistoryEntry) -> String {
+        HistoryFavoriteMutationPolicy.logicalItemKey(entry)
+    }
+
     private func batchTitle(_ entry: HistoryEntry) -> String {
         let count = batchCount(entry)
         let total = entry.batch_total ?? count
@@ -108,7 +150,9 @@ struct HistoryView: View {
                 dateRangeFilteringSupported: dateRangeFilteringSupported,
                 daemonOnline: daemonOnline,
                 onSubmit: { page = 0; load(targetPage: 0) },
-                onFilterChanged: { page = 0; load(targetPage: 0) }
+                onFilterChanged: { page = 0; load(targetPage: 0) },
+                isFavoritesCollection: isFavoritesCollection,
+                onOpenFavorites: { AppDelegate.showFavorites() }
             )
             .padding(.horizontal, 12).padding(.top, 8)
 
@@ -154,16 +198,25 @@ struct HistoryView: View {
             } else if entries.isEmpty {
                 Spacer()
                 VStack(spacing: 8) {
-                    if let image = loc.themeAssetImages["emptyState"] {
+                    if isFavoritesCollection {
+                        Image(systemName: "star")
+                            .font(.system(size: 32))
+                            .foregroundColor(palette.tertiaryColor)
+                    } else if let image = loc.themeAssetImages["emptyState"] {
                         Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(width: 64, height: 64)
                     } else {
                         Image(systemName: "doc.on.clipboard")
                             .font(.system(size: 32))
                             .foregroundColor(palette.tertiaryColor)
                     }
-                    Text(Loc.t("history.empty"))
+                    Text(Loc.t(isFavoritesCollection ? "favorites.emptyTitle" : "history.empty"))
                         .font(activeTheme.displayFont(size: 15))
                         .foregroundColor(palette.secondaryColor)
+                    if isFavoritesCollection {
+                        Text(Loc.t("favorites.emptyDescription"))
+                            .font(activeTheme.readingFont(size: 11))
+                            .foregroundColor(palette.tertiaryColor)
+                    }
                 }
                 Spacer()
             } else {
@@ -210,40 +263,45 @@ struct HistoryView: View {
                             .foregroundColor(palette.secondaryColor)
                             .padding(.horizontal, 6)
                         }
-                        HistoryRow(
+                        HistoryInteractiveRow(
                             entry: entry,
                             isRestored: restoredId == entry.id,
                             isFocused: focusedEntryId == entry.id,
-                            showsMultipleLabels: multipleLabelsSupported
+                            showsMultipleLabels: multipleLabelsSupported,
+                            previewRequest: historyPreviewRequest(
+                                focusedId: entry.id,
+                                entries: entries,
+                                expandedBatchIds: expandedBatchIds
+                            ),
+                            onSelect: {
+                                focusedEntryId = entry.id
+                            },
+                            onRestore: {
+                                restore(entry.id)
+                            },
+                            onDelete: {
+                                delete(entry)
+                            },
+                            onFavorite: {
+                                toggleFavorite(entry)
+                            },
+                            onPreview: { request in
+                                HistoryPreviewWindowController.shared.present(
+                                    request,
+                                    owner: previewOwner
+                                )
+                            },
+                            onClosePreview: {
+                                HistoryPreviewWindowController.shared.close(
+                                    ifOwnedBy: previewOwner
+                                )
+                            },
+                            isPreviewVisible: {
+                                HistoryPreviewWindowController.shared.isPreviewVisible(
+                                    for: previewOwner
+                                )
+                            }
                         )
-                        .contentShape(Rectangle())
-                        .overlay {
-                            HistoryRowInteraction(
-                                previewRequest: historyPreviewRequest(
-                                    focusedId: entry.id,
-                                    entries: entries,
-                                    expandedBatchIds: expandedBatchIds
-                                ),
-                                onSelect: {
-                                    focusedEntryId = entry.id
-                                },
-                                onRestore: {
-                                    restore(entry.id)
-                                },
-                                onDelete: {
-                                    delete(entry.id)
-                                },
-                                onPreview: { request in
-                                    HistoryPreviewWindowController.shared.present(request)
-                                },
-                                onClosePreview: {
-                                    HistoryPreviewWindowController.shared.close()
-                                },
-                                isPreviewVisible: {
-                                    HistoryPreviewWindowController.shared.isPreviewVisible
-                                }
-                            )
-                        }
                         }
                         .listRowBackground(palette.surfaceColor)
                         .listRowSeparatorTint(palette.dividerColor)
@@ -268,7 +326,7 @@ struct HistoryView: View {
                 } label: { Image(systemName: "chevron.right") }
                     .disabled(!hasNext || isLoading)
                 Spacer()
-                if !entries.isEmpty {
+                if !isFavoritesCollection && !entries.isEmpty {
                     Button(Loc.t("history.clearAll"), role: .destructive) { showingClearAlert = true }
                         .font(.caption).buttonStyle(.plain)
                 }
@@ -290,15 +348,15 @@ struct HistoryView: View {
             loadHistoryCapabilities()
             loadMigrationDiagnostics()
         }
-        .task(id: historyWindowIsVisible) {
-            guard historyWindowIsVisible else { return }
+        .task(id: windowIsVisible) {
+            guard windowIsVisible else { return }
             await runtimeSnapshotLoop(forceRefresh: true)
         }
         .onReceive(NotificationCenter.default.publisher(
-            for: .tailSyncHistoryWindowVisibilityChanged
+            for: visibilityNotification
         )) { notification in
             guard let isVisible = notification.userInfo?["visible"] as? Bool else { return }
-            historyWindowIsVisible = isVisible
+            windowIsVisible = isVisible
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             reloadActiveDateFilter()
@@ -317,11 +375,25 @@ struct HistoryView: View {
             restoreFeedbackTask = nil
             syncWarningTask?.cancel()
             syncWarningTask = nil
+            actionMessageTask?.cancel()
+            actionMessageTask = nil
             focusedEntryId = nil
-            HistoryPreviewWindowController.shared.close()
+            HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
+                if let actionMessage {
+                    Text(actionMessage)
+                        .font(activeTheme.readingFont(size: 11))
+                        .foregroundColor(palette.toastTextColor)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(palette.toastColor)
+                        .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
+                        .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+                        .accessibilityLabel(actionMessage)
+                }
                 if let syncWarning {
                     Text(syncWarning)
                         .font(activeTheme.readingFont(size: 11))
@@ -407,9 +479,13 @@ struct HistoryView: View {
                     startTime: requestedStartTime,
                     endTime: requestedEndTime,
                     limit: pageSize + 1,
-                    offset: requestedPage * pageSize)
+                    offset: requestedPage * pageSize,
+                    collection: collection)
                 guard generation == loadGeneration else { return }
-                entries = Array(result.prefix(pageSize))
+                entries = HistoryFavoriteMutationPolicy.reconcile(
+                    Array(result.prefix(pageSize)),
+                    pendingFavorites: favoriteMutations
+                )
                 hasNext = result.count > pageSize
                 page = requestedPage
                 pruneSelection()
@@ -607,16 +683,30 @@ struct HistoryView: View {
         }
     }
 
-    private func delete(_ id: Int64) {
+    private func delete(_ entry: HistoryEntry) {
+        guard favoriteMutations[logicalItemKey(entry)] == nil else { return }
+        if entry.pinned && !isFavoritesCollection {
+            showActionMessage(Loc.t("history.favoriteProtected"))
+            return
+        }
         Task {
             do {
-                try await ApiClient.shared.deleteEntry(id: id)
-                entries.removeAll { $0.id == id }
-                HistoryPreviewWindowController.shared.closeIfShowing(entryId: id)
+                if isFavoritesCollection {
+                    try await ApiClient.shared.deleteFavoriteEntry(id: entry.id)
+                } else {
+                    try await ApiClient.shared.deleteEntry(id: entry.id)
+                }
+                entries.removeAll { $0.id == entry.id }
+                HistoryPreviewWindowController.shared.closeIfShowing(entryId: entry.id)
                 pruneSelection()
                 loadMigrationDiagnostics()
+                if isFavoritesCollection {
+                    // A favorite file batch is one logical item. Refresh the
+                    // collection so sibling rows disappear immediately too.
+                    load(targetPage: page, clearExisting: false)
+                }
             } catch {
-                errorMsg = Loc.t("history.deleteError")
+                showActionMessage(Loc.t("history.deleteError"))
             }
         }
     }
@@ -625,15 +715,59 @@ struct HistoryView: View {
         Task {
             let ok = await ApiClient.shared.clearAllHistory()
             if ok {
-                entries = []
                 page = 0
-                hasNext = false
                 focusedEntryId = nil
-                HistoryPreviewWindowController.shared.close()
+                HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+                load(targetPage: 0)
                 loadMigrationDiagnostics()
             } else {
                 errorMsg = Loc.t("history.deleteError")
             }
+        }
+    }
+
+    private func toggleFavorite(_ entry: HistoryEntry) {
+        let mutationKey = logicalItemKey(entry)
+        let favorite = !entry.pinned
+        guard favoriteMutations[mutationKey] == nil else { return }
+        favoriteMutations[mutationKey] = favorite
+        withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.18)) {
+            for index in entries.indices
+                where logicalItemKey(entries[index]) == mutationKey
+            {
+                entries[index].pinned = favorite
+            }
+        }
+        Task {
+            defer { favoriteMutations.removeValue(forKey: mutationKey) }
+            do {
+                // The daemon applies the mutation to the complete logical
+                // item, including every member of a file batch.
+                try await ApiClient.shared.setHistoryFavorite(id: entry.id, favorite: favorite)
+                // Reload instead of changing only the pressed row: file
+                // batches are one logical favorite and the daemon mutates
+                // every member atomically.
+                load(targetPage: page, clearExisting: false)
+            } catch {
+                withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                    for index in entries.indices
+                        where logicalItemKey(entries[index]) == mutationKey
+                    {
+                        entries[index].pinned = entry.pinned
+                    }
+                }
+                showActionMessage(Loc.t("history.actionFailed"))
+            }
+        }
+    }
+
+    private func showActionMessage(_ message: String) {
+        actionMessageTask?.cancel()
+        actionMessage = message
+        actionMessageTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            actionMessage = nil
         }
     }
 

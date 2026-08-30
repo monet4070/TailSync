@@ -37,9 +37,34 @@ impl HistoryDB {
         limit: usize,
         offset: usize,
     ) -> Result<HistoryQueryPage, Box<dyn std::error::Error>> {
+        self.get_page_in_collection(HistoryQuery {
+            collection: HistoryCollection::All,
+            keyword,
+            category,
+            start_time,
+            end_time,
+            limit,
+            offset,
+        })
+    }
+
+    pub fn get_page_in_collection(
+        &self,
+        query: HistoryQuery<'_>,
+    ) -> Result<HistoryQueryPage, Box<dyn std::error::Error>> {
+        let HistoryQuery {
+            collection,
+            keyword,
+            category,
+            start_time,
+            end_time,
+            limit,
+            offset,
+        } = query;
         let keyword = keyword.filter(|value| !value.trim().is_empty());
         if let Some(keyword) = keyword {
             let (entries, _, has_more) = self.scan_keyword_matches(
+                collection,
                 keyword,
                 category,
                 start_time,
@@ -54,7 +79,7 @@ impl HistoryDB {
         }
 
         let (filter_clause, mut values) =
-            Self::history_filter_clause(category, start_time, end_time)?;
+            Self::history_filter_clause(collection, category, start_time, end_time)?;
 
         let mut sql = String::from(
             "SELECT id, timestamp, type, description, data_hash, size_bytes, source_peer,
@@ -86,7 +111,7 @@ impl HistoryDB {
             }
             entries.push(entry);
         }
-        let total = self.count_all_filtered(None, category, start_time, end_time)?;
+        let total = self.count_in_collection(collection, None, category, start_time, end_time)?;
         let has_more = offset
             .checked_add(entries.len())
             .is_some_and(|consumed| consumed < total);
@@ -104,12 +129,30 @@ impl HistoryDB {
         start_time: Option<&str>,
         end_time: Option<&str>,
     ) -> Result<usize, Box<dyn std::error::Error>> {
+        self.count_in_collection(
+            HistoryCollection::All,
+            keyword,
+            category,
+            start_time,
+            end_time,
+        )
+    }
+
+    pub fn count_in_collection(
+        &self,
+        collection: HistoryCollection,
+        keyword: Option<&str>,
+        category: Option<&str>,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
         if let Some(keyword) = keyword.filter(|value| !value.trim().is_empty()) {
-            let (_, count, _) =
-                self.scan_keyword_matches(keyword, category, start_time, end_time, None)?;
+            let (_, count, _) = self
+                .scan_keyword_matches(collection, keyword, category, start_time, end_time, None)?;
             return Ok(count);
         }
-        let (filter_clause, values) = Self::history_filter_clause(category, start_time, end_time)?;
+        let (filter_clause, values) =
+            Self::history_filter_clause(collection, category, start_time, end_time)?;
         let sql = format!("SELECT COUNT(*) FROM history{filter_clause}");
         let count: i64 = self
             .conn
@@ -119,6 +162,7 @@ impl HistoryDB {
 
     fn scan_keyword_matches(
         &self,
+        collection: HistoryCollection,
         keyword: &str,
         category: Option<&str>,
         start_time: Option<&str>,
@@ -126,7 +170,7 @@ impl HistoryDB {
         page: Option<(usize, usize)>,
     ) -> Result<(Vec<HistoryEntry>, usize, bool), Box<dyn std::error::Error>> {
         let (filter_clause, mut values) =
-            Self::history_filter_clause(category, start_time, end_time)?;
+            Self::history_filter_clause(collection, category, start_time, end_time)?;
         let escaped = format!("%{}%", escape_like_literal(keyword));
         let candidate =
             "(type = 'text' OR description LIKE ? ESCAPE '\\' OR source_peer LIKE ? ESCAPE '\\'
@@ -197,6 +241,7 @@ impl HistoryDB {
     }
 
     fn history_filter_clause(
+        collection: HistoryCollection,
         category: Option<&str>,
         start_time: Option<&str>,
         end_time: Option<&str>,
@@ -229,6 +274,9 @@ impl HistoryDB {
 
         let mut conditions = Vec::new();
         let mut values = Vec::<Value>::new();
+        if collection == HistoryCollection::Favorites {
+            conditions.push("history.pinned = 1");
+        }
         if let Some(category) = category {
             conditions.push(
                 "EXISTS (SELECT 1 FROM json_each(history.categories) AS label

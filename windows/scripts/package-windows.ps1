@@ -131,9 +131,11 @@ $requiredFiles = @(
     $updaterPublicKeyPath,
     (Join-Path $windowsRoot 'package-lock.json'),
     (Join-Path $windowsRoot 'history.html'),
+    (Join-Path $windowsRoot 'favorites.html'),
     (Join-Path $windowsRoot 'settings.html'),
     (Join-Path $windowsRoot 'preview.html'),
     (Join-Path $windowsRoot 'src\history-main.tsx'),
+    (Join-Path $windowsRoot 'src\favorites-main.tsx'),
     (Join-Path $windowsRoot 'src\settings-main.tsx'),
     (Join-Path $windowsRoot 'src\preview-main.tsx')
 )

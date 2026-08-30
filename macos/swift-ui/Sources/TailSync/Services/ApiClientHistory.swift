@@ -183,15 +183,31 @@ extension ApiClient {
     }
   }
 
+  func setHistoryFavorite(id: Int64, favorite: Bool) async throws {
+    let response = try await request(["cmd": "set_history_favorite", "id": id, "favorite": favorite])
+    guard response["ok"] as? Bool == true else {
+      throw ApiError.serverError(response["error"] as? String ?? "unknown")
+    }
+  }
+
+  func deleteFavoriteEntry(id: Int64) async throws {
+    let response = try await request(["cmd": "delete_favorite_entry", "id": id])
+    guard response["ok"] as? Bool == true else {
+      throw ApiError.serverError(response["error"] as? String ?? "unknown")
+    }
+  }
+
   func getHistory(
     keyword: String? = nil,
     category: String? = nil,
     startTime: String? = nil,
     endTime: String? = nil,
     limit: Int = 30,
-    offset: Int = 0
+    offset: Int = 0,
+    collection: String = "all"
   ) async throws -> [HistoryEntry] {
     var request: [String: Any] = ["cmd": "get_history", "limit": limit, "offset": offset]
+    if collection != "all" { request["collection"] = collection }
     if let keyword { request["keyword"] = keyword }
     if let category { request["category"] = category }
     if let startTime { request["start_time"] = startTime }

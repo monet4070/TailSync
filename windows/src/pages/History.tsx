@@ -3,20 +3,24 @@ import {
   cancelFileBatch,
   clearHistory,
   deleteEntry,
+  deleteFavoriteEntry,
   getHistoryCapabilities,
   getHistoryPage,
   getMigrationDiagnostics,
   getSettings,
   closeHistoryWindow,
+  closeFavoritesWindow,
   closePreviewWindow,
+  openFavoritesWindow,
   openPreviewWindow,
   syncPreviewWindowMinimized,
   restoreEntry,
   restoreFileBatch,
-  setHistoryPinned,
+  setHistoryFavorite,
   type FileProgress,
   type HistoryCapabilities,
   type HistoryCategory,
+  type HistoryCollection,
   type HistoryEntry,
   type MigrationDiagnostics,
 } from "../tailsyncClient";
@@ -69,8 +73,18 @@ import { HistoryFooter } from "./history/HistoryFooter";
 
 /* ── Constants ──────────────────────────────────────────────────── */
 
-export function History() {
+interface HistoryProps {
+  collection?: HistoryCollection;
+}
+
+function logicalHistoryItemKey(entry: HistoryEntry): string {
+  return entry.batch_id ? `batch:${entry.batch_id}` : `entry:${entry.id}`;
+}
+
+export function History({ collection = "all" }: HistoryProps) {
+  const isFavoritesCollection = collection === "favorites";
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
+  const favoriteMutations = useRef(new Map<string, boolean>());
   const [totalEntries, setTotalEntries] = useState<number | null>(0);
   const [hasMoreEntries, setHasMoreEntries] = useState(false);
   const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
@@ -111,19 +125,21 @@ export function History() {
   const [fileProgress, setFileProgress] = useState<FileProgress | null>(null);
   const [progressBarEnabled, setProgressBarEnabled] = useState(true);
   const [windowAlwaysOnTop, setWindowAlwaysOnTop] = useState(false);
-  const [windowAlwaysOnTopPending, setWindowAlwaysOnTopPending] = useState(true);
+  const [windowAlwaysOnTopPending, setWindowAlwaysOnTopPending] = useState(
+    !isFavoritesCollection,
+  );
   const closeHistory = useCallback(async () => {
     try {
-      await closePreviewWindow();
+      await closePreviewWindow(collection);
     } catch (error) {
       console.error("Could not close the preview window:", error);
     }
     try {
-      await closeHistoryWindow();
+      await (isFavoritesCollection ? closeFavoritesWindow() : closeHistoryWindow());
     } catch (error) {
       console.error("Could not release the history window:", error);
     }
-  }, []);
+  }, [collection, isFavoritesCollection]);
   useEffect(() => () => {
     newGlowTimers.current.forEach(window.clearTimeout);
     newGlowTimers.current.clear();
@@ -249,6 +265,7 @@ export function History() {
         capabilities?.date_range_filter ?? true,
         PAGE_SIZE,
         page,
+        collection,
       );
       const queryKey = JSON.stringify(query);
       const result = await getHistoryPage(query);
@@ -263,7 +280,13 @@ export function History() {
       }
 
       const queryChanged = lastQueryKey.current !== queryKey;
-      setEntries(result.entries);
+      const reconciledEntries = result.entries.map((entry) => {
+        const pendingFavorite = favoriteMutations.current.get(logicalHistoryItemKey(entry));
+        return pendingFavorite === undefined
+          ? entry
+          : { ...entry, pinned: pendingFavorite };
+      });
+      setEntries(reconciledEntries);
       setTotalEntries(result.total);
       setHasMoreEntries(result.has_more);
       if (queryChanged) {
@@ -306,6 +329,7 @@ export function History() {
     keyword,
     page,
     selectedCategory,
+    collection,
   ]);
 
   /* ── Polling ──────────────────────────────────────────────────── */
@@ -363,6 +387,7 @@ export function History() {
   // intercepted as well, otherwise Alt+F4 would leave the hidden preview page
   // holding decrypted data alive.
   useEffect(() => {
+    if (isFavoritesCollection) return;
     const appWindow = getCurrentWindow();
     let disposed = false;
     const stored = readStoredHistoryAlwaysOnTop();
@@ -386,7 +411,7 @@ export function History() {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [isFavoritesCollection]);
 
   const toggleWindowAlwaysOnTop = useCallback(async () => {
     if (windowAlwaysOnTopPending) return;
@@ -409,7 +434,7 @@ export function History() {
     const syncMinimized = () => {
       void appWindow.isMinimized()
         .then((minimized) => {
-          if (!disposed) return syncPreviewWindowMinimized(minimized);
+          if (!disposed) return syncPreviewWindowMinimized(minimized, collection);
           return undefined;
         })
         .catch((error: unknown) => {
@@ -440,7 +465,7 @@ export function History() {
       unlistenFocus?.();
       unlistenClose?.();
     };
-  }, [closeHistory]);
+  }, [closeHistory, collection]);
 
   // Filters, pagination, and deletions can replace the loaded page. Do not
   // leave keyboard selection pointing at an entry that is no longer visible.
@@ -482,6 +507,7 @@ export function History() {
       void openPreviewWindow(
         targetId,
         batchId !== null && !expandedBatches.has(batchId) ? batchId : null,
+        collection,
       ).catch((error: unknown) => {
         console.error("Could not open the preview window:", error);
         showActionError();
@@ -490,7 +516,7 @@ export function History() {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [entries, expandedBatches, focusedId, showActionError]);
+  }, [collection, entries, expandedBatches, focusedId, showActionError]);
 
   /* ── Actions ──────────────────────────────────────────────────── */
 
@@ -505,8 +531,14 @@ export function History() {
   };
 
   const handleDelete = async (id: number) => {
+    const entry = entries.find((candidate) => candidate.id === id);
+    if (entry && favoriteMutations.current.has(logicalHistoryItemKey(entry))) return;
     try {
-      await deleteEntry(id);
+      if (isFavoritesCollection) {
+        await deleteFavoriteEntry(id);
+      } else {
+        await deleteEntry(id);
+      }
       if (focusedId === id) setFocusedId(null);
       // A mutation refresh must preserve the current page animation context.
       // It must also avoid marking a row pulled up from the next page as new.
@@ -524,9 +556,7 @@ export function History() {
     setClearing(true);
     try {
       await clearHistory();
-      setEntries([]);
-      setTotalEntries(0);
-      setHasMoreEntries(false);
+      await closePreviewWindow(collection);
       clearThumbnails();
       setPage(0);
       setFocusedId(null);
@@ -535,7 +565,10 @@ export function History() {
       setShowClearConfirm(false);
       prevIds.current = new Set();
       lastQueryKey.current = "";
-      await loadMigrationDiagnostics();
+      await Promise.all([
+        loadHistory({ detectNewEntries: false }),
+        loadMigrationDiagnostics(),
+      ]);
     } catch (e) {
       console.error("Clear history failed:", e);
       showActionError();
@@ -553,18 +586,43 @@ export function History() {
     }
   };
 
-  const handlePinnedChange = async (entry: HistoryEntry) => {
-    const pinned = !entry.pinned;
+  const handleFavoriteChange = async (entry: HistoryEntry) => {
+    const mutationKey = logicalHistoryItemKey(entry);
+    if (favoriteMutations.current.has(mutationKey)) return;
+    const favorite = !entry.pinned;
+    favoriteMutations.current.set(mutationKey, favorite);
+    setEntries((current) => current.map((item) =>
+      logicalHistoryItemKey(item) === mutationKey
+        ? { ...item, pinned: favorite }
+        : item
+    ));
     try {
-      await setHistoryPinned(entry.id, pinned);
-      setEntries((current) => current.map((item) =>
-        item.id === entry.id ? { ...item, pinned } : item
-      ));
+      const mutation = await setHistoryFavorite(entry.id, favorite);
+      const nextFavorite = mutation?.favorite ?? favorite;
+      if (isFavoritesCollection && !nextFavorite) {
+        await loadHistory({ detectNewEntries: false });
+      } else {
+        const affectedIds = new Set(mutation?.affected_ids ?? [entry.id]);
+        setEntries((current) => current.map((item) =>
+          affectedIds.has(item.id) ? { ...item, pinned: nextFavorite } : item
+        ));
+      }
     } catch (error) {
-      console.error("Pin update failed:", error);
+      setEntries((current) => current.map((item) =>
+        logicalHistoryItemKey(item) === mutationKey
+          ? { ...item, pinned: entry.pinned }
+          : item
+      ));
+      console.error("Favorite update failed:", error);
       showActionError();
+    } finally {
+      favoriteMutations.current.delete(mutationKey);
     }
   };
+
+  const handleFavoriteProtected = useCallback(() => {
+    flashActionError(t("history.favoriteProtected"));
+  }, [flashActionError, t]);
 
   const handleCancelFileBatch = async (batchId: string) => {
     try {
@@ -594,6 +652,8 @@ export function History() {
         windowAlwaysOnTopPending={windowAlwaysOnTopPending}
         toggleWindowAlwaysOnTop={toggleWindowAlwaysOnTop}
         closeHistory={closeHistory}
+        openFavorites={openFavoritesWindow}
+        isFavoritesCollection={isFavoritesCollection}
         keywordDraft={keywordDraft}
         setKeywordDraft={setKeywordDraft}
         totalEntries={totalEntries}
@@ -633,7 +693,10 @@ export function History() {
         handleRestore={handleRestore}
         handleRestoreBatch={handleRestoreBatch}
         handleDelete={handleDelete}
-        handlePinnedChange={handlePinnedChange}
+        handleFavoriteChange={handleFavoriteChange}
+        handleFavoriteProtected={handleFavoriteProtected}
+        collection={collection}
+        isFavoritesCollection={isFavoritesCollection}
       />
 
       <HistoryFooter
@@ -655,7 +718,12 @@ export function History() {
         clearing={clearing}
         setShowClearConfirm={setShowClearConfirm}
         handleClearHistory={handleClearHistory}
+        isFavoritesCollection={isFavoritesCollection}
       />
     </div>
   );
+}
+
+export function Favorites() {
+  return <History collection="favorites" />;
 }

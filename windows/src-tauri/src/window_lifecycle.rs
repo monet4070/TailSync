@@ -4,6 +4,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime};
 
 pub const HISTORY_WINDOW_LABEL: &str = "history";
+pub const FAVORITES_WINDOW_LABEL: &str = "favorites";
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
 pub const TRANSIENT_WINDOW_IDLE_RELEASE: Duration = Duration::from_secs(5);
 

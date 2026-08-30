@@ -36,3 +36,20 @@ describe("transparent window backing surface", () => {
     expect(rule?.style.background).toBe("transparent");
   });
 });
+
+describe("favorite history-row surface", () => {
+  it("keeps the completed long-press fill visible for favorite rows", () => {
+    const rules = rulesFrom("src/styles/history.css");
+    const favorite = rules.find((candidate) =>
+      candidate.selectorText === ".history-item.is-favorite .favorite-press-progress",
+    );
+    const progress = rules.find((candidate) =>
+      candidate.selectorText === ".favorite-press-progress",
+    );
+
+    expect(favorite).toBeDefined();
+    expect(favorite?.style.transform).toBe("scaleX(1)");
+    expect(favorite?.style.opacity).toBe("1");
+    expect(progress?.style.transition).toContain("transform 0.42s linear");
+  });
+});

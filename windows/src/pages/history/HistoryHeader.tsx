@@ -1,4 +1,4 @@
-import { Pin, Search, Trash2, TriangleAlert, X } from "lucide-react";
+import { Pin, Search, Star, Trash2, TriangleAlert, X } from "lucide-react";
 import { ThemeLogo } from "../../ThemeLogo";
 import { FilterDropdown } from "./HistoryFilterDropdown";
 import type { HistoryHeaderProps } from "./HistoryViewTypes";
@@ -9,6 +9,8 @@ export function HistoryHeader({
   windowAlwaysOnTopPending,
   toggleWindowAlwaysOnTop,
   closeHistory,
+  openFavorites,
+  isFavoritesCollection,
   keywordDraft,
   setKeywordDraft,
   totalEntries,
@@ -35,19 +37,35 @@ export function HistoryHeader({
           <ThemeLogo />
           <span className="titlebar-text">TailSync</span>
           <span className="titlebar-badge">v2</span>
+          {isFavoritesCollection && (
+            <span className="titlebar-context">{t("favorites.title")}</span>
+          )}
         </div>
         <div className="titlebar-actions">
-          <button
-            className={`titlebar-btn titlebar-pin${windowAlwaysOnTop ? " active" : ""}`}
-            type="button"
-            onClick={() => void toggleWindowAlwaysOnTop()}
-            disabled={windowAlwaysOnTopPending}
-            title={t(windowAlwaysOnTop ? "history.unpinWindow" : "history.pinWindow")}
-            aria-label={t(windowAlwaysOnTop ? "history.unpinWindow" : "history.pinWindow")}
-            aria-pressed={windowAlwaysOnTop}
-          >
-            <Pin size={14} fill={windowAlwaysOnTop ? "currentColor" : "none"} aria-hidden="true" />
-          </button>
+          {!isFavoritesCollection && (
+            <button
+              className={`titlebar-btn titlebar-pin${windowAlwaysOnTop ? " active" : ""}`}
+              type="button"
+              onClick={() => void toggleWindowAlwaysOnTop()}
+              disabled={windowAlwaysOnTopPending}
+              title={t(windowAlwaysOnTop ? "history.unpinWindow" : "history.pinWindow")}
+              aria-label={t(windowAlwaysOnTop ? "history.unpinWindow" : "history.pinWindow")}
+              aria-pressed={windowAlwaysOnTop}
+            >
+              <Pin size={14} fill={windowAlwaysOnTop ? "currentColor" : "none"} aria-hidden="true" />
+            </button>
+          )}
+          {!isFavoritesCollection && (
+            <button
+              className="titlebar-btn titlebar-favorites"
+              type="button"
+              onClick={() => void openFavorites()}
+              title={t("favorites.open")}
+              aria-label={t("favorites.open")}
+            >
+              <Star size={14} aria-hidden="true" />
+            </button>
+          )}
           <button
             className="titlebar-close"
             type="button"
@@ -72,16 +90,18 @@ export function HistoryHeader({
             onChange={(event) => setKeywordDraft(event.target.value)}
             autoFocus
           />
-          <button
-            className="clear-history-btn"
-            type="button"
-            disabled={totalEntries === 0}
-            onClick={() => setShowClearConfirm(true)}
-            title={t("history.clearAll")}
-            aria-label={t("history.clearAll")}
-          >
-            <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
-          </button>
+          {!isFavoritesCollection && (
+            <button
+              className="clear-history-btn"
+              type="button"
+              disabled={totalEntries === 0}
+              onClick={() => setShowClearConfirm(true)}
+              title={t("history.clearAll")}
+              aria-label={t("history.clearAll")}
+            >
+              <Trash2 size={16} strokeWidth={1.7} aria-hidden="true" />
+            </button>
+          )}
         </div>
 
         <div className="history-filter-bar">

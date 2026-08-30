@@ -6,6 +6,7 @@ use thiserror::Error;
 use crate::crypto;
 use crate::history_classifier::{self, Classification};
 
+mod favorites;
 mod file_encryption;
 mod file_storage;
 mod legacy_v1;
@@ -42,14 +43,14 @@ pub use storage::{
     StorageMigrationHooks,
 };
 pub use types::{
-    FileEncryptionMigrationBatch, HistoryEntry, HistoryFileInput, HistoryQueryPage,
-    MigrationDiagnostics, MigrationIssue, PreviewBatchNavigation, PreviewErrorCode,
-    PreviewErrorInfo, PreviewKind, PreviewMetadata, PreviewPayload, StorageMigrationResult,
-    StorageStatus,
+    FavoriteMutation, FileEncryptionMigrationBatch, HistoryCollection, HistoryEntry,
+    HistoryFileInput, HistoryMutationError, HistoryQuery, HistoryQueryPage, MigrationDiagnostics,
+    MigrationIssue, PreviewBatchNavigation, PreviewErrorCode, PreviewErrorInfo, PreviewKind,
+    PreviewMetadata, PreviewPayload, StorageMigrationResult, StorageStatus,
 };
 
 /// Database schema version
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 /// Maximum amount of decrypted data a preview request may materialise.
 pub const PREVIEW_MAX_BYTES: u64 = 64 * 1024 * 1024;

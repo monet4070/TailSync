@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { History } from "./History";
+import { Favorites, History } from "./History";
 
 const {
   invokeMock,
@@ -44,10 +44,12 @@ const entry = {
   source_peer: "Mac",
   category: "text",
 };
+let defaultEntryPinned = false;
 
 describe("History item actions", () => {
   beforeEach(() => {
     localStorage.clear();
+    defaultEntryPinned = false;
     isAlwaysOnTopMock.mockResolvedValue(false);
     setAlwaysOnTopMock.mockResolvedValue(undefined);
     onCloseRequestedMock.mockImplementation(() => Promise.resolve(stopListening));
@@ -56,7 +58,11 @@ describe("History item actions", () => {
         case "get_settings":
           return Promise.resolve({ progress_bar_enabled: true });
         case "get_history_page":
-          return Promise.resolve({ entries: [entry], total: 1, has_more: false });
+          return Promise.resolve({
+            entries: [{ ...entry, pinned: defaultEntryPinned }],
+            total: 1,
+            has_more: false,
+          });
         case "get_history_capabilities":
           return Promise.resolve({
             classifier_version: 1,
@@ -149,6 +155,217 @@ describe("History item actions", () => {
     });
   });
 
+  it("protects a favorite from the history context-menu deletion path", async () => {
+    defaultEntryPinned = true;
+    render(<History />);
+
+    const row = (await screen.findByText(entry.description))
+      .closest<HTMLElement>(".history-item");
+    expect(row).not.toBeNull();
+    invokeMock.mockClear();
+
+    fireEvent.contextMenu(row!);
+
+    await waitFor(() => {
+      expect(screen.getByText("history.favoriteProtected")).toBeInTheDocument();
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_entry", { id: entry.id });
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_favorite_entry", { id: entry.id });
+  });
+
+  it("does not delete a logical item while its favorite mutation is in flight", async () => {
+    const batchEntries = [
+      {
+        ...entry,
+        id: 8,
+        type: "file",
+        description: "pending-a.txt",
+        category: "file",
+        pinned: false,
+        batch_id: "pending-batch",
+        batch_index: 0,
+        batch_total: 2,
+        batch_count: 2,
+        batch_status: "complete",
+      },
+      {
+        ...entry,
+        id: 9,
+        type: "file",
+        description: "pending-b.txt",
+        category: "file",
+        pinned: false,
+        batch_id: "pending-batch",
+        batch_index: 1,
+        batch_total: 2,
+        batch_count: 2,
+        batch_status: "complete",
+      },
+    ];
+    let resolveFavorite!: (value: { affected_ids: number[]; favorite: boolean }) => void;
+    const favoriteResponse = new Promise<{ affected_ids: number[]; favorite: boolean }>(
+      (resolve) => { resolveFavorite = resolve; },
+    );
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_settings":
+          return Promise.resolve({ progress_bar_enabled: true });
+        case "get_history_page":
+          return Promise.resolve({ entries: batchEntries, total: 2, has_more: false });
+        case "set_history_favorite":
+          return favoriteResponse;
+        case "get_history_capabilities":
+          return Promise.resolve({
+            classifier_version: 1,
+            categories: ["text", "image", "file"],
+            multiple_labels: true,
+            date_range_filter: true,
+          });
+        case "get_migration_diagnostics":
+          return Promise.resolve({ unresolved_count: 0 });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+
+    render(<History />);
+    const sibling = (await screen.findByText("pending-b.txt"))
+      .closest<HTMLElement>(".history-item");
+    fireEvent.click(screen.getAllByTitle("history.pin")[0]);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_history_favorite", {
+        id: 8,
+        favorite: true,
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getAllByTitle("history.unpin")).toHaveLength(2);
+    });
+    expect(sibling).toHaveClass("is-favorite");
+
+    // A refresh started while the mutation is pending can still return the
+    // pre-mutation database snapshot. It must not visually undo the completed
+    // long-press fill while the write is in flight.
+    const historyCallCountBeforeRefresh = invokeMock.mock.calls
+      .filter(([command]) => command === "get_history_page").length;
+    fireEvent.click(screen.getByRole("button", {
+      name: "history.categoryFilter: history.category.all",
+    }));
+    fireEvent.click(screen.getByRole("option", { name: "history.category.file" }));
+    await waitFor(() => {
+      expect(invokeMock.mock.calls
+        .filter(([command]) => command === "get_history_page").length)
+        .toBeGreaterThan(historyCallCountBeforeRefresh);
+    });
+    expect(screen.getAllByTitle("history.unpin")).toHaveLength(2);
+    expect(sibling).toHaveClass("is-favorite");
+
+    fireEvent.contextMenu(sibling!);
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_entry", { id: 9 });
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_favorite_entry", { id: 9 });
+
+    resolveFavorite({ affected_ids: [8, 9], favorite: true });
+    expect(screen.getAllByTitle("history.unpin")).toHaveLength(2);
+  });
+
+  it("reverts the optimistic favorite tint when the update fails", async () => {
+    let rejectFavorite!: (reason?: unknown) => void;
+    const favoriteResponse = new Promise<never>((_, reject) => {
+      rejectFavorite = reject;
+    });
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_settings":
+          return Promise.resolve({ progress_bar_enabled: true });
+        case "get_history_page":
+          return Promise.resolve({
+            entries: [{ ...entry, pinned: false }],
+            total: 1,
+            has_more: false,
+          });
+        case "set_history_favorite":
+          return favoriteResponse;
+        case "get_history_capabilities":
+          return Promise.resolve({
+            classifier_version: 1,
+            categories: ["text", "image", "file"],
+            multiple_labels: true,
+            date_range_filter: true,
+          });
+        case "get_migration_diagnostics":
+          return Promise.resolve({ unresolved_count: 0 });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    render(<History />);
+    const row = (await screen.findByText(entry.description))
+      .closest<HTMLElement>(".history-item");
+    expect(row).not.toBeNull();
+
+    fireEvent.click(screen.getByTitle("history.pin"));
+    await waitFor(() => {
+      expect(row).toHaveClass("is-favorite");
+      expect(screen.getByTitle("history.unpin")).toBeInTheDocument();
+    });
+
+    rejectFavorite(new Error("write failed"));
+    await waitFor(() => {
+      expect(row).not.toHaveClass("is-favorite");
+      expect(screen.getByTitle("history.pin")).toBeInTheDocument();
+      expect(screen.getByText("history.actionFailed")).toBeInTheDocument();
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "Favorite update failed:",
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
+  });
+
+  it("opens the separate favorites window from history", async () => {
+    render(<History />);
+    await screen.findByText(entry.description);
+
+    invokeMock.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "favorites.open" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("open_favorites_window");
+    });
+  });
+
+  it("queries and deletes entries through the favorites collection", async () => {
+    defaultEntryPinned = true;
+    render(<Favorites />);
+
+    const row = (await screen.findByText(entry.description))
+      .closest<HTMLElement>(".history-item");
+    expect(row).not.toBeNull();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "get_history_page",
+      expect.objectContaining({ collection: "favorites" }),
+    );
+
+    invokeMock.mockClear();
+    fireEvent.contextMenu(row!);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("delete_favorite_entry", { id: entry.id });
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_entry", { id: entry.id });
+  });
+
+  it("labels favorites distinctly without exposing the history pin control", async () => {
+    render(<Favorites />);
+
+    await screen.findByText(entry.description);
+    expect(screen.getByText("favorites.title")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "history.pinWindow" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "history.unpinWindow" })).toBeNull();
+  });
+
   it("closes the detached preview before handling a system history close", async () => {
     onCloseRequestedMock.mockImplementation(() => Promise.resolve(stopListening));
     render(<History />);
@@ -163,9 +380,28 @@ describe("History item actions", () => {
 
     expect(preventDefault).toHaveBeenCalledOnce();
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("close_preview_window");
+      expect(invokeMock).toHaveBeenCalledWith("close_preview_window", { owner: "history" });
       expect(invokeMock).toHaveBeenCalledWith("close_history_window");
     });
+  });
+
+  it("closes only the favorites-owned preview on a favorites window close", async () => {
+    onCloseRequestedMock.mockImplementation(() => Promise.resolve(stopListening));
+    render(<Favorites />);
+    await screen.findByText(entry.description);
+
+    const handler = onCloseRequestedMock.mock.calls.at(-1)?.[0] as
+      | ((event: { preventDefault: () => void }) => void)
+      | undefined;
+    const preventDefault = vi.fn();
+    handler?.({ preventDefault });
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("close_preview_window", { owner: "favorites" });
+      expect(invokeMock).toHaveBeenCalledWith("close_favorites_window");
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("close_history_window");
   });
 
   it("uses one blocking runtime snapshot instead of legacy high-frequency polls", async () => {
@@ -216,7 +452,7 @@ describe("History item actions", () => {
     expect(openSpace.defaultPrevented).toBe(true);
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("open_preview_window", {
-        request: { entryId: entry.id, batchId: null },
+        request: { entryId: entry.id, batchId: null, owner: "history" },
       });
     });
 
@@ -241,7 +477,7 @@ describe("History item actions", () => {
     expect(reopenSpace.defaultPrevented).toBe(true);
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("open_preview_window", {
-        request: { entryId: entry.id, batchId: null },
+        request: { entryId: entry.id, batchId: null, owner: "history" },
       });
     });
 
@@ -422,7 +658,7 @@ describe("History item actions", () => {
       .not.toHaveClass("is-new");
   });
 
-  it("offers copy-all for complete batches and persists pin changes", async () => {
+  it("offers copy-all for complete batches and updates every favorite batch row", async () => {
     const batchEntries = [
       {
         ...entry,
@@ -459,6 +695,8 @@ describe("History item actions", () => {
           return Promise.resolve({ progress_bar_enabled: true });
         case "get_history_page":
           return Promise.resolve({ entries: batchEntries, total: batchEntries.length, has_more: false });
+        case "set_history_favorite":
+          return Promise.resolve({ affected_ids: [11, 12], favorite: true });
         case "get_history_capabilities":
           return Promise.resolve({
             classifier_version: 1,
@@ -488,10 +726,13 @@ describe("History item actions", () => {
     invokeMock.mockClear();
     fireEvent.click(screen.getAllByTitle("history.pin")[0]);
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("set_history_pinned", {
+      expect(invokeMock).toHaveBeenCalledWith("set_history_favorite", {
         id: 11,
-        pinned: true,
+        favorite: true,
       });
+    });
+    await waitFor(() => {
+      expect(screen.getAllByTitle("history.unpin")).toHaveLength(2);
     });
   });
 
@@ -605,7 +846,7 @@ describe("History item actions", () => {
     expect(collapsedSpace.defaultPrevented).toBe(true);
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("open_preview_window", {
-        request: { entryId: 60, batchId: "preview-batch" },
+        request: { entryId: 60, batchId: "preview-batch", owner: "history" },
       });
     });
 
@@ -624,7 +865,7 @@ describe("History item actions", () => {
     expect(expandedSpace.defaultPrevented).toBe(true);
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("open_preview_window", {
-        request: { entryId: 63, batchId: null },
+        request: { entryId: 63, batchId: null, owner: "history" },
       });
     });
   });

@@ -3,6 +3,15 @@ import PDFKit
 import QuickLookUI
 import SwiftUI
 
+enum HistoryPreviewOwner: Equatable {
+    case history
+    case favorites
+
+    init(collection: String) {
+        self = collection == "favorites" ? .favorites : .history
+    }
+}
+
 /// Sole owner of the independent preview window and its sensitive content.
 /// A process-wide instance is intentional: the product permits one reusable
 /// preview window, and this object defines its complete creation/cleanup path.
@@ -16,11 +25,14 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
     var hasAllocatedWindow: Bool { window != nil }
 
     private weak var historyWindow: NSWindow?
+    private weak var favoritesWindow: NSWindow?
+    private weak var activeHostWindow: NSWindow?
+    private var activeOwner: HistoryPreviewOwner?
     private var window: HistoryPreviewWindow?
-    private var historyObservers: [NSObjectProtocol] = []
+    private var hostObservers: [NSObjectProtocol] = []
     private var activeWindowKind: HistoryPreviewWindowKind = .text
     private var isApplyingFrame = false
-    private var restoreAfterHistoryMiniaturizes = false
+    private var restoreAfterHostMiniaturizes = false
 
     // The default is resolved inside the (isolated) initializer body:
     // `HistoryPreviewViewModel()` is main-actor-isolated and cannot be
@@ -34,41 +46,32 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func attachHistoryWindow(_ historyWindow: NSWindow?) {
-        guard self.historyWindow !== historyWindow else { return }
-        removeHistoryObservers()
-        self.historyWindow = historyWindow
-        guard let historyWindow else {
+    func registerHostWindow(_ window: NSWindow?, for owner: HistoryPreviewOwner) {
+        switch owner {
+        case .history:
+            historyWindow = window
+        case .favorites:
+            favoritesWindow = window
+        }
+        guard activeOwner == owner else { return }
+
+        removeHostObservers()
+        activeHostWindow = window
+        restoreAfterHostMiniaturizes = false
+        guard let window else {
             close()
+            activeOwner = nil
             return
         }
-        let center = NotificationCenter.default
-        historyObservers = [
-            center.addObserver(
-                forName: NSWindow.willCloseNotification,
-                object: historyWindow,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.close() }
-            },
-            center.addObserver(
-                forName: NSWindow.didMiniaturizeNotification,
-                object: historyWindow,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.historyDidMiniaturize() }
-            },
-            center.addObserver(
-                forName: NSWindow.didDeminiaturizeNotification,
-                object: historyWindow,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.historyDidDeminiaturize() }
-            }
-        ]
+        observeHostWindow(window, owner: owner)
     }
 
-    func present(_ request: HistoryPreviewRequest) {
+    func isPreviewVisible(for owner: HistoryPreviewOwner) -> Bool {
+        activeOwner == owner && isPreviewVisible
+    }
+
+    func present(_ request: HistoryPreviewRequest, owner: HistoryPreviewOwner = .history) {
+        activateHost(for: owner)
         guard let selected = request.selectedItem else { return }
         let window = previewWindow()
         applyWindowKind(selected.estimatedFormat.windowKind)
@@ -79,9 +82,68 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func close(ifOwnedBy owner: HistoryPreviewOwner) {
+        guard activeOwner == owner else { return }
+        close()
+    }
+
+    private func activateHost(for owner: HistoryPreviewOwner) {
+        let hostWindow = registeredWindow(for: owner)
+        guard activeOwner != owner || activeHostWindow !== hostWindow else { return }
+        removeHostObservers()
+        activeOwner = owner
+        activeHostWindow = hostWindow
+        restoreAfterHostMiniaturizes = false
+        if let hostWindow {
+            observeHostWindow(hostWindow, owner: owner)
+        }
+    }
+
+    private func registeredWindow(for owner: HistoryPreviewOwner) -> NSWindow? {
+        switch owner {
+        case .history: historyWindow
+        case .favorites: favoritesWindow
+        }
+    }
+
+    private func observeHostWindow(_ hostWindow: NSWindow, owner: HistoryPreviewOwner) {
+        let center = NotificationCenter.default
+        hostObservers = [
+            center.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: hostWindow,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.hostWillClose(owner: owner) }
+            },
+            center.addObserver(
+                forName: NSWindow.didMiniaturizeNotification,
+                object: hostWindow,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.hostDidMiniaturize() }
+            },
+            center.addObserver(
+                forName: NSWindow.didDeminiaturizeNotification,
+                object: hostWindow,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.hostDidDeminiaturize() }
+            }
+        ]
+    }
+
+    private func hostWillClose(owner: HistoryPreviewOwner) {
+        guard activeOwner == owner else { return }
+        close()
+        removeHostObservers()
+        activeHostWindow = nil
+        activeOwner = nil
+    }
+
     func close() {
         viewModel.close()
-        restoreAfterHistoryMiniaturizes = false
+        restoreAfterHostMiniaturizes = false
         guard let window else { return }
         if window.isVisible { saveFrameIfNeeded() }
         window.delegate = nil
@@ -98,13 +160,17 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
 
     func shutdown() {
         close()
-        removeHistoryObservers()
+        removeHostObservers()
+        historyWindow = nil
+        favoritesWindow = nil
+        activeHostWindow = nil
+        activeOwner = nil
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender.isVisible { saveFrameIfNeeded() }
         viewModel.close()
-        restoreAfterHistoryMiniaturizes = false
+        restoreAfterHostMiniaturizes = false
         return true
     }
 
@@ -171,7 +237,7 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
         for kind: HistoryPreviewWindowKind,
         window: NSWindow
     ) -> NSRect {
-        let screenFrame = (historyWindow?.screen ?? window.screen ?? NSScreen.main)?.visibleFrame
+        let screenFrame = (activeHostWindow?.screen ?? window.screen ?? NSScreen.main)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
         let maximumSize = NSSize(width: screenFrame.width * 0.9, height: screenFrame.height * 0.9)
         let minimumSize = kind.minimumContentSize
@@ -185,7 +251,7 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
         let desiredOrigin: NSPoint
         if let stored, stored.intersects(screenFrame) {
             desiredOrigin = stored.origin
-        } else if let historyFrame = historyWindow?.frame {
+        } else if let historyFrame = activeHostWindow?.frame {
             desiredOrigin = NSPoint(
                 x: historyFrame.midX - size.width / 2,
                 y: historyFrame.midY - size.height / 2
@@ -212,32 +278,32 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
         "HistoryPreviewWindow.frame.\(kind.rawValue)"
     }
 
-    private func historyDidMiniaturize() {
+    private func hostDidMiniaturize() {
         guard let window, window.isVisible else {
-            restoreAfterHistoryMiniaturizes = false
+            restoreAfterHostMiniaturizes = false
             return
         }
-        restoreAfterHistoryMiniaturizes = true
+        restoreAfterHostMiniaturizes = true
         if !window.isMiniaturized { window.miniaturize(nil) }
     }
 
-    private func historyDidDeminiaturize() {
-        guard restoreAfterHistoryMiniaturizes else { return }
-        restoreAfterHistoryMiniaturizes = false
+    private func hostDidDeminiaturize() {
+        guard restoreAfterHostMiniaturizes else { return }
+        restoreAfterHostMiniaturizes = false
         if window?.isMiniaturized == true { window?.deminiaturize(nil) }
     }
 
-    private func removeHistoryObservers() {
+    private func removeHostObservers() {
         let center = NotificationCenter.default
-        historyObservers.forEach(center.removeObserver)
-        historyObservers.removeAll()
+        hostObservers.forEach(center.removeObserver)
+        hostObservers.removeAll()
     }
 
     deinit {
         // deinit is nonisolated; remove the observers inline instead of
         // calling the actor-isolated helper.
         let center = NotificationCenter.default
-        historyObservers.forEach(center.removeObserver)
+        hostObservers.forEach(center.removeObserver)
     }
 }
 

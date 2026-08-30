@@ -31,11 +31,13 @@ Responsibilities are separated as follows:
   selects, Space previews, double click restores, and right click deletes;
 - window-size persistence is keyed by renderer family rather than by file.
 
-The window is not globally always-on-top. It is focused when opened, follows
-the history window when that window is minimized, and closes when the history
-window closes. Space and Escape close the preview unless an interactive control
-currently owns the keystroke. A batch exposes previous/next navigation without
-loading all batch payloads into memory.
+The window is not globally always-on-top. Each preview records whether the
+history or favorites collection opened it; it follows only that source window
+when minimized and closes only when that source window closes. The inactive
+collection window cannot hide, restore, or close another window's preview.
+Space and Escape close the preview unless an interactive control currently
+owns the keystroke. A batch exposes previous/next navigation without loading
+all batch payloads into memory.
 
 ## Security constraints
 

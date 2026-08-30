@@ -164,6 +164,41 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the favorites window that shares the history row interaction model.
+#[command]
+pub async fn open_favorites_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+
+    crate::window_lifecycle::mark_window_open(
+        &app,
+        crate::window_lifecycle::FAVORITES_WINDOW_LABEL,
+    );
+
+    if let Some(window) = app.get_webview_window(crate::window_lifecycle::FAVORITES_WINDOW_LABEL) {
+        crate::window_lifecycle::restore_and_focus_window(&window)?;
+        return Ok(());
+    }
+
+    let window =
+        crate::window_lifecycle::configure_transparent_window(tauri::WebviewWindowBuilder::new(
+            &app,
+            crate::window_lifecycle::FAVORITES_WINDOW_LABEL,
+            tauri::WebviewUrl::App("favorites.html".into()),
+        ))
+        .title("TailSync - Favorites")
+        .inner_size(400.0, 600.0)
+        .decorations(false)
+        .shadow(false)
+        .resizable(true)
+        .visible(false)
+        .center()
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    crate::window_lifecycle::restore_and_focus_window(&window)?;
+    Ok(())
+}
+
 /// Open the settings window
 #[command]
 pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -203,6 +238,14 @@ pub fn close_history_window(app: tauri::AppHandle) -> Result<(), String> {
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::HISTORY_WINDOW_LABEL,
+    )
+}
+
+#[command]
+pub fn close_favorites_window(app: tauri::AppHandle) -> Result<(), String> {
+    crate::window_lifecycle::hide_then_release_window(
+        app,
+        crate::window_lifecycle::FAVORITES_WINDOW_LABEL,
     )
 }
 

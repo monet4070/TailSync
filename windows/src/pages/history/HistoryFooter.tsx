@@ -26,6 +26,7 @@ export function HistoryFooter({
   clearing,
   setShowClearConfirm,
   handleClearHistory,
+  isFavoritesCollection,
 }: HistoryFooterProps) {
   return (
     <>
@@ -100,7 +101,7 @@ export function HistoryFooter({
         </div>
       )}
 
-      {showClearConfirm && (
+      {!isFavoritesCollection && showClearConfirm && (
         <div className="dialog-backdrop" onMouseDown={() => !clearing && setShowClearConfirm(false)}>
           <div
             className="confirm-dialog"

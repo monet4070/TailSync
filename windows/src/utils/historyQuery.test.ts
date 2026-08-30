@@ -49,4 +49,12 @@ describe("buildHistoryQuery", () => {
     });
     expect(typeof query.startTime).toBe("string");
   });
+
+  it("adds the favorites collection without changing the default wire shape", () => {
+    const all = buildHistoryQuery("", "all", BOUNDS, true, 30, 0, "all");
+    const favorites = buildHistoryQuery("", "all", BOUNDS, true, 30, 0, "favorites");
+
+    expect(all).not.toHaveProperty("collection");
+    expect(favorites.collection).toBe("favorites");
+  });
 });

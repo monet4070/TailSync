@@ -44,6 +44,198 @@ fn test_database(root: &Path) -> HistoryDB {
 }
 
 #[test]
+fn favorites_query_and_delete_authority_are_consistent() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-favorites-authority-{:016x}",
+        rand::random::<u64>()
+    ));
+    let mut db = test_database(&root);
+    db.add_text("ordinary", "self").unwrap();
+    let ordinary_id = db.conn.last_insert_rowid();
+    db.add_text("favorite", "self").unwrap();
+    let favorite_id = db.conn.last_insert_rowid();
+
+    let mutation = db.set_favorite(favorite_id, true).unwrap();
+    assert_eq!(mutation.affected_ids, vec![favorite_id]);
+    assert!(mutation.favorite);
+    assert_eq!(
+        db.get_page_in_collection(HistoryQuery {
+            collection: HistoryCollection::Favorites,
+            keyword: None,
+            category: None,
+            start_time: None,
+            end_time: None,
+            limit: 10,
+            offset: 0,
+        })
+        .unwrap()
+        .entries
+        .iter()
+        .map(|entry| entry.id)
+        .collect::<Vec<_>>(),
+        vec![favorite_id]
+    );
+
+    let protected = db.delete(favorite_id).unwrap_err();
+    assert!(
+        protected
+            .downcast_ref::<HistoryMutationError>()
+            .is_some_and(
+                |error| *error == HistoryMutationError::FavoriteProtected { id: favorite_id }
+            )
+    );
+    db.delete(ordinary_id).unwrap();
+    let deleted = db.delete_favorite(favorite_id).unwrap();
+    assert_eq!(deleted.affected_ids, vec![favorite_id]);
+    assert!(db
+        .get_page_in_collection(HistoryQuery {
+            collection: HistoryCollection::Favorites,
+            keyword: None,
+            category: None,
+            start_time: None,
+            end_time: None,
+            limit: 10,
+            offset: 0,
+        })
+        .unwrap()
+        .entries
+        .is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn favorite_batches_are_mutated_and_deleted_atomically() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-favorite-batch-{:016x}",
+        rand::random::<u64>()
+    ));
+    let mut db = test_database(&root);
+    db.conn
+        .execute_batch(
+            "INSERT INTO history
+                (id, timestamp, type, description, data, size_bytes, data_hash,
+                 batch_id, batch_index, batch_total, batch_status)
+             VALUES
+                (41, '2026-01-01T00:00:00Z', 'file', 'one.txt', X'00', 1, 'one',
+                 'favorite-batch', 0, 2, 'complete'),
+                (42, '2026-01-01T00:00:00Z', 'file', 'two.txt', X'01', 1, 'two',
+                 'favorite-batch', 1, 2, 'complete');",
+        )
+        .unwrap();
+
+    let mutation = db.set_favorite(41, true).unwrap();
+    assert_eq!(mutation.affected_ids, vec![41, 42]);
+    let pinned_count: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM history WHERE batch_id = 'favorite-batch' AND pinned = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pinned_count, 2);
+    assert!(db.delete(42).is_err());
+
+    let mutation = db.set_favorite(42, false).unwrap();
+    assert_eq!(mutation.affected_ids, vec![41, 42]);
+    assert!(!mutation.favorite);
+    let pinned_count: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM history WHERE batch_id = 'favorite-batch' AND pinned = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pinned_count, 0);
+
+    db.set_favorite(41, true).unwrap();
+
+    db.clear_all().unwrap();
+    let remaining: i64 = db
+        .conn
+        .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(remaining, 2);
+
+    db.delete_favorite(42).unwrap();
+    let remaining: i64 = db
+        .conn
+        .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn clearing_history_removes_only_unfavorited_items() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-clear-favorites-{:016x}",
+        rand::random::<u64>()
+    ));
+    let mut db = test_database(&root);
+    db.add_text("keep me", "self").unwrap();
+    let favorite_id = db.conn.last_insert_rowid();
+    db.add_text("remove me", "self").unwrap();
+    db.set_favorite(favorite_id, true).unwrap();
+
+    db.clear_all().unwrap();
+    let entries = db.get_all(None, None, 10, 0).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, favorite_id);
+    assert!(entries[0].pinned);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn migration_v10_normalizes_partial_favorite_batches() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-favorite-migration-{:016x}",
+        rand::random::<u64>()
+    ));
+    let file_dir = root.join("file-history");
+    let image_dir = root.join("image-history");
+    std::fs::create_dir_all(&file_dir).unwrap();
+    std::fs::create_dir_all(&image_dir).unwrap();
+    let conn = Connection::open_in_memory().unwrap();
+    schema::initialize(&conn).unwrap();
+    conn.execute("INSERT INTO schema_version (version) VALUES (9)", [])
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO history
+            (timestamp, type, description, data, size_bytes, data_hash,
+             pinned, batch_id, batch_index, batch_total, batch_status)
+         VALUES
+            ('2026-01-01T00:00:00Z', 'file', 'one', X'00', 1, 'one', 1,
+             'legacy-favorite-batch', 0, 2, 'complete'),
+            ('2026-01-01T00:00:00Z', 'file', 'two', X'01', 1, 'two', 0,
+             'legacy-favorite-batch', 1, 2, 'complete');",
+    )
+    .unwrap();
+
+    HistoryDB::migrate(&conn, &file_dir, &image_dir).unwrap();
+    let states: Vec<i64> = conn
+        .prepare("SELECT pinned FROM history ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(states, vec![1, 1]);
+    let index_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_history_favorites'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index_count, 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn clipboard_bytes_are_materialized_below_the_controlled_directory() {
     let root = std::env::temp_dir().join(format!(
         "tailsync-clipboard-bytes-{:016x}",
@@ -746,7 +938,8 @@ fn manually_deleting_from_a_complete_batch_rebases_survivors() {
         )
         .unwrap();
 
-    db.delete(2).unwrap();
+    db.delete_entries_with_batch_policy(&[2], None, true)
+        .unwrap();
     let survivor: (i64, i64, String) = db
         .conn
         .query_row(

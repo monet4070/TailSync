@@ -188,10 +188,11 @@ impl HistoryDB {
     }
 
     pub fn set_pinned(&mut self, id: i64, pinned: bool) -> Result<(), Box<dyn std::error::Error>> {
-        self.conn.execute(
-            "UPDATE history SET pinned = ?1 WHERE id = ?2",
-            params![i64::from(pinned), id],
-        )?;
+        // Legacy callers retain the old name, but must use the same atomic
+        // logical-item semantics as the favorites API.
+        self.set_favorite(id, pinned)
+            .map(|_| ())
+            .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
         Ok(())
     }
 

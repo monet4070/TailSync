@@ -18,10 +18,10 @@ function fixture(version = '2.1.0') {
       '',
       `> TailSync ${version} 目前处于积极开发阶段。`,
       '',
-      `当前产品版本为 ${version}，数据库 schema 为 v9。`,
+      `当前产品版本为 ${version}，数据库 schema 为 v10。`,
       '',
     ].join('\n'),
-    'CONTEXT.md': `线协议 v4；产品版本 ${version}；数据库 schema v9。详见 \`README.md\`。\n`,
+    'CONTEXT.md': `线协议 v4；产品版本 ${version}；数据库 schema v10。详见 \`README.md\`。\n`,
     'docs/USER_GUIDE.zh-CN.md': `> 适用版本：TailSync ${version}，线协议 v4\n`,
     'docs/THEMING.md': [
       `> 适用版本：产品 ${version}，Theme V2。`,

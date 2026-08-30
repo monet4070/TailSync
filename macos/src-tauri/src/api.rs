@@ -615,6 +615,10 @@ struct Request {
     #[serde(default)]
     pinned: Option<bool>,
     #[serde(default)]
+    favorite: Option<bool>,
+    #[serde(default)]
+    collection: Option<String>,
+    #[serde(default)]
     since_revision: Option<u64>,
     #[serde(default)]
     wait_ms: Option<u64>,

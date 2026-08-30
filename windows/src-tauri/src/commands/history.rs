@@ -8,6 +8,8 @@ pub struct HistoryPage {
 }
 
 /// Get clipboard history entries
+// Tauri exposes these named arguments as the stable frontend command contract.
+#[allow(clippy::too_many_arguments)]
 #[command]
 pub async fn get_history(
     state: State<'_, AppState>,
@@ -17,19 +19,25 @@ pub async fn get_history(
     end_time: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
+    collection: Option<String>,
 ) -> Result<Vec<db::HistoryEntry>, String> {
     let db = state.db.lock().await;
-    db.get_all_filtered(
-        keyword.as_deref(),
-        category.as_deref(),
-        start_time.as_deref(),
-        end_time.as_deref(),
-        limit.unwrap_or(50),
-        offset.unwrap_or(0),
-    )
+    let collection = db::HistoryCollection::from_wire(collection.as_deref())
+        .map_err(|error| error.to_string())?;
+    db.get_page_in_collection(db::HistoryQuery {
+        collection,
+        keyword: keyword.as_deref(),
+        category: category.as_deref(),
+        start_time: start_time.as_deref(),
+        end_time: end_time.as_deref(),
+        limit: limit.unwrap_or(50),
+        offset: offset.unwrap_or(0),
+    })
+    .map(|page| page.entries)
     .map_err(|e| e.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 #[command]
 pub async fn get_history_page(
     state: State<'_, AppState>,
@@ -39,17 +47,21 @@ pub async fn get_history_page(
     end_time: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
+    collection: Option<String>,
 ) -> Result<HistoryPage, String> {
     let db = state.db.lock().await;
+    let collection = db::HistoryCollection::from_wire(collection.as_deref())
+        .map_err(|error| error.to_string())?;
     let page = db
-        .get_page_filtered(
-            keyword.as_deref(),
-            category.as_deref(),
-            start_time.as_deref(),
-            end_time.as_deref(),
-            limit.unwrap_or(50),
-            offset.unwrap_or(0),
-        )
+        .get_page_in_collection(db::HistoryQuery {
+            collection,
+            keyword: keyword.as_deref(),
+            category: category.as_deref(),
+            start_time: start_time.as_deref(),
+            end_time: end_time.as_deref(),
+            limit: limit.unwrap_or(50),
+            offset: offset.unwrap_or(0),
+        })
         .map_err(|e| e.to_string())?;
     Ok(HistoryPage {
         entries: page.entries,
@@ -93,6 +105,33 @@ pub async fn delete_entry(state: State<'_, AppState>, id: i64) -> Result<(), Str
     db.delete(id).map_err(|e| e.to_string())?;
     crate::api::bump_clipboard_version();
     Ok(())
+}
+
+/// Set or clear the favorite state for a logical history item.
+#[command]
+pub async fn set_history_favorite(
+    state: State<'_, AppState>,
+    id: i64,
+    favorite: bool,
+) -> Result<db::FavoriteMutation, String> {
+    let mut db = state.db.lock().await;
+    let mutation = db
+        .set_favorite(id, favorite)
+        .map_err(|error| error.to_string())?;
+    crate::api::bump_clipboard_version();
+    Ok(mutation)
+}
+
+/// Delete a logical history item from the favorites collection.
+#[command]
+pub async fn delete_favorite_entry(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<db::FavoriteMutation, String> {
+    let mut db = state.db.lock().await;
+    let mutation = db.delete_favorite(id).map_err(|error| error.to_string())?;
+    crate::api::bump_clipboard_version();
+    Ok(mutation)
 }
 
 /// Delete all clipboard history entries.

@@ -105,6 +105,45 @@ final class WindowLifecycleTests: XCTestCase {
         XCTAssertEqual(states, [false, true])
     }
 
+    func testHistoryCollectionsUseIndependentVisibilityNotifications() {
+        let historyNotification = Notification.Name
+            .tailSyncHistoryCollectionVisibilityChanged(for: "all")
+        let favoritesNotification = Notification.Name
+            .tailSyncHistoryCollectionVisibilityChanged(for: "favorites")
+
+        XCTAssertEqual(historyNotification, .tailSyncHistoryWindowVisibilityChanged)
+        XCTAssertEqual(favoritesNotification, .tailSyncFavoritesWindowVisibilityChanged)
+        XCTAssertNotEqual(historyNotification, favoritesNotification)
+    }
+
+    func testClosingHistoryKeepsFavoritesWindowOpen() {
+        _ = NSApplication.shared
+        let expectation = expectation(description: "favorites window remains open")
+
+        AppDelegate.showHistory { historyWindow in
+            AppDelegate.showFavorites()
+            DispatchQueue.main.async {
+                guard let favoritesWindow = NSApplication.shared.windows.first(where: {
+                    $0.title == "Favorites"
+                }) else {
+                    XCTFail("favorites window was not presented")
+                    expectation.fulfill()
+                    return
+                }
+
+                XCTAssertTrue(favoritesWindow.isVisible)
+                historyWindow.close()
+                DispatchQueue.main.async {
+                    XCTAssertTrue(favoritesWindow.isVisible)
+                    favoritesWindow.close()
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        wait(for: [expectation], timeout: 1)
+    }
+
     func testPreviewWindowIsRecreatedAfterClose() {
         _ = NSApplication.shared
         let model = HistoryPreviewViewModel(
@@ -148,5 +187,55 @@ final class WindowLifecycleTests: XCTestCase {
         XCTAssertTrue(controller.hasAllocatedWindow)
         controller.shutdown()
         XCTAssertFalse(controller.hasAllocatedWindow)
+    }
+
+    func testPreviewLifecycleFollowsOnlyItsActiveCollectionWindow() {
+        _ = NSApplication.shared
+        let model = HistoryPreviewViewModel(
+            dependencies: HistoryPreviewDependencies(
+                load: { id, _ in
+                    let data = Data("preview".utf8)
+                    return HistoryPreviewData(
+                        kind: "text",
+                        name: "preview.txt",
+                        sizeBytes: Int64(data.count),
+                        data: data,
+                        entryId: id
+                    )
+                },
+                restore: { _ in }
+            )
+        )
+        let controller = HistoryPreviewWindowController(viewModel: model)
+        let historyWindow = NSWindow()
+        let favoritesWindow = NSWindow()
+        controller.registerHostWindow(historyWindow, for: .history)
+        controller.registerHostWindow(favoritesWindow, for: .favorites)
+        let request = HistoryPreviewRequest(
+            items: [HistoryPreviewItem(
+                id: 8,
+                batchId: nil,
+                batchIndex: nil,
+                batchCount: nil,
+                category: "text",
+                type: "text",
+                nameHint: "preview.txt",
+                sizeBytes: 7
+            )],
+            selectedIndex: 0
+        )
+
+        controller.present(request, owner: .favorites)
+        XCTAssertTrue(controller.hasAllocatedWindow)
+        XCTAssertTrue(controller.isPreviewVisible(for: .favorites))
+        XCTAssertFalse(controller.isPreviewVisible(for: .history))
+
+        controller.registerHostWindow(nil, for: .history)
+        controller.close(ifOwnedBy: .history)
+        XCTAssertTrue(controller.hasAllocatedWindow)
+
+        controller.close(ifOwnedBy: .favorites)
+        XCTAssertFalse(controller.hasAllocatedWindow)
+        controller.shutdown()
     }
 }

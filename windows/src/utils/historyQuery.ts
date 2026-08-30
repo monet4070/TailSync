@@ -4,7 +4,7 @@
 // Date bounds are millisecond timestamps; the capability flag suppresses
 // date filtering entirely (null times) when the peer does not support it.
 
-import type { HistoryCategory, HistoryPageQuery } from "../tailsyncClient";
+import type { HistoryCategory, HistoryCollection, HistoryPageQuery } from "../tailsyncClient";
 
 export interface DateBoundsInput {
   start: number | null;
@@ -18,6 +18,7 @@ export function buildHistoryQuery(
   dateFilteringSupported: boolean,
   pageSize: number,
   page: number,
+  collection: HistoryCollection = "all",
 ): HistoryPageQuery {
   const startTime = dateFilteringSupported && dateBounds.start !== null
     ? new Date(dateBounds.start).toISOString()
@@ -32,5 +33,6 @@ export function buildHistoryQuery(
     endTime,
     limit: pageSize,
     offset: page * pageSize,
+    ...(collection === "favorites" ? { collection } : {}),
   };
 }

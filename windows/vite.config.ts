@@ -22,6 +22,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         history: 'history.html',
+        favorites: 'favorites.html',
         settings: 'settings.html',
         preview: 'preview.html',
       },
