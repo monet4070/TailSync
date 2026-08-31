@@ -28,6 +28,8 @@ pub struct AppState {
     pub identity: Arc<identity::DeviceIdentity>,
     pub pool: Arc<Mutex<network::ConnectionPool>>,
     pub pairing: Arc<pairing::PairingManager>,
+    pub remote_invites: Arc<pairing::RemotePairingInviteManager>,
+    pub pending_remote_pairing_link: Arc<StdMutex<Option<String>>>,
     pub shutdown: watch::Sender<bool>,
     /// The exact old root returned by the most recent successful migration.
     /// Cleanup is one-shot and cannot be redirected by an arbitrary IPC path.
@@ -439,6 +441,8 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         settings.clone(),
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
+    let remote_invites = Arc::new(pairing::RemotePairingInviteManager::new());
+    let pending_remote_pairing_link = Arc::new(StdMutex::new(None));
     let pending_storage_cleanup = Arc::new(Mutex::new(None));
     let settings_for_monitor = settings.clone();
     #[cfg(target_os = "windows")]
@@ -458,6 +462,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         identity: identity.clone(),
         pool: pool.clone(),
         pairing: pairing.clone(),
+        remote_invites: remote_invites.clone(),
         token: api_token,
         shutdown: shutdown_tx.clone(),
         imports: Mutex::new(api::ImportRegistry::default()),
@@ -481,14 +486,28 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let app = tauri::Builder::default()
         // This must remain the first plugin so secondary launches are rejected
         // before app setup creates another tray or registers global shortcuts.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let handle = app.clone();
+            #[cfg(not(target_os = "windows"))]
+            let _ = &args;
+            #[cfg(target_os = "windows")]
+            if let Some(link) = commands::remote_pairing_link_from_args(&args) {
+                #[cfg(target_os = "windows")]
+                if let Err(error) = commands::queue_remote_pairing_link(&handle, link) {
+                    log::debug!(
+                        "Ignoring invalid TailSync deep link from a repeated launch: {error}"
+                    );
+                }
+                #[cfg(target_os = "windows")]
+                return;
+            }
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = commands::open_history_window(handle).await {
                     log::warn!("Could not focus TailSync after a repeated launch: {error}");
                 }
             });
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -525,11 +544,44 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 identity,
                 pool: pool_for_setup.clone(),
                 pairing: pairing.clone(),
+                remote_invites: remote_invites.clone(),
+                pending_remote_pairing_link: pending_remote_pairing_link.clone(),
                 shutdown: shutdown_for_state,
                 pending_storage_cleanup,
             };
             let initial_shortcuts = state.settings.blocking_lock().clone();
             app.manage(state);
+            #[cfg(target_os = "windows")]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(error) = app.deep_link().register_all() {
+                    log::debug!("Could not register the TailSync deep-link scheme: {error}");
+                }
+                let deep_link_handle = handle.clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if let Err(error) =
+                            commands::queue_remote_pairing_link(&deep_link_handle, url.as_str())
+                        {
+                            log::debug!("Ignoring invalid TailSync deep link: {error}");
+                        }
+                    }
+                });
+                // On Windows the initial protocol launch is exposed through
+                // `get_current`, while later launches arrive as events. Read
+                // the current value after the listener is installed so a
+                // cold-start invite is not lost before the settings window
+                // exists.
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    for url in urls {
+                        if let Err(error) =
+                            commands::queue_remote_pairing_link(&handle, url.as_str())
+                        {
+                            log::debug!("Ignoring invalid TailSync deep link: {error}");
+                        }
+                    }
+                }
+            }
             app.manage(preview_window::PreviewWindowController::default());
             app.manage(window_lifecycle::TransientWindowController::default());
             if let Err(error) = commands::register_saved_shortcuts(&handle, &initial_shortcuts) {
@@ -581,6 +633,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             let sync_for_iroh = sync_for_setup.clone();
             let pairing_for_server = pairing.clone();
             let pairing_for_iroh = pairing.clone();
+            let remote_invites_for_iroh = remote_invites.clone();
             let server_shutdown = shutdown_for_setup.clone();
             let server_task = tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::start_server(
@@ -605,6 +658,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     settings_for_iroh,
                     identity_for_iroh,
                     pairing_for_iroh,
+                    remote_invites_for_iroh,
                     iroh_shutdown,
                 )
                 .await
@@ -673,6 +727,12 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             commands::start_pairing,
             commands::confirm_pairing,
             commands::cancel_pairing,
+            commands::create_remote_pairing_invite,
+            commands::inspect_remote_pairing_link,
+            commands::start_remote_pairing,
+            commands::get_remote_pairing_invite_status,
+            commands::cancel_remote_pairing_invite,
+            commands::take_pending_remote_pairing_link,
             commands::get_settings,
             commands::update_settings,
             commands::open_history_window,

@@ -52,15 +52,15 @@ TAILSYNC_RELEASE_TIER=community
 
 ## 发布通道
 
-- `v2.2.0` 这类稳定 tag 会发布附件，并生成 `latest.json`，供客户端自动更新。
-- `v2.2.0-rc.1` 这类预发布 tag 会发布附件，但不会生成或覆盖 `latest.json`。
+- `vX.Y.Z` 这类稳定 tag 会发布附件，并生成 `latest.json`，供客户端自动更新。
+- `vX.Y.Z-rc.1` 这类预发布 tag 会发布附件，但不会生成或覆盖 `latest.json`。
 - 当前客户端只订阅稳定通道；预发布包必须从 GitHub Release 页面手动安装。
 
 ## 发布步骤
 
 1. 在两个 `tauri.conf.json` 和三个 Cargo package 中设置相同的语义版本。
 2. 合并前确认 CI 全绿，并完成 macOS 与 Windows 真机验收。
-3. 推送匹配的 tag，例如 `v2.2.0`。
+3. 推送与清单版本匹配的 tag，例如 `vX.Y.Z`。
 4. 确认 Release workflow 的双平台打包、启动烟测、updater 签名和 manifest 校验通过。
 5. 下载公开附件，根据 `.sha256` 文件复核哈希。
 6. 在干净的 Mac 和 Windows 真机安装，再从上一个公开版本执行一次完整更新。
@@ -69,13 +69,13 @@ TAILSYNC_RELEASE_TIER=community
 macOS 可使用：
 
 ```bash
-shasum -a 256 -c TailSync-2.2.0-macOS-universal.sha256
+shasum -a 256 -c TailSync-X.Y.Z-macOS-universal.sha256
 ```
 
 Windows 可按清单中的每个文件执行：
 
 ```powershell
-Get-FileHash .\TailSync-2.2.0-Windows-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash .\TailSync-X.Y.Z-Windows-x86_64-setup.exe -Algorithm SHA256
 ```
 
 ## Community 首次启动说明

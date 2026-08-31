@@ -1,5 +1,11 @@
 # TailSync 全量代码审查（2026-08-28）
 
+> [!IMPORTANT]
+> 这是历史审查快照，不是当前待办清单。报告中的可达问题已经经过后续提交与复核；当前断点续传、
+> Iroh 测速、收藏和代码卫生状态分别以 `CODE-REVIEW-2026-08-30.md`、
+> `features/resumable-file-transfer.md`、`features/favorites-long-press.md` 和 `../CONTEXT.md` 为准。
+> 下文旧行号与“建议行动排序”保留用于追溯发现过程。
+
 > 审查范围：`shared/rust-core`（~3.2 万行）、macOS 客户端（SwiftUI + Rust 守护进程）、Windows 客户端（React/TS + Tauri）、site / themes / scripts / CI / docs / deploy。
 > 方法：四路并行深查 + 对全部高优先级结论逐条二次人工复核（引用的代码行均已重新打开核对，非转述）。
 > 结论总体判断：**工程质量高于同类个人项目平均水平**（协议纵深防御、内存上限意识、private_fs、更新降级防护、测试文化都做得扎实）。主要改进点集中在：投递/剪贴板路径的失败处理语义（无界重试与队头冻结、假成功）、Tauri 权限面与 CSP、发布管线的验证盲区（私钥↔公钥配对、release 并发）、以及若干性能与体验问题。

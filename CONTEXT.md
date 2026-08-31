@@ -19,7 +19,7 @@ shared/
   rust-core/                 共享深模块（跨平台单一事实来源）
     crypto.rs + crypto/      密钥存储与加密边界
     db.rs + db/              数据库生命周期、查询、迁移、文件存储、收藏、预览
-    pairing.rs + pairing/    配对状态机与测试
+    pairing.rs + pairing/    配对状态机、一次性 Iroh 邀请与测试
     peer/                    types/directory/health/delivery 等设备与可靠投递规则
     secure.rs + secure/      握手、认证与安全会话
     sync.rs + sync/          同步编排、批次、接收、恢复与状态
@@ -62,8 +62,9 @@ windows/
 - Windows 的 `commands/preview.rs` 保留独立文件是有意设计，原始 ArrayBuffer 预览协议
   见 `docs/adr/ADR-002-independent-history-preview-window.md`。
 - 收藏是历史的一个受保护集合：`shared/rust-core/src/db/favorites.rs` 负责逻辑条目/文件批次的
-  原子收藏、取消收藏与收藏窗口删除；数据库仍使用 `pinned` 字段保持 v8/v9 wire 兼容，v10
-  启动迁移会把旧的部分收藏批次规范化。平台只负责窗口、手势和命令/Unix route Adapter。
+  原子收藏、取消收藏与收藏窗口删除；数据库仍使用 `pinned` 字段保持 v8/v9 wire 兼容。
+  v10 迁移负责规范化旧的部分收藏批次；当前 v11 另加接收回执和文件批次唯一约束，不改变
+  收藏语义。平台只负责窗口、手势和命令/Unix route Adapter。
 - 历史窗口的右键删除必须经过 Core 的 `delete` 保护；收藏条目只能经
   `delete_favorite_entry` 从收藏窗口删除。清空历史只删除未收藏条目，不能绕过收藏保护。
 - 长按手势的宽限期为 220 ms、可见充能为 420 ms；Swift 的 AppKit responder 与 Windows 的
@@ -79,6 +80,16 @@ windows/
 - macOS API route 的 `handles()` 与 `handle()` 必须同增同删；主题 route 有专门的
   dispatch 回归测试。跨平台契约检查只校验共享协议字段，不替代各平台的 route/command
   dispatch 测试。
+- 文件批次恢复由 Core 的持久态定义：发送端 `sync/outgoing.rs` 写私有 journal，接收端
+  `sync/resume.rs`/`receive_engine.rs` 从 `.part` 实际长度恢复；只有历史文件事务和 v11
+  `received_file_batches` 回执提交成功后才能 ACK 完成。平台传输层只负责调用该状态机，详见
+  `docs/features/resumable-file-transfer.md`。
+- Iroh 远程配对由 `pairing/invite.rs` 定义版本化、一次性、内存态邀请；平台 Adapter 只负责
+  Endpoint 连接、`tailsync://` scheme 事件和 API/Unix route 接线。邀请不依赖 TailSync 自建
+  服务器，仍必须经过 Noise XX、六位验证码和双端确认，详见 `docs/features/remote-iroh-pairing.md`。
+- Windows 历史运行时提示必须使用 `useHistoryNotice` 的页面内联槽位；相同 key 的重复事件只能
+  增加计数，不能刷新 TTL 或创建固定定位浮层；不同 key 的连续错误共享 8 秒可见预算和 1.5 秒
+  冷却间隔，保证错误风暴也不能让提示常驻或遮挡分页和操作控件。
 ## 领域词汇（以 README 与代码为准）
 
 | 术语 | 含义 |
@@ -114,10 +125,13 @@ node windows/scripts/check_cross_platform_sync.mjs --win-root windows --mac-root
 test --no-run），Windows 原生编译/打包/运行由 CI 负责。注意 host 编译会因
 `#[cfg(target_os = windows)]` 块被裁掉而产生 dead-code 伪警告，属正常现象。
 
-## 已知缺口
+## 当前实现说明与已知边界
 
 - `iroh_transport` 的 `repeated_rtt_probes` 测试已于 2026-08-27 解除 `#[ignore]`；测速复用应用的
   常驻 Endpoint，仅为 RTT ALPN 新建并关闭独立 QUIC 连接。测试会校验连续 probe 的来源 Endpoint ID
   不变、业务流不受 probe 关闭影响，并在连续 probe 之间等待前一条连接关闭；Iroh connect 使用 10 秒
   外层超时，避免把冷启动路径发现误报为失败。
+- 文件续传状态最多保留 24 小时；源文件在发送期间发生内容、大小或身份变化时，恢复会失败并要求
+  用户重新复制，而不是继续发送与原 manifest 不一致的数据。
+- Iroh 远程邀请只保存在创建端内存中，默认 120 秒有效；应用退出、取消、过期或成功配对后失效。
 - Android 客户端不在 v4 协议兼容范围。

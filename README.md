@@ -28,11 +28,11 @@
 |---|---|---|
 | 📋 | 多类型剪贴板 | 双向同步文本、图片和文件，并保留本地历史记录 |
 | ⚡ | 智能路由 | `auto` 模式优先选择可用的 LAN，必要时切换到 Tailscale |
-| 🔐 | 安全配对 | 六位验证码、双端确认、固定设备身份和 Noise 加密连接 |
+| 🔐 | 安全配对 | 六位验证码、双端确认、固定设备身份、Noise 加密连接和短时 Iroh 邀请链接 |
 | 🩺 | 真实在线状态 | 单一后台任务主动探测，不再把残留的 mDNS 记录当成在线 |
 | 🔋 | 唤醒恢复 | 睡眠唤醒后保留原始事件时间、取消过期连接并重置剪贴板监听 |
 | 🗂️ | 智能历史 | 文本 / 图片 / 文件分类、日期筛选、搜索与恢复 |
-| 🔁 | 可靠传输 | 消息 ACK、自动重试、重放抑制、文件分块校验和运行期断线续传 |
+| 🔁 | 可靠传输 | 消息 ACK、自动重试、重放抑制、文件分块校验和双方应用重启后的续传 |
 | 🖥️ | 原生体验 | macOS 菜单栏 SwiftUI 应用，Windows 系统托盘 Tauri 应用 |
 
 ## 平台支持
@@ -55,8 +55,10 @@ macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/r
 - `discovered`、`confirming`、`online`、`connected`、`offline` 状态模型
 - Noise XX 握手、X25519 固定设备身份和 ChaCha20-Poly1305 加密
 - 120 秒配对窗口、六位验证码、双向确认和失败锁闭
+- 无需自建服务器的 `tailsync://` Iroh 远程配对链接；链接一次性、120 秒有效，仍需验证码和指纹确认
 - 文本与图片事件 ACK、重试、时间戳检查和消息 ID 去重
-- 1 MiB 文件分块、Blake3 校验、offset ACK 和运行期断线续传
+- 1 MiB 文件分块、BLAKE3 校验、offset ACK、持久化发送日志，以及发送端或接收端重启后的续传
+- Iroh QUIC 中继/打洞路径；路由测速复用应用的常驻 Endpoint，可连续测量 `direct` / `relay` 类型与 RTT
 - 睡眠 / 唤醒恢复：保留可靠事件的原始时间戳、取消过期连接 worker 并重置剪贴板监听
 - 剪贴板监听活性纳入守护进程健康检查，不再把已停止工作的监听误判为健康
 - 文件回传抑制：应用托管的 `clipboard-files/` 文件不会被回传给原发送端
@@ -87,7 +89,7 @@ flowchart LR
     C --> P[发现与健康监控]
     C --> N[Noise 安全会话]
     C --> DB[SQLite 历史记录]
-    N <-->|TCP 19890| Peer[另一台 TailSync 设备]
+    N <-->|TCP 19890 或 Iroh QUIC| Peer[另一台 TailSync 设备]
     P <-->|UDP 19889 / mDNS / Tailscale| Peer
 ```
 
@@ -220,7 +222,8 @@ macOS 默认数据目录：
 | `history-v2.db` | 历史元数据、加密文本和内容引用；文本预览仅在读取时解密 |
 | `file-history/` | 分块 AEAD 加密的文件历史容器 |
 | `image-history/` | 加密图片历史文件 |
-| `incoming/` | 正在接收的临时文件与运行期续传状态 |
+| `incoming/` | 正在接收的明文 `.part` 文件与跨重启续传状态，最多保留 24 小时 |
+| `outgoing-transfers/` | 待发送文件批次与源路径的私有 journal；完成或超过保留期后清理 |
 | `clipboard-files/` | 恢复到系统剪贴板的临时明文文件；未被剪贴板引用且超过 10 分钟后定期清理 |
 | `config-v2.json` | 设置、信任公钥和已知设备地址 |
 | `identity-v1.bin` | 本机固定设备身份 |
@@ -229,6 +232,9 @@ Windows 使用系统应用数据目录保存同一套结构。重新安装或替
 文本历史的 `description` 列只保存固定占位符，关键词搜索在解密后执行；删除历史时同时启用 SQLite `secure_delete` 并截断 WAL，避免明文预览或已删页残留在旁路文件。
 
 ## 开发验证
+
+文档按“当前规格”和“历史审查记录”分层维护，入口见 [`docs/README.md`](docs/README.md)。实现变化时应先
+更新当前规格；带日期的审查与交接文档保留当时证据，不通过重写历史来伪装为当前说明。
 
 ```bash
 cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check
@@ -268,7 +274,7 @@ TailSync/
 │   ├── src-tauri/
 │   └── scripts/
 ├── shared/                # 共享 Rust 核心、设置 schema 和视觉规范
-├── docs/                  # 发布操作手册
+├── docs/                  # 文档索引、用户指南、架构决策、功能规格与发布/依赖手册
 ├── site/                  # 独立项目站点
 ├── .github/workflows/     # CI 检查
 ├── assets/                # 项目展示资源
@@ -279,7 +285,7 @@ macOS 与 Windows 的平台 UI 可以按系统体验分别演进；共享业务�
 
 ## 当前限制
 
-- 未完成文件批次可跨应用重启续传，`incoming/` 中的明文 `.part` 文件和续传状态最多保留 24 小时；`clipboard-files/` 中恢复到剪贴板的明文文件也属于瞬态数据。
+- 未完成文件批次可在发送端或接收端退出、崩溃、重启后续传。发送端 journal 与接收端 `.part`/manifest 最多保留 24 小时；恢复按接收端已验证偏移继续，并在整批完成后重新校验文件。详见[跨重启文件续传](docs/features/resumable-file-transfer.md)。
 - macOS 本地 JSON-lines API 使用用户专属 Unix socket，并对连接对端 PID 及每个请求强制校验 256 位能力令牌；请求上限为 1 MiB，读写超时为 5 秒。Windows 本地 API 才使用 `127.0.0.1:19889`，仍不应通过端口转发暴露。
 - 历史正文与图片/文件负载由应用数据密钥加密；类型、时间戳等数据库元数据不加密，系统磁盘加密仍可提供额外的整盘保护。
 - 默认 tag 产物是 Community Release：macOS 使用 ad-hoc 签名且未公证，Windows 不含商业 Authenticode 签名，因此首次打开会出现 Gatekeeper 或 SmartScreen 警告；不要通过关闭系统安全功能来规避警告。

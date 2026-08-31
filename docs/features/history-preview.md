@@ -11,7 +11,8 @@ filters, pagination, restore, and delete are never covered by preview content.
 - selecting another row and pressing Space replaces the current preview;
 - Space or Escape closes the preview when no interactive control owns the key;
 - double click restores the entry to the clipboard;
-- right click deletes the entry;
+- right click deletes an unfavorited entry; favorites remain protected and can
+  be deleted only from the favorites window;
 - Alt+Left and Alt+Right navigate files in the same batch.
 - Control+wheel on Windows or Command/Control+wheel on macOS changes the text
   font size or zooms the image/PDF under the pointer without replacing ordinary
@@ -42,7 +43,7 @@ renderer family, bounded to the current display's usable work area.
   offscreen web view, and on Windows rendered in a sandboxed WebView2 iframe;
   both provide a compact preview/source control and a per-entry "trust
   external links" switch in the shared header. A render in progress shows a
-placeholder, and render failures or oversized SVGs fall back to source text;
+  placeholder, and render failures or oversized SVGs fall back to source text;
 - metadata and restore controls for unsupported formats such as XLSX.
 
 ## Batch navigation

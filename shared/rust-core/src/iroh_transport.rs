@@ -18,6 +18,7 @@ use crate::identity::{
 
 pub const ALPN: &[u8] = b"tailsync/4";
 pub const RTT_ALPN: &[u8] = b"tailsync/4/rtt";
+pub const INVITE_ALPN: &[u8] = b"tailsync/4/invite";
 const SECRET_KEY_SIZE: usize = 32;
 static IDENTITY_RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -50,6 +51,13 @@ pub struct IrohEndpoint {
 pub struct AcceptedConnection {
     connection: Connection,
     pub remote_endpoint_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrohConnectionKind {
+    Business,
+    Rtt,
+    Invite,
 }
 
 pub struct IrohBiStream {
@@ -93,7 +101,7 @@ impl IrohEndpoint {
             .map_err(|error| format!("Could not load Iroh identity: {error}"))?;
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(secret_key)
-            .alpns(vec![ALPN.to_vec(), RTT_ALPN.to_vec()])
+            .alpns(vec![ALPN.to_vec(), RTT_ALPN.to_vec(), INVITE_ALPN.to_vec()])
             .bind()
             .await
             .map_err(|error| format!("Could not start Iroh endpoint: {error}"))?;
@@ -111,9 +119,17 @@ impl IrohEndpoint {
     }
 
     async fn connect_addr(&self, endpoint_addr: EndpointAddr) -> Result<IrohBiStream, String> {
+        self.connect_addr_with_alpn(endpoint_addr, ALPN).await
+    }
+
+    async fn connect_addr_with_alpn(
+        &self,
+        endpoint_addr: EndpointAddr,
+        alpn: &[u8],
+    ) -> Result<IrohBiStream, String> {
         let connection = self
             .endpoint
-            .connect(endpoint_addr, ALPN)
+            .connect(endpoint_addr, alpn)
             .await
             .map_err(|error| format!("Iroh connection failed: {error}"))?;
         let (send, recv) = connection
@@ -121,6 +137,13 @@ impl IrohEndpoint {
             .await
             .map_err(|error| format!("Could not open Iroh stream: {error}"))?;
         Ok(IrohBiStream::new(send, recv, connection))
+    }
+
+    pub async fn connect_invite(&self, endpoint_id: &str) -> Result<IrohBiStream, String> {
+        let endpoint_id = EndpointId::from_str(&canonical_endpoint_id(endpoint_id)?)
+            .map_err(|error| format!("Invalid Iroh endpoint ID: {error}"))?;
+        self.connect_addr_with_alpn(endpoint_id.into(), INVITE_ALPN)
+            .await
     }
 
     pub async fn connect_rtt(&self, endpoint_id: &str) -> Result<IrohRttProbe, String> {
@@ -154,8 +177,16 @@ impl IrohEndpoint {
 }
 
 impl AcceptedConnection {
+    pub fn kind(&self) -> IrohConnectionKind {
+        match self.connection.alpn() {
+            RTT_ALPN => IrohConnectionKind::Rtt,
+            INVITE_ALPN => IrohConnectionKind::Invite,
+            _ => IrohConnectionKind::Business,
+        }
+    }
+
     pub fn is_rtt_probe(&self) -> bool {
-        self.connection.alpn() == RTT_ALPN
+        self.kind() == IrohConnectionKind::Rtt
     }
 
     pub async fn wait_for_close(self) {
@@ -640,6 +671,7 @@ mod tests {
                         handshake_hash: accepted.handshake_hash,
                         address: client_endpoint_id,
                         interface: "iroh".into(),
+                        remote_invite: None,
                     })
                     .await
                     .unwrap();
@@ -666,6 +698,7 @@ mod tests {
                 handshake_hash: accepted.handshake_hash,
                 address: server_endpoint_id,
                 interface: "iroh".into(),
+                remote_invite: None,
             })
             .await
             .unwrap();
@@ -712,6 +745,183 @@ mod tests {
             client_settings.lock().await.trusted_peer_keys.get("server"),
             Some(&server_identity.public_key_base64())
         );
+        client.close().await;
+        server.close().await;
+    }
+
+    #[tokio::test]
+    async fn one_time_invite_completes_over_real_iroh_and_is_consumed() {
+        use crate::pairing::{
+            invite::{INVITE_ACK_ACCEPTED, INVITE_HELLO_LENGTH},
+            RemoteInviteState, RemotePairingInvite, RemotePairingInviteManager,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let server = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![INVITE_ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let client = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
+        };
+        let server_endpoint_id = server.endpoint_id();
+        let client_endpoint_id = client.endpoint_id();
+        let invite_manager = Arc::new(RemotePairingInviteManager::new());
+        let invite = invite_manager
+            .create(server.endpoint.id(), Duration::from_secs(60))
+            .unwrap();
+        let invite = RemotePairingInvite::parse(&invite.as_link()).unwrap();
+
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let server_manager = PairingManager::with_policy(
+            Arc::new(Mutex::new(Settings::default())),
+            server_identity.clone(),
+            Duration::from_secs(5),
+            5,
+            false,
+        );
+        let client_manager = PairingManager::with_policy(
+            Arc::new(Mutex::new(Settings::default())),
+            client_identity.clone(),
+            Duration::from_secs(5),
+            5,
+            false,
+        );
+        server_manager.enable().await;
+        client_manager.enable().await;
+
+        let server_task = {
+            let server = server.clone();
+            let server_identity = server_identity.clone();
+            let server_manager = server_manager.clone();
+            let invite_manager = invite_manager.clone();
+            let server_endpoint_id = server_endpoint_id.clone();
+            let client_endpoint_id = client_endpoint_id.clone();
+            tokio::spawn(async move {
+                let accepted = server.accept().await.unwrap().unwrap();
+                assert_eq!(accepted.kind(), IrohConnectionKind::Invite);
+                assert_eq!(accepted.remote_endpoint_id, client_endpoint_id);
+                let mut stream = accepted.accept_stream().await.unwrap();
+                let mut encoded = [0_u8; INVITE_HELLO_LENGTH];
+                stream.read_exact(&mut encoded).await.unwrap();
+                let hello = crate::pairing::InviteHello::decode(&encoded).unwrap();
+                let claim = invite_manager.claim(&hello).unwrap();
+                stream.write_all(&[INVITE_ACK_ACCEPTED]).await.unwrap();
+                stream.flush().await.unwrap();
+
+                let accepted = secure::accept_with_pairing_window(
+                    stream,
+                    &server_identity,
+                    PeerIdentity {
+                        hostname: "server".into(),
+                        tailscale_ip: String::new(),
+                        iroh_endpoint_id: Some(server_endpoint_id),
+                    },
+                    server_manager.subscribe_window(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    accepted.peer_identity.iroh_endpoint_id.as_deref(),
+                    Some(client_endpoint_id.as_str())
+                );
+                let mut connection = accepted.connection;
+                secure::write_ready(&mut connection).await.unwrap();
+                server_manager
+                    .install_session(PendingPairing {
+                        connection,
+                        hostname: accepted.peer_identity.hostname,
+                        remote_public_key: accepted.remote_public_key,
+                        handshake_hash: accepted.handshake_hash,
+                        address: client_endpoint_id,
+                        interface: "iroh".into(),
+                        remote_invite: Some(claim),
+                    })
+                    .await
+                    .unwrap();
+            })
+        };
+
+        let mut stream = client
+            .connect_addr_with_alpn(server.endpoint.addr(), INVITE_ALPN)
+            .await
+            .unwrap();
+        stream.write_all(&invite.hello().encode()).await.unwrap();
+        stream.flush().await.unwrap();
+        let mut ack = [0_u8; 1];
+        stream.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack[0], INVITE_ACK_ACCEPTED);
+        let accepted = secure::connect_pairing(
+            stream,
+            &client_identity,
+            PeerIdentity {
+                hostname: "client".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: Some(client_endpoint_id),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            accepted.peer_identity.iroh_endpoint_id.as_deref(),
+            Some(server_endpoint_id.as_str())
+        );
+        client_manager
+            .install_session(PendingPairing {
+                connection: accepted.connection,
+                hostname: accepted.peer_identity.hostname,
+                remote_public_key: accepted.remote_public_key,
+                handshake_hash: accepted.handshake_hash,
+                address: server_endpoint_id,
+                interface: "iroh".into(),
+                remote_invite: None,
+            })
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(
+            invite_manager.status().state,
+            Some(RemoteInviteState::Claimed)
+        );
+        let server_code = server_manager
+            .status()
+            .await
+            .peer
+            .as_ref()
+            .unwrap()
+            .verification_code
+            .clone();
+        let client_code = client_manager
+            .status()
+            .await
+            .peer
+            .as_ref()
+            .unwrap()
+            .verification_code
+            .clone();
+        assert_eq!(server_code, client_code);
+
+        server_manager.confirm().await.unwrap();
+        client_manager.confirm().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if server_manager.status().await.phase == PairingPhase::Paired
+                    && client_manager.status().await.phase == PairingPhase::Paired
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("invite pairing should complete after both persisted acknowledgements");
+
+        assert!(!invite_manager.status().active);
         client.close().await;
         server.close().await;
     }

@@ -129,6 +129,7 @@ pub struct PendingPairing {
     pub handshake_hash: Vec<u8>,
     pub address: String,
     pub interface: String,
+    pub remote_invite: Option<InviteClaim>,
 }
 
 enum PairingAction {
@@ -159,7 +160,13 @@ pub struct PairingManager {
     persist_trust: bool,
 }
 
+pub mod invite;
 mod manager;
+
+pub use invite::{
+    InviteClaim, InviteError, InviteHello, RemoteInviteState, RemoteInviteStatus,
+    RemotePairingInvite, RemotePairingInviteManager, DEFAULT_INVITE_TTL,
+};
 
 /// Installs an inbound pairing session for an accepted connection (T110
 /// migration). When `pairing` is absent (Iroh transport cannot pair), an
@@ -167,12 +174,39 @@ mod manager;
 /// connection winds down normally.
 pub async fn install_pairing_session(
     pairing: Option<&Arc<PairingManager>>,
+    stream: SecureConnection,
+    hostname: String,
+    remote_public_key: Vec<u8>,
+    handshake_hash: Vec<u8>,
+    address: String,
+    interface: String,
+) -> Result<(), PairingError> {
+    install_pairing_session_with_invite(
+        pairing,
+        stream,
+        hostname,
+        remote_public_key,
+        handshake_hash,
+        address,
+        interface,
+        None,
+    )
+    .await
+}
+
+/// Installs a pairing session that was authorized by a one-time remote invite.
+/// The claim is committed only after both peers have persisted trust; dropping
+/// it on any earlier path releases the invite for a retry.
+#[allow(clippy::too_many_arguments)]
+pub async fn install_pairing_session_with_invite(
+    pairing: Option<&Arc<PairingManager>>,
     mut stream: SecureConnection,
     hostname: String,
     remote_public_key: Vec<u8>,
     handshake_hash: Vec<u8>,
     address: String,
     interface: String,
+    remote_invite: Option<InviteClaim>,
 ) -> Result<(), PairingError> {
     let Some(pairing) = pairing else {
         crate::secure::write_error(&mut stream, "Pairing over Iroh is not supported")
@@ -191,6 +225,7 @@ pub async fn install_pairing_session(
             handshake_hash,
             address,
             interface,
+            remote_invite,
         })
         .await
 }

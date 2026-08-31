@@ -19,9 +19,6 @@ export function HistoryFooter({
   progressBarEnabled,
   fileProgress,
   handleCancelFileBatch,
-  actionError,
-  syncWarning,
-  restoredEntry,
   showClearConfirm,
   clearing,
   setShowClearConfirm,
@@ -88,16 +85,6 @@ export function HistoryFooter({
               <span>{t("history.stopTransfer")}</span>
             </button>
           )}
-        </div>
-      )}
-
-      {actionError ? (
-        <div className="toast" role="alert">{actionError}</div>
-      ) : syncWarning ? (
-        <div className="toast sync-warning-toast" role="status">{syncWarning}</div>
-      ) : restoredEntry && (
-        <div className="toast" key={restoredEntry.id}>
-          {t("history.restored")}
         </div>
       )}
 

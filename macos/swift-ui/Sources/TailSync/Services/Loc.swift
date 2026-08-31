@@ -7,6 +7,9 @@ extension Notification.Name {
     static let tailSyncLocaleChanged = Notification.Name("TailSyncLocaleChanged")
     static let tailSyncSettingsChanged = Notification.Name("TailSyncSettingsChanged")
     static let tailSyncThemeAssetsChanged = Notification.Name("TailSyncThemeAssetsChanged")
+    static let tailSyncRemotePairingInviteReceived = Notification.Name(
+        "TailSyncRemotePairingInviteReceived"
+    )
 }
 
 struct ThemeResolutionCacheIdentity: Equatable {
@@ -748,6 +751,22 @@ final class Loc: ObservableObject {
             "settings.allowPairing": "Allow pairing",
             "settings.closePairing": "Close",
             "settings.pairingClosed": "Currently closed",
+            "settings.remotePairing": "Remote Iroh pairing",
+            "settings.remotePairingDescription": "Use a short-lived link when the devices are not on the same network",
+            "settings.createRemoteInvite": "Create invite link",
+            "settings.createRemoteInviteDescription": "Create a one-time link on this device, then send it to the other device",
+            "settings.remoteInviteLink": "Remote pairing invite link",
+            "settings.copyInvite": "Copy invite link",
+            "settings.copied": "Copied",
+            "settings.cancelRemoteInvite": "Cancel invite",
+            "settings.remoteInviteCopyFailed": "Could not copy the invite link",
+            "settings.remoteInviteExpires": "Expires in {seconds}s",
+            "settings.useRemoteInvite": "Use invite link",
+            "settings.useRemoteInviteDescription": "Paste the link from the other device to start secure pairing",
+            "settings.remoteInvitePlaceholder": "tailsync://pair/v1/...",
+            "settings.checkInvite": "Check link",
+            "settings.startRemotePairing": "Start pairing",
+            "settings.remoteInviteValid": "Link is valid for {seconds}s",
             "settings.waitingPairing": "Waiting for another device",
             "settings.pairingInstruction": "On the other device, click Allow pairing. Then click the pair icon next to it here.",
             "settings.secureHandshake": "Establishing a secure connection",
@@ -1000,6 +1019,22 @@ final class Loc: ObservableObject {
             "settings.allowPairing": "允许配对",
             "settings.closePairing": "关闭",
             "settings.pairingClosed": "当前关闭",
+            "settings.remotePairing": "远程 Iroh 配对",
+            "settings.remotePairingDescription": "两台设备不在同一网络时，可使用短时有效的链接",
+            "settings.createRemoteInvite": "创建邀请链接",
+            "settings.createRemoteInviteDescription": "在本机创建一次性链接，再发送给另一台设备",
+            "settings.remoteInviteLink": "远程配对邀请链接",
+            "settings.copyInvite": "复制邀请链接",
+            "settings.copied": "已复制",
+            "settings.cancelRemoteInvite": "取消邀请",
+            "settings.remoteInviteCopyFailed": "无法复制邀请链接",
+            "settings.remoteInviteExpires": "将在 {seconds} 秒后失效",
+            "settings.useRemoteInvite": "使用邀请链接",
+            "settings.useRemoteInviteDescription": "粘贴另一台设备发来的链接，开始安全配对",
+            "settings.remoteInvitePlaceholder": "tailsync://pair/v1/...",
+            "settings.checkInvite": "检查链接",
+            "settings.startRemotePairing": "开始配对",
+            "settings.remoteInviteValid": "链接有效期还剩 {seconds} 秒",
             "settings.waitingPairing": "等待另一台设备",
             "settings.pairingInstruction": "请先在另一台设备点击“允许配对”，再点击此处该设备旁的配对图标。",
             "settings.secureHandshake": "正在建立安全连接",

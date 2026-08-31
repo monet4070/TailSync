@@ -105,9 +105,6 @@ export interface HistoryFooterProps {
   progressBarEnabled: boolean;
   fileProgress: FileProgress | null;
   handleCancelFileBatch: (batchId: string) => Promise<void>;
-  actionError: string;
-  syncWarning: string;
-  restoredEntry: HistoryEntry | null;
   showClearConfirm: boolean;
   clearing: boolean;
   setShowClearConfirm: Dispatch<SetStateAction<boolean>>;

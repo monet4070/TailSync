@@ -178,3 +178,11 @@ Once per quarter:
   baseline.
 - Release-only GitHub Actions majors require release-path validation.
 - Rust 0.x minor releases are treated as potentially breaking.
+
+Direct dependencies must also survive a source-use review. A package that is
+available transitively is not evidence that each platform crate needs its own
+manifest entry. During quarterly review, run Clippy with
+`RUSTFLAGS='-W unused-crate-dependencies'` for the shared core and both platform
+crates, verify feature-gated/native uses manually, and remove only proven
+residue. Example-only dependencies belong in `[dev-dependencies]` unless a
+shipped target imports them.

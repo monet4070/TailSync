@@ -37,6 +37,20 @@ export interface SettingsConnectionsSectionProps {
   handlePeerToggle: (peer: PeerDevice, enabled: boolean) => Promise<void>;
   handleForget: (peer: PeerDevice) => Promise<void>;
   openPairing: (peer: PeerDevice) => Promise<void>;
+  remotePairing: {
+    invite: import("../../tailsyncClient").RemotePairingInvite | null;
+    linkDraft: string;
+    linkPreview: import("../../tailsyncClient").RemotePairingInvitePreview | null;
+    remotePairingBusy: boolean;
+    remotePairingError: string;
+    copied: boolean;
+    handleCreateInvite: () => Promise<void>;
+    handleLinkChange: (value: string) => void;
+    handleInspectLink: () => Promise<void>;
+    handleStartRemotePairing: () => Promise<void>;
+    handleCancelInvite: () => Promise<void>;
+    handleCopyInvite: () => Promise<void>;
+  };
 }
 
 export interface SettingsGeneralSectionProps {

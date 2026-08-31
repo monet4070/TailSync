@@ -113,7 +113,7 @@ jobs:
       - name: Run bidirectional interoperability probe
         shell: pwsh
         run: ./windows/scripts/test_cross_project_interop.ps1 -WinRoot ./windows -MacRoot ./macos
-      - name: Build NSIS and run the packaged executable smoke test
+      - name: Build NSIS and run packaged executable/deep-link smoke tests
         shell: pwsh
         run: ./windows/scripts/package-windows.ps1 -InstallDependencies -SkipChecks
       - name: Upload packaged Windows smoke artifacts

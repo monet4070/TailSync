@@ -2,6 +2,7 @@ import { Activity, Grid2X2, RefreshCw, Trash2, Wifi } from "lucide-react";
 import type { PeerRoute } from "../../tailsyncClient";
 import { pairingAddressForPeer } from "../../utils/pairingAddress";
 import { routeSupportsLatencyTest } from "../../utils/peerRoute";
+import { RemotePairingPanel } from "./RemotePairingPanel";
 import {
   peerCanSync,
   routeInterfaceLabel,
@@ -25,6 +26,7 @@ export function SettingsConnectionsSection({
   handlePeerToggle,
   handleForget,
   openPairing,
+  remotePairing,
 }: SettingsConnectionsSectionProps) {
   return (
     <section className="setting-group connection-group">
@@ -97,6 +99,22 @@ export function SettingsConnectionsSection({
             : "settings.allowPairing")}
         </button>
       </div>
+
+      <RemotePairingPanel
+        t={t}
+        invite={remotePairing.invite}
+        linkDraft={remotePairing.linkDraft}
+        linkPreview={remotePairing.linkPreview}
+        busy={remotePairing.remotePairingBusy}
+        error={remotePairing.remotePairingError}
+        copied={remotePairing.copied}
+        onCreateInvite={remotePairing.handleCreateInvite}
+        onLinkChange={remotePairing.handleLinkChange}
+        onInspectLink={remotePairing.handleInspectLink}
+        onStartPairing={remotePairing.handleStartRemotePairing}
+        onCancelInvite={remotePairing.handleCancelInvite}
+        onCopyInvite={remotePairing.handleCopyInvite}
+      />
 
       <div className="device-list" aria-live="polite">
         {devices && (

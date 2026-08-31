@@ -1,6 +1,6 @@
 # ADR-003：History favorites and long-press interaction
 
-- Status: Accepted for implementation
+- Status: Accepted and implemented
 - Scope: `shared/rust-core/src/db/favorites.rs`, history APIs, and both history UIs
 
 ## Context
@@ -21,8 +21,10 @@ right, then a star stamp confirms completion.
 
 1. **Keep the storage column and wire field named `pinned` for compatibility.**
    The user-facing and new API vocabulary is `favorite`, but existing v8/v9
-   databases and clients can still decode `pinned`. Schema v10 adds the
-   favorites index and normalizes any old partially pinned file batch.
+   databases and clients can still decode `pinned`. Schema v10 added the
+   favorites index and normalized old partially pinned file batches. The
+   current schema is v11; its durable receive receipts and file-batch uniqueness
+   constraint do not change favorite semantics.
 2. **Favorite a logical item atomically.** A row without `batch_id` is one item;
    every row sharing a `batch_id` is one item. `set_favorite` and
    `delete_favorite` return all affected IDs so adapters can update visible
@@ -68,7 +70,7 @@ right, then a star stamp confirms completion.
 ## Verification
 
 - Core tests cover collection queries, deletion protection, clear behavior,
-  atomic batch mutation, duplicate/cleanup protection, and v10 migration.
+  atomic batch mutation, duplicate/cleanup protection, and v10-to-v11 migration.
 - Windows tests cover the pointer timing hook, protected context-menu path,
   favorites collection query/deletion, separate-window command, and batch-row
   state propagation.

@@ -39,6 +39,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["tailsync"]
+      }
+    },
     "shell": {
       "open": "https?://.+"
     },

@@ -132,6 +132,7 @@ assertTreeMatch('src-tauri/src', [
   'commands/peers.rs',
   'commands/platform.rs',
   'commands/preview.rs',
+  'commands/remote_pairing.rs',
   'commands/settings.rs',
   'commands/storage.rs',
   'commands/tests.rs',
@@ -521,6 +522,35 @@ for (const pattern of [
   /PlistBuddy.*NSBonjourServices:0.*_tailsync\._tcp/,
 ]) if (!pattern.test(macBuild)) fail('build-mac.sh does not package and verify the local-network permission contract.');
 
+let windowsTauriConfig;
+try {
+  windowsTauriConfig = JSON.parse(read(winRoot, 'src-tauri/tauri.conf.json'));
+} catch (error) {
+  fail(`Windows tauri.conf.json is not valid JSON: ${error}`);
+}
+const deepLinkSchemes = windowsTauriConfig.plugins?.['deep-link']?.desktop?.schemes;
+if (!Array.isArray(deepLinkSchemes) || !deepLinkSchemes.includes('tailsync')) {
+  fail('Windows package must register the tailsync deep-link scheme.');
+}
+const windowsAppSource = read(winRoot, 'src-tauri/src/lib.rs');
+for (const pattern of [
+  /tauri_plugin_single_instance::init/,
+  /deep_link\(\)\.on_open_url/,
+  /deep_link\(\)\.get_current/,
+  /queue_remote_pairing_link/,
+]) if (!pattern.test(windowsAppSource)) fail(`Windows deep-link lifecycle is missing required wiring: ${pattern}`);
+const macAppSource = read(macRoot, 'swift-ui/Sources/TailSync/TailSyncApp.swift');
+for (const pattern of [
+  /application\(_ application: NSApplication, open urls: \[URL\]\)/,
+  /remotePairingDeepLinkInbox\.receive/,
+  /takePendingRemotePairingLink/,
+]) if (!pattern.test(macAppSource)) fail(`macOS deep-link lifecycle is missing required wiring: ${pattern}`);
+for (const pattern of [
+  /<key>CFBundleURLTypes<\/key>/,
+  /<string>tailsync<\/string>/,
+  /PlistBuddy.*CFBundleURLTypes:0:CFBundleURLSchemes:0.*tailsync/,
+]) if (!pattern.test(macBuild)) fail(`build-mac.sh is missing the tailsync deep-link package contract: ${pattern}`);
+
 const clipboardHelper = read(macRoot, 'src-tauri/clipboard-helper.swift');
 if (!/--write-files/.test(clipboardHelper) || !/writeObjects\(urls\)/.test(clipboardHelper)) {
   fail('macOS clipboard helper does not support self-contained file URL restoration.');
@@ -549,4 +579,4 @@ for (const pattern of [
   /get_version/,
 ]) if (!pattern.test(macVerifier)) fail(`macOS release verifier is missing required check: ${pattern}`);
 
-console.log(`Cross-platform contract passed: shared Rust core, ${swiftCommands.size} Swift API commands, Swift JSON models, TCP 19890, Windows API 19889, macOS Unix-socket API, and macOS release requirements.`);
+console.log(`Cross-platform contract passed: shared Rust core, ${swiftCommands.size} Swift API commands, Swift JSON models, tailsync deep links, TCP 19890, Windows API 19889, macOS Unix-socket API, and macOS release requirements.`);

@@ -11,9 +11,13 @@ use tokio::time::{timeout, Duration};
 use crate::crypto;
 use crate::db;
 use crate::identity::DeviceIdentity;
-use crate::pairing::{PairingManager, PendingPairing};
+use crate::pairing::{
+    PairingManager, PendingPairing, RemotePairingInvite, RemotePairingInviteManager,
+    DEFAULT_INVITE_TTL,
+};
 use crate::protocol::{Command, FileChunkPayload, FileOffset, Frame, ProtocolError, TransferId};
 use crate::sync;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Default TCP port for TailSync
 pub const TCP_PORT: u16 = 19890;
@@ -27,6 +31,8 @@ const FILE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Reconnect back-off
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const PEER_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const REMOTE_INVITE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const REMOTE_INVITE_PREFACE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Used by the macOS SwiftUI shell to verify that the peer listener survived
 /// sleep/wake transitions.
@@ -391,6 +397,124 @@ pub async fn start_pairing(
             handshake_hash: accepted.handshake_hash,
             address: pairing_address,
             interface: pairing_interface.as_str().to_string(),
+            remote_invite: None,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Create a self-contained, one-time invite. The endpoint is started here so
+/// the displayed ID is backed by the live listener even when the server was
+/// just switched to automatic mode.
+pub async fn create_remote_pairing_invite(
+    pairing: Arc<PairingManager>,
+    settings: Arc<Mutex<crypto::Settings>>,
+    invites: Arc<RemotePairingInviteManager>,
+) -> Result<RemotePairingInvite, String> {
+    if settings.lock().await.connection_mode != "auto" {
+        return Err("Remote Iroh pairing requires automatic connection mode".to_string());
+    }
+    let endpoint = iroh::endpoint().await?;
+    let invite = invites
+        .create_from_endpoint_id(&endpoint.endpoint_id(), DEFAULT_INVITE_TTL)
+        .map_err(|error| error.to_string())?;
+    pairing.enable().await;
+    Ok(invite)
+}
+
+/// Consume a remote invite on the new device, then enter the existing Noise
+/// XX verification flow. The invite only authorizes reaching this pairing
+/// handshake; it never replaces the fingerprint/code confirmation step.
+pub async fn start_remote_pairing(
+    pairing: Arc<PairingManager>,
+    identity: Arc<DeviceIdentity>,
+    settings: Arc<Mutex<crypto::Settings>>,
+    link: &str,
+) -> Result<(), String> {
+    let invite = RemotePairingInvite::parse(link).map_err(|error| error.to_string())?;
+    if settings.lock().await.connection_mode != "auto" {
+        return Err("Remote Iroh pairing requires automatic connection mode".to_string());
+    }
+    pairing.enable().await;
+    pairing
+        .begin_handshake()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut window = pairing.subscribe_window();
+    let operation = async {
+        let endpoint = iroh::endpoint().await?;
+        let mut stream = timeout(
+            REMOTE_INVITE_CONNECT_TIMEOUT,
+            endpoint.connect_invite(&invite.endpoint_id_string()),
+        )
+        .await
+        .map_err(|_| "Remote Iroh invite connection timed out".to_string())??;
+        let hello = invite.hello().encode();
+        timeout(REMOTE_INVITE_PREFACE_TIMEOUT, stream.write_all(&hello))
+            .await
+            .map_err(|_| "Remote Iroh invite preface timed out".to_string())?
+            .map_err(|error| error.to_string())?;
+        timeout(REMOTE_INVITE_PREFACE_TIMEOUT, stream.flush())
+            .await
+            .map_err(|_| "Remote Iroh invite preface timed out".to_string())?
+            .map_err(|error| error.to_string())?;
+        let mut ack = [0_u8; 1];
+        timeout(REMOTE_INVITE_PREFACE_TIMEOUT, stream.read_exact(&mut ack))
+            .await
+            .map_err(|_| "Remote Iroh invite acknowledgement timed out".to_string())?
+            .map_err(|error| error.to_string())?;
+        if ack[0] != tailsync_core::pairing::invite::INVITE_ACK_ACCEPTED {
+            return Err(
+                "The remote pairing invite was rejected or is no longer available".to_string(),
+            );
+        }
+        let accepted = secure::connect_pairing(stream, &identity, local_peer_identity("auto"))
+            .await
+            .map_err(|error| error.to_string())?;
+        let claimed = accepted
+            .peer_identity
+            .iroh_endpoint_id
+            .as_deref()
+            .ok_or("Peer did not bind its Noise identity to an Iroh endpoint")?;
+        if tailsync_core::iroh_transport::canonical_endpoint_id(claimed)?
+            != invite.endpoint_id_string()
+        {
+            return Err("Peer Iroh endpoint does not match the invite".to_string());
+        }
+        iroh::remember_rtt_capability(&invite.endpoint_id_string());
+        Ok::<_, String>((accepted, invite.endpoint_id_string()))
+    };
+    tokio::pin!(operation);
+    let (accepted, pairing_address) = loop {
+        tokio::select! {
+            result = &mut operation => {
+                break match result {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        let message = format!("Remote pairing failed: {error}");
+                        pairing.record_failure(message.clone()).await;
+                        return Err(message);
+                    }
+                };
+            }
+            changed = window.changed() => {
+                if changed.is_err() || !*window.borrow() {
+                    return Err("Pairing window was closed".to_string());
+                }
+            }
+        }
+    };
+
+    pairing
+        .install_session(PendingPairing {
+            connection: accepted.connection,
+            hostname: accepted.peer_identity.hostname,
+            remote_public_key: accepted.remote_public_key,
+            handshake_hash: accepted.handshake_hash,
+            address: pairing_address,
+            interface: ConnectionInterface::Iroh.as_str().to_string(),
+            remote_invite: None,
         })
         .await
         .map_err(|error| error.to_string())

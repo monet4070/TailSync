@@ -37,6 +37,7 @@ import {
 import { useConnectionTests } from "../hooks/useConnectionTests";
 import { useDevices } from "../hooks/useDevices";
 import { usePairing } from "../hooks/usePairing";
+import { useRemotePairing } from "../hooks/useRemotePairing";
 import {
   DEFAULT_HISTORY_SHORTCUT,
   DEFAULT_SYNC_SHORTCUT,
@@ -315,6 +316,7 @@ export function Settings() {
     closePairing,
     handlePair,
   } = usePairing({ refreshDevices });
+  const remotePairing = useRemotePairing();
 
   const handleConnectionMode = async (mode: "auto" | "lan_only" | "tailscale_only") => {
     if (mode === settings?.connection_mode) return;
@@ -496,6 +498,7 @@ export function Settings() {
           handlePeerToggle={handlePeerToggle}
           handleForget={handleForget}
           openPairing={openPairing}
+          remotePairing={remotePairing}
         />
         <SettingsGeneralSection
           settings={settings}

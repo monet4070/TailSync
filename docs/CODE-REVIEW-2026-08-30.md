@@ -6,6 +6,10 @@
 > - v3：**并入作者的第二轮独立核验结论**——撤销 1 条误报（§1.7 macOS 唤醒恢复）、降级/收窄若干夸大描述、撤回 1 条不充分的修复建议（仅查内存 `completed_batches`），并新增作者发现的更基础 P0（ACK 先于持久化提交）。v3 的所有反转点均已由本审查独立验证（验证链见各节）。
 > - v4（2026-08-31 当前状态）：提交 `fe7e4c6` 已完成持久回执、ACK 时序、schema v11 唯一约束/迁移修复、退避调度、稳定设备身份、Windows 双广播、存储事务与配额保护。后续卫生审查删除了协议已拒绝的旧单文件发送路径，并把 `sync_warning` 的四个重复用例合并为一个表驱动用例。以下 v3 章节保留发现过程；本段与状态表是当前结论。
 
+> [!IMPORTANT]
+> §一至§四保留 v3 的故障证据与原始修复方案，标题中的 P0/P1 不表示问题仍然存在。当前行为规格见
+> `features/resumable-file-transfer.md`，当前裁决以本页 v4 状态表为准。
+
 ## 〇、总体判断
 
 **断点续传跨崩溃/重启的架构方向正确**：发送端 journal（`data/outgoing-transfers/`，原子写+fsync，private_fs.rs:303-320）+ 接收端 `.part`/`.batch.json` 持久态 + 进程内 claim 防并发重放（outgoing.rs:22-59）；接收端偏移量从 `.part` 文件长度推导而非信任 sidecar（resume.rs:115-120、receive_engine.rs:140-147），恢复后强制全文件校验。`4039413` 的路由重选改动（回退路由上的 FileResume 触发重选首选路由）已带守卫测试落地。
@@ -29,7 +33,9 @@ v3 发现的两个 P0 都源于同一类根因——**完成事务不是原子�
 | §1.G macOS 缺唤醒恢复 | **误报，已撤销** | Swift 层监听 `didWakeNotification` 并调用守护进程断连+恢复 |
 | §2.4 Windows 前端测试 | ✅ 已随 `4039413` 修复 | 当前不属于问题 |
 
-v4 的最终测试数字以本次提交 CI 为准。`sync_warning` 的生产语义仍是单一最新槽；测试通过专用锁串行观察该槽，四个同构用例已合并为一个表驱动用例。
+v4 的最终验证以 `d6c4b24` 对应的 [CI run 33343172090](https://github.com/monet4070/TailSync/actions/runs/33343172090)
+为准：5 个 job 全部通过，包含 Windows NSIS 构建/烟测、macOS bundle/daemon 验证和双向互操作探针。
+`sync_warning` 的生产语义仍是单一最新槽；测试通过专用锁串行观察该槽，四个同构用例已合并为一个表驱动用例。
 
 ---
 
@@ -224,3 +230,23 @@ Windows 缺少 macOS 那样的运行时通知缓冲，历史窗口内看不到�
 | §1.8 取消残留 | 收窄为窄窗口 | 批次/chunk 边界均发 Cancel 帧 |
 | §1.8 dead code 复活即挂起 | 修正为"会被拒绝" | prepare.rs:103-105 拒绝 batch=None |
 | —（v3 新增） | **§1.A ACK 先于 DB 提交，P0** | server.rs:436-467 → batches.rs:182/184-193 → sync_adapter.rs:126-137 |
+
+---
+
+## 五、2026-08-31 代码卫生收口
+
+提交 `3c8390a` 与 `d6c4b24` 在不改变用户语义的前提下完成了本轮后续收口：
+
+- Iroh RTT 测速改为复用应用常驻 Endpoint，只关闭独立 RTT 连接；连续测速保持相同 Endpoint ID，
+  既有业务流不受影响，冷路径连接预算统一为 10 秒。
+- 两端删除协议入口已拒绝、没有调用者的旧单文件发送路径及其哈希辅助代码，避免未来误接回不完整流程。
+- 删除平台 crate 和 Windows 前端中已证明无直接用途的依赖；示例专用 `zip` 移入 dev dependency。
+- `sync_warning` 四个同构用例合并为一个表驱动用例，但保留跨模块共享状态所需的串行测试锁。
+- Swift JSON 解析移除强制字典转换；主题持久化路径移除生产 `unwrap`；TypeScript JSON 读取从
+  `any` 收紧为验证后的 `unknown`。
+- React 19 中可安全替换的 render-time ref 写入已改为 `useEffectEvent` 或派生状态；其余涉及异步预览、
+  窗口和资源释放时序的建议级告警保留现有实现，不为追求“零告警”引入竞态。
+
+相对上一远端基线，本轮实现差异为 43 个文件、净删 866 行。大型模块按职责和 seam 审查后未做纯行数
+拆分；`peer/directory.rs`、`sync/outgoing.rs`、`TailSyncApp.swift`、`Loc.swift` 等仍偏大，但分别集中
+规则、持久状态、应用生命周期或本地化数据，后续只应在出现新的稳定职责边界时继续拆分。

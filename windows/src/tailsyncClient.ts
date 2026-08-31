@@ -461,6 +461,51 @@ export function confirmPairing(): Promise<PairingStatus> {
   return invoke<PairingStatus>("confirm_pairing");
 }
 
+export interface RemotePairingInvite {
+  link: string;
+  expires_at: number;
+  remaining_seconds: number;
+}
+
+export interface RemotePairingInvitePreview {
+  endpoint_id: string;
+  expires_at: number;
+  remaining_seconds: number;
+}
+
+export type RemoteInviteState = "ready" | "claimed";
+
+export interface RemoteInviteStatus {
+  active: boolean;
+  state?: RemoteInviteState | null;
+  expires_at?: number | null;
+  remaining_seconds: number;
+}
+
+export function createRemotePairingInvite(): Promise<RemotePairingInvite> {
+  return invoke<RemotePairingInvite>("create_remote_pairing_invite");
+}
+
+export function inspectRemotePairingLink(link: string): Promise<RemotePairingInvitePreview> {
+  return invoke<RemotePairingInvitePreview>("inspect_remote_pairing_link", { link });
+}
+
+export function startRemotePairing(link: string): Promise<PairingStatus> {
+  return invoke<PairingStatus>("start_remote_pairing", { link });
+}
+
+export function getRemotePairingInviteStatus(): Promise<RemoteInviteStatus> {
+  return invoke<RemoteInviteStatus>("get_remote_pairing_invite_status");
+}
+
+export function cancelRemotePairingInvite(): Promise<PairingStatus> {
+  return invoke<PairingStatus>("cancel_remote_pairing_invite");
+}
+
+export function takePendingRemotePairingLink(): Promise<string | null> {
+  return invoke<string | null>("take_pending_remote_pairing_link");
+}
+
 // ---------------------------------------------------------------------------
 // Settings — write side (T246)
 // ---------------------------------------------------------------------------

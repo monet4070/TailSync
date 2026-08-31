@@ -2,6 +2,7 @@ use super::*;
 use tailsync_core::peer::admission::peer_is_allowed;
 use tailsync_core::peer::event_receiver::process_reliable_event;
 use tailsync_core::peer::inbound_source::InboundSource;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub(super) use tailsync_core::peer::connection_limiter::ConnectionLimiter;
 
@@ -145,10 +146,12 @@ async fn handle_connection(
         database,
         settings,
         Some(pairing),
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_iroh_connection(
     stream: tailsync_core::iroh_transport::IrohBiStream,
     remote_endpoint_id: String,
@@ -157,6 +160,7 @@ pub(super) async fn handle_iroh_connection(
     settings: Arc<Mutex<crypto::Settings>>,
     identity: Arc<DeviceIdentity>,
     pairing: Arc<PairingManager>,
+    remote_invite: Option<tailsync_core::pairing::InviteClaim>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if settings.lock().await.connection_mode != "auto" {
         return Err("Iroh connections are only accepted in automatic mode".into());
@@ -192,6 +196,66 @@ pub(super) async fn handle_iroh_connection(
         database,
         settings,
         Some(pairing),
+        remote_invite,
+    )
+    .await
+}
+
+/// Validate the application-level capability before entering the normal Noise
+/// pairing handshake.  An invalid capability receives only a generic reject
+/// byte and never consumes a pairing failure budget.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn handle_iroh_invite_connection(
+    mut stream: tailsync_core::iroh_transport::IrohBiStream,
+    remote_endpoint_id: String,
+    invite_manager: Arc<tailsync_core::pairing::RemotePairingInviteManager>,
+    sync_engine: Arc<Mutex<sync::SyncEngine>>,
+    database: Arc<Mutex<db::HistoryDB>>,
+    settings: Arc<Mutex<crypto::Settings>>,
+    identity: Arc<DeviceIdentity>,
+    pairing: Arc<PairingManager>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const INVITE_PREFACE_TIMEOUT: Duration = Duration::from_secs(3);
+    let mut encoded = [0u8; tailsync_core::pairing::invite::INVITE_HELLO_LENGTH];
+    let read_result = timeout(INVITE_PREFACE_TIMEOUT, stream.read_exact(&mut encoded)).await;
+    let hello = match read_result {
+        Ok(Ok(_)) => tailsync_core::pairing::InviteHello::decode(&encoded),
+        _ => Err(tailsync_core::pairing::InviteError::InvalidFormat),
+    };
+    let claim = match hello {
+        Ok(hello) => match invite_manager.claim(&hello) {
+            Ok(claim) => claim,
+            Err(error) => {
+                let _ = stream
+                    .write_all(&[tailsync_core::pairing::invite::INVITE_ACK_REJECTED])
+                    .await;
+                let _ = stream.flush().await;
+                return Err(error.to_string().into());
+            }
+        },
+        Err(error) => {
+            let _ = stream
+                .write_all(&[tailsync_core::pairing::invite::INVITE_ACK_REJECTED])
+                .await;
+            let _ = stream.flush().await;
+            return Err(error.to_string().into());
+        }
+    };
+    timeout(
+        INVITE_PREFACE_TIMEOUT,
+        stream.write_all(&[tailsync_core::pairing::invite::INVITE_ACK_ACCEPTED]),
+    )
+    .await??;
+    timeout(INVITE_PREFACE_TIMEOUT, stream.flush()).await??;
+    handle_iroh_connection(
+        stream,
+        remote_endpoint_id,
+        sync_engine,
+        database,
+        settings,
+        identity,
+        pairing,
+        Some(claim),
     )
     .await
 }
@@ -203,6 +267,7 @@ async fn handle_accepted_connection(
     database: Arc<Mutex<db::HistoryDB>>,
     settings: Arc<Mutex<crypto::Settings>>,
     pairing: Option<Arc<PairingManager>>,
+    remote_invite: Option<tailsync_core::pairing::InviteClaim>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let purpose = accepted.purpose;
     let handshake_hash = accepted.handshake_hash;
@@ -215,7 +280,7 @@ async fn handle_accepted_connection(
     let source_interface = source.interface()?;
 
     if purpose == secure::HandshakePurpose::Pairing {
-        return crate::pairing::install_pairing_session(
+        return crate::pairing::install_pairing_session_with_invite(
             pairing.as_ref(),
             stream,
             peer_info.hostname,
@@ -223,6 +288,7 @@ async fn handle_accepted_connection(
             handshake_hash,
             source_address,
             source_interface.as_str().to_string(),
+            remote_invite,
         )
         .await
         .map_err(Into::into);

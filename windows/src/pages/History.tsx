@@ -28,6 +28,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
 import { useTransient } from "../hooks/useTransient";
+import { useHistoryNotice } from "../hooks/useHistoryNotice";
 import {
   useThumbnailCache,
 } from "../hooks/useThumbnailCache";
@@ -68,6 +69,7 @@ import type { FilterOption } from "./history/HistoryViewTypes";
 import { HistoryHeader } from "./history/HistoryHeader";
 import { HistoryMainContent } from "./history/HistoryMainContent";
 import { HistoryFooter } from "./history/HistoryFooter";
+import { HistoryNoticeBar } from "./history/HistoryNoticeBar";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -114,8 +116,7 @@ export function History({ collection = "all" }: HistoryProps) {
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [actionError, flashActionError] = useTransient("", RESTORE_FEEDBACK_DURATION_MS);
-  const [syncWarning, flashSyncWarning] = useTransient("", 8000);
+  const [historyNotice, showHistoryNotice, clearHistoryNotice] = useHistoryNotice();
   const newGlowTimers = useRef<Set<number>>(new Set());
 
   const lastVersion = useRef<number>(0);
@@ -171,8 +172,12 @@ export function History({ collection = "all" }: HistoryProps) {
   const { theme, themeAssetSlots } = useTheme();
   const { t } = useI18n();
   const showActionError = useCallback(() => {
-    flashActionError(t("history.actionFailed"));
-  }, [t, flashActionError]);
+    showHistoryNotice({
+      key: "action-failed",
+      level: "error",
+      message: t("history.actionFailed"),
+    });
+  }, [t, showHistoryNotice]);
 
   const categoryOptions = useMemo<FilterOption[]>(
     () =>
@@ -353,12 +358,20 @@ export function History({ collection = "all" }: HistoryProps) {
         delivery_expired: "history.syncDeliveryExpired",
       }[snapshot.sync_warning.kind];
       if (key) {
-        flashSyncWarning(t(key).replace("{peer}", snapshot.sync_warning.peer));
+        showHistoryNotice({
+          key: `sync-warning:${snapshot.sync_warning.kind}:${snapshot.sync_warning.peer}`,
+          level: "warning",
+          message: t(key).replace("{peer}", snapshot.sync_warning.peer),
+        });
       }
     }
     for (const notification of snapshot.notifications ?? []) {
       if (notification.level === "error") {
-        flashSyncWarning(notification.message);
+        showHistoryNotice({
+          key: `runtime-error:${notification.message}`,
+          level: "error",
+          message: notification.message,
+        });
       }
     }
     if (!progressBarEnabled) {
@@ -529,6 +542,11 @@ export function History({ collection = "all" }: HistoryProps) {
     try {
       await restoreEntry(id);
       flashSelectedId(id);
+      showHistoryNotice({
+        key: "restore-success",
+        level: "success",
+        message: t("history.restored"),
+      });
     } catch (e) {
       console.error("Restore failed:", e);
       showActionError();
@@ -585,6 +603,11 @@ export function History({ collection = "all" }: HistoryProps) {
   const handleRestoreBatch = async (batchId: string) => {
     try {
       await restoreFileBatch(batchId);
+      showHistoryNotice({
+        key: "restore-success",
+        level: "success",
+        message: t("history.restored"),
+      });
     } catch (error) {
       console.error("Batch restore failed:", error);
       showActionError();
@@ -626,8 +649,12 @@ export function History({ collection = "all" }: HistoryProps) {
   };
 
   const handleFavoriteProtected = useCallback(() => {
-    flashActionError(t("history.favoriteProtected"));
-  }, [flashActionError, t]);
+    showHistoryNotice({
+      key: "favorite-protected",
+      level: "warning",
+      message: t("history.favoriteProtected"),
+    });
+  }, [showHistoryNotice, t]);
 
   const handleCancelFileBatch = async (batchId: string) => {
     try {
@@ -639,10 +666,6 @@ export function History({ collection = "all" }: HistoryProps) {
   };
 
   /* ── Derived state ────────────────────────────────────────────── */
-
-  const restoredEntry = selectedId
-    ? entries.find((entry) => entry.id === selectedId) ?? null
-    : null;
 
   /* ── Render ───────────────────────────────────────────────────── */
 
@@ -677,6 +700,12 @@ export function History({ collection = "all" }: HistoryProps) {
         activeDateBounds={activeDateBounds}
         hasActiveFilters={hasActiveFilters}
         migrationDiagnostics={migrationDiagnostics}
+      />
+
+      <HistoryNoticeBar
+        t={t}
+        notice={historyNotice}
+        onDismiss={clearHistoryNotice}
       />
 
       <HistoryMainContent
@@ -716,9 +745,6 @@ export function History({ collection = "all" }: HistoryProps) {
         progressBarEnabled={progressBarEnabled}
         fileProgress={fileProgress}
         handleCancelFileBatch={handleCancelFileBatch}
-        actionError={actionError}
-        syncWarning={syncWarning}
-        restoredEntry={restoredEntry}
         showClearConfirm={showClearConfirm}
         clearing={clearing}
         setShowClearConfirm={setShowClearConfirm}

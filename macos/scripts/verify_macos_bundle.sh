@@ -57,6 +57,7 @@ test -x "$APP_PATH/Contents/MacOS/clipboard-helper"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$APP_PATH/Contents/Info.plist" | grep -q 'local network access'
 /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices:0' "$APP_PATH/Contents/Info.plist" | grep -qx '_tailsync._tcp'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$APP_PATH/Contents/Info.plist" | grep -qx 'tailsync'
 codesign --verify --deep --strict "$APP_PATH"
 if [[ "$RELEASE_TIER" == "trusted" ]]; then
     xcrun stapler validate "$APP_PATH"

@@ -325,6 +325,7 @@ impl PairingManager {
             remote_public_key,
             address,
             interface,
+            mut remote_invite,
             ..
         } = pending;
         let deadline = {
@@ -444,6 +445,9 @@ impl PairingManager {
             }
 
             if local_persisted && remote_persisted {
+                if let Some(claim) = remote_invite.take() {
+                    claim.commit();
+                }
                 self.set_finalizing(session_id).await;
                 match tokio::time::timeout(PAIRING_FINALIZE_TIMEOUT, connection.shutdown()).await {
                     Ok(Ok(())) => {}

@@ -146,6 +146,7 @@ async fn a_stalled_pairing_session_releases_the_window_before_window_expiry() {
             handshake_hash: vec![7; 32],
             address: "192.168.1.5".into(),
             interface: "lan".into(),
+            remote_invite: None,
         })
         .await
         .unwrap();
@@ -220,6 +221,7 @@ async fn both_confirmations_save_both_peer_keys_and_close_windows() {
                 handshake_hash: accepted.handshake_hash,
                 address: IROH_ENDPOINT_ID.into(),
                 interface: "iroh".into(),
+                remote_invite: None,
             })
             .await
             .unwrap();
@@ -244,6 +246,7 @@ async fn both_confirmations_save_both_peer_keys_and_close_windows() {
             handshake_hash: accepted.handshake_hash,
             address: IROH_ENDPOINT_ID.into(),
             interface: "iroh".into(),
+            remote_invite: None,
         })
         .await
         .unwrap();
@@ -331,6 +334,7 @@ async fn pairing_waits_for_remote_persisted_ack_before_marking_paired() {
             handshake_hash: vec![7; 32],
             address: "5866666666666666666666666666666666666666666666666666666666666666".into(),
             interface: "iroh".into(),
+            remote_invite: None,
         })
         .await
         .unwrap();
@@ -364,6 +368,71 @@ async fn pairing_waits_for_remote_persisted_ack_before_marking_paired() {
         server_settings.lock().await.trusted_peer_keys.get("client"),
         Some(&client_identity.public_key_base64())
     );
+}
+
+#[tokio::test]
+async fn remote_invite_is_consumed_only_after_both_peers_persist_trust() {
+    const IROH_ENDPOINT_ID: &str =
+        "5866666666666666666666666666666666666666666666666666666666666666";
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let server_manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_secs(2),
+        5,
+        false,
+    );
+    let invite_manager = Arc::new(RemotePairingInviteManager::new());
+    let invite = invite_manager
+        .create_from_endpoint_id(IROH_ENDPOINT_ID, Duration::from_secs(60))
+        .unwrap();
+    let claim = invite_manager.claim(&invite.hello()).unwrap();
+    server_manager.enable().await;
+
+    let (mut client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    server_manager
+        .install_session(PendingPairing {
+            connection: server,
+            hostname: "client".into(),
+            remote_public_key: client_identity.public_key().to_vec(),
+            handshake_hash: vec![7; 32],
+            address: IROH_ENDPOINT_ID.into(),
+            interface: "iroh".into(),
+            remote_invite: Some(claim),
+        })
+        .await
+        .unwrap();
+
+    server_manager.confirm().await.unwrap();
+    let frame = client.read_frame().await.unwrap();
+    assert_eq!(frame.command, Command::PairingConfirm);
+    client
+        .write_frame(&Frame::try_new(Command::PairingConfirm, 0, 0, Vec::new()).unwrap())
+        .await
+        .unwrap();
+    let frame = client.read_frame().await.unwrap();
+    assert_eq!(frame.command, Command::PairingPersisted);
+
+    assert!(invite_manager.status().active);
+    assert_eq!(
+        invite_manager.status().state,
+        Some(RemoteInviteState::Claimed)
+    );
+
+    client
+        .write_frame(&Frame::try_new(Command::PairingPersisted, 0, 0, Vec::new()).unwrap())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while server_manager.status().await.phase != PairingPhase::Paired {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("pairing should complete after both persisted acknowledgements");
+
+    assert!(!invite_manager.status().active);
 }
 
 // ------------------------------------------------------------------

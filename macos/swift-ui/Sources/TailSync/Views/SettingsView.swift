@@ -81,6 +81,12 @@ struct SettingsView: View {
     @State var pairingInProgress = false
     @State var showPairingSheet = false
     @State var previousPairingPhase: String?
+    @State var remoteInvite: ApiClient.RemotePairingInvite?
+    @State var remoteInviteLink = ""
+    @State var remoteInvitePreview: ApiClient.RemotePairingInvitePreview?
+    @State var remotePairingMessage: String?
+    @State var remotePairingInProgress = false
+    @State var remoteInviteCopied = false
     @State var testingPeers: Set<String> = []
     @State var removingPeers: Set<String> = []
     @State var testResults: [String: PeerConnectionTestResult] = [:]
@@ -200,6 +206,17 @@ struct SettingsView: View {
         ) { notification in
             if let enabled = notification.userInfo?["enabled"] as? Bool {
                 settings.sync_enabled = enabled
+            }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .tailSyncRemotePairingInviteReceived)
+        ) { notification in
+            guard let link = notification.object as? String else { return }
+            handleRemotePairingLink(link)
+        }
+        .onAppear {
+            if let link = AppDelegate.takePendingRemotePairingLink() {
+                handleRemotePairingLink(link)
             }
         }
         .onDisappear {

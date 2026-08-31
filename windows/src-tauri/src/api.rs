@@ -518,6 +518,7 @@ pub struct ApiState {
     pub identity: Arc<DeviceIdentity>,
     pub pool: Arc<Mutex<network::ConnectionPool>>,
     pub pairing: Arc<crate::pairing::PairingManager>,
+    pub remote_invites: Arc<crate::pairing::RemotePairingInviteManager>,
     pub token: ApiToken,
     pub shutdown: watch::Sender<bool>,
     pub pending_storage_cleanup: Arc<Mutex<Option<std::path::PathBuf>>>,
@@ -574,6 +575,8 @@ struct Request {
     public_key: Option<String>,
     #[serde(default)]
     address: Option<String>,
+    #[serde(default)]
+    invite_link: Option<String>,
     #[serde(default)]
     batch_id: Option<String>,
     #[serde(default)]

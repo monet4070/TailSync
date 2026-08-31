@@ -98,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static var historyWC: NSWindowController?
     private static var favoritesWC: NSWindowController?
     private static var settingsWC: NSWindowController?
+    private static var remotePairingDeepLinkInbox = RemotePairingDeepLinkInbox()
     private static var daemonProcess: Process?
     private static let daemonStopLock = NSLock()
 
@@ -147,6 +148,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("[TailSync] could not acquire the single-instance lock: \(error)")
             NSApp.terminate(nil)
         }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            Self.receiveRemotePairingURL(url)
+        }
+    }
+
+    private static func receiveRemotePairingURL(_ url: URL) {
+        guard let link = remotePairingDeepLinkInbox.receive(url) else { return }
+        showSettings()
+        NotificationCenter.default.post(
+            name: .tailSyncRemotePairingInviteReceived,
+            object: link
+        )
+    }
+
+    static func takePendingRemotePairingLink() -> String? {
+        remotePairingDeepLinkInbox.takePending()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

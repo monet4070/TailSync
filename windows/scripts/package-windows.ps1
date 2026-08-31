@@ -93,6 +93,53 @@ function New-ArtifactRecord {
     }
 }
 
+function Convert-HexToBytes {
+    param(
+        [Parameter(Mandatory)] [string]$Hex
+    )
+
+    if (($Hex.Length % 2) -ne 0 -or $Hex -notmatch '^[0-9a-fA-F]+$') {
+        throw 'Hex input must contain an even number of hexadecimal characters.'
+    }
+    [byte[]]$bytes = [byte[]]::new([int]($Hex.Length / 2))
+    for ($index = 0; $index -lt $bytes.Length; $index++) {
+        $bytes[$index] = [System.Convert]::ToByte($Hex.Substring($index * 2, 2), 16)
+    }
+    return $bytes
+}
+
+function New-SmokeRemotePairingLink {
+    # A short-lived, structurally valid invite lets the packaged smoke test
+    # exercise the Windows-only single-instance/deep-link path without using a
+    # real peer or persisting a reusable capability.
+    $payload = [System.Collections.Generic.List[byte]]::new()
+    $payload.AddRange([System.Text.Encoding]::ASCII.GetBytes('TSI1'))
+    $payload.Add([byte]1)
+    $payload.Add([byte]0)
+
+    [byte[]]$expires = [System.BitConverter]::GetBytes(
+        [UInt64]([System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 120)
+    )
+    if ([System.BitConverter]::IsLittleEndian) {
+        [System.Array]::Reverse($expires)
+    }
+    $payload.AddRange($expires)
+    [byte[]]$endpointId = Convert-HexToBytes -Hex `
+        '5866666666666666666666666666666666666666666666666666666666666666'
+    $payload.AddRange($endpointId)
+
+    [byte[]]$inviteId = New-Object byte[] 16
+    [byte[]]$secret = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($inviteId)
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($secret)
+    $payload.AddRange($inviteId)
+    $payload.AddRange($secret)
+
+    $encoded = [System.Convert]::ToBase64String($payload.ToArray()).TrimEnd('=')
+    $encoded = $encoded.Replace('+', '-').Replace('/', '_')
+    return "tailsync://pair/v1/$encoded"
+}
+
 if ($env:OS -ne 'Windows_NT') {
     throw 'This packaging script must run on Windows.'
 }
@@ -376,6 +423,7 @@ try {
         New-Item -ItemType Directory -Path $smokeRoot | Out-Null
         $previousDataDirectory = $env:TAILSYNC_DATA_DIR
         $process = $null
+        $secondaryProcess = $null
         try {
             $env:TAILSYNC_DATA_DIR = $smokeRoot
             $process = Start-Process -FilePath $portablePath -WindowStyle Hidden -PassThru
@@ -384,8 +432,29 @@ try {
             if ($process.HasExited) {
                 throw "Packaged executable exited during smoke test with code $($process.ExitCode)."
             }
+
+            Write-Host 'Exercising packaged single-instance remote-pairing deep link...'
+            $smokeLink = New-SmokeRemotePairingLink
+            $secondaryProcess = Start-Process `
+                -FilePath $portablePath `
+                -ArgumentList @($smokeLink) `
+                -WindowStyle Hidden `
+                -PassThru
+            Wait-Process -Id $secondaryProcess.Id -Timeout 10 -ErrorAction Stop
+            $secondaryProcess.Refresh()
+            if (!$secondaryProcess.HasExited) {
+                throw 'Packaged deep-link launch did not hand off to the existing instance.'
+            }
+            $process.Refresh()
+            if ($process.HasExited) {
+                throw 'Existing packaged instance exited while accepting a remote-pairing deep link.'
+            }
         }
         finally {
+            if ($null -ne $secondaryProcess -and !$secondaryProcess.HasExited) {
+                Stop-Process -Id $secondaryProcess.Id -Force
+                Wait-Process -Id $secondaryProcess.Id -Timeout 10 -ErrorAction SilentlyContinue
+            }
             if ($null -ne $process -and !$process.HasExited) {
                 Stop-Process -Id $process.Id -Force
                 Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue

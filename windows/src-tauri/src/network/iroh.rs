@@ -138,6 +138,7 @@ pub async fn start_server(
     settings: Arc<Mutex<crypto::Settings>>,
     identity: Arc<DeviceIdentity>,
     pairing: Arc<PairingManager>,
+    remote_invites: Arc<tailsync_core::pairing::RemotePairingInviteManager>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let limiter = ConnectionLimiter::new(64, 8);
@@ -192,11 +193,12 @@ pub async fn start_server(
         match accepted {
             Ok(Some(accepted)) => {
                 let remote_endpoint_id = accepted.remote_endpoint_id.clone();
+                let connection_kind = accepted.kind();
                 let Some(permit) = limiter.try_acquire_source(remote_endpoint_id.clone()) else {
                     warn!("Connection limit reached for an inbound Iroh peer");
                     continue;
                 };
-                if accepted.is_rtt_probe() {
+                if connection_kind == tailsync_core::iroh_transport::IrohConnectionKind::Rtt {
                     handlers.spawn(async move {
                         let _permit = permit;
                         accepted.wait_for_close().await;
@@ -208,6 +210,7 @@ pub async fn start_server(
                 let settings = settings.clone();
                 let identity = identity.clone();
                 let pairing = pairing.clone();
+                let remote_invites = remote_invites.clone();
                 handlers.spawn(async move {
                     let _permit = permit;
                     let stream = match timeout(HANDSHAKE_TIMEOUT, accepted.accept_stream()).await {
@@ -221,17 +224,34 @@ pub async fn start_server(
                             return;
                         }
                     };
-                    if let Err(error) = server::handle_iroh_connection(
-                        stream,
-                        remote_endpoint_id.clone(),
-                        sync,
-                        db,
-                        settings,
-                        identity,
-                        pairing,
-                    )
-                    .await
+                    let result = if connection_kind
+                        == tailsync_core::iroh_transport::IrohConnectionKind::Invite
                     {
+                        server::handle_iroh_invite_connection(
+                            stream,
+                            remote_endpoint_id.clone(),
+                            remote_invites,
+                            sync,
+                            db,
+                            settings,
+                            identity,
+                            pairing,
+                        )
+                        .await
+                    } else {
+                        server::handle_iroh_connection(
+                            stream,
+                            remote_endpoint_id.clone(),
+                            sync,
+                            db,
+                            settings,
+                            identity,
+                            pairing,
+                            None,
+                        )
+                        .await
+                    };
+                    if let Err(error) = result {
                         warn!("Inbound Iroh connection error: {error}");
                         debug!("Failed inbound Iroh endpoint: {remote_endpoint_id}");
                     }

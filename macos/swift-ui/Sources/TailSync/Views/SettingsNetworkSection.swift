@@ -26,6 +26,9 @@ extension SettingsView {
             pairingPanel
 
             themedDivider.padding(.leading, 16)
+            remotePairingSection
+
+            themedDivider.padding(.leading, 16)
             peerList
         }
     }

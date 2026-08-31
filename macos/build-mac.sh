@@ -133,6 +133,17 @@ cat > "$STAGING_BUNDLE/Contents/Info.plist" << PLIST
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.tailsync.app</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>tailsync</string>
+            </array>
+        </dict>
+    </array>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSLocalNetworkUsageDescription</key>
@@ -164,6 +175,7 @@ test -x "$STAGING_BUNDLE/Contents/MacOS/clipboard-helper"
 /usr/bin/plutil -lint "$STAGING_BUNDLE/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$STAGING_BUNDLE/Contents/Info.plist" | grep -q 'local network access'
 /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices:0' "$STAGING_BUNDLE/Contents/Info.plist" | grep -qx '_tailsync._tcp'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$STAGING_BUNDLE/Contents/Info.plist" | grep -qx 'tailsync'
 grep -Fq "\"version\":\"$APP_VERSION\"" "$STAGING_BUNDLE/Contents/Resources/tailsync-update.json"
 
 rm -rf "$BUNDLE"

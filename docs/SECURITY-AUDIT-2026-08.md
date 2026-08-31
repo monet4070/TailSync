@@ -1,10 +1,12 @@
 # Security Audit Adjudication — 2026-08
 
 This document records the final adjudication of the 2026-08 external audit
-reports against `main@eac7310`, so the same findings are not re-litigated.
-Every item below was verified directly against the source tree before
-acceptance; several widely-repeated claims were disproven and are listed at
-the bottom.
+reports, originally raised against `main@eac7310` and updated through
+`codex/reliability-hardening@d6c4b24`, so the same findings are not
+re-litigated. Every item below was verified directly against the source tree
+before acceptance; several widely-repeated claims were disproven and are
+listed at the bottom. Current feature behavior belongs in `docs/features/`;
+this file remains the security decision record.
 
 ## Accepted (fixed or scheduled)
 

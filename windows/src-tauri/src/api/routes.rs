@@ -337,6 +337,107 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             error: None,
         },
 
+        "create_remote_pairing_invite" => match network::create_remote_pairing_invite(
+            state.pairing.clone(),
+            state.settings.clone(),
+            state.remote_invites.clone(),
+        )
+        .await
+        {
+            Ok(invite) => Response {
+                ok: true,
+                data: Some(serde_json::json!({
+                    "link": invite.as_link(),
+                    "expires_at": invite.expires_at(),
+                    "remaining_seconds": invite.remaining_seconds(),
+                })),
+                error: None,
+            },
+            Err(error) => Response {
+                ok: false,
+                data: None,
+                error: Some(error),
+            },
+        },
+
+        "inspect_remote_pairing_link" => {
+            let link = req
+                .invite_link
+                .as_deref()
+                .or(req.address.as_deref())
+                .unwrap_or_default();
+            match crate::pairing::RemotePairingInvite::parse(link) {
+                Ok(invite) => Response {
+                    ok: true,
+                    data: Some(serde_json::json!({
+                        "endpoint_id": invite.endpoint_id_string(),
+                        "expires_at": invite.expires_at(),
+                        "remaining_seconds": invite.remaining_seconds(),
+                    })),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+
+        "start_remote_pairing" => {
+            let link = req
+                .invite_link
+                .as_deref()
+                .or(req.address.as_deref())
+                .unwrap_or_default()
+                .trim();
+            if link.is_empty() {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing invite_link".into()),
+                };
+            }
+            match network::start_remote_pairing(
+                state.pairing.clone(),
+                state.identity.clone(),
+                state.settings.clone(),
+                link,
+            )
+            .await
+            {
+                Ok(()) => Response {
+                    ok: true,
+                    data: Some(
+                        serde_json::to_value(state.pairing.status().await).unwrap_or_default(),
+                    ),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: Some(
+                        serde_json::to_value(state.pairing.status().await).unwrap_or_default(),
+                    ),
+                    error: Some(error),
+                },
+            }
+        }
+
+        "get_remote_pairing_invite_status" => Response {
+            ok: true,
+            data: Some(serde_json::to_value(state.remote_invites.status()).unwrap_or_default()),
+            error: None,
+        },
+
+        "cancel_remote_pairing_invite" => {
+            state.remote_invites.cancel();
+            Response {
+                ok: true,
+                data: Some(serde_json::to_value(state.pairing.cancel().await).unwrap_or_default()),
+                error: None,
+            }
+        }
+
         command if history::handles(command) => history::handle(req, state).await,
         command if settings::handles(command) => settings::handle(req, state).await,
         command if peers::handles(command) => peers::handle(req, state).await,

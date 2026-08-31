@@ -29,6 +29,7 @@ pub struct AppState {
     pub identity: Arc<identity::DeviceIdentity>,
     pub pool: Arc<Mutex<network::ConnectionPool>>,
     pub pairing: Arc<pairing::PairingManager>,
+    pub remote_invites: Arc<pairing::RemotePairingInviteManager>,
     pub shutdown: watch::Sender<bool>,
     pub pending_storage_cleanup: Arc<Mutex<Option<std::path::PathBuf>>>,
 }
@@ -399,6 +400,7 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
         settings.clone(),
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
+    let remote_invites = Arc::new(pairing::RemotePairingInviteManager::new());
     let pending_storage_cleanup = Arc::new(Mutex::new(None));
     let runtime = clipboard::ClipboardRuntime::Headless;
     sync_engine
@@ -417,6 +419,7 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
         identity: identity.clone(),
         pool: pool.clone(),
         pairing: pairing.clone(),
+        remote_invites: remote_invites.clone(),
         token: api_token,
         shutdown: shutdown_tx.clone(),
         pending_storage_cleanup: pending_storage_cleanup.clone(),
@@ -468,9 +471,16 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
         let identity = identity.clone();
         let shutdown = shutdown_rx.clone();
         async move {
-            if let Err(error) =
-                network::start_iroh_server(sync_engine, db, settings, identity, pairing, shutdown)
-                    .await
+            if let Err(error) = network::start_iroh_server(
+                sync_engine,
+                db,
+                settings,
+                identity,
+                pairing,
+                remote_invites,
+                shutdown,
+            )
+            .await
             {
                 log::error!("Iroh server error: {error}");
             }
@@ -604,6 +614,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         settings.clone(),
     )));
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
+    let remote_invites = Arc::new(pairing::RemotePairingInviteManager::new());
     let pending_storage_cleanup = Arc::new(Mutex::new(None));
     let settings_for_monitor = settings.clone();
     let settings_for_server = settings.clone();
@@ -621,6 +632,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         identity: identity.clone(),
         pool: pool.clone(),
         pairing: pairing.clone(),
+        remote_invites: remote_invites.clone(),
         token: api_token,
         shutdown: shutdown_tx.clone(),
         pending_storage_cleanup: pending_storage_cleanup.clone(),
@@ -674,6 +686,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 identity,
                 pool: pool_for_setup.clone(),
                 pairing: pairing.clone(),
+                remote_invites: remote_invites.clone(),
                 shutdown: shutdown_for_state,
                 pending_storage_cleanup,
             };
@@ -696,6 +709,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             let sync_for_iroh = sync_for_setup.clone();
             let pairing_for_server = pairing.clone();
             let pairing_for_iroh = pairing.clone();
+            let remote_invites_for_iroh = remote_invites.clone();
             let server_shutdown = shutdown_for_setup.clone();
             let server_task = tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::start_server(
@@ -720,6 +734,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     settings_for_iroh,
                     identity_for_iroh,
                     pairing_for_iroh,
+                    remote_invites_for_iroh,
                     iroh_shutdown,
                 )
                 .await
