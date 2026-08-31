@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("../tailsyncClient", () => ({
@@ -10,7 +10,7 @@ vi.mock("../tailsyncClient", () => ({
   takePendingRemotePairingLink: vi.fn(),
 }));
 
-import { listen, type Event } from "@tauri-apps/api/event";
+import { listen, type Event, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   cancelRemotePairingInvite,
   createRemotePairingInvite,
@@ -35,7 +35,7 @@ const mockedStart = vi.mocked(startRemotePairing);
 const mockedTakePending = vi.mocked(takePendingRemotePairingLink);
 
 let remoteLinkListener: ((event: Event<unknown>) => void) | undefined;
-let unlisten: ReturnType<typeof vi.fn>;
+let unlisten: Mock<() => void>;
 
 async function flushMicrotasks() {
   await act(async () => {});
@@ -44,10 +44,11 @@ async function flushMicrotasks() {
 describe("useRemotePairing", () => {
   beforeEach(() => {
     remoteLinkListener = undefined;
-    unlisten = vi.fn();
+    unlisten = vi.fn<() => void>();
     mockedListen.mockReset().mockImplementation(async (_event, handler) => {
       remoteLinkListener = handler;
-      return unlisten;
+      const stop: UnlistenFn = () => { unlisten(); };
+      return stop;
     });
     mockedCancel.mockReset().mockResolvedValue({
       pairing_enabled: false,
