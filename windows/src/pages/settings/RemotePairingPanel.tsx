@@ -47,7 +47,7 @@ export function RemotePairingPanel({
         <div className="remote-pairing-card">
           <strong>{t("settings.createRemoteInvite")}</strong>
           <span>{t("settings.createRemoteInviteDescription")}</span>
-          <button type="button" className="pair-device-action" onClick={() => void onCreateInvite()} disabled={busy}>
+          <button type="button" className="pair-device-action remote-invite-create-action" onClick={() => void onCreateInvite()} disabled={busy}>
             {busy && !invite ? <RefreshCw className="spin" size={14} aria-hidden="true" /> : <Link2 size={14} aria-hidden="true" />}
             {t("settings.createRemoteInvite")}
           </button>

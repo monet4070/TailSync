@@ -293,6 +293,23 @@
   margin-top: 3px;
 }
 
+.remote-pairing-card .remote-invite-create-action {
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  height: 30px;
+  margin-top: 5px;
+  padding: 0 11px;
+  white-space: nowrap;
+}
+
+.remote-invite-create-action svg {
+  flex: 0 0 auto;
+}
+
 .remote-invite-result {
   display: flex;
   flex-wrap: wrap;
