@@ -164,7 +164,8 @@ async fn clipboard_loop(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut change_detector = ClipboardChangeDetector::new();
-    let poll_interval = change_detector.poll_interval_ms();
+    let active_poll_interval = change_detector.poll_interval_ms();
+    let mut poll_interval = active_poll_interval;
     info!("Clipboard monitor started ({poll_interval} ms change polling)");
 
     let mut last_text_hash = String::new();
@@ -211,7 +212,13 @@ async fn clipboard_loop(
             info!("Clipboard monitor alive (tick={tick})");
         }
 
-        if !change_detector.changed() {
+        let clipboard_changed = change_detector.changed();
+        poll_interval = if clipboard_changed {
+            active_poll_interval
+        } else {
+            change_detector.idle_poll_interval_ms()
+        };
+        if !clipboard_changed {
             continue;
         }
         // NSPasteboard.changeCount changes for every copy operation, including

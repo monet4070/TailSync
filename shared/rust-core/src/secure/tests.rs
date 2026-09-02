@@ -111,6 +111,7 @@ async fn assert_read_resumes_after_cancellation(split_at: usize) {
             tailscale_ip: String::new(),
             iroh_endpoint_id: None,
         },
+        session_id: "test-session".into(),
     };
 
     assert!(
@@ -255,6 +256,7 @@ async fn encrypted_frame_write_does_not_wait_forever_for_a_stalled_peer() {
             tailscale_ip: String::new(),
             iroh_endpoint_id: None,
         },
+        session_id: "test-session".into(),
     };
     let frame = Frame::try_new(Command::TextPayload, 0, 1, b"stalled".to_vec()).unwrap();
 

@@ -17,6 +17,10 @@ impl ClipboardChangeDetector {
         50
     }
 
+    pub fn idle_poll_interval_ms(&self) -> u64 {
+        250
+    }
+
     pub fn changed(&mut self) -> bool {
         use objc2_app_kit::NSPasteboard;
 
@@ -52,6 +56,10 @@ impl ClipboardChangeDetector {
         50
     }
 
+    pub fn idle_poll_interval_ms(&self) -> u64 {
+        250
+    }
+
     pub fn changed(&mut self) -> bool {
         let current =
             unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
@@ -82,6 +90,10 @@ impl ClipboardChangeDetector {
     }
 
     pub fn poll_interval_ms(&self) -> u64 {
+        200
+    }
+
+    pub fn idle_poll_interval_ms(&self) -> u64 {
         200
     }
 

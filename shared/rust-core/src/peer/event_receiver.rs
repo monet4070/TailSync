@@ -14,6 +14,7 @@ use crate::sync::SyncEngine;
 use log::{debug, info};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::Instrument;
 
 /// How the reliable event was handled.
 #[derive(Debug, PartialEq, Eq)]
@@ -69,6 +70,15 @@ pub async fn process_reliable_event(
 ) -> Result<ReliableEventOutcome, ReliableEventError> {
     let envelope = EventEnvelope::decode(&frame.payload)
         .map_err(|error| ReliableEventError::permanent(error.to_string()))?;
+    let session_id = stream.session_id().to_string();
+    let event_span = tracing::info_span!(
+        "receive.event",
+        session_id = %session_id,
+        peer = %source,
+        message_id = %envelope.message_id.as_hex(),
+        sequence = frame.sequence,
+        command = ?frame.command,
+    );
     envelope
         .validate_timestamp(unix_timestamp_ms())
         .map_err(|error| ReliableEventError::permanent(error.to_string()))?;
@@ -102,8 +112,13 @@ pub async fn process_reliable_event(
             sync_engine,
             database,
         )
+        .instrument(event_span.clone())
         .await?;
-        info!("{kind} event from {source} applied");
+        info!(
+            "event_applied kind={kind} source={source} session_id={session_id} message_id={} sequence={}",
+            envelope.message_id.as_hex(),
+            frame.sequence
+        );
         sync_engine
             .lock()
             .await
@@ -111,7 +126,11 @@ pub async fn process_reliable_event(
         on_applied();
         ReliableEventOutcome::Applied
     } else {
-        debug!("Reliable event from {source} was already applied; acknowledging again");
+        debug!(
+            "event_duplicate source={source} session_id={session_id} message_id={} sequence={}",
+            envelope.message_id.as_hex(),
+            frame.sequence
+        );
         ReliableEventOutcome::Duplicate
     };
 
@@ -129,6 +148,13 @@ pub async fn process_reliable_event(
         .write_frame(&ack)
         .await
         .map_err(|error| ReliableEventError::retryable(error.to_string()))?;
+    tracing::debug!(
+        session_id = %session_id,
+        peer = %source,
+        message_id = %envelope.message_id.as_hex(),
+        sequence = frame.sequence,
+        "event acknowledgement sent"
+    );
     Ok(outcome)
 }
 

@@ -39,8 +39,8 @@ pub use paths::{
     get_storage_dir, validate_storage_dir, STORAGE_DIRECTORY_NAME,
 };
 pub use storage::{
-    delete_old_storage, migrate_storage_with_rollback, StorageMigrationFailure,
-    StorageMigrationHooks,
+    delete_old_storage, migrate_storage_with_rollback, storage_status_async,
+    StorageMigrationFailure, StorageMigrationHooks,
 };
 pub use types::{
     FavoriteMutation, FileBatchWriteOptions, FileEncryptionMigrationBatch, HistoryCollection,

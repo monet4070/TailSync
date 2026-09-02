@@ -109,6 +109,17 @@ pub enum PeerStatus {
 }
 
 impl PeerStatus {
+    /// Stable wire/log label for status transitions.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovered => "discovered",
+            Self::Confirming => "confirming",
+            Self::Online => "online",
+            Self::Connected => "connected",
+            Self::Offline => "offline",
+        }
+    }
+
     /// Whether the status counts as online in the health model.
     pub fn is_online(self) -> bool {
         matches!(self, Self::Connected | Self::Online | Self::Confirming)

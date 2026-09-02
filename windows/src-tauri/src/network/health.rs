@@ -85,7 +85,7 @@ pub(crate) fn register_active_session(
 pub fn apply_peer_health(peers: &mut [tailscale::PeerInfo]) {
     apply_peer_health_impl(
         peers,
-        &peer_health()
+        &mut peer_health()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         active_sessions(),

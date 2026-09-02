@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::OnceLock;
 use tokio::net::UdpSocket;
 use tokio::time::{timeout, Duration, Instant};
 
@@ -34,24 +35,29 @@ fn advertised_iroh_endpoint(response: &DiscoveryResponse) -> Option<String> {
 }
 
 pub fn local_hostname() -> String {
-    if let Some(hostname) = ["COMPUTERNAME", "HOSTNAME"]
-        .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .map(|value| value.trim().to_string())
-        .find(|value| !value.is_empty())
-    {
-        return hostname;
-    }
+    static LOCAL_HOSTNAME: OnceLock<String> = OnceLock::new();
+    LOCAL_HOSTNAME
+        .get_or_init(|| {
+            if let Some(hostname) = ["COMPUTERNAME", "HOSTNAME"]
+                .into_iter()
+                .filter_map(|name| std::env::var(name).ok())
+                .map(|value| value.trim().to_string())
+                .find(|value| !value.is_empty())
+            {
+                return hostname;
+            }
 
-    #[cfg(unix)]
-    if let Ok(output) = std::process::Command::new("/bin/hostname").output() {
-        let hostname = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if output.status.success() && !hostname.is_empty() {
-            return hostname;
-        }
-    }
+            #[cfg(unix)]
+            if let Ok(output) = std::process::Command::new("/bin/hostname").output() {
+                let hostname = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if output.status.success() && !hostname.is_empty() {
+                    return hostname;
+                }
+            }
 
-    "TailSync device".to_string()
+            "TailSync device".to_string()
+        })
+        .clone()
 }
 
 fn local_ip() -> String {

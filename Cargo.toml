@@ -8,3 +8,12 @@ members = [
     "tools/updater-verify",
 ]
 exclude = ["windows/src-tauri", "macos/src-tauri"]
+
+# Keep shipped shared binaries small without trading away the throughput of
+# file transfer. Platform manifests repeat this profile because they are
+# intentionally standalone workspaces (and are excluded above).
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+opt-level = "s"

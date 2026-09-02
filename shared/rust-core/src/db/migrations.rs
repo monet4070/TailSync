@@ -54,79 +54,90 @@ impl HistoryDB {
         if version < 1 {
             info!("Running database migration v1...");
             // Base schema already created above
-            conn.execute("INSERT INTO schema_version (version) VALUES (1)", [])?;
+            Self::run_migration_transaction(conn, 1, |conn| {
+                conn.execute("INSERT INTO schema_version (version) VALUES (1)", [])?;
+                Ok(())
+            })?;
         }
 
         if version < 2 {
             info!("Running database migration v2...");
             // Future: add full-text search, etc.
-            conn.execute("INSERT INTO schema_version (version) VALUES (2)", [])?;
+            Self::run_migration_transaction(conn, 2, |conn| {
+                conn.execute("INSERT INTO schema_version (version) VALUES (2)", [])?;
+                Ok(())
+            })?;
         }
 
         if version < 3 {
             info!("Running database migration v3 (files to local history folder)...");
-            let legacy_files = {
-                let mut statement = conn.prepare(
-                    "SELECT id, data, data_hash, description FROM history WHERE type = 'file'",
+            Self::run_migration_transaction(conn, 3, |conn| {
+                let legacy_files = {
+                    let mut statement = conn.prepare(
+                        "SELECT id, data, data_hash, description FROM history WHERE type = 'file'",
+                    )?;
+                    let rows = statement
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, Vec<u8>>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        })?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    rows
+                };
+                for (id, stored, stored_hash, description) in legacy_files {
+                    Self::migrate_legacy_file_entry(
+                        conn,
+                        file_history_dir,
+                        id,
+                        &stored,
+                        &stored_hash,
+                        &description,
+                    )?;
+                }
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![3_i64],
                 )?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, Vec<u8>>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows
-            };
-
-            for (id, stored, stored_hash, description) in legacy_files {
-                Self::migrate_legacy_file_entry(
-                    conn,
-                    file_history_dir,
-                    id,
-                    &stored,
-                    &stored_hash,
-                    &description,
-                )?;
-            }
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![3_i64],
-            )?;
+                Ok(())
+            })?;
         }
 
         if version < 4 {
             info!("Running database migration v4 (images to local history folder)...");
-            let legacy_images = {
-                let mut statement =
-                    conn.prepare("SELECT id, data, data_hash FROM history WHERE type = 'image'")?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, Vec<u8>>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows
-            };
-            for (id, stored, stored_hash) in legacy_images {
-                Self::migrate_legacy_image_entry(
-                    conn,
-                    image_history_dir,
-                    id,
-                    &stored,
-                    &stored_hash,
+            Self::run_migration_transaction(conn, 4, |conn| {
+                let legacy_images = {
+                    let mut statement = conn
+                        .prepare("SELECT id, data, data_hash FROM history WHERE type = 'image'")?;
+                    let rows = statement
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, Vec<u8>>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        })?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    rows
+                };
+                for (id, stored, stored_hash) in legacy_images {
+                    Self::migrate_legacy_image_entry(
+                        conn,
+                        image_history_dir,
+                        id,
+                        &stored,
+                        &stored_hash,
+                    )?;
+                }
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![4_i64],
                 )?;
-            }
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![4_i64],
-            )?;
+                Ok(())
+            })?;
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
             let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
             let free_pages: i64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
@@ -139,59 +150,65 @@ impl HistoryDB {
         if version < 5 {
             info!("Running database migration v5 (history categories)...");
         }
-        Self::add_column_if_missing(
-            conn,
-            "category",
-            "ALTER TABLE history ADD COLUMN category TEXT NOT NULL DEFAULT 'text'",
-        )?;
-        Self::add_column_if_missing(
-            conn,
-            "category_confidence",
-            "ALTER TABLE history ADD COLUMN category_confidence INTEGER NOT NULL DEFAULT 0",
-        )?;
-        Self::add_column_if_missing(
-            conn,
-            "classifier_version",
-            "ALTER TABLE history ADD COLUMN classifier_version INTEGER NOT NULL DEFAULT 0",
-        )?;
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_history_category_timestamp
-             ON history(category, timestamp DESC, id DESC);",
-        )?;
-        if version < 5 {
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![5_i64],
+        Self::run_migration_transaction(conn, 5, |conn| {
+            Self::add_column_if_missing(
+                conn,
+                "category",
+                "ALTER TABLE history ADD COLUMN category TEXT NOT NULL DEFAULT 'text'",
             )?;
-        }
+            Self::add_column_if_missing(
+                conn,
+                "category_confidence",
+                "ALTER TABLE history ADD COLUMN category_confidence INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "classifier_version",
+                "ALTER TABLE history ADD COLUMN classifier_version INTEGER NOT NULL DEFAULT 0",
+            )?;
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_history_category_timestamp
+                 ON history(category, timestamp DESC, id DESC);",
+            )?;
+            if version < 5 {
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![5_i64],
+                )?;
+            }
+            Ok(())
+        })?;
 
         if version < 6 {
             info!("Running database migration v6 (multiple history labels)...");
         }
-        let categories_added = Self::add_column_if_missing(
-            conn,
-            "categories",
-            "ALTER TABLE history ADD COLUMN categories TEXT NOT NULL DEFAULT '[\"text\"]'",
-        )?;
-        if version < 6 || categories_added {
-            conn.execute("UPDATE history SET categories = json_array(category)", [])?;
-        }
-        if version < 6 {
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![6_i64],
+        Self::run_migration_transaction(conn, 6, |conn| {
+            let categories_added = Self::add_column_if_missing(
+                conn,
+                "categories",
+                "ALTER TABLE history ADD COLUMN categories TEXT NOT NULL DEFAULT '[\"text\"]'",
             )?;
-        }
-        conn.execute(
-            "UPDATE history
-             SET category = type,
-                 categories = json_array(type),
-                 category_confidence = 100,
-                 classifier_version = ?1
-             WHERE type IN ('image', 'file')
-               AND (classifier_version < ?1 OR category != type OR categories != json_array(type))",
-            params![history_classifier::CLASSIFIER_VERSION],
-        )?;
+            if version < 6 || categories_added {
+                conn.execute("UPDATE history SET categories = json_array(category)", [])?;
+            }
+            if version < 6 {
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![6_i64],
+                )?;
+            }
+            conn.execute(
+                "UPDATE history
+                 SET category = type,
+                     categories = json_array(type),
+                     category_confidence = 100,
+                     classifier_version = ?1
+                 WHERE type IN ('image', 'file')
+                   AND (classifier_version < ?1 OR category != type OR categories != json_array(type))",
+                params![history_classifier::CLASSIFIER_VERSION],
+            )?;
+            Ok(())
+        })?;
 
         if version >= 4 {
             Self::retry_unresolved_migration_issues(conn, file_history_dir, image_history_dir)?;
@@ -199,71 +216,92 @@ impl HistoryDB {
 
         if version < 7 {
             info!("Running database migration v7 (enabling encrypted file history)...");
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![7_i64],
-            )?;
+            Self::run_migration_transaction(conn, 7, |conn| {
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![7_i64],
+                )?;
+                Ok(())
+            })?;
         }
 
         if version < 8 {
             info!("Running database migration v8 (file batches and pinned history)...");
         }
-        Self::add_column_if_missing(
-            conn,
-            "pinned",
-            "ALTER TABLE history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
-        )?;
-        Self::add_column_if_missing(
-            conn,
-            "batch_id",
-            "ALTER TABLE history ADD COLUMN batch_id TEXT",
-        )?;
-        Self::add_column_if_missing(
-            conn,
-            "batch_index",
-            "ALTER TABLE history ADD COLUMN batch_index INTEGER",
-        )?;
-        Self::add_column_if_missing(
-            conn,
-            "batch_total",
-            "ALTER TABLE history ADD COLUMN batch_total INTEGER",
-        )?;
-        Self::add_column_if_missing(
-            conn,
-            "batch_status",
-            "ALTER TABLE history ADD COLUMN batch_status TEXT NOT NULL DEFAULT 'complete'",
-        )?;
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_history_batch
-             ON history(batch_id, batch_index);",
-        )?;
-        if version < 8 {
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![8_i64],
+        Self::run_migration_transaction(conn, 8, |conn| {
+            Self::add_column_if_missing(
+                conn,
+                "pinned",
+                "ALTER TABLE history ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
             )?;
-        }
+            Self::add_column_if_missing(
+                conn,
+                "batch_id",
+                "ALTER TABLE history ADD COLUMN batch_id TEXT",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "batch_index",
+                "ALTER TABLE history ADD COLUMN batch_index INTEGER",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "batch_total",
+                "ALTER TABLE history ADD COLUMN batch_total INTEGER",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                "batch_status",
+                "ALTER TABLE history ADD COLUMN batch_status TEXT NOT NULL DEFAULT 'complete'",
+            )?;
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_history_batch
+                 ON history(batch_id, batch_index);",
+            )?;
+            if version < 8 {
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![8_i64],
+                )?;
+            }
+            Ok(())
+        })?;
 
         if version < 9 {
             info!("Running database migration v9 (removing plaintext text previews)...");
             conn.execute_batch("PRAGMA secure_delete = ON;")?;
-            conn.execute(
-                "UPDATE history SET description = ?1 WHERE type = 'text'",
-                params![TEXT_DESCRIPTION_PLACEHOLDER],
-            )?;
-            conn.execute_batch(
-                "DROP INDEX IF EXISTS idx_history_description;
-                 DROP INDEX IF EXISTS idx_history_description_nontext;
-                 CREATE INDEX idx_history_description_nontext
-                    ON history(description) WHERE type <> 'text';",
-            )?;
+            // `VACUUM` cannot execute inside a SQLite transaction. Publish a
+            // durable phase marker after the data/index transaction so a
+            // crash between the two phases is safely replayed on next open.
+            Self::run_migration_transaction(conn, 9, |conn| {
+                conn.execute(
+                    "UPDATE history SET description = ?1 WHERE type = 'text'",
+                    params![TEXT_DESCRIPTION_PLACEHOLDER],
+                )?;
+                conn.execute_batch(
+                    "DROP INDEX IF EXISTS idx_history_description;
+                     DROP INDEX IF EXISTS idx_history_description_nontext;
+                     CREATE INDEX idx_history_description_nontext
+                        ON history(description) WHERE type <> 'text';
+                     INSERT INTO migration_state(version, phase, updated_at)
+                     VALUES (9, 'vacuum_pending', datetime('now'))
+                     ON CONFLICT(version) DO UPDATE SET
+                         phase = excluded.phase, updated_at = excluded.updated_at;",
+                )?;
+                Ok(())
+            })?;
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
-            // Mark v9 complete only after the residual-data cleanup succeeds.
-            // If the process exits first, startup safely repeats this idempotent migration.
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![9_i64],
-            )?;
+            Self::run_migration_transaction(conn, 9, |conn| {
+                // Mark v9 complete only after the residual-data cleanup
+                // succeeds. If the process exits first, startup repeats the
+                // idempotent preparation and vacuum phases.
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![9_i64],
+                )?;
+                conn.execute("DELETE FROM migration_state WHERE version = 9", [])?;
+                Ok(())
+            })?;
         }
 
         if version < 10 {
@@ -271,50 +309,97 @@ impl HistoryDB {
             // A file batch is one logical history item. Older versions could
             // leave only one member pinned, so normalize those batches before
             // the favorites collection or protected deletion can observe them.
-            conn.execute(
-                "UPDATE history
-                 SET pinned = 1
-                 WHERE batch_id IS NOT NULL
-                   AND batch_id IN (
-                       SELECT batch_id FROM history WHERE pinned <> 0
-                   )",
-                [],
-            )?;
-            conn.execute_batch(
-                "CREATE INDEX IF NOT EXISTS idx_history_favorites
-                 ON history(timestamp DESC, id DESC) WHERE pinned = 1;",
-            )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![10_i64],
-            )?;
+            Self::run_migration_transaction(conn, 10, |conn| {
+                conn.execute(
+                    "UPDATE history
+                     SET pinned = 1
+                     WHERE batch_id IS NOT NULL
+                       AND batch_id IN (
+                           SELECT batch_id FROM history WHERE pinned <> 0
+                       )",
+                    [],
+                )?;
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_history_favorites
+                     ON history(timestamp DESC, id DESC) WHERE pinned = 1;",
+                )?;
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![10_i64],
+                )?;
+                Ok(())
+            })?;
         }
 
         if version < 11 {
             info!("Running database migration v11 (deduplicating file batch identities)...");
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS received_file_batches (
-                    source_device_id TEXT NOT NULL,
-                    batch_id TEXT NOT NULL,
-                    manifest_hash TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    completed_at TEXT,
-                    UNIQUE(source_device_id, batch_id)
-                );",
-            )?;
-            Self::repair_duplicate_file_batch_rows(conn)?;
-            conn.execute_batch(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_history_file_batch_identity
-                 ON history(batch_id, batch_index)
-                 WHERE type = 'file' AND batch_id IS NOT NULL AND batch_index IS NOT NULL;",
-            )?;
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                params![SCHEMA_VERSION],
-            )?;
+            Self::run_migration_transaction(conn, 11, |conn| {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS received_file_batches (
+                        source_device_id TEXT NOT NULL,
+                        batch_id TEXT NOT NULL,
+                        manifest_hash TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        completed_at TEXT,
+                        UNIQUE(source_device_id, batch_id)
+                    );",
+                )?;
+                Self::repair_duplicate_file_batch_rows(conn)?;
+                conn.execute_batch(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_history_file_batch_identity
+                     ON history(batch_id, batch_index)
+                     WHERE type = 'file' AND batch_id IS NOT NULL AND batch_index IS NOT NULL;",
+                )?;
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    params![SCHEMA_VERSION],
+                )?;
+                Ok(())
+            })?;
         }
 
         Ok(())
+    }
+
+    /// Run one SQLite-only migration step atomically. The version marker is
+    /// deliberately written inside the same transaction as the schema/data
+    /// changes, so a failed step cannot advertise a partially applied schema.
+    pub(super) fn run_migration_transaction<F>(
+        conn: &Connection,
+        version: i64,
+        apply: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: FnOnce(&Connection) -> Result<(), Box<dyn std::error::Error>>,
+    {
+        tracing::debug!(migration_version = version, "migration transaction begin");
+        conn.execute_batch("BEGIN IMMEDIATE;")?;
+        match apply(conn) {
+            Ok(()) => match conn.execute_batch("COMMIT;") {
+                Ok(()) => {
+                    tracing::debug!(migration_version = version, "migration transaction commit");
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK;");
+                    tracing::error!(
+                        migration_version = version,
+                        error = %error,
+                        "migration transaction commit failed; rolled back"
+                    );
+                    Err(format!("database migration v{version} commit failed: {error}").into())
+                }
+            },
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                tracing::warn!(
+                    migration_version = version,
+                    error = %error,
+                    "migration transaction rolled back"
+                );
+                Err(error)
+            }
+        }
     }
 
     /// Repair rows written by a pre-idempotency file-batch implementation
@@ -411,7 +496,12 @@ impl HistoryDB {
                 UNIQUE(history_id, migration_version, issue_type)
             );
             CREATE INDEX IF NOT EXISTS idx_migration_issues_unresolved
-                ON migration_issues(resolved_at, history_id);",
+                ON migration_issues(resolved_at, history_id);
+            CREATE TABLE IF NOT EXISTS migration_state (
+                version INTEGER PRIMARY KEY,
+                phase TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
         )?;
         Ok(())
     }

@@ -90,6 +90,7 @@ pub struct SecureConnection {
     partial_record: Vec<u8>,
     partial_expected: Option<usize>,
     peer_identity: PeerIdentity,
+    session_id: String,
 }
 
 pub struct AcceptedConnection {
@@ -109,6 +110,12 @@ pub enum HandshakePurpose {
 impl SecureConnection {
     pub fn peer_identity(&self) -> &PeerIdentity {
         &self.peer_identity
+    }
+
+    /// Stable correlation identifier shared by both sides of this Noise
+    /// session. The raw handshake transcript is never exposed.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     pub async fn read_frame(&mut self) -> Result<Frame, ProtocolError> {

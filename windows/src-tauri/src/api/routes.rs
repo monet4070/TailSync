@@ -213,7 +213,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         "get_storage_status" => Response {
             ok: true,
-            data: serde_json::to_value(state.db.lock().await.storage_status()).ok(),
+            data: serde_json::to_value(db::storage_status_async(&state.db).await).ok(),
             error: None,
         },
 

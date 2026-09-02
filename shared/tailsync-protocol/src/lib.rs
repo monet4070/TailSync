@@ -24,6 +24,7 @@ pub const MAX_TEXT_PAYLOAD_SIZE: usize = 1024 * 1024;
 pub const MAX_IMAGE_PAYLOAD_SIZE: usize = 32 * 1024 * 1024;
 pub const MAX_FILE_META_PAYLOAD_SIZE: usize = 16 * 1024;
 pub const FILE_CHUNK_SIZE: usize = 1024 * 1024;
+pub const MIN_FILE_CHUNK_PAYLOAD_SIZE: usize = FILE_CHUNK_HEADER_SIZE + 1;
 pub const MAX_FILE_CHUNK_PAYLOAD_SIZE: usize = FILE_CHUNK_SIZE + FILE_CHUNK_HEADER_SIZE;
 pub const MAX_PAYLOAD_SIZE: usize = MAX_IMAGE_PAYLOAD_SIZE;
 const MAX_IMAGE_PIXELS: usize = MAX_IMAGE_PAYLOAD_SIZE / 4;
@@ -51,6 +52,13 @@ impl MessageId {
 
     pub fn ack_payload(self) -> Vec<u8> {
         self.0.to_vec()
+    }
+
+    /// Stable, non-secret correlation value for diagnostics. Message IDs are
+    /// random event identifiers; rendering them in logs never exposes event
+    /// content or device keys.
+    pub fn as_hex(self) -> String {
+        hex::encode(self.0)
     }
 }
 
@@ -88,6 +96,9 @@ pub struct FileChunkPayload {
 
 impl FileChunkPayload {
     pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
+        if self.data.is_empty() {
+            return Err(ProtocolError::EmptyFileChunk);
+        }
         if self.data.len() > FILE_CHUNK_SIZE {
             return Err(ProtocolError::FileChunkTooLarge(self.data.len()));
         }
@@ -117,7 +128,10 @@ impl FileChunkPayload {
                 .try_into()
                 .map_err(|_| ProtocolError::InvalidFileChunk)?,
         ) as usize;
-        if data_len > FILE_CHUNK_SIZE || payload.len() != FILE_CHUNK_HEADER_SIZE + data_len {
+        if data_len == 0
+            || data_len > FILE_CHUNK_SIZE
+            || payload.len() != FILE_CHUNK_HEADER_SIZE + data_len
+        {
             return Err(ProtocolError::InvalidFileChunk);
         }
         let data = payload[FILE_CHUNK_HEADER_SIZE..].to_vec();
@@ -389,6 +403,8 @@ pub enum ProtocolError {
     EventTimestampOutsideWindow,
     #[error("file chunk exceeds the {FILE_CHUNK_SIZE} byte logical block size: {0}")]
     FileChunkTooLarge(usize),
+    #[error("empty resumable file chunk")]
+    EmptyFileChunk,
     #[error("invalid resumable file chunk")]
     InvalidFileChunk,
     #[error("file chunk checksum mismatch")]

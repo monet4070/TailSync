@@ -1,6 +1,73 @@
 use super::*;
 
 impl SyncEngine {
+    /// Drop a disconnected peer's open receive handles without keeping the
+    /// engine mutex while closing files and deleting temporary artifacts.
+    pub async fn cancel_receive_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: &str,
+    ) {
+        let operation_locks = {
+            let mut engine = sync_engine.lock().await;
+            let mut keys = engine
+                .active_receives
+                .keys()
+                .filter(|(peer, _)| peer == source)
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.extend(
+                engine
+                    .inflight_receives
+                    .iter()
+                    .filter(|(peer, _)| peer == source)
+                    .cloned(),
+            );
+            keys.extend(
+                engine
+                    .pending_receives
+                    .iter()
+                    .filter(|((peer, _), _)| peer == source)
+                    .map(|(key, _)| key.clone()),
+            );
+            keys.sort_unstable_by_key(|(peer, receive_key)| {
+                (peer.clone(), format!("{receive_key:?}"))
+            });
+            keys.dedup();
+            keys.iter()
+                .map(|key| engine.receive_operation_lock(key))
+                .collect::<Vec<_>>()
+        };
+        let mut operation_guards = Vec::with_capacity(operation_locks.len());
+        for operation_lock in operation_locks {
+            operation_guards.push(operation_lock.lock_owned().await);
+        }
+        let (states, platform) = {
+            let mut engine = sync_engine.lock().await;
+            let keys = engine
+                .active_receives
+                .keys()
+                .filter(|(peer, _)| peer == source)
+                .cloned()
+                .collect::<Vec<_>>();
+            let states = keys
+                .into_iter()
+                .filter_map(|key| engine.active_receives.remove(&key))
+                .collect::<Vec<_>>();
+            (states, engine.platform.clone())
+        };
+        for state in states {
+            drop(state.writer);
+            let _ = fs::remove_file(state.tmp_path);
+            if let Some(path) = state.state_path {
+                let _ = fs::remove_file(path);
+            }
+        }
+        if let Some(platform) = platform {
+            platform.clear_file_progress(None, Some(source));
+        }
+        drop(operation_guards);
+    }
+
     /// Cancel all active receives from a peer and clean up their temp state.
     pub async fn cancel_receive(&mut self, source: &str) {
         let keys = self
@@ -26,6 +93,111 @@ impl SyncEngine {
     pub fn suspend_receive(&mut self, source: &str) {
         let epoch = self.receive_epoch(source);
         self.suspend_receive_epoch(source, epoch);
+    }
+
+    /// Suspend a receive epoch after waiting for any transfer-scoped disk
+    /// operation that temporarily removed its state from `active_receives`.
+    /// This closes the disconnect race without holding the engine mutex while
+    /// a buffered writer is dropped.
+    pub async fn suspend_receive_epoch_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: &str,
+        epoch: u64,
+    ) {
+        let (keys, batch_operation_locks, operation_locks) = {
+            let mut engine = sync_engine.lock().await;
+            let mut batch_keys = engine
+                .incoming_batches
+                .iter()
+                .filter(|((peer, _), batch)| peer == source && batch.session_epoch == epoch)
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            batch_keys.sort_unstable_by_key(|(peer, batch_id)| (peer.clone(), batch_id.as_hex()));
+            batch_keys.dedup();
+            let batch_operation_locks = batch_keys
+                .iter()
+                .map(|key| engine.batch_operation_lock(key))
+                .collect::<Vec<_>>();
+            let mut keys = engine
+                .active_receives
+                .iter()
+                .filter(|((peer, _), state)| peer == source && state.session_epoch == epoch)
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            keys.extend(
+                engine
+                    .inflight_receives
+                    .iter()
+                    .filter(|(peer, _)| peer == source)
+                    .cloned(),
+            );
+            keys.extend(
+                engine
+                    .pending_receives
+                    .iter()
+                    .filter(|((peer, _), pending_epoch)| peer == source && **pending_epoch == epoch)
+                    .map(|(key, _)| key.clone()),
+            );
+            keys.sort_unstable_by_key(|(peer, receive_key)| {
+                (peer.clone(), format!("{receive_key:?}"))
+            });
+            keys.dedup();
+            let operation_locks = keys
+                .iter()
+                .map(|key| engine.receive_operation_lock(key))
+                .collect::<Vec<_>>();
+            (keys, batch_operation_locks, operation_locks)
+        };
+        let mut batch_operation_guards = Vec::with_capacity(batch_operation_locks.len());
+        for batch_operation_lock in batch_operation_locks {
+            batch_operation_guards.push(batch_operation_lock.lock_owned().await);
+        }
+        let mut operation_guards = Vec::with_capacity(operation_locks.len());
+        for operation_lock in operation_locks {
+            operation_guards.push(operation_lock.lock_owned().await);
+        }
+        let (states, should_clear_progress, platform) = {
+            let mut engine = sync_engine.lock().await;
+            let active_keys = engine
+                .active_receives
+                .iter()
+                .filter(|((peer, _), state)| peer == source && state.session_epoch == epoch)
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            let states = active_keys
+                .into_iter()
+                .filter_map(|key| engine.active_receives.remove(&key))
+                .collect::<Vec<_>>();
+            engine
+                .pending_receives
+                .retain(|key, pending_epoch| !(keys.contains(key) && *pending_epoch == epoch));
+            engine.inflight_receives.retain(|key| !keys.contains(key));
+            engine
+                .incoming_batches
+                .retain(|(peer, _), batch| peer != source || batch.session_epoch != epoch);
+            let should_clear_progress = !engine
+                .active_receives
+                .keys()
+                .any(|(peer, _)| peer == source)
+                && !engine
+                    .incoming_batches
+                    .keys()
+                    .any(|(peer, _)| peer == source);
+            (states, should_clear_progress, engine.platform.clone())
+        };
+        for state in states {
+            drop(state.writer);
+        }
+        if should_clear_progress {
+            if let Some(platform) = platform {
+                platform.clear_file_progress(None, Some(source));
+            }
+        }
+        // Keep the owned guards alive until after the state transition and
+        // writer drops so a new FileMeta/chunk cannot reopen a suspended key.
+        drop(keys);
+        drop(operation_guards);
+        drop(batch_operation_guards);
     }
 
     pub fn start_receive_session(&mut self, source: &str) -> u64 {

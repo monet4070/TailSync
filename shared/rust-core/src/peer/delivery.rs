@@ -90,6 +90,12 @@ pub trait DeliveryConnection: Send {
         frame: &Frame,
     ) -> impl std::future::Future<Output = Result<(), String>> + Send;
     fn read_frame(&mut self) -> impl std::future::Future<Output = Result<Frame, String>> + Send;
+
+    /// A completed secure connection exposes a transcript-derived correlation
+    /// ID. In-memory test connections and other adapters may omit it.
+    fn session_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl DeliveryConnection for SecureConnection {
@@ -103,6 +109,10 @@ impl DeliveryConnection for SecureConnection {
         SecureConnection::read_frame(self)
             .await
             .map_err(|error| error.to_string())
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        Some(SecureConnection::session_id(self))
     }
 }
 

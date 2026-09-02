@@ -130,64 +130,16 @@ impl SyncEngine {
             ));
         }
 
-        let resumable = meta.transfer_id.is_some();
-        let parent = file_path
-            .parent()
-            .ok_or_else(|| "incoming file path has no parent".to_string())?;
-        crate::private_fs::create_private_dir_all(parent).map_err(|error| error.to_string())?;
-        let id = transfer_id.as_hex();
-        let tmp_path = if resumable {
-            parent.join(format!("{id}.part"))
-        } else {
-            file_path.with_extension("tmp")
-        };
-        let state_path = resumable.then(|| parent.join(format!("{id}.resume.json")));
-
-        let mut final_path = file_path.to_path_buf();
-        if let Some(ref path) = state_path {
-            if let Ok(data) = fs::read(path) {
-                if let Ok(saved) = serde_json::from_slice::<PersistedTransfer>(&data) {
-                    if saved.source == source
-                        && saved.meta.hash == meta.hash
-                        && saved.meta.size == meta.size
-                    {
-                        if let Some(file_name) = saved.final_path.file_name() {
-                            final_path = parent.join(file_name);
-                        }
-                    } else {
-                        let _ = fs::remove_file(&tmp_path);
-                    }
-                }
-            }
-        }
-
-        let mut file = crate::private_fs::open_private_file(&tmp_path, !resumable)
-            .map_err(|error| format!("cannot open {}: {error}", tmp_path.display()))?;
-        let received = file.metadata().map_err(|error| error.to_string())?.len();
-        if received > meta.size {
-            file.set_len(0).map_err(|error| error.to_string())?;
-        }
-        let received = file.metadata().map_err(|error| error.to_string())?.len();
-        let requires_full_hash = received > 0;
-        file.seek(SeekFrom::Start(received))
-            .map_err(|error| error.to_string())?;
-        let writer = BufWriter::with_capacity(FILE_CHUNK_SIZE, file);
-        let state = FileReceiveState {
-            meta: meta.clone(),
-            session_epoch,
-            tmp_path,
-            final_path,
-            state_path,
-            writer,
-            hasher: blake3::Hasher::new(),
-            received,
-            requires_full_hash,
-        };
-        persist_transfer_state(&state, &source).map_err(|error| error.to_string())?;
+        let state = open_receive_state(&meta, file_path, &source, session_epoch)?;
+        let received = state.received;
 
         info!(
-            "File receive ready: {} from {} at {}/{} bytes",
-            meta.name, source, received, meta.size
+            "file_receive_ready transfer_id={} source={} name={:?} received={} total={}",
+            transfer_id.as_hex(),
+            source,
+            meta.name,
+            received,
+            meta.size
         );
         self.set_receive_progress(&source, &meta, received);
         self.active_receives.insert(key.clone(), state);
@@ -210,6 +162,182 @@ impl SyncEngine {
         })
     }
 
+    /// Transfer-scoped FileMeta path. Admission and map mutations use the
+    /// engine mutex briefly; resume-sidecar and file opening work happens
+    /// after the lock is released.
+    pub async fn begin_file_receive_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        meta: FileMeta,
+        file_path: &Path,
+        source: String,
+        session_epoch: u64,
+    ) -> Result<FileReceiveProgress, String> {
+        let transfer_id = meta.transfer_id.unwrap_or(TransferId([0; 16]));
+        let key = (source.clone(), ReceiveKey::from(meta.transfer_id));
+        let operation_lock = {
+            let mut engine = sync_engine.lock().await;
+            engine.receive_operation_lock(&key)
+        };
+        let _operation_guard = operation_lock.lock().await;
+        {
+            let mut engine = sync_engine.lock().await;
+            if let Some(batch_ref) = meta.batch {
+                let batch_key = (source.clone(), batch_ref.batch_id);
+                engine.prune_cancelled_batches();
+                if engine.cancelled_batches.contains_key(&batch_key) {
+                    return Err("File batch was cancelled".to_string());
+                }
+                engine.prune_completed_batches();
+                if engine.completed_batches.contains_key(&batch_key) {
+                    let completed_manifest = engine
+                        .completed_batch_manifests
+                        .get(&batch_key)
+                        .ok_or_else(|| {
+                            "Completed file batch metadata is unavailable".to_string()
+                        })?;
+                    let expected = completed_manifest
+                        .files
+                        .get(usize::from(batch_ref.index))
+                        .ok_or_else(|| "File batch index is out of range".to_string())?;
+                    if expected.transfer_id != transfer_id
+                        || expected.name != meta.name
+                        || expected.size != meta.size
+                        || expected.hash != meta.hash
+                        || expected.chunk_size != meta.chunk_size
+                    {
+                        return Err(
+                            "File metadata does not match the completed batch manifest".to_string()
+                        );
+                    }
+                    return Ok(FileReceiveProgress {
+                        transfer_id,
+                        next_offset: meta.size,
+                        completed: None,
+                    });
+                }
+                let batch = engine.incoming_batches.get(&batch_key).ok_or_else(|| {
+                    "File batch manifest must be accepted before file data".to_string()
+                })?;
+                let expected = batch
+                    .manifest
+                    .files
+                    .get(usize::from(batch_ref.index))
+                    .ok_or_else(|| "File batch index is out of range".to_string())?;
+                if expected.transfer_id != transfer_id
+                    || expected.name != meta.name
+                    || expected.size != meta.size
+                    || expected.hash != meta.hash
+                    || expected.chunk_size != meta.chunk_size
+                {
+                    return Err(
+                        "File metadata does not match the accepted batch manifest".to_string()
+                    );
+                }
+                if let Some(existing) = batch
+                    .files
+                    .get(usize::from(batch_ref.index))
+                    .and_then(Option::as_ref)
+                {
+                    if existing.size == meta.size
+                        && existing.hash == meta.hash
+                        && existing.path.is_file()
+                    {
+                        return Ok(FileReceiveProgress {
+                            transfer_id,
+                            next_offset: existing.size,
+                            completed: None,
+                        });
+                    }
+                }
+            }
+            let now = chrono::Utc::now().timestamp();
+            engine.completed_transfers.retain(|_, completed| {
+                now.saturating_sub(completed.completed_at) <= SEEN_MESSAGE_RETENTION_SECONDS
+            });
+            if let Some(completed) = engine.completed_transfers.get(&key) {
+                if completed.size == meta.size && completed.hash == meta.hash {
+                    return Ok(FileReceiveProgress {
+                        transfer_id,
+                        next_offset: completed.size,
+                        completed: None,
+                    });
+                }
+                engine.completed_transfers.remove(&key);
+            }
+            if let Some(state) = engine.active_receives.get_mut(&key) {
+                if state.meta.hash == meta.hash && state.meta.size == meta.size {
+                    state.session_epoch = state.session_epoch.max(session_epoch);
+                    return Ok(FileReceiveProgress {
+                        transfer_id,
+                        next_offset: state.received,
+                        completed: None,
+                    });
+                }
+                return Err("transfer ID was reused with different metadata".to_string());
+            }
+            if engine.pending_receives.contains_key(&key) {
+                return Err("file receive is already being initialized".to_string());
+            }
+            let active_for_peer = engine
+                .active_receives
+                .keys()
+                .filter(|(peer, _)| peer == &source)
+                .count();
+            if active_for_peer >= MAX_ACTIVE_RECEIVES_PER_PEER {
+                return Err(format!(
+                    "peer {source} already has {MAX_ACTIVE_RECEIVES_PER_PEER} active file receives"
+                ));
+            }
+            if engine.active_receives.len() >= MAX_ACTIVE_RECEIVES_GLOBAL {
+                return Err(format!(
+                    "global active file receive limit ({MAX_ACTIVE_RECEIVES_GLOBAL}) reached"
+                ));
+            }
+            engine.pending_receives.insert(key.clone(), session_epoch);
+        };
+        let state = match open_receive_state(&meta, file_path, &source, session_epoch) {
+            Ok(state) => state,
+            Err(error) => {
+                sync_engine.lock().await.pending_receives.remove(&key);
+                return Err(error);
+            }
+        };
+        let received = state.received;
+        let complete = received == meta.size;
+        if !complete {
+            let mut engine = sync_engine.lock().await;
+            engine.pending_receives.remove(&key);
+            engine.set_receive_progress(&source, &meta, received);
+            engine.active_receives.insert(key, state);
+            return Ok(FileReceiveProgress {
+                transfer_id,
+                next_offset: received,
+                completed: None,
+            });
+        }
+
+        {
+            let mut engine = sync_engine.lock().await;
+            engine.pending_receives.remove(&key);
+            engine.set_receive_progress(&source, &meta, received);
+        }
+        let pending = match finalize_receive_state(state, &source) {
+            Ok(pending) => pending,
+            Err(error) => {
+                sync_engine
+                    .lock()
+                    .await
+                    .clear_file_progress(meta.batch.map(|batch| batch.batch_id), Some(&source));
+                return Err(error);
+            }
+        };
+        Ok(FileReceiveProgress {
+            transfer_id,
+            next_offset: received,
+            completed: Some(pending),
+        })
+    }
+
     pub async fn handle_resumable_file_chunk(
         &mut self,
         chunk: &FileChunkPayload,
@@ -219,12 +347,216 @@ impl SyncEngine {
             .await
     }
 
+    /// Transfer-scoped receive path used by network adapters. The engine
+    /// mutex is held only long enough to look up/remove/reinsert state; all
+    /// file writes, resume persistence and finalization run under the
+    /// transfer's own lock.
+    pub async fn handle_resumable_file_chunk_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        chunk: &FileChunkPayload,
+        source: String,
+    ) -> Result<FileReceiveProgress, FileReceiveError> {
+        Self::handle_file_chunk_shared_with_key(
+            sync_engine,
+            chunk,
+            source,
+            ReceiveKey::Resumable(chunk.transfer_id),
+        )
+        .await
+    }
+
+    /// Compatibility path for unframed legacy chunks. It uses the same
+    /// transfer-scoped state machine as resumable chunks, without retaining
+    /// the engine mutex over the disk write.
+    pub async fn handle_file_chunk_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        chunk: &[u8],
+        source: String,
+    ) {
+        let key = (source.clone(), ReceiveKey::Legacy);
+        let offset = {
+            let engine = sync_engine.lock().await;
+            engine.active_receives.get(&key).map(|state| state.received)
+        };
+        let Some(offset) = offset else {
+            tracing::warn!(source = %source, "legacy file chunk from unknown source");
+            return;
+        };
+        let payload = FileChunkPayload {
+            transfer_id: TransferId([0; 16]),
+            offset,
+            data: chunk.to_vec(),
+        };
+        if let Err(error) = Self::handle_file_chunk_shared_with_key(
+            sync_engine,
+            &payload,
+            source,
+            ReceiveKey::Legacy,
+        )
+        .await
+        {
+            error!("legacy file chunk failed: {error}");
+        }
+    }
+
+    async fn handle_file_chunk_shared_with_key(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        chunk: &FileChunkPayload,
+        source: String,
+        receive_key: ReceiveKey,
+    ) -> Result<FileReceiveProgress, FileReceiveError> {
+        if chunk.data.is_empty() {
+            return Err(FileReceiveError::Failed(
+                "empty file chunk is not valid".to_string(),
+            ));
+        }
+        let key = (source.clone(), receive_key);
+        let operation_lock = {
+            let mut engine = sync_engine.lock().await;
+            engine.receive_operation_lock(&key)
+        };
+        let _operation_guard = operation_lock.lock().await;
+        let mut state = {
+            let mut engine = sync_engine.lock().await;
+            if let Some(completed) = engine.completed_transfers.get(&key) {
+                return Ok(FileReceiveProgress {
+                    transfer_id: chunk.transfer_id,
+                    next_offset: completed.size,
+                    completed: None,
+                });
+            }
+            let state = engine.active_receives.remove(&key).ok_or(
+                FileReceiveError::MetadataUnavailable {
+                    transfer_id: chunk.transfer_id,
+                },
+            )?;
+            engine.inflight_receives.insert(key.clone());
+            state
+        };
+
+        if chunk.offset != state.received {
+            let next_offset = state.received;
+            let progress_meta = state.meta.clone();
+            let progress_name = progress_meta.name.clone();
+            let progress_total = progress_meta.size;
+            let mut engine = sync_engine.lock().await;
+            engine.inflight_receives.remove(&key);
+            engine.active_receives.insert(key, state);
+            if progress_meta.batch.is_some() {
+                engine.set_receive_progress(&source, &progress_meta, next_offset);
+            } else {
+                engine.set_file_progress(&progress_name, next_offset, progress_total);
+            }
+            return Ok(FileReceiveProgress {
+                transfer_id: chunk.transfer_id,
+                next_offset,
+                completed: None,
+            });
+        }
+        if state.received.saturating_add(chunk.data.len() as u64) > state.meta.size {
+            let message = format!("file chunk exceeds declared size for {}", state.meta.name);
+            let mut engine = sync_engine.lock().await;
+            engine.inflight_receives.remove(&key);
+            engine.active_receives.insert(key, state);
+            return Err(FileReceiveError::Failed(message));
+        }
+
+        let io_result = (|| -> Result<(), FileReceiveError> {
+            state
+                .writer
+                .write_all(&chunk.data)
+                .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
+            state
+                .writer
+                .flush()
+                .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
+            state.hasher.update(&chunk.data);
+            state.received += chunk.data.len() as u64;
+            state.chunks_since_persist = state.chunks_since_persist.saturating_add(1);
+            let persist_due = state.state_path.is_some()
+                && (state.chunks_since_persist >= RESUME_PERSIST_CHUNK_INTERVAL
+                    || state.last_persist_at.elapsed() >= RESUME_PERSIST_INTERVAL
+                    || state.received == state.meta.size);
+            if persist_due {
+                state
+                    .writer
+                    .get_ref()
+                    .sync_data()
+                    .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
+                persist_transfer_state(&state, &source)
+                    .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
+                state.chunks_since_persist = 0;
+                state.last_persist_at = Instant::now();
+            }
+            Ok(())
+        })();
+        if let Err(error) = io_result {
+            let mut engine = sync_engine.lock().await;
+            engine.inflight_receives.remove(&key);
+            engine.active_receives.insert(key, state);
+            return Err(error);
+        }
+
+        let next_offset = state.received;
+        let completed = state.received == state.meta.size;
+        let progress_meta = state.meta.clone();
+        let progress_name = progress_meta.name.clone();
+        let progress_total = progress_meta.size;
+        if !completed {
+            let mut engine = sync_engine.lock().await;
+            engine.inflight_receives.remove(&key);
+            engine.active_receives.insert(key, state);
+            if progress_meta.batch.is_some() {
+                engine.set_receive_progress(&source, &progress_meta, next_offset);
+            } else {
+                engine.set_file_progress(&progress_name, next_offset, progress_total);
+            }
+            return Ok(FileReceiveProgress {
+                transfer_id: chunk.transfer_id,
+                next_offset,
+                completed: None,
+            });
+        }
+
+        {
+            let engine = sync_engine.lock().await;
+            if progress_meta.batch.is_some() {
+                engine.set_receive_progress(&source, &progress_meta, next_offset);
+            } else {
+                engine.set_file_progress(&progress_name, next_offset, progress_total);
+            }
+        }
+        let pending = match finalize_receive_state(state, &source) {
+            Ok(pending) => pending,
+            Err(error) => {
+                let mut engine = sync_engine.lock().await;
+                engine.inflight_receives.remove(&key);
+                engine.clear_file_progress(
+                    progress_meta.batch.map(|batch| batch.batch_id),
+                    Some(&source),
+                );
+                return Err(FileReceiveError::Failed(error));
+            }
+        };
+        sync_engine.lock().await.inflight_receives.remove(&key);
+        Ok(FileReceiveProgress {
+            transfer_id: chunk.transfer_id,
+            next_offset,
+            completed: Some(pending),
+        })
+    }
+
     pub(super) async fn handle_file_chunk_with_key(
         &mut self,
         chunk: &FileChunkPayload,
         source: String,
         receive_key: ReceiveKey,
     ) -> Result<FileReceiveProgress, FileReceiveError> {
+        if chunk.data.is_empty() {
+            return Err(FileReceiveError::Failed(
+                "empty file chunk is not valid".to_string(),
+            ));
+        }
         let key = (source.clone(), receive_key);
         if let Some(completed) = self.completed_transfers.get(&key) {
             return Ok(FileReceiveProgress {
@@ -263,8 +595,26 @@ impl SyncEngine {
             .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
         state.hasher.update(&chunk.data);
         state.received += chunk.data.len() as u64;
-        persist_transfer_state(state, &source)
-            .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
+        state.chunks_since_persist = state.chunks_since_persist.saturating_add(1);
+        let persist_due = state.state_path.is_some()
+            && (state.chunks_since_persist >= RESUME_PERSIST_CHUNK_INTERVAL
+                || state.last_persist_at.elapsed() >= RESUME_PERSIST_INTERVAL
+                || state.received == state.meta.size);
+        if persist_due {
+            // Flush the data file before publishing the advisory sidecar so
+            // a crash cannot advertise a longer safe offset than the bytes on
+            // disk. The sidecar itself is atomically synced by
+            // `persist_transfer_state`.
+            state
+                .writer
+                .get_ref()
+                .sync_data()
+                .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
+            persist_transfer_state(state, &source)
+                .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
+            state.chunks_since_persist = 0;
+            state.last_persist_at = Instant::now();
+        }
         let next_offset = state.received;
         let completed = state.received == state.meta.size;
         let progress_name = state.meta.name.clone();
@@ -322,47 +672,24 @@ impl SyncEngine {
         state: FileReceiveState,
         source: &str,
     ) -> Result<Option<PendingReceivedFile>, String> {
-        let mut writer = state.writer;
-        writer.flush().map_err(|error| error.to_string())?;
-        drop(writer);
-        let computed = state.hasher.finalize().to_hex().to_string();
-        if !state.requires_full_hash && computed != state.meta.hash {
-            let _ = fs::remove_file(&state.tmp_path);
-            if let Some(path) = state.state_path {
-                let _ = fs::remove_file(path);
+        let batch_id = state.meta.batch.map(|batch| batch.batch_id);
+        let pending = match finalize_receive_state(state, source) {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.clear_file_progress(batch_id, Some(source));
+                return Err(error);
             }
-            self.clear_file_progress(state.meta.batch.map(|batch| batch.batch_id), Some(source));
-            return Err(format!(
-                "whole-file checksum mismatch for {}",
-                state.meta.name
-            ));
-        }
-        fs::rename(&state.tmp_path, &state.final_path).map_err(|error| error.to_string())?;
-        if let Some(path) = state.state_path {
-            let _ = fs::remove_file(path);
-        }
-        let pending = PendingReceivedFile {
-            transfer_id: state.meta.transfer_id.unwrap_or(TransferId([0; 16])),
-            file: ReceivedFile {
-                name: state.meta.name.clone(),
-                size: state.meta.size,
-                hash: if state.requires_full_hash {
-                    state.meta.hash.clone()
-                } else {
-                    computed
-                },
-                path: state.final_path,
-            },
-            hash_verified: !state.requires_full_hash,
-            meta: state.meta,
         };
         if pending.hash_verified {
             self.commit_received_file(source, pending).await?;
             Ok(None)
         } else {
             info!(
-                "File receive complete: {} ({} bytes, awaiting resumed-file verification)",
-                pending.meta.name, pending.meta.size
+                "file_receive_pending_verification transfer_id={} source={} name={:?} bytes={}",
+                pending.transfer_id.as_hex(),
+                source,
+                pending.meta.name,
+                pending.meta.size
             );
             Ok(Some(pending))
         }
@@ -376,9 +703,12 @@ impl SyncEngine {
         if !pending.hash_verified {
             return Err("Received file must be hash-verified before commit".to_string());
         }
-        info!(
-            "File receive complete: {} ({} bytes, hash verified)",
-            pending.meta.name, pending.meta.size
+        tracing::info!(
+            "file_receive_committed transfer_id={} source={} name={:?} bytes={} hash_verified=true",
+            pending.transfer_id.as_hex(),
+            source,
+            pending.meta.name,
+            pending.meta.size
         );
         let PendingReceivedFile {
             meta,
@@ -386,103 +716,7 @@ impl SyncEngine {
             ..
         } = pending;
         if let Some(batch_ref) = meta.batch {
-            let batch_key = (source.to_string(), batch_ref.batch_id);
-            if !self.incoming_batches.contains_key(&batch_key) {
-                // A receive task may finish its off-thread hash after the
-                // connection guard has suspended in-memory state. Rehydrate
-                // the durable manifest so verified bytes remain resumable.
-                let incoming_dir = received_file
-                    .path
-                    .parent()
-                    .ok_or_else(|| "Received file path has no parent".to_string())?;
-                let manifest_path =
-                    incoming_dir.join(format!("{}.batch.json", batch_ref.batch_id.as_hex()));
-                let data = fs::read(&manifest_path)
-                    .map_err(|error| format!("File batch state disappeared: {error}"))?;
-                let saved: PersistedIncomingBatch = serde_json::from_slice(&data)
-                    .map_err(|error| format!("Invalid persisted file batch state: {error}"))?;
-                if saved.source != source || saved.manifest.batch_id != batch_ref.batch_id {
-                    return Err(
-                        "Persisted file batch state belongs to another source or batch".to_string(),
-                    );
-                }
-                if saved.files.len() != saved.manifest.files.len() {
-                    return Err("Persisted file batch state has an invalid file count".to_string());
-                }
-                let manifest = saved.manifest;
-                let saved_source = saved.source;
-                let local_generation = saved.local_generation;
-                let source_device_id = if saved.source_device_id.is_empty() {
-                    self.peer_device_ids
-                        .get(source)
-                        .cloned()
-                        .unwrap_or_else(|| source.to_string())
-                } else {
-                    saved.source_device_id
-                };
-                let mut files = vec![None; manifest.files.len()];
-                for (index, file) in saved.files.into_iter().enumerate() {
-                    if let Some(file) = file {
-                        if let Some(file) = restore_persisted_received_file(
-                            &file,
-                            &manifest.files[index],
-                            incoming_dir,
-                        ) {
-                            files[index] = Some(file);
-                        }
-                    }
-                }
-                let session_epoch = self.receive_epoch(source);
-                self.incoming_batches.insert(
-                    batch_key.clone(),
-                    IncomingBatch {
-                        manifest,
-                        source: saved_source,
-                        source_device_id,
-                        session_epoch,
-                        local_generation,
-                        files,
-                        manifest_path,
-                    },
-                );
-            }
-            let batch = self
-                .incoming_batches
-                .get_mut(&batch_key)
-                .ok_or_else(|| "File batch state disappeared before completion".to_string())?;
-            let mut files = batch.files.clone();
-            let slot = files
-                .get_mut(usize::from(batch_ref.index))
-                .ok_or_else(|| "File batch index is out of range".to_string())?;
-            *slot = Some(received_file);
-            let persisted = PersistedIncomingBatch {
-                source: batch.source.clone(),
-                source_device_id: batch.source_device_id.clone(),
-                manifest: batch.manifest.clone(),
-                files: files.clone(),
-                local_generation: batch.local_generation,
-            };
-            persist_incoming_batch(&batch.manifest_path, &persisted)
-                .map_err(|error| error.to_string())?;
-            batch.files = files;
-            let completed_files = batch.files.iter().filter(|file| file.is_some()).count();
-            let completed_bytes = batch
-                .files
-                .iter()
-                .filter_map(|file| file.as_ref().map(|file| file.size))
-                .sum();
-            if let Some(platform) = self.platform.as_ref() {
-                platform.set_file_batch_progress(FileBatchProgress {
-                    batch_id: batch_ref.batch_id.as_hex(),
-                    direction: "receiving".to_string(),
-                    device: source.to_string(),
-                    current_file: meta.name.clone(),
-                    completed_files,
-                    total_files: batch.manifest.files.len(),
-                    transferred_bytes: completed_bytes,
-                    total_bytes: batch.manifest.total_bytes,
-                });
-            }
+            self.commit_received_batch_file(source, batch_ref, &meta, received_file)?;
         } else {
             let platform = self
                 .platform
@@ -516,7 +750,500 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Apply batch-local durable manifest bookkeeping. This helper contains
+    /// no async platform call and is safe to run under the short engine-state
+    /// mutex section used by the shared commit path.
+    fn commit_received_batch_file(
+        &mut self,
+        source: &str,
+        batch_ref: FileBatchRef,
+        meta: &FileMeta,
+        received_file: ReceivedFile,
+    ) -> Result<(), String> {
+        let batch_key = (source.to_string(), batch_ref.batch_id);
+        if !self.incoming_batches.contains_key(&batch_key) {
+            // A receive task may finish its off-thread hash after the
+            // connection guard has suspended in-memory state. Rehydrate the
+            // durable manifest so verified bytes remain resumable.
+            let incoming_dir = received_file
+                .path
+                .parent()
+                .ok_or_else(|| "Received file path has no parent".to_string())?;
+            let manifest_path =
+                incoming_dir.join(format!("{}.batch.json", batch_ref.batch_id.as_hex()));
+            let data = fs::read(&manifest_path)
+                .map_err(|error| format!("File batch state disappeared: {error}"))?;
+            let saved: PersistedIncomingBatch = serde_json::from_slice(&data)
+                .map_err(|error| format!("Invalid persisted file batch state: {error}"))?;
+            if saved.source != source || saved.manifest.batch_id != batch_ref.batch_id {
+                return Err(
+                    "Persisted file batch state belongs to another source or batch".to_string(),
+                );
+            }
+            if saved.files.len() != saved.manifest.files.len() {
+                return Err("Persisted file batch state has an invalid file count".to_string());
+            }
+            let manifest = saved.manifest;
+            let saved_source = saved.source;
+            let local_generation = saved.local_generation;
+            let source_device_id = if saved.source_device_id.is_empty() {
+                self.peer_device_ids
+                    .get(source)
+                    .cloned()
+                    .unwrap_or_else(|| source.to_string())
+            } else {
+                saved.source_device_id
+            };
+            let mut files = vec![None; manifest.files.len()];
+            for (index, file) in saved.files.into_iter().enumerate() {
+                if let Some(file) = file {
+                    if let Some(file) =
+                        restore_persisted_received_file(&file, &manifest.files[index], incoming_dir)
+                    {
+                        files[index] = Some(file);
+                    }
+                }
+            }
+            let session_epoch = self.receive_epoch(source);
+            self.incoming_batches.insert(
+                batch_key.clone(),
+                IncomingBatch {
+                    manifest,
+                    source: saved_source,
+                    source_device_id,
+                    session_epoch,
+                    local_generation,
+                    files,
+                    manifest_path,
+                },
+            );
+        }
+        let batch = self
+            .incoming_batches
+            .get_mut(&batch_key)
+            .ok_or_else(|| "File batch state disappeared before completion".to_string())?;
+        let mut files = batch.files.clone();
+        let slot = files
+            .get_mut(usize::from(batch_ref.index))
+            .ok_or_else(|| "File batch index is out of range".to_string())?;
+        *slot = Some(received_file);
+        let persisted = PersistedIncomingBatch {
+            source: batch.source.clone(),
+            source_device_id: batch.source_device_id.clone(),
+            manifest: batch.manifest.clone(),
+            files: files.clone(),
+            local_generation: batch.local_generation,
+        };
+        persist_incoming_batch(&batch.manifest_path, &persisted)
+            .map_err(|error| error.to_string())?;
+        batch.files = files;
+        let completed_files = batch.files.iter().filter(|file| file.is_some()).count();
+        let completed_bytes = batch
+            .files
+            .iter()
+            .filter_map(|file| file.as_ref().map(|file| file.size))
+            .sum();
+        if let Some(platform) = self.platform.as_ref() {
+            platform.set_file_batch_progress(FileBatchProgress {
+                batch_id: batch_ref.batch_id.as_hex(),
+                direction: "receiving".to_string(),
+                device: source.to_string(),
+                current_file: meta.name.clone(),
+                completed_files,
+                total_files: batch.manifest.files.len(),
+                transferred_bytes: completed_bytes,
+                total_bytes: batch.manifest.total_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    /// Commit a verified file through the shared runtime. Batch bookkeeping
+    /// remains a short engine-state operation; the platform's durable history
+    /// future is awaited after the engine mutex is released.
+    pub async fn commit_received_file_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: &str,
+        pending: PendingReceivedFile,
+    ) -> Result<(), String> {
+        if !pending.hash_verified {
+            return Err("Received file must be hash-verified before commit".to_string());
+        }
+        if pending.meta.batch.is_some() {
+            let batch_id = pending
+                .meta
+                .batch
+                .ok_or_else(|| "File batch metadata is missing".to_string())?
+                .batch_id;
+            let receive_key = (
+                source.to_string(),
+                ReceiveKey::from(pending.meta.transfer_id),
+            );
+            let (batch_lock, receive_lock) = {
+                let mut engine = sync_engine.lock().await;
+                (
+                    engine.batch_operation_lock(&(source.to_string(), batch_id)),
+                    engine.receive_operation_lock(&receive_key),
+                )
+            };
+            let _batch_guard = batch_lock.lock().await;
+            let _receive_guard = receive_lock.lock().await;
+            let batch_ref = pending
+                .meta
+                .batch
+                .ok_or_else(|| "File batch metadata is missing".to_string())?;
+            let batch_key = (source.to_string(), batch_ref.batch_id);
+            let (batch_snapshot, fallback_source_device_id, session_epoch, platform, cancelled) = {
+                let engine = sync_engine.lock().await;
+                (
+                    engine.incoming_batches.get(&batch_key).cloned(),
+                    engine
+                        .peer_device_ids
+                        .get(source)
+                        .cloned()
+                        .unwrap_or_else(|| source.to_string()),
+                    engine.receive_epoch(source),
+                    engine.platform.clone(),
+                    engine.cancelled_batches.contains_key(&batch_key),
+                )
+            };
+            if cancelled {
+                let _ = fs::remove_file(&pending.file.path);
+                return Err("File batch was cancelled".to_string());
+            }
+            let meta = pending.meta.clone();
+            let received_file = pending.file.clone();
+            let batch = match batch_snapshot {
+                Some(batch) => batch,
+                None => rehydrate_batch_for_commit(
+                    source,
+                    batch_ref,
+                    &received_file,
+                    fallback_source_device_id,
+                    session_epoch,
+                )?,
+            };
+            let (batch, progress) =
+                persist_received_file_in_batch(batch, batch_ref, &meta, received_file)?;
+            let completed = CompletedTransfer {
+                size: meta.size,
+                hash: meta.hash,
+                completed_at: chrono::Utc::now().timestamp(),
+            };
+            {
+                let mut engine = sync_engine.lock().await;
+                engine.incoming_batches.insert(batch_key.clone(), batch);
+                engine.completed_transfers.insert(receive_key, completed);
+            }
+            if let Some(platform) = platform {
+                platform.set_file_batch_progress(progress);
+            }
+            return Ok(());
+        }
+
+        let receive_key = (
+            source.to_string(),
+            ReceiveKey::from(pending.meta.transfer_id),
+        );
+        let receive_lock = {
+            let mut engine = sync_engine.lock().await;
+            engine.receive_operation_lock(&receive_key)
+        };
+        let _receive_guard = receive_lock.lock().await;
+        let (platform, source_device_id, commit, completed_key) = {
+            let engine = sync_engine.lock().await;
+            let source_device_id = engine
+                .peer_device_ids
+                .get(source)
+                .cloned()
+                .unwrap_or_else(|| source.to_string());
+            let commit = FileReceiveCommit {
+                batch_id: None,
+                files: vec![pending.file.clone()],
+                batch_total: 1,
+                batch_complete: true,
+                activate_clipboard: true,
+                device: source.to_string(),
+                source_device_id,
+                manifest_hash: None,
+            };
+            let platform = engine
+                .platform
+                .clone()
+                .ok_or_else(|| "Clipboard platform is unavailable".to_string())?;
+            (
+                platform,
+                commit.source_device_id.clone(),
+                commit,
+                (
+                    source.to_string(),
+                    ReceiveKey::from(pending.meta.transfer_id),
+                ),
+            )
+        };
+        let transfer_id = pending.transfer_id;
+        let name = pending.meta.name.clone();
+        let bytes = pending.meta.size;
+        platform.files_received(commit).await?;
+        let mut engine = sync_engine.lock().await;
+        engine.completed_transfers.insert(
+            completed_key,
+            CompletedTransfer {
+                size: bytes,
+                hash: pending.meta.hash,
+                completed_at: chrono::Utc::now().timestamp(),
+            },
+        );
+        tracing::info!(
+            transfer_id = %transfer_id.as_hex(),
+            source = %source,
+            name = ?name,
+            bytes,
+            source_device_id = %source_device_id,
+            "receive history commit complete"
+        );
+        Ok(())
+    }
+
     pub fn discard_received_file(&self, source: &str, batch_id: Option<TransferId>) {
         self.clear_file_progress(batch_id, Some(source));
     }
+}
+
+/// Open/restore a receive state without borrowing `SyncEngine`. This is the
+/// disk portion of FileMeta handling and is intentionally usable by the
+/// transfer-scoped runtime path.
+fn open_receive_state(
+    meta: &FileMeta,
+    file_path: &Path,
+    source: &str,
+    session_epoch: u64,
+) -> Result<FileReceiveState, String> {
+    let transfer_id = meta.transfer_id.unwrap_or(TransferId([0; 16]));
+    let resumable = meta.transfer_id.is_some();
+    let parent = file_path
+        .parent()
+        .ok_or_else(|| "incoming file path has no parent".to_string())?;
+    crate::private_fs::create_private_dir_all(parent).map_err(|error| error.to_string())?;
+    let id = transfer_id.as_hex();
+    let tmp_path = if resumable {
+        parent.join(format!("{id}.part"))
+    } else {
+        file_path.with_extension("tmp")
+    };
+    let state_path = resumable.then(|| parent.join(format!("{id}.resume.json")));
+
+    let mut final_path = file_path.to_path_buf();
+    if let Some(ref path) = state_path {
+        if let Ok(data) = fs::read(path) {
+            if let Ok(saved) = serde_json::from_slice::<PersistedTransfer>(&data) {
+                if saved.source == source
+                    && saved.meta.hash == meta.hash
+                    && saved.meta.size == meta.size
+                {
+                    if let Some(file_name) = saved.final_path.file_name() {
+                        final_path = parent.join(file_name);
+                    }
+                } else {
+                    let _ = fs::remove_file(&tmp_path);
+                }
+            }
+        }
+    }
+
+    let mut file = crate::private_fs::open_private_file(&tmp_path, !resumable)
+        .map_err(|error| format!("cannot open {}: {error}", tmp_path.display()))?;
+    let received = file.metadata().map_err(|error| error.to_string())?.len();
+    if received > meta.size {
+        file.set_len(0).map_err(|error| error.to_string())?;
+    }
+    let received = file.metadata().map_err(|error| error.to_string())?.len();
+    let requires_full_hash = received > 0;
+    file.seek(SeekFrom::Start(received))
+        .map_err(|error| error.to_string())?;
+    let writer = BufWriter::with_capacity(FILE_CHUNK_SIZE, file);
+    let state = FileReceiveState {
+        meta: meta.clone(),
+        session_epoch,
+        tmp_path,
+        final_path,
+        state_path,
+        writer,
+        hasher: blake3::Hasher::new(),
+        received,
+        requires_full_hash,
+        chunks_since_persist: 0,
+        last_persist_at: Instant::now(),
+    };
+    persist_transfer_state(&state, source).map_err(|error| error.to_string())?;
+    Ok(state)
+}
+
+/// Rehydrate a durable incoming batch when a connection suspension removed
+/// its in-memory manifest before a verified file finished committing.
+fn rehydrate_batch_for_commit(
+    source: &str,
+    batch_ref: FileBatchRef,
+    received_file: &ReceivedFile,
+    fallback_source_device_id: String,
+    session_epoch: u64,
+) -> Result<IncomingBatch, String> {
+    let incoming_dir = received_file
+        .path
+        .parent()
+        .ok_or_else(|| "Received file path has no parent".to_string())?;
+    let manifest_path = incoming_dir.join(format!("{}.batch.json", batch_ref.batch_id.as_hex()));
+    let data = fs::read(&manifest_path)
+        .map_err(|error| format!("File batch state disappeared: {error}"))?;
+    let saved: PersistedIncomingBatch = serde_json::from_slice(&data)
+        .map_err(|error| format!("Invalid persisted file batch state: {error}"))?;
+    if saved.source != source || saved.manifest.batch_id != batch_ref.batch_id {
+        return Err("Persisted file batch state belongs to another source or batch".to_string());
+    }
+    if saved.files.len() != saved.manifest.files.len() {
+        return Err("Persisted file batch state has an invalid file count".to_string());
+    }
+    let manifest = saved.manifest;
+    let mut files = vec![None; manifest.files.len()];
+    for (index, file) in saved.files.into_iter().enumerate() {
+        if let Some(file) = file {
+            if let Some(file) =
+                restore_persisted_received_file(&file, &manifest.files[index], incoming_dir)
+            {
+                files[index] = Some(file);
+            }
+        }
+    }
+    Ok(IncomingBatch {
+        source: saved.source,
+        source_device_id: if saved.source_device_id.is_empty() {
+            fallback_source_device_id
+        } else {
+            saved.source_device_id
+        },
+        session_epoch,
+        local_generation: saved.local_generation,
+        files,
+        manifest_path,
+        manifest,
+    })
+}
+
+/// Merge one verified file into a batch snapshot and persist the snapshot.
+/// The caller owns the batch operation lock, so this disk work cannot race a
+/// concurrent finish/cancel for the same batch.
+fn persist_received_file_in_batch(
+    mut batch: IncomingBatch,
+    batch_ref: FileBatchRef,
+    meta: &FileMeta,
+    received_file: ReceivedFile,
+) -> Result<(IncomingBatch, FileBatchProgress), String> {
+    let index = usize::from(batch_ref.index);
+    let expected = batch
+        .manifest
+        .files
+        .get(index)
+        .ok_or_else(|| "File batch index is out of range".to_string())?;
+    if expected.transfer_id != meta.transfer_id.unwrap_or(TransferId([0; 16]))
+        || expected.name != meta.name
+        || expected.size != meta.size
+        || expected.hash != meta.hash
+        || expected.chunk_size != meta.chunk_size
+    {
+        return Err("File metadata does not match the batch manifest".to_string());
+    }
+    if received_file.name != expected.name
+        || received_file.size != expected.size
+        || received_file.hash != expected.hash
+    {
+        return Err("Received file does not match the batch manifest".to_string());
+    }
+    let mut files = batch.files.clone();
+    let slot = files
+        .get_mut(index)
+        .ok_or_else(|| "File batch index is out of range".to_string())?;
+    *slot = Some(received_file);
+    let persisted = PersistedIncomingBatch {
+        source: batch.source.clone(),
+        source_device_id: batch.source_device_id.clone(),
+        manifest: batch.manifest.clone(),
+        files: files.clone(),
+        local_generation: batch.local_generation,
+    };
+    persist_incoming_batch(&batch.manifest_path, &persisted).map_err(|error| error.to_string())?;
+    batch.files = files;
+    let completed_files = batch.files.iter().filter(|file| file.is_some()).count();
+    let completed_bytes = batch
+        .files
+        .iter()
+        .filter_map(|file| file.as_ref().map(|file| file.size))
+        .sum();
+    let progress = FileBatchProgress {
+        batch_id: batch_ref.batch_id.as_hex(),
+        direction: "receiving".to_string(),
+        device: batch.source.clone(),
+        current_file: meta.name.clone(),
+        completed_files,
+        total_files: batch.manifest.files.len(),
+        transferred_bytes: completed_bytes,
+        total_bytes: batch.manifest.total_bytes,
+    };
+    Ok((batch, progress))
+}
+
+/// Complete the disk portion of a receive without borrowing `SyncEngine`.
+/// Network callers run this while holding only the transfer lock, so a slow
+/// flush, fsync, hash or rename cannot block unrelated peers on the engine
+/// mutex. The returned value is committed by the caller after this function
+/// releases the transfer lock.
+fn finalize_receive_state(
+    state: FileReceiveState,
+    source: &str,
+) -> Result<PendingReceivedFile, String> {
+    let mut writer = state.writer;
+    writer.flush().map_err(|error| error.to_string())?;
+    writer
+        .get_ref()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    drop(writer);
+    let computed = state.hasher.finalize().to_hex().to_string();
+    if !state.requires_full_hash && computed != state.meta.hash {
+        let _ = fs::remove_file(&state.tmp_path);
+        if let Some(path) = state.state_path {
+            let _ = fs::remove_file(path);
+        }
+        return Err(format!(
+            "whole-file checksum mismatch for {}",
+            state.meta.name
+        ));
+    }
+    fs::rename(&state.tmp_path, &state.final_path).map_err(|error| error.to_string())?;
+    if let Some(path) = state.state_path {
+        let _ = fs::remove_file(path);
+    }
+    let pending = PendingReceivedFile {
+        transfer_id: state.meta.transfer_id.unwrap_or(TransferId([0; 16])),
+        file: ReceivedFile {
+            name: state.meta.name.clone(),
+            size: state.meta.size,
+            hash: if state.requires_full_hash {
+                state.meta.hash.clone()
+            } else {
+                computed
+            },
+            path: state.final_path,
+        },
+        hash_verified: !state.requires_full_hash,
+        meta: state.meta,
+    };
+    tracing::info!(
+        transfer_id = %pending.transfer_id.as_hex(),
+        source = %source,
+        name = ?pending.meta.name,
+        bytes = pending.meta.size,
+        hash_verified = pending.hash_verified,
+        "receive disk finalization complete"
+    );
+    Ok(pending)
 }

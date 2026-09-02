@@ -33,7 +33,9 @@ blake3 = "1"
 base64 = "0.23"
 hex = "0.4"
 log = "0.4"
-env_logger = "0.11"
+tracing-log = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 directories = "6"
 rand = "0.8"
@@ -59,3 +61,9 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+opt-level = "s"

@@ -136,7 +136,7 @@ async fn runtime_snapshot_data(state: &ApiState, since_notification_id: Option<u
     // the starting revision, so the client's next wait returns immediately.
     let revision = get_runtime_revision();
     let sync_enabled = state.settings.lock().await.sync_enabled;
-    let storage = state.db.lock().await.storage_status();
+    let storage = db::storage_status_async(&state.db).await;
     serde_json::json!({
         "revision": revision,
         "history_version": get_clipboard_version(),
@@ -279,7 +279,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         "get_storage_status" => Response {
             ok: true,
-            data: serde_json::to_value(state.db.lock().await.storage_status()).ok(),
+            data: serde_json::to_value(db::storage_status_async(&state.db).await).ok(),
             error: None,
         },
 

@@ -253,6 +253,8 @@ mod tests {
             hasher: blake3::Hasher::new(),
             received: 0,
             requires_full_hash: false,
+            chunks_since_persist: 0,
+            last_persist_at: std::time::Instant::now(),
         };
 
         persist_transfer_state(&state, "peer").unwrap();

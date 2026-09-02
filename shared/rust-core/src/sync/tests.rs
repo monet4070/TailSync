@@ -1181,6 +1181,53 @@ async fn completed_pending_receive(
 }
 
 #[tokio::test]
+async fn file_receive_rejects_empty_chunk_without_mutating_resume_state() {
+    let directory = TestDirectory::new("empty-file-chunk");
+    let transfer_id = TransferId([9; 16]);
+    let meta = FileMeta {
+        transfer_id: Some(transfer_id),
+        name: "received.bin".into(),
+        size: 4,
+        hash: blake3::hash(b"data").to_hex().to_string(),
+        chunk_size: FILE_CHUNK_SIZE as u32,
+        batch: None,
+    };
+    let final_path = directory.path().join("received.bin");
+    let mut engine = SyncEngine::new();
+    engine
+        .begin_file_receive(meta, &final_path, "peer".into())
+        .await
+        .unwrap();
+
+    let error = engine
+        .handle_resumable_file_chunk(
+            &FileChunkPayload {
+                transfer_id,
+                offset: 0,
+                data: Vec::new(),
+            },
+            "peer".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FileReceiveError::Failed(message) if message.contains("empty")));
+    assert_eq!(
+        persisted_file_resume_offset("peer", transfer_id, directory.path()),
+        Some(0)
+    );
+    assert_eq!(
+        std::fs::metadata(
+            directory
+                .path()
+                .join(format!("{}.part", transfer_id.as_hex()))
+        )
+        .unwrap()
+        .len(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn verify_and_commit_commits_verified_files() {
     let directory = TestDirectory::new("verify-commit-ok");
     let (engine, platform, pending) =
@@ -1209,6 +1256,218 @@ async fn verify_and_commit_removes_corrupt_files_without_committing() {
     assert!(error.contains("checksum mismatch"));
     assert!(!path.exists(), "corrupt temp file must be removed");
     assert!(platform.received().is_empty());
+}
+
+#[tokio::test]
+async fn shared_receive_path_uses_transfer_scoped_state_and_commit() {
+    let directory = TestDirectory::new("shared-receive-path");
+    let transfer_id = TransferId([78; 16]);
+    let data = b"shared-path";
+    let meta = FileMeta {
+        transfer_id: Some(transfer_id),
+        name: "received.bin".into(),
+        size: data.len() as u64,
+        hash: blake3::hash(data).to_hex().to_string(),
+        chunk_size: FILE_CHUNK_SIZE as u32,
+        batch: None,
+    };
+    let platform = Arc::new(TestPlatform::default());
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    engine.lock().await.set_platform(platform.clone());
+
+    let progress = SyncEngine::begin_file_receive_shared(
+        &engine,
+        meta,
+        &directory.path().join("received.bin"),
+        "peer".into(),
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(progress.next_offset, 0);
+
+    let progress = SyncEngine::handle_resumable_file_chunk_shared(
+        &engine,
+        &FileChunkPayload {
+            transfer_id,
+            offset: 0,
+            data: data.to_vec(),
+        },
+        "peer".into(),
+    )
+    .await
+    .unwrap();
+    let pending = progress
+        .completed
+        .expect("completed transfer must be pending");
+    verify_and_commit_received_file(&engine, "peer", pending)
+        .await
+        .unwrap();
+    assert_eq!(platform.received().len(), 1);
+    assert_eq!(engine.lock().await.completed_transfers.len(), 1);
+}
+
+#[tokio::test]
+async fn shared_batch_finish_keeps_manifest_until_platform_commit() {
+    let directory = TestDirectory::new("shared-batch-path");
+    let manifest = manifest_with_sizes(&[0]);
+    let batch_id = manifest.batch_id;
+    let platform = Arc::new(TestPlatform::default());
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    engine.lock().await.set_platform(platform.clone());
+
+    SyncEngine::begin_file_batch_shared(
+        &engine,
+        manifest.clone(),
+        "peer".into(),
+        "device-id".into(),
+        directory.path().to_path_buf(),
+        1,
+    )
+    .await
+    .unwrap();
+    let meta = FileMeta {
+        transfer_id: Some(manifest.files[0].transfer_id),
+        name: manifest.files[0].name.clone(),
+        size: 0,
+        hash: manifest.files[0].hash.clone(),
+        chunk_size: FILE_CHUNK_SIZE as u32,
+        batch: Some(FileBatchRef { batch_id, index: 0 }),
+    };
+    let progress = SyncEngine::begin_file_receive_shared(
+        &engine,
+        meta,
+        &directory.path().join("empty.bin"),
+        "peer".into(),
+        1,
+    )
+    .await
+    .unwrap();
+    let pending = progress
+        .completed
+        .expect("empty file should finalize immediately");
+    verify_and_commit_received_file(&engine, "peer", pending)
+        .await
+        .unwrap();
+    SyncEngine::finish_file_batch_shared(&engine, "peer", batch_id)
+        .await
+        .unwrap();
+    assert!(engine
+        .lock()
+        .await
+        .is_file_batch_completed("peer", batch_id));
+    assert!(platform
+        .received()
+        .iter()
+        .any(|event| { event.batch_id == Some(batch_id) && event.batch_complete }));
+}
+
+#[tokio::test]
+async fn shared_batch_cancel_waits_for_transfer_state_and_cleans_temp_files() {
+    let directory = TestDirectory::new("shared-cancel-path");
+    let manifest = manifest_with_sizes(&[4]);
+    let transfer_id = manifest.files[0].transfer_id;
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    SyncEngine::begin_file_batch_shared(
+        &engine,
+        manifest.clone(),
+        "peer".into(),
+        "device-id".into(),
+        directory.path().to_path_buf(),
+        1,
+    )
+    .await
+    .unwrap();
+    SyncEngine::begin_file_receive_shared(
+        &engine,
+        FileMeta {
+            transfer_id: Some(transfer_id),
+            name: manifest.files[0].name.clone(),
+            size: 4,
+            hash: manifest.files[0].hash.clone(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: Some(FileBatchRef {
+                batch_id: manifest.batch_id,
+                index: 0,
+            }),
+        },
+        &directory.path().join("partial.bin"),
+        "peer".into(),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(SyncEngine::cancel_file_batch_shared(&engine, "peer", manifest.batch_id).await);
+    assert!(!directory
+        .path()
+        .join(format!("{}.part", transfer_id.as_hex()))
+        .exists());
+    assert!(engine
+        .lock()
+        .await
+        .cancelled_batches
+        .contains_key(&("peer".to_string(), manifest.batch_id)));
+}
+
+#[tokio::test]
+async fn shared_batch_cancel_rejects_a_verified_pending_commit_without_leaking_file() {
+    let directory = TestDirectory::new("shared-cancel-pending");
+    let data = b"done";
+    let mut manifest = manifest_with_sizes(&[data.len() as u64]);
+    manifest.files[0].hash = blake3::hash(data).to_hex().to_string();
+    let transfer_id = manifest.files[0].transfer_id;
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    SyncEngine::begin_file_batch_shared(
+        &engine,
+        manifest.clone(),
+        "peer".into(),
+        "device-id".into(),
+        directory.path().to_path_buf(),
+        1,
+    )
+    .await
+    .unwrap();
+    let _ = SyncEngine::begin_file_receive_shared(
+        &engine,
+        FileMeta {
+            transfer_id: Some(transfer_id),
+            name: manifest.files[0].name.clone(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: Some(FileBatchRef {
+                batch_id: manifest.batch_id,
+                index: 0,
+            }),
+        },
+        &directory.path().join("pending.bin"),
+        "peer".into(),
+        1,
+    )
+    .await
+    .unwrap();
+    let progress = SyncEngine::handle_resumable_file_chunk_shared(
+        &engine,
+        &FileChunkPayload {
+            transfer_id,
+            offset: 0,
+            data: data.to_vec(),
+        },
+        "peer".into(),
+    )
+    .await
+    .unwrap();
+    let pending = progress
+        .completed
+        .expect("complete receive should be pending");
+    let final_path = pending.path().to_path_buf();
+    assert!(final_path.is_file());
+    assert!(SyncEngine::cancel_file_batch_shared(&engine, "peer", manifest.batch_id).await);
+    let error = verify_and_commit_received_file(&engine, "peer", pending)
+        .await
+        .unwrap_err();
+    assert!(error.contains("cancelled"));
+    assert!(!final_path.exists());
 }
 
 // ------------------------------------------------------------------

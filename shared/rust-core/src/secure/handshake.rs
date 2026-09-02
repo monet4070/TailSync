@@ -29,6 +29,11 @@ where
 
     let ack = read_handshake_response(&mut stream).await?;
     if ack.command == Command::PeerError {
+        tracing::warn!(
+            expected_hostname = %expected_hostname,
+            "secure handshake rejected: {}",
+            String::from_utf8_lossy(&ack.payload)
+        );
         return Err(String::from_utf8_lossy(&ack.payload).to_string().into());
     }
     if ack.command != Command::HandshakeAck {
@@ -39,8 +44,15 @@ where
     validate_peer_identity(&peer_info)?;
     let remote_key = handshake
         .get_remote_static()
-        .ok_or("Responder did not provide a static identity")?;
+        .ok_or("Responder did not provide a static identity")?
+        .to_vec();
     if peer_info.hostname != expected_hostname || remote_key != expected_public_key {
+        tracing::warn!(
+            expected_hostname = %expected_hostname,
+            actual_hostname = %peer_info.hostname,
+            peer_id = %crate::observability::peer_id(&remote_key),
+            "secure handshake identity mismatch"
+        );
         return Err(format!("Peer identity mismatch for {expected_hostname}").into());
     }
 
@@ -49,6 +61,7 @@ where
     let length = handshake.write_message(&local_payload, &mut output)?;
     write_plain_frame(&mut stream, Command::HandshakeFinish, &output[..length]).await?;
 
+    let session_id = crate::observability::session_id(handshake.get_handshake_hash());
     let transport = handshake.into_transport_mode()?;
     let mut secure = SecureConnection {
         stream: Box::new(stream),
@@ -59,11 +72,28 @@ where
         partial_record: Vec::new(),
         partial_expected: None,
         peer_identity: peer_info,
+        session_id,
     };
     let ready = secure.read_frame().await?;
     match ready.command {
-        Command::HandshakeReady => Ok(secure),
-        Command::PeerError => Err(String::from_utf8_lossy(&ready.payload).to_string().into()),
+        Command::HandshakeReady => {
+            tracing::info!(
+                session_id = %secure.session_id(),
+                peer = %secure.peer_identity.hostname,
+                peer_id = %crate::observability::peer_id(&remote_key),
+                purpose = "connection",
+                "secure handshake ready"
+            );
+            Ok(secure)
+        }
+        Command::PeerError => {
+            tracing::warn!(
+                peer = %secure.peer_identity.hostname,
+                "secure handshake confirmation rejected: {}",
+                String::from_utf8_lossy(&ready.payload)
+            );
+            Err(String::from_utf8_lossy(&ready.payload).to_string().into())
+        }
         _ => Err("Secure handshake confirmation missing".into()),
     }
 }
@@ -83,6 +113,11 @@ where
 
     let ack = read_handshake_response(&mut stream).await?;
     if ack.command == Command::PeerError {
+        tracing::warn!(
+            purpose = "pairing",
+            "secure pairing rejected: {}",
+            String::from_utf8_lossy(&ack.payload)
+        );
         return Err(String::from_utf8_lossy(&ack.payload).to_string().into());
     }
     if ack.command != Command::PairingHandshakeAck {
@@ -106,6 +141,7 @@ where
     )
     .await?;
     let handshake_hash = handshake.get_handshake_hash().to_vec();
+    let session_id = crate::observability::session_id(&handshake_hash);
     let transport = handshake.into_transport_mode()?;
     let mut connection = SecureConnection {
         stream: Box::new(stream),
@@ -116,17 +152,35 @@ where
         partial_record: Vec::new(),
         partial_expected: None,
         peer_identity: peer_identity.clone(),
+        session_id,
     };
     let ready = connection.read_frame().await?;
     match ready.command {
-        Command::HandshakeReady => Ok(AcceptedConnection {
-            connection,
-            peer_identity,
-            remote_public_key,
-            handshake_hash,
-            purpose: HandshakePurpose::Pairing,
-        }),
-        Command::PeerError => Err(String::from_utf8_lossy(&ready.payload).to_string().into()),
+        Command::HandshakeReady => {
+            tracing::info!(
+                session_id = %connection.session_id(),
+                peer = %peer_identity.hostname,
+                peer_id = %crate::observability::peer_id(&remote_public_key),
+                purpose = "pairing",
+                "secure handshake ready"
+            );
+            Ok(AcceptedConnection {
+                connection,
+                peer_identity,
+                remote_public_key,
+                handshake_hash,
+                purpose: HandshakePurpose::Pairing,
+            })
+        }
+        Command::PeerError => {
+            tracing::warn!(
+                peer = %connection.peer_identity.hostname,
+                purpose = "pairing",
+                "secure pairing confirmation rejected: {}",
+                String::from_utf8_lossy(&ready.payload)
+            );
+            Err(String::from_utf8_lossy(&ready.payload).to_string().into())
+        }
         _ => Err("Secure pairing confirmation missing".into()),
     }
 }
@@ -247,7 +301,15 @@ where
         .ok_or("Initiator did not provide a static identity")?
         .to_vec();
     let handshake_hash = handshake.get_handshake_hash().to_vec();
+    let session_id = crate::observability::session_id(&handshake_hash);
     let transport = handshake.into_transport_mode()?;
+    tracing::info!(
+        session_id = %session_id,
+        peer = %peer_info.hostname,
+        peer_id = %crate::observability::peer_id(&remote_key),
+        purpose = ?purpose,
+        "secure handshake accepted"
+    );
     Ok(AcceptedConnection {
         connection: SecureConnection {
             stream: Box::new(stream),
@@ -258,6 +320,7 @@ where
             partial_record: Vec::new(),
             partial_expected: None,
             peer_identity: peer_info.clone(),
+            session_id,
         },
         peer_identity: peer_info,
         remote_public_key: remote_key,

@@ -161,6 +161,55 @@ fn rejects_v1_and_unsafe() {
     m["light"]["colors"]["background"]["canvas"] = Value::from("url(https://bad)");
     assert!(!validate_theme(&package(m), "light", false).valid);
 }
+
+#[test]
+fn rejects_unsafe_archive_paths_before_reading_entries() {
+    let bytes = package_with_asset(manifest(), "../escape.png", &png(1, 1));
+    let validation = validate_theme(&bytes, "light", false);
+    assert!(!validation.valid);
+    assert_eq!(validation.diagnostics[0].code, "THEME_PATH_TRAVERSAL");
+
+    assert!(safe_zip_path("assets/logo.png"));
+    assert!(!safe_zip_path("../escape.png"));
+    assert!(!safe_zip_path("/absolute/escape.png"));
+}
+
+#[test]
+fn rejects_archives_with_more_than_the_asset_budget() {
+    let cursor = Cursor::new(Vec::new());
+    let mut archive = zip::ZipWriter::new(cursor);
+    use zip::write::SimpleFileOptions;
+    archive
+        .start_file("theme.json", SimpleFileOptions::default())
+        .unwrap();
+    std::io::Write::write_all(
+        &mut archive,
+        serde_json::to_string(&manifest()).unwrap().as_bytes(),
+    )
+    .unwrap();
+    for index in 0..=MAX_ASSETS {
+        archive
+            .start_file(
+                format!("assets/asset-{index}.png"),
+                SimpleFileOptions::default(),
+            )
+            .unwrap();
+        std::io::Write::write_all(&mut archive, &png(1, 1)).unwrap();
+    }
+    let bytes = archive.finish().unwrap().into_inner();
+    let validation = validate_theme(&bytes, "light", false);
+    assert!(!validation.valid);
+    assert_eq!(validation.diagnostics[0].code, "THEME_TOO_MANY_FILES");
+}
+
+#[test]
+fn rejects_non_image_theme_assets() {
+    let bytes = package_with_asset(manifest(), "assets/not-an-image.bin", b"not an image");
+    let validation = validate_theme(&bytes, "light", false);
+    assert!(!validation.valid);
+    assert_eq!(validation.diagnostics[0].code, "THEME_ASSET_MIME");
+}
+
 #[test]
 fn install_requires_digest_and_retains_rollback() {
     let base = std::env::temp_dir().join(format!("themes-v2-{}", rand::random::<u64>()));

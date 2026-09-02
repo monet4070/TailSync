@@ -134,7 +134,9 @@ extension SettingsView {
                 }
             }
 
-            if let message = pairingMessage ?? pairingStatus?.error {
+            if let message = pairingMessage
+                ?? pairingStatus?.error.map(ApiError.pairingErrorDescription)
+            {
                 Text(message)
                     .font(.caption2)
                     .foregroundColor(.red)

@@ -3,6 +3,7 @@ use tailsync_core::peer::admission::peer_is_allowed;
 use tailsync_core::peer::event_receiver::process_reliable_event;
 use tailsync_core::peer::inbound_source::InboundSource;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::Instrument;
 
 pub(super) use tailsync_core::peer::connection_limiter::ConnectionLimiter;
 
@@ -269,6 +270,41 @@ async fn handle_accepted_connection(
     pairing: Option<Arc<PairingManager>>,
     remote_invite: Option<tailsync_core::pairing::InviteClaim>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let session_id = accepted.connection.session_id().to_string();
+    let peer = accepted.peer_identity.hostname.clone();
+    let peer_id = tailsync_core::observability::peer_id(&accepted.remote_public_key);
+    let interface = source
+        .interface()
+        .map(|interface| interface.as_str().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    handle_accepted_connection_inner(
+        accepted,
+        source,
+        sync_engine,
+        database,
+        settings,
+        pairing,
+        remote_invite,
+    )
+    .instrument(tracing::info_span!(
+        "secure.session",
+        session_id = %session_id,
+        peer = %peer,
+        peer_id = %peer_id,
+        interface = %interface,
+    ))
+    .await
+}
+
+async fn handle_accepted_connection_inner(
+    accepted: secure::AcceptedConnection,
+    source: InboundSource,
+    sync_engine: Arc<Mutex<sync::SyncEngine>>,
+    database: Arc<Mutex<db::HistoryDB>>,
+    settings: Arc<Mutex<crypto::Settings>>,
+    pairing: Option<Arc<PairingManager>>,
+    remote_invite: Option<tailsync_core::pairing::InviteClaim>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let purpose = accepted.purpose;
     let handshake_hash = accepted.handshake_hash;
     let mut stream = accepted.connection;
@@ -357,6 +393,13 @@ async fn handle_accepted_connection(
                 Command::TextPayload | Command::ImagePayload | Command::FileBatchStart => {
                     check_peer_event_budget(&peer_info.hostname, payload_length)
                         .map_err(ProtocolError::AdmissionRejected)
+                }
+                Command::FileChunk
+                    if payload_length < crate::protocol::MIN_FILE_CHUNK_PAYLOAD_SIZE =>
+                {
+                    Err(ProtocolError::AdmissionRejected(
+                        "empty file chunk is not valid".to_string(),
+                    ))
                 }
                 _ => Ok(()),
             }),
@@ -497,16 +540,15 @@ async fn handle_accepted_connection(
                                                 peer_info.hostname.clone(),
                                             )
                                         }
-                                        Ok(()) => sync_engine
-                                            .lock()
-                                            .await
-                                            .begin_file_batch_at_epoch_with_identity(
-                                                manifest.clone(),
-                                                peer_info.hostname.clone(),
-                                                source_device_id.clone(),
-                                                &db::get_incoming_dir(),
-                                                receive_epoch,
-                                            ),
+                                        Ok(()) => sync::SyncEngine::begin_file_batch_shared(
+                                            &sync_engine,
+                                            manifest.clone(),
+                                            peer_info.hostname.clone(),
+                                            source_device_id.clone(),
+                                            db::get_incoming_dir(),
+                                            receive_epoch,
+                                        )
+                                        .await,
                                         Err(error) => Err(error),
                                     }
                                 }
@@ -543,11 +585,12 @@ async fn handle_accepted_connection(
                     .try_into()
                     .map_err(|_| "Invalid file batch completion ID")?;
                 let batch_id = TransferId(bytes);
-                let result = sync_engine
-                    .lock()
-                    .await
-                    .finish_file_batch(&peer_info.hostname, batch_id)
-                    .await;
+                let result = sync::SyncEngine::finish_file_batch_shared(
+                    &sync_engine,
+                    &peer_info.hostname,
+                    batch_id,
+                )
+                .await;
                 if let Err(error) = &result {
                     sync_engine
                         .lock()
@@ -577,10 +620,12 @@ async fn handle_accepted_connection(
                     .try_into()
                     .map_err(|_| "Invalid file batch cancellation ID")?;
                 let batch_id = TransferId(bytes);
-                let mut sync = sync_engine.lock().await;
-                let was_receiving = sync.has_file_batch(&peer_info.hostname, batch_id);
-                sync.cancel_file_batch(&peer_info.hostname, batch_id).await;
-                drop(sync);
+                let was_receiving = sync::SyncEngine::cancel_file_batch_shared(
+                    &sync_engine,
+                    &peer_info.hostname,
+                    batch_id,
+                )
+                .await;
                 if !was_receiving {
                     crate::api::request_file_batch_cancel(&batch_id.as_hex());
                 }
@@ -602,16 +647,14 @@ async fn handle_accepted_connection(
                 let file_path =
                     incoming_dir.join(format!("{:016x}-{}", rand::random::<u64>(), meta.name));
                 let meta_batch_id = meta.batch.map(|batch| batch.batch_id);
-                let result = {
-                    let mut sync = sync_engine.lock().await;
-                    sync.begin_file_receive_at_epoch(
-                        meta,
-                        &file_path,
-                        peer_info.hostname.clone(),
-                        receive_epoch,
-                    )
-                    .await
-                };
+                let result = sync::SyncEngine::begin_file_receive_shared(
+                    &sync_engine,
+                    meta,
+                    &file_path,
+                    peer_info.hostname.clone(),
+                    receive_epoch,
+                )
+                .await;
                 let result = match result {
                     Ok(mut progress) => {
                         if let Some(pending) = progress.completed.take() {
@@ -644,12 +687,18 @@ async fn handle_accepted_connection(
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        let mut sync = sync_engine.lock().await;
-                        sync.notify_file_batch_failed(meta_batch_id, &error);
+                        sync_engine
+                            .lock()
+                            .await
+                            .notify_file_batch_failed(meta_batch_id, &error);
                         if let Some(batch_id) = meta_batch_id {
-                            sync.cancel_file_batch(&peer_info.hostname, batch_id).await;
+                            sync::SyncEngine::cancel_file_batch_shared(
+                                &sync_engine,
+                                &peer_info.hostname,
+                                batch_id,
+                            )
+                            .await;
                         }
-                        drop(sync);
                         secure::write_error(&mut stream, &error).await?;
                     }
                 }
@@ -659,15 +708,16 @@ async fn handle_accepted_connection(
                     match FileChunkPayload::decode(&frame.payload) {
                         Ok(chunk) => {
                             let expected_end = chunk.offset.saturating_add(chunk.data.len() as u64);
-                            let (result, chunk_batch_id) = {
-                                let mut sync = sync_engine.lock().await;
-                                let batch_id =
-                                    sync.batch_for_transfer(&peer_info.hostname, chunk.transfer_id);
-                                let result = sync
-                                    .handle_resumable_file_chunk(&chunk, peer_info.hostname.clone())
-                                    .await;
-                                (result, batch_id)
-                            };
+                            let chunk_batch_id = sync_engine
+                                .lock()
+                                .await
+                                .batch_for_transfer(&peer_info.hostname, chunk.transfer_id);
+                            let result = sync::SyncEngine::handle_resumable_file_chunk_shared(
+                                &sync_engine,
+                                &chunk,
+                                peer_info.hostname.clone(),
+                            )
+                            .await;
                             let result = match result {
                                 Ok(mut progress) => {
                                     if let Some(pending) = progress.completed.take() {
@@ -725,36 +775,40 @@ async fn handle_accepted_connection(
                                 }
                                 Err(error) => {
                                     let error_message = error.to_string();
-                                    let mut sync = sync_engine.lock().await;
-                                    sync.notify_file_batch_failed(chunk_batch_id, &error_message);
+                                    sync_engine
+                                        .lock()
+                                        .await
+                                        .notify_file_batch_failed(chunk_batch_id, &error_message);
                                     if let Some(batch_id) = chunk_batch_id {
-                                        sync.cancel_file_batch(&peer_info.hostname, batch_id).await;
+                                        sync::SyncEngine::cancel_file_batch_shared(
+                                            &sync_engine,
+                                            &peer_info.hostname,
+                                            batch_id,
+                                        )
+                                        .await;
                                     }
-                                    drop(sync);
                                     secure::write_error(&mut stream, &error_message).await?;
                                 }
                             }
                         }
                         Err(error) => {
                             secure::write_error(&mut stream, &error.to_string()).await?;
+                            return Err(error.into());
                         }
                     }
                 } else {
-                    sync_engine
-                        .lock()
-                        .await
-                        .handle_file_chunk(&frame.payload, peer_info.hostname.clone())
-                        .await;
+                    sync::SyncEngine::handle_file_chunk_shared(
+                        &sync_engine,
+                        &frame.payload,
+                        peer_info.hostname.clone(),
+                    )
+                    .await;
                 }
             }
             Command::CancelTransfer => {
                 warn!("Transfer cancelled by remote peer");
                 debug!("Transfer cancellation address: {peer_addr}");
-                sync_engine
-                    .lock()
-                    .await
-                    .cancel_receive(&peer_info.hostname)
-                    .await;
+                sync::SyncEngine::cancel_receive_shared(&sync_engine, &peer_info.hostname).await;
             }
             Command::PeerError => {
                 let msg = String::from_utf8_lossy(&frame.payload);

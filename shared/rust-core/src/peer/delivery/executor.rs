@@ -116,6 +116,14 @@ async fn deliver_event_frame<T: DeliveryConnection>(
     config: &DeliveryConfig,
 ) -> Result<(), DeliveryError> {
     for attempt in 0..config.max_attempts {
+        tracing::debug!(
+            command = ?pending.queued.command,
+            sequence = pending.sequence,
+            session_id = ?stream.session_id(),
+            message_id = %message_id.as_hex(),
+            attempt = attempt + 1,
+            "event delivery attempt"
+        );
         stream
             .write_frame(frame)
             .await
@@ -161,6 +169,14 @@ async fn deliver_file_frame<T: DeliveryConnection>(
     config: &DeliveryConfig,
 ) -> Result<DeliveryReceipt, DeliveryError> {
     for attempt in 0..config.max_attempts {
+        tracing::debug!(
+            command = ?pending.queued.command,
+            sequence = pending.sequence,
+            session_id = ?stream.session_id(),
+            transfer_id = %transfer_id.as_hex(),
+            attempt = attempt + 1,
+            "file delivery attempt"
+        );
         stream
             .write_frame(frame)
             .await
@@ -204,6 +220,14 @@ async fn deliver_batch_frame<T: DeliveryConnection>(
     config: &DeliveryConfig,
 ) -> Result<DeliveryReceipt, DeliveryError> {
     for attempt in 0..config.max_attempts {
+        tracing::debug!(
+            command = ?pending.queued.command,
+            sequence = pending.sequence,
+            session_id = ?stream.session_id(),
+            batch_id = %batch_id.as_hex(),
+            attempt = attempt + 1,
+            "batch delivery attempt"
+        );
         stream
             .write_frame(frame)
             .await

@@ -1,10 +1,15 @@
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::{ConnectionInterface, PeerCandidate, PeerStatus};
 
 pub use tailsync_core::peer::types::{LocalInfo, PeerInfo};
+
+type PeerLookupResult = Result<(LocalInfo, Vec<PeerInfo>), String>;
+type PeerLookupCache = OnceLock<Mutex<Option<(Instant, PeerLookupResult)>>>;
 
 #[cfg(not(target_os = "macos"))]
 fn tailscale_binary() -> Option<PathBuf> {
@@ -41,7 +46,31 @@ fn tailscale_binary() -> Option<PathBuf> {
 
 /// Run `tailscale status --json` and parse online peers
 pub fn get_peers() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
-    get_peers_from_binary(tailscale_binary())
+    static STATUS_CACHE: PeerLookupCache = OnceLock::new();
+    const CACHE_TTL: Duration = Duration::from_secs(10);
+    let cache = STATUS_CACHE.get_or_init(|| Mutex::new(None));
+    let cached = {
+        let cache = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .as_ref()
+            .filter(|(fetched_at, _)| fetched_at.elapsed() < CACHE_TTL)
+            .map(|(_, result)| result.clone())
+    };
+    if let Some(result) = cached {
+        return result;
+    }
+
+    // Do not hold the cache mutex while starting and waiting for the CLI.
+    // Discovery callers already run on blocking workers; keeping this lock
+    // short prevents a slow CLI from serializing otherwise independent reads.
+    let result = get_peers_from_binary(tailscale_binary());
+    *cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((Instant::now(), result.clone()));
+    result
 }
 
 fn get_peers_from_binary(binary: Option<PathBuf>) -> Result<(LocalInfo, Vec<PeerInfo>), String> {

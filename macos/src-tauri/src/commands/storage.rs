@@ -24,11 +24,7 @@ pub(crate) async fn cancel_file_batch_impl(
     batch_id: crate::protocol::TransferId,
 ) {
     let batch_id_hex = batch_id.as_hex();
-    let source = sync_engine
-        .lock()
-        .await
-        .cancel_file_batch_local(batch_id)
-        .await;
+    let source = crate::sync::SyncEngine::cancel_file_batch_local_shared(sync_engine, batch_id).await;
     crate::api::clear_file_progress_scope(Some(&batch_id_hex), None);
     if let Some(source) = source {
         if let Err(error) = network::send_file_batch_cancel(pool, settings, &source, batch_id).await
@@ -45,7 +41,7 @@ pub(crate) async fn cancel_file_batch_impl(
 
 #[command]
 pub async fn get_storage_status(state: State<'_, AppState>) -> Result<db::StorageStatus, String> {
-    Ok(state.db.lock().await.storage_status())
+    Ok(db::storage_status_async(&state.db).await)
 }
 
 #[command]

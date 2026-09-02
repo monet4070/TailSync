@@ -3542,6 +3542,7 @@ dependencies = [
  "tailsync-themes",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
  "windows-sys 0.61.2",
  "zip",
 ]

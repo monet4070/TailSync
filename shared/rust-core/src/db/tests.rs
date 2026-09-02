@@ -787,6 +787,17 @@ fn migration_v9_scrubs_legacy_plaintext_previews_from_sqlite_files() {
             .query_row("SELECT description FROM history", [], |row| row.get(0))
             .unwrap();
         assert_eq!(description, TEXT_DESCRIPTION_PLACEHOLDER);
+        let pending_phases: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM migration_state WHERE version = 9",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pending_phases, 0,
+            "successful v9 migration clears its journal"
+        );
     }
 
     for path in [
@@ -825,6 +836,45 @@ fn open_at_locks_the_managed_storage_tree() {
         assert_eq!(mode(&root.join("history-v2.db")), 0o600, "sqlite main file");
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn open_at_rejects_a_newer_schema_before_initializing_tables() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-future-schema-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let db_path = root.join("history-v2.db");
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        [SCHEMA_VERSION + 1],
+    )
+    .unwrap();
+    drop(conn);
+
+    let result = HistoryDB::open_at(&root);
+    let error = result.err().expect("future schema must be rejected");
+    assert!(error.to_string().contains("newer than supported"));
+
+    let conn = Connection::open(&db_path).unwrap();
+    let history_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        !history_exists,
+        "future schema must not be initialized by an old binary"
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -1762,6 +1812,48 @@ fn migration_v5_is_idempotent_and_classifies_media() {
     assert!(columns.contains(&"category_confidence".to_string()));
     assert!(columns.contains(&"classifier_version".to_string()));
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn migration_transaction_rolls_back_schema_and_version_together() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_version (version INTEGER NOT NULL);
+         INSERT INTO schema_version (version) VALUES (10);",
+    )
+    .unwrap();
+
+    let result = HistoryDB::run_migration_transaction(
+        &conn,
+        11,
+        |conn| -> Result<(), Box<dyn std::error::Error>> {
+            conn.execute_batch(
+                "CREATE TABLE migration_probe (value TEXT NOT NULL);
+                 INSERT INTO migration_probe(value) VALUES ('should roll back');
+                 INSERT INTO schema_version(version) VALUES (11);",
+            )?;
+            Err("injected migration failure".into())
+        },
+    );
+
+    assert!(result.is_err());
+    let probe_exists: i64 = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'migration_probe'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(probe_exists, 0);
+    assert_eq!(version, 10);
 }
 
 #[test]

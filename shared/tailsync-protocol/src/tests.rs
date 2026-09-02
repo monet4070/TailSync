@@ -121,6 +121,7 @@ fn event_ack_requires_exactly_one_message_id() {
     );
     assert!(MessageId::from_ack_payload(&[0u8; 15]).is_err());
     assert!(MessageId::from_ack_payload(&[0u8; 17]).is_err());
+    assert_eq!(message_id.as_hex(), "7b".repeat(16));
 }
 
 #[test]
@@ -138,6 +139,31 @@ fn resumable_file_chunk_round_trips_and_detects_corruption() {
     assert!(matches!(
         FileChunkPayload::decode(&corrupted),
         Err(ProtocolError::FileChunkChecksumMismatch)
+    ));
+}
+
+#[test]
+fn resumable_file_chunk_rejects_empty_payloads() {
+    let chunk = FileChunkPayload {
+        transfer_id: TransferId([8; 16]),
+        offset: 0,
+        data: Vec::new(),
+    };
+    assert!(matches!(chunk.encode(), Err(ProtocolError::EmptyFileChunk)));
+
+    let mut encoded = FileChunkPayload {
+        data: vec![1],
+        ..chunk
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(encoded.len(), MIN_FILE_CHUNK_PAYLOAD_SIZE);
+    encoded.truncate(MIN_FILE_CHUNK_PAYLOAD_SIZE - 1);
+    encoded[28..32].copy_from_slice(&0_u32.to_be_bytes());
+    encoded[32..64].copy_from_slice(blake3::hash(&[]).as_bytes());
+    assert!(matches!(
+        FileChunkPayload::decode(&encoded),
+        Err(ProtocolError::InvalidFileChunk)
     ));
 }
 

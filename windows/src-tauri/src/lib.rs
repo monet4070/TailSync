@@ -15,9 +15,12 @@ pub use tailsync_core::{
 };
 
 use log::info;
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use tauri::Manager;
 use tokio::sync::{watch, Mutex};
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 type BackgroundTasks = Arc<StdMutex<Vec<tauri::async_runtime::JoinHandle<()>>>>;
 
@@ -280,11 +283,12 @@ fn start_storage_monitor(
                     continue;
                 }
             }
-            let mut history = database.lock().await;
-            if history.storage_status().available {
+            let storage_status = db::storage_status_async(&database).await;
+            if storage_status.available {
                 warned = false;
                 continue;
             }
+            let mut history = database.lock().await;
             history.mark_storage_unavailable();
             match history.reopen_configured_storage() {
                 Ok(()) => {
@@ -314,11 +318,138 @@ fn start_storage_monitor(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> i32 {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_logging();
     match run_app() {
         Ok(()) => 0,
         Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
     }
+}
+
+#[cfg_attr(debug_assertions, allow(dead_code))]
+const RUNTIME_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Keep release diagnostics available after the Windows subsystem hides the
+/// process console. The active file is bounded and the previous file is
+/// retained as `tailsync.log.1` so a noisy failure cannot grow without limit.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+struct RotatingLogWriter {
+    path: PathBuf,
+    max_bytes: u64,
+    bytes: u64,
+    file: Option<std::fs::File>,
+}
+
+#[cfg_attr(debug_assertions, allow(dead_code))]
+impl RotatingLogWriter {
+    fn open(path: PathBuf) -> io::Result<Self> {
+        Self::open_with_limit(path, RUNTIME_LOG_MAX_BYTES)
+    }
+
+    fn open_with_limit(path: PathBuf, max_bytes: u64) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let bytes = file.metadata()?.len();
+        Ok(Self {
+            path,
+            max_bytes: max_bytes.max(1),
+            bytes,
+            file: Some(file),
+        })
+    }
+
+    fn backup_path(&self) -> PathBuf {
+        PathBuf::from(format!("{}.1", self.path.display()))
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        if let Some(file) = self.file.take() {
+            let _ = file.sync_all();
+        }
+        let backup = self.backup_path();
+        if let Err(error) = std::fs::remove_file(&backup) {
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(error);
+            }
+        }
+        match std::fs::rename(&self.path, &backup) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        self.file = Some(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?,
+        );
+        self.bytes = 0;
+        Ok(())
+    }
+}
+
+impl Write for RotatingLogWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.bytes > 0 && self.bytes.saturating_add(buffer.len() as u64) > self.max_bytes {
+            self.rotate()?;
+        }
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("runtime log file is closed"))?;
+        let written = file.write(buffer)?;
+        self.bytes = self.bytes.saturating_add(written as u64);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("runtime log file is closed"))?
+            .flush()
+    }
+}
+
+fn init_logging() {
+    let _ = tracing_log::LogTracer::init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    #[cfg(not(debug_assertions))]
+    {
+        let path = db::get_data_dir().join("tailsync.log");
+        match RotatingLogWriter::open(path) {
+            Ok(writer) => {
+                let writer = StdMutex::new(writer);
+                let _ = tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_span_events(FmtSpan::CLOSE)
+                    .with_target(true)
+                    .json()
+                    .with_current_span(true)
+                    .with_ansi(false)
+                    .with_writer(writer)
+                    .try_init();
+                return;
+            }
+            Err(error) => {
+                // Startup failures still go to startup-error.log; this
+                // fallback keeps release diagnostics visible when that file
+                // cannot be created (for example, during a permissions issue).
+                eprintln!("Could not open TailSync runtime log: {error}");
+            }
+        }
+    }
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_target(true)
+        .json()
+        .with_current_span(true)
+        .with_ansi(false)
+        .try_init();
 }
 
 /// Record a fatal startup failure and return the process exit code.
@@ -788,7 +919,8 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod startup_failure_tests {
-    use super::{report_startup_failure, write_startup_error_log};
+    use super::{report_startup_failure, write_startup_error_log, RotatingLogWriter};
+    use std::io::Write;
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -818,6 +950,23 @@ mod startup_failure_tests {
         assert!(log.contains("first failure"));
         assert!(log.contains("second failure"));
         assert_eq!(log.lines().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn runtime_log_writer_rotates_before_exceeding_limit() {
+        let dir = temp_dir("runtime-rotation");
+        let path = dir.join("tailsync.log");
+        let mut writer = RotatingLogWriter::open_with_limit(path.clone(), 8).unwrap();
+        writer.write_all(b"first\n").unwrap();
+        writer.write_all(b"second\n").unwrap();
+        writer.flush().unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second\n");
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("tailsync.log.1")).unwrap(),
+            "first\n"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

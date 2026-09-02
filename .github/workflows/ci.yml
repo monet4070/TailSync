@@ -170,6 +170,8 @@ jobs:
         run: cargo clippy --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets -- -D warnings
       - name: Run macOS application unit tests
         run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
+      - name: Run Swift UI unit tests
+        run: swift test --package-path macos/swift-ui
       - name: Build the macOS application bundle
         run: bash macos/build-mac.sh --skip-swift-build
       - name: Verify packaged macOS bundle and daemon

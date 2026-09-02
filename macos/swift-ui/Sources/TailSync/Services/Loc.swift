@@ -218,7 +218,7 @@ final class Loc: ObservableObject {
 
     private init() {
         reload()
-        NotificationCenter.default.addObserver(
+        NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil,
             queue: .main
@@ -804,6 +804,7 @@ final class Loc: ObservableObject {
             "error.pairingWindowClosed": "The other device is not allowing pairing. Click Allow pairing on that device first.",
             "error.pairingHandshakeTimedOut": "The other device did not answer the pairing request. Update both devices and click Allow pairing on the other device first.",
             "error.pairingConnectionClosed": "The other device closed the pairing connection. Update both devices and click Allow pairing on the other device first.",
+            "error.identityMismatch": "The device identity does not match the paired device. Pair it again or verify the fingerprint.",
         ],
         "zh-CN": [
             "history.loadError": "无法加载历史记录",
@@ -1072,6 +1073,7 @@ final class Loc: ObservableObject {
             "error.pairingWindowClosed": "另一台设备尚未允许配对，请先在该设备上点击“允许配对”。",
             "error.pairingHandshakeTimedOut": "另一台设备未响应配对请求。请先将两端更新到最新版，并在另一台设备上点击“允许配对”。",
             "error.pairingConnectionClosed": "另一台设备关闭了配对连接。请先将两端更新到最新版，并在另一台设备上点击“允许配对”。",
+            "error.identityMismatch": "设备身份与已配对设备不匹配。请重新配对或核对指纹。",
         ],
     ]
 

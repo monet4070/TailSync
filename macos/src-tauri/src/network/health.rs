@@ -98,7 +98,7 @@ pub(super) fn update_peer_health_for_failed_round(mode: &str) {
 pub fn apply_peer_health(peers: &mut [tailscale::PeerInfo]) {
     apply_peer_health_impl(
         peers,
-        &peer_health()
+        &mut peer_health()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         authenticated_sessions(),

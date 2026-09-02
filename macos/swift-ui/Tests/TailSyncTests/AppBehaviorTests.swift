@@ -157,6 +157,14 @@ final class AppBehaviorTests: XCTestCase {
             ApiError.serverError("Pairing handshake timed out")
                 .pairingErrorDescription.contains("允许配对")
         )
+        XCTAssertTrue(
+            ApiError.serverError("Pairing handshake failed: Peer identity mismatch for laptop")
+                .pairingErrorDescription.contains("设备身份")
+        )
+        XCTAssertTrue(
+            ApiError.pairingErrorDescription("Peer identity mismatch for laptop")
+                .contains("设备身份")
+        )
         XCTAssertTrue(Loc.t("settings.pairingInstruction").contains("允许配对"))
     }
 

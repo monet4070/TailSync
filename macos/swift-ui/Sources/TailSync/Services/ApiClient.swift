@@ -28,6 +28,10 @@ enum ApiError: LocalizedError {
 
   var pairingErrorDescription: String {
     guard case .serverError(let message) = self else { return localizedDescription }
+    return Self.pairingErrorDescription(message)
+  }
+
+  static func pairingErrorDescription(_ message: String) -> String {
     if message.contains("Pairing window is closed") {
       return Loc.t("error.pairingWindowClosed")
     }
@@ -36,6 +40,9 @@ enum ApiError: LocalizedError {
     }
     if message.contains("Connection reset by peer") || message.contains("early eof") {
       return Loc.t("error.pairingConnectionClosed")
+    }
+    if message.range(of: "Peer identity mismatch", options: .caseInsensitive) != nil {
+      return Loc.t("error.identityMismatch")
     }
     return message
   }

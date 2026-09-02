@@ -185,6 +185,7 @@ pub fn merge_lan_discovery_results(
         }
     }
     let Some(mut local) = local else {
+        tracing::warn!(transport = "lan", errors = %errors.join("; "), "peer discovery failed");
         return Err(format!("LAN discovery failed ({})", errors.join("; ")));
     };
     sort_and_dedup_candidates(&mut local.candidates);
@@ -260,6 +261,7 @@ pub fn merge_discovery_results(
     }
 
     let Some(mut local) = local else {
+        tracing::warn!(transport = "auto", errors = %errors.join("; "), "peer discovery failed");
         return Err(format!(
             "Automatic discovery failed ({})",
             errors.join("; ")
@@ -503,7 +505,7 @@ pub fn resolve_candidates(
         candidates.push(PeerCandidate::new(interface, address));
     }
     candidates.sort_by_key(|candidate| candidate.priority);
-    candidates
+    let resolved = candidates
         .into_iter()
         .map(|candidate| {
             let target = match candidate.interface {
@@ -519,7 +521,14 @@ pub fn resolve_candidates(
             };
             Ok(ResolvedCandidate { candidate, target })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    tracing::debug!(
+        peer = %peer.hostname,
+        candidate_count = resolved.len(),
+        tcp_port,
+        "peer routes resolved"
+    );
+    Ok(resolved)
 }
 
 #[cfg(test)]

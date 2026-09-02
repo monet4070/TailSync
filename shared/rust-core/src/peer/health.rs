@@ -78,6 +78,7 @@ struct PeerHealth {
 pub struct HealthTracker {
     routes: HashMap<RouteKey, PeerHealth>,
     route_order: VecDeque<RouteKey>,
+    projected_peer_statuses: HashMap<String, PeerStatus>,
 }
 
 impl HealthTracker {
@@ -178,6 +179,7 @@ impl HealthTracker {
     pub fn clear(&mut self) {
         self.routes.clear();
         self.route_order.clear();
+        self.projected_peer_statuses.clear();
     }
 
     pub fn tracked_route_count(&self) -> usize {
@@ -374,10 +376,17 @@ pub fn update_peer_health_for_failed_round(tracker: &mut HealthTracker, mode: &s
 /// authenticated route.
 pub fn apply_peer_health(
     peers: &mut [PeerInfo],
-    tracker: &HealthTracker,
+    tracker: &mut HealthTracker,
     sessions: &SessionRegistry,
     now: Instant,
 ) {
+    let visible_peers = peers
+        .iter()
+        .map(|peer| peer.hostname.clone())
+        .collect::<HashSet<_>>();
+    tracker
+        .projected_peer_statuses
+        .retain(|hostname, _| visible_peers.contains(hostname));
     for peer in peers {
         // Projection always starts from a clean slate: if the peer's last
         // authenticated session closed, the stale current route must not
@@ -406,6 +415,25 @@ pub fn apply_peer_health(
         }
         peer.status = peer_status;
         peer.online = peer_status.is_online();
+        match tracker
+            .projected_peer_statuses
+            .insert(peer.hostname.clone(), peer_status)
+        {
+            Some(previous_status) if previous_status != peer_status => {
+                tracing::info!(
+                    peer = %peer.hostname,
+                    from = previous_status.as_str(),
+                    to = peer_status.as_str(),
+                    "peer health transition"
+                );
+            }
+            None => tracing::debug!(
+                peer = %peer.hostname,
+                status = peer_status.as_str(),
+                "peer health initial projection"
+            ),
+            _ => {}
+        }
         debug_assert!(
             peer.is_consistent(),
             "health projection produced inconsistent state"
@@ -664,7 +692,7 @@ mod tests {
             status: PeerStatus::Discovered,
         }];
 
-        apply_peer_health(&mut peers, &tracker, &sessions, now);
+        apply_peer_health(&mut peers, &mut tracker, &sessions, now);
         assert_eq!(peers[0].status, PeerStatus::Online);
         assert!(peers[0].online);
         assert_eq!(peers[0].candidates[0].status, PeerStatus::Online);
@@ -675,7 +703,7 @@ mod tests {
 
     #[test]
     fn apply_peer_health_normalizes_inconsistent_legacy_input() {
-        let tracker = HealthTracker::default();
+        let mut tracker = HealthTracker::default();
         let sessions = SessionRegistry::default();
         let now = Instant::now();
         let legacy_candidate: PeerCandidate = serde_json::from_value(serde_json::json!({
@@ -701,7 +729,7 @@ mod tests {
             status: PeerStatus::Discovered,
         }];
 
-        apply_peer_health(&mut peers, &tracker, &sessions, now);
+        apply_peer_health(&mut peers, &mut tracker, &sessions, now);
 
         assert!(peers[0].is_consistent());
         assert!(!peers[0].online);
@@ -736,7 +764,7 @@ mod tests {
             status: PeerStatus::Discovered,
         }];
 
-        apply_peer_health(&mut peers, &tracker, &sessions, now);
+        apply_peer_health(&mut peers, &mut tracker, &sessions, now);
         assert_eq!(peers[0].status, PeerStatus::Connected);
         assert_eq!(
             peers[0].current_interface,
@@ -772,14 +800,14 @@ mod tests {
         }];
 
         // First projection with the session open keeps the current route.
-        apply_peer_health(&mut peers, &tracker, &sessions, now);
+        apply_peer_health(&mut peers, &mut tracker, &sessions, now);
         assert_eq!(peers[0].status, PeerStatus::Connected);
         assert!(peers[0].current_address.is_some());
 
         // Session closes: the next projection must clear the stale route and
         // fall back to the probe-derived status.
         drop(guard);
-        apply_peer_health(&mut peers, &tracker, &sessions, now);
+        apply_peer_health(&mut peers, &mut tracker, &sessions, now);
         assert_eq!(peers[0].status, PeerStatus::Online);
         assert!(peers[0].current_interface.is_none());
         assert!(peers[0].current_address.is_none());

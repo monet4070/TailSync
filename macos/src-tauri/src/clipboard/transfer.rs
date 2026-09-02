@@ -65,7 +65,7 @@ pub(super) async fn send_file_batch_to_peers(
         info!("Sync is paused; keeping clipboard files local");
         return;
     }
-    let storage_status = database.lock().await.storage_status();
+    let storage_status = db::storage_status_async(&database).await;
     if !storage_status.available {
         let message = storage_status
             .error

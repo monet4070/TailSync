@@ -8,6 +8,7 @@ use std::io::{BufReader, Read, Write};
 const OWNER_FILE_NAME: &str = "storage-owner-v1";
 const STORAGE_MARKER_NAME: &str = ".tailsync-storage-v1";
 const STORAGE_FREE_SPACE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
+const STORAGE_STATUS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Serializes storage-tree migration with the background file-encryption
 /// worker. Both operations use an independent SQLite connection and therefore
@@ -123,33 +124,16 @@ struct StorageMarker {
 }
 
 impl HistoryDB {
+    fn storage_status_snapshot(&self) -> StorageStatusSnapshot {
+        StorageStatusSnapshot {
+            root: get_storage_dir(),
+            quota_bytes: self.storage_quota_bytes,
+            available: self.storage_available,
+        }
+    }
+
     pub fn storage_status(&self) -> StorageStatus {
-        let root = get_storage_dir();
-        if !self.storage_available {
-            return StorageStatus {
-                root: root.to_string_lossy().into_owned(),
-                used_bytes: 0,
-                quota_bytes: self.storage_quota_bytes,
-                available: false,
-                error: Some("Configured storage is unavailable".to_string()),
-            };
-        }
-        match bulk_storage_size(&root) {
-            Ok(used_bytes) => StorageStatus {
-                root: root.to_string_lossy().into_owned(),
-                used_bytes,
-                quota_bytes: self.storage_quota_bytes,
-                available: true,
-                error: None,
-            },
-            Err(error) => StorageStatus {
-                root: root.to_string_lossy().into_owned(),
-                used_bytes: 0,
-                quota_bytes: self.storage_quota_bytes,
-                available: false,
-                error: Some(error.to_string()),
-            },
-        }
+        storage_status_for(self.storage_status_snapshot())
     }
 
     /// Ensure a complete incoming batch can be retained without exceeding the
@@ -291,6 +275,103 @@ impl HistoryDB {
         replacement.storage_available = true;
         *self = replacement;
         Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct StorageStatusSnapshot {
+    root: PathBuf,
+    quota_bytes: u64,
+    available: bool,
+}
+
+struct StorageStatusCacheEntry {
+    snapshot: StorageStatusSnapshot,
+    measured_at: std::time::Instant,
+    status: StorageStatus,
+}
+
+static STORAGE_STATUS_SCAN_CACHE: std::sync::LazyLock<
+    tokio::sync::Mutex<Option<StorageStatusCacheEntry>>,
+> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
+
+/// Measure storage outside the application DB mutex. The snapshot contains
+/// only immutable configuration; recursive directory walking happens on a
+/// blocking worker and cannot delay history queries or runtime snapshots.
+pub async fn storage_status_async(
+    database: &std::sync::Arc<tokio::sync::Mutex<HistoryDB>>,
+) -> StorageStatus {
+    loop {
+        let snapshot = database.lock().await.storage_status_snapshot();
+        let mut cache = STORAGE_STATUS_SCAN_CACHE.lock().await;
+        if let Some(entry) = cache.as_ref() {
+            if entry.snapshot == snapshot && entry.measured_at.elapsed() < STORAGE_STATUS_CACHE_TTL
+            {
+                return entry.status.clone();
+            }
+        }
+
+        // Holding only the scan-cache mutex coalesces concurrent status
+        // requests without blocking database queries. The database mutex was
+        // released before the recursive walk starts.
+        let measured_snapshot = snapshot.clone();
+        let fallback = snapshot.clone();
+        let status = match tokio::task::spawn_blocking(move || {
+            storage_status_for(measured_snapshot)
+        })
+        .await
+        {
+            Ok(status) => status,
+            Err(error) => StorageStatus {
+                root: fallback.root.to_string_lossy().into_owned(),
+                used_bytes: 0,
+                quota_bytes: fallback.quota_bytes,
+                available: false,
+                error: Some(format!("storage measurement task failed: {error}")),
+            },
+        };
+
+        // A storage migration may have completed during the walk. Never
+        // publish or cache a measurement for an obsolete root/configuration.
+        if database.lock().await.storage_status_snapshot() != snapshot {
+            drop(cache);
+            continue;
+        }
+        *cache = Some(StorageStatusCacheEntry {
+            snapshot,
+            measured_at: std::time::Instant::now(),
+            status: status.clone(),
+        });
+        return status;
+    }
+}
+
+fn storage_status_for(snapshot: StorageStatusSnapshot) -> StorageStatus {
+    let root = snapshot.root;
+    if !snapshot.available {
+        return StorageStatus {
+            root: root.to_string_lossy().into_owned(),
+            used_bytes: 0,
+            quota_bytes: snapshot.quota_bytes,
+            available: false,
+            error: Some("Configured storage is unavailable".to_string()),
+        };
+    }
+    match bulk_storage_size(&root) {
+        Ok(used_bytes) => StorageStatus {
+            root: root.to_string_lossy().into_owned(),
+            used_bytes,
+            quota_bytes: snapshot.quota_bytes,
+            available: true,
+            error: None,
+        },
+        Err(error) => StorageStatus {
+            root: root.to_string_lossy().into_owned(),
+            used_bytes: 0,
+            quota_bytes: snapshot.quota_bytes,
+            available: false,
+            error: Some(error.to_string()),
+        },
     }
 }
 

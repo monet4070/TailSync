@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 mod resume;
@@ -50,6 +50,13 @@ const MAX_ACTIVE_BATCHES_PER_PEER: usize = 2;
 const MAX_ACTIVE_BATCHES_GLOBAL: usize = 8;
 const MAX_ACTIVE_RECEIVES_PER_PEER: usize = 2;
 const MAX_ACTIVE_RECEIVES_GLOBAL: usize = 8;
+const OPERATION_LOCK_MAX_ENTRIES: usize = 2048;
+/// Resume metadata is advisory (the `.part` length is authoritative), so it
+/// can be persisted at a bounded cadence instead of once per chunk. The
+/// cadence keeps crash recovery loss bounded while avoiding one atomic JSON
+/// rewrite and directory sync for every megabyte.
+pub(crate) const RESUME_PERSIST_CHUNK_INTERVAL: u32 = 8;
+pub(crate) const RESUME_PERSIST_INTERVAL: Duration = Duration::from_secs(1);
 
 static FILE_BATCH_ADMISSION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -144,6 +151,8 @@ struct FileReceiveState {
     hasher: blake3::Hasher,
     received: u64,
     requires_full_hash: bool,
+    chunks_since_persist: u32,
+    last_persist_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -234,6 +243,7 @@ impl From<Option<TransferId>> for ReceiveKey {
     }
 }
 
+#[derive(Debug, Clone)]
 struct IncomingBatch {
     manifest: FileBatchManifest,
     source: String,
@@ -244,6 +254,9 @@ struct IncomingBatch {
     manifest_path: PathBuf,
 }
 
+type ReceiveOperationKey = (String, ReceiveKey);
+type BatchOperationKey = (String, TransferId);
+
 pub struct SyncEngine {
     /// Reliable event IDs retained across reconnects so ACK loss cannot apply
     /// the same clipboard event twice.
@@ -251,6 +264,17 @@ pub struct SyncEngine {
     seen_message_order: VecDeque<(Arc<str>, MessageId, i64)>,
     /// Active file receives: authenticated peer + transfer ID → receive state.
     active_receives: HashMap<(String, ReceiveKey), FileReceiveState>,
+    /// Per-transfer and per-batch locks are kept outside the state mutex's
+    /// critical sections. Network handlers can therefore serialize one
+    /// transfer while unrelated peers continue to inspect engine state.
+    receive_operation_locks: HashMap<ReceiveOperationKey, Arc<tokio::sync::Mutex<()>>>,
+    batch_operation_locks: HashMap<BatchOperationKey, Arc<tokio::sync::Mutex<()>>>,
+    /// A FileMeta operation reserves its key before doing off-lock file I/O.
+    /// This closes the race between two frames opening the same transfer.
+    pending_receives: HashMap<ReceiveOperationKey, u64>,
+    /// A chunk temporarily owns a receive state while it performs disk I/O.
+    /// Cancellation includes these keys before waiting on their transfer lock.
+    inflight_receives: HashSet<ReceiveOperationKey>,
     completed_transfers: HashMap<(String, ReceiveKey), CompletedTransfer>,
     incoming_batches: HashMap<(String, TransferId), IncomingBatch>,
     cancelled_batches: HashMap<(String, TransferId), i64>,
@@ -277,6 +301,75 @@ mod clipboard;
 mod engine_state;
 mod receive_engine;
 
+impl SyncEngine {
+    fn prune_receive_operation_locks(&mut self) {
+        if self.receive_operation_locks.len() <= OPERATION_LOCK_MAX_ENTRIES {
+            return;
+        }
+        let remove_count = self
+            .receive_operation_locks
+            .len()
+            .saturating_sub(OPERATION_LOCK_MAX_ENTRIES);
+        let keys = self
+            .receive_operation_locks
+            .iter()
+            .filter(|(key, lock)| {
+                Arc::strong_count(lock) == 1
+                    && !self.active_receives.contains_key(*key)
+                    && !self.pending_receives.contains_key(*key)
+                    && !self.inflight_receives.contains(*key)
+                    && !self.completed_transfers.contains_key(*key)
+            })
+            .map(|(key, _)| key.clone())
+            .take(remove_count)
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.receive_operation_locks.remove(&key);
+        }
+    }
+
+    fn prune_batch_operation_locks(&mut self) {
+        if self.batch_operation_locks.len() <= OPERATION_LOCK_MAX_ENTRIES {
+            return;
+        }
+        let remove_count = self
+            .batch_operation_locks
+            .len()
+            .saturating_sub(OPERATION_LOCK_MAX_ENTRIES);
+        let keys = self
+            .batch_operation_locks
+            .iter()
+            .filter(|(key, lock)| {
+                Arc::strong_count(lock) == 1
+                    && !self.incoming_batches.contains_key(*key)
+                    && !self.cancelled_batches.contains_key(*key)
+                    && !self.completed_batches.contains_key(*key)
+            })
+            .map(|(key, _)| key.clone())
+            .take(remove_count)
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.batch_operation_locks.remove(&key);
+        }
+    }
+
+    fn receive_operation_lock(&mut self, key: &ReceiveOperationKey) -> Arc<tokio::sync::Mutex<()>> {
+        self.prune_receive_operation_locks();
+        self.receive_operation_locks
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    fn batch_operation_lock(&mut self, key: &BatchOperationKey) -> Arc<tokio::sync::Mutex<()>> {
+        self.prune_batch_operation_locks();
+        self.batch_operation_locks
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+}
+
 /// Verifies a completed inbound file off the async path and commits it
 /// (T108 migration). On verification failure the completed file is removed;
 /// a commit failure preserves verified bytes so a later reconnect can recover
@@ -293,12 +386,7 @@ pub async fn verify_and_commit_received_file(
         .map_err(|error| format!("File verification task failed: {error}"))?;
     match verification {
         Ok(verified) => {
-            let result = sync_engine
-                .lock()
-                .await
-                .commit_received_file(source, verified)
-                .await;
-            result
+            SyncEngine::commit_received_file_shared(sync_engine, source, verified).await
         }
         Err(error) => {
             let _ = std::fs::remove_file(&path);
@@ -341,10 +429,7 @@ impl Drop for ReceiveSuspendGuard {
         let epoch = self.epoch;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                sync_engine
-                    .lock()
-                    .await
-                    .suspend_receive_epoch(&source, epoch);
+                SyncEngine::suspend_receive_epoch_shared(&sync_engine, &source, epoch).await;
             });
         } else if let Ok(mut sync) = sync_engine.try_lock() {
             sync.suspend_receive_epoch(&source, epoch);

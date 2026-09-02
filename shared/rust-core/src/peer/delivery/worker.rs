@@ -1,6 +1,7 @@
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{timeout, Duration};
+use tracing::Instrument;
 
 use crate::peer::types::{ActiveRoute, ConnectionInterface, ResolvedCandidate};
 
@@ -205,7 +206,9 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
     let mut pending: Option<PendingFrame> = None;
     let mut next_sequence = 1u32;
     let mut priority_streak = 0usize;
+    let mut connection_attempt = 0usize;
     'connection: loop {
+        connection_attempt = connection_attempt.saturating_add(1);
         maintain_offline_queue(
             &mut priority_rx,
             &mut bulk_rx,
@@ -226,17 +229,25 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 config.refresh_timeout
             );
         }
-        let connection_result = {
-            let connection = adapter.connect(&hostname, &candidates);
+        let (connection_id, connection_result) = {
+            let connection_id = crate::observability::connection_id();
+            let span = tracing::info_span!(
+                "connection.attempt",
+                connection_id = %connection_id,
+                peer = %hostname,
+                attempt = connection_attempt,
+            );
+            let connection = adapter.connect(&hostname, &candidates).instrument(span);
             tokio::pin!(connection);
-            tokio::select! {
+            let result = tokio::select! {
                 biased;
                 _ = wait_for_shutdown(&mut shutdown) => {
                     crate::sync_warning::record_delivery_shutdown(&hostname);
                     return;
                 },
                 result = &mut connection => result,
-            }
+            };
+            (connection_id, result)
         };
         let (mut stream, route) = match connection_result {
             Ok(result) => {
@@ -248,9 +259,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     adapter.record_protocol_error(&hostname, &error);
                 }
                 log::warn!(
-                    "Pool connect to {} ({}) failed: {} — retrying in {:?}",
+                    "Pool connect to {} ({}) failed connection_id={}: {} — retrying in {:?}",
                     preferred_target,
                     hostname,
+                    connection_id,
                     error,
                     config.reconnect_delay
                 );
@@ -265,6 +277,13 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 continue;
             }
         };
+        tracing::info!(
+            connection_id = %connection_id,
+            peer = %hostname,
+            interface = %route.candidate.interface.as_str(),
+            session_id = ?stream.session_id(),
+            "delivery session ready"
+        );
         let learned_iroh = timeout(
             config.refresh_timeout,
             adapter.refresh_candidates(&hostname, &mut candidates),
@@ -308,16 +327,33 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 complete_expired_frame(frame, &hostname);
                 continue;
             }
+            let session_id = stream.session_id().map(str::to_owned);
             let delivery = tokio::select! {
                 biased;
                 _ = wait_for_shutdown(&mut shutdown) => {
                     crate::sync_warning::record_delivery_shutdown(&hostname);
                     return;
                 },
-                result = deliver_pending_frame(&mut stream, &frame, &config.delivery) => result,
+                result = deliver_pending_frame(&mut stream, &frame, &config.delivery).instrument(
+                    tracing::info_span!(
+                        "delivery.frame",
+                        connection_id = %connection_id,
+                        session_id = ?session_id,
+                        peer = %hostname,
+                        sequence = frame.sequence,
+                    ),
+                ) => result,
             };
             match delivery {
                 Ok(receipt) => {
+                    tracing::info!(
+                        connection_id = %connection_id,
+                        session_id = ?stream.session_id(),
+                        peer = %hostname,
+                        sequence = frame.sequence,
+                        command = ?frame.queued.command(),
+                        "delivery completed"
+                    );
                     let reselect_route = should_reselect_route_after_receipt(
                         frame.queued.command(),
                         &receipt,
@@ -402,16 +438,33 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                         complete_expired_frame(frame, &hostname);
                         continue;
                     }
+                    let session_id = stream.session_id().map(str::to_owned);
                     let delivery = tokio::select! {
                         biased;
                         _ = wait_for_shutdown(&mut shutdown) => {
                             crate::sync_warning::record_delivery_shutdown(&hostname);
                             return;
                         },
-                        result = deliver_pending_frame(&mut stream, &frame, &config.delivery) => result,
+                        result = deliver_pending_frame(&mut stream, &frame, &config.delivery).instrument(
+                            tracing::info_span!(
+                                "delivery.frame",
+                                connection_id = %connection_id,
+                                session_id = ?session_id,
+                                peer = %hostname,
+                                sequence = frame.sequence,
+                            ),
+                        ) => result,
                     };
                     match delivery {
                         Ok(receipt) => {
+                            tracing::info!(
+                                connection_id = %connection_id,
+                                session_id = ?stream.session_id(),
+                                peer = %hostname,
+                                sequence = frame.sequence,
+                                command = ?frame.queued.command(),
+                                "delivery completed"
+                            );
                             let reselect_route = should_reselect_route_after_receipt(
                                 frame.queued.command(),
                                 &receipt,

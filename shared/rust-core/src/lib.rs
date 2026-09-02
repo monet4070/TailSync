@@ -5,6 +5,7 @@ pub mod history_classifier;
 pub mod identity;
 pub mod import;
 pub mod iroh_transport;
+pub mod observability;
 pub mod pairing;
 pub mod peer;
 pub mod private_fs;

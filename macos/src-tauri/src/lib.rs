@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 #[cfg(not(target_os = "macos"))]
 use tauri::Manager;
 use tokio::sync::{watch, Mutex};
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 type BackgroundTasks = Arc<StdMutex<Vec<tauri::async_runtime::JoinHandle<()>>>>;
 const PEER_DISCONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
@@ -206,11 +207,12 @@ fn start_storage_monitor(
                     continue;
                 }
             }
-            let mut history = database.lock().await;
-            if history.storage_status().available {
+            let storage_status = db::storage_status_async(&database).await;
+            if storage_status.available {
                 warned = false;
                 continue;
             }
+            let mut history = database.lock().await;
             history.mark_storage_unavailable();
             match history.reopen_configured_storage() {
                 Ok(()) => {
@@ -264,7 +266,7 @@ pub fn run() -> i32 {
         }
         return 0;
     }
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_logging();
     match tauri::async_runtime::block_on(run_headless_app()) {
         Ok(()) => 0,
         Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
@@ -274,11 +276,28 @@ pub fn run() -> i32 {
 #[cfg(not(target_os = "macos"))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> i32 {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_logging();
     match run_app() {
         Ok(()) => 0,
         Err(error) => report_startup_failure(&db::get_data_dir(), error.as_ref()),
     }
+}
+
+/// Install one structured subscriber for both the headless daemon and the
+/// SwiftUI-launched process. Existing `log` records are bridged by
+/// `LogTracer`, so the migration can instrument hot paths incrementally
+/// without dropping legacy diagnostics.
+fn init_logging() {
+    let _ = tracing_log::LogTracer::init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_target(true)
+        .json()
+        .with_current_span(true)
+        .with_ansi(false)
+        .try_init();
 }
 
 /// Record a fatal startup failure and return the process exit code.

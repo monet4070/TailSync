@@ -2,10 +2,16 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+use std::time::Instant;
 
 use super::{lan, ConnectionInterface, PeerCandidate, PeerStatus};
 
 pub use tailsync_core::peer::types::{LocalInfo, PeerInfo};
+
+type PeerLookupResult = Result<(LocalInfo, Vec<PeerInfo>), String>;
+type PeerLookupCache = OnceLock<Mutex<Option<(Instant, PeerLookupResult)>>>;
 
 fn tailscale_binary() -> PathBuf {
     #[cfg(target_os = "macos")]
@@ -45,6 +51,33 @@ fn tailscale_binary() -> PathBuf {
 
 /// Run `tailscale status --json` and parse online peers
 pub fn get_peers() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
+    static STATUS_CACHE: PeerLookupCache = OnceLock::new();
+    const CACHE_TTL: Duration = Duration::from_secs(10);
+    let cache = STATUS_CACHE.get_or_init(|| Mutex::new(None));
+    let cached = {
+        let cache = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .as_ref()
+            .filter(|(fetched_at, _)| fetched_at.elapsed() < CACHE_TTL)
+            .map(|(_, result)| result.clone())
+    };
+    if let Some(result) = cached {
+        return result;
+    }
+
+    // Cache failures as well as successes. Otherwise a missing or unhealthy
+    // CLI would still be spawned on every discovery round.
+    let result = get_peers_uncached();
+    *cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((Instant::now(), result.clone()));
+    result
+}
+
+fn get_peers_uncached() -> PeerLookupResult {
     let mut cmd = Command::new(tailscale_binary());
     cmd.args(["status", "--json"]);
     // Suppress console window flash on Windows

@@ -32,6 +32,7 @@ impl HistoryDB {
 
         let conn = Connection::open(&db_path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        ensure_supported_schema(&conn)?;
         let file_history_dir = storage_dir.join("file-history");
         let image_history_dir = storage_dir.join("image-history");
 
@@ -100,4 +101,33 @@ impl HistoryDB {
     pub fn is_storage_available(&self) -> bool {
         self.storage_available
     }
+}
+
+/// Refuse to let an older binary initialize or migrate a database created by
+/// a newer binary. This check must run before `schema::initialize`, since that
+/// function creates current-version tables and indexes with `IF NOT EXISTS`.
+fn ensure_supported_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    let has_schema_version: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_schema_version {
+        return Ok(());
+    }
+
+    let version: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+        [],
+        |row| row.get(0),
+    )?;
+    if version > SCHEMA_VERSION {
+        return Err(format!(
+            "database schema version {version} is newer than supported version {SCHEMA_VERSION}"
+        )
+        .into());
+    }
+    Ok(())
 }
