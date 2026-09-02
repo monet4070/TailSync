@@ -38,7 +38,7 @@ export function PreviewContent({
       case "code":
         return <TextPreview key={`${payload.entry_id ?? 0}-${payload.name}`} data={payload.data} name={payload.name} forceCode t={t} />;
       case "markdown":
-        return <MarkdownPreview data={payload.data} />;
+        return <MarkdownPreview data={payload.data} t={t} />;
       case "pdf":
         return <PdfPreview data={payload.data} t={t} onCorrupt={onCorrupt} />;
       case "docx":

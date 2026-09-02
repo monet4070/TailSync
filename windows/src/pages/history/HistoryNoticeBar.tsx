@@ -6,9 +6,13 @@ interface HistoryNoticeBarProps {
   t: Translate;
   notice: HistoryNotice | null;
   onDismiss: () => void;
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
 }
 
-export function HistoryNoticeBar({ t, notice, onDismiss }: HistoryNoticeBarProps) {
+export function HistoryNoticeBar({ t, notice, onDismiss, action }: HistoryNoticeBarProps) {
   if (!notice) return null;
   return (
     <div
@@ -21,6 +25,15 @@ export function HistoryNoticeBar({ t, notice, onDismiss }: HistoryNoticeBarProps
         <span className="history-notice-count" aria-label={`${notice.occurrences} occurrences`}>
           ×{notice.occurrences}
         </span>
+      )}
+      {action && (
+        <button
+          className="history-notice-action"
+          type="button"
+          onClick={action.onClick}
+        >
+          {action.label}
+        </button>
       )}
       <button
         className="history-notice-dismiss"

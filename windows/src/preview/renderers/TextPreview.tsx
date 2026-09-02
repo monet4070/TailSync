@@ -25,6 +25,12 @@ import yaml from "highlight.js/lib/languages/yaml";
 import { previewFileExtension } from "../../utils/historyPreview";
 import { useModifierWheelZoom, usePreviewTextFontSize, zoomFromWheel } from "../previewPreferences";
 import { MarkdownPreview } from "./MarkdownPreview";
+import {
+  countTextLines,
+  limitTextSource,
+  TEXT_PREVIEW_HIGHLIGHT_MAX_CHARS,
+  TEXT_PREVIEW_MAX_LINE_NUMBER_ROWS,
+} from "./textPreviewPolicy";
 
 hljs.registerLanguage("bash", bash);
 hljs.registerLanguage("cpp", cpp);
@@ -118,6 +124,7 @@ export function TextPreview({
   t: (key: string) => string;
 }) {
   const source = useMemo(() => new TextDecoder("utf-8").decode(data), [data]);
+  const rendered = useMemo(() => limitTextSource(source), [source]);
   const extensionLanguage = LANGUAGE_BY_EXTENSION[previewFileExtension(name)];
   const [mode, setMode] = useState<"text" | "code" | "markdown">(
     forceCode || Boolean(extensionLanguage) || likelyCode(source) ? "code" : "text",
@@ -130,21 +137,25 @@ export function TextPreview({
   const sourceScrollRef = useModifierWheelZoom<HTMLDivElement>((deltaY) => {
     setFontSize((value) => zoomFromWheel(value, deltaY, 12, 32));
   });
-  const matches = useMemo(() => countMatches(source, query), [query, source]);
+  const matches = useMemo(() => countMatches(rendered.source, query), [query, rendered.source]);
+  const sourceLineCount = useMemo(() => countTextLines(source), [source]);
+  const renderedLineCount = useMemo(() => countTextLines(rendered.source), [rendered.source]);
+  const highlightDisabled = codeMode && rendered.source.length > TEXT_PREVIEW_HIGHLIGHT_MAX_CHARS;
+  const lineNumbersDisabled = codeMode && renderedLineCount > TEXT_PREVIEW_MAX_LINE_NUMBER_ROWS;
   const highlighted = useMemo(() => {
-    if (!codeMode) return "";
+    if (!codeMode || highlightDisabled) return "";
     try {
       const value = extensionLanguage
-        ? hljs.highlight(source, { language: extensionLanguage, ignoreIllegals: true }).value
-        : hljs.highlightAuto(source).value;
+        ? hljs.highlight(rendered.source, { language: extensionLanguage, ignoreIllegals: true }).value
+        : hljs.highlightAuto(rendered.source).value;
       return DOMPurify.sanitize(value, { ALLOWED_TAGS: ["span"], ALLOWED_ATTR: ["class"] });
     } catch {
-      return DOMPurify.sanitize(hljs.highlightAuto(source).value, {
+      return DOMPurify.sanitize(hljs.highlightAuto(rendered.source).value, {
         ALLOWED_TAGS: ["span"],
         ALLOWED_ATTR: ["class"],
       });
     }
-  }, [codeMode, extensionLanguage, source]);
+  }, [codeMode, extensionLanguage, highlightDisabled, rendered.source]);
 
   const copyAll = async () => {
     try {
@@ -223,23 +234,46 @@ export function TextPreview({
         ref={sourceScrollRef}
         className="preview-source-scroll"
       >
+        {rendered.truncated && mode !== "markdown" && (
+          <div className="preview-truncated-notice" role="status" data-testid="preview-truncated">
+            {t("history.preview.truncated")}
+          </div>
+        )}
+        {highlightDisabled && (
+          <div className="preview-truncated-notice" role="status" data-testid="preview-highlight-disabled">
+            {t("history.preview.highlightDisabled")}
+          </div>
+        )}
+        {lineNumbersDisabled && (
+          <div className="preview-truncated-notice" role="status" data-testid="preview-line-numbers-disabled">
+            {t("history.preview.lineNumbersDisabled")}
+          </div>
+        )}
         {mode === "markdown" ? (
-          <MarkdownPreview data={data} />
+          <MarkdownPreview data={data} t={t} />
         ) : codeMode ? (
           <div className={wrap ? "preview-code-layout is-wrapped" : "preview-code-layout"} style={{ fontSize }}>
-            <ol className="preview-code-lines" aria-hidden="true">
-              {source.split("\n").map((_, index) => <li key={index} />)}
-            </ol>
-            <pre className="preview-code"><code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} /></pre>
+            {!lineNumbersDisabled && (
+              <ol className="preview-code-lines" aria-hidden="true">
+                {Array.from({ length: renderedLineCount }, (_, index) => <li key={index} />)}
+              </ol>
+            )}
+            <pre className="preview-code">
+              {highlightDisabled ? (
+                <code>{rendered.source}</code>
+              ) : (
+                <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
+              )}
+            </pre>
           </div>
         ) : (
           <pre className={wrap ? "preview-plain-text is-wrapped" : "preview-plain-text"} style={{ fontSize }}>
-            {source}
+            {rendered.source}
           </pre>
         )}
       </div>
       <footer className="preview-text-stats">
-        <span>{source.split(/\r?\n/).length} {t("history.preview.lines")}</span>
+        <span>{sourceLineCount} {t("history.preview.lines")}</span>
         <span>{source.length} {t("history.preview.characters")}</span>
       </footer>
     </section>

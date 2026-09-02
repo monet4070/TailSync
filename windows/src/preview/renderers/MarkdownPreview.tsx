@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { open } from "@tauri-apps/plugin-shell";
 import { useModifierWheelZoom, usePreviewTextFontSize, zoomFromWheel } from "../previewPreferences";
+import { limitTextSource } from "./textPreviewPolicy";
 
 function explicitWebUrl(value: string): string | null {
   try {
@@ -60,17 +61,24 @@ function sanitizeRenderedMarkdown(rendered: string): string {
   return template.innerHTML;
 }
 
-export function MarkdownPreview({ data }: { data: Uint8Array }) {
+export function MarkdownPreview({
+  data,
+  t,
+}: {
+  data: Uint8Array;
+  t?: (key: string) => string;
+}) {
   const [fontSize, setFontSize] = usePreviewTextFontSize();
   const articleRef = useModifierWheelZoom<HTMLElement>((deltaY) => {
     setFontSize((value) => zoomFromWheel(value, deltaY, 12, 32));
   });
+  const source = useMemo(() => new TextDecoder("utf-8").decode(data), [data]);
+  const limited = useMemo(() => limitTextSource(source), [source]);
   const html = useMemo(() => {
-    const source = new TextDecoder("utf-8").decode(data);
-    const rendered = marked.parse(source);
+    const rendered = marked.parse(limited.source);
     if (typeof rendered !== "string") return "";
     return sanitizeRenderedMarkdown(rendered);
-  }, [data]);
+  }, [limited.source]);
 
   const openLink = useCallback((event: React.MouseEvent<HTMLElement>) => {
     const anchor = event.target instanceof Element
@@ -86,13 +94,20 @@ export function MarkdownPreview({ data }: { data: Uint8Array }) {
   }, []);
 
   return (
-    <article
-      ref={articleRef}
-      className="preview-markdown"
-      data-testid="preview-markdown"
-      style={{ fontSize }}
-      onClick={openLink}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <>
+      {t && limited.truncated && (
+        <div className="preview-truncated-notice" role="status" data-testid="preview-truncated">
+          {t("history.preview.truncated")}
+        </div>
+      )}
+      <article
+        ref={articleRef}
+        className="preview-markdown"
+        data-testid="preview-markdown"
+        style={{ fontSize }}
+        onClick={openLink}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    </>
   );
 }

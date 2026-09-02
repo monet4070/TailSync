@@ -663,6 +663,17 @@ body,
   user-select: text;
 }
 
+.preview-truncated-notice {
+  margin: -4px 0 12px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--brand) 28%, var(--divider));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-window));
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .preview-plain-text {
   min-width: 100%;
   width: max-content;

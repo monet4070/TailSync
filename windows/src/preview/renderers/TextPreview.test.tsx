@@ -2,6 +2,10 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { PREVIEW_TEXT_FONT_SIZE_KEY } from "../previewPreferences";
 import { TextPreview } from "./TextPreview";
+import {
+  TEXT_PREVIEW_MAX_LINE_NUMBER_ROWS,
+  TEXT_PREVIEW_RENDER_MAX_CHARS,
+} from "./textPreviewPolicy";
 
 const t = (key: string) => key;
 
@@ -47,5 +51,33 @@ describe("TextPreview", () => {
 
     fireEvent.click(screen.getByTitle("history.preview.markdownMode"));
     expect(screen.getByRole("heading", { name: "Heading" })).toBeInTheDocument();
+  });
+
+  it("bounds expensive code rendering while retaining complete copy statistics", () => {
+    const source = `const value = 1;\n${"x".repeat(TEXT_PREVIEW_RENDER_MAX_CHARS + 100)}`;
+    const { container } = render(
+      <TextPreview data={new TextEncoder().encode(source)} name="large.ts" forceCode t={t} />,
+    );
+
+    expect(screen.getByTestId("preview-truncated")).toBeInTheDocument();
+    const renderedCode = container.querySelector(".preview-code code");
+    expect(renderedCode).not.toBeNull();
+    expect(renderedCode!.textContent!.length).toBeLessThanOrEqual(TEXT_PREVIEW_RENDER_MAX_CHARS);
+    expect(screen.getByText(`${source.length} history.preview.characters`)).toBeInTheDocument();
+  });
+
+  it("does not create an unbounded line-number DOM for newline-heavy text", () => {
+    const source = Array.from(
+      { length: TEXT_PREVIEW_MAX_LINE_NUMBER_ROWS + 2 },
+      () => "x",
+    ).join("\n");
+    const { container } = render(
+      <TextPreview data={new TextEncoder().encode(source)} name="many-lines.ts" forceCode t={t} />,
+    );
+
+    expect(screen.getByTestId("preview-line-numbers-disabled")).toBeInTheDocument();
+    expect(container.querySelector(".preview-code-lines")).toBeNull();
+    expect(screen.getByText(`${TEXT_PREVIEW_MAX_LINE_NUMBER_ROWS + 2} history.preview.lines`))
+      .toBeInTheDocument();
   });
 });

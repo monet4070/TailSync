@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { TEXT_PREVIEW_RENDER_MAX_CHARS } from "./textPreviewPolicy";
 
 // `vi.mock` is hoisted by Vitest.  Keep the spy in a hoisted factory so the
 // module under test never observes an uninitialised binding during import.
@@ -40,5 +41,18 @@ describe("MarkdownPreview", () => {
 
     fireEvent.click(safe);
     expect(openMock).toHaveBeenCalledWith("https://example.com/read");
+  });
+
+  it("bounds Markdown parsing for oversized sources and reports truncation", () => {
+    const source = `# Heading\n\n${"paragraph ".repeat(TEXT_PREVIEW_RENDER_MAX_CHARS)}`;
+    render(
+      <MarkdownPreview
+        data={bytes(source)}
+        t={(key) => key}
+      />,
+    );
+
+    expect(screen.getByTestId("preview-truncated")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Heading" })).toBeInTheDocument();
   });
 });

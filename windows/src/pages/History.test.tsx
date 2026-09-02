@@ -124,6 +124,49 @@ describe("History item actions", () => {
     expect(localStorage.getItem("tailsync-history-always-on-top")).toBe("false");
   });
 
+  it("shows a retryable notice when history loading fails", async () => {
+    let attempts = 0;
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "get_settings":
+          return Promise.resolve({ progress_bar_enabled: true });
+        case "get_history_page":
+          attempts += 1;
+          return attempts <= 2
+            ? Promise.reject(new Error("database unavailable"))
+            : Promise.resolve({
+              entries: [{ ...entry, pinned: false }],
+              total: 1,
+              has_more: false,
+            });
+        case "get_history_capabilities":
+          return Promise.resolve({
+            classifier_version: 1,
+            categories: ["text", "image", "file"],
+            multiple_labels: true,
+            date_range_filter: true,
+          });
+        case "get_migration_diagnostics":
+          return Promise.resolve({ unresolved_count: 0 });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    render(<History />);
+
+    await waitFor(() => {
+      expect(screen.getByText("history.loadError")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "history.retry" })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "history.retry" }));
+    await screen.findByText(entry.description);
+    expect(screen.queryByText("history.loadError")).toBeNull();
+    expect(attempts).toBe(3);
+    consoleError.mockRestore();
+  });
+
   it("restores the persisted always-on-top state when the window mounts", async () => {
     localStorage.setItem("tailsync-history-always-on-top", "true");
 
@@ -174,6 +217,24 @@ describe("History item actions", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("delete_entry", { id: entry.id });
     });
+  });
+
+  it("renders restore feedback in the footer instead of above the history list", async () => {
+    render(<History />);
+
+    const row = (await screen.findByText(entry.description))
+      .closest<HTMLElement>(".history-item");
+    expect(row).not.toBeNull();
+    fireEvent.doubleClick(row!);
+
+    const notice = await screen.findByRole("status");
+    const pagination = document.querySelector(".pagination");
+    const historyList = document.querySelector(".history-list");
+    expect(pagination).not.toBeNull();
+    expect(historyList).not.toBeNull();
+    expect(notice.previousElementSibling).toBe(pagination);
+    expect(historyList!.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .not.toBe(0);
   });
 
   it("uses one footer stamp for favorite state and long-press feedback", async () => {

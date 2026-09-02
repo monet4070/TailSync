@@ -8,6 +8,7 @@ import type {
   MigrationDiagnostics,
 } from "../../tailsyncClient";
 import type { ThumbnailData } from "../../hooks/useThumbnailCache";
+import type { HistoryNotice } from "../../hooks/useHistoryNotice";
 import type { DateBounds, DateFilter } from "../../utils/historyFilters";
 
 export type Translate = (key: string) => string;
@@ -110,4 +111,7 @@ export interface HistoryFooterProps {
   setShowClearConfirm: Dispatch<SetStateAction<boolean>>;
   handleClearHistory: () => Promise<void>;
   isFavoritesCollection: boolean;
+  historyNotice: HistoryNotice | null;
+  clearHistoryNotice: () => void;
+  retryHistory: () => void;
 }

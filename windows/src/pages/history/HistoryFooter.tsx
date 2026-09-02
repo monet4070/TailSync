@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import type { HistoryFooterProps } from "./HistoryViewTypes";
 import { formatSize } from "./HistoryEntryHelpers";
+import { HistoryNoticeBar } from "./HistoryNoticeBar";
 
 export function HistoryFooter({
   t,
@@ -24,6 +25,9 @@ export function HistoryFooter({
   setShowClearConfirm,
   handleClearHistory,
   isFavoritesCollection,
+  historyNotice,
+  clearHistoryNotice,
+  retryHistory,
 }: HistoryFooterProps) {
   return (
     <>
@@ -87,6 +91,15 @@ export function HistoryFooter({
           )}
         </div>
       )}
+
+      <HistoryNoticeBar
+        t={t}
+        notice={historyNotice}
+        onDismiss={clearHistoryNotice}
+        action={historyNotice?.key === "history-load"
+          ? { label: t("history.retry"), onClick: retryHistory }
+          : undefined}
+      />
 
       {!isFavoritesCollection && showClearConfirm && (
         <div className="dialog-backdrop" onMouseDown={() => !clearing && setShowClearConfirm(false)}>

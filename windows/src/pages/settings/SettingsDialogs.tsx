@@ -17,6 +17,10 @@ export function PairingDialog({
   handlePair,
 }: PairingDialogProps) {
   if (!pairingOpen) return null;
+  const rawPairingError = pairingError || pairingStatus?.error || "";
+  const visiblePairingError = /identity\s+mismatch/i.test(rawPairingError)
+    ? t("settings.identityMismatch")
+    : rawPairingError;
 
   return (
     <div className="dialog-backdrop" onMouseDown={() => void closePairing()}>
@@ -71,8 +75,8 @@ export function PairingDialog({
             )}
           </div>
         )}
-        {(pairingError || pairingStatus?.error) && (
-          <p className="pair-dialog-error" role="alert">{pairingError || pairingStatus?.error}</p>
+        {visiblePairingError && (
+          <p className="pair-dialog-error" role="alert">{visiblePairingError}</p>
         )}
         <div className="confirm-dialog-actions">
           <button type="button" onClick={() => void closePairing()} disabled={pairingBusy}>

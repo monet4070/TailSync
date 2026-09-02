@@ -69,7 +69,6 @@ import type { FilterOption } from "./history/HistoryViewTypes";
 import { HistoryHeader } from "./history/HistoryHeader";
 import { HistoryMainContent } from "./history/HistoryMainContent";
 import { HistoryFooter } from "./history/HistoryFooter";
-import { HistoryNoticeBar } from "./history/HistoryNoticeBar";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -171,6 +170,7 @@ export function History({ collection = "all" }: HistoryProps) {
 
   const { theme, themeAssetSlots } = useTheme();
   const { t } = useI18n();
+  const historyLoadErrorMessage = t("history.loadError");
   const showActionError = useCallback(() => {
     showHistoryNotice({
       key: "action-failed",
@@ -322,6 +322,11 @@ export function History({ collection = "all" }: HistoryProps) {
     } catch (e) {
       if (historyRequests.current.isCurrent(requestGeneration)) {
         console.error("Failed to load history:", e);
+        showHistoryNotice({
+          key: "history-load",
+          level: "error",
+          message: historyLoadErrorMessage,
+        });
       }
     } finally {
       if (historyRequests.current.isCurrent(requestGeneration)) {
@@ -335,6 +340,8 @@ export function History({ collection = "all" }: HistoryProps) {
     page,
     selectedCategory,
     collection,
+    showHistoryNotice,
+    historyLoadErrorMessage,
   ]);
 
   /* ── Polling ──────────────────────────────────────────────────── */
@@ -665,6 +672,11 @@ export function History({ collection = "all" }: HistoryProps) {
     }
   };
 
+  const retryHistory = useCallback(() => {
+    clearHistoryNotice();
+    void loadHistory();
+  }, [clearHistoryNotice, loadHistory]);
+
   /* ── Derived state ────────────────────────────────────────────── */
 
   /* ── Render ───────────────────────────────────────────────────── */
@@ -700,12 +712,6 @@ export function History({ collection = "all" }: HistoryProps) {
         activeDateBounds={activeDateBounds}
         hasActiveFilters={hasActiveFilters}
         migrationDiagnostics={migrationDiagnostics}
-      />
-
-      <HistoryNoticeBar
-        t={t}
-        notice={historyNotice}
-        onDismiss={clearHistoryNotice}
       />
 
       <HistoryMainContent
@@ -750,6 +756,9 @@ export function History({ collection = "all" }: HistoryProps) {
         setShowClearConfirm={setShowClearConfirm}
         handleClearHistory={handleClearHistory}
         isFavoritesCollection={isFavoritesCollection}
+        historyNotice={historyNotice}
+        clearHistoryNotice={clearHistoryNotice}
+        retryHistory={retryHistory}
       />
     </div>
   );

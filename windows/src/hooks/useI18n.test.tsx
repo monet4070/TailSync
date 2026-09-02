@@ -66,12 +66,17 @@ describe("useI18n", () => {
   it("keeps both locale catalogs complete for history preview", () => {
     expect(Object.keys(zhCN).sort()).toEqual(Object.keys(en).sort());
     for (const key of [
+      "history.loadError",
+      "history.retry",
       "history.preview.title",
       "history.preview.loading",
       "history.preview.error",
       "history.preview.docxDescription",
       "history.preview.unsupported",
       "history.preview.restoreError",
+      "history.preview.truncated",
+      "history.preview.highlightDisabled",
+      "history.preview.lineNumbersDisabled",
     ] as const) {
       expect(en[key]).not.toBe(key);
       expect(zhCN[key]).not.toBe(key);
