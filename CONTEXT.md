@@ -23,7 +23,6 @@ shared/
     peer/                    types/directory/health/delivery 等设备与可靠投递规则
     secure.rs + secure/      握手、认证与安全会话
     sync.rs + sync/          同步编排、批次、接收、恢复与状态
-    themes_v2.rs             对 tailsync-themes 的数据目录 Adapter
   tailsync-protocol/         线协议类型、编解码与契约测试
   tailsync-history-classifier/
     model.rs                 分类模型、类别常量与公开结果
@@ -56,7 +55,7 @@ windows/
   新逻辑先考虑 Core，再决定在哪个 Adapter 绑定系统能力。
 - 文件拆分以 Seam 和 Locality 为准：页面 façade 只编排状态/副作用；子 Module 通过显式、
   可测试的 Interface 接收数据和回调。不要为了缩短行数引入没有独立职责的薄包装。
-- `themes_v2::read_theme_package_file` 是两端共用的主题文件读取策略；响应编码仍属于
+- `tailsync_themes::read_theme_package_file` 是两端共用的主题文件读取策略；响应编码仍属于
   transport Adapter。macOS 有 Unix socket JSON routes，Windows 有 Tauri commands，
   不为表面结构对称而复制路由。
 - Windows 的 `commands/preview.rs` 保留独立文件是有意设计，原始 ArrayBuffer 预览协议
@@ -72,10 +71,11 @@ windows/
   同一手势的选择、点击与双击。历史和收藏窗口分别拥有可见性、轮询、关闭与资源释放生命周期。
 - 平台 `network/*` 中**被漂移检查强制逐字节一致**的文件：`build.rs`、
   `examples/interop_probe.rs`、`network/types.rs`、`network/server.rs`、
+  `network/pool.rs`、`network/iroh.rs`、
   `scripts/check_cross_platform_sync.mjs|ps1`、`scripts/test_cross_project_interop.ps1`。
   修改这些文件必须两端同步。
-- `network/mod.rs`、`network/health.rs`、`network/pool.rs`、`network/tailscale.rs`、
-  `network/lan.rs`、`network/mdns.rs`、`network/peer_cache.rs` 等仍允许平台差异
+- `network/mod.rs`、`network/health.rs`、`network/tailscale.rs`、`network/lan.rs`、
+  `network/mdns.rs`、`network/peer_cache.rs` 等仍允许平台差异
   （编排与 Adapter），但共享逻辑一旦迁入 Core，平台文件应只剩接线/适配。
 - macOS API route 的 `handles()` 与 `handle()` 必须同增同删；主题 route 有专门的
   dispatch 回归测试。跨平台契约检查只校验共享协议字段，不替代各平台的 route/command

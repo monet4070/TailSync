@@ -216,7 +216,7 @@ flowchart TB
         PEER["Peer Health 状态机\n& 路由竞速 (race_connections)"]
         DELIV["Reliable Delivery 投递引擎\n(ACK / 指数退避重试 / 唤醒恢复)"]
         NOISE["Noise XX 安全通道\n(ChaCha20-Poly1305 加密)"]
-        DB_STORE["SQLite 数据库 (Schema v9)\n& AES-256-GCM 加密存储"]
+        DB_STORE["SQLite 数据库 (Schema v11)\n& AES-256-GCM 加密存储"]
         PROTO["Wire Protocol v4\n(48B 帧头 + Blake3 分块校验)"]
     end
 

@@ -1,6 +1,6 @@
 # TailSync 主题指南（Theme V2：包格式、内置主题与本地选择）
 
-> 适用版本：产品 2.2.2，Theme V2（`shared/rust-core/src/themes_v2.rs` 是唯一实现）。
+> 适用版本：产品 2.2.2，Theme V2（解析、校验与存储实现位于 `shared/tailsync-themes/`，两端只负责渲染适配）。
 > 本文档描述 V2 主题包格式、内置主题 ID、本地选择语义、旧版迁移规则与全部实际限额。
 
 ## 0. 先读这一段：主题系统如何工作
@@ -171,7 +171,7 @@ Windows（Tauri invoke）与 macOS（本地 API，SwiftUI `ApiClient`）同名�
 
 ## 7. 安全
 
-- 主题包是纯声明式数据：颜色字面量/表达式、受限数值（范围随令牌而定，见 `themes_v2.rs`
+- 主题包是纯声明式数据：颜色字面量/表达式、受限数值（范围随令牌而定，见 `shared/tailsync-themes/`
   的 `bounded_number`）、字符串值（字体名等仅拒绝 `url(`、`<`、`;`、`@import` 危险子串）、
   布尔值、PNG/JPEG 字节。
 - 任何字段都不会进入 HTML / innerHTML / 命令行：Windows 只经 `style.setProperty()` 注入，

@@ -58,7 +58,7 @@ TAILSYNC_RELEASE_TIER=community
 
 ## 发布步骤
 
-1. 在两个 `tauri.conf.json` 和三个 Cargo package 中设置相同的语义版本。
+1. 在两个 `tauri.conf.json` 和六个受版本矩阵管理的 Cargo package 中设置相同的语义版本。
 2. 合并前确认 CI 全绿，并完成 macOS 与 Windows 真机验收。
 3. 推送与清单版本匹配的 tag，例如 `vX.Y.Z`。
 4. 确认 Release workflow 的双平台打包、启动烟测、updater 签名和 manifest 校验通过。
