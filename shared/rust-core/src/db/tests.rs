@@ -1,5 +1,146 @@
 use super::*;
 
+fn percentile_millis(samples: &[f64], percentile: f64) -> f64 {
+    let mut ordered = samples.to_vec();
+    ordered.sort_by(f64::total_cmp);
+    let index = ((ordered.len() as f64 * percentile).ceil() as usize)
+        .saturating_sub(1)
+        .min(ordered.len().saturating_sub(1));
+    ordered[index]
+}
+
+fn scan_synthetic_history(
+    database: &HistoryDB,
+    keyword: Option<&str>,
+    stop_after: Option<usize>,
+) -> Result<usize, HistoryReadError> {
+    let revision = database.read_revision()?;
+    let cancellation = crate::cancellation::Cancellation::default();
+    let mut cursor = None;
+    let mut matched = 0usize;
+    loop {
+        let chunk = database.prepare_read_chunk(
+            HistoryQuery {
+                collection: HistoryCollection::All,
+                keyword,
+                category: None,
+                start_time: None,
+                end_time: None,
+                limit: stop_after.unwrap_or(usize::MAX),
+                offset: 0,
+            },
+            cursor.as_ref(),
+            &revision,
+            128,
+        )?;
+        let exhausted = chunk.exhausted;
+        cursor = chunk.cursor.clone();
+        matched += chunk.matching_entries(keyword, &cancellation)?.len();
+        if let Some(limit) = stop_after {
+            if matched >= limit {
+                matched = limit;
+                break;
+            }
+        }
+        if exhausted || cursor.is_none() {
+            break;
+        }
+    }
+    database.validate_read_revision(&revision)?;
+    Ok(matched)
+}
+
+/// Manual O04 performance evidence. The fixture uses a private temporary
+/// database, deterministic plaintext, production encryption/schema, and no
+/// user paths or clipboard contents. It is ignored by normal test runs.
+#[test]
+#[ignore = "manual synthetic performance baseline"]
+fn synthetic_history_performance_baseline() {
+    let rows = std::env::var("TAILSYNC_HISTORY_BASELINE_ROWS")
+        .unwrap_or_else(|_| "1000,10000,50000".into())
+        .split(',')
+        .map(|value| value.trim().parse::<usize>().expect("valid row count"))
+        .collect::<Vec<_>>();
+    let rounds = std::env::var("TAILSYNC_HISTORY_BASELINE_ROUNDS")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("valid round count"))
+        .unwrap_or(5)
+        .max(1);
+    let mut reports = Vec::new();
+
+    for row_count in rows {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-history-baseline-{row_count}-{:016x}",
+            rand::random::<u64>()
+        ));
+        let mut database =
+            HistoryDB::open_isolated_for_test(&root).expect("open isolated performance database");
+        let seed_started = std::time::Instant::now();
+        let dataset_digest = database
+            .seed_synthetic_history_for_test(row_count)
+            .expect("seed deterministic history");
+        let seed_ms = seed_started.elapsed().as_secs_f64() * 1000.0;
+
+        let cold_started = std::time::Instant::now();
+        let cold_no_match = scan_synthetic_history(&database, Some("absent-baseline-token"), None)
+            .expect("cold no-match scan");
+        let cold_no_match_ms = cold_started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(cold_no_match, 0);
+
+        let mut first_page_ms = Vec::with_capacity(rounds);
+        let mut matching_page_ms = Vec::with_capacity(rounds);
+        let mut no_match_ms = Vec::with_capacity(rounds);
+        for _ in 0..rounds {
+            let started = std::time::Instant::now();
+            let matches =
+                scan_synthetic_history(&database, None, Some(50)).expect("first-page scan");
+            first_page_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            assert!(matches >= 50.min(row_count));
+
+            let started = std::time::Instant::now();
+            let matches = scan_synthetic_history(&database, Some("needle"), Some(50))
+                .expect("matching page scan");
+            matching_page_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(matches, 50.min(row_count.div_ceil(17)));
+
+            let started = std::time::Instant::now();
+            let matches = scan_synthetic_history(&database, Some("absent-baseline-token"), None)
+                .expect("warm no-match scan");
+            no_match_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(matches, 0);
+        }
+
+        reports.push(serde_json::json!({
+            "rows": row_count,
+            "rounds": rounds,
+            "dataset_digest": dataset_digest,
+            "seed_ms": seed_ms,
+            "cold_no_match_ms": cold_no_match_ms,
+            "first_page_ms": first_page_ms,
+            "matching_page_ms": matching_page_ms,
+            "no_match_ms": no_match_ms,
+            "first_page_p95_ms": percentile_millis(&first_page_ms, 0.95),
+            "first_page_p99_ms": percentile_millis(&first_page_ms, 0.99),
+            "matching_page_p95_ms": percentile_millis(&matching_page_ms, 0.95),
+            "matching_page_p99_ms": percentile_millis(&matching_page_ms, 0.99),
+            "no_match_p95_ms": percentile_millis(&no_match_ms, 0.95),
+            "no_match_p99_ms": percentile_millis(&no_match_ms, 0.99),
+        }));
+        drop(database);
+        std::fs::remove_dir_all(&root).expect("remove isolated performance database");
+    }
+
+    let report = serde_json::json!({
+        "schema": 1,
+        "fixture": "deterministic encrypted history",
+        "reports": reports,
+    });
+    if let Ok(output) = std::env::var("TAILSYNC_PERFORMANCE_BASELINE_OUTPUT") {
+        std::fs::write(&output, format!("{report:#}\n")).expect("write performance evidence");
+    }
+    println!("TAILSYNC_PERFORMANCE_BASELINE={report}");
+}
+
 #[test]
 fn prepared_preview_survives_entry_deletion_without_reopening_its_path() {
     let root = std::env::temp_dir().join(format!(

@@ -261,3 +261,33 @@ jobs:
           arguments: --locked --all-features
           command: check advisories
           manifest-path: ${{ matrix.manifest }}/Cargo.toml
+
+  required-verification:
+    name: Required verification
+    if: ${{ always() }}
+    needs: [frontend, rust-windows, rust-macos, scripts, shared-resolution, rustsec]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FRONTEND_RESULT: ${{ needs.frontend.result }}
+      RUST_WINDOWS_RESULT: ${{ needs.rust-windows.result }}
+      RUST_MACOS_RESULT: ${{ needs.rust-macos.result }}
+      SCRIPTS_RESULT: ${{ needs.scripts.result }}
+      SHARED_RESOLUTION_RESULT: ${{ needs.shared-resolution.result }}
+      RUSTSEC_RESULT: ${{ needs.rustsec.result }}
+    steps:
+      - name: Require every CI job to succeed
+        shell: bash
+        run: |
+          results=(
+            "$FRONTEND_RESULT"
+            "$RUST_WINDOWS_RESULT"
+            "$RUST_MACOS_RESULT"
+            "$SCRIPTS_RESULT"
+            "$SHARED_RESOLUTION_RESULT"
+            "$RUSTSEC_RESULT"
+          )
+          printf 'Dependency results: %s\n' "${results[*]}"
+          for result in "${results[@]}"; do
+            test "$result" = success
+          done

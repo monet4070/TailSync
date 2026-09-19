@@ -114,6 +114,7 @@ for (const [name, s] of Object.entries(defs)) {
   js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
   swift += swiftDefinition(name,s) + '\n';
 }
+swift = `${swift.trimEnd()}\n`;
 const outputs = {
   'shared/schema/local-contract.schema.json': result.stdout,
   'shared/schema/local-contract-decoders.generated.mjs': js,

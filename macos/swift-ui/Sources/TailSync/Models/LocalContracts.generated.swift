@@ -13,6 +13,7 @@ struct ContractActiveRoute: Codable, Sendable {
     self.`latency` = try c.decode(UInt64.self, forKey: .`latency`)
   }
 }
+
 enum ContractConnectionInterface: String, Codable, Sendable {
   case `lan` = "lan"
   case `iroh` = "iroh"

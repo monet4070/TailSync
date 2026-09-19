@@ -1,3 +1,15 @@
 {
-  "allowedMismatches": []
+  "allowedMismatches": [],
+  "requiredFeatureMatches": [
+    "blake3",
+    "chrono",
+    "fernet",
+    "iroh",
+    "ring",
+    "rusqlite",
+    "schemars",
+    "serde",
+    "snow",
+    "tokio"
+  ]
 }

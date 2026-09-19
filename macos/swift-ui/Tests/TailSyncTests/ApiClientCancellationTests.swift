@@ -4,12 +4,13 @@ import XCTest
 @testable import TailSync
 
 final class ApiClientCancellationTests: XCTestCase {
-  func testLargeBinaryPreviewCompletesAtDeclaredLengthWithoutWaitingForEOF() async throws {
+  func testSixtyFourMiBBinaryPreviewCompletesAtDeclaredLengthWithoutWaitingForEOF() async throws {
     let server = try LocalTestSocket()
     let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
-    let width = 2_800
-    let height = 1_000
+    let width = 4_096
+    let height = 4_096
     let payload = Data(repeating: 0x7F, count: width * height * 4)
+    XCTAssertEqual(payload.count, 64 * 1024 * 1024)
     let metadata = try JSONSerialization.data(withJSONObject: [
       "entry_id": 7,
       "kind": "image",
@@ -29,7 +30,7 @@ final class ApiClientCancellationTests: XCTestCase {
     DispatchQueue.global().async {
       server.respond(
         with: frame,
-        closeDelay: 0.8,
+        closeDelay: 2,
         responseSent: responseSent,
         connectionClosed: connectionClosed
       )
@@ -38,14 +39,14 @@ final class ApiClientCancellationTests: XCTestCase {
     let started = Date()
     let received = try await client.requestBytes(
       ["cmd": "get_preview_binary", "id": 7],
-      timeoutSeconds: 3,
+      timeoutSeconds: 10,
       maxResponseBytes: frame.count
     )
     let elapsed = Date().timeIntervalSince(started)
 
     XCTAssertEqual(received, frame)
-    XCTAssertLessThan(elapsed, 0.7, "A complete frame must not wait for EOF")
-    await fulfillment(of: [responseSent, connectionClosed], timeout: 2)
+    XCTAssertLessThan(elapsed, 1.75, "A complete frame must not wait for EOF")
+    await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
   }
 
   func testFiftyPreviewSwitchesReleaseTheirRealSocket() async throws {
