@@ -1,3 +1,4 @@
+pub mod cancellation;
 pub mod crypto;
 pub mod db;
 pub mod diagnostics;

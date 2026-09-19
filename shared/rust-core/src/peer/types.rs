@@ -10,7 +10,17 @@ use std::fmt;
 use std::net::SocketAddr;
 
 /// The transport a peer route uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionInterface {
     Lan,
@@ -97,7 +107,17 @@ impl ConnectionMode {
 /// [`PeerCandidate::is_consistent`] check this. Legacy wire data can contain
 /// older field combinations; the health projection (`apply_peer_health`)
 /// normalizes both fields before exposing a fresh snapshot.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerStatus {
     #[default]
@@ -129,7 +149,9 @@ impl PeerStatus {
 /// One reachable route for a peer, with the health fields the health monitor
 /// derives. Legacy serialized candidates without `online`/`status` keep
 /// working through serde defaults.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct PeerCandidate {
     pub interface: ConnectionInterface,
     pub address: String,
@@ -190,7 +212,7 @@ impl PeerCandidate {
 }
 
 /// The route a peer is currently using for authenticated traffic.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ActiveRoute {
     pub interface: ConnectionInterface,
     pub address: String,
@@ -198,7 +220,7 @@ pub struct ActiveRoute {
 }
 
 /// Health snapshot for one peer, derived by the platform health monitor.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct PeerHealthSnapshot {
     pub status: PeerStatus,
     pub online: bool,
@@ -221,7 +243,7 @@ impl PeerInfo {
 /// JSON APIs (mirrored by the Swift `Route` DTO and the React `PeerRoute`
 /// interface). Field names are part of the wire contract; the drift check
 /// compares this struct's fields against the contract lists.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct PeerRouteSnapshot {
     pub interface: ConnectionInterface,
     pub address: String,
@@ -237,7 +259,7 @@ pub struct PeerRouteSnapshot {
 /// shape: macOS and Windows previously carried slightly different field sets
 /// (Windows lacked `current_address` and `status`), which made shared
 /// directory logic impossible and let the JSON contracts drift.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct PeerInfo {
     pub hostname: String,
     pub tailscale_ip: String,
@@ -262,7 +284,7 @@ pub struct PeerInfo {
 }
 
 /// Information about the local device gathered during discovery.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct LocalInfo {
     pub hostname: String,
     pub tailscale_ip: String,
@@ -307,7 +329,7 @@ pub struct ResolvedCandidate {
 /// Latency of one measured route, as reported to the settings UI. The path is
 /// "tcp" for plain TCP routes and "direct" or "relay" for Iroh routes, so
 /// callers can distinguish a direct connection from a cold-start relay sample.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct RouteLatency {
     pub latency_ms: u64,
     pub path: String,

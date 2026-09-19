@@ -11,6 +11,7 @@ impl HistoryDB {
         Self::migrate(&conn, &get_file_history_dir(), &get_image_history_dir())?;
         Ok(Self {
             conn,
+            read_identity: std::sync::Arc::new(()),
             max_history: 1000,
             storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
             storage_available: false,
@@ -61,6 +62,7 @@ impl HistoryDB {
 
         let mut database = HistoryDB {
             conn,
+            read_identity: std::sync::Arc::new(()),
             max_history: i64::MAX / 2,
             storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
             storage_available: true,

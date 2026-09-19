@@ -218,6 +218,7 @@ mod tests {
             .unwrap();
         HistoryDB {
             conn: connection,
+            read_identity: std::sync::Arc::new(()),
             max_history: 100,
             storage_quota_bytes: crate::crypto::DEFAULT_STORAGE_QUOTA_BYTES,
             storage_available: true,

@@ -40,23 +40,25 @@ pub enum HistoryMutationError {
 }
 
 /// Result of changing the favorite state of a logical history item.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct FavoriteMutation {
     pub affected_ids: Vec<i64>,
     pub favorite: bool,
 }
 
 /// A clipboard history entry.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct HistoryEntry {
     pub id: i64,
     pub timestamp: String,
     #[serde(rename = "type")]
+    #[schemars(with = "PreviewKind")]
     pub entry_type: String,
     pub description: String,
     pub data_hash: String,
     pub size_bytes: i64,
     pub source_peer: String,
+    #[schemars(extend("enum" = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]))]
     pub category: String,
     pub categories: Vec<String>,
     pub category_confidence: i64,
@@ -66,10 +68,11 @@ pub struct HistoryEntry {
     pub batch_index: Option<i64>,
     pub batch_total: Option<i64>,
     pub batch_count: Option<i64>,
+    #[schemars(extend("enum" = ["complete", "incomplete"]))]
     pub batch_status: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct HistoryQueryPage {
     pub entries: Vec<HistoryEntry>,
     pub total: Option<usize>,
@@ -89,7 +92,9 @@ pub struct HistoryQuery<'a> {
 }
 
 /// The storage-level kind of a history item that can be previewed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum PreviewKind {
     Text,
@@ -108,7 +113,9 @@ impl PreviewKind {
 }
 
 /// Stable error categories exposed by platform preview adapters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PreviewErrorCode {
     EntryNotFound,
@@ -126,7 +133,9 @@ pub enum PreviewErrorCode {
 /// Platform code serializes this value using its native IPC framing. Keeping
 /// retryability and size details here prevents Windows and macOS from
 /// interpreting free-form error messages differently.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct PreviewErrorInfo {
     pub code: PreviewErrorCode,
     pub message: String,
@@ -141,7 +150,9 @@ pub struct PreviewErrorInfo {
 /// `item_index` is zero-based and `item_count` is derived from the rows that
 /// are actually present. This keeps incomplete batches navigable without
 /// trusting stale `batch_total` metadata.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct PreviewBatchNavigation {
     pub batch_id: String,
     pub item_index: usize,
@@ -153,7 +164,9 @@ pub struct PreviewBatchNavigation {
 }
 
 /// Metadata needed to select a renderer without decrypting the payload.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct PreviewMetadata {
     pub entry_id: i64,
     pub kind: PreviewKind,
@@ -198,7 +211,7 @@ pub struct FileBatchWriteOptions<'a> {
     pub manifest_hash: Option<&'a str>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct StorageStatus {
     pub root: String,
     pub used_bytes: u64,
@@ -207,14 +220,14 @@ pub struct StorageStatus {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct StorageMigrationResult {
     pub new_root: String,
     pub old_root: String,
     pub old_size_bytes: u64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct MigrationIssue {
     pub history_id: i64,
     pub migration_version: i64,
@@ -223,7 +236,7 @@ pub struct MigrationIssue {
     pub created_at: String,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct MigrationDiagnostics {
     pub unresolved_count: usize,
     pub issues: Vec<MigrationIssue>,

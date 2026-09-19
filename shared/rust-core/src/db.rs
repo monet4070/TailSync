@@ -14,8 +14,11 @@ mod lifecycle;
 mod migrations;
 mod paths;
 mod queries;
+mod reads;
 mod schema;
 mod storage;
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
 mod types;
 
 pub use file_storage::{
@@ -37,6 +40,9 @@ pub use paths::{
     configure_storage_dir, configure_storage_parent, get_clipboard_files_dir, get_data_dir,
     get_file_history_dir, get_history_db_path, get_image_history_dir, get_incoming_dir,
     get_storage_dir, validate_storage_dir, STORAGE_DIRECTORY_NAME,
+};
+pub use reads::{
+    HistoryReadChunk, HistoryReadCursor, HistoryReadError, HistoryReadRevision, PreparedPreview,
 };
 pub use storage::{
     delete_old_storage, migrate_storage_with_rollback, storage_status_async,
@@ -191,6 +197,7 @@ fn remove_unreferenced_persisted_files(conn: &Connection, persisted: &[(Vec<u8>,
 
 pub struct HistoryDB {
     conn: Connection,
+    read_identity: std::sync::Arc<()>,
     max_history: i64,
     storage_quota_bytes: u64,
     storage_available: bool,

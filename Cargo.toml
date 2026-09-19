@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "shared/rust-core",
+    "shared/tailsync-runtime",
     "shared/tailsync-history-classifier",
     "shared/tailsync-protocol",
     "shared/tailsync-themes",

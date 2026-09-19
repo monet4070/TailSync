@@ -1,6 +1,6 @@
 use std::sync::{Mutex, OnceLock};
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct SyncWarning {
     pub kind: &'static str,
     pub peer: String,

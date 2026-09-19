@@ -240,7 +240,7 @@ impl HistoryDB {
         Ok((entries, count, has_more))
     }
 
-    fn history_filter_clause(
+    pub(super) fn history_filter_clause(
         collection: HistoryCollection,
         category: Option<&str>,
         start_time: Option<&str>,
@@ -316,7 +316,7 @@ impl HistoryDB {
         }
     }
 
-    fn entry_metadata_matches_keyword(entry: &HistoryEntry, keyword: &str) -> bool {
+    pub(super) fn entry_metadata_matches_keyword(entry: &HistoryEntry, keyword: &str) -> bool {
         let keyword = keyword.to_lowercase();
         [
             entry.description.as_str(),
@@ -329,7 +329,7 @@ impl HistoryDB {
         .any(|value| value.to_lowercase().contains(&keyword))
     }
 
-    fn row_to_entry(row: &rusqlite::Row) -> Result<HistoryEntry, rusqlite::Error> {
+    pub(super) fn row_to_entry(row: &rusqlite::Row) -> Result<HistoryEntry, rusqlite::Error> {
         let category = row.get::<_, String>(7)?;
         let encoded_categories = row.get::<_, String>(10)?;
         let mut categories = serde_json::from_str::<Vec<String>>(&encoded_categories)
@@ -361,7 +361,7 @@ impl HistoryDB {
     }
 }
 
-fn escape_like_literal(value: &str) -> String {
+pub(super) fn escape_like_literal(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('%', "\\%")

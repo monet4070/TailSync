@@ -1,5 +1,79 @@
 use super::*;
 
+#[test]
+fn prepared_preview_survives_entry_deletion_without_reopening_its_path() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-open-preview-{:016x}",
+        rand::random::<u64>()
+    ));
+    let mut database = test_database(&root);
+    database
+        .add_file("preview.bin", &[7; 1024 * 1024 + 17], "fixture")
+        .unwrap();
+    let id = database.conn.last_insert_rowid();
+    let prepared = database.prepare_preview(id, None).unwrap();
+    database.delete(id).unwrap();
+    let (_, payload) = prepared
+        .read(&crate::cancellation::Cancellation::default())
+        .unwrap();
+    assert_eq!(payload.data, vec![7; 1024 * 1024 + 17]);
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn read_revision_rejects_mutations_and_replaced_database_instances() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-read-revision-{:016x}",
+        rand::random::<u64>()
+    ));
+    let mut database = test_database(&root);
+    let revision = database.read_revision().unwrap();
+    database.add_text("mutation", "fixture").unwrap();
+    assert!(matches!(
+        database.validate_read_revision(&revision),
+        Err(HistoryReadError::Changed)
+    ));
+    let revision = database.read_revision().unwrap();
+    let mut replacement = test_database(&root);
+    replacement.add_text("replacement", "fixture").unwrap();
+    assert!(matches!(
+        replacement.validate_read_revision(&revision),
+        Err(HistoryReadError::Changed)
+    ));
+}
+
+#[test]
+fn prepared_preview_rejects_corruption_and_observes_cancellation() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-preview-cancel-{:016x}",
+        rand::random::<u64>()
+    ));
+    let mut database = test_database(&root);
+    database.add_text("preview", "fixture").unwrap();
+    let id = database.conn.last_insert_rowid();
+    let prepared = database.prepare_preview(id, None).unwrap();
+    let cancellation = crate::cancellation::Cancellation::default();
+    cancellation.cancel();
+    assert!(prepared
+        .read(&cancellation)
+        .unwrap_err()
+        .to_string()
+        .contains("cancelled"));
+    database
+        .conn
+        .execute(
+            "UPDATE history SET size_bytes = size_bytes + 1 WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    assert!(database
+        .prepare_preview(id, None)
+        .unwrap()
+        .read(&crate::cancellation::Cancellation::default())
+        .is_err());
+}
+
 fn packed_test_image(width: u32, height: u32, channel: u8) -> Vec<u8> {
     let length = 8 + width as usize * height as usize * 4;
     let mut data = Vec::with_capacity(length);
@@ -46,6 +120,7 @@ fn test_database(root: &Path) -> HistoryDB {
     .unwrap();
     HistoryDB {
         conn,
+        read_identity: std::sync::Arc::new(()),
         max_history: 100,
         storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
         storage_available: true,
@@ -1733,6 +1808,7 @@ fn migration_v4_preserves_invalid_images_and_exposes_diagnostics() {
     assert_eq!(stored, encrypted);
     let db = HistoryDB {
         conn,
+        read_identity: std::sync::Arc::new(()),
         max_history: 100,
         storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
         storage_available: true,

@@ -389,7 +389,31 @@ fn decrypt_to_writer(
     output: &mut impl Write,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let mut input = File::open(source)?;
-    let (header, header_bytes) = read_header(&mut input)?;
+    decrypt_open_file(
+        &mut input,
+        output,
+        u64::MAX,
+        &crate::cancellation::Cancellation::default(),
+    )
+}
+
+/// Decode the already-open object. A delete or atomic replacement of its
+/// pathname cannot splice a different container into this read.
+pub(super) fn decrypt_open_file(
+    input: &mut File,
+    output: &mut impl Write,
+    limit: u64,
+    cancellation: &crate::cancellation::Cancellation,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    cancellation.check()?;
+    let (header, header_bytes) = read_header(input)?;
+    if header.plaintext_size > limit {
+        return Err(super::PreviewError::PreviewTooLarge {
+            size: header.plaintext_size,
+            limit,
+        }
+        .into());
+    }
     if input.metadata()?.len() != expected_container_size(header.plaintext_size)? {
         return Err("file-history container length is invalid".into());
     }
@@ -408,6 +432,7 @@ fn decrypt_to_writer(
     let mut chunk_index = 0_u32;
     let mut hasher = blake3::Hasher::new();
     while remaining > 0 {
+        cancellation.check()?;
         let plaintext_length = usize::try_from(remaining.min(CHUNK_SIZE as u64))?;
         let mut encrypted = vec![0_u8; plaintext_length + TAG_SIZE as usize];
         input.read_exact(&mut encrypted)?;
@@ -432,6 +457,7 @@ fn decrypt_to_writer(
     if hasher.finalize().as_bytes() != &header.plaintext_hash {
         return Err("file-history plaintext hash mismatch".into());
     }
+    cancellation.check()?;
     output.flush()?;
     Ok(header.plaintext_size)
 }
