@@ -1,4 +1,5 @@
 use super::*;
+use tailsync_runtime::history::HistoryOperations;
 
 /// Get current file transfer progress (for progress bar)
 #[command]
@@ -24,7 +25,8 @@ pub(crate) async fn cancel_file_batch_impl(
     batch_id: crate::protocol::TransferId,
 ) {
     let batch_id_hex = batch_id.as_hex();
-    let source = crate::sync::SyncEngine::cancel_file_batch_local_shared(sync_engine, batch_id).await;
+    let source =
+        crate::sync::SyncEngine::cancel_file_batch_local_shared(sync_engine, batch_id).await;
     crate::api::clear_file_progress_scope(Some(&batch_id_hex), None);
     if let Some(source) = source {
         if let Err(error) = network::send_file_batch_cancel(pool, settings, &source, batch_id).await
@@ -103,13 +105,13 @@ pub async fn set_history_pinned(
     id: i64,
     pinned: bool,
 ) -> Result<(), String> {
-    state
-        .db
-        .lock()
-        .await
-        .set_favorite(id, pinned)
-        .map_err(|error| error.to_string())?;
-    crate::api::bump_clipboard_version();
+    HistoryOperations::set_favorite_async_with_hook(
+        state.db.clone(),
+        id,
+        pinned,
+        crate::api::bump_clipboard_version,
+    )
+    .await?;
     Ok(())
 }
 

@@ -4,12 +4,7 @@ use crate::AppState;
 use log::info;
 use tauri::{command, AppHandle, Manager, State};
 
-#[derive(serde::Serialize)]
-pub struct HistoryPage {
-    pub entries: Vec<db::HistoryEntry>,
-    pub total: Option<usize>,
-    pub has_more: bool,
-}
+pub use db::HistoryQueryPage as HistoryPage;
 
 mod history;
 mod peers;

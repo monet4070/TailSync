@@ -38,8 +38,8 @@ pub async fn get_image_data(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<serde_json::Value, String> {
-    let db = state.db.lock().await;
-    let data = db.get_data(id).map_err(|e| e.to_string())?;
+    let data =
+        tailsync_runtime::history::HistoryOperations::data_async(state.db.clone(), id).await?;
     let image = crate::protocol::PackedImage::try_from(data.as_slice())
         .map_err(|error| error.to_string())?;
     let (tw, th, thumb) = crate::api::thumbnail_rgba(image, crate::api::THUMBNAIL_MAX_SIDE);

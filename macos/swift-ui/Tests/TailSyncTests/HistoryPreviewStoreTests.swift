@@ -257,6 +257,30 @@ final class HistoryPreviewStoreTests: XCTestCase {
         )
     }
 
+    func testScreenshotSizedRawRGBAImageMaterializesInMemory() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let width = 2_800
+        let height = 1_000
+        let rgba = Data(repeating: 0x7F, count: width * height * 4)
+        let preview = HistoryPreviewData(
+            kind: "image",
+            name: "image",
+            sizeBytes: Int64(rgba.count),
+            data: rgba,
+            imageWidth: width,
+            imageHeight: height
+        )
+
+        guard case .image(let material) = try HistoryPreviewStore(directory: directory)
+            .materialize(preview) else {
+            return XCTFail("large raw RGBA previews must remain in memory")
+        }
+        XCTAssertEqual(Array(material.data.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10])
+        XCTAssertEqual(material.image.representations.first?.pixelsWide, width)
+        XCTAssertEqual(material.image.representations.first?.pixelsHigh, height)
+    }
+
     func testPdfMaterializesInMemoryAndDocxUsesPrivateQuickLookFile() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
