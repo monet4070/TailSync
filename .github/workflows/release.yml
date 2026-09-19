@@ -54,7 +54,7 @@ jobs:
       - name: Validate updater trust anchor and endpoints
         run: node scripts/validate-updater-config.mjs --root .
       - name: Test release metadata generators
-        run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs scripts/verify-published-update.test.mjs
+        run: node --test scripts/generate-update-manifest.test.mjs scripts/generate-release-provenance.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs scripts/verify-published-update.test.mjs
 
   verify:
     name: Verify full CI for release commit
