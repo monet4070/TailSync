@@ -257,6 +257,10 @@ final class AppBehaviorTests: XCTestCase {
         let keys = [
             "history.preview.title",
             "history.preview.loading",
+            "settings.launchAtLogin",
+            "settings.launchAtLoginApproval",
+            "settings.launchAtLoginOpenSettings",
+            "settings.launchAtLoginError",
             "history.preview.error",
             "history.preview.close",
             "history.preview.previousItem",

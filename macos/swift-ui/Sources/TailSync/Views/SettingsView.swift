@@ -64,6 +64,7 @@ struct SettingsView: View {
     }
 
     @ObservedObject var loc = Loc.shared
+    @StateObject var launchAtLogin = LaunchAtLoginController()
     @Environment(\.colorScheme) var colorScheme
     @State var settings = AppSettings()
     @State var persistedSettings = AppSettings()
@@ -109,6 +110,14 @@ struct SettingsView: View {
     @State var appUpdateErrorMessage: String?
     @State var showingAppUpdateAlert = false
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
+
+    init() {
+        _launchAtLogin = StateObject(wrappedValue: LaunchAtLoginController())
+    }
+
+    init(launchAtLogin: LaunchAtLoginController) {
+        _launchAtLogin = StateObject(wrappedValue: launchAtLogin)
+    }
 
     var activeTheme: TailSyncThemeSelection {
         TailSyncThemeSelection(
@@ -214,7 +223,13 @@ struct SettingsView: View {
             guard let link = notification.object as? String else { return }
             handleRemotePairingLink(link)
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            launchAtLogin.refresh()
+        }
         .onAppear {
+            launchAtLogin.refresh()
             if let link = AppDelegate.takePendingRemotePairingLink() {
                 handleRemotePairingLink(link)
             }

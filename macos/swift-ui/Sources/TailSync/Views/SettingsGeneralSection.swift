@@ -13,6 +13,38 @@ extension SettingsView {
                     .onChange(of: settings.sync_enabled) { _ in save() }
             }
             themedDivider.padding(.leading, 16)
+            settingRow {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Loc.t("settings.launchAtLogin"))
+                    if launchAtLogin.requiresApproval {
+                        Text(Loc.t("settings.launchAtLoginApproval"))
+                            .font(.caption2)
+                            .foregroundColor(palette.warningColor)
+                    } else if let message = launchAtLogin.errorMessage {
+                        Text("\(Loc.t("settings.launchAtLoginError")) \(message)")
+                            .font(.caption2)
+                            .foregroundColor(palette.warningColor)
+                            .lineLimit(2)
+                    }
+                }
+                Spacer()
+                if launchAtLogin.requiresApproval {
+                    Button(Loc.t("settings.launchAtLoginOpenSettings")) {
+                        launchAtLogin.openSystemSettings()
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                }
+                Toggle("", isOn: Binding(
+                    get: { launchAtLogin.isRequested },
+                    set: { launchAtLogin.setEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .accessibilityLabel(Loc.t("settings.launchAtLogin"))
+            }
+            themedDivider.padding(.leading, 16)
             shortcutRow(.sync)
             themedDivider.padding(.leading, 16)
             shortcutRow(.history)
