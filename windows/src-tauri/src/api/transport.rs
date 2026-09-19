@@ -12,6 +12,7 @@ pub async fn start(
     };
     let connections = Arc::new(Semaphore::new(API_MAX_CONNECTIONS));
     let mut handlers = tokio::task::JoinSet::new();
+    let mut reap_tick = tokio::time::interval(Duration::from_secs(1));
     info!("API server listening on {}", addr);
 
     loop {
@@ -20,6 +21,10 @@ pub async fn start(
                 if changed.is_err() || *shutdown.borrow() {
                     break;
                 }
+                continue;
+            }
+            _ = reap_tick.tick() => {
+                reap_finished_handlers(&mut handlers);
                 continue;
             }
             accepted = listener.accept() => accepted,
@@ -90,6 +95,14 @@ pub async fn start(
         while handlers.join_next().await.is_some() {}
     }
     Ok(())
+}
+
+fn reap_finished_handlers(handlers: &mut tokio::task::JoinSet<()>) {
+    while let Some(result) = handlers.try_join_next() {
+        if let Err(error) = result {
+            warn!("local API connection handler failed: {error}");
+        }
+    }
 }
 
 pub(super) async fn bind_api_listener(
@@ -189,6 +202,21 @@ async fn send_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn completed_local_api_handlers_are_reaped() {
+        let mut handlers = tokio::task::JoinSet::new();
+        for _ in 0..10_000 {
+            handlers.spawn(async {});
+        }
+
+        while !handlers.is_empty() {
+            tokio::task::yield_now().await;
+            reap_finished_handlers(&mut handlers);
+        }
+
+        assert!(handlers.is_empty());
+    }
 
     #[test]
     fn preview_response_gets_extended_write_timeout_only() {
