@@ -58,6 +58,12 @@ struct HistoryRowInteraction: NSViewRepresentable {
     }
 }
 
+enum HistoryFavoriteHapticPolicy {
+    static func shouldPerform(for associatedEvents: NSEvent.EventTypeMask) -> Bool {
+        associatedEvents.contains(.pressure)
+    }
+}
+
 final class HistoryRowInteractionNSView: NSView {
     var previewRequest: HistoryPreviewRequest?
     var onSelect: (() -> Void)?
@@ -69,11 +75,18 @@ final class HistoryRowInteractionNSView: NSView {
     var onPreview: ((HistoryPreviewRequest) -> Void)?
     var onClosePreview: (() -> Void)?
     var isPreviewVisible: (() -> Bool)?
+    var hapticCapabilityForEvent: (NSEvent) -> Bool = { event in
+        HistoryFavoriteHapticPolicy.shouldPerform(for: event.associatedEventsMask)
+    }
+    var performFavoriteHapticFeedback: () -> Void = {
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+    }
 
     private var pressStartLocation: NSPoint?
     private var favoriteGraceWork: DispatchWorkItem?
     private var favoriteCommitWork: DispatchWorkItem?
     private var favoritePressTriggered = false
+    private var favoritePressSupportsHapticFeedback = false
 
     private static let favoriteGrace: TimeInterval = 0.22
     private static let favoriteCharge: TimeInterval = 0.42
@@ -95,6 +108,7 @@ final class HistoryRowInteractionNSView: NSView {
         cancelFavoritePress(notify: false)
         favoritePressTriggered = false
         pressStartLocation = event.locationInWindow
+        favoritePressSupportsHapticFeedback = hapticCapabilityForEvent(event)
         let grace = DispatchWorkItem { [weak self] in
             guard let self, self.pressStartLocation != nil else { return }
             self.onFavoritePressStarted?()
@@ -102,6 +116,9 @@ final class HistoryRowInteractionNSView: NSView {
                 guard let self, self.pressStartLocation != nil else { return }
                 self.favoritePressTriggered = true
                 self.onFavorite?()
+                if self.favoritePressSupportsHapticFeedback {
+                    self.performFavoriteHapticFeedback()
+                }
             }
             self.favoriteCommitWork = commit
             DispatchQueue.main.asyncAfter(
@@ -162,6 +179,7 @@ final class HistoryRowInteractionNSView: NSView {
             onFavoritePressCancelled?()
         }
         pressStartLocation = nil
+        favoritePressSupportsHapticFeedback = false
     }
 
     override func keyDown(with event: NSEvent) {

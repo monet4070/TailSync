@@ -118,6 +118,36 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertTrue(capableIrohCandidate.rttCapable)
     }
 
+    func testPeerLatencyPlanPreservesCoreRouteOrder() {
+        let routes = [
+            PeerLatencyTestTarget(
+                id: "tailscale", address: "100.64.0.2", interface: "tailscale", rttCapable: true),
+            PeerLatencyTestTarget(
+                id: "unsupported-iroh", address: "old-endpoint", interface: "iroh", rttCapable: false),
+            PeerLatencyTestTarget(
+                id: "lan", address: "192.168.1.2", interface: "lan", rttCapable: true),
+            PeerLatencyTestTarget(
+                id: "empty", address: "", interface: "lan", rttCapable: true),
+            PeerLatencyTestTarget(
+                id: "iroh", address: "endpoint", interface: "iroh", rttCapable: true),
+        ]
+
+        let plan = PeerLatencyTestPlan.orderedTargets(routes)
+
+        XCTAssertEqual(plan.map(\.id), ["tailscale", "lan", "iroh"])
+    }
+
+    func testPeerLatencyPlanDeduplicatesRepeatedRouteIdentifiers() {
+        let routes = [
+            PeerLatencyTestTarget(
+                id: "same-route", address: "192.168.1.2", interface: "lan", rttCapable: true),
+            PeerLatencyTestTarget(
+                id: "same-route", address: "192.168.1.2", interface: "lan", rttCapable: true),
+        ]
+
+        XCTAssertEqual(PeerLatencyTestPlan.orderedTargets(routes).map(\.id), ["same-route"])
+    }
+
     func testUnknownConnectionModeFallsBackToAutomatic() throws {
         let data = Data("""
         {

@@ -4,6 +4,19 @@ import XCTest
 @testable import TailSync
 
 final class HistoryRowInteractionTests: XCTestCase {
+    func testFavoriteHapticPolicyRequiresPressureCapableInput() {
+        XCTAssertTrue(
+            HistoryFavoriteHapticPolicy.shouldPerform(
+                for: [.leftMouseDown, .pressure]
+            )
+        )
+        XCTAssertFalse(
+            HistoryFavoriteHapticPolicy.shouldPerform(
+                for: [.leftMouseDown]
+            )
+        )
+    }
+
     func testFavoriteFillStaysCompleteAfterThePressEnds() {
         XCTAssertEqual(
             HistoryFavoriteFillPolicy.progress(
@@ -179,6 +192,7 @@ final class HistoryRowInteractionTests: XCTestCase {
         var restoreCount = 0
         var startedCount = 0
         var cancelledCount = 0
+        var hapticCount = 0
         interaction.onSelect = { selectionCount += 1 }
         interaction.onDelete = { deleteCount += 1 }
         interaction.onFavorite = {
@@ -188,6 +202,8 @@ final class HistoryRowInteractionTests: XCTestCase {
         interaction.onRestore = { restoreCount += 1 }
         interaction.onFavoritePressStarted = { startedCount += 1 }
         interaction.onFavoritePressCancelled = { cancelledCount += 1 }
+        interaction.hapticCapabilityForEvent = { _ in true }
+        interaction.performFavoriteHapticFeedback = { hapticCount += 1 }
 
         interaction.mouseDown(with: mouseEvent(.leftMouseDown, window: window, clickCount: 1, eventNumber: 10))
         wait(for: [favorite], timeout: 1.2)
@@ -201,6 +217,7 @@ final class HistoryRowInteractionTests: XCTestCase {
         XCTAssertEqual(favoriteCount, 1)
         XCTAssertEqual(cancelledCount, 0)
         XCTAssertEqual(restoreCount, 0)
+        XCTAssertEqual(hapticCount, 1)
         _ = window.makeFirstResponder(nil)
     }
 
@@ -214,8 +231,11 @@ final class HistoryRowInteractionTests: XCTestCase {
 
         var favoriteCount = 0
         var cancelledCount = 0
+        var hapticCount = 0
         interaction.onFavorite = { favoriteCount += 1 }
         interaction.onFavoritePressCancelled = { cancelledCount += 1 }
+        interaction.hapticCapabilityForEvent = { _ in true }
+        interaction.performFavoriteHapticFeedback = { hapticCount += 1 }
 
         interaction.mouseDown(with: mouseEvent(.leftMouseDown, window: window, clickCount: 1, eventNumber: 12))
         interaction.mouseDragged(with: mouseEvent(
@@ -230,6 +250,7 @@ final class HistoryRowInteractionTests: XCTestCase {
 
         XCTAssertEqual(favoriteCount, 0)
         XCTAssertEqual(cancelledCount, 1)
+        XCTAssertEqual(hapticCount, 0)
         _ = window.makeFirstResponder(nil)
     }
 

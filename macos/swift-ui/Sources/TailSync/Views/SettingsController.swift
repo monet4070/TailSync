@@ -251,6 +251,7 @@ extension SettingsView {
         guard !removingPeers.contains(hostname) else { return }
         removingPeers.insert(hostname)
         peers.removeAll { $0.hostname == hostname }
+        peerTestGenerations[hostname, default: 0] += 1
         testingPeers.remove(hostname)
         testResults.removeValue(forKey: hostname)
 
@@ -278,19 +279,30 @@ extension SettingsView {
         }
     }
 
-    func testPeer(_ hostname: String, route: PeerRoute) {
-        guard !route.address.isEmpty else { return }
+    func testPeer(_ hostname: String, routes: [PeerRoute]) {
+        guard !routes.isEmpty, !testingPeers.contains(hostname) else { return }
+        let generation = peerTestGenerations[hostname, default: 0] + 1
+        peerTestGenerations[hostname] = generation
         testingPeers.insert(hostname)
+        testResults[hostname] = [:]
         Task { @MainActor in
-            let result = await ApiClient.shared.testConnection(address: route.address)
-                ?? (0, "", Loc.t("settings.connectionFailed"))
-            testResults[hostname] = PeerConnectionTestResult(
-                latencyMs: result.latencyMs,
-                path: result.path,
-                error: result.error,
-                interface: route.interface
-            )
-            testingPeers.remove(hostname)
+            defer {
+                if peerTestGenerations[hostname] == generation {
+                    testingPeers.remove(hostname)
+                }
+            }
+            for route in routes {
+                let result = await ApiClient.shared.testConnection(address: route.address)
+                    ?? (0, "", Loc.t("settings.connectionFailed"))
+                guard peerTestGenerations[hostname] == generation else { return }
+                var peerResults = testResults[hostname] ?? [:]
+                peerResults[route.id] = PeerConnectionTestResult(
+                    latencyMs: result.latencyMs,
+                    path: result.path,
+                    error: result.error
+                )
+                testResults[hostname] = peerResults
+            }
         }
     }
 

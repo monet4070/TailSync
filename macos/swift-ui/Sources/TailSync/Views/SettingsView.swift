@@ -54,13 +54,21 @@ struct SettingsView: View {
         let rttCapable: Bool
 
         var id: String { "\(peer.hostname)-\(interface ?? "unknown")-\(address)" }
+
+        var latencyTestTarget: PeerLatencyTestTarget {
+            PeerLatencyTestTarget(
+                id: id,
+                address: address,
+                interface: interface,
+                rttCapable: rttCapable
+            )
+        }
     }
 
     struct PeerConnectionTestResult {
         let latencyMs: Int
         let path: String
         let error: String
-        let interface: String?
     }
 
     @ObservedObject var loc = Loc.shared
@@ -90,7 +98,8 @@ struct SettingsView: View {
     @State var remoteInviteCopied = false
     @State var testingPeers: Set<String> = []
     @State var removingPeers: Set<String> = []
-    @State var testResults: [String: PeerConnectionTestResult] = [:]
+    @State var testResults: [String: [String: PeerConnectionTestResult]] = [:]
+    @State var peerTestGenerations: [String: Int] = [:]
     @State var peerLoadGeneration = 0
     @State var peerRequestInFlight = false
     @State var saveGeneration = 0

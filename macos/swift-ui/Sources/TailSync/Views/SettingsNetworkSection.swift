@@ -266,37 +266,14 @@ extension SettingsView {
         }
     }
 
-    func routePriority(_ interface: String?) -> Int {
-        switch interface {
-        case "lan": return 0
-        case "iroh": return 1
-        case "tailscale": return 2
-        default: return 3
-        }
-    }
-
-    func preferredTestRoute(in routes: [PeerRoute]) -> PeerRoute? {
-        routes
-            .filter { route in
-                routeIsAllowed(route)
-                    && !route.address.isEmpty
-                    && (route.interface != "iroh" || route.rttCapable)
-            }
-            .sorted { lhs, rhs in
-                let lhsIsCurrent = lhs.peer.current_address == lhs.address
-                let rhsIsCurrent = rhs.peer.current_address == rhs.address
-                if lhsIsCurrent != rhsIsCurrent { return lhsIsCurrent }
-                if lhs.connected != rhs.connected { return lhs.connected }
-                if lhs.online != rhs.online { return lhs.online }
-                let lhsConfirming = lhs.status == "confirming"
-                let rhsConfirming = rhs.status == "confirming"
-                if lhsConfirming != rhsConfirming { return lhsConfirming }
-                let lhsPriority = routePriority(lhs.interface)
-                let rhsPriority = routePriority(rhs.interface)
-                if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
-                return lhs.address < rhs.address
-            }
-            .first
+    func latencyTestRoutes(in routes: [PeerRoute]) -> [PeerRoute] {
+        let routesByID = Dictionary(
+            routes.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return PeerLatencyTestPlan
+            .orderedTargets(routes.map(\.latencyTestTarget))
+            .compactMap { routesByID[$0.id] }
     }
 
     func pairingRoute(in routes: [PeerRoute], for peer: ApiClient.PeerSnapshot) -> PeerRoute? {
@@ -324,7 +301,8 @@ extension SettingsView {
     }
 
     func peerRouteLine(_ route: PeerRoute) -> some View {
-        HStack(spacing: 7) {
+        let testResult = testResults[route.peer.hostname]?[route.id]
+        return HStack(spacing: 7) {
             Text(route.address.isEmpty ? Loc.t("settings.pairedOffline") : route.address)
                 .font(.caption.monospaced())
                 .foregroundColor(palette.secondaryColor)
@@ -339,7 +317,16 @@ extension SettingsView {
             Text(statusText(route.status))
                 .font(.caption2.weight(route.connected ? .semibold : .regular))
                 .foregroundColor(statusColor(route.status))
-            if let latencyMs = route.latencyMs,
+            if let result = testResult {
+                let label = result.error.isEmpty
+                    ? "\(result.latencyMs) ms"
+                        + (result.path == "relay" ? " · \(Loc.t("settings.relayPath"))" : "")
+                    : result.error
+                Text(label)
+                    .font(.caption2.monospaced())
+                    .foregroundColor(result.error.isEmpty ? palette.positiveColor : .red)
+                    .lineLimit(1)
+            } else if let latencyMs = route.latencyMs,
                ["online", "connected", "confirming"].contains(route.status) {
                 Text("\(latencyMs) ms")
                     .font(.caption2.monospaced())
@@ -351,11 +338,11 @@ extension SettingsView {
     func peerRow(_ peer: ApiClient.PeerSnapshot) -> some View {
         let routes = peerRoutes(for: peer)
         let status = peerStatus(peer, routes: routes)
-        let testRoute = preferredTestRoute(in: routes)
+        let testRoutes = latencyTestRoutes(in: routes)
         let pairingRoute = pairingRoute(in: routes, for: peer)
-        let needsIrohRediscovery = testRoute == nil
+        let needsIrohRediscovery = testRoutes.isEmpty
             && routes.contains { route in
-                routeIsAllowed(route) && route.interface == "iroh" && !route.rttCapable
+                route.interface == "iroh" && !route.rttCapable
             }
         return settingRow {
             Circle()
@@ -390,17 +377,6 @@ extension SettingsView {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                if let result = testResults[peer.hostname] {
-                    let label = result.error.isEmpty
-                        ? "\(result.latencyMs) ms"
-                            + (result.path == "relay" ? " · \(Loc.t("settings.relayPath"))" : "")
-                        : result.error
-                    let interfaceLabel = result.interface.map { "\(routeInterfaceLabel($0)) · " } ?? ""
-                    Text(interfaceLabel + label)
-                        .font(.caption2)
-                        .foregroundColor(result.error.isEmpty ? .green : .red)
-                        .lineLimit(1)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
@@ -409,18 +385,16 @@ extension SettingsView {
                 ProgressView().controlSize(.small)
             } else {
                 Button {
-                    if let testRoute {
-                        testPeer(peer.hostname, route: testRoute)
-                    }
+                    testPeer(peer.hostname, routes: testRoutes)
                 } label: {
                     Image(systemName: "bolt.horizontal")
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
-                .disabled(testRoute == nil)
+                .disabled(testRoutes.isEmpty)
                 .help(needsIrohRediscovery
                     ? Loc.t("settings.testRouteRediscover")
-                    : Loc.t("settings.testPreferredConnection"))
+                    : Loc.t("settings.testAllConnections"))
             }
 
             if peer.trusted, removingPeers.contains(peer.hostname) {
