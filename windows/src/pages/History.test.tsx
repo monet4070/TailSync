@@ -47,8 +47,30 @@ const entry = {
   size_bytes: 16,
   source_peer: "Mac",
   category: "text",
+  categories: ["text"],
+  category_confidence: 100,
+  classifier_version: 1,
+  pinned: false,
+  batch_id: null,
+  batch_index: null,
+  batch_total: null,
+  batch_count: null,
+  batch_status: "complete",
 };
 let defaultEntryPinned = false;
+
+function defaultInvoke(command: string) {
+  if (command === "wait_runtime_snapshot") {
+    return new Promise(() => undefined);
+  }
+  if (command === "set_history_favorite") {
+    return Promise.resolve({
+      affected_ids: [entry.id],
+      favorite: !defaultEntryPinned,
+    });
+  }
+  return Promise.resolve(undefined);
+}
 
 function completeLongPress(row: HTMLElement, pointerId: number) {
   fireEvent.pointerDown(row, {
@@ -96,7 +118,7 @@ describe("History item actions", () => {
         case "get_file_progress":
           return Promise.resolve({ active: false, name: "", sent: 0, total: 0 });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
   });
@@ -149,7 +171,7 @@ describe("History item actions", () => {
         case "get_migration_diagnostics":
           return Promise.resolve({ unresolved_count: 0 });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -351,7 +373,7 @@ describe("History item actions", () => {
         case "get_migration_diagnostics":
           return Promise.resolve({ unresolved_count: 0 });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
 
@@ -426,7 +448,7 @@ describe("History item actions", () => {
         case "get_migration_diagnostics":
           return Promise.resolve({ unresolved_count: 0 });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -708,7 +730,7 @@ describe("History item actions", () => {
         case "get_file_progress":
           return Promise.resolve({ active: false });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
 
@@ -759,7 +781,7 @@ describe("History item actions", () => {
         case "get_file_progress":
           return Promise.resolve({ active: false });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
 
@@ -836,7 +858,7 @@ describe("History item actions", () => {
         case "get_file_progress":
           return Promise.resolve({ active: false });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
 
@@ -901,7 +923,7 @@ describe("History item actions", () => {
         case "get_file_progress":
           return Promise.resolve({ active: false });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
 
@@ -958,7 +980,7 @@ describe("History item actions", () => {
         case "get_file_progress":
           return Promise.resolve({ active: false });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
 
@@ -1035,7 +1057,7 @@ describe("History item actions", () => {
         case "get_file_progress":
           return Promise.resolve({ active: false });
         default:
-          return Promise.resolve(undefined);
+          return defaultInvoke(command);
       }
     });
 

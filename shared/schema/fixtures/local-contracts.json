@@ -1,0 +1,6471 @@
+[
+  {
+    "name": "LocalCapabilities: production output",
+    "contract": "LocalCapabilities",
+    "valid": true,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: additive field",
+    "contract": "LocalCapabilities",
+    "valid": true,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "LocalCapabilities: missing schema_version",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: wrong type schema_version",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": [],
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: missing wire_version",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: wrong type wire_version",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": [],
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: missing platform",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: wrong type platform",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": [],
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: missing max_preview_bytes",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: wrong type max_preview_bytes",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": [],
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: missing supports_binary_preview",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: wrong type supports_binary_preview",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": [],
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: missing supports_runtime_snapshot",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: wrong type supports_runtime_snapshot",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": [],
+      "supports_stable_errors": false
+    }
+  },
+  {
+    "name": "LocalCapabilities: missing supports_stable_errors",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true
+    }
+  },
+  {
+    "name": "LocalCapabilities: wrong type supports_stable_errors",
+    "contract": "LocalCapabilities",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "wire_version": 4,
+      "platform": "macos",
+      "max_preview_bytes": 67108864,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": []
+    }
+  },
+  {
+    "name": "FavoriteMutation: production output",
+    "contract": "FavoriteMutation",
+    "valid": true,
+    "value": {
+      "affected_ids": [
+        7
+      ],
+      "favorite": true
+    }
+  },
+  {
+    "name": "FavoriteMutation: additive field",
+    "contract": "FavoriteMutation",
+    "valid": true,
+    "value": {
+      "affected_ids": [
+        7
+      ],
+      "favorite": true,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "FavoriteMutation: missing affected_ids",
+    "contract": "FavoriteMutation",
+    "valid": false,
+    "value": {
+      "favorite": true
+    }
+  },
+  {
+    "name": "FavoriteMutation: wrong type affected_ids",
+    "contract": "FavoriteMutation",
+    "valid": false,
+    "value": {
+      "affected_ids": {},
+      "favorite": true
+    }
+  },
+  {
+    "name": "FavoriteMutation: missing favorite",
+    "contract": "FavoriteMutation",
+    "valid": false,
+    "value": {
+      "affected_ids": [
+        7
+      ]
+    }
+  },
+  {
+    "name": "FavoriteMutation: wrong type favorite",
+    "contract": "FavoriteMutation",
+    "valid": false,
+    "value": {
+      "affected_ids": [
+        7
+      ],
+      "favorite": []
+    }
+  },
+  {
+    "name": "HistoryQueryPage: production output",
+    "contract": "HistoryQueryPage",
+    "valid": true,
+    "value": {
+      "entries": [
+        {
+          "id": 7,
+          "timestamp": "2026-09-08T00:00:00Z",
+          "type": "text",
+          "description": "synthetic fixture",
+          "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size_bytes": 5,
+          "source_peer": "fixture-peer",
+          "category": "text",
+          "categories": [
+            "text"
+          ],
+          "category_confidence": 100,
+          "classifier_version": 1,
+          "pinned": true,
+          "batch_id": null,
+          "batch_index": null,
+          "batch_total": null,
+          "batch_count": null,
+          "batch_status": "complete"
+        }
+      ],
+      "total": 1,
+      "has_more": false
+    }
+  },
+  {
+    "name": "HistoryQueryPage: additive field",
+    "contract": "HistoryQueryPage",
+    "valid": true,
+    "value": {
+      "entries": [
+        {
+          "id": 7,
+          "timestamp": "2026-09-08T00:00:00Z",
+          "type": "text",
+          "description": "synthetic fixture",
+          "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size_bytes": 5,
+          "source_peer": "fixture-peer",
+          "category": "text",
+          "categories": [
+            "text"
+          ],
+          "category_confidence": 100,
+          "classifier_version": 1,
+          "pinned": true,
+          "batch_id": null,
+          "batch_index": null,
+          "batch_total": null,
+          "batch_count": null,
+          "batch_status": "complete"
+        }
+      ],
+      "total": 1,
+      "has_more": false,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "HistoryQueryPage: missing entries",
+    "contract": "HistoryQueryPage",
+    "valid": false,
+    "value": {
+      "total": 1,
+      "has_more": false
+    }
+  },
+  {
+    "name": "HistoryQueryPage: wrong type entries",
+    "contract": "HistoryQueryPage",
+    "valid": false,
+    "value": {
+      "entries": {},
+      "total": 1,
+      "has_more": false
+    }
+  },
+  {
+    "name": "HistoryQueryPage: missing total",
+    "contract": "HistoryQueryPage",
+    "valid": false,
+    "value": {
+      "entries": [
+        {
+          "id": 7,
+          "timestamp": "2026-09-08T00:00:00Z",
+          "type": "text",
+          "description": "synthetic fixture",
+          "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size_bytes": 5,
+          "source_peer": "fixture-peer",
+          "category": "text",
+          "categories": [
+            "text"
+          ],
+          "category_confidence": 100,
+          "classifier_version": 1,
+          "pinned": true,
+          "batch_id": null,
+          "batch_index": null,
+          "batch_total": null,
+          "batch_count": null,
+          "batch_status": "complete"
+        }
+      ],
+      "has_more": false
+    }
+  },
+  {
+    "name": "HistoryQueryPage: wrong type total",
+    "contract": "HistoryQueryPage",
+    "valid": false,
+    "value": {
+      "entries": [
+        {
+          "id": 7,
+          "timestamp": "2026-09-08T00:00:00Z",
+          "type": "text",
+          "description": "synthetic fixture",
+          "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size_bytes": 5,
+          "source_peer": "fixture-peer",
+          "category": "text",
+          "categories": [
+            "text"
+          ],
+          "category_confidence": 100,
+          "classifier_version": 1,
+          "pinned": true,
+          "batch_id": null,
+          "batch_index": null,
+          "batch_total": null,
+          "batch_count": null,
+          "batch_status": "complete"
+        }
+      ],
+      "total": [],
+      "has_more": false
+    }
+  },
+  {
+    "name": "HistoryQueryPage: missing has_more",
+    "contract": "HistoryQueryPage",
+    "valid": false,
+    "value": {
+      "entries": [
+        {
+          "id": 7,
+          "timestamp": "2026-09-08T00:00:00Z",
+          "type": "text",
+          "description": "synthetic fixture",
+          "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size_bytes": 5,
+          "source_peer": "fixture-peer",
+          "category": "text",
+          "categories": [
+            "text"
+          ],
+          "category_confidence": 100,
+          "classifier_version": 1,
+          "pinned": true,
+          "batch_id": null,
+          "batch_index": null,
+          "batch_total": null,
+          "batch_count": null,
+          "batch_status": "complete"
+        }
+      ],
+      "total": 1
+    }
+  },
+  {
+    "name": "HistoryQueryPage: wrong type has_more",
+    "contract": "HistoryQueryPage",
+    "valid": false,
+    "value": {
+      "entries": [
+        {
+          "id": 7,
+          "timestamp": "2026-09-08T00:00:00Z",
+          "type": "text",
+          "description": "synthetic fixture",
+          "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size_bytes": 5,
+          "source_peer": "fixture-peer",
+          "category": "text",
+          "categories": [
+            "text"
+          ],
+          "category_confidence": 100,
+          "classifier_version": 1,
+          "pinned": true,
+          "batch_id": null,
+          "batch_index": null,
+          "batch_total": null,
+          "batch_count": null,
+          "batch_status": "complete"
+        }
+      ],
+      "total": 1,
+      "has_more": []
+    }
+  },
+  {
+    "name": "HistoryEntry: production output",
+    "contract": "HistoryEntry",
+    "valid": true,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: additive field",
+    "contract": "HistoryEntry",
+    "valid": true,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete",
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing id",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type id",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": [],
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing timestamp",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type timestamp",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": [],
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing type",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type type",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": [],
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing description",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type description",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": [],
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing data_hash",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type data_hash",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": [],
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing size_bytes",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type size_bytes",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": [],
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing source_peer",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type source_peer",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": [],
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing category",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type category",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": [],
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing categories",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type categories",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": {},
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing category_confidence",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type category_confidence",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": [],
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing classifier_version",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type classifier_version",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": [],
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing pinned",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type pinned",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": [],
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing batch_id",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type batch_id",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": [],
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing batch_index",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type batch_index",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": [],
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing batch_total",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type batch_total",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": [],
+      "batch_count": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing batch_count",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type batch_count",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": [],
+      "batch_status": "complete"
+    }
+  },
+  {
+    "name": "HistoryEntry: missing batch_status",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null
+    }
+  },
+  {
+    "name": "HistoryEntry: wrong type batch_status",
+    "contract": "HistoryEntry",
+    "valid": false,
+    "value": {
+      "id": 7,
+      "timestamp": "2026-09-08T00:00:00Z",
+      "type": "text",
+      "description": "synthetic fixture",
+      "data_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 5,
+      "source_peer": "fixture-peer",
+      "category": "text",
+      "categories": [
+        "text"
+      ],
+      "category_confidence": 100,
+      "classifier_version": 1,
+      "pinned": true,
+      "batch_id": null,
+      "batch_index": null,
+      "batch_total": null,
+      "batch_count": null,
+      "batch_status": []
+    }
+  },
+  {
+    "name": "PreviewKind: production output",
+    "contract": "PreviewKind",
+    "valid": true,
+    "value": "text"
+  },
+  {
+    "name": "PreviewKind: unknown enum",
+    "contract": "PreviewKind",
+    "valid": false,
+    "value": "unknown_future_enum"
+  },
+  {
+    "name": "MacRuntimeSnapshot: production output",
+    "contract": "MacRuntimeSnapshot",
+    "valid": true,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: additive field",
+    "contract": "MacRuntimeSnapshot",
+    "valid": true,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ],
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing revision",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type revision",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": [],
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing history_version",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type history_version",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": [],
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing progress",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type progress",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": [],
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing storage",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type storage",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": [],
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing sync_enabled",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type sync_enabled",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": [],
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing status",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type status",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": [],
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ]
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing notifications",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type notifications",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": {}
+    }
+  },
+  {
+    "name": "RuntimeNotification: production output",
+    "contract": "RuntimeNotification",
+    "valid": true,
+    "value": {
+      "id": 1,
+      "level": "error",
+      "message": "synthetic error"
+    }
+  },
+  {
+    "name": "RuntimeNotification: additive field",
+    "contract": "RuntimeNotification",
+    "valid": true,
+    "value": {
+      "id": 1,
+      "level": "error",
+      "message": "synthetic error",
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "RuntimeNotification: missing id",
+    "contract": "RuntimeNotification",
+    "valid": false,
+    "value": {
+      "level": "error",
+      "message": "synthetic error"
+    }
+  },
+  {
+    "name": "RuntimeNotification: wrong type id",
+    "contract": "RuntimeNotification",
+    "valid": false,
+    "value": {
+      "id": [],
+      "level": "error",
+      "message": "synthetic error"
+    }
+  },
+  {
+    "name": "RuntimeNotification: missing level",
+    "contract": "RuntimeNotification",
+    "valid": false,
+    "value": {
+      "id": 1,
+      "message": "synthetic error"
+    }
+  },
+  {
+    "name": "RuntimeNotification: wrong type level",
+    "contract": "RuntimeNotification",
+    "valid": false,
+    "value": {
+      "id": 1,
+      "level": [],
+      "message": "synthetic error"
+    }
+  },
+  {
+    "name": "RuntimeNotification: missing message",
+    "contract": "RuntimeNotification",
+    "valid": false,
+    "value": {
+      "id": 1,
+      "level": "error"
+    }
+  },
+  {
+    "name": "RuntimeNotification: wrong type message",
+    "contract": "RuntimeNotification",
+    "valid": false,
+    "value": {
+      "id": 1,
+      "level": "error",
+      "message": []
+    }
+  },
+  {
+    "name": "FileProgress: production output",
+    "contract": "FileProgress",
+    "valid": true,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: additive field",
+    "contract": "FileProgress",
+    "valid": true,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "FileProgress: missing batch_id",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type batch_id",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": [],
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing name",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type name",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": [],
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing sent",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type sent",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": [],
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing total",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type total",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": [],
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing active",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type active",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": [],
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing direction",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type direction",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": [],
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing device",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type device",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": [],
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing completed_files",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type completed_files",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": [],
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing total_files",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type total_files",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": [],
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing speed_bytes_per_second",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type speed_bytes_per_second",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": [],
+      "status": "transferring",
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing status",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: wrong type status",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": [],
+      "can_stop": true
+    }
+  },
+  {
+    "name": "FileProgress: missing can_stop",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring"
+    }
+  },
+  {
+    "name": "FileProgress: wrong type can_stop",
+    "contract": "FileProgress",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "name": "synthetic.txt",
+      "sent": 1,
+      "total": 2,
+      "active": true,
+      "direction": "sending",
+      "device": "fixture-peer",
+      "completed_files": 0,
+      "total_files": 1,
+      "speed_bytes_per_second": 1,
+      "status": "transferring",
+      "can_stop": []
+    }
+  },
+  {
+    "name": "DaemonStatus: production output",
+    "contract": "DaemonStatus",
+    "valid": true,
+    "value": {
+      "tcp_server_healthy": true,
+      "clipboard_monitor_healthy": true,
+      "clipboard_monitor_failures": 0,
+      "active_routes": {
+        "fixture-peer": {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "latency": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "DaemonStatus: additive field",
+    "contract": "DaemonStatus",
+    "valid": true,
+    "value": {
+      "tcp_server_healthy": true,
+      "clipboard_monitor_healthy": true,
+      "clipboard_monitor_failures": 0,
+      "active_routes": {
+        "fixture-peer": {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "latency": 1
+        }
+      },
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "DaemonStatus: missing tcp_server_healthy",
+    "contract": "DaemonStatus",
+    "valid": false,
+    "value": {
+      "clipboard_monitor_healthy": true,
+      "clipboard_monitor_failures": 0,
+      "active_routes": {
+        "fixture-peer": {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "latency": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "DaemonStatus: wrong type tcp_server_healthy",
+    "contract": "DaemonStatus",
+    "valid": false,
+    "value": {
+      "tcp_server_healthy": [],
+      "clipboard_monitor_healthy": true,
+      "clipboard_monitor_failures": 0,
+      "active_routes": {
+        "fixture-peer": {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "latency": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "DaemonStatus: missing clipboard_monitor_healthy",
+    "contract": "DaemonStatus",
+    "valid": false,
+    "value": {
+      "tcp_server_healthy": true,
+      "clipboard_monitor_failures": 0,
+      "active_routes": {
+        "fixture-peer": {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "latency": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "DaemonStatus: wrong type clipboard_monitor_healthy",
+    "contract": "DaemonStatus",
+    "valid": false,
+    "value": {
+      "tcp_server_healthy": true,
+      "clipboard_monitor_healthy": [],
+      "clipboard_monitor_failures": 0,
+      "active_routes": {
+        "fixture-peer": {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "latency": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "DaemonStatus: missing clipboard_monitor_failures",
+    "contract": "DaemonStatus",
+    "valid": false,
+    "value": {
+      "tcp_server_healthy": true,
+      "clipboard_monitor_healthy": true,
+      "active_routes": {
+        "fixture-peer": {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "latency": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "DaemonStatus: wrong type clipboard_monitor_failures",
+    "contract": "DaemonStatus",
+    "valid": false,
+    "value": {
+      "tcp_server_healthy": true,
+      "clipboard_monitor_healthy": true,
+      "clipboard_monitor_failures": [],
+      "active_routes": {
+        "fixture-peer": {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "latency": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "DaemonStatus: missing active_routes",
+    "contract": "DaemonStatus",
+    "valid": false,
+    "value": {
+      "tcp_server_healthy": true,
+      "clipboard_monitor_healthy": true,
+      "clipboard_monitor_failures": 0
+    }
+  },
+  {
+    "name": "DaemonStatus: wrong type active_routes",
+    "contract": "DaemonStatus",
+    "valid": false,
+    "value": {
+      "tcp_server_healthy": true,
+      "clipboard_monitor_healthy": true,
+      "clipboard_monitor_failures": 0,
+      "active_routes": []
+    }
+  },
+  {
+    "name": "ActiveRoute: production output",
+    "contract": "ActiveRoute",
+    "valid": true,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "latency": 1
+    }
+  },
+  {
+    "name": "ActiveRoute: additive field",
+    "contract": "ActiveRoute",
+    "valid": true,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "latency": 1,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "ActiveRoute: missing interface",
+    "contract": "ActiveRoute",
+    "valid": false,
+    "value": {
+      "address": "192.0.2.1",
+      "latency": 1
+    }
+  },
+  {
+    "name": "ActiveRoute: wrong type interface",
+    "contract": "ActiveRoute",
+    "valid": false,
+    "value": {
+      "interface": [],
+      "address": "192.0.2.1",
+      "latency": 1
+    }
+  },
+  {
+    "name": "ActiveRoute: missing address",
+    "contract": "ActiveRoute",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "latency": 1
+    }
+  },
+  {
+    "name": "ActiveRoute: wrong type address",
+    "contract": "ActiveRoute",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": [],
+      "latency": 1
+    }
+  },
+  {
+    "name": "ActiveRoute: missing latency",
+    "contract": "ActiveRoute",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1"
+    }
+  },
+  {
+    "name": "ActiveRoute: wrong type latency",
+    "contract": "ActiveRoute",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "latency": []
+    }
+  },
+  {
+    "name": "ConnectionInterface: production output",
+    "contract": "ConnectionInterface",
+    "valid": true,
+    "value": "lan"
+  },
+  {
+    "name": "ConnectionInterface: unknown enum",
+    "contract": "ConnectionInterface",
+    "valid": false,
+    "value": "unknown_future_enum"
+  },
+  {
+    "name": "StorageStatus: production output",
+    "contract": "StorageStatus",
+    "valid": true,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": 5,
+      "quota_bytes": 1073741824,
+      "available": true,
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: additive field",
+    "contract": "StorageStatus",
+    "valid": true,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": 5,
+      "quota_bytes": 1073741824,
+      "available": true,
+      "error": null,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "StorageStatus: missing root",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "used_bytes": 5,
+      "quota_bytes": 1073741824,
+      "available": true,
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: wrong type root",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": [],
+      "used_bytes": 5,
+      "quota_bytes": 1073741824,
+      "available": true,
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: missing used_bytes",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": "/isolated-fixture",
+      "quota_bytes": 1073741824,
+      "available": true,
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: wrong type used_bytes",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": [],
+      "quota_bytes": 1073741824,
+      "available": true,
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: missing quota_bytes",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": 5,
+      "available": true,
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: wrong type quota_bytes",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": 5,
+      "quota_bytes": [],
+      "available": true,
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: missing available",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": 5,
+      "quota_bytes": 1073741824,
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: wrong type available",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": 5,
+      "quota_bytes": 1073741824,
+      "available": [],
+      "error": null
+    }
+  },
+  {
+    "name": "StorageStatus: missing error",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": 5,
+      "quota_bytes": 1073741824,
+      "available": true
+    }
+  },
+  {
+    "name": "StorageStatus: wrong type error",
+    "contract": "StorageStatus",
+    "valid": false,
+    "value": {
+      "root": "/isolated-fixture",
+      "used_bytes": 5,
+      "quota_bytes": 1073741824,
+      "available": true,
+      "error": []
+    }
+  },
+  {
+    "name": "PeersResponse: production output",
+    "contract": "PeersResponse",
+    "valid": true,
+    "value": {
+      "self": {
+        "hostname": "fixture-local",
+        "tailscale_ip": "192.0.2.2",
+        "routes": [],
+        "connection_mode": "auto",
+        "public_key": "fixture-only",
+        "fingerprint": "fixture-only",
+        "iroh_endpoint_id": null
+      },
+      "peers": [
+        {
+          "hostname": "fixture-peer",
+          "tailscale_ip": "192.0.2.1",
+          "online": true,
+          "enabled": true,
+          "address": "192.0.2.1",
+          "connection_mode": "lan",
+          "trusted": true,
+          "fingerprint": "fixture-only",
+          "candidates": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "online": true,
+              "priority": 0,
+              "status": "online",
+              "rtt_capable": true
+            }
+          ],
+          "status": "online",
+          "routes": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "status": "online",
+              "online": true,
+              "connected": false,
+              "latency_ms": null,
+              "pairing_endpoint": false,
+              "rtt_capable": true
+            }
+          ],
+          "protocol_error": null,
+          "required_protocol_version": null
+        }
+      ],
+      "paired_peer_endpoints": {
+        "fixture-peer": "192.0.2.1"
+      },
+      "discovery_error": null
+    }
+  },
+  {
+    "name": "PeersResponse: additive field",
+    "contract": "PeersResponse",
+    "valid": true,
+    "value": {
+      "self": {
+        "hostname": "fixture-local",
+        "tailscale_ip": "192.0.2.2",
+        "routes": [],
+        "connection_mode": "auto",
+        "public_key": "fixture-only",
+        "fingerprint": "fixture-only",
+        "iroh_endpoint_id": null
+      },
+      "peers": [
+        {
+          "hostname": "fixture-peer",
+          "tailscale_ip": "192.0.2.1",
+          "online": true,
+          "enabled": true,
+          "address": "192.0.2.1",
+          "connection_mode": "lan",
+          "trusted": true,
+          "fingerprint": "fixture-only",
+          "candidates": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "online": true,
+              "priority": 0,
+              "status": "online",
+              "rtt_capable": true
+            }
+          ],
+          "status": "online",
+          "routes": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "status": "online",
+              "online": true,
+              "connected": false,
+              "latency_ms": null,
+              "pairing_endpoint": false,
+              "rtt_capable": true
+            }
+          ],
+          "protocol_error": null,
+          "required_protocol_version": null
+        }
+      ],
+      "paired_peer_endpoints": {
+        "fixture-peer": "192.0.2.1"
+      },
+      "discovery_error": null,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PeersResponse: missing self",
+    "contract": "PeersResponse",
+    "valid": false,
+    "value": {
+      "peers": [
+        {
+          "hostname": "fixture-peer",
+          "tailscale_ip": "192.0.2.1",
+          "online": true,
+          "enabled": true,
+          "address": "192.0.2.1",
+          "connection_mode": "lan",
+          "trusted": true,
+          "fingerprint": "fixture-only",
+          "candidates": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "online": true,
+              "priority": 0,
+              "status": "online",
+              "rtt_capable": true
+            }
+          ],
+          "status": "online",
+          "routes": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "status": "online",
+              "online": true,
+              "connected": false,
+              "latency_ms": null,
+              "pairing_endpoint": false,
+              "rtt_capable": true
+            }
+          ],
+          "protocol_error": null,
+          "required_protocol_version": null
+        }
+      ],
+      "paired_peer_endpoints": {
+        "fixture-peer": "192.0.2.1"
+      },
+      "discovery_error": null
+    }
+  },
+  {
+    "name": "PeersResponse: wrong type self",
+    "contract": "PeersResponse",
+    "valid": false,
+    "value": {
+      "self": [],
+      "peers": [
+        {
+          "hostname": "fixture-peer",
+          "tailscale_ip": "192.0.2.1",
+          "online": true,
+          "enabled": true,
+          "address": "192.0.2.1",
+          "connection_mode": "lan",
+          "trusted": true,
+          "fingerprint": "fixture-only",
+          "candidates": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "online": true,
+              "priority": 0,
+              "status": "online",
+              "rtt_capable": true
+            }
+          ],
+          "status": "online",
+          "routes": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "status": "online",
+              "online": true,
+              "connected": false,
+              "latency_ms": null,
+              "pairing_endpoint": false,
+              "rtt_capable": true
+            }
+          ],
+          "protocol_error": null,
+          "required_protocol_version": null
+        }
+      ],
+      "paired_peer_endpoints": {
+        "fixture-peer": "192.0.2.1"
+      },
+      "discovery_error": null
+    }
+  },
+  {
+    "name": "PeersResponse: missing peers",
+    "contract": "PeersResponse",
+    "valid": false,
+    "value": {
+      "self": {
+        "hostname": "fixture-local",
+        "tailscale_ip": "192.0.2.2",
+        "routes": [],
+        "connection_mode": "auto",
+        "public_key": "fixture-only",
+        "fingerprint": "fixture-only",
+        "iroh_endpoint_id": null
+      },
+      "paired_peer_endpoints": {
+        "fixture-peer": "192.0.2.1"
+      },
+      "discovery_error": null
+    }
+  },
+  {
+    "name": "PeersResponse: wrong type peers",
+    "contract": "PeersResponse",
+    "valid": false,
+    "value": {
+      "self": {
+        "hostname": "fixture-local",
+        "tailscale_ip": "192.0.2.2",
+        "routes": [],
+        "connection_mode": "auto",
+        "public_key": "fixture-only",
+        "fingerprint": "fixture-only",
+        "iroh_endpoint_id": null
+      },
+      "peers": {},
+      "paired_peer_endpoints": {
+        "fixture-peer": "192.0.2.1"
+      },
+      "discovery_error": null
+    }
+  },
+  {
+    "name": "PeersResponse: missing paired_peer_endpoints",
+    "contract": "PeersResponse",
+    "valid": false,
+    "value": {
+      "self": {
+        "hostname": "fixture-local",
+        "tailscale_ip": "192.0.2.2",
+        "routes": [],
+        "connection_mode": "auto",
+        "public_key": "fixture-only",
+        "fingerprint": "fixture-only",
+        "iroh_endpoint_id": null
+      },
+      "peers": [
+        {
+          "hostname": "fixture-peer",
+          "tailscale_ip": "192.0.2.1",
+          "online": true,
+          "enabled": true,
+          "address": "192.0.2.1",
+          "connection_mode": "lan",
+          "trusted": true,
+          "fingerprint": "fixture-only",
+          "candidates": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "online": true,
+              "priority": 0,
+              "status": "online",
+              "rtt_capable": true
+            }
+          ],
+          "status": "online",
+          "routes": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "status": "online",
+              "online": true,
+              "connected": false,
+              "latency_ms": null,
+              "pairing_endpoint": false,
+              "rtt_capable": true
+            }
+          ],
+          "protocol_error": null,
+          "required_protocol_version": null
+        }
+      ],
+      "discovery_error": null
+    }
+  },
+  {
+    "name": "PeersResponse: wrong type paired_peer_endpoints",
+    "contract": "PeersResponse",
+    "valid": false,
+    "value": {
+      "self": {
+        "hostname": "fixture-local",
+        "tailscale_ip": "192.0.2.2",
+        "routes": [],
+        "connection_mode": "auto",
+        "public_key": "fixture-only",
+        "fingerprint": "fixture-only",
+        "iroh_endpoint_id": null
+      },
+      "peers": [
+        {
+          "hostname": "fixture-peer",
+          "tailscale_ip": "192.0.2.1",
+          "online": true,
+          "enabled": true,
+          "address": "192.0.2.1",
+          "connection_mode": "lan",
+          "trusted": true,
+          "fingerprint": "fixture-only",
+          "candidates": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "online": true,
+              "priority": 0,
+              "status": "online",
+              "rtt_capable": true
+            }
+          ],
+          "status": "online",
+          "routes": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "status": "online",
+              "online": true,
+              "connected": false,
+              "latency_ms": null,
+              "pairing_endpoint": false,
+              "rtt_capable": true
+            }
+          ],
+          "protocol_error": null,
+          "required_protocol_version": null
+        }
+      ],
+      "paired_peer_endpoints": [],
+      "discovery_error": null
+    }
+  },
+  {
+    "name": "PeersResponse: missing discovery_error",
+    "contract": "PeersResponse",
+    "valid": false,
+    "value": {
+      "self": {
+        "hostname": "fixture-local",
+        "tailscale_ip": "192.0.2.2",
+        "routes": [],
+        "connection_mode": "auto",
+        "public_key": "fixture-only",
+        "fingerprint": "fixture-only",
+        "iroh_endpoint_id": null
+      },
+      "peers": [
+        {
+          "hostname": "fixture-peer",
+          "tailscale_ip": "192.0.2.1",
+          "online": true,
+          "enabled": true,
+          "address": "192.0.2.1",
+          "connection_mode": "lan",
+          "trusted": true,
+          "fingerprint": "fixture-only",
+          "candidates": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "online": true,
+              "priority": 0,
+              "status": "online",
+              "rtt_capable": true
+            }
+          ],
+          "status": "online",
+          "routes": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "status": "online",
+              "online": true,
+              "connected": false,
+              "latency_ms": null,
+              "pairing_endpoint": false,
+              "rtt_capable": true
+            }
+          ],
+          "protocol_error": null,
+          "required_protocol_version": null
+        }
+      ],
+      "paired_peer_endpoints": {
+        "fixture-peer": "192.0.2.1"
+      }
+    }
+  },
+  {
+    "name": "PeersResponse: wrong type discovery_error",
+    "contract": "PeersResponse",
+    "valid": false,
+    "value": {
+      "self": {
+        "hostname": "fixture-local",
+        "tailscale_ip": "192.0.2.2",
+        "routes": [],
+        "connection_mode": "auto",
+        "public_key": "fixture-only",
+        "fingerprint": "fixture-only",
+        "iroh_endpoint_id": null
+      },
+      "peers": [
+        {
+          "hostname": "fixture-peer",
+          "tailscale_ip": "192.0.2.1",
+          "online": true,
+          "enabled": true,
+          "address": "192.0.2.1",
+          "connection_mode": "lan",
+          "trusted": true,
+          "fingerprint": "fixture-only",
+          "candidates": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "online": true,
+              "priority": 0,
+              "status": "online",
+              "rtt_capable": true
+            }
+          ],
+          "status": "online",
+          "routes": [
+            {
+              "interface": "lan",
+              "address": "192.0.2.1",
+              "status": "online",
+              "online": true,
+              "connected": false,
+              "latency_ms": null,
+              "pairing_endpoint": false,
+              "rtt_capable": true
+            }
+          ],
+          "protocol_error": null,
+          "required_protocol_version": null
+        }
+      ],
+      "paired_peer_endpoints": {
+        "fixture-peer": "192.0.2.1"
+      },
+      "discovery_error": []
+    }
+  },
+  {
+    "name": "PeerSnapshot: production output",
+    "contract": "PeerSnapshot",
+    "valid": true,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: additive field",
+    "contract": "PeerSnapshot",
+    "valid": true,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing hostname",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type hostname",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": [],
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing tailscale_ip",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type tailscale_ip",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": [],
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing online",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type online",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": [],
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing enabled",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type enabled",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": [],
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing address",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type address",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": [],
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing connection_mode",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type connection_mode",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": [],
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing trusted",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type trusted",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": [],
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing fingerprint",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type fingerprint",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": [],
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing candidates",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type candidates",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": {},
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing status",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type status",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": [],
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing routes",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type routes",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": {},
+      "protocol_error": null,
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing protocol_error",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type protocol_error",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": [],
+      "required_protocol_version": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: missing required_protocol_version",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null
+    }
+  },
+  {
+    "name": "PeerSnapshot: wrong type required_protocol_version",
+    "contract": "PeerSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "tailscale_ip": "192.0.2.1",
+      "online": true,
+      "enabled": true,
+      "address": "192.0.2.1",
+      "connection_mode": "lan",
+      "trusted": true,
+      "fingerprint": "fixture-only",
+      "candidates": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "online": true,
+          "priority": 0,
+          "status": "online",
+          "rtt_capable": true
+        }
+      ],
+      "status": "online",
+      "routes": [
+        {
+          "interface": "lan",
+          "address": "192.0.2.1",
+          "status": "online",
+          "online": true,
+          "connected": false,
+          "latency_ms": null,
+          "pairing_endpoint": false,
+          "rtt_capable": true
+        }
+      ],
+      "protocol_error": null,
+      "required_protocol_version": []
+    }
+  },
+  {
+    "name": "PeerCandidate: production output",
+    "contract": "PeerCandidate",
+    "valid": true,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: additive field",
+    "contract": "PeerCandidate",
+    "valid": true,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": true,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PeerCandidate: missing interface",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: wrong type interface",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": [],
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: missing address",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "online": true,
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: wrong type address",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": [],
+      "online": true,
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: missing online",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: wrong type online",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": [],
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: missing priority",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: wrong type priority",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": [],
+      "status": "online",
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: missing status",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": 0,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: wrong type status",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": 0,
+      "status": [],
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerCandidate: missing rtt_capable",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": 0,
+      "status": "online"
+    }
+  },
+  {
+    "name": "PeerCandidate: wrong type rtt_capable",
+    "contract": "PeerCandidate",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "priority": 0,
+      "status": "online",
+      "rtt_capable": []
+    }
+  },
+  {
+    "name": "PeerStatus: production output",
+    "contract": "PeerStatus",
+    "valid": true,
+    "value": "online"
+  },
+  {
+    "name": "PeerStatus: unknown enum",
+    "contract": "PeerStatus",
+    "valid": false,
+    "value": "unknown_future_enum"
+  },
+  {
+    "name": "PeerRouteSnapshot: production output",
+    "contract": "PeerRouteSnapshot",
+    "valid": true,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: additive field",
+    "contract": "PeerRouteSnapshot",
+    "valid": true,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: missing interface",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: wrong type interface",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": [],
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: missing address",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: wrong type address",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": [],
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: missing status",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: wrong type status",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": [],
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: missing online",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: wrong type online",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": [],
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: missing connected",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: wrong type connected",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": [],
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: missing latency_ms",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: wrong type latency_ms",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": [],
+      "pairing_endpoint": false,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: missing pairing_endpoint",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: wrong type pairing_endpoint",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": [],
+      "rtt_capable": true
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: missing rtt_capable",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false
+    }
+  },
+  {
+    "name": "PeerRouteSnapshot: wrong type rtt_capable",
+    "contract": "PeerRouteSnapshot",
+    "valid": false,
+    "value": {
+      "interface": "lan",
+      "address": "192.0.2.1",
+      "status": "online",
+      "online": true,
+      "connected": false,
+      "latency_ms": null,
+      "pairing_endpoint": false,
+      "rtt_capable": []
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: production output",
+    "contract": "LocalDeviceSnapshot",
+    "valid": true,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: additive field",
+    "contract": "LocalDeviceSnapshot",
+    "valid": true,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: missing hostname",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: wrong type hostname",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": [],
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: missing tailscale_ip",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: wrong type tailscale_ip",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": [],
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: missing routes",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: wrong type routes",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": {},
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: missing connection_mode",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: wrong type connection_mode",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": [],
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: missing public_key",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: wrong type public_key",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": [],
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: missing fingerprint",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: wrong type fingerprint",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": [],
+      "iroh_endpoint_id": null
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: missing iroh_endpoint_id",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only"
+    }
+  },
+  {
+    "name": "LocalDeviceSnapshot: wrong type iroh_endpoint_id",
+    "contract": "LocalDeviceSnapshot",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-local",
+      "tailscale_ip": "192.0.2.2",
+      "routes": [],
+      "connection_mode": "auto",
+      "public_key": "fixture-only",
+      "fingerprint": "fixture-only",
+      "iroh_endpoint_id": []
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: production output",
+    "contract": "PreviewFrameMetadata",
+    "valid": true,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: additive field",
+    "contract": "PreviewFrameMetadata",
+    "valid": true,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      },
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: missing entry_id",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: wrong type entry_id",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": [],
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: missing kind",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: wrong type kind",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": [],
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: missing name",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: wrong type name",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": [],
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: missing size_bytes",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: wrong type size_bytes",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": [],
+      "width": null,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: missing width",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: wrong type width",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": [],
+      "height": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: missing height",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: wrong type height",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": [],
+      "batch": {
+        "batch_id": "fixture-batch",
+        "item_index": 0,
+        "item_count": 1,
+        "first_entry_id": 7,
+        "last_entry_id": 7,
+        "previous_entry_id": null,
+        "next_entry_id": null
+      }
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: missing batch",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": null
+    }
+  },
+  {
+    "name": "PreviewFrameMetadata: wrong type batch",
+    "contract": "PreviewFrameMetadata",
+    "valid": false,
+    "value": {
+      "request_id": "fixture-request",
+      "entry_id": 7,
+      "kind": "text",
+      "name": "text.txt",
+      "size_bytes": 5,
+      "width": null,
+      "height": null,
+      "batch": []
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: production output",
+    "contract": "PreviewBatchNavigation",
+    "valid": true,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: additive field",
+    "contract": "PreviewBatchNavigation",
+    "valid": true,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: missing batch_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: wrong type batch_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": [],
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: missing item_index",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: wrong type item_index",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": [],
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: missing item_count",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: wrong type item_count",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": [],
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: missing first_entry_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: wrong type first_entry_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": [],
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: missing last_entry_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: wrong type last_entry_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": [],
+      "previous_entry_id": null,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: missing previous_entry_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: wrong type previous_entry_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": [],
+      "next_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: missing next_entry_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null
+    }
+  },
+  {
+    "name": "PreviewBatchNavigation: wrong type next_entry_id",
+    "contract": "PreviewBatchNavigation",
+    "valid": false,
+    "value": {
+      "batch_id": "fixture-batch",
+      "item_index": 0,
+      "item_count": 1,
+      "first_entry_id": 7,
+      "last_entry_id": 7,
+      "previous_entry_id": null,
+      "next_entry_id": []
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: production output",
+    "contract": "PreviewErrorInfo",
+    "valid": true,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: additive field",
+    "contract": "PreviewErrorInfo",
+    "valid": true,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": false,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: missing code",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: wrong type code",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": [],
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: missing message",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: wrong type message",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": [],
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: missing entry_id",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: wrong type entry_id",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": [],
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: missing size_bytes",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: wrong type size_bytes",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": [],
+      "limit_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: missing limit_bytes",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": null,
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: wrong type limit_bytes",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": [],
+      "retryable": false
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: missing retryable",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": null
+    }
+  },
+  {
+    "name": "PreviewErrorInfo: wrong type retryable",
+    "contract": "PreviewErrorInfo",
+    "valid": false,
+    "value": {
+      "code": "payload_unavailable",
+      "message": "synthetic cancellation",
+      "entry_id": 7,
+      "size_bytes": null,
+      "limit_bytes": null,
+      "retryable": []
+    }
+  },
+  {
+    "name": "PreviewErrorCode: production output",
+    "contract": "PreviewErrorCode",
+    "valid": true,
+    "value": "payload_unavailable"
+  },
+  {
+    "name": "PreviewErrorCode: unknown enum",
+    "contract": "PreviewErrorCode",
+    "valid": false,
+    "value": "unknown_future_enum"
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: production output",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": true,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: additive field",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": true,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": [],
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: missing revision",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: wrong type revision",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": [],
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: missing history_version",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: wrong type history_version",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": [],
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: missing progress",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: wrong type progress",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": [],
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: missing sync_warning",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: wrong type sync_warning",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": [],
+      "notifications": []
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: missing notifications",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      }
+    }
+  },
+  {
+    "name": "WindowsRuntimeSnapshot: wrong type notifications",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": {}
+    }
+  },
+  {
+    "name": "SyncWarning: production output",
+    "contract": "SyncWarning",
+    "valid": true,
+    "value": {
+      "kind": "expired_event",
+      "peer": "fixture-peer",
+      "occurred_at_ms": 0
+    }
+  },
+  {
+    "name": "SyncWarning: additive field",
+    "contract": "SyncWarning",
+    "valid": true,
+    "value": {
+      "kind": "expired_event",
+      "peer": "fixture-peer",
+      "occurred_at_ms": 0,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "SyncWarning: missing kind",
+    "contract": "SyncWarning",
+    "valid": false,
+    "value": {
+      "peer": "fixture-peer",
+      "occurred_at_ms": 0
+    }
+  },
+  {
+    "name": "SyncWarning: wrong type kind",
+    "contract": "SyncWarning",
+    "valid": false,
+    "value": {
+      "kind": [],
+      "peer": "fixture-peer",
+      "occurred_at_ms": 0
+    }
+  },
+  {
+    "name": "SyncWarning: missing peer",
+    "contract": "SyncWarning",
+    "valid": false,
+    "value": {
+      "kind": "expired_event",
+      "occurred_at_ms": 0
+    }
+  },
+  {
+    "name": "SyncWarning: wrong type peer",
+    "contract": "SyncWarning",
+    "valid": false,
+    "value": {
+      "kind": "expired_event",
+      "peer": [],
+      "occurred_at_ms": 0
+    }
+  },
+  {
+    "name": "SyncWarning: missing occurred_at_ms",
+    "contract": "SyncWarning",
+    "valid": false,
+    "value": {
+      "kind": "expired_event",
+      "peer": "fixture-peer"
+    }
+  },
+  {
+    "name": "SyncWarning: wrong type occurred_at_ms",
+    "contract": "SyncWarning",
+    "valid": false,
+    "value": {
+      "kind": "expired_event",
+      "peer": "fixture-peer",
+      "occurred_at_ms": []
+    }
+  },
+  {
+    "name": "safe integer boundary",
+    "contract": "WindowsRuntimeSnapshot",
+    "valid": true,
+    "typescriptValid": false,
+    "value": {
+      "revision": 9007199254740992,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "sync_warning": {
+        "kind": "expired_event",
+        "peer": "fixture-peer",
+        "occurred_at_ms": 0
+      },
+      "notifications": []
+    }
+  }
+]

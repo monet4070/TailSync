@@ -1,21 +1,10 @@
 use super::*;
 
-pub(super) fn handles(command: &str) -> bool {
-    matches!(
-        command,
-        "get_peers"
-            | "refresh_peers"
-            | "toggle_peer"
-            | "trust_peer"
-            | "forget_peer"
-            | "test_connection"
-            | "reconnect_peers"
-    )
-}
+use super::registry::PeersCommand;
 
-pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
-    match req.cmd.as_str() {
-        "get_peers" => {
+pub(super) async fn handle(command: PeersCommand, req: Request, state: &ApiState) -> Response {
+    match command {
+        PeersCommand::GetPeers => {
             let settings = state.settings.lock().await.clone();
             let mode = settings.connection_mode.clone();
             let discovery = network::cached_discover_peers(&mode).await;
@@ -26,7 +15,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "refresh_peers" => {
+        PeersCommand::RefreshPeers => {
             let mode = state.settings.lock().await.connection_mode.clone();
             match network::request_peer_refresh(&mode).await {
                 Ok(()) => {
@@ -47,7 +36,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "toggle_peer" => {
+        PeersCommand::TogglePeer => {
             let hostname = req.hostname.as_deref().unwrap_or_default().trim();
             if hostname.is_empty() {
                 return Response {
@@ -80,7 +69,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "trust_peer" => {
+        PeersCommand::TrustPeer => {
             let hostname = req.hostname.as_deref().unwrap_or_default().trim();
             let public_key = req.public_key.as_deref().unwrap_or_default();
             let address = req
@@ -125,7 +114,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "forget_peer" => {
+        PeersCommand::ForgetPeer => {
             let hostname = req.hostname.as_deref().unwrap_or_default().trim();
             if hostname.is_empty() {
                 return Response {
@@ -158,7 +147,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "test_connection" => {
+        PeersCommand::TestConnection => {
             let hostname = req.hostname.as_deref().unwrap_or_default().trim();
             if hostname.is_empty() {
                 return Response {
@@ -190,7 +179,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "reconnect_peers" => {
+        PeersCommand::ReconnectPeers => {
             state.pool.lock().await.disconnect_all();
             crate::clipboard::request_wake_recovery();
             network::clear_peer_cache().await;
@@ -200,7 +189,5 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
                 error: None,
             }
         }
-
-        _ => unreachable!("peers command dispatch was checked before routing"),
     }
 }

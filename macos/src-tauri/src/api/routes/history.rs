@@ -1,22 +1,28 @@
 use super::*;
+use tailsync_runtime::history::{HistoryOperations, HistoryPageRequestOwned};
 
-pub(super) fn handles(command: &str) -> bool {
-    matches!(
-        command,
-        "get_history"
-            | "get_preview_data"
-            | "delete_entry"
-            | "set_history_favorite"
-            | "delete_favorite_entry"
-            | "clear_history"
-            | "clear_all"
-            | "restore_entry"
-    )
+use super::registry::HistoryCommand;
+
+/// Produce the shared TSPV frame for the macOS private-socket transport.
+/// Errors are returned as the stable JSON error object encoded in the legacy
+/// response envelope; the transport decides whether to write bytes or JSON.
+pub(crate) async fn preview_binary_response(
+    state: &ApiState,
+    id: Option<i64>,
+    batch_id: Option<String>,
+    request_id: Option<String>,
+) -> Result<Vec<u8>, String> {
+    let id = id.ok_or_else(|| "missing id".to_string())?;
+    HistoryOperations::preview_binary_async(state.db.clone(), id, batch_id, request_id)
+        .await
+        .map_err(|error| {
+            serde_json::to_string(&error).unwrap_or_else(|fallback| fallback.to_string())
+        })
 }
 
-pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
-    match req.cmd.as_str() {
-        "get_history" => {
+pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiState) -> Response {
+    match command {
+        HistoryCommand::GetHistory => {
             let collection = match db::HistoryCollection::from_wire(req.collection.as_deref()) {
                 Ok(collection) => collection,
                 Err(error) => {
@@ -27,21 +33,20 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
                     };
                 }
             };
-            let db = state.db.lock().await;
-            // Consume before await for Send safety
-            let result = db
-                .get_page_in_collection(db::HistoryQuery {
+            let result = HistoryOperations::entries_async(
+                state.db.clone(),
+                HistoryPageRequestOwned::new(
                     collection,
-                    keyword: req.keyword.as_deref(),
-                    category: req.category.as_deref(),
-                    start_time: req.start_time.as_deref(),
-                    end_time: req.end_time.as_deref(),
-                    limit: req.limit.unwrap_or(30),
-                    offset: req.offset.unwrap_or(0),
-                })
-                .map(|page| page.entries)
-                .map_err(|e| e.to_string());
-            drop(db);
+                    req.keyword,
+                    req.category,
+                    req.start_time,
+                    req.end_time,
+                    req.limit,
+                    req.offset,
+                    30,
+                ),
+            )
+            .await;
             match result {
                 Ok(entries) => Response {
                     ok: true,
@@ -56,7 +61,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "get_preview_data" => {
+        HistoryCommand::GetPreviewData => {
             let Some(id) = req.id else {
                 return Response {
                     ok: false,
@@ -69,20 +74,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             // accessor deliberately avoids materialising file entries to a
             // plaintext path, which is important for the macOS Quick Look
             // caller and for text/image previews alike.
-            let db = state.db.lock().await;
-            let preview_id = match req.batch_id.as_deref() {
-                Some(batch_id) => db
-                    .get_preview_batch_navigation(batch_id, id)
-                    .map(|navigation| navigation.first_entry_id),
-                None => Ok(id),
-            };
-            let result = preview_id.and_then(|preview_id| {
-                let metadata = db.get_preview_metadata(preview_id)?;
-                let payload = db.get_preview_payload(preview_id)?;
-                Ok((metadata, payload))
-            });
-            drop(db);
-
+            let result = HistoryOperations::preview_async(state.db.clone(), id, req.batch_id).await;
             let result = result.map(|(metadata, payload)| {
                 use base64::Engine;
                 serde_json::json!({
@@ -115,7 +107,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "delete_entry" => {
+        HistoryCommand::DeleteEntry => {
             let Some(id) = req.id else {
                 return Response {
                     ok: false,
@@ -123,16 +115,18 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
                     error: Some("missing id".into()),
                 };
             };
-            let mut db = state.db.lock().await;
-            match db.delete(id) {
-                Ok(()) => {
-                    bump_clipboard_version();
-                    Response {
-                        ok: true,
-                        data: None,
-                        error: None,
-                    }
-                }
+            match HistoryOperations::delete_async_with_hook(
+                state.db.clone(),
+                id,
+                bump_clipboard_version,
+            )
+            .await
+            {
+                Ok(()) => Response {
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
                 Err(e) => Response {
                     ok: false,
                     data: None,
@@ -141,7 +135,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "set_history_favorite" => {
+        HistoryCommand::SetHistoryFavorite => {
             let Some(id) = req.id else {
                 return Response {
                     ok: false,
@@ -149,16 +143,19 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
                     error: Some("missing id".into()),
                 };
             };
-            let mut db = state.db.lock().await;
-            match db.set_favorite(id, req.favorite.unwrap_or(true)) {
-                Ok(mutation) => {
-                    bump_clipboard_version();
-                    Response {
-                        ok: true,
-                        data: serde_json::to_value(mutation).ok(),
-                        error: None,
-                    }
-                }
+            match HistoryOperations::set_favorite_async_with_hook(
+                state.db.clone(),
+                id,
+                req.favorite.unwrap_or(true),
+                bump_clipboard_version,
+            )
+            .await
+            {
+                Ok(mutation) => Response {
+                    ok: true,
+                    data: serde_json::to_value(mutation).ok(),
+                    error: None,
+                },
                 Err(error) => Response {
                     ok: false,
                     data: None,
@@ -167,7 +164,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "delete_favorite_entry" => {
+        HistoryCommand::DeleteFavoriteEntry => {
             let Some(id) = req.id else {
                 return Response {
                     ok: false,
@@ -175,16 +172,18 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
                     error: Some("missing id".into()),
                 };
             };
-            let mut db = state.db.lock().await;
-            match db.delete_favorite(id) {
-                Ok(mutation) => {
-                    bump_clipboard_version();
-                    Response {
-                        ok: true,
-                        data: serde_json::to_value(mutation).ok(),
-                        error: None,
-                    }
-                }
+            match HistoryOperations::delete_favorite_async_with_hook(
+                state.db.clone(),
+                id,
+                bump_clipboard_version,
+            )
+            .await
+            {
+                Ok(mutation) => Response {
+                    ok: true,
+                    data: serde_json::to_value(mutation).ok(),
+                    error: None,
+                },
                 Err(error) => Response {
                     ok: false,
                     data: None,
@@ -193,17 +192,15 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "clear_history" | "clear_all" => {
-            let mut db = state.db.lock().await;
-            match db.clear_all() {
-                Ok(()) => {
-                    bump_clipboard_version();
-                    Response {
-                        ok: true,
-                        data: None,
-                        error: None,
-                    }
-                }
+        HistoryCommand::ClearHistory | HistoryCommand::ClearAll => {
+            match HistoryOperations::clear_async_with_hook(state.db.clone(), bump_clipboard_version)
+                .await
+            {
+                Ok(()) => Response {
+                    ok: true,
+                    data: None,
+                    error: None,
+                },
                 Err(e) => Response {
                     ok: false,
                     data: None,
@@ -212,7 +209,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "restore_entry" => {
+        HistoryCommand::RestoreEntry => {
             let Some(id) = req.id else {
                 return Response {
                     ok: false,
@@ -220,120 +217,78 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
                     error: Some("missing id".into()),
                 };
             };
-            let db = state.db.lock().await;
-            let entry_type = db
-                .get_type(id)
-                .map_err(|e| e.to_string())
-                .unwrap_or_default();
-            let file_path = if entry_type == "file" {
-                db.get_file_path(id).map_err(|e| e.to_string())
-            } else {
-                Ok(None)
+            let payload = HistoryOperations::restore_payload_async(state.db.clone(), id).await;
+            let payload = match payload {
+                Ok(payload) => payload,
+                Err(error) => {
+                    return Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error),
+                    };
+                }
             };
-            let file_name = if entry_type == "file" {
-                db.get_description(id)
-                    .unwrap_or_else(|_| "restored_file".into())
-            } else {
-                String::new()
-            };
-            let data_result = match &file_path {
-                Ok(Some(_)) => Ok(None),
-                Ok(None) => db.get_data(id).map(Some).map_err(|e| e.to_string()),
-                Err(error) => Err(error.clone()),
-            };
-            drop(db);
-            match (data_result, file_path) {
-                (Ok(data), Ok(file_path)) => {
-                    if entry_type == "image" {
-                        let Some(data) = data.as_ref() else {
-                            return Response {
-                                ok: false,
-                                data: None,
-                                error: Some("image history data is unavailable".into()),
-                            };
+            let entry_type = payload.entry_type;
+            let file_path = payload.file_path;
+            let file_name = payload.file_name.unwrap_or_else(|| "restored_file".into());
+            let data = payload.data;
+
+            if entry_type == "image" {
+                let Some(data) = data.as_ref() else {
+                    return Response {
+                        ok: false,
+                        data: None,
+                        error: Some("image history data is unavailable".into()),
+                    };
+                };
+                if let Err(error) = state.sync_engine.lock().await.restore_image(data) {
+                    return Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error),
+                    };
+                }
+            } else if entry_type == "file" {
+                if let Some(path) = file_path {
+                    if let Err(error) = restore_file_path_to_clipboard(&path, &file_name) {
+                        return Response {
+                            ok: false,
+                            data: None,
+                            error: Some(error),
                         };
-                        if let Err(error) = state.sync_engine.lock().await.restore_image(data) {
-                            return Response {
-                                ok: false,
-                                data: None,
-                                error: Some(error),
-                            };
-                        }
-                    } else if entry_type == "file" {
-                        if let Some(path) = file_path {
-                            if let Err(error) = restore_file_path_to_clipboard(&path, &file_name) {
-                                return Response {
-                                    ok: false,
-                                    data: None,
-                                    error: Some(error),
-                                };
-                            }
-                        } else if let Some(data) = data.as_deref() {
-                            if let Err(error) = restore_file_to_clipboard(data, &file_name) {
-                                return Response {
-                                    ok: false,
-                                    data: None,
-                                    error: Some(error),
-                                };
-                            }
-                        } else {
-                            return Response {
-                                ok: false,
-                                data: None,
-                                error: Some("file history data is unavailable".into()),
-                            };
-                        }
-                    } else {
-                        let text = String::from_utf8_lossy(data.as_deref().unwrap_or_default())
-                            .to_string();
-                        if let Err(error) = state.sync_engine.lock().await.restore_text(&text) {
-                            return Response {
-                                ok: false,
-                                data: None,
-                                error: Some(error),
-                            };
-                        }
                     }
-
-                    crate::api::bump_clipboard_version();
-                    Response {
-                        ok: true,
+                } else if let Some(data) = data.as_deref() {
+                    if let Err(error) = restore_file_to_clipboard(data, &file_name) {
+                        return Response {
+                            ok: false,
+                            data: None,
+                            error: Some(error),
+                        };
+                    }
+                } else {
+                    return Response {
+                        ok: false,
                         data: None,
-                        error: None,
-                    }
+                        error: Some("file history data is unavailable".into()),
+                    };
                 }
-                (Err(e), _) | (_, Err(e)) => Response {
-                    ok: false,
-                    data: None,
-                    error: Some(e),
-                },
+            } else {
+                let text = String::from_utf8_lossy(data.as_deref().unwrap_or_default()).to_string();
+                if let Err(error) = state.sync_engine.lock().await.restore_text(&text) {
+                    return Response {
+                        ok: false,
+                        data: None,
+                        error: Some(error),
+                    };
+                }
             }
-        }
 
-        _ => unreachable!("history command dispatch was checked before routing"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::handles;
-
-    #[test]
-    fn every_history_handler_command_is_dispatchable() {
-        for command in [
-            "get_history",
-            "get_preview_data",
-            "delete_entry",
-            "set_history_favorite",
-            "delete_favorite_entry",
-            "clear_history",
-            "clear_all",
-            "restore_entry",
-        ] {
-            assert!(
-                handles(command),
-                "history route does not dispatch {command}"
-            );
+            crate::api::bump_clipboard_version();
+            Response {
+                ok: true,
+                data: None,
+                error: None,
+            }
         }
     }
 }

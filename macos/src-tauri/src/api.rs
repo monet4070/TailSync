@@ -41,12 +41,7 @@ use std::sync::{LazyLock, Mutex as StdMutex};
 static RUNTIME_REVISION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(1).0);
 const MAX_RUNTIME_NOTIFICATIONS: usize = 32;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct RuntimeNotification {
-    pub id: u64,
-    pub level: String,
-    pub message: String,
-}
+pub use tailsync_runtime::contracts::RuntimeNotification;
 
 #[derive(Default)]
 struct RuntimeNotificationBuffer {
@@ -131,21 +126,7 @@ static FILE_PROGRESS: LazyLock<StdMutex<HashMap<String, TrackedFileProgress>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 static CANCELLED_FILE_BATCHES: LazyLock<StdMutex<HashSet<String>>> =
     LazyLock::new(|| StdMutex::new(HashSet::new()));
-#[derive(Clone, Serialize)]
-pub struct FileProgress {
-    pub batch_id: String,
-    pub name: String,
-    pub sent: u64,
-    pub total: u64,
-    pub active: bool,
-    pub direction: String,
-    pub device: String,
-    pub completed_files: usize,
-    pub total_files: usize,
-    pub speed_bytes_per_second: u64,
-    pub status: String,
-    pub can_stop: bool,
-}
+pub use tailsync_runtime::contracts::FileProgress;
 
 struct TrackedFileProgress {
     progress: FileProgress,

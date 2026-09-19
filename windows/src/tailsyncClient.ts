@@ -4,6 +4,7 @@
 // (R008). Feature sections land here incrementally (T241+); JSON command
 // names and payload shapes are the wire contract and must not change.
 
+import * as Contract from "./types/localContracts.generated";
 import { invoke } from "@tauri-apps/api/core";
 import type { PreviewResponseInput } from "./utils/historyPreview";
 import type { SettingsData } from "./types/settings.generated";
@@ -40,13 +41,7 @@ export function installUpdate(): Promise<boolean> {
 // Storage (T242)
 // ---------------------------------------------------------------------------
 
-export interface StorageStatus {
-  root: string;
-  used_bytes: number;
-  quota_bytes: number;
-  available: boolean;
-  error?: string | null;
-}
+export type StorageStatus = Omit<Contract.StorageStatus, "error"> & Partial<Pick<Contract.StorageStatus, "error">>;
 
 export interface StorageMigrationResult {
   new_root: string;
@@ -55,7 +50,7 @@ export interface StorageMigrationResult {
 }
 
 export function getStorageStatus(): Promise<StorageStatus> {
-  return invoke<StorageStatus>("get_storage_status");
+  return invoke<unknown>("get_storage_status").then(Contract.decodeStorageStatus);
 }
 
 export function changeStorageLocation(parent: string): Promise<StorageMigrationResult> {
@@ -74,6 +69,13 @@ export function getSettings(): Promise<SettingsData> {
   return invoke<SettingsData>("get_settings");
 }
 
+export type LocalCapabilities = Contract.LocalCapabilities;
+export const decodeLocalCapabilities = Contract.decodeLocalCapabilities;
+
+export function getLocalCapabilities(): Promise<LocalCapabilities> {
+  return invoke<unknown>("get_local_capabilities").then(decodeLocalCapabilities);
+}
+
 // ---------------------------------------------------------------------------
 // History — read side (T243)
 // ---------------------------------------------------------------------------
@@ -88,25 +90,8 @@ export type HistoryCategory =
   | "image"
   | "file";
 
-export interface HistoryEntry {
-  id: number;
-  timestamp: string;
-  type: "text" | "image" | "file";
-  description: string;
-  data_hash: string;
-  size_bytes: number;
-  source_peer: string;
-  category?: HistoryCategory;
-  categories?: HistoryCategory[];
-  category_confidence?: number;
-  classifier_version?: number;
-  pinned?: boolean;
-  batch_id?: string | null;
-  batch_index?: number | null;
-  batch_total?: number | null;
-  batch_count?: number | null;
-  batch_status?: "complete" | "incomplete";
-}
+export type HistoryEntry = Pick<Contract.HistoryEntry, "id" | "timestamp" | "type" | "description" | "data_hash" | "size_bytes" | "source_peer"> &
+  Partial<Omit<Contract.HistoryEntry, "id" | "timestamp" | "type" | "description" | "data_hash" | "size_bytes" | "source_peer" | "categories">> & { categories?: HistoryCategory[] };
 
 export interface ImageThumbnail {
   id: number;
@@ -115,19 +100,12 @@ export interface ImageThumbnail {
   thumbnail_height: number;
 }
 
-export interface HistoryPageResult {
-  entries: HistoryEntry[];
-  total: number | null;
-  has_more: boolean;
-}
+export type HistoryPageResult = Omit<Contract.HistoryQueryPage, "entries"> & { entries: HistoryEntry[] };
 
 export type HistoryCollection = "all" | "favorites";
 export type PreviewWindowOwner = "history" | "favorites";
 
-export interface FavoriteMutation {
-  affected_ids: number[];
-  favorite: boolean;
-}
+export type FavoriteMutation = Contract.FavoriteMutation;
 
 export interface HistoryCapabilities {
   classifier_version: number;
@@ -140,40 +118,13 @@ export interface MigrationDiagnostics {
   unresolved_count: number;
 }
 
-export interface SyncWarning {
-  kind: "expired_event" | "delivery_stalled" | "delivery_shutdown" | "delivery_expired";
-  peer: string;
-  occurred_at_ms: number;
-}
+export type SyncWarning = Contract.SyncWarning;
 
-export interface FileProgress {
-  batch_id: string;
-  name: string;
-  sent: number;
-  total: number;
-  active: boolean;
-  direction: "sending" | "receiving";
-  device: string;
-  completed_files: number;
-  total_files: number;
-  speed_bytes_per_second: number;
-  status: string;
-  can_stop: boolean;
-}
+export type FileProgress = Contract.FileProgress;
 
-export interface RuntimeNotification {
-  id: number;
-  level: string;
-  message: string;
-}
+export type RuntimeNotification = Contract.RuntimeNotification;
 
-export interface RuntimeSnapshot {
-  revision: number;
-  history_version: number;
-  progress: FileProgress | null;
-  sync_warning: SyncWarning | null;
-  notifications: RuntimeNotification[];
-}
+export type RuntimeSnapshot = Contract.WindowsRuntimeSnapshot;
 
 export type HistoryPageQuery = {
   keyword: string | null;
@@ -276,7 +227,7 @@ export function getHistoryCapabilities(): Promise<HistoryCapabilities> {
 }
 
 export function getHistoryPage(query: HistoryPageQuery): Promise<HistoryPageResult> {
-  return invoke<HistoryPageResult>("get_history_page", query);
+  return invoke<unknown>("get_history_page", query).then(value => Contract.decodeHistoryQueryPage(value) as HistoryPageResult);
 }
 
 export function getVersion(): Promise<{ version: number }> {
@@ -288,11 +239,11 @@ export function waitRuntimeSnapshot(
   waitMs = 2_500,
   sinceNotificationId = 0,
 ): Promise<RuntimeSnapshot> {
-  return invoke<RuntimeSnapshot>("wait_runtime_snapshot", {
+  return invoke<unknown>("wait_runtime_snapshot", {
     sinceRevision,
     waitMs,
     sinceNotificationId,
-  });
+  }).then(value => Contract.decodeWindowsRuntimeSnapshot(value) as RuntimeSnapshot);
 }
 
 export function getSyncWarning(): Promise<SyncWarning | null> {
@@ -320,7 +271,7 @@ export function clearHistory(): Promise<void> {
 }
 
 export function setHistoryFavorite(id: number, favorite: boolean): Promise<FavoriteMutation> {
-  return invoke<FavoriteMutation>("set_history_favorite", { id, favorite });
+  return invoke<unknown>("set_history_favorite", { id, favorite }).then(Contract.decodeFavoriteMutation);
 }
 
 export function deleteFavoriteEntry(id: number): Promise<FavoriteMutation> {
@@ -343,48 +294,17 @@ export function cancelFileBatch(batchId: string): Promise<void> {
 // Devices & pairing (T245)
 // ---------------------------------------------------------------------------
 
-export interface PeerRoute {
-  interface: "lan" | "iroh" | "tailscale";
-  address: string;
-  status: "discovered" | "online" | "confirming" | "offline" | "connected";
-  online: boolean;
-  connected: boolean;
-  latency_ms?: number | null;
-  pairing_endpoint?: boolean;
-  rtt_capable?: boolean;
-}
+export type PeerRoute = Pick<Contract.PeerRouteSnapshot, "interface" | "address" | "status" | "online" | "connected"> &
+  Partial<Omit<Contract.PeerRouteSnapshot, "interface" | "address" | "status" | "online" | "connected">>;
 
-export interface PeerDevice {
-  hostname: string;
-  tailscale_ip: string;
-  address: string;
-  online: boolean;
-  enabled: boolean;
-  connection_mode: "auto" | "lan" | "tailscale";
-  trusted: boolean;
-  fingerprint: string;
-  current_interface?: "lan" | "iroh" | "tailscale";
-  current_address?: string | null;
-  status?: "discovered" | "online" | "confirming" | "offline" | "connected";
-  protocol_error?: string | null;
-  required_protocol_version?: number | null;
-  routes?: PeerRoute[];
-}
+export type PeerDevice = Pick<Contract.PeerSnapshot, "hostname" | "tailscale_ip" | "address" | "online" | "enabled" | "connection_mode" | "trusted" | "fingerprint"> &
+  Partial<Omit<Contract.PeerSnapshot, "hostname" | "tailscale_ip" | "address" | "online" | "enabled" | "connection_mode" | "trusted" | "fingerprint" | "routes">> & { routes?: PeerRoute[] };
 
-export interface PeersResponse {
-  self: {
-    hostname: string;
-    tailscale_ip: string;
-    connection_mode: "auto" | "lan_only" | "tailscale_only";
-    public_key: string;
-    fingerprint: string;
-    iroh_endpoint_id?: string | null;
-    routes?: PeerRoute[];
-  };
+export type PeersResponse = Omit<Contract.PeersResponse, "self" | "peers" | "discovery_error"> & {
+  self: Omit<Contract.LocalDeviceSnapshot, "iroh_endpoint_id" | "routes"> & Partial<Pick<Contract.LocalDeviceSnapshot, "iroh_endpoint_id">> & { routes?: PeerRoute[] };
   peers: PeerDevice[];
-  paired_peer_endpoints: Record<string, string>;
   discovery_error?: string | null;
-}
+};
 
 export interface PairingPeerStatus {
   hostname: string;
@@ -422,11 +342,11 @@ export interface ConnectionTestResult {
 }
 
 export function getPeers(): Promise<PeersResponse> {
-  return invoke<PeersResponse>("get_peers");
+  return invoke<unknown>("get_peers").then(value => Contract.decodePeersResponse(value) as PeersResponse);
 }
 
 export function refreshPeers(): Promise<PeersResponse> {
-  return invoke<PeersResponse>("refresh_peers");
+  return invoke<unknown>("refresh_peers").then(value => Contract.decodePeersResponse(value) as PeersResponse);
 }
 
 export function togglePeer(hostname: string, enabled: boolean): Promise<void> {

@@ -1,0 +1,1007 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LocalContractExports",
+  "type": "object",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/LocalCapabilities"
+    },
+    "favorite": {
+      "$ref": "#/$defs/FavoriteMutation"
+    },
+    "history": {
+      "$ref": "#/$defs/HistoryQueryPage"
+    },
+    "mac_runtime": {
+      "$ref": "#/$defs/MacRuntimeSnapshot"
+    },
+    "peers": {
+      "$ref": "#/$defs/PeersResponse"
+    },
+    "preview": {
+      "$ref": "#/$defs/PreviewFrameMetadata"
+    },
+    "preview_error": {
+      "$ref": "#/$defs/PreviewErrorInfo"
+    },
+    "windows_runtime": {
+      "$ref": "#/$defs/WindowsRuntimeSnapshot"
+    }
+  },
+  "required": [
+    "capabilities",
+    "history",
+    "favorite",
+    "mac_runtime",
+    "windows_runtime",
+    "peers",
+    "preview_error",
+    "preview"
+  ],
+  "$defs": {
+    "ActiveRoute": {
+      "description": "The route a peer is currently using for authenticated traffic.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "interface": {
+          "$ref": "#/$defs/ConnectionInterface"
+        },
+        "latency": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "interface",
+        "address",
+        "latency"
+      ]
+    },
+    "ConnectionInterface": {
+      "description": "The transport a peer route uses.",
+      "type": "string",
+      "enum": [
+        "lan",
+        "iroh",
+        "tailscale"
+      ]
+    },
+    "DaemonStatus": {
+      "type": "object",
+      "properties": {
+        "active_routes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ActiveRoute"
+          }
+        },
+        "clipboard_monitor_failures": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "clipboard_monitor_healthy": {
+          "type": "boolean"
+        },
+        "tcp_server_healthy": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tcp_server_healthy",
+        "clipboard_monitor_healthy",
+        "clipboard_monitor_failures",
+        "active_routes"
+      ]
+    },
+    "FavoriteMutation": {
+      "description": "Result of changing the favorite state of a logical history item.",
+      "type": "object",
+      "properties": {
+        "affected_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "favorite": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "affected_ids",
+        "favorite"
+      ]
+    },
+    "FileProgress": {
+      "type": "object",
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "batch_id": {
+          "type": "string"
+        },
+        "can_stop": {
+          "type": "boolean"
+        },
+        "completed_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "device": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "sending",
+            "receiving"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "sent": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "speed_bytes_per_second": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total_files": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "batch_id",
+        "name",
+        "sent",
+        "total",
+        "active",
+        "direction",
+        "device",
+        "completed_files",
+        "total_files",
+        "speed_bytes_per_second",
+        "status",
+        "can_stop"
+      ]
+    },
+    "HistoryEntry": {
+      "description": "A clipboard history entry.",
+      "type": "object",
+      "properties": {
+        "batch_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "batch_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "batch_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "batch_status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "incomplete"
+          ]
+        },
+        "batch_total": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "text",
+            "website",
+            "code",
+            "command",
+            "structured_data",
+            "path",
+            "image",
+            "file"
+          ]
+        },
+        "category_confidence": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "classifier_version": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "data_hash": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "source_peer": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/PreviewKind"
+        }
+      },
+      "required": [
+        "id",
+        "timestamp",
+        "type",
+        "description",
+        "data_hash",
+        "size_bytes",
+        "source_peer",
+        "category",
+        "categories",
+        "category_confidence",
+        "classifier_version",
+        "pinned",
+        "batch_id",
+        "batch_index",
+        "batch_total",
+        "batch_count",
+        "batch_status"
+      ]
+    },
+    "HistoryQueryPage": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HistoryEntry"
+          }
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "total": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "entries",
+        "total",
+        "has_more"
+      ]
+    },
+    "LocalCapabilities": {
+      "type": "object",
+      "properties": {
+        "max_preview_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 67108864,
+          "minimum": 67108864
+        },
+        "platform": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 1,
+          "minimum": 1
+        },
+        "supports_binary_preview": {
+          "type": "boolean"
+        },
+        "supports_runtime_snapshot": {
+          "type": "boolean"
+        },
+        "supports_stable_errors": {
+          "type": "boolean"
+        },
+        "wire_version": {
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 4,
+          "minimum": 4
+        }
+      },
+      "required": [
+        "schema_version",
+        "wire_version",
+        "platform",
+        "max_preview_bytes",
+        "supports_binary_preview",
+        "supports_runtime_snapshot",
+        "supports_stable_errors"
+      ]
+    },
+    "LocalDeviceSnapshot": {
+      "type": "object",
+      "properties": {
+        "connection_mode": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "iroh_endpoint_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "public_key": {
+          "type": "string"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PeerRouteSnapshot"
+          }
+        },
+        "tailscale_ip": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hostname",
+        "tailscale_ip",
+        "routes",
+        "connection_mode",
+        "public_key",
+        "fingerprint",
+        "iroh_endpoint_id"
+      ]
+    },
+    "MacRuntimeSnapshot": {
+      "type": "object",
+      "properties": {
+        "history_version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuntimeNotification"
+          }
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "status": {
+          "$ref": "#/$defs/DaemonStatus"
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageStatus"
+        },
+        "sync_enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "revision",
+        "history_version",
+        "progress",
+        "storage",
+        "sync_enabled",
+        "status",
+        "notifications"
+      ]
+    },
+    "PeerCandidate": {
+      "description": "One reachable route for a peer, with the health fields the health monitor\nderives. Legacy serialized candidates without `online`/`status` keep\nworking through serde defaults.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "interface": {
+          "$ref": "#/$defs/ConnectionInterface"
+        },
+        "latency": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "online": {
+          "type": "boolean",
+          "default": true
+        },
+        "priority": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "rtt_capable": {
+          "description": "Whether latency can be measured over this route. LAN/Tailscale routes\nare always testable; Iroh routes require the peer to have advertised\nRTT support and to have been rediscovered.",
+          "type": "boolean",
+          "default": false
+        },
+        "status": {
+          "$ref": "#/$defs/PeerStatus",
+          "default": "discovered"
+        }
+      },
+      "required": [
+        "interface",
+        "address",
+        "online",
+        "priority",
+        "status",
+        "rtt_capable"
+      ]
+    },
+    "PeerRouteSnapshot": {
+      "description": "One serialized route row of the peer snapshot, shared by both platform\nJSON APIs (mirrored by the Swift `Route` DTO and the React `PeerRoute`\ninterface). Field names are part of the wire contract; the drift check\ncompares this struct's fields against the contract lists.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "connected": {
+          "type": "boolean"
+        },
+        "interface": {
+          "$ref": "#/$defs/ConnectionInterface"
+        },
+        "latency_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "online": {
+          "type": "boolean"
+        },
+        "pairing_endpoint": {
+          "type": "boolean"
+        },
+        "rtt_capable": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/PeerStatus"
+        }
+      },
+      "required": [
+        "interface",
+        "address",
+        "status",
+        "online",
+        "connected",
+        "latency_ms",
+        "pairing_endpoint",
+        "rtt_capable"
+      ]
+    },
+    "PeerSnapshot": {
+      "description": "A discovered or remembered peer device. This is the unified cross-platform\nshape: macOS and Windows previously carried slightly different field sets\n(Windows lacked `current_address` and `status`), which made shared\ndirectory logic impossible and let the JSON contracts drift.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "default": ""
+        },
+        "candidates": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PeerCandidate"
+          }
+        },
+        "connection_mode": {
+          "type": "string",
+          "default": ""
+        },
+        "current_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_interface": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConnectionInterface"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fingerprint": {
+          "type": "string",
+          "default": ""
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "online": {
+          "type": "boolean"
+        },
+        "protocol_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required_protocol_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PeerRouteSnapshot"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/PeerStatus",
+          "default": "discovered"
+        },
+        "tailscale_ip": {
+          "type": "string"
+        },
+        "trusted": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "hostname",
+        "tailscale_ip",
+        "online",
+        "enabled",
+        "address",
+        "connection_mode",
+        "trusted",
+        "fingerprint",
+        "candidates",
+        "status",
+        "routes",
+        "protocol_error",
+        "required_protocol_version"
+      ]
+    },
+    "PeerStatus": {
+      "description": "Lifecycle status of a discovered peer.\n\nProjected health state is consistent when a peer or candidate is `online`\niff its status is\n[`PeerStatus::Connected`], [`PeerStatus::Online`], or\n[`PeerStatus::Confirming`]. [`PeerInfo::is_consistent`] and\n[`PeerCandidate::is_consistent`] check this. Legacy wire data can contain\nolder field combinations; the health projection (`apply_peer_health`)\nnormalizes both fields before exposing a fresh snapshot.",
+      "type": "string",
+      "enum": [
+        "discovered",
+        "confirming",
+        "online",
+        "connected",
+        "offline"
+      ]
+    },
+    "PeersResponse": {
+      "type": "object",
+      "properties": {
+        "discovery_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paired_peer_endpoints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "peers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PeerSnapshot"
+          }
+        },
+        "self": {
+          "$ref": "#/$defs/LocalDeviceSnapshot"
+        }
+      },
+      "required": [
+        "self",
+        "peers",
+        "paired_peer_endpoints",
+        "discovery_error"
+      ]
+    },
+    "PreviewBatchNavigation": {
+      "description": "Ordered navigation state for the current item in a file batch.\n\n`item_index` is zero-based and `item_count` is derived from the rows that\nare actually present. This keeps incomplete batches navigable without\ntrusting stale `batch_total` metadata.",
+      "type": "object",
+      "properties": {
+        "batch_id": {
+          "type": "string"
+        },
+        "first_entry_id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "item_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "item_index": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "last_entry_id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "next_entry_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "previous_entry_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "batch_id",
+        "item_index",
+        "item_count",
+        "first_entry_id",
+        "last_entry_id",
+        "previous_entry_id",
+        "next_entry_id"
+      ]
+    },
+    "PreviewErrorCode": {
+      "description": "Stable error categories exposed by platform preview adapters.",
+      "type": "string",
+      "enum": [
+        "entry_not_found",
+        "batch_not_found",
+        "entry_not_in_batch",
+        "metadata_unavailable",
+        "payload_unavailable",
+        "preview_too_large",
+        "unsupported_type",
+        "invalid_size"
+      ]
+    },
+    "PreviewErrorInfo": {
+      "description": "Stable, transport-neutral preview failure exposed by platform adapters.\n\nPlatform code serializes this value using its native IPC framing. Keeping\nretryability and size details here prevents Windows and macOS from\ninterpreting free-form error messages differently.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/PreviewErrorCode"
+        },
+        "entry_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "limit_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "entry_id",
+        "size_bytes",
+        "limit_bytes",
+        "retryable"
+      ]
+    },
+    "PreviewFrameMetadata": {
+      "type": "object",
+      "properties": {
+        "batch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreviewBatchNavigation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entry_id": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 1
+        },
+        "height": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "text",
+            "image",
+            "file"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 67108864,
+          "minimum": 0
+        },
+        "width": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "entry_id",
+        "kind",
+        "name",
+        "size_bytes",
+        "width",
+        "height",
+        "batch"
+      ]
+    },
+    "PreviewKind": {
+      "description": "The storage-level kind of a history item that can be previewed.",
+      "type": "string",
+      "enum": [
+        "text",
+        "image",
+        "file"
+      ]
+    },
+    "RuntimeNotification": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "level": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "message"
+      ]
+    },
+    "StorageStatus": {
+      "type": "object",
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quota_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "root": {
+          "type": "string"
+        },
+        "used_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "root",
+        "used_bytes",
+        "quota_bytes",
+        "available",
+        "error"
+      ]
+    },
+    "SyncWarning": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "occurred_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "peer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "peer",
+        "occurred_at_ms"
+      ]
+    },
+    "WindowsRuntimeSnapshot": {
+      "type": "object",
+      "properties": {
+        "history_version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuntimeNotification"
+          }
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sync_warning": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SyncWarning"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "history_version",
+        "progress",
+        "sync_warning",
+        "notifications"
+      ]
+    }
+  }
+}

@@ -1,24 +1,11 @@
 use super::*;
+use tailsync_runtime::history::HistoryOperations;
 
-pub(super) fn handles(command: &str) -> bool {
-    matches!(
-        command,
-        "get_settings"
-            | "get_sync_state"
-            | "set_sync_enabled"
-            | "toggle_sync"
-            | "set_sync_shortcut"
-            | "set_history_shortcut"
-            | "update_settings"
-            | "change_storage_location"
-            | "delete_old_storage"
-            | "set_history_pinned"
-    )
-}
+use super::registry::SettingsCommand;
 
-pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
-    match req.cmd.as_str() {
-        "get_settings" => {
+pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiState) -> Response {
+    match command {
+        SettingsCommand::GetSettings => {
             let settings = state.settings.lock().await.clone();
             Response {
                 ok: true,
@@ -27,7 +14,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "get_sync_state" => {
+        SettingsCommand::GetSyncState => {
             let settings = state.settings.lock().await;
             Response {
                 ok: true,
@@ -40,7 +27,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "set_sync_enabled" => {
+        SettingsCommand::SetSyncEnabled => {
             let enabled = req.enabled.unwrap_or(true);
             let result = state
                 .settings
@@ -55,7 +42,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "toggle_sync" => {
+        SettingsCommand::ToggleSync => {
             let mut settings = state.settings.lock().await;
             let enabled = !settings.sync_enabled;
             match settings.set_sync_enabled(enabled) {
@@ -72,7 +59,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "set_sync_shortcut" => {
+        SettingsCommand::SetSyncShortcut => {
             let shortcut = req.shortcut.unwrap_or_default();
             let result = state
                 .settings
@@ -87,7 +74,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "set_history_shortcut" => {
+        SettingsCommand::SetHistoryShortcut => {
             let shortcut = req.shortcut.unwrap_or_default();
             let result = state
                 .settings
@@ -102,7 +89,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "update_settings" => {
+        SettingsCommand::UpdateSettings => {
             let Some(settings_json) = req.settings else {
                 return Response {
                     ok: false,
@@ -157,7 +144,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "change_storage_location" => {
+        SettingsCommand::ChangeStorageLocation => {
             let Some(parent) = req.parent else {
                 return Response {
                     ok: false,
@@ -214,7 +201,7 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "delete_old_storage" => {
+        SettingsCommand::DeleteOldStorage => {
             let result = match req.path.as_deref() {
                 None => Err("missing path".to_string()),
                 Some(path) => {
@@ -244,26 +231,24 @@ pub(super) async fn handle(req: Request, state: &ApiState) -> Response {
             }
         }
 
-        "set_history_pinned" => {
+        SettingsCommand::SetHistoryPinned => {
             let result = match req.id {
-                Some(id) => state
-                    .db
-                    .lock()
+                Some(id) => {
+                    HistoryOperations::set_favorite_async_with_hook(
+                        state.db.clone(),
+                        id,
+                        req.pinned.unwrap_or(true),
+                        bump_clipboard_version,
+                    )
                     .await
-                    .set_favorite(id, req.pinned.unwrap_or(true))
-                    .map_err(|error| error.to_string()),
+                }
                 None => Err("missing id".to_string()),
             };
-            if result.is_ok() {
-                bump_clipboard_version();
-            }
             Response {
                 ok: result.is_ok(),
                 data: None,
                 error: result.err(),
             }
         }
-
-        _ => unreachable!("settings command dispatch was checked before routing"),
     }
 }

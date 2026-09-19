@@ -1,37 +1,22 @@
 use super::*;
 
-pub(super) fn handles(command: &str) -> bool {
-    matches!(
-        command,
-        "list_themes_v2"
-            | "get_local_theme_settings"
-            | "set_local_theme_settings"
-            | "validate_theme"
-            | "install_theme"
-            | "update_theme"
-            | "rollback_theme"
-            | "delete_theme_v2"
-            | "resolve_theme"
-            | "get_theme_asset_slot"
-            | "preview_theme_asset_slot"
-    )
-}
+use super::registry::ThemeCommand;
 
-pub(super) async fn handle(req: Request) -> Response {
-    match req.cmd.as_str() {
-        "list_themes_v2" => Response {
+pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
+    match command {
+        ThemeCommand::ListThemesV2 => Response {
             ok: true,
             data: serde_json::to_value(tailsync_core::themes_v2::list_themes_v2()).ok(),
             error: None,
         },
 
-        "get_local_theme_settings" => Response {
+        ThemeCommand::GetLocalThemeSettings => Response {
             ok: true,
             data: serde_json::to_value(tailsync_core::themes_v2::get_local_theme_settings()).ok(),
             error: None,
         },
 
-        "set_local_theme_settings" => {
+        ThemeCommand::SetLocalThemeSettings => {
             let result = req
                 .settings
                 .ok_or_else(|| tailsync_core::themes_v2::ThemeError {
@@ -71,7 +56,7 @@ pub(super) async fn handle(req: Request) -> Response {
             }
         }
 
-        "validate_theme" => {
+        ThemeCommand::ValidateTheme => {
             let result: Result<
                 tailsync_core::themes_v2::ThemeValidation,
                 tailsync_core::themes_v2::ThemeError,
@@ -121,7 +106,7 @@ pub(super) async fn handle(req: Request) -> Response {
             }
         }
 
-        "install_theme" | "update_theme" => {
+        ThemeCommand::InstallTheme | ThemeCommand::UpdateTheme => {
             let result: Result<
                 tailsync_core::themes_v2::ThemeDescriptor,
                 tailsync_core::themes_v2::ThemeError,
@@ -185,7 +170,7 @@ pub(super) async fn handle(req: Request) -> Response {
             }
         }
 
-        "rollback_theme" => {
+        ThemeCommand::RollbackTheme => {
             let result = req
                 .theme_id
                 .as_deref()
@@ -213,7 +198,7 @@ pub(super) async fn handle(req: Request) -> Response {
             }
         }
 
-        "delete_theme_v2" => {
+        ThemeCommand::DeleteThemeV2 => {
             let result = if let Some(handle) = req.storage_handle.as_deref() {
                 tailsync_core::themes_v2::delete_theme_by_handle_for_theme(
                     handle,
@@ -246,7 +231,7 @@ pub(super) async fn handle(req: Request) -> Response {
             }
         }
 
-        "resolve_theme" => {
+        ThemeCommand::ResolveTheme => {
             let theme_id = req
                 .theme_id
                 .as_deref()
@@ -271,7 +256,7 @@ pub(super) async fn handle(req: Request) -> Response {
             }
         }
 
-        "get_theme_asset_slot" => {
+        ThemeCommand::GetThemeAssetSlot => {
             use base64::Engine;
             let result = req
                 .theme_id
@@ -331,7 +316,7 @@ pub(super) async fn handle(req: Request) -> Response {
             }
         }
 
-        "preview_theme_asset_slot" => {
+        ThemeCommand::PreviewThemeAssetSlot => {
             use base64::Engine;
             let result: Result<Vec<u8>, tailsync_core::themes_v2::ThemeError> = req
                 .path
@@ -388,34 +373,6 @@ pub(super) async fn handle(req: Request) -> Response {
                     error: Some(error.to_string()),
                 },
             }
-        }
-        _ => unreachable!("theme command dispatch was checked before routing"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::handles;
-
-    #[test]
-    fn every_theme_route_handler_command_is_dispatchable() {
-        for command in [
-            "list_themes_v2",
-            "get_local_theme_settings",
-            "set_local_theme_settings",
-            "validate_theme",
-            "install_theme",
-            "update_theme",
-            "rollback_theme",
-            "delete_theme_v2",
-            "resolve_theme",
-            "get_theme_asset_slot",
-            "preview_theme_asset_slot",
-        ] {
-            assert!(
-                handles(command),
-                "theme command {command} is not dispatchable"
-            );
         }
     }
 }

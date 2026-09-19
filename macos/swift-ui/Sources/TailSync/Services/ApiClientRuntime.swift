@@ -1,6 +1,40 @@
 import Foundation
 
 extension ApiClient {
+  typealias LocalCapabilities = ContractLocalCapabilities
+
+  func getLocalCapabilities() async throws -> LocalCapabilities? {
+    let response = try await request(["cmd": "get_local_capabilities"])
+    guard response["ok"] as? Bool == true else {
+      let message = response["error"] as? String ?? "Invalid local capabilities response"
+      // An older daemon has no capability command. That is the only response
+      // that permits the preview caller to use its legacy JSON path. Auth,
+      // framing, and malformed contract errors must remain visible.
+      if Self.isUnsupportedCapabilitiesResponse(message) {
+        return nil
+      }
+      throw ApiError.serverError(message)
+    }
+
+    guard let data = response["data"],
+      let encoded = try? JSONSerialization.data(withJSONObject: data),
+      let capabilities = try? JSONDecoder().decode(LocalCapabilities.self, from: encoded),
+      capabilities.schemaVersion == 1,
+      capabilities.wireVersion == 4,
+      !capabilities.platform.isEmpty,
+      capabilities.maxPreviewBytes == UInt64(HistoryPreviewData.maxBytes),
+      capabilities.platform == "macos" || capabilities.platform == "windows"
+    else {
+      throw ApiError.serverError("Invalid local capabilities response")
+    }
+    return capabilities
+  }
+
+  static func isUnsupportedCapabilitiesResponse(_ message: String) -> Bool {
+    message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      == "unknown command: get_local_capabilities"
+  }
+
   func getVersion() async -> UInt64? {
     guard let response = try? await request(["cmd": "get_version"]),
       response["ok"] as? Bool == true,
@@ -47,7 +81,9 @@ extension ApiClient {
       ),
       response["ok"] as? Bool == true,
       let data = response["data"] as? [String: Any],
-      let nextRevision = (data["revision"] as? NSNumber)?.uint64Value,
+      let encoded = try? JSONSerialization.data(withJSONObject: data),
+      let contract = try? JSONDecoder().decode(ContractMacRuntimeSnapshot.self, from: encoded),
+      let nextRevision = Optional(contract.revision),
       let historyVersion = (data["history_version"] as? NSNumber)?.uint64Value,
       let statusData = data["status"] as? [String: Any]
     else { return nil }
@@ -223,4 +259,13 @@ extension ApiClient {
       activeInterfaces: interfaces
     )
   }
+}
+
+extension ContractLocalCapabilities {
+  var schemaVersion: UInt32 { schema_version }
+  var wireVersion: UInt32 { wire_version }
+  var maxPreviewBytes: UInt64 { max_preview_bytes }
+  var supportsBinaryPreview: Bool { supports_binary_preview }
+  var supportsRuntimeSnapshot: Bool { supports_runtime_snapshot }
+  var supportsStableErrors: Bool { supports_stable_errors }
 }

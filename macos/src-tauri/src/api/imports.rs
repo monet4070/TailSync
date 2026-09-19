@@ -12,6 +12,7 @@ use tailsync_core::import::{
     commit_import as core_commit_import, finalize_import as core_finalize_import,
     import_size_limit as core_import_size_limit, BeginImportParams, BeginImportResult,
 };
+use tailsync_runtime::execution::run_db;
 
 pub(super) fn import_size_limit(entry_type: &str) -> Result<u64, String> {
     core_import_size_limit(entry_type).map_err(|error| error.to_string())
@@ -65,17 +66,29 @@ pub(super) async fn finish_import(req: &Request, state: &ApiState) -> Result<Val
     let mut imports = state.imports.lock().await;
     let finished =
         core_finalize_import(&mut imports, import_id).map_err(|error| error.to_string())?;
-    let commit_result = {
-        let mut database = state.db.lock().await;
-        core_commit_import(&mut database, &finished)
-    };
-    if let Some(path) = &finished.path {
-        let _ = std::fs::remove_file(path);
+    drop(imports);
+    let response_size = finished.size;
+    let response_hash = finished.data_hash.clone();
+    struct RemoveCompletedImport(Option<std::path::PathBuf>);
+    impl Drop for RemoveCompletedImport {
+        fn drop(&mut self) {
+            if let Some(path) = &self.0 {
+                let _ = std::fs::remove_file(path);
+            }
+        }
     }
-    if commit_result.is_ok() {
-        bump_clipboard_version();
-    }
+    let cleanup = RemoveCompletedImport(finished.path.clone());
+    let commit_result = run_db(state.db.clone(), move |database| {
+        let _cleanup = cleanup;
+        let result = core_commit_import(database, &finished);
+        if result.is_ok() {
+            bump_clipboard_version();
+        }
+        result
+    })
+    .await
+    .map_err(|error| error.to_string());
     commit_result
-        .map(|()| serde_json::json!({ "size": finished.size, "data_hash": finished.data_hash }))
+        .map(|()| serde_json::json!({ "size": response_size, "data_hash": response_hash }))
         .map_err(|error| error.to_string())
 }

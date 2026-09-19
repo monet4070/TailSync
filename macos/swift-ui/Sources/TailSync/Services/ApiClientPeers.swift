@@ -144,10 +144,15 @@ extension ApiClient {
     requestSucceeded: Bool
   )
 
-  private func decodePeersResponse(_ response: [String: Any]) -> PeersResult? {
+  private func decodePeersResponse(_ response: [String: Any], strict: Bool) -> PeersResult? {
     guard response["ok"] as? Bool == true,
       let data = response["data"] as? [String: Any]
     else { return nil }
+    if strict {
+      guard let encoded = try? JSONSerialization.data(withJSONObject: data),
+        (try? JSONDecoder().decode(ContractPeersResponse.self, from: encoded)) != nil
+      else { return nil }
+    }
     let local: DeviceSnapshot?
     if let value = data["self"], let json = try? JSONSerialization.data(withJSONObject: value) {
       local = try? JSONDecoder().decode(DeviceSnapshot.self, from: json)
@@ -156,9 +161,10 @@ extension ApiClient {
     }
     let peers: [PeerSnapshot]
     if let value = data["peers"], let json = try? JSONSerialization.data(withJSONObject: value) {
-      peers = (try? JSONDecoder().decode([PeerSnapshot].self, from: json)) ?? []
+      guard let decoded = try? JSONDecoder().decode([PeerSnapshot].self, from: json) else { return nil }
+      peers = decoded
     } else {
-      peers = []
+      return nil
     }
     return (
       local,
@@ -170,8 +176,11 @@ extension ApiClient {
   }
 
   func getPeers() async -> PeersResult {
+    let strict: Bool
+    do { strict = try await getLocalCapabilities() != nil }
+    catch { return (nil, [], [:], responseError(), false) }
     guard let response = try? await request(["cmd": "get_peers"]),
-      let result = decodePeersResponse(response)
+      let result = decodePeersResponse(response, strict: strict)
     else {
       return (nil, [], [:], responseError(), false)
     }
@@ -179,8 +188,11 @@ extension ApiClient {
   }
 
   func refreshPeers() async -> PeersResult {
+    let strict: Bool
+    do { strict = try await getLocalCapabilities() != nil }
+    catch { return (nil, [], [:], responseError(), false) }
     guard let response = try? await request(["cmd": "refresh_peers"]),
-      let result = decodePeersResponse(response)
+      let result = decodePeersResponse(response, strict: strict)
     else {
       return (nil, [], [:], responseError(), false)
     }

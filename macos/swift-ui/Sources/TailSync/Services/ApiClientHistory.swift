@@ -218,10 +218,13 @@ extension ApiClient {
     else {
       throw ApiError.serverError(response["error"] as? String ?? "unknown")
     }
-    return data.compactMap { item in
-      guard let data = try? JSONSerialization.data(withJSONObject: item) else { return nil }
-      return try? JSONDecoder().decode(HistoryEntry.self, from: data)
+    let encoded = try JSONSerialization.data(withJSONObject: data)
+    if try await getLocalCapabilities() != nil {
+      _ = try JSONDecoder().decode([ContractHistoryEntry].self, from: encoded)
     }
+    // The legacy presentation adapter supplies defaults only for old daemons.
+    // Decode atomically; a malformed row must not silently disappear.
+    return try JSONDecoder().decode([HistoryEntry].self, from: encoded)
   }
 
   func deleteEntry(id: Int64) async throws {
