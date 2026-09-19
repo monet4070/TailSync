@@ -793,52 +793,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             info!("TailSync v2 initialized successfully");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::get_history,
-            commands::get_history_page,
-            commands::get_history_capabilities,
-            commands::get_migration_diagnostics,
-            commands::search_history,
-            commands::delete_entry,
-            commands::set_history_favorite,
-            commands::delete_favorite_entry,
-            commands::clear_history,
-            commands::restore_entry,
-            commands::get_peers,
-            commands::refresh_peers,
-            commands::toggle_peer,
-            commands::trust_peer,
-            commands::forget_peer,
-            commands::enable_pairing,
-            commands::get_pairing_status,
-            commands::start_pairing,
-            commands::confirm_pairing,
-            commands::cancel_pairing,
-            commands::get_settings,
-            commands::update_settings,
-            commands::get_image_data,
-            commands::validate_theme,
-            commands::install_theme,
-            commands::update_theme,
-            commands::rollback_theme,
-            commands::delete_theme_v2,
-            commands::list_themes_v2,
-            commands::get_local_theme_settings,
-            commands::set_local_theme_settings,
-            commands::resolve_theme,
-            commands::get_theme_asset,
-            commands::get_theme_asset_slot,
-            commands::preview_theme_asset_slot,
-            commands::get_file_progress,
-            commands::cancel_file_batch,
-            commands::get_storage_status,
-            commands::change_storage_location,
-            commands::set_history_pinned,
-            commands::delete_old_storage,
-            commands::restore_file_batch,
-            commands::get_version,
-            commands::get_sync_warning,
-        ])
+        .invoke_handler(include!("tauri-handler.generated.rs"))
         .run(tauri::generate_context!())?;
     Ok(())
 }
