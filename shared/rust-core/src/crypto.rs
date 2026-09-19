@@ -318,6 +318,24 @@ impl Settings {
         Ok(changed)
     }
 
+    /// Persist a discovery round once, after validating every route. A failed
+    /// save leaves the live settings unchanged, as with the single-route API.
+    pub fn remember_peer_addresses<'a>(
+        &mut self,
+        routes: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut updated = self.clone();
+        let mut changed = false;
+        for (hostname, interface, address) in routes {
+            changed |= updated.remember_peer_address_without_save(hostname, interface, address)?;
+        }
+        if changed {
+            updated.save()?;
+            *self = updated;
+        }
+        Ok(changed)
+    }
+
     fn remember_peer_address_without_save(
         &mut self,
         hostname: &str,

@@ -1,0 +1,575 @@
+use super::*;
+use tailsync_core::peer::directory::resolve_candidates;
+
+pub(super) use tailsync_core::peer::delivery::QueuedFrame;
+pub use tailsync_core::peer::delivery::SharedEvent;
+use tailsync_core::peer::pool::ConnectionPoolState;
+pub(super) use tailsync_core::peer::pool::PoolSender;
+pub use tailsync_core::peer::types::DeliveryReceipt;
+
+pub struct ConnectionPool {
+    core: ConnectionPoolState,
+    identity: Arc<DeviceIdentity>,
+    settings: Arc<Mutex<crypto::Settings>>,
+}
+
+pub(super) use tailsync_core::peer::types::{ResolvedCandidate, ResolvedTarget};
+
+impl ConnectionPool {
+    pub fn new(identity: Arc<DeviceIdentity>, settings: Arc<Mutex<crypto::Settings>>) -> Self {
+        ConnectionPool {
+            core: ConnectionPoolState::new(),
+            identity,
+            settings,
+        }
+    }
+
+    pub(super) fn sender_for(
+        &mut self,
+        addr: SocketAddr,
+        hostname: String,
+    ) -> Result<PoolSender, String> {
+        let interface = infer_interface(&addr.ip().to_string()).unwrap_or(ConnectionInterface::Lan);
+        self.sender_for_candidates(
+            hostname,
+            vec![ResolvedCandidate {
+                candidate: PeerCandidate::new(interface, addr.ip().to_string()),
+                target: ResolvedTarget::Tcp(addr),
+            }],
+        )
+    }
+
+    fn sender_for_peer(&mut self, peer: &tailscale::PeerInfo) -> Result<PoolSender, String> {
+        self.sender_for_candidates(peer.hostname.clone(), resolve_candidates(peer, TCP_PORT)?)
+    }
+
+    fn sender_for_candidates(
+        &mut self,
+        hostname: String,
+        candidates: Vec<ResolvedCandidate>,
+    ) -> Result<PoolSender, String> {
+        let identity = self.identity.clone();
+        let settings = self.settings.clone();
+        self.core.sender_for_candidates(
+            hostname,
+            candidates,
+            move |candidates, hostname, priority_rx, bulk_rx, shutdown_rx| {
+                tokio::spawn(connection_task(
+                    candidates,
+                    hostname,
+                    priority_rx,
+                    bulk_rx,
+                    identity,
+                    settings,
+                    shutdown_rx,
+                ));
+            },
+        )
+    }
+
+    /// Push a frame to a TCP peer. Creates a persistent background connection
+    /// on first use.
+    pub async fn send(
+        &mut self,
+        addr: SocketAddr,
+        hostname: String,
+        cmd: Command,
+        payload: Vec<u8>,
+    ) -> Result<(), String> {
+        let trusted_key = self
+            .settings
+            .lock()
+            .await
+            .trusted_peer_keys
+            .get(&hostname)
+            .cloned()
+            .ok_or_else(|| format!("Peer {hostname} is not paired"))?;
+        secure::decode_trusted_key(&trusted_key)
+            .map_err(|error| format!("Peer {hostname} has an invalid pinned key: {error}"))?;
+        if payload.len() > cmd.payload_limit() {
+            return Err(format!(
+                "{:?} payload exceeds the {} byte limit",
+                cmd,
+                cmd.payload_limit()
+            ));
+        }
+        let tx = self.sender_for(addr, hostname.clone())?;
+
+        enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), &hostname, cmd, payload).await
+    }
+
+    /// Remove a peer from the pool (e.g. when user disables it).
+    pub fn disconnect_hostname(&mut self, hostname: &str) {
+        self.core.disconnect_hostname(hostname);
+    }
+
+    pub fn disconnect_all(&mut self) {
+        self.core.disconnect_all();
+    }
+
+    #[cfg(test)]
+    pub(super) fn sender_count(&self) -> usize {
+        self.core.sender_count()
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_sender(
+        &mut self,
+        target: ResolvedTarget,
+        hostname: String,
+        sender: PoolSender,
+    ) {
+        self.core.insert_sender(target, hostname, sender);
+    }
+}
+
+pub async fn acquire_peer_file_batch(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    hostname: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    // `ConnectionPoolState` is embedded in the platform wrapper so the
+    // wrapper only needs to borrow it for the short serializer lookup.
+    let serializer = {
+        let mut pool = pool.lock().await;
+        pool.core.batch_serializer(hostname)
+    };
+    serializer.lock_owned().await
+}
+
+pub async fn queue_peer_frame(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &tailscale::PeerInfo,
+    cmd: Command,
+    payload: Vec<u8>,
+) -> Result<(), String> {
+    if payload.len() > cmd.payload_limit() {
+        return Err(format!(
+            "{:?} payload exceeds the {} byte limit",
+            cmd,
+            cmd.payload_limit()
+        ));
+    }
+    let settings = { pool.lock().await.settings.clone() };
+    let trusted_key = settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .get(&peer.hostname)
+        .cloned()
+        .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
+    secure::decode_trusted_key(&trusted_key)
+        .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
+
+    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let preferred = resolve_candidates(peer, TCP_PORT)?
+        .first()
+        .map(|candidate| candidate.target.clone())
+        .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    enqueue_pool_frame(tx, preferred, &peer.hostname, cmd, payload).await
+}
+
+/// Broadcast-friendly sibling of [`queue_peer_frame`]: enqueue a
+/// [`SharedEvent`] whose encoded payload is shared (reference-counted) across
+/// every peer of one broadcast, so a large image is encoded once and never
+/// copied per peer. Trust and route selection mirror [`queue_peer_frame`];
+/// the payload limit was already enforced when the event was encoded.
+pub async fn queue_peer_shared_event(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &tailscale::PeerInfo,
+    event: &SharedEvent,
+) -> Result<(), String> {
+    let settings = { pool.lock().await.settings.clone() };
+    let trusted_key = settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .get(&peer.hostname)
+        .cloned()
+        .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
+    secure::decode_trusted_key(&trusted_key)
+        .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
+
+    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let preferred = resolve_candidates(peer, TCP_PORT)?
+        .first()
+        .map(|candidate| candidate.target.clone())
+        .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    enqueue_pool_queued_frame(tx, preferred, &peer.hostname, event.queued()).await
+}
+
+pub async fn queue_peer_file_frame(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &tailscale::PeerInfo,
+    command: Command,
+    payload: Vec<u8>,
+    transfer_id: TransferId,
+) -> Result<DeliveryReceipt, String> {
+    let settings = { pool.lock().await.settings.clone() };
+    let trusted_key = settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .get(&peer.hostname)
+        .cloned()
+        .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
+    secure::decode_trusted_key(&trusted_key)
+        .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
+
+    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let preferred = resolve_candidates(peer, TCP_PORT)?
+        .first()
+        .map(|candidate| candidate.target.clone())
+        .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    let (completion_tx, completion_rx) = oneshot::channel();
+    let queued = QueuedFrame::confirmed_file(command, payload, transfer_id, completion_tx)?;
+    enqueue_queued_frame(tx, preferred, queued).await?;
+    tailsync_core::peer::pool::await_delivery(
+        completion_rx,
+        command,
+        &peer.hostname,
+        FILE_CONFIRM_TIMEOUT,
+    )
+    .await
+}
+
+pub async fn queue_peer_batch_frame(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &tailscale::PeerInfo,
+    command: Command,
+    payload: Vec<u8>,
+    batch_id: TransferId,
+) -> Result<DeliveryReceipt, String> {
+    let settings = { pool.lock().await.settings.clone() };
+    let trusted_key = settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .get(&peer.hostname)
+        .cloned()
+        .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
+    secure::decode_trusted_key(&trusted_key)
+        .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
+    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let preferred = resolve_candidates(peer, TCP_PORT)?
+        .first()
+        .map(|candidate| candidate.target.clone())
+        .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    let (completion_tx, completion_rx) = oneshot::channel();
+    let queued = QueuedFrame::confirmed_batch(command, payload, batch_id, completion_tx)?;
+    enqueue_queued_frame(tx, preferred, queued).await?;
+    tailsync_core::peer::pool::await_delivery(
+        completion_rx,
+        command,
+        &peer.hostname,
+        FILE_CONFIRM_TIMEOUT,
+    )
+    .await
+}
+
+/// Start persistent connection tasks before the first clipboard payload so
+/// copying does not pay TCP and Noise handshake latency.
+pub async fn prewarm_connections(
+    pool: Arc<Mutex<ConnectionPool>>,
+    peers: Vec<tailscale::PeerInfo>,
+) {
+    for peer in peers
+        .into_iter()
+        .filter(|peer| peer.enabled && peer.trusted)
+    {
+        let mut pool = pool.lock().await;
+        let settings = pool.settings.clone();
+        let settings = settings.lock().await;
+        if !settings.trusted_peer_keys.contains_key(&peer.hostname)
+            || !settings.enabled_peers.get(&peer.hostname).copied().unwrap_or(true)
+        { continue; }
+        let Some(mode) = tailsync_core::peer::types::ConnectionMode::parse(&settings.connection_mode) else { continue; };
+        let mut peer = peer;
+        peer.candidates.retain(|candidate| mode.allows(candidate.interface));
+        if peer.candidates.is_empty() { continue; }
+        // Keep the current authorization guard until worker creation. The
+        // disable/forget path removes workers only after releasing Settings.
+        if let Err(error) = pool.sender_for_peer(&peer) {
+            debug!("Could not prewarm {}: {error}", peer.hostname);
+        }
+    }
+}
+
+async fn enqueue_pool_frame(
+    tx: PoolSender,
+    target: ResolvedTarget,
+    peer_label: &str,
+    cmd: Command,
+    payload: Vec<u8>,
+) -> Result<(), String> {
+    enqueue_pool_queued_frame(tx, target, peer_label, QueuedFrame::new(cmd, payload)?).await
+}
+
+/// Hand an already-built queued frame to the worker, surfacing a stall the
+/// same way [`enqueue_pool_frame`] does: pairing and route selection have
+/// already succeeded, so a failure here means the frame genuinely could not
+/// be handed to the worker (channel full past the pool timeout, or the worker
+/// exited) and must not be swallowed by the clipboard broadcast.
+async fn enqueue_pool_queued_frame(
+    tx: PoolSender,
+    target: ResolvedTarget,
+    peer_label: &str,
+    queued: QueuedFrame,
+) -> Result<(), String> {
+    enqueue_queued_frame(tx, target, queued)
+        .await
+        .inspect_err(|error| {
+            warn!("Delivery to {peer_label} stalled: {error}");
+            tailsync_core::sync_warning::record_delivery_stalled(peer_label);
+        })
+}
+
+async fn enqueue_queued_frame(
+    tx: PoolSender,
+    target: ResolvedTarget,
+    queued: QueuedFrame,
+) -> Result<(), String> {
+    tailsync_core::peer::pool::enqueue_queued_frame(tx, target, queued).await
+}
+
+/// Platform adapter for the shared connection worker.
+///
+/// Binds candidate resolution, the connect + handshake executor, session
+/// registration, and protocol diagnostics to this crate's network module.
+struct PoolAdapter {
+    identity: Arc<DeviceIdentity>,
+    settings: Arc<Mutex<crypto::Settings>>,
+}
+
+impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
+    type Connection = secure::SecureConnection;
+    type SessionLease = tailsync_core::peer::health::SessionGuard;
+
+    async fn connect(
+        &self,
+        hostname: &str,
+        candidates: &[ResolvedCandidate],
+    ) -> Result<(secure::SecureConnection, ResolvedCandidate), String> {
+        race_connect_and_handshake(candidates, hostname, &self.identity, &self.settings).await
+    }
+
+    fn register_session(
+        &self,
+        hostname: &str,
+        interface: ConnectionInterface,
+        address: &str,
+        latency_ms: u64,
+    ) -> Self::SessionLease {
+        register_active_session(hostname, interface, address, latency_ms)
+    }
+
+    fn record_protocol_error(&self, hostname: &str, error: &str) {
+        record_protocol_compatibility_error(hostname, error);
+    }
+
+    fn clear_protocol_error(&self, hostname: &str) {
+        clear_protocol_compatibility_error(hostname);
+    }
+
+    async fn refresh_candidates(
+        &self,
+        hostname: &str,
+        candidates: &mut Vec<ResolvedCandidate>,
+    ) -> bool {
+        refresh_remembered_iroh_candidate(candidates, hostname, &self.settings).await
+    }
+}
+
+/// Background task for one pooled connection: delegates the entire lifecycle
+/// loop (reconnect, heartbeat, keep-frame, queue priority) to the shared
+/// worker in `tailsync_core`.
+pub(super) async fn connection_task(
+    candidates: Vec<ResolvedCandidate>,
+    hostname: String,
+    priority_rx: mpsc::Receiver<QueuedFrame>,
+    bulk_rx: mpsc::Receiver<QueuedFrame>,
+    identity: Arc<DeviceIdentity>,
+    settings: Arc<Mutex<crypto::Settings>>,
+    shutdown: watch::Receiver<bool>,
+) {
+    let adapter = PoolAdapter { identity, settings };
+    tailsync_core::peer::delivery::run_connection_worker(
+        &adapter,
+        &tailsync_core::peer::delivery::WorkerConfig::default(),
+        candidates,
+        hostname,
+        priority_rx,
+        bulk_rx,
+        shutdown,
+    )
+    .await
+}
+
+async fn refresh_remembered_iroh_candidate(
+    candidates: &mut Vec<ResolvedCandidate>,
+    hostname: &str,
+    settings: &Arc<Mutex<crypto::Settings>>,
+) -> bool {
+    let endpoint_id = {
+        let settings = settings.lock().await;
+        if settings.connection_mode != "auto" {
+            candidates
+                .retain(|candidate| candidate.candidate.interface != ConnectionInterface::Iroh);
+            return false;
+        }
+        settings
+            .trusted_peer_addresses
+            .get(hostname)
+            .and_then(|addresses| addresses.get("iroh"))
+            .cloned()
+    };
+    let Some(endpoint_id) = endpoint_id else {
+        return false;
+    };
+    let Ok(endpoint_id) = tailsync_core::iroh_transport::canonical_endpoint_id(&endpoint_id) else {
+        return false;
+    };
+    candidates.retain(|candidate| {
+        candidate.candidate.interface != ConnectionInterface::Iroh
+            || candidate.candidate.address == endpoint_id
+    });
+    if candidates.iter().any(|candidate| {
+        candidate.candidate.interface == ConnectionInterface::Iroh
+            && candidate.candidate.address == endpoint_id
+    }) {
+        return false;
+    }
+    candidates.push(ResolvedCandidate {
+        candidate: PeerCandidate::new(ConnectionInterface::Iroh, endpoint_id.clone()),
+        target: ResolvedTarget::Iroh(endpoint_id),
+    });
+    candidates.sort_by_key(|candidate| candidate.candidate.priority);
+    true
+}
+
+pub(super) async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
+        }
+    }
+}
+pub(super) async fn race_connect_and_handshake(
+    candidates: &[ResolvedCandidate],
+    hostname: &str,
+    identity: &Arc<DeviceIdentity>,
+    settings: &Arc<Mutex<crypto::Settings>>,
+) -> Result<(secure::SecureConnection, ResolvedCandidate), String> {
+    let identity = identity.clone();
+    let settings = settings.clone();
+    let hostname = hostname.to_string();
+    tailsync_core::peer::delivery::race_connections(
+        candidates,
+        HANDSHAKE_TIMEOUT,
+        move |target, _candidate| {
+            let identity = identity.clone();
+            let settings = settings.clone();
+            let hostname = hostname.clone();
+            async move {
+                connect_and_handshake(&target, &hostname, &identity, &settings)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+        },
+    )
+    .await
+}
+
+async fn connect_and_handshake(
+    target: &ResolvedTarget,
+    hostname: &str,
+    identity: &DeviceIdentity,
+    settings: &Arc<Mutex<crypto::Settings>>,
+) -> Result<secure::SecureConnection, Box<dyn std::error::Error + Send + Sync>> {
+    let (expected_key, mode) = {
+        let settings = settings.lock().await;
+        if !settings.enabled_peers.get(hostname).copied().unwrap_or(true) {
+            return Err(std::io::Error::other("Peer is disabled").into());
+        }
+        (
+            settings
+                .trusted_peer_keys
+                .get(hostname)
+                .cloned()
+                .ok_or_else(|| format!("Peer {hostname} is not paired"))?,
+            settings.connection_mode.clone(),
+        )
+    };
+    let expected_key = secure::decode_trusted_key(&expected_key)?;
+    if matches!(target, ResolvedTarget::Iroh(_)) && mode != "auto" {
+        return Err(std::io::Error::other("Iroh is only available in automatic mode").into());
+    }
+    let connection = match target {
+        ResolvedTarget::Tcp(address) => {
+            let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(address)).await??;
+            secure::connect(
+                stream,
+                identity,
+                local_peer_identity(&mode),
+                hostname,
+                &expected_key,
+            )
+            .await?
+        }
+        ResolvedTarget::Iroh(endpoint_id) => {
+            let endpoint = iroh::endpoint().await.map_err(std::io::Error::other)?;
+            let stream = endpoint
+                .connect(endpoint_id)
+                .await
+                .map_err(std::io::Error::other)?;
+            secure::connect(
+                stream,
+                identity,
+                local_peer_identity(&mode),
+                hostname,
+                &expected_key,
+            )
+            .await?
+        }
+    };
+
+    if let ResolvedTarget::Iroh(endpoint_id) = target {
+        let claimed = connection
+            .peer_identity()
+            .iroh_endpoint_id
+            .as_deref()
+            .ok_or_else(|| {
+                std::io::Error::other("Peer did not bind its Noise identity to an Iroh endpoint")
+            })?;
+        let claimed = tailsync_core::iroh_transport::canonical_endpoint_id(claimed)
+            .map_err(std::io::Error::other)?;
+        if &claimed != endpoint_id {
+            return Err(std::io::Error::other(
+                "Peer Iroh endpoint does not match its Noise identity",
+            )
+            .into());
+        }
+    }
+
+    let mut latest = settings.lock().await;
+    if !latest.enabled_peers.get(hostname).copied().unwrap_or(true)
+        || latest.connection_mode != mode
+        || latest.trusted_peer_keys.get(hostname).and_then(|key| secure::decode_trusted_key(key).ok()).as_ref() != Some(&expected_key)
+    {
+        return Err(std::io::Error::other("Peer authorization changed during handshake").into());
+    }
+    if let Some(endpoint_id) = &connection.peer_identity().iroh_endpoint_id {
+        if let Err(error) =
+            latest.remember_peer_address(hostname, "iroh", endpoint_id)
+        {
+            warn!("Could not remember Iroh endpoint for {hostname}: {error}");
+        }
+    }
+    Ok(connection)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TCP server (inbound connections from peers)
+// ═══════════════════════════════════════════════════════════════════

@@ -1,184 +1,130 @@
 use super::*;
-use std::collections::HashSet;
 use tailsync_core::peer::health::RouteKey;
+use tailsync_runtime::peer_refresh::{
+    Completion, Discovery, Observations, PeerRefresh, PeerRefreshAdapter,
+};
 
-#[derive(Clone)]
-struct PeerCacheEntry {
-    local: tailscale::LocalInfo,
-    peers: Vec<tailscale::PeerInfo>,
+static PEER_REFRESH: OnceLock<Arc<PeerRefresh>> = OnceLock::new();
+fn refresh() -> &'static Arc<PeerRefresh> {
+    PEER_REFRESH.get_or_init(|| Arc::new(PeerRefresh::default()))
 }
 
-static PEER_CACHE: OnceLock<RwLock<HashMap<String, PeerCacheEntry>>> = OnceLock::new();
-static PEER_REFRESH_NOTIFY: OnceLock<Notify> = OnceLock::new();
-static PEER_REFRESH_GENERATION: OnceLock<watch::Sender<u64>> = OnceLock::new();
-
-fn peer_cache() -> &'static RwLock<HashMap<String, PeerCacheEntry>> {
-    PEER_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
-fn peer_refresh_generation() -> &'static watch::Sender<u64> {
-    PEER_REFRESH_GENERATION.get_or_init(|| watch::channel(0).0)
-}
-
+#[cfg(test)]
 pub(crate) async fn store_peer_cache(
     mode: &str,
     local: tailscale::LocalInfo,
     peers: Vec<tailscale::PeerInfo>,
 ) {
-    peer_cache()
-        .write()
-        .await
-        .insert(mode.to_string(), PeerCacheEntry { local, peers });
+    refresh().seed_candidates(mode, (local, peers));
 }
 
 pub async fn clear_peer_cache() {
-    peer_cache().write().await.clear();
-    clear_peer_health();
-    request_peer_refresh();
+    refresh().invalidate(super::health::clear_peer_health);
 }
 
-async fn refresh_peer_cache(
-    mode: &str,
-) -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
-    let (local, mut peers) = discover_peers(mode).await?;
-    probe_discovered_routes(&mut peers).await;
-    store_peer_cache(mode, local.clone(), peers.clone()).await;
-    Ok((local, peers))
+pub async fn cached_discover_peers(mode: &str) -> Result<Discovery, String> {
+    if let Some(cached) = refresh().cached(mode) {
+        return Ok(cached);
+    }
+    refresh()
+        .refresh_and_wait(mode, Duration::from_secs(2))
+        .await?;
+    refresh()
+        .cached(mode)
+        .ok_or_else(|| "Peer discovery is still starting".into())
 }
 
-/// mDNS contributes remembered routes but is only a discovery signal. Probe
-/// those LAN/Tailscale addresses explicitly so health state is based on an
-/// authenticated TailSync response rather than a presentation field.
-async fn probe_discovered_routes(peers: &mut [tailscale::PeerInfo]) {
-    for interface in [ConnectionInterface::Lan, ConnectionInterface::Tailscale] {
-        let addresses = peers
-            .iter()
-            .flat_map(|peer| peer.candidates.iter())
-            .filter(|candidate| candidate.interface == interface && candidate.latency.is_none())
-            .map(|candidate| candidate.address.clone())
-            .collect::<HashSet<_>>();
-        if addresses.is_empty() {
-            continue;
+struct Adapter {
+    pool: Arc<Mutex<ConnectionPool>>,
+    app_handle: Option<tauri::AppHandle>,
+}
+impl PeerRefreshAdapter for Adapter {
+    async fn discover(&self, mode: &str) -> Result<Discovery, String> {
+        discover_peers(mode).await
+    }
+    fn supports_rtt(&self, endpoint: &str) -> bool {
+        iroh::supports_rtt(endpoint)
+    }
+    fn remember(
+        &self,
+        settings: &mut crypto::Settings,
+        _mode: &str,
+        peers: &[tailscale::PeerInfo],
+    ) {
+        let routes = peers.iter().flat_map(|peer| {
+            peer.candidates.iter().map(|candidate| {
+                (
+                    peer.hostname.as_str(),
+                    candidate.interface.as_str(),
+                    candidate.address.as_str(),
+                )
+            })
+        });
+        if let Err(error) = settings.remember_peer_addresses(routes) {
+            debug!("Could not remember peer routes: {error}");
         }
-        let Ok(responses) = lan::probe_addresses(addresses, interface).await else {
-            continue;
-        };
-        for response in responses {
-            let Some(peer) = peers
-                .iter_mut()
-                .find(|peer| peer.hostname == response.hostname)
-            else {
+    }
+    async fn prewarm(&self, peers: Vec<tailscale::PeerInfo>) {
+        prewarm_connections(self.pool.clone(), peers).await;
+    }
+    fn publish(&self, completion: Completion) {
+        if let Some(app) = &self.app_handle {
+            use tauri::Emitter;
+            let _ = app.emit("peer-health-changed", serde_json::json!({"epoch": completion.epoch, "generation": completion.generation, "mode": completion.mode}));
+        }
+    }
+    async fn probe(&self, routes: Vec<RouteKey>) -> Result<Observations, String> {
+        let mut observations = Vec::new();
+        for interface in [ConnectionInterface::Lan, ConnectionInterface::Tailscale] {
+            let addresses = routes
+                .iter()
+                .filter(|route| route.interface == interface)
+                .map(|route| route.address.clone())
+                .collect::<std::collections::HashSet<_>>();
+            if addresses.is_empty() {
                 continue;
-            };
-            for response_candidate in response.candidates {
-                if response_candidate.interface != interface {
-                    continue;
-                }
-                if let Some(candidate) = peer.candidates.iter_mut().find(|candidate| {
-                    candidate.interface == interface
-                        && candidate.address == response_candidate.address
-                }) {
-                    candidate.latency = response_candidate.latency;
+            }
+            for response in lan::probe_addresses(addresses, interface).await? {
+                for candidate in response.candidates {
+                    let key =
+                        RouteKey::new(&response.hostname, candidate.interface, &candidate.address);
+                    if routes.contains(&key) {
+                        if let Some(latency) = candidate.latency {
+                            observations.push((key, latency));
+                        }
+                    }
                 }
             }
         }
+        Ok(observations)
+    }
+    fn record_health(&self, mode: &str, peers: &[tailscale::PeerInfo], observations: Observations) {
+        super::health::record_probe_round(mode, peers, observations);
     }
 }
 
-pub async fn cached_discover_peers(
-    mode: &str,
-) -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
-    if let Some(entry) = peer_cache().read().await.get(mode).cloned() {
-        return Ok((entry.local, entry.peers));
-    }
-    let mut completion = peer_refresh_generation().subscribe();
-    request_peer_refresh();
-    let _ = timeout(Duration::from_secs(2), completion.changed()).await;
-    if let Some(entry) = peer_cache().read().await.get(mode).cloned() {
-        return Ok((entry.local, entry.peers));
-    }
-    Err(format!("Peer discovery is starting for {mode} mode"))
+pub async fn request_peer_refresh_and_wait(
+    settings: &Arc<Mutex<crypto::Settings>>,
+) -> Result<(), String> {
+    let mode = settings.lock().await.connection_mode.clone();
+    refresh()
+        .refresh_and_wait(&mode, Duration::from_secs(7))
+        .await
+        .map(|_| ())
 }
-
-pub fn request_peer_refresh() {
-    PEER_REFRESH_NOTIFY.get_or_init(Notify::new).notify_one();
-}
-
-pub async fn request_peer_refresh_and_wait() -> Result<(), String> {
-    let mut completion = peer_refresh_generation().subscribe();
-    let generation = *completion.borrow();
-    request_peer_refresh();
-    timeout(Duration::from_secs(3), async {
-        while *completion.borrow() == generation {
-            completion
-                .changed()
-                .await
-                .map_err(|_| "Peer health monitor stopped".to_string())?;
-        }
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|_| "Peer refresh timed out".to_string())??;
-    Ok(())
-}
-
 pub async fn peer_cache_refresh_loop(
     settings: Arc<Mutex<crypto::Settings>>,
     pool: Arc<Mutex<ConnectionPool>>,
     app_handle: Option<tauri::AppHandle>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) {
-    loop {
-        if *shutdown.borrow() {
-            return;
-        }
-        let mode = settings.lock().await.connection_mode.clone();
-        let mut discovered: Vec<tailscale::PeerInfo> = Vec::new();
-        match refresh_peer_cache(&mode).await {
-            Ok((_, peers)) => {
-                discovered = peers;
-                let observations = discovered.iter().flat_map(|peer| {
-                    peer.candidates.iter().filter_map(|candidate| {
-                        candidate.latency.map(|latency_ms| {
-                            (
-                                RouteKey::new(
-                                    &peer.hostname,
-                                    candidate.interface,
-                                    &candidate.address,
-                                ),
-                                latency_ms,
-                            )
-                        })
-                    })
-                });
-                record_probe_round(&mode, &discovered, observations);
-                remember_peer_addresses(&settings, &mode, &discovered).await;
-            }
-            Err(error) => {
-                update_peer_health_for_failed_round(&mode);
-                debug!("Peer cache refresh failed for {mode} mode: {error}");
-            }
-        }
-        // Redial trusted peers every round, mirroring the Windows health
-        // monitor: merge_paired_peers fills in remembered addresses for
-        // paired peers that discovery missed, so a restarted daemon
-        // reconnects on its own instead of waiting for user action.
-        // prewarm_connections itself only touches enabled && trusted peers,
-        // and a pooled worker is reused while its channels stay open.
-        let snapshot = settings.lock().await.clone();
-        let prewarm_peers = merge_paired_peers(&snapshot, &mode, discovered);
-        prewarm_connections(pool.clone(), prewarm_peers).await;
-        peer_refresh_generation().send_modify(|generation| {
-            *generation = generation.wrapping_add(1);
-        });
-        if let Some(app_handle) = &app_handle {
-            use tauri::Emitter;
-            let _ = app_handle.emit("peer-health-changed", ());
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(PEER_CACHE_REFRESH_INTERVAL) => {}
-            _ = PEER_REFRESH_NOTIFY.get_or_init(Notify::new).notified() => {}
-            _ = wait_for_shutdown(&mut shutdown) => return,
-        }
-    }
+    refresh()
+        .clone()
+        .run(
+            settings,
+            Arc::new(Adapter { pool, app_handle }),
+            shutdown,
+            PEER_CACHE_REFRESH_INTERVAL,
+        )
+        .await;
 }

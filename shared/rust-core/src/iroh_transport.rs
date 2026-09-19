@@ -1,15 +1,17 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex as StdMutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{Mutex, Notify};
 
 use crate::db;
 use crate::identity::{
@@ -20,7 +22,7 @@ pub const ALPN: &[u8] = b"tailsync/4";
 pub const RTT_ALPN: &[u8] = b"tailsync/4/rtt";
 pub const INVITE_ALPN: &[u8] = b"tailsync/4/invite";
 const SECRET_KEY_SIZE: usize = 32;
-static IDENTITY_RECOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static IDENTITY_RECOVERY_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
 
 type ShutdownFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
 
@@ -46,6 +48,149 @@ pub fn persistent_endpoint_id() -> Result<String, String> {
 #[derive(Clone, Debug)]
 pub struct IrohEndpoint {
     endpoint: Endpoint,
+}
+
+#[derive(Default)]
+struct EndpointState {
+    endpoint: Option<IrohEndpoint>,
+    generation: u64,
+}
+
+/// Owns the process-local lifecycle state for the long-lived Iroh endpoint.
+///
+/// Endpoint binding, generation invalidation, the local endpoint-id cache, and
+/// RTT capability observations are transport rules rather than platform UI or
+/// daemon wiring. Keeping them here makes the macOS and Windows adapters share
+/// one lifecycle state machine while still letting each adapter run its own
+/// inbound connection loop.
+pub struct IrohEndpointRegistry {
+    state: Mutex<EndpointState>,
+    local_endpoint_id: StdMutex<Option<String>>,
+    rtt_capable_endpoints: StdMutex<HashSet<String>>,
+    mode_changed: Notify,
+}
+
+impl Default for IrohEndpointRegistry {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(EndpointState::default()),
+            local_endpoint_id: StdMutex::new(None),
+            rtt_capable_endpoints: StdMutex::new(HashSet::new()),
+            mode_changed: Notify::new(),
+        }
+    }
+}
+
+impl IrohEndpointRegistry {
+    pub fn mode_changed(&self) -> &Notify {
+        &self.mode_changed
+    }
+
+    pub fn remember_rtt_capability(&self, endpoint_id: &str) {
+        self.rtt_capable_endpoints
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(endpoint_id.to_string());
+    }
+
+    pub fn supports_rtt(&self, endpoint_id: &str) -> bool {
+        self.rtt_capable_endpoints
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(endpoint_id)
+    }
+
+    pub fn local_endpoint_id(&self) -> Option<String> {
+        let cached = self
+            .local_endpoint_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if cached.is_some() {
+            return cached;
+        }
+        match persistent_endpoint_id() {
+            Ok(endpoint_id) => {
+                *self
+                    .local_endpoint_id
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(endpoint_id.clone());
+                Some(endpoint_id)
+            }
+            Err(error) => {
+                log::warn!("Could not load local Iroh endpoint ID: {error}");
+                None
+            }
+        }
+    }
+
+    pub async fn ensure_endpoint(&self) -> Result<(IrohEndpoint, u64), String> {
+        let mut state = self.state.lock().await;
+        if let Some(endpoint) = &state.endpoint {
+            return Ok((endpoint.clone(), state.generation));
+        }
+
+        let endpoint = IrohEndpoint::bind().await?;
+        let endpoint_id = endpoint.endpoint_id();
+        state.generation = state.generation.wrapping_add(1);
+        let generation = state.generation;
+        state.endpoint = Some(endpoint.clone());
+        *self
+            .local_endpoint_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(endpoint_id.clone());
+        log::info!("Iroh endpoint started as {endpoint_id}");
+        Ok((endpoint, generation))
+    }
+
+    pub async fn endpoint(&self) -> Result<IrohEndpoint, String> {
+        self.ensure_endpoint().await.map(|(endpoint, _)| endpoint)
+    }
+
+    pub async fn invalidate_endpoint(&self, generation: u64) {
+        let endpoint = {
+            let mut state = self.state.lock().await;
+            if state.generation != generation {
+                return;
+            }
+            state.generation = state.generation.wrapping_add(1);
+            state.endpoint.take()
+        };
+        *self
+            .local_endpoint_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        if let Some(endpoint) = endpoint {
+            endpoint.close().await;
+        }
+    }
+
+    pub async fn close_endpoint(&self) {
+        let endpoint = {
+            let mut state = self.state.lock().await;
+            state.generation = state.generation.wrapping_add(1);
+            state.endpoint.take()
+        };
+        *self
+            .local_endpoint_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        if let Some(endpoint) = endpoint {
+            endpoint.close().await;
+            log::info!("Iroh endpoint stopped");
+        }
+    }
+
+    pub async fn refresh_for_mode(&self, mode: &str) -> Result<(), String> {
+        let result = if mode == "auto" {
+            self.ensure_endpoint().await.map(|_| ())
+        } else {
+            self.close_endpoint().await;
+            Ok(())
+        };
+        self.mode_changed.notify_waiters();
+        result
+    }
 }
 
 pub struct AcceptedConnection {
@@ -394,7 +539,7 @@ fn load_or_create_secret_key(path: &Path) -> Result<SecretKey, IdentityError> {
 
 fn load_or_recover_secret_key(path: &Path) -> Result<SecretKey, IdentityError> {
     let _guard = IDENTITY_RECOVERY_LOCK
-        .get_or_init(|| Mutex::new(()))
+        .get_or_init(|| StdMutex::new(()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
@@ -473,6 +618,18 @@ mod tests {
     use crate::secure::{self, HandshakePurpose, PeerIdentity};
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[test]
+    fn endpoint_registries_isolate_rtt_capability_observations() {
+        let first = IrohEndpointRegistry::default();
+        let second = IrohEndpointRegistry::default();
+
+        first.remember_rtt_capability("peer-a");
+
+        assert!(first.supports_rtt("peer-a"));
+        assert!(!first.supports_rtt("peer-b"));
+        assert!(!second.supports_rtt("peer-a"));
+    }
 
     // Each accepted probe is drained before the next connection attempt. The
     // client must reuse its long-lived endpoint so repeated measurements do

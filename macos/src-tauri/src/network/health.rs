@@ -4,8 +4,7 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use super::tailscale;
 use tailsync_core::peer::health::{
     apply_peer_health as apply_peer_health_impl, record_probe_round as record_probe_round_impl,
-    update_peer_health_for_failed_round as update_failed_round_impl, HealthTracker,
-    ProbeObservation, SessionGuard, SessionRegistry,
+    HealthTracker, ProbeObservation, SessionGuard, SessionRegistry,
 };
 
 pub use tailsync_core::peer::health::RouteKey;
@@ -81,16 +80,6 @@ pub(super) fn record_probe_round(
         observations
             .into_iter()
             .map(|(route, latency_ms)| ProbeObservation::new(route, latency_ms)),
-        tokio::time::Instant::now(),
-    );
-}
-
-pub(super) fn update_peer_health_for_failed_round(mode: &str) {
-    update_failed_round_impl(
-        &mut peer_health()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        mode,
         tokio::time::Instant::now(),
     );
 }

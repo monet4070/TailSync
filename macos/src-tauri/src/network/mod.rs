@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 use tokio::time::{timeout, Duration};
 
 use crate::crypto;
@@ -25,8 +25,8 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Max queued frames per peer before backpressure kicks in
+#[cfg(test)]
 const POOL_CHANNEL_SIZE: usize = 64;
-const POOL_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const FILE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Reconnect back-off
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -69,13 +69,10 @@ mod health;
 mod iroh;
 pub mod lan;
 pub mod mdns;
+use health::register_active_session;
 pub use health::{
     active_routes_snapshot, apply_peer_health, record_address_test_failure,
     record_address_test_success,
-};
-use health::{
-    clear_peer_health, record_probe_round, register_active_session,
-    update_peer_health_for_failed_round,
 };
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
@@ -254,48 +251,6 @@ async fn discover_lan_hybrid() -> Result<(tailscale::LocalInfo, Vec<tailscale::P
 async fn discover_auto() -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
     let (lan_result, tailscale_result) = tokio::join!(discover_lan_hybrid(), discover_tailscale());
     merge_discovery_results(lan_result, tailscale_result)
-}
-
-pub async fn remember_peer_addresses(
-    settings: &Arc<Mutex<crypto::Settings>>,
-    mode: &str,
-    peers: &[tailscale::PeerInfo],
-) {
-    let mut settings = settings.lock().await;
-    for peer in peers {
-        if !peer.candidates.is_empty() {
-            for candidate in &peer.candidates {
-                if let Err(error) = settings.remember_peer_address(
-                    &peer.hostname,
-                    candidate.interface.as_str(),
-                    &candidate.address,
-                ) {
-                    debug!(
-                        "Could not remember {} address for {}: {error}",
-                        candidate.interface.as_str(),
-                        peer.hostname
-                    );
-                }
-            }
-            continue;
-        }
-        let address = if peer.address.is_empty() {
-            &peer.tailscale_ip
-        } else {
-            &peer.address
-        };
-        let Some(interface) = mode_interface(mode) else {
-            continue;
-        };
-        if let Err(error) =
-            settings.remember_peer_address(&peer.hostname, interface.as_str(), address)
-        {
-            debug!(
-                "Could not remember {mode} address for {}: {error}",
-                peer.hostname
-            );
-        }
-    }
 }
 
 pub async fn start_discovery_responder(

@@ -16,7 +16,7 @@ pub async fn get_peers(state: State<'_, AppState>) -> Result<serde_json::Value, 
 /// Ask the single background health monitor to run an early discovery round.
 #[command]
 pub async fn refresh_peers(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    network::request_peer_refresh_and_wait().await?;
+    network::request_peer_refresh_and_wait(&state.settings).await?;
     get_peers(state).await
 }
 

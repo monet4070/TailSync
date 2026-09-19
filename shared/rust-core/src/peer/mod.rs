@@ -14,5 +14,6 @@ pub mod discovery_admission;
 pub mod event_receiver;
 pub mod health;
 pub mod inbound_source;
+pub mod pool;
 pub mod rate_limit;
 pub mod types;

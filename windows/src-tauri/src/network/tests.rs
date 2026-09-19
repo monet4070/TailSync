@@ -82,7 +82,7 @@ async fn connection_pool_reuses_sender_for_peer() {
     let first = pool.sender_for(addr, "macbook".into()).unwrap();
     let second = pool.sender_for(addr, "macbook".into()).unwrap();
 
-    assert_eq!(pool.senders.len(), 1);
+    assert_eq!(pool.sender_count(), 1);
     assert!(first.same_channel(&second));
 }
 
@@ -117,7 +117,12 @@ async fn file_batches_are_serial_per_peer_and_parallel_between_peers() {
 #[tokio::test]
 async fn prewarm_recreates_a_trusted_connection_after_pool_disconnect() {
     let identity = Arc::new(DeviceIdentity::generate_for_test());
-    let settings = Arc::new(Mutex::new(crypto::Settings::default()));
+    let mut settings = crypto::Settings::default();
+    settings.trusted_peer_keys.insert(
+        "prewarm-mode-switch-test".into(),
+        STANDARD.encode(identity.public_key()),
+    );
+    let settings = Arc::new(Mutex::new(settings));
     let pool = Arc::new(Mutex::new(ConnectionPool::new(identity, settings)));
     let mut trusted = discovered_peer(
         "prewarm-mode-switch-test",
@@ -127,13 +132,13 @@ async fn prewarm_recreates_a_trusted_connection_after_pool_disconnect() {
     trusted.trusted = true;
 
     prewarm_connections(pool.clone(), vec![trusted.clone()]).await;
-    assert_eq!(pool.lock().await.senders.len(), 1);
+    assert_eq!(pool.lock().await.sender_count(), 1);
 
     pool.lock().await.disconnect_all();
-    assert!(pool.lock().await.senders.is_empty());
+    assert_eq!(pool.lock().await.sender_count(), 0);
 
     prewarm_connections(pool.clone(), vec![trusted]).await;
-    assert_eq!(pool.lock().await.senders.len(), 1);
+    assert_eq!(pool.lock().await.sender_count(), 1);
 
     let untrusted = discovered_peer(
         "untrusted-prewarm-test",
@@ -142,7 +147,7 @@ async fn prewarm_recreates_a_trusted_connection_after_pool_disconnect() {
     );
     pool.lock().await.disconnect_all();
     prewarm_connections(pool.clone(), vec![untrusted]).await;
-    assert!(pool.lock().await.senders.is_empty());
+    assert_eq!(pool.lock().await.sender_count(), 0);
 }
 
 #[tokio::test]
@@ -303,11 +308,7 @@ async fn connection_worker_stops_when_the_pool_disconnects_it() {
     let (priority, priority_rx) = mpsc::channel(POOL_CHANNEL_SIZE);
     let (bulk, bulk_rx) = mpsc::channel(POOL_CHANNEL_SIZE);
     let (shutdown, shutdown_rx) = watch::channel(false);
-    let sender = PoolSender {
-        priority,
-        bulk,
-        shutdown,
-    };
+    let sender = PoolSender::new(priority, bulk, shutdown);
     let worker = tokio::spawn(connection_task(
         vec![resolved_candidate(ConnectionInterface::Lan, address)],
         "server".into(),
@@ -318,8 +319,7 @@ async fn connection_worker_stops_when_the_pool_disconnects_it() {
         shutdown_rx,
     ));
     let mut pool = ConnectionPool::new(client_identity, settings);
-    pool.senders
-        .insert((ResolvedTarget::Tcp(address), "server".into()), sender);
+    pool.insert_sender(ResolvedTarget::Tcp(address), "server".into(), sender);
 
     tokio::task::yield_now().await;
     pool.disconnect_all();
@@ -465,16 +465,10 @@ async fn full_peer_queue_does_not_hold_connection_pool_lock() {
             .try_send(QueuedFrame::new(Command::TextPayload, vec![1]).unwrap())
             .unwrap();
     }
-    let tx = PoolSender {
-        priority,
-        bulk,
-        shutdown,
-    };
+    let tx = PoolSender::new(priority, bulk, shutdown);
 
     let mut pool_value = ConnectionPool::new(identity, settings);
-    pool_value
-        .senders
-        .insert((ResolvedTarget::Tcp(addr), "blocked-peer".into()), tx);
+    pool_value.insert_sender(ResolvedTarget::Tcp(addr), "blocked-peer".into(), tx);
     let pool = Arc::new(Mutex::new(pool_value));
     let queued_pool = pool.clone();
     let peer = PeerInfo {
@@ -524,26 +518,19 @@ async fn connection_pool_rebuilds_a_dead_cached_sender() {
     let (shutdown, _shutdown_rx) = watch::channel(false);
     drop(priority_rx);
     drop(bulk_rx);
-    let dead = PoolSender {
-        priority,
-        bulk,
-        shutdown,
-    };
-    assert!(dead.priority.is_closed() && dead.bulk.is_closed());
-    pool.senders.insert(
-        (ResolvedTarget::Tcp(addr), "windows-pc".into()),
-        dead.clone(),
-    );
+    let dead = PoolSender::new(priority, bulk, shutdown);
+    assert!(dead.priority_is_closed() && dead.bulk_is_closed());
+    pool.insert_sender(ResolvedTarget::Tcp(addr), "windows-pc".into(), dead.clone());
 
     let rebuilt = pool.sender_for(addr, "windows-pc".into()).unwrap();
 
-    assert_eq!(pool.senders.len(), 1, "the dead entry must be replaced");
+    assert_eq!(pool.sender_count(), 1, "the dead entry must be replaced");
     assert!(
         !dead.same_channel(&rebuilt),
         "sender_for must hand back a freshly built worker, not the dead one"
     );
     assert!(
-        !rebuilt.priority.is_closed(),
+        !rebuilt.priority_is_closed(),
         "the rebuilt worker's channel must be live"
     );
 }
@@ -553,11 +540,7 @@ async fn file_chunks_use_a_separate_queue_from_priority_messages() {
     let (priority, mut priority_rx) = mpsc::channel(1);
     let (bulk, mut bulk_rx) = mpsc::channel(1);
     let (shutdown, _shutdown_rx) = watch::channel(false);
-    let sender = PoolSender {
-        priority,
-        bulk,
-        shutdown,
-    };
+    let sender = PoolSender::new(priority, bulk, shutdown);
 
     sender
         .channel_for(Command::FileChunk)

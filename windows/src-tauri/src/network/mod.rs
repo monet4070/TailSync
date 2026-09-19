@@ -2,11 +2,10 @@ use log::{debug, error, info, warn};
 use socket2::{Domain, Protocol as SocketProtocol, SockAddr, Socket, Type};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use tauri::{AppHandle, Emitter};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 use tokio::time::{timeout, Duration};
 
 use crate::crypto;
@@ -26,14 +25,12 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Max queued frames per peer before backpressure kicks in
+#[cfg(test)]
 const POOL_CHANNEL_SIZE: usize = 64;
-const POOL_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const FILE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Reconnect back-off
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const PEER_CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const PEER_INITIAL_CACHE_WAIT: Duration = Duration::from_secs(2);
-const PEER_MANUAL_REFRESH_WAIT: Duration = Duration::from_secs(5);
 const REMOTE_INVITE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_INVITE_PREFACE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -77,7 +74,7 @@ pub use health::{
     active_routes_snapshot, apply_peer_health, record_address_test_failure,
     record_address_test_success,
 };
-use health::{record_probe_round, PeerRouteKey};
+
 pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
 pub use iroh::start_server as start_iroh_server;
@@ -109,8 +106,7 @@ pub use peer_cache::{
     cached_discover_peers, clear_peer_cache, peer_health_monitor, request_peer_refresh,
 };
 pub use tailsync_core::peer::directory::{
-    infer_interface, merge_discovery_results, merge_lan_discovery_results, mode_interface,
-    PairingTarget,
+    infer_interface, merge_discovery_results, merge_lan_discovery_results, PairingTarget,
 };
 pub(crate) use tailsync_core::secure;
 
@@ -213,48 +209,6 @@ async fn discover_auto() -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInf
     let tailscale_result =
         tailscale_result.map_err(|error| format!("Tailscale discovery task failed: {error}"))?;
     merge_discovery_results(lan_result, tailscale_result)
-}
-
-pub async fn remember_peer_addresses(
-    settings: &Arc<Mutex<crypto::Settings>>,
-    mode: &str,
-    peers: &[tailscale::PeerInfo],
-) {
-    let mut settings = settings.lock().await;
-    for peer in peers {
-        if !peer.candidates.is_empty() {
-            for candidate in &peer.candidates {
-                if let Err(error) = settings.remember_peer_address(
-                    &peer.hostname,
-                    candidate.interface.as_str(),
-                    &candidate.address,
-                ) {
-                    debug!(
-                        "Could not remember {} address for {}: {error}",
-                        candidate.interface.as_str(),
-                        peer.hostname
-                    );
-                }
-            }
-            continue;
-        }
-        let address = if peer.address.is_empty() {
-            &peer.tailscale_ip
-        } else {
-            &peer.address
-        };
-        let Some(interface) = mode_interface(mode) else {
-            continue;
-        };
-        if let Err(error) =
-            settings.remember_peer_address(&peer.hostname, interface.as_str(), address)
-        {
-            debug!(
-                "Could not remember {mode} address for {}: {error}",
-                peer.hostname
-            );
-        }
-    }
 }
 
 pub async fn start_discovery_responder(
