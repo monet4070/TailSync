@@ -26,6 +26,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify release commit
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -53,9 +56,14 @@ jobs:
       - name: Test release metadata generators
         run: node --test scripts/generate-update-manifest.test.mjs scripts/validate-updater-config.test.mjs scripts/validate-release-version.test.mjs scripts/bump-version.test.mjs scripts/verify-published-update.test.mjs
 
+  verify:
+    name: Verify full CI for release commit
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
   windows:
     name: Package Windows (${{ vars.TAILSYNC_RELEASE_TIER || 'community' }})
-    needs: validate
+    needs: [validate, verify]
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -116,7 +124,7 @@ jobs:
 
   macos:
     name: Package macOS (${{ vars.TAILSYNC_RELEASE_TIER || 'community' }})
-    needs: validate
+    needs: [validate, verify]
     runs-on: macos-14
     timeout-minutes: 120
     env:
@@ -203,7 +211,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release and updater manifest
-    needs: [windows, macos]
+    needs: [windows, macos, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -216,6 +224,8 @@ jobs:
           pattern: tailsync-*-release
           path: release
           merge-multiple: true
+      - name: Generate release provenance
+        run: node scripts/generate-release-provenance.mjs --input release --output release/release-provenance.json
       - name: Generate and validate stable latest.json
         if: ${{ !contains(github.ref_name, '-') }}
         env:
@@ -235,7 +245,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for fragment in release/release-*.json; do
+          for fragment in release/release-{windows,darwin}-{x86_64,aarch64}.json; do
+            [[ -f "$fragment" ]] || continue
             artifact=$(node -e 'const fs=require("node:fs"); const f=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(f.artifact)' "$fragment")
             signature=$(node -e 'const fs=require("node:fs"); const f=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(f.signatureFile)' "$fragment")
             cargo run --locked --quiet --manifest-path tools/updater-verify/Cargo.toml -- \
@@ -275,6 +286,7 @@ jobs:
             release/*.app.tar.gz.sig
             release/*-build.json
             release/*.sha256
+            release/release-provenance.json
             release/latest.json
       - name: Verify public updater feed and artifacts
         if: ${{ !contains(github.ref_name, '-') }}
@@ -305,3 +317,4 @@ jobs:
             release/*.app.tar.gz.sig
             release/*-build.json
             release/*.sha256
+            release/release-provenance.json

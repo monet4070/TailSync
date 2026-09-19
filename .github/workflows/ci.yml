@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches:
       - main
@@ -96,6 +97,12 @@ jobs:
         run: cargo clippy --locked --manifest-path shared/tailsync-themes/Cargo.toml --all-targets -- -D warnings
       - name: Run theme crate unit tests
         run: cargo test --locked --manifest-path shared/tailsync-themes/Cargo.toml
+      - name: Check application runtime formatting
+        run: cargo fmt --manifest-path shared/tailsync-runtime/Cargo.toml --all -- --check
+      - name: Run application runtime Clippy
+        run: cargo clippy --locked --manifest-path shared/tailsync-runtime/Cargo.toml --all-targets -- -D warnings
+      - name: Run application runtime unit tests
+        run: cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml
       - name: Check formatting
         run: cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check
       - name: Check Windows application formatting
@@ -162,6 +169,12 @@ jobs:
         run: cargo clippy --locked --manifest-path shared/tailsync-themes/Cargo.toml --all-targets -- -D warnings
       - name: Run theme crate unit tests
         run: cargo test --locked --manifest-path shared/tailsync-themes/Cargo.toml
+      - name: Check application runtime formatting
+        run: cargo fmt --manifest-path shared/tailsync-runtime/Cargo.toml --all -- --check
+      - name: Run application runtime Clippy
+        run: cargo clippy --locked --manifest-path shared/tailsync-runtime/Cargo.toml --all-targets -- -D warnings
+      - name: Run application runtime unit tests
+        run: cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml
       - name: Run shared core unit tests
         run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
       - name: Check macOS application formatting
@@ -171,6 +184,8 @@ jobs:
       - name: Run macOS application unit tests
         run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
       - name: Run Swift UI unit tests
+        env:
+          TAILSYNC_WEB_SVG_RENDER_TESTS: "1"
         run: swift test --package-path macos/swift-ui
       - name: Build the macOS application bundle
         run: bash macos/build-mac.sh --skip-swift-build
@@ -213,3 +228,36 @@ jobs:
         run: |
           RELEASE_VERSION="$(node -p "require('./windows/src-tauri/tauri.conf.json').version")"
           node scripts/bump-version.mjs --root . --target "$RELEASE_VERSION" --check
+
+  shared-resolution:
+    name: Shared production dependency resolution
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.91.0
+      - name: Check shared dependency resolution
+        run: node scripts/check-shared-resolution.mjs --root .
+      - name: Check local UI contracts
+        run: node scripts/check-local-contracts.mjs --root .
+
+  rustsec:
+    name: RustSec advisories (${{ matrix.manifest }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        manifest:
+          - .
+          - macos/src-tauri
+          - windows/src-tauri
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          arguments: --locked --all-features
+          command: check advisories
+          manifest-path: ${{ matrix.manifest }}/Cargo.toml

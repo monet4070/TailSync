@@ -165,6 +165,51 @@ fi
     shasum -a 256 "${checksum_files[@]}"
 ) > "$CHECKSUM_PATH"
 
+if [[ "$FORMAL_RELEASE" == "1" ]]; then
+    # The Windows packager and the macOS packager emit the same evidence
+    # shape. Keep the source identity full length so publish can reject a
+    # mixed-commit artifact set before it creates an update feed.
+    SOURCE_COMMIT=$(git rev-parse HEAD)
+    SOURCE_DIRTY=false
+    if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+        SOURCE_DIRTY=true
+    fi
+    CARGO_LOCK_SHA256=$(shasum -a 256 src-tauri/Cargo.lock | awk '{print $1}')
+    RUSTC_VERSION=$(rustc --version)
+    NODE_VERSION=$(node --version)
+    TAURI_VERSION=$("$TAURI_CLI" --version)
+    BUILD_MANIFEST_PATH="$OUTPUT_DIR/$APP_NAME-$VERSION-macOS-$ARCH_LABEL-build.json"
+    node - "$BUILD_MANIFEST_PATH" "$OUTPUT_DIR" "$APP_NAME" "$VERSION" "$ARCH_LABEL" "$RELEASE_TIER" "$SOURCE_COMMIT" "$SOURCE_DIRTY" "$CARGO_LOCK_SHA256" "$RUSTC_VERSION" "$NODE_VERSION" "$TAURI_VERSION" "${checksum_files[@]}" <<'NODE'
+const fs = require('node:fs');
+const crypto = require('node:crypto');
+const [manifestPath, outputDir, product, version, architecture, releaseTier, sourceCommit, sourceDirty, cargoLockSha256, rustc, node, tauri, ...artifactNames] = process.argv.slice(2);
+const files = artifactNames
+  .sort()
+  .map((name) => {
+    const path = `${outputDir}/${name}`;
+    const bytes = fs.readFileSync(path);
+    return { file: name, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  });
+const manifest = {
+  product,
+  version,
+  target: architecture.includes('arm64') && architecture.includes('x86_64')
+    ? 'universal-apple-darwin'
+    : architecture,
+  releaseTier,
+  builtAtUtc: new Date().toISOString(),
+  sourceCommit,
+  sourceDirty: sourceDirty === 'true',
+  cargoLockSha256,
+  rustc,
+  node,
+  tauri,
+  artifacts: files,
+};
+fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+NODE
+fi
+
 echo ""
 echo "  📀 $DMG_PATH ($(du -sh "$DMG_PATH" | cut -f1))"
 echo "  🔎 $CHECKSUM_PATH"

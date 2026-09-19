@@ -72,7 +72,7 @@ export function generateManifest({ inputDirectory, repository, tag, pubDate, not
   if (Number.isNaN(Date.parse(pubDate))) fail(`Invalid publication date: ${pubDate}`);
 
   const fragmentNames = readdirSync(inputDirectory)
-    .filter((name) => /^release-[a-z0-9_-]+\.json$/.test(name))
+    .filter((name) => /^release-(windows|darwin)-(x86_64|aarch64)\.json$/.test(name))
     .sort();
   if (!fragmentNames.length) fail(`No release fragments found in ${inputDirectory}`);
 

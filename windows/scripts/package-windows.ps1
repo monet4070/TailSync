@@ -397,9 +397,13 @@ try {
     $checksumLines = $artifacts | ForEach-Object { "$($_.sha256) *$($_.file)" }
     Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ascii
 
-    $commit = (& git -C $repositoryRoot rev-parse --short HEAD 2>$null)
+    # Keep a full commit identity in the release evidence. Short hashes are
+    # convenient in logs but cannot prove that a tag and its final artifacts
+    # came from the same commit.
+    $commit = (& git -C $repositoryRoot rev-parse HEAD 2>$null)
     if ($LASTEXITCODE -ne 0) { $commit = $null }
     $dirty = $null -ne (& git -C $repositoryRoot status --porcelain 2>$null | Select-Object -First 1)
+    $lockDigest = ((Get-FileHash -Algorithm SHA256 -LiteralPath $lockPath).Hash).ToLowerInvariant()
     $manifest = [ordered]@{
         product = $productName
         version = $version
@@ -408,6 +412,7 @@ try {
         builtAtUtc = [DateTime]::UtcNow.ToString('o')
         sourceCommit = $commit
         sourceDirty = $dirty
+        cargoLockSha256 = $lockDigest
         rustc = (& rustc --version)
         node = (& node --version)
         tauri = (& $tauriCli --version)
