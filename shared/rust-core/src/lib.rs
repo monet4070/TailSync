@@ -15,3 +15,4 @@ pub mod secure;
 pub mod sync;
 pub mod sync_warning;
 pub mod themes_v2;
+pub mod updates;
