@@ -8,14 +8,19 @@ pub async fn get_version() -> Result<serde_json::Value, String> {
     }))
 }
 
-#[derive(serde::Serialize)]
-pub struct RuntimeSnapshot {
-    revision: u64,
-    history_version: u64,
-    progress: Option<crate::api::FileProgress>,
-    sync_warning: Option<tailsync_core::sync_warning::SyncWarning>,
-    notifications: Vec<crate::api::RuntimeNotification>,
+/// Report the versioned local UI contract before an optional optimized path is
+/// selected.  The capability is transport-local and does not change wire v4.
+#[command]
+pub fn get_local_capabilities() -> tailsync_runtime::contracts::LocalCapabilities {
+    tailsync_runtime::contracts::LocalCapabilities::current(
+        "windows",
+        crate::protocol::VERSION,
+        true,
+        true,
+    )
 }
+
+pub use tailsync_runtime::contracts::WindowsRuntimeSnapshot as RuntimeSnapshot;
 
 /// Wait until history or transfer state changes, then return one coherent
 /// snapshot. The bounded timeout lets the UI recover if a notification is

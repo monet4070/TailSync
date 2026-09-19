@@ -8,6 +8,18 @@ pub async fn get_version() -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Report the versioned local UI contract before an optional optimized path is
+/// selected.  The capability is transport-local and does not change wire v4.
+#[command]
+pub fn get_local_capabilities() -> tailsync_runtime::contracts::LocalCapabilities {
+    tailsync_runtime::contracts::LocalCapabilities::current(
+        "macos",
+        crate::protocol::VERSION,
+        false,
+        false,
+    )
+}
+
 #[command]
 pub async fn get_sync_warning() -> Result<Option<tailsync_core::sync_warning::SyncWarning>, String>
 {
