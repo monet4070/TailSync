@@ -59,12 +59,31 @@ pub enum PrepareError {
     InvalidPathName(PathBuf),
     #[error("File batch index overflowed")]
     IndexOverflow,
-    #[error("Cannot re-open {0}: {1}")]
-    ReopenFailed(PathBuf, String),
+    #[error("Cannot re-open {path}: {message}")]
+    ReopenFailed {
+        path: PathBuf,
+        message: String,
+        kind: std::io::ErrorKind,
+    },
     #[error("{0} changed after the batch was copied")]
     ChangedAfterCopy(PathBuf),
     #[error("{0}")]
     Io(String),
+}
+
+impl PrepareError {
+    /// A prepared batch cannot safely resume after its source disappeared or
+    /// changed identity. Other I/O failures may be transient and keep their
+    /// existing retry behavior.
+    pub fn requires_reselection(&self) -> bool {
+        matches!(
+            self,
+            Self::ReopenFailed {
+                kind: std::io::ErrorKind::NotFound,
+                ..
+            } | Self::ChangedAfterCopy(_)
+        )
+    }
 }
 
 pub fn normalize_transferred_file_name(name: &str, data_hash: &str) -> String {
@@ -315,8 +334,12 @@ pub fn prepare_file_batch(
 }
 
 pub fn revalidate_prepared_file(file: &PreparedFile) -> Result<(), PrepareError> {
-    let metadata = fs::symlink_metadata(&file.path)
-        .map_err(|error| PrepareError::ReopenFailed(file.path.clone(), error.to_string()))?;
+    let metadata =
+        fs::symlink_metadata(&file.path).map_err(|error| PrepareError::ReopenFailed {
+            path: file.path.clone(),
+            message: error.to_string(),
+            kind: error.kind(),
+        })?;
     if metadata.file_type().is_symlink()
         || !metadata.is_file()
         || metadata.len() != file.entry.size
@@ -523,6 +546,16 @@ mod tests {
         assert_ne!(again.manifest.batch_id, prepared.manifest.batch_id);
 
         revalidate_prepared_file(&prepared.files[0]).unwrap();
+        fs::write(&prepared.files[0].path, b"alpha changed").unwrap();
+        let changed_error = revalidate_prepared_file(&prepared.files[0]).unwrap_err();
+        assert!(changed_error.requires_reselection());
+        assert!(changed_error
+            .to_string()
+            .contains("changed after the batch was copied"));
+        fs::remove_file(&prepared.files[0].path).unwrap();
+        let missing_error = revalidate_prepared_file(&prepared.files[0]).unwrap_err();
+        assert!(missing_error.requires_reselection());
+        assert!(missing_error.to_string().contains("Cannot re-open"));
         fs::remove_dir_all(directory).unwrap();
     }
 

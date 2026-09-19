@@ -241,6 +241,48 @@ impl SyncPlatform for TestPlatform {
     fn file_batch_failed(&self, _batch_id: Option<TransferId>, _message: &str) {}
 }
 
+struct BlockingPlatform {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl BlockingPlatform {
+    fn new() -> Self {
+        Self {
+            started: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+impl SyncPlatform for BlockingPlatform {
+    fn write_text(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn write_image(&self, _width: u32, _height: u32, _rgba: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_file_progress(&self, _name: &str, _received: u64, _total: u64) {}
+
+    fn clear_file_progress(&self, _batch_id: Option<TransferId>, _device: Option<&str>) {}
+
+    fn set_file_batch_progress(&self, _progress: FileBatchProgress) {}
+
+    fn files_received(&self, _commit: FileReceiveCommit) -> crate::sync::PlatformResultFuture {
+        let started = self.started.clone();
+        let release = self.release.clone();
+        Box::pin(async move {
+            started.notify_one();
+            release.notified().await;
+            Ok(())
+        })
+    }
+
+    fn file_batch_failed(&self, _batch_id: Option<TransferId>, _message: &str) {}
+}
+
 fn manifest_with_sizes(sizes: &[u64]) -> FileBatchManifest {
     FileBatchManifest {
         batch_id: TransferId([200; 16]),
@@ -1360,6 +1402,74 @@ async fn shared_batch_finish_keeps_manifest_until_platform_commit() {
         .received()
         .iter()
         .any(|event| { event.batch_id == Some(batch_id) && event.batch_complete }));
+}
+
+#[tokio::test]
+async fn shared_batch_finish_does_not_hold_engine_lock_during_platform_commit() {
+    let directory = TestDirectory::new("shared-batch-lock-release");
+    let manifest = manifest_with_sizes(&[0]);
+    let batch_id = manifest.batch_id;
+    let platform = Arc::new(BlockingPlatform::new());
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    engine.lock().await.set_platform(platform.clone());
+
+    SyncEngine::begin_file_batch_shared(
+        &engine,
+        manifest.clone(),
+        "peer".into(),
+        "device-id".into(),
+        directory.path().to_path_buf(),
+        1,
+    )
+    .await
+    .unwrap();
+    let entry = &manifest.files[0];
+    let progress = SyncEngine::begin_file_receive_shared(
+        &engine,
+        FileMeta {
+            transfer_id: Some(entry.transfer_id),
+            name: entry.name.clone(),
+            size: entry.size,
+            hash: entry.hash.clone(),
+            chunk_size: entry.chunk_size,
+            batch: Some(FileBatchRef {
+                batch_id,
+                index: entry.index,
+            }),
+        },
+        &directory.path().join(&entry.name),
+        "peer".into(),
+        1,
+    )
+    .await
+    .unwrap();
+    let pending = progress
+        .completed
+        .expect("empty file should finalize immediately");
+    verify_and_commit_received_file(&engine, "peer", pending)
+        .await
+        .unwrap();
+
+    let finish_engine = engine.clone();
+    let finish = tokio::spawn(async move {
+        SyncEngine::finish_file_batch_shared(&finish_engine, "peer", batch_id).await
+    });
+    tokio::time::timeout(Duration::from_secs(1), platform.started.notified())
+        .await
+        .expect("platform commit did not start");
+
+    let lock = tokio::time::timeout(Duration::from_millis(100), engine.lock())
+        .await
+        .expect("engine state lock remained held during platform commit");
+    assert!(lock.has_file_batch("peer", batch_id));
+    drop(lock);
+
+    platform.release.notify_one();
+    finish.await.unwrap().unwrap();
+    assert!(engine
+        .lock()
+        .await
+        .is_file_batch_completed("peer", batch_id));
 }
 
 #[tokio::test]

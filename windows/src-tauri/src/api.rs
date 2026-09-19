@@ -279,78 +279,13 @@ pub fn restore_file_to_clipboard(data: &[u8], fname: &str) -> Result<(), String>
 
 #[cfg(target_os = "windows")]
 fn write_file_path_to_clipboard(file_path: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::GlobalFree;
-    use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
-    };
-    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
-
-    let wide_path: Vec<u16> = file_path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    // DROPFILES header (20 bytes) + wide path (including double-null terminator)
-    let df_size = std::mem::size_of::<DropFilesHeader>() as u32;
-    let total_size = df_size as usize + (wide_path.len() + 1) * 2; // +1 for final null
-    let path_offset = df_size;
-
-    unsafe {
-        if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return Err("Could not open the Windows clipboard".to_string());
-        }
-        if EmptyClipboard() == 0 {
-            CloseClipboard();
-            return Err("Could not clear the Windows clipboard".to_string());
-        }
-        let h = GlobalAlloc(GHND, total_size);
-        if h.is_null() {
-            CloseClipboard();
-            return Err("Could not allocate Windows clipboard memory".to_string());
-        }
-        let ptr = GlobalLock(h) as *mut u8;
-        if ptr.is_null() {
-            GlobalFree(h);
-            CloseClipboard();
-            return Err("Could not lock Windows clipboard memory".to_string());
-        }
-        let header = DropFilesHeader {
-            p_files: path_offset,
-            pt: [0, 0],
-            f_nc: 0,
-            f_wide: 1,
-        };
-        std::ptr::copy_nonoverlapping(
-            &header as *const _ as *const u8,
-            ptr,
-            std::mem::size_of::<DropFilesHeader>(),
-        );
-        let path_ptr = ptr.add(path_offset as usize) as *mut u16;
-        std::ptr::copy_nonoverlapping(wide_path.as_ptr(), path_ptr, wide_path.len());
-        path_ptr.add(wide_path.len()).write(0);
-        GlobalUnlock(h);
-        if SetClipboardData(15, h).is_null() {
-            GlobalFree(h);
-            CloseClipboard();
-            return Err("Could not publish the file to the Windows clipboard".to_string());
-        }
-        CloseClipboard();
-    }
+    crate::clipboard_file::write_clipboard_files(&[file_path.to_path_buf()])
+        .map_err(|error| format!("Could not restore file to clipboard: {error}"))?;
     log::info!(
         "Restored file to Windows clipboard: {}",
         file_path.display()
     );
     Ok(())
-}
-
-#[repr(C)]
-#[cfg(target_os = "windows")]
-struct DropFilesHeader {
-    p_files: u32,
-    pt: [i32; 2],
-    f_nc: i32,
-    f_wide: i32,
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

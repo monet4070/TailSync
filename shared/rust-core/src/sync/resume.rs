@@ -60,6 +60,53 @@ pub(crate) fn persist_transfer_state(
         .map_err(|error| ResumeError::Io(error.to_string()))
 }
 
+/// Flush the buffered partial file and publish its advisory resume sidecar.
+///
+/// The `.part` length remains authoritative during recovery.  The sidecar is
+/// therefore allowed to lag during normal chunk handling, but lifecycle
+/// transitions such as a connection suspension must first make all bytes
+/// written by the buffered writer durable before the in-memory state is
+/// released.
+pub(crate) fn flush_and_persist_transfer_state(
+    state: &mut FileReceiveState,
+    source: &str,
+) -> Result<(), ResumeError> {
+    state
+        .writer
+        .flush()
+        .map_err(|error| ResumeError::Io(error.to_string()))?;
+    state
+        .writer
+        .get_ref()
+        .sync_data()
+        .map_err(|error| ResumeError::Io(error.to_string()))?;
+    persist_transfer_state(state, source)?;
+    state.chunks_since_persist = 0;
+    state.last_persist_at = Instant::now();
+    Ok(())
+}
+
+/// Persist resume metadata only when the bounded cadence requires it.
+///
+/// Returning whether a write occurred keeps the receive path explicit about
+/// the durability decision while ensuring the chunk and shared receive paths
+/// cannot grow different cadence or ordering rules.
+pub(crate) fn persist_transfer_state_if_due(
+    state: &mut FileReceiveState,
+    source: &str,
+) -> Result<bool, ResumeError> {
+    state.chunks_since_persist = state.chunks_since_persist.saturating_add(1);
+    let due = state.state_path.is_some()
+        && (state.chunks_since_persist >= RESUME_PERSIST_CHUNK_INTERVAL
+            || state.last_persist_at.elapsed() >= RESUME_PERSIST_INTERVAL
+            || state.received == state.meta.size);
+    if !due {
+        return Ok(false);
+    }
+    flush_and_persist_transfer_state(state, source)?;
+    Ok(true)
+}
+
 pub(crate) fn persist_incoming_batch(
     path: &Path,
     batch: &PersistedIncomingBatch,
@@ -261,6 +308,88 @@ mod tests {
 
         let mode = fs::metadata(&state_path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn resume_persistence_is_buffered_until_the_cadence_is_due() {
+        let directory = test_directory("cadence");
+        fs::create_dir_all(&directory).unwrap();
+        let transfer_id = TransferId::random();
+        let part_path = directory.join(format!("{}.part", transfer_id.as_hex()));
+        let state_path = directory.join(format!("{}.resume.json", transfer_id.as_hex()));
+        let mut state = FileReceiveState {
+            meta: FileMeta {
+                transfer_id: Some(transfer_id),
+                name: "payload.bin".to_string(),
+                size: 32,
+                hash: blake3::hash(b"payload").to_hex().to_string(),
+                chunk_size: FILE_CHUNK_SIZE as u32,
+                batch: None,
+            },
+            session_epoch: 1,
+            tmp_path: part_path.clone(),
+            final_path: directory.join("payload.bin"),
+            state_path: Some(state_path.clone()),
+            writer: BufWriter::new(File::create(&part_path).unwrap()),
+            hasher: blake3::Hasher::new(),
+            received: 1,
+            requires_full_hash: true,
+            chunks_since_persist: 0,
+            last_persist_at: std::time::Instant::now(),
+        };
+        state.writer.write_all(b"x").unwrap();
+
+        assert!(!persist_transfer_state_if_due(&mut state, "peer").unwrap());
+        assert_eq!(fs::metadata(&part_path).unwrap().len(), 0);
+        assert_eq!(state.chunks_since_persist, 1);
+
+        state.writer.write_all(b"y").unwrap();
+        state.received = 2;
+        state.chunks_since_persist = RESUME_PERSIST_CHUNK_INTERVAL - 1;
+        assert!(persist_transfer_state_if_due(&mut state, "peer").unwrap());
+        assert_eq!(fs::metadata(&part_path).unwrap().len(), 2);
+        assert!(state_path.is_file());
+        assert_eq!(state.chunks_since_persist, 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn forced_resume_persistence_flushes_before_state_release() {
+        let directory = test_directory("forced-flush");
+        fs::create_dir_all(&directory).unwrap();
+        let transfer_id = TransferId::random();
+        let part_path = directory.join(format!("{}.part", transfer_id.as_hex()));
+        let state_path = directory.join(format!("{}.resume.json", transfer_id.as_hex()));
+        let mut state = FileReceiveState {
+            meta: FileMeta {
+                transfer_id: Some(transfer_id),
+                name: "payload.bin".to_string(),
+                size: 16,
+                hash: blake3::hash(b"payload").to_hex().to_string(),
+                chunk_size: FILE_CHUNK_SIZE as u32,
+                batch: None,
+            },
+            session_epoch: 1,
+            tmp_path: part_path.clone(),
+            final_path: directory.join("payload.bin"),
+            state_path: Some(state_path.clone()),
+            writer: BufWriter::new(File::create(&part_path).unwrap()),
+            hasher: blake3::Hasher::new(),
+            received: 3,
+            requires_full_hash: true,
+            chunks_since_persist: 1,
+            last_persist_at: std::time::Instant::now(),
+        };
+        state.writer.write_all(b"abc").unwrap();
+
+        flush_and_persist_transfer_state(&mut state, "peer").unwrap();
+
+        assert_eq!(fs::metadata(&part_path).unwrap().len(), 3);
+        assert_eq!(
+            persisted_transfer_offset("peer", transfer_id, &directory),
+            Some(3)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

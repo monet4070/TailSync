@@ -15,6 +15,41 @@ use crate::network;
 use crate::protocol::{Command, FileChunkPayload, TransferId, FILE_CHUNK_SIZE};
 use crate::sync;
 
+#[derive(Clone)]
+#[allow(dead_code)]
+pub enum ClipboardRuntime {
+    Tauri(AppHandle),
+    Headless,
+}
+
+impl ClipboardRuntime {
+    async fn notify_file_batch_error(
+        &self,
+        settings: &Arc<Mutex<crypto::Settings>>,
+        message: &str,
+    ) {
+        // Windows historically surfaced this through the in-app runtime
+        // notice even when native notifications were disabled. Keep that
+        // behavior in the platform seam while sharing the transfer flow.
+        crate::api::push_runtime_notification("error", message);
+        if !settings.lock().await.notifications_enabled {
+            return;
+        }
+        if let ClipboardRuntime::Tauri(app) = self {
+            use tauri_plugin_notification::NotificationExt;
+            if let Err(error) = app
+                .notification()
+                .builder()
+                .title("TailSync")
+                .body(message)
+                .show()
+            {
+                log::warn!("Could not show file transfer notification: {error}");
+            }
+        }
+    }
+}
+
 static CLIPBOARD_RECOVERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_FAILURES: AtomicU64 = AtomicU64::new(0);
@@ -103,9 +138,9 @@ pub fn start_monitor(
             let peers = configured_peers(&warm_settings).await;
             network::prewarm_connections(warm_pool, peers).await;
         });
-        let resume_handle = handle.clone();
+        let resume_runtime = ClipboardRuntime::Tauri(handle.clone());
         tauri::async_runtime::spawn(resume_outgoing_file_batches(
-            resume_handle,
+            resume_runtime,
             database.clone(),
             pool.clone(),
             settings.clone(),
@@ -299,7 +334,7 @@ async fn clipboard_loop(
                                 outbound_paths,
                                 generation,
                                 selection_id,
-                                handle.clone(),
+                                ClipboardRuntime::Tauri(handle.clone()),
                                 pool.clone(),
                                 database.clone(),
                                 settings.clone(),

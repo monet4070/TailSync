@@ -185,7 +185,14 @@ impl SyncEngine {
                     .any(|(peer, _)| peer == source);
             (states, should_clear_progress, engine.platform.clone())
         };
-        for state in states {
+        for mut state in states {
+            if let Err(error) = flush_and_persist_transfer_state(&mut state, source) {
+                tracing::warn!(
+                    source = %source,
+                    error = %error,
+                    "Could not persist receive state before connection suspension"
+                );
+            }
             drop(state.writer);
         }
         if should_clear_progress {
@@ -218,7 +225,14 @@ impl SyncEngine {
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         for key in keys {
-            if let Some(state) = self.active_receives.remove(&key) {
+            if let Some(mut state) = self.active_receives.remove(&key) {
+                if let Err(error) = flush_and_persist_transfer_state(&mut state, source) {
+                    tracing::warn!(
+                        source = %source,
+                        error = %error,
+                        "Could not persist receive state before connection suspension"
+                    );
+                }
                 drop(state.writer);
             }
         }

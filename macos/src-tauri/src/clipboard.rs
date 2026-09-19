@@ -22,6 +22,33 @@ pub enum ClipboardRuntime {
     Headless,
 }
 
+impl ClipboardRuntime {
+    async fn notify_file_batch_error(
+        &self,
+        settings: &Arc<Mutex<crypto::Settings>>,
+        message: &str,
+    ) {
+        if !settings.lock().await.notifications_enabled {
+            return;
+        }
+        if let ClipboardRuntime::Tauri(app) = self {
+            use tauri_plugin_notification::NotificationExt;
+            if let Err(error) = app
+                .notification()
+                .builder()
+                .title("TailSync")
+                .body(message)
+                .show()
+            {
+                log::warn!("Could not show file transfer notification: {error}");
+            }
+        } else {
+            crate::api::push_runtime_notification("error", message);
+            log::warn!("File transfer failed: {message}");
+        }
+    }
+}
+
 static CLIPBOARD_RECOVERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_MONITOR_FAILURES: AtomicU64 = AtomicU64::new(0);

@@ -15,8 +15,9 @@ use thiserror::Error;
 mod resume;
 pub use resume::cleanup_expired_transfers;
 use resume::{
-    persist_incoming_batch, persist_transfer_state, persisted_transfer_offset,
-    restore_persisted_received_file, PersistedIncomingBatch, PersistedTransfer,
+    flush_and_persist_transfer_state, persist_incoming_batch, persist_transfer_state,
+    persist_transfer_state_if_due, persisted_transfer_offset, restore_persisted_received_file,
+    PersistedIncomingBatch, PersistedTransfer,
 };
 mod shadow;
 use shadow::ShadowFilter;

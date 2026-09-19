@@ -466,28 +466,10 @@ impl SyncEngine {
                 .writer
                 .write_all(&chunk.data)
                 .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
-            state
-                .writer
-                .flush()
-                .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
             state.hasher.update(&chunk.data);
             state.received += chunk.data.len() as u64;
-            state.chunks_since_persist = state.chunks_since_persist.saturating_add(1);
-            let persist_due = state.state_path.is_some()
-                && (state.chunks_since_persist >= RESUME_PERSIST_CHUNK_INTERVAL
-                    || state.last_persist_at.elapsed() >= RESUME_PERSIST_INTERVAL
-                    || state.received == state.meta.size);
-            if persist_due {
-                state
-                    .writer
-                    .get_ref()
-                    .sync_data()
-                    .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
-                persist_transfer_state(&state, &source)
-                    .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
-                state.chunks_since_persist = 0;
-                state.last_persist_at = Instant::now();
-            }
+            persist_transfer_state_if_due(&mut state, &source)
+                .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
             Ok(())
         })();
         if let Err(error) = io_result {
@@ -589,32 +571,10 @@ impl SyncEngine {
             .writer
             .write_all(&chunk.data)
             .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
-        state
-            .writer
-            .flush()
-            .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
         state.hasher.update(&chunk.data);
         state.received += chunk.data.len() as u64;
-        state.chunks_since_persist = state.chunks_since_persist.saturating_add(1);
-        let persist_due = state.state_path.is_some()
-            && (state.chunks_since_persist >= RESUME_PERSIST_CHUNK_INTERVAL
-                || state.last_persist_at.elapsed() >= RESUME_PERSIST_INTERVAL
-                || state.received == state.meta.size);
-        if persist_due {
-            // Flush the data file before publishing the advisory sidecar so
-            // a crash cannot advertise a longer safe offset than the bytes on
-            // disk. The sidecar itself is atomically synced by
-            // `persist_transfer_state`.
-            state
-                .writer
-                .get_ref()
-                .sync_data()
-                .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
-            persist_transfer_state(state, &source)
-                .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
-            state.chunks_since_persist = 0;
-            state.last_persist_at = Instant::now();
-        }
+        persist_transfer_state_if_due(state, &source)
+            .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
         let next_offset = state.received;
         let completed = state.received == state.meta.size;
         let progress_name = state.meta.name.clone();
