@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +23,7 @@ const winRoot = resolve(option('--win-root') ??
 const macRoot = resolve(option('--mac-root') ??
   (currentIsMac ? currentRoot : join(parentRoot, 'tailsync-v2-mac-1')));
 const sharedCoreRoot = resolve(option('--core-root') ?? join(dirname(winRoot), 'shared/rust-core'));
+const repoRoot = dirname(dirname(sharedCoreRoot));
 
 if (winRoot.toLowerCase() === macRoot.toLowerCase()) {
   fail('Windows and macOS roots must be different directories.');
@@ -126,6 +128,8 @@ assertTreeMatch('src-tauri/src', [
   'api/routes/peers.rs',
   'api/routes/settings.rs',
   'api/routes/theme.rs',
+  'api/routes/registry.rs',
+  'tauri-handler.generated.rs',
   'api/tests.rs',
   'clipboard/transfer.rs',
   'commands/history.rs',
@@ -155,13 +159,46 @@ assertTreeMatch('src-tauri/src', [
   'tray.rs',
   'window_lifecycle.rs',
 ]);
+
+for (const [relativePath, canonicalPath] of [
+  ['src-tauri/src/network/server.rs', 'shared/platform-network-server.rs'],
+  ['src-tauri/src/network/pool.rs', 'shared/platform-network-pool.rs'],
+  ['src-tauri/src/network/iroh.rs', 'shared/platform-network-iroh.rs'],
+  ['src-tauri/src/updates.rs', 'shared/platform-updates.rs'],
+  ['src-tauri/src/clipboard/transfer.rs', 'shared/platform-clipboard-transfer.rs'],
+  ['src-tauri/src/clipboard/tests.rs', 'shared/platform-clipboard-tests.rs'],
+]) {
+  const winSource = readFileSync(join(winRoot, relativePath), 'utf8');
+  const macSource = readFileSync(join(macRoot, relativePath), 'utf8');
+  if (!winSource.includes(canonicalPath) || !macSource.includes(canonicalPath)) {
+    fail(`${relativePath} must include the canonical shared source ${canonicalPath}.`);
+  }
+  if (!existsSync(join(repoRoot, canonicalPath))) {
+    fail(`Canonical shared source is missing: ${canonicalPath}`);
+  }
+}
 for (const path of [
   'src-tauri/build.rs',
   'src-tauri/examples/interop_probe.rs',
-  'scripts/check_cross_platform_sync.mjs',
-  'scripts/check_cross_platform_sync.ps1',
-  'scripts/test_cross_project_interop.ps1',
 ]) assertFileMatch(path);
+
+function assertDelegatingWrapper(relativePath, requiredTarget) {
+  const path = join(macRoot, relativePath);
+  if (!existsSync(path)) fail(`macOS wrapper missing: ${relativePath}`);
+  const source = readFileSync(path, 'utf8');
+  if (!source.includes(requiredTarget)) {
+    fail(`macOS wrapper must delegate ${relativePath} to ${requiredTarget}`);
+  }
+}
+
+// Keep one implementation for repository-wide tooling.  The macOS paths are
+// compatibility entry points for existing local scripts and CI conventions.
+assertDelegatingWrapper('scripts/check_cross_platform_sync.mjs',
+  'windows/scripts/check_cross_platform_sync.mjs');
+assertDelegatingWrapper('scripts/check_cross_platform_sync.ps1',
+  'windows/scripts/check_cross_platform_sync.ps1');
+assertDelegatingWrapper('scripts/test_cross_project_interop.ps1',
+  'windows/scripts/test_cross_project_interop.ps1');
 
 function read(root, path) {
   return readFileSync(join(root, path), 'utf8');
@@ -258,12 +295,13 @@ const macApiRoutesSource = [
   read(macRoot, 'src-tauri/src/api/routes.rs'),
   ...treeFiles(macRoot, 'src-tauri/src/api/routes').values().map((path) => readFileSync(path, 'utf8')),
 ].join('\n');
-const macApiContractSource = `${macApiSource}\n${macApiRoutesSource}`;
+const runtimeContractSource = readFileSync(join(repoRoot, 'shared/tailsync-runtime/src/contracts.rs'), 'utf8');
+const macApiContractSource = `${macApiSource}\n${macApiRoutesSource}\n${runtimeContractSource}`;
 const winApiRoutesSource = [
   read(winRoot, 'src-tauri/src/api/routes.rs'),
   ...treeFiles(winRoot, 'src-tauri/src/api/routes').values().map((path) => readFileSync(path, 'utf8')),
 ].join('\n');
-const winApiContractSource = `${read(winRoot, 'src-tauri/src/api.rs')}\n${winApiRoutesSource}`;
+const winApiContractSource = `${read(winRoot, 'src-tauri/src/api.rs')}\n${winApiRoutesSource}\n${runtimeContractSource}`;
 const swiftApiDirectory = join(macRoot, 'swift-ui/Sources/TailSync/Services');
 const swiftSource = readdirSync(swiftApiDirectory)
   .filter((name) => /^ApiClient.*\.swift$/.test(name))
@@ -291,12 +329,12 @@ for (const [description, source, markers] of [
   if (missing.length) fail(`${description} is missing Unix-socket security markers: ${missing.join(', ')}`);
 }
 
-const rustCommands = new Set();
-for (const line of macApiRoutesSource.split(/\r?\n/)) {
-  if (/^        "[a-z][a-z0-9_]*"( \| "[a-z][a-z0-9_]*")* =>/.test(line)) {
-    for (const match of line.matchAll(/"([a-z][a-z0-9_]*)"/g)) rustCommands.add(match[1]);
-  }
-}
+// The registry generates the real exhaustive Rust dispatcher and Tauri macro.
+// Check its output, rather than inferring registration from incidental strings.
+const registryCheck = spawnSync(process.execPath, [join(repoRoot, 'shared/schema/generate-local-commands.mjs'), '--check'], { cwd: repoRoot, encoding: 'utf8' });
+if (registryCheck.status !== 0) fail(registryCheck.stderr || registryCheck.stdout);
+const localCommands = JSON.parse(readFileSync(join(repoRoot, 'shared/schema/local-commands.json'), 'utf8'));
+const rustCommands = new Set([...Object.values(localCommands.macos.json).flat(), ...localCommands.macos.binary]);
 const swiftCommands = new Set([...swiftSource.matchAll(/"cmd"\s*:\s*"([a-z][a-z0-9_]*)"/g)]
   .map((match) => match[1]));
 if (!rustCommands.size || !swiftCommands.size) fail('Could not extract the Rust or SwiftUI API command contract.');
@@ -464,13 +502,16 @@ function assertJsonFields(description, source, fields) {
   const missing = fields.filter((field) => !new RegExp(`"${field}"\\s*:`).test(source));
   if (missing.length) fail(`${description} is missing fields used by SwiftUI: ${missing.join(', ')}`);
 }
-assertJsonFields('Local device snapshot', macApiContractSource,
-  ['hostname', 'tailscale_ip', 'connection_mode', 'public_key', 'fingerprint']);
-assertJsonFields('Daemon status', macApiContractSource,
-  ['tcp_server_healthy', 'clipboard_monitor_healthy', 'active_routes']);
+const localSchema = JSON.parse(readFileSync(join(repoRoot, 'shared/schema/local-contract.schema.json'), 'utf8'));
+for (const [name, fields] of [
+  ['LocalDeviceSnapshot', ['hostname', 'tailscale_ip', 'connection_mode', 'public_key', 'fingerprint']],
+  ['DaemonStatus', ['tcp_server_healthy', 'clipboard_monitor_healthy', 'active_routes']],
+]) {
+  for (const field of fields) if (!localSchema.$defs[name].properties[field]) fail(`${name} is missing ${field}`);
+}
 const requiredProgressFields = ['name', 'sent', 'total', 'active', 'batch_id', 'device',
   'completed_files', 'total_files', 'speed_bytes_per_second', 'can_stop'];
-const rustProgressFields = rustFields(macApiSource, 'FileProgress');
+const rustProgressFields = rustFields(runtimeContractSource, 'FileProgress');
 const missingProgressFields = requiredProgressFields.filter((field) => !rustProgressFields.has(field));
 if (missingProgressFields.length) {
   fail(`File progress is missing fields used by SwiftUI: ${missingProgressFields.join(', ')}`);

@@ -4,10 +4,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$arguments = @((Join-Path $PSScriptRoot 'check_cross_platform_sync.mjs'))
-if ($WinRoot) { $arguments += @('--win-root', $WinRoot) }
-if ($MacRoot) { $arguments += @('--mac-root', $MacRoot) }
-& node @arguments
+$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
+$canonicalScript = Join-Path $repositoryRoot 'windows/scripts/check_cross_platform_sync.ps1'
+$arguments = @()
+if ($WinRoot) { $arguments += @('-WinRoot', $WinRoot) }
+if ($MacRoot) { $arguments += @('-MacRoot', $MacRoot) }
+& $canonicalScript @arguments
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
