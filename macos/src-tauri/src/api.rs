@@ -11,7 +11,7 @@ use imports::{
     append_import_chunk, begin_import, finish_import, import_response, import_size_limit,
 };
 use routes::handle_cmd;
-pub(crate) use routes::{history_capabilities_data, peer_snapshot_data};
+pub(crate) use routes::{history_capabilities_data, peer_snapshot_data, preview_binary_response};
 pub(crate) use tailsync_core::import::ImportRegistry;
 pub use transport::start;
 #[cfg(test)]
@@ -527,6 +527,8 @@ pub struct ApiState {
 #[derive(Debug, Deserialize)]
 struct Request {
     cmd: String,
+    #[serde(default)]
+    request_id: Option<String>,
     #[serde(default)]
     token: Option<String>,
     #[serde(default)]

@@ -9,6 +9,13 @@ final class ApiClient: @unchecked Sendable {
   private let daemonPIDLock = NSLock()
   private var expectedDaemonPID: pid_t?
 
+  // Dependency injection for isolated socket tests; production always uses shared.
+  init(socketPath: String, capabilityToken: String, expectedDaemonPID: pid_t? = nil) {
+    self.socketPath = socketPath
+    self.capabilityToken = capabilityToken
+    self.expectedDaemonPID = expectedDaemonPID
+  }
+
   private init() {
     socketPath = Self.apiSocketPath()
     if let configured = ProcessInfo.processInfo.environment["TAILSYNC_API_TOKEN"],
@@ -77,31 +84,46 @@ final class ApiClient: @unchecked Sendable {
     return dictionary
   }
 
-  func request(
+  private enum ResponseFraming: Sendable {
+    case jsonLine
+    case eof
+  }
+
+  private func requestData(
     _ json: [String: Any],
-    timeoutSeconds: Int = 3,
-    maxResponseBytes: Int = 4 * 1024 * 1024
-  ) async throws -> [String: Any] {
+    timeoutSeconds: Int,
+    maxResponseBytes: Int,
+    framing: ResponseFraming
+  ) async throws -> Data {
     var authenticated = json
     authenticated["token"] = capabilityToken
+    if ["get_history", "get_preview_data"].contains(json["cmd"] as? String ?? "") {
+      authenticated["request_id"] = UUID().uuidString
+    }
     var data = try JSONSerialization.data(withJSONObject: authenticated)
     data.append(0x0A)
 
-    return try await withCheckedThrowingContinuation { continuation in
+    let ownership = RequestSocketOwnership()
+    return try await withTaskCancellationHandler(operation: {
+      try Task.checkCancellation()
+      return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
       DispatchQueue.global(qos: .userInitiated).async {
+        do {
+        try ownership.checkCancellation()
         let sock = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else {
-          continuation.resume(throwing: ApiError.connectionFailed)
-          return
+          throw ApiError.connectionFailed
         }
-        defer { close(sock) }
+        try ownership.install(sock)
+        defer { ownership.finish() }
+        var noSignal: Int32 = 1
+        setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(self.socketPath.utf8) + [0]
         guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
-          continuation.resume(throwing: ApiError.connectionFailed)
-          return
+          throw ApiError.connectionFailed
         }
         withUnsafeMutableBytes(of: &address.sun_path) { destination in
           destination.initializeMemory(as: UInt8.self, repeating: 0)
@@ -119,57 +141,125 @@ final class ApiClient: @unchecked Sendable {
           }
         }
         guard connected == 0 else {
-          continuation.resume(throwing: ApiError.connectionFailed)
-          return
+          throw ApiError.connectionFailed
         }
 
         if let expectedPID = self.expectedDaemonProcessIdentifier() {
           guard let peerPID = Self.peerProcessIdentifier(sock), peerPID == expectedPID else {
-            continuation.resume(throwing: ApiError.connectionFailed)
-            return
+            throw ApiError.connectionFailed
           }
         }
 
         var sentTotal = 0
         while sentTotal < data.count {
+          try ownership.checkCancellation()
           let sent = data.withUnsafeBytes { bytes -> Int in
             guard let base = bytes.baseAddress else { return -1 }
             return send(sock, base.advanced(by: sentTotal), data.count - sentTotal, 0)
           }
           guard sent > 0 else {
-            continuation.resume(throwing: ApiError.sendFailed)
-            return
+            if errno == EINTR { continue }
+            throw ApiError.sendFailed
           }
           sentTotal += sent
         }
 
-        // The daemon uses JSON-lines. A single recv() may contain only
-        // part of a response, or several responses, so read until the
-        // first newline and cap the buffer against a broken daemon.
+        // JSON responses end at the first newline. Binary preview responses
+        // end at their declared frame length; EOF remains a truncation/error
+        // signal because the server closes this one-shot connection afterward.
         var responseData = Data()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         var newlineIndex: Data.Index?
-        while responseData.count < maxResponseBytes {
+        var expectedFrameBytes: Int?
+        while responseData.count <= maxResponseBytes {
+          try ownership.checkCancellation()
           let received = recv(sock, &buffer, buffer.count, 0)
-          guard received > 0 else { break }
+          if received == 0 { break }
+          if received < 0 {
+            if errno == EINTR { continue }
+            throw ApiError.noResponse
+          }
           responseData.append(contentsOf: buffer.prefix(received))
-          if let index = responseData.firstIndex(of: 0x0A) {
+          if responseData.count > maxResponseBytes {
+            throw ApiError.noResponse
+          }
+          if case .eof = framing {
+            // Validate the bounded header and metadata as soon as they arrive,
+            // before accepting a potentially large payload from the daemon.
+            if responseData.first == 0x7B {
+              guard responseData.count <= 1024 * 1024 else { throw ApiError.noResponse }
+              // Binary-preview failures retain the legacy JSON-line envelope.
+              // Do not keep a completed error waiting for the peer to close.
+              if responseData.contains(0x0A) { break }
+            } else {
+              if expectedFrameBytes == nil, let (end, metadata) = try Self.previewFrameHeader(responseData) {
+                expectedFrameBytes = end + Int(metadata.size_bytes)
+              }
+              if let expectedFrameBytes, responseData.count > expectedFrameBytes {
+                throw ApiError.serverError("Trailing binary preview bytes")
+              }
+              // The frame declares its exact total length. Completing at that
+              // boundary avoids an otherwise unbounded loading state if a
+              // successfully written one-shot response is slow to close.
+              if let expectedFrameBytes, responseData.count == expectedFrameBytes { break }
+            }
+          }
+          if case .jsonLine = framing, let index = responseData.firstIndex(of: 0x0A) {
             newlineIndex = index
             break
           }
         }
-        guard let newlineIndex, newlineIndex > responseData.startIndex else {
-          continuation.resume(throwing: ApiError.noResponse)
-          return
+        try ownership.checkCancellation()
+        switch framing {
+        case .jsonLine:
+          guard let newlineIndex, newlineIndex > responseData.startIndex else {
+            throw ApiError.noResponse
+          }
+          continuation.resume(returning: Data(responseData[..<newlineIndex]))
+        case .eof:
+          guard !responseData.isEmpty else {
+            throw ApiError.noResponse
+          }
+          continuation.resume(returning: responseData)
         }
-        let line = Data(responseData[..<newlineIndex])
-        guard let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
-          continuation.resume(throwing: ApiError.invalidJson)
-          return
+        } catch {
+          continuation.resume(throwing: ownership.isCancelled ? CancellationError() : error)
         }
-        continuation.resume(returning: response)
       }
+      }
+    }, onCancel: { ownership.cancel() })
+  }
+
+  func request(
+    _ json: [String: Any],
+    timeoutSeconds: Int = 3,
+    maxResponseBytes: Int = 4 * 1024 * 1024
+  ) async throws -> [String: Any] {
+    let line = try await requestData(
+      json,
+      timeoutSeconds: timeoutSeconds,
+      maxResponseBytes: maxResponseBytes,
+      framing: .jsonLine
+    )
+    guard let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+      throw ApiError.invalidJson
     }
+    return response
+  }
+
+  /// Send an authenticated one-shot command and retain the raw response.
+  /// This is used only for the negotiated binary preview capability.
+  func requestBytes(
+    _ json: [String: Any],
+    timeoutSeconds: Int = 3,
+    maxResponseBytes: Int = 4 * 1024 * 1024
+  ) async throws -> Data {
+    try await requestData(
+      json,
+      timeoutSeconds: timeoutSeconds,
+      maxResponseBytes: maxResponseBytes,
+      framing: .eof
+    )
   }
 
   private static func peerProcessIdentifier(_ socket: Int32) -> pid_t? {

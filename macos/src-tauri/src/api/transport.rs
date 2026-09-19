@@ -177,8 +177,8 @@ async fn serve_connection<S>(
 ) where
     S: AsyncRead + AsyncWriteExt + Unpin + Send + 'static,
 {
-    let (reader, mut writer) = tokio::io::split(stream);
-    let req = match read_request(reader).await {
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let req = match read_request(&mut reader).await {
         Ok(req) => req,
         Err(error) => {
             let _ = write_response(&mut writer, false, None, &error, API_WRITE_TIMEOUT).await;
@@ -191,12 +191,69 @@ async fn serve_connection<S>(
     }
 
     let should_shutdown = req.cmd == "quit";
+    if req
+        .request_id
+        .as_ref()
+        .is_some_and(|id| id.is_empty() || id.len() > 128)
+    {
+        let _ = write_response(
+            &mut writer,
+            false,
+            None,
+            "invalid request_id",
+            API_WRITE_TIMEOUT,
+        )
+        .await;
+        return;
+    }
+    if req.cmd == "get_preview_binary" {
+        let Some(response) = until_disconnect(
+            &mut reader,
+            crate::api::preview_binary_response(&state, req.id, req.batch_id, req.request_id),
+        )
+        .await
+        else {
+            return;
+        };
+        match response {
+            Ok(bytes) => {
+                let _ = write_binary_response(
+                    &mut writer,
+                    &bytes,
+                    response_timeout_for_command(&req.cmd),
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = write_response(
+                    &mut writer,
+                    false,
+                    None,
+                    &error,
+                    response_timeout_for_command(&req.cmd),
+                )
+                .await;
+            }
+        }
+        return;
+    }
     // A history preview can contain up to 64 MiB of decrypted bytes,
     // expanding to roughly 90 MiB when wrapped in Base64/JSON. Keep the
     // normal five-second API timeout for every other command but allow this
     // bounded response enough time to drain locally.
     let response_timeout = response_timeout_for_command(&req.cmd);
-    let response = handle_cmd(req, &state).await;
+    // Opt-in read cancellation preserves legacy clients that half-close their
+    // write side after a request. Mutations always finish their commit/hooks.
+    let cancel_on_disconnect =
+        req.request_id.is_some() && matches!(req.cmd.as_str(), "get_history" | "get_preview_data");
+    let response = if cancel_on_disconnect {
+        let Some(response) = until_disconnect(&mut reader, handle_cmd(req, &state)).await else {
+            return;
+        };
+        response
+    } else {
+        handle_cmd(req, &state).await
+    };
     let sent = write_response(
         &mut writer,
         response.ok,
@@ -207,6 +264,54 @@ async fn serve_connection<S>(
     .await;
     if should_shutdown && sent.is_ok() {
         graceful_shutdown(&state).await;
+    }
+}
+
+/// One request per connection: EOF, read failure, or further input ends an
+/// opted-in read. Dropping its future propagates to the runtime read worker.
+async fn until_disconnect<R: AsyncRead + Unpin, F: std::future::Future>(
+    reader: &mut R,
+    response: F,
+) -> Option<F::Output> {
+    use tokio::io::AsyncReadExt;
+    let mut unexpected = [0_u8; 1];
+    tokio::select! {
+        biased;
+        _ = reader.read(&mut unexpected) => None,
+        response = response => Some(response),
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disconnected_client_drops_pending_response() {
+        let (mut server, client) = tokio::io::duplex(64);
+        let cancelled = tailsync_core::cancellation::Cancellation::default();
+        let observed = cancelled.clone();
+        struct OnDrop(tailsync_core::cancellation::Cancellation);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                self.0.cancel();
+            }
+        }
+        let guard = OnDrop(cancelled);
+        let task = tokio::spawn(async move {
+            until_disconnect(&mut server, async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            })
+            .await
+        });
+        drop(client);
+        assert!(timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none());
+        assert!(observed.is_cancelled());
     }
 }
 
@@ -382,8 +487,24 @@ async fn write_response(
         .map_err(|error| error.to_string())
 }
 
+async fn write_binary_response(
+    writer: &mut (impl AsyncWriteExt + Unpin),
+    bytes: &[u8],
+    timeout_duration: Duration,
+) -> Result<(), String> {
+    timeout(timeout_duration, async {
+        writer
+            .write_all(bytes)
+            .await
+            .map_err(|error| error.to_string())?;
+        writer.flush().await.map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "binary preview write timed out".to_string())?
+}
+
 fn response_timeout_for_command(command: &str) -> Duration {
-    if command == "get_preview_data" {
+    if command == "get_preview_data" || command == "get_preview_binary" {
         Duration::from_secs(30)
     } else {
         API_WRITE_TIMEOUT
@@ -421,6 +542,10 @@ mod tests {
     fn preview_response_gets_extended_write_timeout_only() {
         assert_eq!(
             response_timeout_for_command("get_preview_data"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            response_timeout_for_command("get_preview_binary"),
             Duration::from_secs(30)
         );
         assert_eq!(

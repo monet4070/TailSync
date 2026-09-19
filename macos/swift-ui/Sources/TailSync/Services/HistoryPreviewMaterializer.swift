@@ -73,7 +73,12 @@ extension HistoryPreviewStore {
         }
 
         if preview.kind == "image" {
-            let png = try pngData(fromPackedRGBA: preview.data)
+            let png: Data
+            if let width = preview.imageWidth, let height = preview.imageHeight {
+                png = try pngData(fromRawRGBA: preview.data, width: width, height: height)
+            } else {
+                png = try pngData(fromPackedRGBA: preview.data)
+            }
             let image = try validatedImage(from: png)
             return .image(HistoryPreviewImageMaterial(data: png, image: image))
         }
@@ -161,18 +166,37 @@ extension HistoryPreviewStore {
             throw HistoryPreviewStoreError.invalidImage
         }
 
-        let rgba = packed.dropFirst(8)
+        return try pngData(
+            fromRawRGBA: Data(packed.dropFirst(8)),
+            width: Int(width),
+            height: Int(height)
+        )
+    }
+
+    private func pngData(fromRawRGBA rgba: Data, width: Int, height: Int) throws -> Data {
+        guard width > 0, height > 0 else {
+            throw HistoryPreviewStoreError.invalidImage
+        }
+        let pixelCountResult = width.multipliedReportingOverflow(by: height)
+        guard !pixelCountResult.overflow,
+              pixelCountResult.partialValue <= 64 * 1024 * 1024 else {
+            throw HistoryPreviewStoreError.invalidImage
+        }
+        let byteCountResult = pixelCountResult.partialValue.multipliedReportingOverflow(by: 4)
+        guard !byteCountResult.overflow, byteCountResult.partialValue == rgba.count else {
+            throw HistoryPreviewStoreError.invalidImage
+        }
         guard let provider = CGDataProvider(data: Data(rgba) as CFData),
               let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
             throw HistoryPreviewStoreError.invalidImage
         }
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue)
         guard let image = CGImage(
-            width: Int(width),
-            height: Int(height),
+            width: width,
+            height: height,
             bitsPerComponent: 8,
             bitsPerPixel: 32,
-            bytesPerRow: Int(width) * 4,
+            bytesPerRow: width * 4,
             space: colorSpace,
             bitmapInfo: bitmapInfo,
             provider: provider,

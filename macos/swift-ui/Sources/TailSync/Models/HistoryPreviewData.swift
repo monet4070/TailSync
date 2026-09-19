@@ -23,6 +23,11 @@ struct HistoryPreviewData: Equatable, Sendable {
     let entryId: Int64?
     /// Batch navigation context, when the entry is part of a batch.
     let batch: HistoryPreviewBatchNavigation?
+    /// Dimensions carried by the binary TSPV envelope for raw RGBA images.
+    /// Legacy JSON previews keep the packed width/height prefix in `data` and
+    /// leave these fields nil.
+    let imageWidth: Int?
+    let imageHeight: Int?
 
     /// Shared payload cap across the preview pipeline (64 MiB).
     static let maxBytes: Int64 = 64 * 1024 * 1024
@@ -33,7 +38,9 @@ struct HistoryPreviewData: Equatable, Sendable {
         sizeBytes: Int64,
         data: Data,
         entryId: Int64? = nil,
-        batch: HistoryPreviewBatchNavigation? = nil
+        batch: HistoryPreviewBatchNavigation? = nil,
+        imageWidth: Int? = nil,
+        imageHeight: Int? = nil
     ) {
         self.kind = kind
         self.name = name
@@ -41,6 +48,8 @@ struct HistoryPreviewData: Equatable, Sendable {
         self.data = data
         self.entryId = entryId
         self.batch = batch
+        self.imageWidth = imageWidth
+        self.imageHeight = imageHeight
     }
 }
 

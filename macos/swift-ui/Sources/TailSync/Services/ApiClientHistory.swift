@@ -30,6 +30,30 @@ extension ApiClient {
     if let batchId, !batchId.isEmpty {
       command["batch_id"] = batchId
     }
+
+    // The binary path is negotiated explicitly. A malformed, oversized, or
+    // unauthorized binary response is surfaced to the caller; it is never
+    // treated as a reason to retry through the legacy path.
+    if let capabilities = try await getLocalCapabilities(), capabilities.supportsBinaryPreview {
+      var binaryCommand = command
+      binaryCommand["cmd"] = "get_preview_binary"
+      let requestID = UUID().uuidString
+      binaryCommand["request_id"] = requestID
+      let binary = try await requestBytes(
+        binaryCommand,
+        timeoutSeconds: 30,
+        maxResponseBytes: Int(HistoryPreviewData.maxBytes) + 1024 * 1024 + 9
+      )
+      if binary.first == 0x7B {
+        let line = binary.firstIndex(of: 0x0A).map { Data(binary[..<$0]) } ?? binary
+        guard let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+          throw ApiError.invalidJson
+        }
+        throw Self.previewError(from: response, fallback: "Could not load history preview")
+      }
+      return try Self.decodeBinaryPreview(binary, expectedRequestID: requestID)
+    }
+
     let response = try await request(
       command,
       timeoutSeconds: 30,
