@@ -11,6 +11,69 @@ API_TOKEN=''
 API_SOCKET_ROOT="$(mktemp -d -t tailsync-api.XXXXXX)"
 API_SOCKET="$API_SOCKET_ROOT/tailsyncd.sock"
 RELEASE_TIER="${TAILSYNC_RELEASE_TIER:-community}"
+CI_KEYCHAIN=''
+ORIGINAL_KEYCHAIN_LIST=''
+
+restore_ci_keychain() {
+    if [[ -n "$ORIGINAL_KEYCHAIN_LIST" && -f "$ORIGINAL_KEYCHAIN_LIST" ]]; then
+        local keychains=()
+        local line=''
+        while IFS= read -r line; do
+            line="${line#*\"}"
+            line="${line%%\"*}"
+            if [[ -n "$line" ]]; then
+                keychains+=("$line")
+            fi
+        done < "$ORIGINAL_KEYCHAIN_LIST"
+        /usr/bin/security list-keychains -d user -s "${keychains[@]}" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$CI_KEYCHAIN" ]]; then
+        /usr/bin/security delete-keychain "$CI_KEYCHAIN" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$ORIGINAL_KEYCHAIN_LIST" ]]; then
+        rm -f "$ORIGINAL_KEYCHAIN_LIST"
+    fi
+}
+
+prepare_ci_keychain() {
+    if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+        return
+    fi
+
+    # A hosted macOS runner can expose a locked or missing default keychain.
+    # Security.framework may then wait for an unavailable UI agent while the
+    # packaged daemon performs its first-run DEK lookup. Use an ephemeral,
+    # unlocked keychain for this smoke test and restore the runner afterwards.
+    ORIGINAL_KEYCHAIN_LIST="$(mktemp -t tailsync-keychain-list.XXXXXX)"
+    if ! /usr/bin/security list-keychains -d user > "$ORIGINAL_KEYCHAIN_LIST"; then
+        echo 'Could not capture the user keychain search list.' >&2
+        return 1
+    fi
+    CI_KEYCHAIN="$API_SOCKET_ROOT/tailsync-ci.keychain-db"
+    local keychain_password=''
+    local test_dek=''
+    keychain_password="$(/usr/bin/openssl rand -hex 24)"
+    test_dek="$(/usr/bin/openssl rand -hex 32)"
+    /usr/bin/security create-keychain -p "$keychain_password" "$CI_KEYCHAIN"
+    /usr/bin/security set-keychain-settings -lut 3600 "$CI_KEYCHAIN"
+    /usr/bin/security unlock-keychain -p "$keychain_password" "$CI_KEYCHAIN"
+    /usr/bin/security add-generic-password -A \
+        -s 'com.tailsync.app.dek-v2' \
+        -a 'encryption-key' \
+        -w "$test_dek" \
+        "$CI_KEYCHAIN" >/dev/null
+
+    local keychains=("$CI_KEYCHAIN")
+    local line=''
+    while IFS= read -r line; do
+        line="${line#*\"}"
+        line="${line%%\"*}"
+        if [[ -n "$line" && "$line" != "$CI_KEYCHAIN" ]]; then
+            keychains+=("$line")
+        fi
+    done < "$ORIGINAL_KEYCHAIN_LIST"
+    /usr/bin/security list-keychains -d user -s "${keychains[@]}"
+}
 
 cleanup() {
     if [ "$DAEMON_STARTED" -eq 1 ]; then
@@ -26,6 +89,7 @@ cleanup() {
             sleep 0.1
         done
     fi
+    restore_ci_keychain
     if [[ -n "$DAEMON_LOG" ]]; then
         rm -f "$DAEMON_LOG"
     fi
@@ -80,9 +144,12 @@ rm -f "$helper_probe"
 # network/API payload used by the UI, so smoke-test that exact packaged binary
 # here and keep the AppKit UI checks above structural and code-signature based.
 echo '[2/3] Launching the packaged daemon from the app bundle...'
+prepare_ci_keychain
 API_TOKEN="$(/usr/bin/openssl rand -hex 32)"
 DAEMON_LOG="$(mktemp -t tailsync-daemon.XXXXXX)"
-TAILSYNC_API_TOKEN="$API_TOKEN" TAILSYNC_API_SOCKET="$API_SOCKET" \
+TAILSYNC_API_TOKEN="$API_TOKEN" \
+    TAILSYNC_API_SOCKET="$API_SOCKET" \
+    TAILSYNC_DATA_DIR="$API_SOCKET_ROOT/data" \
     "$APP_PATH/Contents/MacOS/tailsyncd" >"$DAEMON_LOG" 2>&1 &
 DAEMON_PROCESS_PID=$!
 DAEMON_STARTED=1
