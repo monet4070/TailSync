@@ -66,6 +66,12 @@ TAILSYNC_RELEASE_TIER=community
 6. 在干净的 Mac 和 Windows 真机安装，再从上一个公开版本执行一次完整更新。
 7. 真机更新通过后再对外公告；首次闭环未完成前，不把自动更新标记为已验证。
 
+Release workflow 会先调用与普通 CI 相同的 `verify` 工作流，再执行平台打包。两个平台的
+`*-build.json` 必须记录与 tag 完全一致的 40 位 `sourceCommit`；同时保存产品锁文件摘要、
+工具链版本和每个产物的 SHA-256。发布阶段生成 `release-provenance.json`，缺少来源身份或
+发现混入其他提交的产物会在写入 `latest.json` 前失败。该清单证明产物来源和内容完整性，
+不能替代真机安装、升级和双系统互联验收。
+
 macOS 可使用：
 
 ```bash

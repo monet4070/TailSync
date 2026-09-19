@@ -24,6 +24,11 @@ Windows/site 前端和发布恢复脚本。此后的纯文档改动另由版本�
 
 架构决策位于 [`adr/`](adr/)；已接受且已经落地的 ADR 仍是当前约束，不是待办计划。
 
+## 优化计划
+
+- [`OPTIMIZATION-PLAN-2026-09-05.md`](OPTIMIZATION-PLAN-2026-09-05.md)：系统设计与工程流程优化方案，包含目标架构、工作包、依赖、验收和回滚边界。
+- [`OPTIMIZATION-IMPLEMENTATION-STATUS-2026-09-06.md`](OPTIMIZATION-IMPLEMENTATION-STATUS-2026-09-06.md)：按工作包记录当前实现、已执行门禁和仍需真机/发布环境完成的验收；不能用本地 probe 结果代替真实双系统证据。
+
 ## 审计与历史记录
 
 以下文档保留问题发现、证据和决策过程。它们带有日期，正文中的旧行号、旧风险和“待修”描述

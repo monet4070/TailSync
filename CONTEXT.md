@@ -20,8 +20,10 @@ shared/
     crypto.rs + crypto/      密钥存储与加密边界
     db.rs + db/              数据库生命周期、查询、迁移、文件存储、收藏、预览
     pairing.rs + pairing/    配对状态机、一次性 Iroh 邀请与测试
-    peer/                    types/directory/health/delivery 等设备与可靠投递规则
+    peer/                    types/directory/health/delivery/pool 等设备与可靠投递规则
     secure.rs + secure/      握手、认证与安全会话
+    iroh_transport.rs        Iroh 端点、RTT 探测与共享生命周期注册表
+    updates.rs               签名更新元数据校验规则
     sync.rs + sync/          同步编排、批次、接收、恢复与状态
   tailsync-protocol/         线协议类型、编解码与契约测试
   tailsync-history-classifier/
@@ -30,6 +32,8 @@ shared/
     command.rs/code.rs       命令与代码检测器
   tailsync-themes/           主题包格式、验证、解析、存储与读取策略
     package_io.rs             用户选包的扩展名/普通文件/符号链接/64 MiB 门禁
+  tailsync-runtime/          transport-neutral application use cases
+    history.rs                history paging, restore payloads, and mutations
 
 macos|windows/src-tauri/
   api/                        Tauri/Unix socket API 接线与 transport Adapter
@@ -49,6 +53,10 @@ windows/
                               外观/更新/对话框拆分
   src/pages/History.tsx       历史页面 façade；history/ 按 header/list/item/main/footer 拆分
   src/hooks/                  可复用的设备、配对、快捷键、更新、缩略图、长按与运行时状态
+
+shared/platform-network-{server,pool,iroh}.rs、shared/platform-updates.rs、
+shared/platform-clipboard-{transfer,tests}.rs 是平台 Rust 模块的 canonical include 源：归档
+解析/通知、TCP/Iroh 入口等 Adapter 差异留在接线层，网络/更新编排与纯测试规则只维护一份。
 ```
 
 - shared Core 的纯规则和状态机是 Leverage 最高的 Module；平台 Adapter 不得复制规则。
@@ -71,9 +79,9 @@ windows/
   同一手势的选择、点击与双击。历史和收藏窗口分别拥有可见性、轮询、关闭与资源释放生命周期。
 - 平台 `network/*` 中**被漂移检查强制逐字节一致**的文件：`build.rs`、
   `examples/interop_probe.rs`、`network/types.rs`、`network/server.rs`、
-  `network/pool.rs`、`network/iroh.rs`、
-  `scripts/check_cross_platform_sync.mjs|ps1`、`scripts/test_cross_project_interop.ps1`。
-  修改这些文件必须两端同步。
+  `network/pool.rs`、`network/iroh.rs`。修改这些文件必须两端同步。
+- 跨平台检查与互操作脚本以 `windows/scripts/` 为唯一实现；`macos/scripts/`
+  保留同名兼容转发入口，并由漂移检查验证其指向，避免两份脚本再次分叉。
 - `network/mod.rs`、`network/health.rs`、`network/tailscale.rs`、`network/lan.rs`、
   `network/mdns.rs`、`network/peer_cache.rs` 等仍允许平台差异
   （编排与 Adapter），但共享逻辑一旦迁入 Core，平台文件应只剩接线/适配。
@@ -115,12 +123,16 @@ windows/
 
 ```bash
 cargo fmt --manifest-path shared/rust-core/Cargo.toml --all -- --check   # 三端同样
+cargo fmt --manifest-path shared/tailsync-runtime/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings
+cargo clippy --locked --manifest-path shared/tailsync-runtime/Cargo.toml --all-targets -- -D warnings
 cargo test --locked --manifest-path shared/rust-core/Cargo.toml
+cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml
+TAILSYNC_WEB_SVG_RENDER_TESTS=1 swift test --package-path macos/swift-ui
 node windows/scripts/check_cross_platform_sync.mjs --win-root windows --mac-root macos --core-root shared/rust-core
 ```
 
-共享逻辑的测试在 core 内（单点）；平台测试覆盖真实 I/O 回归。Windows Rust crate 在 macOS
+共享规则的测试在 core 内（单点），跨 transport 的应用用例在 tailsync-runtime 测试；平台测试覆盖真实 I/O 回归。Windows Rust crate 在 macOS
 上通过 host 编译验证（见 `scripts/check-windows-host.sh`：fmt + check --all-targets +
 test --no-run），Windows 原生编译/打包/运行由 CI 负责。注意 host 编译会因
 `#[cfg(target_os = windows)]` 块被裁掉而产生 dead-code 伪警告，属正常现象。
