@@ -1,6 +1,6 @@
 [package]
 name = "tailsync-runtime"
-version = "2.2.2"
+version = "2.3.0"
 description = "Shared application use cases and delivery runtime for TailSync"
 edition = "2021"
 license = "MIT"

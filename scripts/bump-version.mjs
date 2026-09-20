@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 // Single-entry version bump (T355 implementation of the T003 design).
 //
-// Writes the new version into all version-bearing files (#1-#12 in
-// VERSION_MATRIX), keeps the Cargo.lock files in sync without
+// Writes the new version into all version-bearing files, keeps the Cargo.lock files in sync without
 // re-resolving dependencies, and self-verifies through the existing
-// validate-release-version.mjs. The "current product version" markers in
-// both READMEs/CONTEXT/USER_GUIDE/THEMING are part of the same matrix: each
-// marker must appear exactly once and match the manifest version, so
-// `--check` (run in CI) fails on doc drift.
+// validate-release-version.mjs. Current product-version markers in docs and
+// development source are part of the same matrix: each marker must appear
+// exactly once and match the manifest version, so `--check` (run in CI) fails
+// on drift.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -111,6 +110,7 @@ const CARGO_TOML_FILES = [
   'macos/src-tauri/Cargo.toml',
   'shared/rust-core/Cargo.toml',
   'shared/tailsync-protocol/Cargo.toml',
+  'shared/tailsync-runtime/Cargo.toml',
   'shared/tailsync-themes/Cargo.toml',
   'shared/tailsync-history-classifier/Cargo.toml',
 ];
@@ -118,21 +118,22 @@ const CARGO_TOML_FILES = [
 const LOCK_ROOTS = [
   // Application locks: tailsync + tailsync-core + the extracted shared crates.
   ['windows/src-tauri/Cargo.lock', 'tailsync', 'tailsync-core',
-   'tailsync-protocol', 'tailsync-themes', 'tailsync-history-classifier'],
+   'tailsync-protocol', 'tailsync-runtime', 'tailsync-themes', 'tailsync-history-classifier'],
   ['macos/src-tauri/Cargo.lock', 'tailsync', 'tailsync-core',
-   'tailsync-protocol', 'tailsync-themes', 'tailsync-history-classifier'],
-  // Root workspace lock: the four shared crates.
+   'tailsync-protocol', 'tailsync-runtime', 'tailsync-themes', 'tailsync-history-classifier'],
+  // Root workspace lock: all extracted shared crates.
   ['Cargo.lock', 'tailsync-core', 'tailsync-protocol', 'tailsync-themes',
-   'tailsync-history-classifier'],
+   'tailsync-history-classifier', 'tailsync-runtime'],
 ];
 
 const PACKAGE_LOCK_FILES = ['windows/package-lock.json', 'site/package-lock.json'];
 
-// "Current product version" markers in prose docs. Each entry's pattern must
-// match exactly once in the file; bump rewrites the capture and --check pins
-// it to the manifest version. Examples in RELEASE.md and test fixtures
-// deliberately use other versions and stay out of this matrix.
-const DOC_VERSION_MARKERS = [
+// "Current product version" markers outside structured manifests. Each
+// entry's pattern must match exactly once in the file; bump rewrites the
+// capture and --check pins it to the manifest version. Examples in RELEASE.md
+// and test fixtures deliberately use other versions and stay out of this
+// matrix.
+const TEXT_VERSION_MARKERS = [
   {
     relative: 'README.md',
     // Version badge label and link target: both must carry the same version.
@@ -187,14 +188,19 @@ const DOC_VERSION_MARKERS = [
     pattern: /SemVer，且 ≤ 当前 Core 版本（(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)），否则包被拒绝/,
     build: (version) => `SemVer，且 ≤ 当前 Core 版本（${version}），否则包被拒绝`,
   },
+  {
+    relative: 'macos/swift-ui/Sources/TailSync/TailSyncApp.swift',
+    pattern: /private static let developmentFallback = "(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"/,
+    build: (version) => `private static let developmentFallback = "${version}"`,
+  },
 ];
 
 function globalPattern(pattern) {
   return pattern.flags.includes('g') ? pattern : new RegExp(pattern.source, `${pattern.flags}g`);
 }
 
-function bumpDocMarkers(root, version, written, dryRun) {
-  for (const marker of DOC_VERSION_MARKERS) {
+function bumpTextMarkers(root, version, written, dryRun) {
+  for (const marker of TEXT_VERSION_MARKERS) {
     const path = resolve(root, marker.relative);
     const content = readFileSync(path, 'utf8');
     const matches = [...content.matchAll(globalPattern(marker.pattern))];
@@ -211,8 +217,8 @@ function bumpDocMarkers(root, version, written, dryRun) {
   }
 }
 
-function verifyDocMarkers(root, version) {
-  for (const marker of DOC_VERSION_MARKERS) {
+function verifyTextMarkers(root, version) {
+  for (const marker of TEXT_VERSION_MARKERS) {
     const content = readFileSync(resolve(root, marker.relative), 'utf8');
     const matches = [...content.matchAll(globalPattern(marker.pattern))];
     if (matches.length !== 1) {
@@ -240,7 +246,7 @@ export function bumpRepositoryVersions(root, version, dryRun = false) {
     ...JSON_VERSION_FILES,
     ...CARGO_TOML_FILES,
     ...PACKAGE_LOCK_FILES,
-    ...DOC_VERSION_MARKERS.map((marker) => marker.relative),
+    ...TEXT_VERSION_MARKERS.map((marker) => marker.relative),
     ...LOCK_ROOTS.map(([relative]) => relative),
   ]);
   const written = [];
@@ -265,7 +271,7 @@ export function bumpRepositoryVersions(root, version, dryRun = false) {
       }
     }, written, dryRun);
   }
-  bumpDocMarkers(root, expected, written, dryRun);
+  bumpTextMarkers(root, expected, written, dryRun);
   return written;
 }
 
@@ -293,7 +299,7 @@ export function verifyRepositoryVersions(root, version) {
       fail(`${relative} is not at version ${expected}`);
     }
   }
-  verifyDocMarkers(root, expected);
+  verifyTextMarkers(root, expected);
   return releaseChannel(tag);
 }
 

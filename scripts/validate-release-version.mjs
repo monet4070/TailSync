@@ -57,6 +57,7 @@ export function validateRepositoryVersions(root, tag) {
     'macos/Cargo.toml': cargoPackageVersion(root, 'macos/src-tauri/Cargo.toml'),
     'shared/Cargo.toml': cargoPackageVersion(root, 'shared/rust-core/Cargo.toml'),
     'tailsync-protocol/Cargo.toml': cargoPackageVersion(root, 'shared/tailsync-protocol/Cargo.toml'),
+    'tailsync-runtime/Cargo.toml': cargoPackageVersion(root, 'shared/tailsync-runtime/Cargo.toml'),
     'tailsync-themes/Cargo.toml': cargoPackageVersion(root, 'shared/tailsync-themes/Cargo.toml'),
     'tailsync-history-classifier/Cargo.toml': cargoPackageVersion(root, 'shared/tailsync-history-classifier/Cargo.toml'),
   };

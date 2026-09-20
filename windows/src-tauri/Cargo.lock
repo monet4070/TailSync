@@ -6063,7 +6063,7 @@ dependencies = [
 
 [[package]]
 name = "tailsync-runtime"
-version = "2.2.2"
+version = "2.3.0"
 dependencies = [
  "schemars 1.2.2",
  "serde",

@@ -39,6 +39,8 @@ function fixture(version = '2.1.0') {
       `| \`minCoreVersion\` | ✅ | SemVer，且 ≤ 当前 Core 版本（${version}），否则包被拒绝 |`,
       '',
     ].join('\n'),
+    'macos/swift-ui/Sources/TailSync/TailSyncApp.swift':
+      `enum TailSyncAppVersion {\n    private static let developmentFallback = "${version}"\n}\n`,
     'windows/src-tauri/tauri.conf.json': JSON.stringify({ version }, null, 2) + '\n',
     'macos/src-tauri/tauri.conf.json': JSON.stringify({ version }, null, 2) + '\n',
     'windows/package.json': JSON.stringify({ name: 'tailsync-v2', version }, null, 2) + '\n',
@@ -51,16 +53,18 @@ function fixture(version = '2.1.0') {
       '[package]\nname = "tailsync-core"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
     'shared/tailsync-protocol/Cargo.toml':
       '[package]\nname = "tailsync-protocol"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
+    'shared/tailsync-runtime/Cargo.toml':
+      '[package]\nname = "tailsync-runtime"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
     'shared/tailsync-themes/Cargo.toml':
       '[package]\nname = "tailsync-themes"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
     'shared/tailsync-history-classifier/Cargo.toml':
       '[package]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
     'windows/src-tauri/Cargo.lock':
-      'version = 4\n\n[[package]]\nname = "tailsync"\nversion = "' + version + '"\ndependencies = ["tailsync-core"]\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
+      'version = 4\n\n[[package]]\nname = "tailsync"\nversion = "' + version + '"\ndependencies = ["tailsync-core"]\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-runtime"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
     'macos/src-tauri/Cargo.lock':
-      'version = 4\n\n[[package]]\nname = "tailsync"\nversion = "' + version + '"\ndependencies = ["tailsync-core"]\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
+      'version = 4\n\n[[package]]\nname = "tailsync"\nversion = "' + version + '"\ndependencies = ["tailsync-core"]\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-runtime"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
     'Cargo.lock':
-      'version = 4\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
+      'version = 4\n\n[[package]]\nname = "tailsync-core"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-protocol"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-runtime"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-themes"\nversion = "' + version + '"\n\n[[package]]\nname = "tailsync-history-classifier"\nversion = "' + version + '"\n',
     'windows/package-lock.json':
       JSON.stringify({
         name: 'tailsync-v2',
@@ -84,11 +88,11 @@ function fixture(version = '2.1.0') {
   return root;
 }
 
-test('bump writes all twenty version files and is idempotent', () => {
+test('bump writes all twenty-two version files and is idempotent', () => {
   const root = fixture('2.1.0');
   try {
     const written = bumpRepositoryVersions(root, '2.2.0');
-    assert.equal(written.length, 20, `expected 20 files, got ${written.length}`);
+    assert.equal(written.length, 22, `expected 22 files, got ${written.length}`);
     for (const relative of [
       'windows/src-tauri/tauri.conf.json',
       'macos/src-tauri/tauri.conf.json',
@@ -96,6 +100,7 @@ test('bump writes all twenty version files and is idempotent', () => {
       'site/package.json',
       'shared/rust-core/Cargo.toml',
       'shared/tailsync-protocol/Cargo.toml',
+      'shared/tailsync-runtime/Cargo.toml',
       'shared/tailsync-themes/Cargo.toml',
       'shared/tailsync-history-classifier/Cargo.toml',
     ]) {
@@ -131,7 +136,7 @@ test('dry-run records the would-be writes without touching the tree', () => {
   const root = fixture('2.1.0');
   try {
     const written = bumpRepositoryVersions(root, '2.2.0', true);
-    assert.equal(written.length, 20);
+    assert.equal(written.length, 22);
     assert.match(readFileSync(join(root, 'windows/package.json'), 'utf8'), /2\.1\.0/);
     assert.match(readFileSync(join(root, 'README.md'), 'utf8'), /2\.1\.0/);
   } finally {

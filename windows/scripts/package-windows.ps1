@@ -170,6 +170,14 @@ $tauriCli = Join-Path $windowsRoot 'node_modules\.bin\tauri.cmd'
 $targetDirectory = Resolve-OutputPath -BasePath $tauriRoot -RequestedPath $BuildDirectory
 $releaseDirectory = Resolve-OutputPath -BasePath $windowsRoot -RequestedPath $OutputDirectory
 
+$initialSourceStatus = @(& git -C $repositoryRoot status --porcelain --untracked-files=all 2>$null)
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not inspect the source tree at $repositoryRoot."
+}
+if ($Release -and $initialSourceStatus.Count -gt 0) {
+    throw "Release packaging requires a clean source tree:`n$($initialSourceStatus -join "`n")"
+}
+
 $requiredFiles = @(
     $manifestPath,
     $configPath,
@@ -402,7 +410,17 @@ try {
     # came from the same commit.
     $commit = (& git -C $repositoryRoot rev-parse HEAD 2>$null)
     if ($LASTEXITCODE -ne 0) { $commit = $null }
-    $dirty = $null -ne (& git -C $repositoryRoot status --porcelain 2>$null | Select-Object -First 1)
+    $sourceStatus = @(& git -C $repositoryRoot status --porcelain --untracked-files=all 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not inspect the source tree after packaging."
+    }
+    $dirty = $sourceStatus.Count -gt 0
+    if ($dirty) {
+        Write-Warning "Packaging left the source tree dirty:`n$($sourceStatus -join "`n")"
+    }
+    if ($Release -and $dirty) {
+        throw "Release packaging modified the source tree; refusing to publish dirty provenance."
+    }
     $lockDigest = ((Get-FileHash -Algorithm SHA256 -LiteralPath $lockPath).Hash).ToLowerInvariant()
     $manifest = [ordered]@{
         product = $productName
