@@ -59,23 +59,40 @@ pub(crate) fn peer_snapshot_data(
             )
         })
         .collect();
-    let local_routes = network::mode_interface(&mode)
-        .or_else(|| network::infer_interface(&local.tailscale_ip).ok())
-        .filter(|_| !local.tailscale_ip.is_empty())
-        .map(|interface| {
-            let rtt_capable = interface != network::ConnectionInterface::Iroh;
-            vec![tailsync_core::peer::types::PeerRouteSnapshot {
-                interface,
-                address: local.tailscale_ip.clone(),
+    let local_routes = if network::mode_interface(&mode) == Some(network::ConnectionInterface::Iroh)
+    {
+        local
+            .candidates
+            .iter()
+            .map(|candidate| tailsync_core::peer::types::PeerRouteSnapshot {
+                interface: candidate.interface,
+                address: candidate.address.clone(),
                 status: network::PeerStatus::Connected,
                 online: true,
                 connected: true,
                 latency_ms: None,
                 pairing_endpoint: false,
-                rtt_capable,
-            }]
-        })
-        .unwrap_or_default();
+                rtt_capable: candidate.rtt_capable,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        network::mode_interface(&mode)
+            .or_else(|| network::infer_interface(&local.tailscale_ip).ok())
+            .filter(|_| !local.tailscale_ip.is_empty())
+            .map(|interface| {
+                vec![tailsync_core::peer::types::PeerRouteSnapshot {
+                    interface,
+                    address: local.tailscale_ip.clone(),
+                    status: network::PeerStatus::Connected,
+                    online: true,
+                    connected: true,
+                    latency_ms: None,
+                    pairing_endpoint: false,
+                    rtt_capable: true,
+                }]
+            })
+            .unwrap_or_default()
+    };
 
     serde_json::to_value(tailsync_runtime::contracts::PeersResponse {
         local: tailsync_runtime::contracts::LocalDeviceSnapshot {

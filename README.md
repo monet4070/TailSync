@@ -49,7 +49,7 @@ macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/r
 
 - 文本、图片、文件双向同步
 - 本地历史记录的搜索、收藏、恢复、受保护删除、数量限制，以及文本 / 图片 / 文件分类和日期筛选
-- `auto`、`lan_only`、`tailscale_only` 三种连接策略
+- `auto`、`lan_only`、`iroh_only`、`tailscale_only` 四种连接策略
 - UDP、mDNS / DNS-SD 与 Tailscale 候选发现
 - LAN 与 Tailscale 独立健康检查及往返延迟显示
 - `discovered`、`confirming`、`online`、`connected`、`offline` 状态模型
@@ -107,7 +107,7 @@ flowchart LR
 > 第一次使用？请阅读[《TailSync 实用指南》](docs/USER_GUIDE.zh-CN.md)，其中包含安装、配对、历史预览、文件批次、主题、存储管理和常见故障排查。
 
 1. 在 macOS 和 Windows 上分别启动 TailSync。
-2. 在两端的“设置 → 连接与设备”中选择 `自动`、`仅局域网` 或 `仅 Tailscale`。
+2. 在两端的“设置 → 连接与设备”中选择 `自动`、`仅局域网`、`仅 Iroh` 或 `仅 Tailscale`。
 3. 一端点击“允许配对”，另一端点击连接按钮，核对相同的六位验证码和设备指纹。
 4. 双方确认后，复制文本、图片或文件即可自动同步。
 

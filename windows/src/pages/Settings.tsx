@@ -44,6 +44,7 @@ import {
   useShortcutRecorder,
 } from "../hooks/useShortcutRecorder";
 import { useUpdater } from "../hooks/useUpdater";
+import { useLaunchAtLogin } from "../hooks/useLaunchAtLogin";
 import { X } from "lucide-react";
 import { ThemeLogo } from "../ThemeLogo";
 import { GIB } from "./settings/SettingsFormatters";
@@ -77,6 +78,7 @@ export function Settings() {
     themePreference,
   } = useTheme();
   const { t, setLocale, locale } = useI18n();
+  const launchAtLogin = useLaunchAtLogin();
   const toastTimer = useRef<number>(0);
   const settingsRef = useRef<SettingsData | null>(null);
   const saveQueue = useRef(new SerialTaskQueue());
@@ -318,7 +320,7 @@ export function Settings() {
   } = usePairing({ refreshDevices });
   const remotePairing = useRemotePairing();
 
-  const handleConnectionMode = async (mode: "auto" | "lan_only" | "tailscale_only") => {
+  const handleConnectionMode = async (mode: SettingsData["connection_mode"]) => {
     if (mode === settings?.connection_mode) return;
     resetDevices();
     if (await update({ connection_mode: mode })) {
@@ -503,6 +505,7 @@ export function Settings() {
         <SettingsGeneralSection
           settings={settings}
           t={t}
+          launchAtLogin={launchAtLogin}
           syncShortcutRecorder={syncShortcutRecorder}
           historyShortcutRecorder={historyShortcutRecorder}
           setGlobalSync={setGlobalSync}

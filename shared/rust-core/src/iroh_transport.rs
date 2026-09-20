@@ -17,6 +17,7 @@ use crate::db;
 use crate::identity::{
     persist_protected_bytes_create_only, read_protected_bytes, CreateOutcome, IdentityError,
 };
+use crate::peer::types::{ConnectionInterface, ConnectionMode};
 
 pub const ALPN: &[u8] = b"tailsync/4";
 pub const RTT_ALPN: &[u8] = b"tailsync/4/rtt";
@@ -182,7 +183,9 @@ impl IrohEndpointRegistry {
     }
 
     pub async fn refresh_for_mode(&self, mode: &str) -> Result<(), String> {
-        let result = if mode == "auto" {
+        let result = if ConnectionMode::parse(mode)
+            .is_some_and(|mode| mode.allows(ConnectionInterface::Iroh))
+        {
             self.ensure_endpoint().await.map(|_| ())
         } else {
             self.close_endpoint().await;

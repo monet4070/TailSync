@@ -411,7 +411,9 @@ async fn refresh_remembered_iroh_candidate(
 ) -> bool {
     let endpoint_id = {
         let settings = settings.lock().await;
-        if settings.connection_mode != "auto" {
+        if !tailsync_core::peer::types::ConnectionMode::parse(&settings.connection_mode)
+            .is_some_and(|mode| mode.allows(ConnectionInterface::Iroh))
+        {
             candidates
                 .retain(|candidate| candidate.candidate.interface != ConnectionInterface::Iroh);
             return false;
@@ -503,8 +505,15 @@ async fn connect_and_handshake(
         )
     };
     let expected_key = secure::decode_trusted_key(&expected_key)?;
-    if matches!(target, ResolvedTarget::Iroh(_)) && mode != "auto" {
-        return Err(std::io::Error::other("Iroh is only available in automatic mode").into());
+    if matches!(target, ResolvedTarget::Iroh(_))
+        && !tailsync_core::peer::types::ConnectionMode::parse(&mode).is_some_and(|mode| {
+            mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
+        })
+    {
+        return Err(std::io::Error::other(
+            "Iroh is unavailable in the selected connection mode",
+        )
+        .into());
     }
     let connection = match target {
         ResolvedTarget::Tcp(address) => {

@@ -55,6 +55,7 @@ impl ConnectionInterface {
 pub enum ConnectionMode {
     Auto,
     LanOnly,
+    IrohOnly,
     TailscaleOnly,
 }
 
@@ -65,6 +66,7 @@ impl ConnectionMode {
         match mode {
             "auto" => Some(Self::Auto),
             "lan" | "lan_only" => Some(Self::LanOnly),
+            "iroh" | "iroh_only" => Some(Self::IrohOnly),
             "tailscale" | "tailscale_only" => Some(Self::TailscaleOnly),
             _ => None,
         }
@@ -75,6 +77,7 @@ impl ConnectionMode {
         match self {
             Self::Auto => "auto",
             Self::LanOnly => "lan_only",
+            Self::IrohOnly => "iroh_only",
             Self::TailscaleOnly => "tailscale_only",
         }
     }
@@ -84,15 +87,18 @@ impl ConnectionMode {
         match self {
             Self::Auto => true,
             Self::LanOnly => interface == ConnectionInterface::Lan,
+            Self::IrohOnly => interface == ConnectionInterface::Iroh,
             Self::TailscaleOnly => interface == ConnectionInterface::Tailscale,
         }
     }
 
-    /// The discovery interfaces this mode probes (Auto probes both).
+    /// The TCP discovery interfaces this mode probes. Iroh reachability is
+    /// established by its authenticated session rather than UDP discovery.
     pub fn interfaces(self) -> &'static [ConnectionInterface] {
         match self {
             Self::Auto => &[ConnectionInterface::Lan, ConnectionInterface::Tailscale],
             Self::LanOnly => &[ConnectionInterface::Lan],
+            Self::IrohOnly => &[],
             Self::TailscaleOnly => &[ConnectionInterface::Tailscale],
         }
     }
@@ -379,6 +385,14 @@ mod tests {
             Some(ConnectionMode::LanOnly)
         );
         assert_eq!(
+            ConnectionMode::parse("iroh"),
+            Some(ConnectionMode::IrohOnly)
+        );
+        assert_eq!(
+            ConnectionMode::parse("iroh_only"),
+            Some(ConnectionMode::IrohOnly)
+        );
+        assert_eq!(
             ConnectionMode::parse("tailscale"),
             Some(ConnectionMode::TailscaleOnly)
         );
@@ -389,6 +403,7 @@ mod tests {
         assert_eq!(ConnectionMode::parse("cache-test"), None);
         assert_eq!(ConnectionMode::Auto.as_str(), "auto");
         assert_eq!(ConnectionMode::LanOnly.as_str(), "lan_only");
+        assert_eq!(ConnectionMode::IrohOnly.as_str(), "iroh_only");
         assert_eq!(ConnectionMode::TailscaleOnly.as_str(), "tailscale_only");
     }
 
@@ -404,6 +419,11 @@ mod tests {
         );
         assert!(ConnectionMode::LanOnly.allows(lan) && !ConnectionMode::LanOnly.allows(tail));
         assert!(
+            ConnectionMode::IrohOnly.allows(iroh)
+                && !ConnectionMode::IrohOnly.allows(lan)
+                && !ConnectionMode::IrohOnly.allows(tail)
+        );
+        assert!(
             !ConnectionMode::TailscaleOnly.allows(lan)
                 && ConnectionMode::TailscaleOnly.allows(tail)
         );
@@ -411,6 +431,7 @@ mod tests {
             ConnectionMode::LanOnly.interfaces(),
             &[ConnectionInterface::Lan]
         );
+        assert!(ConnectionMode::IrohOnly.interfaces().is_empty());
     }
 
     #[test]

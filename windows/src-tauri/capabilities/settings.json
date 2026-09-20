@@ -3,5 +3,10 @@
   "identifier": "settings",
   "description": "File and folder chooser access for the settings window",
   "windows": ["settings"],
-  "permissions": ["dialog:allow-open"]
+  "permissions": [
+    "dialog:allow-open",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
+  ]
 }

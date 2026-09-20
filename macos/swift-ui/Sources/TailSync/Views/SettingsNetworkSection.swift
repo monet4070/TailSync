@@ -10,10 +10,11 @@ extension SettingsView {
                 Picker("", selection: $settings.connection_mode) {
                     Text(Loc.t("settings.modeAuto")).tag("auto")
                     Text(Loc.t("settings.modeLan")).tag("lan_only")
+                    Text(Loc.t("settings.modeIroh")).tag("iroh_only")
                     Text(Loc.t("settings.modeTailscale")).tag("tailscale_only")
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 240)
+                .frame(width: 320)
                 .onChange(of: settings.connection_mode) { _ in
                     changeConnectionMode()
                 }
@@ -222,7 +223,8 @@ extension SettingsView {
                 )
             }
         }
-        if settings.connection_mode == "auto", !peer.candidates.isEmpty {
+        if ["auto", "iroh_only"].contains(settings.connection_mode),
+           !peer.candidates.isEmpty {
             return peer.candidates.map {
                 PeerRoute(
                     peer: peer,
@@ -253,6 +255,7 @@ extension SettingsView {
     func routeInterface(for mode: String) -> String? {
         switch mode {
         case "lan_only": return "lan"
+        case "iroh_only": return "iroh"
         case "tailscale_only": return "tailscale"
         default: return nil
         }
@@ -261,6 +264,7 @@ extension SettingsView {
     func routeIsAllowed(_ route: PeerRoute) -> Bool {
         switch settings.connection_mode {
         case "lan_only": return route.interface == "lan"
+        case "iroh_only": return route.interface == "iroh"
         case "tailscale_only": return route.interface == "tailscale"
         default: return true
         }

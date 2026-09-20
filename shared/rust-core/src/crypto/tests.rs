@@ -501,6 +501,11 @@ fn legacy_manual_connection_mode_maps_to_lan() {
     );
     assert_eq!(super::normalize_connection_mode("auto".into()), "auto");
     assert_eq!(super::normalize_connection_mode("lan".into()), "lan_only");
+    assert_eq!(super::normalize_connection_mode("iroh".into()), "iroh_only");
+    assert_eq!(
+        super::normalize_connection_mode("iroh_only".into()),
+        "iroh_only"
+    );
     assert_eq!(
         super::normalize_connection_mode("tailscale".into()),
         "tailscale_only"
@@ -808,6 +813,13 @@ fn settings_contract_bounds_are_validated() {
     assert!(settings.validate_user_values().is_err());
     settings.language = "zh-CN".into();
     assert!(settings.validate_user_values().is_ok());
+    settings.connection_mode = "iroh_only".into();
+    assert!(settings.validate_user_values().is_ok());
+    settings.connection_mode = "future_mode".into();
+    assert!(matches!(
+        settings.validate_user_values(),
+        Err(SettingsValidationError::ConnectionMode)
+    ));
 }
 
 #[test]

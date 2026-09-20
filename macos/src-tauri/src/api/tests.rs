@@ -389,3 +389,32 @@ fn peer_snapshot_does_not_infer_a_connection_from_selected_mode() {
     assert_eq!(routes[0]["rtt_capable"].as_bool(), Some(true));
     assert_eq!(data["self"]["routes"].as_array().map(Vec::len), Some(1));
 }
+
+#[test]
+fn iroh_only_snapshot_exposes_the_local_endpoint_route() {
+    let identity = DeviceIdentity::generate_for_test();
+    let settings = Settings {
+        connection_mode: "iroh_only".into(),
+        ..Settings::default()
+    };
+    let endpoint = "5866666666666666666666666666666666666666666666666666666666666666";
+
+    let data = peer_snapshot_data(
+        &identity,
+        &settings,
+        Ok((
+            LocalInfo {
+                hostname: "macbook".into(),
+                tailscale_ip: String::new(),
+                candidates: vec![PeerCandidate::new(ConnectionInterface::Iroh, endpoint)],
+            },
+            Vec::new(),
+        )),
+    );
+
+    let routes = data["self"]["routes"].as_array().expect("local routes");
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0]["interface"].as_str(), Some("iroh"));
+    assert_eq!(routes[0]["address"].as_str(), Some(endpoint));
+    assert_eq!(routes[0]["connected"].as_bool(), Some(true));
+}

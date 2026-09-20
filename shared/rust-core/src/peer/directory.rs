@@ -31,6 +31,7 @@ pub fn mode_interface(mode: &str) -> Option<ConnectionInterface> {
     match ConnectionMode::parse(mode)? {
         ConnectionMode::Auto => None,
         ConnectionMode::LanOnly => Some(ConnectionInterface::Lan),
+        ConnectionMode::IrohOnly => Some(ConnectionInterface::Iroh),
         ConnectionMode::TailscaleOnly => Some(ConnectionInterface::Tailscale),
     }
 }
@@ -122,14 +123,18 @@ pub fn parse_pairing_target(address: &str) -> Result<PairingTarget, String> {
 }
 
 /// Validate a pairing target against the connection mode: TCP targets must
-/// be in the mode's address ranges, and Iroh pairing requires automatic mode.
+/// be in the mode's address ranges, and Iroh targets require an Iroh-capable
+/// mode.
 pub fn validate_pairing_target(target: &PairingTarget, mode: &str) -> Result<(), String> {
     match target {
         PairingTarget::Tcp(ip) if !source_matches_mode(*ip, mode) => {
             Err("Peer address is outside the selected network".to_string())
         }
-        PairingTarget::Iroh(_) if mode != "auto" => {
-            Err("Iroh pairing is only available in automatic mode".to_string())
+        PairingTarget::Iroh(_)
+            if !ConnectionMode::parse(mode)
+                .is_some_and(|mode| mode.allows(ConnectionInterface::Iroh)) =>
+        {
+            Err("Iroh pairing is unavailable in the selected connection mode".to_string())
         }
         _ => Ok(()),
     }
@@ -658,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_mode_adds_iroh_between_lan_and_tailscale_only() {
+    fn connection_modes_keep_only_their_allowed_remembered_routes() {
         let identity = DeviceIdentity::generate_for_test();
         let mut settings = Settings::default();
         settings
@@ -694,6 +699,12 @@ mod tests {
         assert_eq!(
             lan_only[0].candidates[0].interface,
             ConnectionInterface::Lan
+        );
+        let iroh_only = merge_paired_peers(&settings, "iroh_only", Vec::new(), |_| false);
+        assert_eq!(iroh_only[0].candidates.len(), 1);
+        assert_eq!(
+            iroh_only[0].candidates[0].interface,
+            ConnectionInterface::Iroh
         );
         let tailscale_only = merge_paired_peers(&settings, "tailscale_only", Vec::new(), |_| false);
         assert_eq!(tailscale_only[0].candidates.len(), 1);
@@ -973,6 +984,7 @@ mod tests {
         assert!(validate_pairing_target(&lan, "tailscale").is_err());
         assert!(validate_pairing_target(&tailscale, "tailscale").is_ok());
         assert!(validate_pairing_target(&iroh, "auto").is_ok());
+        assert!(validate_pairing_target(&iroh, "iroh_only").is_ok());
         assert!(validate_pairing_target(&iroh, "lan").is_err());
         assert_eq!(
             validate_pairing_target(&lan, "tailscale").unwrap_err(),
@@ -980,7 +992,7 @@ mod tests {
         );
         assert_eq!(
             validate_pairing_target(&iroh, "lan").unwrap_err(),
-            "Iroh pairing is only available in automatic mode"
+            "Iroh pairing is unavailable in the selected connection mode"
         );
     }
 

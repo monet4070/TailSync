@@ -7,7 +7,7 @@
 //! both server paths apply.
 
 use crate::peer::directory::{infer_interface, source_matches_mode};
-use crate::peer::types::ConnectionInterface;
+use crate::peer::types::{ConnectionInterface, ConnectionMode};
 use std::net::SocketAddr;
 
 /// Where an inbound peer connection came from.
@@ -45,7 +45,8 @@ impl InboundSource {
     pub fn is_allowed(&self, mode: &str) -> bool {
         match self {
             Self::Tcp(address) => source_matches_mode(address.ip(), mode),
-            Self::Iroh(_) => mode == "auto",
+            Self::Iroh(_) => ConnectionMode::parse(mode)
+                .is_some_and(|mode| mode.allows(ConnectionInterface::Iroh)),
         }
     }
 }
@@ -98,6 +99,7 @@ mod tests {
 
         let iroh = InboundSource::Iroh("endpoint-1".to_string());
         assert!(iroh.is_allowed("auto"));
+        assert!(iroh.is_allowed("iroh_only"));
         assert!(!iroh.is_allowed("lan_only"));
         assert!(!iroh.is_allowed("tailscale_only"));
     }

@@ -162,15 +162,18 @@ pub(super) async fn handle_iroh_connection(
     pairing: Arc<PairingManager>,
     remote_invite: Option<tailsync_core::pairing::InviteClaim>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if settings.lock().await.connection_mode != "auto" {
-        return Err("Iroh connections are only accepted in automatic mode".into());
+    let mode = settings.lock().await.connection_mode.clone();
+    if !tailsync_core::peer::types::ConnectionMode::parse(&mode).is_some_and(|mode| {
+        mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
+    }) {
+        return Err("Iroh connections are unavailable in the selected connection mode".into());
     }
     let accepted = timeout(
         HANDSHAKE_TIMEOUT,
         secure::accept_with_pairing_window(
             stream,
             &identity,
-            local_peer_identity("auto"),
+            local_peer_identity(&mode),
             pairing.subscribe_window(),
         ),
     )
@@ -891,6 +894,11 @@ pub(super) fn local_peer_identity(mode: &str) -> secure::PeerIdentity {
     secure::PeerIdentity {
         hostname: lan::local_hostname(),
         tailscale_ip: String::new(),
-        iroh_endpoint_id: (mode == "auto").then(iroh::local_endpoint_id).flatten(),
+        iroh_endpoint_id: tailsync_core::peer::types::ConnectionMode::parse(mode)
+            .is_some_and(|mode| {
+                mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
+            })
+            .then(iroh::local_endpoint_id)
+            .flatten(),
     }
 }

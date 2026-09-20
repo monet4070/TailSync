@@ -8,6 +8,7 @@ import type { SettingsGeneralSectionProps } from "./SettingsSectionTypes";
 export function SettingsGeneralSection({
   settings,
   t,
+  launchAtLogin,
   syncShortcutRecorder,
   historyShortcutRecorder,
   setGlobalSync,
@@ -33,6 +34,36 @@ export function SettingsGeneralSection({
             type="checkbox"
             checked={settings.sync_enabled}
             onChange={(event) => void setGlobalSync(event.target.checked)}
+          />
+          <div className="toggle-track" />
+        </label>
+      </div>
+
+      <div
+        className="setting-row setting-row--toggle"
+        onClick={() => {
+          if (!launchAtLogin.loading && !launchAtLogin.busy) {
+            void launchAtLogin.setEnabled(!launchAtLogin.enabled);
+          }
+        }}
+      >
+        <div className="setting-row-info">
+          <span>{t("settings.launchAtLogin")}</span>
+          {launchAtLogin.error ? (
+            <small className="setting-inline-error" role="alert">
+              {t("settings.launchAtLoginError")} {launchAtLogin.error}
+            </small>
+          ) : (
+            <small>{t("settings.launchAtLoginDescription")}</small>
+          )}
+        </div>
+        <label className="toggle" onClick={(event) => event.stopPropagation()}>
+          <input
+            type="checkbox"
+            aria-label={t("settings.launchAtLogin")}
+            checked={launchAtLogin.enabled}
+            disabled={launchAtLogin.loading || launchAtLogin.busy}
+            onChange={(event) => void launchAtLogin.setEnabled(event.target.checked)}
           />
           <div className="toggle-track" />
         </label>

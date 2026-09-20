@@ -69,6 +69,15 @@ export function SettingsConnectionsSection({
         </button>
         <button
           type="button"
+          className={settings.connection_mode === "iroh_only" ? "active" : ""}
+          onClick={() => void handleConnectionMode("iroh_only")}
+          role="radio"
+          aria-checked={settings.connection_mode === "iroh_only"}
+        >
+          {t("settings.modeIroh")}
+        </button>
+        <button
+          type="button"
           className={settings.connection_mode === "tailscale_only" ? "active" : ""}
           onClick={() => void handleConnectionMode("tailscale_only")}
           role="radio"
@@ -312,7 +321,9 @@ export function SettingsConnectionsSection({
           <div className="device-list-state error">
             {t(settings.connection_mode === "tailscale_only"
               ? "settings.tailscaleUnavailable"
-              : "settings.lanUnavailable")}
+              : settings.connection_mode === "iroh_only"
+                ? "settings.irohUnavailable"
+                : "settings.lanUnavailable")}
           </div>
         )}
       </div>

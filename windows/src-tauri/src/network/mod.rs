@@ -79,8 +79,15 @@ pub use iroh::refresh_for_mode as refresh_iroh_for_mode;
 mod server;
 pub use iroh::start_server as start_iroh_server;
 
+fn mode_allows_iroh(mode: &str) -> bool {
+    tailsync_core::peer::types::ConnectionMode::parse(mode)
+        .is_some_and(|mode| mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh))
+}
+
 pub fn local_iroh_endpoint_id(mode: &str) -> Option<String> {
-    (mode == "auto").then(iroh::local_endpoint_id).flatten()
+    mode_allows_iroh(mode)
+        .then(iroh::local_endpoint_id)
+        .flatten()
 }
 pub use server::start_server;
 #[cfg(test)]
@@ -147,6 +154,18 @@ pub async fn discover_peers(
 ) -> Result<(tailscale::LocalInfo, Vec<tailscale::PeerInfo>), String> {
     match mode {
         "auto" => discover_auto().await,
+        "iroh_only" | "iroh" => Ok((
+            tailscale::LocalInfo {
+                hostname: lan::local_hostname(),
+                tailscale_ip: String::new(),
+                candidates: local_iroh_endpoint_id(mode)
+                    .map(|endpoint_id| {
+                        vec![PeerCandidate::new(ConnectionInterface::Iroh, endpoint_id)]
+                    })
+                    .unwrap_or_default(),
+            },
+            Vec::new(),
+        )),
         "lan_only" | "lan" => {
             let (mut local, mut peers) = discover_lan_hybrid().await?;
             local
@@ -260,7 +279,7 @@ pub async fn start_pairing(
                 let endpoint = iroh::endpoint().await?;
                 let stream = endpoint.connect(endpoint_id).await?;
                 let accepted =
-                    secure::connect_pairing(stream, &identity, local_peer_identity("auto"))
+                    secure::connect_pairing(stream, &identity, local_peer_identity(&mode))
                         .await
                         .map_err(|error| error.to_string())?;
                 let claimed = accepted
@@ -318,14 +337,15 @@ pub async fn start_pairing(
 
 /// Create a self-contained, one-time invite. The endpoint is started here so
 /// the displayed ID is backed by the live listener even when the server was
-/// just switched to automatic mode.
+/// just switched to an Iroh-capable mode.
 pub async fn create_remote_pairing_invite(
     pairing: Arc<PairingManager>,
     settings: Arc<Mutex<crypto::Settings>>,
     invites: Arc<RemotePairingInviteManager>,
 ) -> Result<RemotePairingInvite, String> {
-    if settings.lock().await.connection_mode != "auto" {
-        return Err("Remote Iroh pairing requires automatic connection mode".to_string());
+    let mode = settings.lock().await.connection_mode.clone();
+    if !mode_allows_iroh(&mode) {
+        return Err("Remote Iroh pairing is unavailable in the selected connection mode".into());
     }
     let endpoint = iroh::endpoint().await?;
     let invite = invites
@@ -345,8 +365,9 @@ pub async fn start_remote_pairing(
     link: &str,
 ) -> Result<(), String> {
     let invite = RemotePairingInvite::parse(link).map_err(|error| error.to_string())?;
-    if settings.lock().await.connection_mode != "auto" {
-        return Err("Remote Iroh pairing requires automatic connection mode".to_string());
+    let mode = settings.lock().await.connection_mode.clone();
+    if !mode_allows_iroh(&mode) {
+        return Err("Remote Iroh pairing is unavailable in the selected connection mode".into());
     }
     pairing.enable().await;
     pairing
@@ -382,7 +403,7 @@ pub async fn start_remote_pairing(
                 "The remote pairing invite was rejected or is no longer available".to_string(),
             );
         }
-        let accepted = secure::connect_pairing(stream, &identity, local_peer_identity("auto"))
+        let accepted = secure::connect_pairing(stream, &identity, local_peer_identity(&mode))
             .await
             .map_err(|error| error.to_string())?;
         let claimed = accepted

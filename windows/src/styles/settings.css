@@ -52,7 +52,7 @@
 
 .connection-mode {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 3px;
   margin: 10px 8px 8px;
   padding: 3px;
@@ -120,6 +120,8 @@
 .device-status.online::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: var(--green); }
 .device-list-state { padding: 18px 8px 8px; text-align: center; color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
 .device-list-state.error { color: #d84a4a; }
+
+.setting-inline-error { color: #d84a4a; }
 
 .peer-device-row { align-items: flex-start; padding-top: 10px; padding-bottom: 10px; }
 .peer-device-row .device-avatar { margin-top: 1px; }

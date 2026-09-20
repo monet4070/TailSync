@@ -11,6 +11,7 @@ import type {
 } from "../../tailsyncClient";
 import type { ConnectionTestState } from "../../hooks/useConnectionTests";
 import type { useShortcutRecorder } from "../../hooks/useShortcutRecorder";
+import type { useLaunchAtLogin } from "../../hooks/useLaunchAtLogin";
 import type { ThemePreference } from "../../hooks/useTheme";
 import type { UpdatePhase } from "../../hooks/useUpdater";
 import type { SettingsData } from "../../types/settings.generated";
@@ -19,6 +20,7 @@ import type { PendingThemePackage } from "../../utils/themePackageWorkflow";
 export type Translate = (key: string) => string;
 
 export type ShortcutRecorder = ReturnType<typeof useShortcutRecorder>;
+export type LaunchAtLoginController = ReturnType<typeof useLaunchAtLogin>;
 
 export interface SettingsConnectionsSectionProps {
   settings: SettingsData;
@@ -56,6 +58,7 @@ export interface SettingsConnectionsSectionProps {
 export interface SettingsGeneralSectionProps {
   settings: SettingsData;
   t: Translate;
+  launchAtLogin: LaunchAtLoginController;
   syncShortcutRecorder: ShortcutRecorder;
   historyShortcutRecorder: ShortcutRecorder;
   setGlobalSync: (enabled: boolean) => Promise<void>;

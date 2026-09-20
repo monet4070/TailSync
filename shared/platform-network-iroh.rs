@@ -63,7 +63,9 @@ pub async fn start_server(
             break;
         }
         let mode = settings.lock().await.connection_mode.clone();
-        if mode != "auto" {
+        if !tailsync_core::peer::types::ConnectionMode::parse(&mode).is_some_and(|mode| {
+            mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
+        }) {
             close_endpoint().await;
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}

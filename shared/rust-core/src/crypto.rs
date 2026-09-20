@@ -60,7 +60,7 @@ pub enum SettingsValidationError {
     StorageQuota,
     #[error("storage_root cannot be empty")]
     EmptyStorageRoot,
-    #[error("connection_mode must be 'auto', 'lan_only', or 'tailscale_only'")]
+    #[error("connection_mode must be 'auto', 'lan_only', 'iroh_only', or 'tailscale_only'")]
     ConnectionMode,
     #[error("language must be 'en' or 'zh-CN'")]
     Language,
@@ -92,6 +92,7 @@ enum LanguageContract {
 enum ConnectionModeContract {
     Auto,
     LanOnly,
+    IrohOnly,
     TailscaleOnly,
 }
 
@@ -123,8 +124,9 @@ fn normalize_connection_mode(mode: String) -> String {
     match mode.as_str() {
         // Older builds called the direct local-network mode "manual".
         "manual" | "lan" => "lan_only".to_string(),
+        "iroh" => "iroh_only".to_string(),
         "tailscale" => "tailscale_only".to_string(),
-        "auto" | "lan_only" | "tailscale_only" => mode,
+        "auto" | "lan_only" | "iroh_only" | "tailscale_only" => mode,
         other => {
             warn!("Unknown connection mode {other:?}; falling back to auto");
             default_connection_mode()
@@ -206,7 +208,7 @@ impl Settings {
         }
         if !matches!(
             self.connection_mode.as_str(),
-            "auto" | "lan_only" | "tailscale_only"
+            "auto" | "lan_only" | "iroh_only" | "tailscale_only"
         ) {
             return Err(SettingsValidationError::ConnectionMode);
         }

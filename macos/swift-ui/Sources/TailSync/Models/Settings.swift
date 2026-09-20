@@ -40,8 +40,9 @@ struct AppSettings: Codable, Equatable, Sendable {
         let mode = try values.decodeIfPresent(String.self, forKey: .connection_mode) ?? "auto"
         switch mode {
         case "manual", "lan": connection_mode = "lan_only"
+        case "iroh": connection_mode = "iroh_only"
         case "tailscale": connection_mode = "tailscale_only"
-        case "auto", "lan_only", "tailscale_only": connection_mode = mode
+        case "auto", "lan_only", "iroh_only", "tailscale_only": connection_mode = mode
         default: connection_mode = "auto"
         }
         trusted_peer_keys = try values.decodeIfPresent([String: String].self, forKey: .trusted_peer_keys) ?? [:]
