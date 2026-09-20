@@ -5,7 +5,7 @@
 // VERSION_MATRIX), keeps the Cargo.lock files in sync without
 // re-resolving dependencies, and self-verifies through the existing
 // validate-release-version.mjs. The "current product version" markers in
-// README/CONTEXT/USER_GUIDE/THEMING are part of the same matrix: each
+// both READMEs/CONTEXT/USER_GUIDE/THEMING are part of the same matrix: each
 // marker must appear exactly once and match the manifest version, so
 // `--check` (run in CI) fails on doc drift.
 
@@ -142,11 +142,28 @@ const DOC_VERSION_MARKERS = [
   },
   {
     relative: 'README.md',
+    pattern: /> TailSync (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?) is under active development/,
+    build: (version) => `> TailSync ${version} is under active development`,
+  },
+  {
+    relative: 'README.md',
+    pattern: /The current product version is (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?), and the database schema is v11/,
+    build: (version) => `The current product version is ${version}, and the database schema is v11`,
+  },
+  {
+    relative: 'README.zh-CN.md',
+    // Keep the localized README independently release-safe.
+    pattern: /\[!\[Version\]\(https:\/\/img\.shields\.io\/badge\/Version-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-D5684B\)\]\(https:\/\/github\.com\/monet4070\/TailSync\/tree\/v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\)/,
+    build: (version) =>
+      `[![Version](https://img.shields.io/badge/Version-v${version}-D5684B)](https://github.com/monet4070/TailSync/tree/v${version})`,
+  },
+  {
+    relative: 'README.zh-CN.md',
     pattern: /> TailSync (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?) 目前处于积极开发阶段/,
     build: (version) => `> TailSync ${version} 目前处于积极开发阶段`,
   },
   {
-    relative: 'README.md',
+    relative: 'README.zh-CN.md',
     pattern: /当前产品版本为 (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，数据库 schema 为 v11/,
     build: (version) => `当前产品版本为 ${version}，数据库 schema 为 v11`,
   },

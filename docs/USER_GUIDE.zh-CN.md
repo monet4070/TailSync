@@ -587,4 +587,4 @@ macOS 本机 API 使用用户专属目录下的 Unix socket，不监听本地 TC
 
 请勿公开分享验证码、设备私钥、应用数据密钥、完整剪贴板正文或包含敏感文件名的截图。
 
-更多技术背景可参阅项目 [README](../README.md)、[历史预览说明](features/history-preview.md) 和 [Theme V2 指南](THEMING.md)。
+更多技术背景可参阅项目 [中文 README](../README.zh-CN.md)、[历史预览说明](features/history-preview.md) 和 [Theme V2 指南](THEMING.md)。

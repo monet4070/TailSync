@@ -16,6 +16,16 @@ function fixture(version = '2.1.0') {
       '',
       `[![Version](https://img.shields.io/badge/Version-v${version}-D5684B)](https://github.com/monet4070/TailSync/tree/v${version})`,
       '',
+      `> TailSync ${version} is under active development.`,
+      '',
+      `The current product version is ${version}, and the database schema is v11.`,
+      '',
+    ].join('\n'),
+    'README.zh-CN.md': [
+      `# TailSync`,
+      '',
+      `[![Version](https://img.shields.io/badge/Version-v${version}-D5684B)](https://github.com/monet4070/TailSync/tree/v${version})`,
+      '',
       `> TailSync ${version} 目前处于积极开发阶段。`,
       '',
       `当前产品版本为 ${version}，数据库 schema 为 v11。`,
@@ -74,11 +84,11 @@ function fixture(version = '2.1.0') {
   return root;
 }
 
-test('bump writes all nineteen version files and is idempotent', () => {
+test('bump writes all twenty version files and is idempotent', () => {
   const root = fixture('2.1.0');
   try {
     const written = bumpRepositoryVersions(root, '2.2.0');
-    assert.equal(written.length, 19, `expected 19 files, got ${written.length}`);
+    assert.equal(written.length, 20, `expected 20 files, got ${written.length}`);
     for (const relative of [
       'windows/src-tauri/tauri.conf.json',
       'macos/src-tauri/tauri.conf.json',
@@ -105,7 +115,7 @@ test('bump writes all nineteen version files and is idempotent', () => {
       assert.equal(lock.version, '2.2.0');
       assert.equal(lock.packages[''].version, '2.2.0');
     }
-    for (const relative of ['README.md', 'CONTEXT.md', 'docs/USER_GUIDE.zh-CN.md', 'docs/THEMING.md']) {
+    for (const relative of ['README.md', 'README.zh-CN.md', 'CONTEXT.md', 'docs/USER_GUIDE.zh-CN.md', 'docs/THEMING.md']) {
       const doc = readFileSync(join(root, relative), 'utf8');
       assert.match(doc, /2\.2\.0/);
       assert.doesNotMatch(doc, /2\.1\.0/);
@@ -121,7 +131,7 @@ test('dry-run records the would-be writes without touching the tree', () => {
   const root = fixture('2.1.0');
   try {
     const written = bumpRepositoryVersions(root, '2.2.0', true);
-    assert.equal(written.length, 19);
+    assert.equal(written.length, 20);
     assert.match(readFileSync(join(root, 'windows/package.json'), 'utf8'), /2\.1\.0/);
     assert.match(readFileSync(join(root, 'README.md'), 'utf8'), /2\.1\.0/);
   } finally {
