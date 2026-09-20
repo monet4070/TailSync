@@ -117,6 +117,13 @@ jobs:
         run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
       - name: Run Windows application unit tests
         run: cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib
+      - name: Check generated Windows Tauri capability schemas
+        shell: pwsh
+        run: |
+          git diff --exit-code -- windows/src-tauri/gen/schemas
+          if (git ls-files --others --exclude-standard -- windows/src-tauri/gen/schemas) {
+            throw 'Windows Tauri capability schemas changed during the build. Regenerate and commit them.'
+          }
       - name: Run bidirectional interoperability probe
         shell: pwsh
         run: ./windows/scripts/test_cross_project_interop.ps1 -WinRoot ./windows -MacRoot ./macos
@@ -183,6 +190,10 @@ jobs:
         run: cargo clippy --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets -- -D warnings
       - name: Run macOS application unit tests
         run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
+      - name: Check generated macOS Tauri capability schemas
+        run: |
+          git diff --exit-code -- macos/src-tauri/gen/schemas
+          test -z "$(git ls-files --others --exclude-standard -- macos/src-tauri/gen/schemas)"
       - name: Run Swift UI unit tests
         env:
           TAILSYNC_WEB_SVG_RENDER_TESTS: "1"
