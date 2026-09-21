@@ -174,6 +174,54 @@ $initialSourceStatus = @(& git -C $repositoryRoot status --porcelain --untracked
 if ($LASTEXITCODE -ne 0) {
     throw "Could not inspect the source tree at $repositoryRoot."
 }
+
+function Assert-StoredZipArchive {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string[]]$ExpectedEntries
+    )
+
+    # tauri-plugin-updater intentionally compiles zip support without any
+    # decompressor features. Windows updater archives must therefore use the
+    # ZIP "stored" method (0), even though the installer inside is already
+    # compressed and Compress-Archive defaults to deflate (8).
+    [byte[]]$bytes = [System.IO.File]::ReadAllBytes($Path)
+    $eocd = -1
+    for ($index = $bytes.Length - 22; $index -ge [Math]::Max(0, $bytes.Length - 65557); $index--) {
+        if ([System.BitConverter]::ToUInt32($bytes, $index) -eq 0x06054b50) {
+            $eocd = $index
+            break
+        }
+    }
+    if ($eocd -lt 0) {
+        throw "Updater archive has no ZIP end-of-central-directory record: $Path"
+    }
+
+    $entryCount = [System.BitConverter]::ToUInt16($bytes, $eocd + 10)
+    $offset = [int][System.BitConverter]::ToUInt32($bytes, $eocd + 16)
+    $entryNames = [System.Collections.Generic.List[string]]::new()
+    for ($entryIndex = 0; $entryIndex -lt $entryCount; $entryIndex++) {
+        if ($offset + 46 -gt $bytes.Length -or
+            [System.BitConverter]::ToUInt32($bytes, $offset) -ne 0x02014b50) {
+            throw "Updater archive has an invalid ZIP central-directory entry: $Path"
+        }
+        $method = [System.BitConverter]::ToUInt16($bytes, $offset + 10)
+        $nameLength = [System.BitConverter]::ToUInt16($bytes, $offset + 28)
+        $extraLength = [System.BitConverter]::ToUInt16($bytes, $offset + 30)
+        $commentLength = [System.BitConverter]::ToUInt16($bytes, $offset + 32)
+        $name = [System.Text.Encoding]::UTF8.GetString($bytes, $offset + 46, $nameLength)
+        if ($method -ne 0) {
+            throw "Updater archive entry '$name' uses ZIP compression method $method; Tauri requires stored entries (method 0)."
+        }
+        $entryNames.Add($name)
+        $offset += 46 + $nameLength + $extraLength + $commentLength
+    }
+    foreach ($expectedEntry in $ExpectedEntries) {
+        if (!$entryNames.Contains($expectedEntry)) {
+            throw "Updater archive is missing required entry '$expectedEntry'."
+        }
+    }
+}
 if ($Release -and $initialSourceStatus.Count -gt 0) {
     throw "Release packaging requires a clean source tree:`n$($initialSourceStatus -join "`n")"
 }
@@ -354,7 +402,11 @@ try {
             Compress-Archive -LiteralPath @(
                 (Join-Path $updaterStaging $installerFile.Name),
                 $metadataPath
-            ) -DestinationPath $updaterPath -CompressionLevel Optimal
+            ) -DestinationPath $updaterPath -CompressionLevel NoCompression
+            Assert-StoredZipArchive -Path $updaterPath -ExpectedEntries @(
+                $installerFile.Name,
+                'tailsync-update.json'
+            )
             Invoke-Checked -FilePath $tauriCli -Arguments @('signer', 'sign', $updaterPath)
             if (!(Test-Path -LiteralPath $updaterSignaturePath -PathType Leaf)) {
                 throw "Tauri signer did not produce $updaterSignaturePath"

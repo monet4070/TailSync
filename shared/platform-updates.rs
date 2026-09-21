@@ -201,6 +201,17 @@ pub async fn install_available_update_headless() -> Result<bool, String> {
 fn validate_update_package(bytes: &[u8], expected_version: &str) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| format!("Invalid signed Windows update archive: {error}"))?;
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Invalid signed Windows update archive: {error}"))?;
+        if entry.compression() != zip::CompressionMethod::Stored {
+            return Err(format!(
+                "Signed Windows update entry {} must use ZIP stored compression for Tauri compatibility",
+                entry.name()
+            ));
+        }
+    }
     let mut metadata = archive
         .by_name(PACKAGE_METADATA_PATH)
         .map_err(|_| "Signed Windows update metadata is missing".to_string())?;
@@ -353,6 +364,31 @@ mod tests {
         assert!(validate_update_package(&bytes, "2.2.0")
             .unwrap_err()
             .contains("Refusing update downgrade or substitution"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_update_archive_rejects_compression_unsupported_by_tauri() {
+        use std::io::{Cursor, Write};
+
+        let cursor = Cursor::new(Vec::new());
+        let mut archive = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        archive
+            .start_file("TailSync-2.1.0-Windows-x64-setup.exe", options)
+            .unwrap();
+        archive.write_all(b"MZ updater fixture").unwrap();
+        archive
+            .start_file(super::PACKAGE_METADATA_PATH, options)
+            .unwrap();
+        archive
+            .write_all(br#"{"schema":1,"product":"TailSync","version":"2.1.0"}"#)
+            .unwrap();
+        let bytes = archive.finish().unwrap().into_inner();
+
+        let error = validate_update_package(&bytes, "2.1.0").unwrap_err();
+        assert!(error.contains("must use ZIP stored compression"));
     }
 
     #[cfg(target_os = "macos")]
