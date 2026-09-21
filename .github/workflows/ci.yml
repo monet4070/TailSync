@@ -120,9 +120,10 @@ jobs:
       - name: Check generated Windows Tauri capability schemas
         shell: pwsh
         run: |
-          git diff --exit-code -- windows/src-tauri/gen/schemas
-          if (git ls-files --others --exclude-standard -- windows/src-tauri/gen/schemas) {
-            throw 'Windows Tauri capability schemas changed during the build. Regenerate and commit them.'
+          $schemaStatus = @(git status --porcelain --untracked-files=all -- windows/src-tauri/gen/schemas)
+          if ($schemaStatus.Count -gt 0) {
+            $schemaStatus | Write-Host
+            throw 'Windows Tauri capability schemas changed during the build. Regenerate and commit them with stable line endings.'
           }
       - name: Run bidirectional interoperability probe
         shell: pwsh
@@ -192,8 +193,12 @@ jobs:
         run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib
       - name: Check generated macOS Tauri capability schemas
         run: |
-          git diff --exit-code -- macos/src-tauri/gen/schemas
-          test -z "$(git ls-files --others --exclude-standard -- macos/src-tauri/gen/schemas)"
+          schema_status="$(git status --porcelain --untracked-files=all -- macos/src-tauri/gen/schemas)"
+          if [[ -n "$schema_status" ]]; then
+            printf '%s\n' "$schema_status"
+            echo 'macOS Tauri capability schemas changed during the build.' >&2
+            exit 1
+          fi
       - name: Run Swift UI unit tests
         env:
           TAILSYNC_WEB_SVG_RENDER_TESTS: "1"
