@@ -4,11 +4,52 @@
 
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipboardFileReadError {
+    Busy { attempts: u32, elapsed_ms: u64 },
+    Win32 { code: u32 },
+    InvalidData { code: u32 },
+}
+
+impl std::fmt::Display for ClipboardFileReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy {
+                attempts,
+                elapsed_ms,
+            } => write!(
+                f,
+                "Windows clipboard remained busy after {attempts} attempts over {elapsed_ms}ms"
+            ),
+            Self::Win32 { code } => write!(f, "Windows clipboard read failed with error {code}"),
+            Self::InvalidData { code } => {
+                write!(f, "Windows clipboard file data was invalid (error {code})")
+            }
+        }
+    }
+}
+
+const CLIPBOARD_READ_DEADLINE: std::time::Duration = std::time::Duration::from_millis(750);
+
+fn clipboard_retry_delay(attempt: u32) -> std::time::Duration {
+    match attempt {
+        0 => std::time::Duration::from_millis(10),
+        1 => std::time::Duration::from_millis(20),
+        2 => std::time::Duration::from_millis(40),
+        3 => std::time::Duration::from_millis(80),
+        4 => std::time::Duration::from_millis(120),
+        5 => std::time::Duration::from_millis(160),
+        _ => std::time::Duration::from_millis(200),
+    }
+}
+
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
-/// Returns file paths from the clipboard, or None if no files.
-pub fn read_clipboard_files() -> Option<Vec<PathBuf>> {
+/// Returns file paths from the clipboard, or `Ok(None)` if no files are present.
+/// A temporary Windows clipboard failure is returned as an error so callers do
+/// not incorrectly fall back to broadcasting a file path as text.
+pub fn read_clipboard_files() -> Result<Option<Vec<PathBuf>>, ClipboardFileReadError> {
     #[cfg(target_os = "macos")]
     {
         read_files_macos()
@@ -21,7 +62,7 @@ pub fn read_clipboard_files() -> Option<Vec<PathBuf>> {
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        None
+        Ok(None)
     }
 }
 
@@ -92,28 +133,48 @@ fn resolve_clipboard_helper() -> Option<PathBuf> {
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(target_os = "windows")]
-fn read_files_windows() -> Option<Vec<PathBuf>> {
+fn read_files_windows() -> Result<Option<Vec<PathBuf>>, ClipboardFileReadError> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, GetClipboardData, OpenClipboard,
     };
     use windows_sys::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
+    let started = std::time::Instant::now();
+    let mut attempts = 0u32;
     unsafe {
-        if OpenClipboard(std::ptr::null_mut()) == 0 {
-            return None;
+        loop {
+            attempts += 1;
+            if OpenClipboard(std::ptr::null_mut()) != 0 {
+                break;
+            }
+            let code = GetLastError();
+            if !is_retryable_clipboard_error(code) {
+                return Err(ClipboardFileReadError::Win32 { code });
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= CLIPBOARD_READ_DEADLINE {
+                return Err(ClipboardFileReadError::Busy {
+                    attempts,
+                    elapsed_ms: elapsed.as_millis() as u64,
+                });
+            }
+            std::thread::sleep(clipboard_retry_delay(attempts - 1));
         }
         let h = GetClipboardData(15); // CF_HDROP
         if h.is_null() {
             CloseClipboard();
-            return None;
+            return Ok(None);
         }
         let drop_handle = h as HDROP;
         let count = DragQueryFileW(drop_handle, 0xFFFFFFFF, std::ptr::null_mut(), 0);
         if count == 0 {
             CloseClipboard();
-            return None;
+            return Err(ClipboardFileReadError::InvalidData {
+                code: GetLastError(),
+            });
         }
         let mut files = Vec::new();
         for i in 0..count {
@@ -130,11 +191,20 @@ fn read_files_windows() -> Option<Vec<PathBuf>> {
         }
         CloseClipboard();
         if files.is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(files)
+            Ok(Some(files))
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn is_retryable_clipboard_error(code: u32) -> bool {
+    // OpenClipboard commonly reports ERROR_ACCESS_DENIED while another process
+    // owns the clipboard. The other values cover transient sharing/lock states;
+    // zero is also treated as retryable because some clipboard owners do not
+    // set last-error consistently.
+    matches!(code, 0 | 5 | 32 | 33 | 170)
 }
 
 #[cfg(target_os = "windows")]
@@ -308,7 +378,30 @@ mod tests {
     #[test]
     fn unsupported_test_platform_has_no_file_clipboard_contents() {
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        assert!(super::read_clipboard_files().is_none());
+        assert!(super::read_clipboard_files().unwrap().is_none());
+    }
+
+    #[test]
+    fn retry_delays_cover_busy_clipboard_windows() {
+        let mut elapsed = std::time::Duration::ZERO;
+        for attempt in 0..7 {
+            elapsed += super::clipboard_retry_delay(attempt);
+        }
+        assert!(elapsed >= std::time::Duration::from_millis(500));
+        assert!(elapsed < super::CLIPBOARD_READ_DEADLINE);
+    }
+
+    #[test]
+    fn clipboard_error_is_typed_and_does_not_expose_content() {
+        let error = super::ClipboardFileReadError::Busy {
+            attempts: 4,
+            elapsed_ms: 200,
+        };
+        assert_eq!(
+            error.to_string(),
+            "Windows clipboard remained busy after 4 attempts over 200ms"
+        );
+        assert!(!error.to_string().contains("clipboard contents"));
     }
 
     #[cfg(target_os = "macos")]

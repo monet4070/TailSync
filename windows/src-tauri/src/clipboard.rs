@@ -276,7 +276,16 @@ async fn clipboard_loop(
         let clipboard = &*clipboard;
 
         // ── 1. Try files FIRST (macOS: text check also matches filenames) ──
-        let file_paths = clipboard_file::read_clipboard_files();
+        let file_paths = match clipboard_file::read_clipboard_files() {
+            Ok(paths) => paths,
+            Err(error) => {
+                // A busy or otherwise failed file clipboard is authoritative
+                // for this change event. Do not fall through to text/image
+                // handling, which could broadcast a file path as text.
+                warn!("Could not read clipboard files: {error}");
+                continue;
+            }
+        };
 
         if tick.is_multiple_of(600) {
             db::cleanup_clipboard_files(
