@@ -821,10 +821,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let retryAfter = self.watchdogRetryAfter, Date() < retryAfter { return }
                 self.watchdogCheckRunning = true
                 defer { self.watchdogCheckRunning = false }
-                // A zero revision requests an immediate consolidated snapshot;
-                // this keeps the watchdog independent while avoiding four
-                // separate status/progress/storage/settings round trips.
-                guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: 0) else {
+                // Liveness must use the daemon's constant-time ping. A
+                // consolidated snapshot also reads storage metadata and may
+                // legitimately wait behind a migration or a long database
+                // query; it must never be treated as process death.
+                guard await ApiClient.shared.ping() else {
                     self.consecutiveWatchdogFailures += 1
                     if self.consecutiveWatchdogFailures >= 2 {
                         print("[TailSync] daemon API unresponsive — restarting...")
@@ -834,6 +835,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.consecutiveWatchdogFailures = 0
                         self.scheduleWatchdogRetry()
                     }
+                    return
+                }
+                self.consecutiveWatchdogFailures = 0
+                self.resetWatchdogBackoff()
+                // A zero revision requests an immediate consolidated snapshot
+                // for menu/UI refresh only. Failure here leaves the daemon
+                // alone because the independent ping above already succeeded.
+                guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: 0) else {
                     return
                 }
                 let status = snapshot.status
@@ -876,31 +885,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.activeRouteSummary = routeSummary
                     self.rebuildMenu()
                 }
-                // Clipboard polling is part of daemon health; a live API and
-                // listener alone do not prove synchronization is working.
-                if status.alive && status.tcpServerHealthy && status.clipboardMonitorHealthy {
-                    self.consecutiveWatchdogFailures = 0
-                    self.resetWatchdogBackoff()
-                } else {
-                    let reason: String
-                    if !status.alive {
-                        reason = "API unresponsive"
-                    } else if !status.tcpServerHealthy {
-                        reason = "TCP server unhealthy"
-                    } else {
-                        reason = "clipboard monitor stalled"
-                    }
-                    self.consecutiveWatchdogFailures += 1
-                    // Restart after 2 consecutive failures (~6s of downtime)
-                    if self.consecutiveWatchdogFailures >= 2 {
-                        print("[TailSync] daemon \(reason) — restarting...")
-                        await Self.stopDaemonForRestart()
-                        guard self.daemonActivityAllowed else { return }
-                        self.launchDaemon()
-                        self.consecutiveWatchdogFailures = 0
-                        self.scheduleWatchdogRetry()
-                    }
-                }
+                // Health fields remain visible in the snapshot for UI
+                // diagnostics, but are deliberately not restart signals here:
+                // only the pure process-liveness ping can trigger recovery.
             }
         }
     }

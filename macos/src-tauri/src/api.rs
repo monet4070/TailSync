@@ -294,7 +294,7 @@ pub fn set_file_batch_progress(mut progress: FileProgress) {
     let now = Instant::now();
     if let Ok(mut state) = FILE_PROGRESS.lock() {
         let key = progress_key(&progress);
-        let tracked = state.entry(key).or_insert_with(|| TrackedFileProgress {
+        let tracked = state.entry(key.clone()).or_insert_with(|| TrackedFileProgress {
             progress: progress.clone(),
             samples: VecDeque::new(),
             updated_at: now,
