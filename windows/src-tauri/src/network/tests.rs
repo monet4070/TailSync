@@ -317,6 +317,7 @@ async fn connection_worker_stops_when_the_pool_disconnects_it() {
         client_identity.clone(),
         settings.clone(),
         shutdown_rx,
+        Arc::new(tokio::sync::Notify::new()),
     ));
     let mut pool = ConnectionPool::new(client_identity, settings);
     pool.insert_sender(ResolvedTarget::Tcp(address), "server".into(), sender);
@@ -422,6 +423,7 @@ async fn fifteen_minute_old_event_is_not_revived_after_reconnect() {
         client_identity,
         settings,
         shutdown_rx,
+        Arc::new(tokio::sync::Notify::new()),
     ));
 
     let mut stale = EventEnvelope::new(b"before-sleep".to_vec());

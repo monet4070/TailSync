@@ -1,6 +1,7 @@
 use super::{
     files_to_broadcast, outgoing_batch_failure_disposition, peer_is_transfer_eligible,
-    run_outgoing_recovery_loop, summarize_file_batch_failures, ClipboardEventGate,
+    run_outgoing_recovery_loop, run_periodic_maintenance, summarize_file_batch_failures,
+    ClipboardEventGate,
     FileBatchDeliveryError, OutgoingBatchFailureDisposition, IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -152,6 +153,40 @@ async fn outgoing_recovery_retries_pending_work_after_the_peer_returns() {
     shutdown_tx.send(true).unwrap();
     worker.await.unwrap();
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn periodic_maintenance_runs_and_stops_on_shutdown() {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let runs_for_worker = runs.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(run_periodic_maintenance(
+        shutdown_rx,
+        Duration::from_millis(1),
+        move || {
+            let runs = runs_for_worker.clone();
+            async move {
+                if runs.fetch_add(1, Ordering::SeqCst) >= 1 {
+                    // The test controls shutdown below; this branch simply
+                    // proves one slow callback does not create overlap.
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }
+        },
+    ));
+
+    tokio::time::timeout(Duration::from_millis(250), async {
+        while runs.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("periodic maintenance did not run twice");
+    shutdown_tx.send(true).unwrap();
+    worker.await.unwrap();
+    let completed = runs.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert_eq!(runs.load(Ordering::SeqCst), completed);
 }
 
 #[test]

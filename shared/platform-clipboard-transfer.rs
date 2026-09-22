@@ -2,6 +2,7 @@ use super::*;
 
 const OUTGOING_RECOVERY_PENDING_DELAY: Duration = Duration::from_secs(2);
 const OUTGOING_RECOVERY_IDLE_DELAY: Duration = Duration::from_secs(30);
+const EXPIRED_TRANSFER_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30 * 60);
 static OUTGOING_RECOVERY_NOTIFY: std::sync::LazyLock<tokio::sync::Notify> =
     std::sync::LazyLock::new(tokio::sync::Notify::new);
 
@@ -83,6 +84,47 @@ pub(super) async fn run_outgoing_recovery_loop<F, Fut>(
             }
         }
     }
+}
+
+/// Run bounded, serialized transfer maintenance until application shutdown.
+/// The callback is injected so the scheduling and shutdown semantics can be
+/// tested without touching a real TailSync data directory.
+pub(super) async fn run_periodic_maintenance<F, Fut>(
+    mut shutdown: watch::Receiver<bool>,
+    interval: Duration,
+    mut maintenance: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => maintenance().await,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Periodically remove expired incoming/outgoing transfer state. The file
+/// walk is blocking I/O and therefore runs outside the async executor.
+pub(super) async fn run_expired_transfer_maintenance(shutdown: watch::Receiver<bool>) {
+    run_periodic_maintenance(
+        shutdown,
+        EXPIRED_TRANSFER_MAINTENANCE_INTERVAL,
+        || async {
+            if let Err(error) = tokio::task::spawn_blocking(sync::cleanup_expired_transfers).await {
+                warn!("Expired-transfer maintenance task failed: {error}");
+            }
+        },
+    )
+    .await;
 }
 
 pub(super) async fn send_file_batch_to_peers(

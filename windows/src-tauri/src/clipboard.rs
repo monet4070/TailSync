@@ -146,6 +146,7 @@ pub fn start_monitor(
             settings.clone(),
             shutdown.clone(),
         ));
+        tauri::async_runtime::spawn(run_expired_transfer_maintenance(shutdown.clone()));
         let mut consecutive_failures = 0_u32;
         loop {
             let worker_started = tokio::time::Instant::now();
