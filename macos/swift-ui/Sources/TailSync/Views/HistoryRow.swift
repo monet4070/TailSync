@@ -293,9 +293,10 @@ enum HistoryThumbnailCache {
     private static let cache: NSCache<NSNumber, NSImage> = {
         let cache = NSCache<NSNumber, NSImage>()
         cache.countLimit = 30
-        // 160px thumbnails cost ~100 KB each; 8 MB leaves headroom over the
-        // 30-item count limit so the cache is bounded by count, not evictions.
-        cache.totalCostLimit = 8 * 1024 * 1024
+        // Keep the in-memory preview budget within the 1–4 MiB contract even
+        // when AppKit retains decoded backing stores larger than their point
+        // size. The count limit remains a second guard for tiny thumbnails.
+        cache.totalCostLimit = 4 * 1024 * 1024
         return cache
     }()
 
