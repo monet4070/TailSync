@@ -89,8 +89,8 @@ fn install_global_shortcuts(
                     }
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Err(error) = open_history_window(app).await {
-                            log::warn!("Could not open history from shortcut: {error}");
+                        if let Err(error) = toggle_history_window(app).await {
+                            log::warn!("Could not toggle history from shortcut: {error}");
                         }
                     });
                 })

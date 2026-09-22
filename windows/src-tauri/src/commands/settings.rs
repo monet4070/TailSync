@@ -164,6 +164,25 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Toggle the focused history window from the global shortcut. An unfocused
+/// or hidden history window is restored and focused; a focused visible one is
+/// hidden and enters the normal transient-window release path.
+pub(crate) async fn toggle_history_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+
+    if let Some(window) = app.get_webview_window(crate::window_lifecycle::HISTORY_WINDOW_LABEL) {
+        let visible = window.is_visible().map_err(|error| error.to_string())?;
+        let focused = window.is_focused().map_err(|error| error.to_string())?;
+        if visible && focused {
+            return crate::window_lifecycle::hide_then_release_window(
+                app,
+                crate::window_lifecycle::HISTORY_WINDOW_LABEL,
+            );
+        }
+    }
+    open_history_window(app).await
+}
+
 /// Open the favorites window that shares the history row interaction model.
 #[command]
 pub async fn open_favorites_window(app: tauri::AppHandle) -> Result<(), String> {

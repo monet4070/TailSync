@@ -205,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         GlobalShortcutController.shared.onHistoryActivate = {
-            Self.showHistory()
+            Self.toggleHistory()
         }
     }
 
@@ -933,6 +933,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     historyWC?.window,
                     for: .history
                 )
+            }
+        }
+    }
+
+    static func toggleHistory() {
+        DispatchQueue.main.async {
+            if historyWC?.window != nil {
+                HistoryWindowController.shared.toggle()
+            } else {
+                showHistory()
             }
         }
     }
