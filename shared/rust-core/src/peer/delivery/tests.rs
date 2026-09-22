@@ -891,6 +891,7 @@ fn fast_worker_config() -> WorkerConfig {
         refresh_timeout: Duration::from_secs(5),
         pending_frame_ttl: Duration::from_secs(5 * 60),
         delivery: DeliveryConfig::DEFAULT,
+        retry_wakeup: std::sync::Arc::new(tokio::sync::Notify::new()),
     }
 }
 
@@ -1002,6 +1003,109 @@ async fn worker_delivers_frames_and_registers_session() {
         0,
         "the session lease must be released when the worker exits"
     );
+}
+
+#[tokio::test]
+async fn worker_wakes_reconnect_backoff_when_new_work_arrives() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    let transfer_id = TransferId([0x29; 16]);
+    let adapter = std::sync::Arc::new(scripted_adapter(vec![
+        Err("network offline".to_string()),
+        Ok((MemoryConnection { io: client_io }, candidate.clone())),
+    ]));
+
+    let server = tokio::spawn(async move {
+        let mut server = MemoryConnection { io: server_io };
+        let frame = server.read_frame().await.unwrap();
+        assert_eq!(frame.command, Command::FileChunk);
+        server
+            .write_frame(
+                &Frame::try_new(
+                    Command::FileAck,
+                    0,
+                    frame.sequence,
+                    FileOffset {
+                        transfer_id,
+                        next_offset: 8,
+                    }
+                    .encode(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let (priority_tx, priority_rx) = mpsc::channel(4);
+    let (bulk_tx, bulk_rx) = mpsc::channel(4);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut config = fast_worker_config();
+    config.reconnect_delay = Duration::from_secs(5);
+    let wakeup = config.retry_wakeup.clone();
+    let config_for_worker = config.clone();
+    let adapter_for_worker = adapter.clone();
+    let worker = tokio::spawn(async move {
+        run_connection_worker(
+            adapter_for_worker.as_ref(),
+            &config_for_worker,
+            vec![candidate],
+            "peer".into(),
+            priority_rx,
+            bulk_rx,
+            shutdown_rx,
+        )
+        .await
+    });
+
+    timeout(Duration::from_secs(1), async {
+        while adapter
+            .connect_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("initial failed connection attempt");
+
+    let (completion_tx, mut completion_rx) = oneshot::channel();
+    priority_tx
+        .send(
+            QueuedFrame::confirmed_file(
+                Command::FileChunk,
+                vec![0u8; 8],
+                transfer_id,
+                completion_tx,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    wakeup.notify_one();
+
+    let receipt = timeout(Duration::from_millis(250), &mut completion_rx)
+        .await
+        .expect("new work should interrupt reconnect backoff")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.next_offset, Some(8));
+    assert_eq!(
+        adapter
+            .connect_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the worker should reconnect immediately after the wakeup"
+    );
+
+    server.await.unwrap();
+    drop(priority_tx);
+    drop(bulk_tx);
+    timeout(Duration::from_secs(2), worker)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 use tokio::time::{timeout, Duration};
 
 use crate::peer::delivery::QueuedFrame;
@@ -25,6 +25,7 @@ pub struct PoolSender {
     priority: mpsc::Sender<QueuedFrame>,
     bulk: mpsc::Sender<QueuedFrame>,
     shutdown: watch::Sender<bool>,
+    retry_wakeup: Arc<Notify>,
 }
 
 impl PoolSender {
@@ -36,10 +37,20 @@ impl PoolSender {
         bulk: mpsc::Sender<QueuedFrame>,
         shutdown: watch::Sender<bool>,
     ) -> Self {
+        Self::with_retry_wakeup(priority, bulk, shutdown, Arc::new(Notify::new()))
+    }
+
+    fn with_retry_wakeup(
+        priority: mpsc::Sender<QueuedFrame>,
+        bulk: mpsc::Sender<QueuedFrame>,
+        shutdown: watch::Sender<bool>,
+        retry_wakeup: Arc<Notify>,
+    ) -> Self {
         Self {
             priority,
             bulk,
             shutdown,
+            retry_wakeup,
         }
     }
 
@@ -105,6 +116,7 @@ impl ConnectionPoolState {
                 mpsc::Receiver<QueuedFrame>,
                 mpsc::Receiver<QueuedFrame>,
                 watch::Receiver<bool>,
+                Arc<Notify>,
             ) + Send
             + 'static,
     {
@@ -132,9 +144,17 @@ impl ConnectionPoolState {
         let (priority, priority_rx) = mpsc::channel::<QueuedFrame>(CHANNEL_SIZE);
         let (bulk, bulk_rx) = mpsc::channel::<QueuedFrame>(CHANNEL_SIZE);
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let sender = PoolSender::new(priority, bulk, shutdown);
+        let retry_wakeup = Arc::new(Notify::new());
+        let sender = PoolSender::with_retry_wakeup(priority, bulk, shutdown, retry_wakeup.clone());
         self.senders.insert(key, sender.clone());
-        spawn_worker(candidates, hostname, priority_rx, bulk_rx, shutdown_rx);
+        spawn_worker(
+            candidates,
+            hostname,
+            priority_rx,
+            bulk_rx,
+            shutdown_rx,
+            retry_wakeup,
+        );
         Ok(sender)
     }
 
@@ -188,7 +208,9 @@ pub async fn enqueue_queued_frame(
     timeout(SEND_TIMEOUT, sender.channel_for(command).send(queued))
         .await
         .map_err(|_| format!("Timed out queueing frame for {target}"))?
-        .map_err(|_| format!("Connection to {target} closed"))
+        .map_err(|_| format!("Connection to {target} closed"))?;
+    sender.retry_wakeup.notify_one();
+    Ok(())
 }
 
 pub async fn await_delivery(
@@ -255,7 +277,7 @@ mod tests {
             .sender_for_candidates(
                 "peer".to_string(),
                 vec![candidate()],
-                |_, _, priority_rx, bulk_rx, shutdown_rx| {
+                |_, _, priority_rx, bulk_rx, shutdown_rx, _retry_wakeup| {
                     tokio::spawn(async move {
                         let _receivers = (priority_rx, bulk_rx, shutdown_rx);
                         std::future::pending::<()>().await;

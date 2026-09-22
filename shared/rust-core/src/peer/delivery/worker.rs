@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::{timeout, Duration};
 use tracing::Instrument;
 
@@ -10,7 +12,7 @@ use super::*;
 /// Timing for the per-peer connection worker loop. Defaults match the shared
 /// platform constants (30 s heartbeat, 10 s heartbeat ACK window, 5 s
 /// reconnect delay).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct WorkerConfig {
     pub heartbeat_interval: Duration,
     pub heartbeat_ack_timeout: Duration,
@@ -25,6 +27,10 @@ pub struct WorkerConfig {
     /// frames whose caller has already timed out.
     pub pending_frame_ttl: Duration,
     pub delivery: DeliveryConfig,
+    /// Notified by the pool whenever a new frame enters either queue. This
+    /// lets a disconnected worker interrupt reconnect backoff without
+    /// consuming the frame or adding a polling loop.
+    pub retry_wakeup: Arc<Notify>,
 }
 
 impl Default for WorkerConfig {
@@ -36,6 +42,7 @@ impl Default for WorkerConfig {
             refresh_timeout: Duration::from_secs(5),
             pending_frame_ttl: Duration::from_secs(5 * 60),
             delivery: DeliveryConfig::DEFAULT,
+            retry_wakeup: Arc::new(Notify::new()),
         }
     }
 }
@@ -271,6 +278,13 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     _ = wait_for_shutdown(&mut shutdown) => {
                         crate::sync_warning::record_delivery_shutdown(&hostname);
                         return;
+                    },
+                    _ = config.retry_wakeup.notified() => {
+                        log::debug!(
+                            "New queued work woke reconnect for {} before {:?} elapsed",
+                            hostname,
+                            config.reconnect_delay
+                        );
                     },
                     _ = tokio::time::sleep(config.reconnect_delay) => {}
                 }
