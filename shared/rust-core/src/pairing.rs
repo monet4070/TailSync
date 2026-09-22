@@ -27,6 +27,8 @@ pub enum PairingError {
     WindowClosed,
     #[error("Another pairing is already in progress")]
     AlreadyInProgress,
+    #[error("Pairing connection was superseded by glare arbitration")]
+    GlareSuperseded,
     #[error("Cannot pair this device with itself")]
     SelfPairing,
     #[error("Invalid pairing interface")]
@@ -122,6 +124,13 @@ pub struct PairingStatus {
 }
 
 #[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingDirection {
+    Inbound,
+    Outbound,
+}
+
+#[doc(hidden)]
 pub struct PendingPairing {
     pub connection: SecureConnection,
     pub hostname: String,
@@ -130,6 +139,7 @@ pub struct PendingPairing {
     pub address: String,
     pub interface: String,
     pub remote_invite: Option<InviteClaim>,
+    pub direction: PairingDirection,
 }
 
 enum PairingAction {
@@ -148,6 +158,7 @@ struct PairingState {
     generation: u64,
     session_id: u64,
     control: Option<mpsc::Sender<PairingAction>>,
+    session_direction: Option<PairingDirection>,
 }
 
 pub struct PairingManager {
@@ -226,6 +237,7 @@ pub async fn install_pairing_session_with_invite(
             address,
             interface,
             remote_invite,
+            direction: PairingDirection::Inbound,
         })
         .await
 }

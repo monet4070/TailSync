@@ -33,6 +33,7 @@ impl PairingManager {
                 generation: 0,
                 session_id: 0,
                 control: None,
+                session_direction: None,
             }),
             settings,
             identity,
@@ -57,6 +58,7 @@ impl PairingManager {
             state.error = None;
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
+            state.session_direction = None;
             (old_control, state.generation, deadline)
         };
         if let Some(control) = old_control {
@@ -135,7 +137,7 @@ impl PairingManager {
     #[doc(hidden)]
     pub async fn install_session(
         self: &Arc<Self>,
-        pending: PendingPairing,
+        mut pending: PendingPairing,
     ) -> Result<(), PairingError> {
         if pending.remote_public_key == self.identity.public_key() {
             return Err(PairingError::SelfPairing);
@@ -151,14 +153,34 @@ impl PairingManager {
         .map_err(PairingError::Verification)?;
         let fingerprint = crate::identity::fingerprint(&pending.remote_public_key);
         let (control, receiver) = mpsc::channel(4);
-        let session_id = {
+        let install = {
             let mut state = self.state.lock().await;
-            if !state.enabled {
+            let old_control = if !state.enabled {
                 return Err(PairingError::WindowClosed);
-            }
-            if state.control.is_some() {
+            } else if let Some(existing_direction) = state.session_direction {
+                if state.control.is_none() {
+                    state.session_direction = None;
+                    None
+                } else if existing_direction == pending.direction {
+                    return Err(PairingError::AlreadyInProgress);
+                } else if pending.direction == self.preferred_direction(&pending.remote_public_key)
+                {
+                    // Both peers may open an outbound and inbound session at
+                    // the same time. Keep the globally deterministic side:
+                    // the lexicographically smaller identity keeps outbound,
+                    // the larger identity keeps inbound.
+                    state.control.take()
+                } else {
+                    return Err(PairingError::GlareSuperseded);
+                }
+            } else if state.control.is_some() {
+                // Older callers/tests may have installed a control channel
+                // without direction metadata. Preserve the single-session
+                // invariant rather than guessing at arbitration state.
                 return Err(PairingError::AlreadyInProgress);
-            }
+            } else {
+                None
+            };
             state.session_id = state.session_id.wrapping_add(1);
             state.phase = PairingPhase::Verification;
             state.peer = Some(PairingPeerStatus {
@@ -171,14 +193,34 @@ impl PairingManager {
             });
             state.error = None;
             state.control = Some(control);
-            state.session_id
+            state.session_direction = Some(pending.direction);
+            Ok((old_control, state.session_id))
         };
+        let (old_control, session_id) = match install {
+            Ok((old_control, session_id)) => (old_control, session_id),
+            Err(error) => {
+                let _ = pending.connection.shutdown().await;
+                return Err(error);
+            }
+        };
+
+        if let Some(old_control) = old_control {
+            let _ = old_control.send(PairingAction::Cancel).await;
+        }
 
         let manager = self.clone();
         tokio::spawn(async move {
             manager.run_session(session_id, pending, receiver).await;
         });
         Ok(())
+    }
+
+    fn preferred_direction(&self, remote_public_key: &[u8]) -> PairingDirection {
+        if self.identity.public_key() < remote_public_key {
+            PairingDirection::Outbound
+        } else {
+            PairingDirection::Inbound
+        }
     }
 
     pub async fn confirm(&self) -> Result<PairingStatus, PairingError> {
@@ -210,6 +252,7 @@ impl PairingManager {
             state.error = Some("Pairing was cancelled".to_string());
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
+            state.session_direction = None;
             control
         };
         self.window_signal.send_replace(false);
@@ -237,6 +280,7 @@ impl PairingManager {
             state.failed_attempts = state.failed_attempts.saturating_add(1);
             state.peer = None;
             state.control = None;
+            state.session_direction = None;
             let message = error.into();
             state.error = Some(message.clone());
             if crate::diagnostics::is_collected() {
@@ -274,6 +318,7 @@ impl PairingManager {
         }
         state.peer = None;
         state.control = None;
+        state.session_direction = None;
         state.phase = PairingPhase::Waiting;
         state.error = Some(message.clone());
         state.session_id = state.session_id.wrapping_add(1);
@@ -312,6 +357,7 @@ impl PairingManager {
             );
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
+            state.session_direction = None;
             (control, true)
         };
         if close_window {
@@ -547,6 +593,7 @@ impl PairingManager {
         state.expires_at = None;
         state.error = None;
         state.control = None;
+        state.session_direction = None;
         state.generation = state.generation.wrapping_add(1);
         self.window_signal.send_replace(false);
         if crate::diagnostics::is_collected() {
@@ -619,6 +666,7 @@ impl PairingManager {
             }
             state.phase = PairingPhase::Waiting;
             state.session_id = state.session_id.wrapping_add(1);
+            state.session_direction = None;
             (control, false)
         };
         if close_window {

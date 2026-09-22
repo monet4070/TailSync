@@ -12,8 +12,8 @@ use crate::crypto;
 use crate::db;
 use crate::identity::DeviceIdentity;
 use crate::pairing::{
-    PairingManager, PendingPairing, RemotePairingInvite, RemotePairingInviteManager,
-    DEFAULT_INVITE_TTL,
+    PairingDirection, PairingManager, PendingPairing, RemotePairingInvite,
+    RemotePairingInviteManager, DEFAULT_INVITE_TTL,
 };
 use crate::protocol::{Command, FileChunkPayload, FileOffset, Frame, ProtocolError, TransferId};
 use crate::sync;
@@ -372,6 +372,7 @@ pub async fn start_pairing(
             address: pairing_address,
             interface: pairing_interface.as_str().to_string(),
             remote_invite: None,
+            direction: PairingDirection::Outbound,
         })
         .await
         .map_err(|error| error.to_string())
@@ -491,6 +492,7 @@ pub async fn start_remote_pairing(
             address: pairing_address,
             interface: ConnectionInterface::Iroh.as_str().to_string(),
             remote_invite: None,
+            direction: PairingDirection::Outbound,
         })
         .await
         .map_err(|error| error.to_string())
