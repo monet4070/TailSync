@@ -383,6 +383,7 @@ impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
 /// Background task for one pooled connection: delegates the entire lifecycle
 /// loop (reconnect, heartbeat, keep-frame, queue priority) to the shared
 /// worker in `tailsync_core`.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn connection_task(
     candidates: Vec<ResolvedCandidate>,
     hostname: String,
@@ -394,8 +395,10 @@ pub(super) async fn connection_task(
     retry_wakeup: Arc<tokio::sync::Notify>,
 ) {
     let adapter = PoolAdapter { identity, settings };
-    let mut config = tailsync_core::peer::delivery::WorkerConfig::default();
-    config.retry_wakeup = retry_wakeup;
+    let config = tailsync_core::peer::delivery::WorkerConfig {
+        retry_wakeup,
+        ..Default::default()
+    };
     tailsync_core::peer::delivery::run_connection_worker(
         &adapter,
         &config,
