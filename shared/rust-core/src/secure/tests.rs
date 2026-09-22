@@ -78,6 +78,51 @@ fn encrypted_record(transport: &mut TransportState, frame: &Frame) -> Vec<u8> {
     record
 }
 
+async fn negotiate_capabilities_for_one_session(
+    server_capabilities: CapabilitySet,
+    client_capabilities: CapabilitySet,
+) -> (CapabilitySet, CapabilitySet) {
+    let server_identity = DeviceIdentity::generate_for_test();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let server_public = server_identity.public_key().to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let accepted = accept_with_test_capabilities(
+            stream,
+            &server_identity,
+            PeerIdentity {
+                hostname: "server".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+            server_capabilities,
+        )
+        .await
+        .unwrap();
+        let mut connection = accepted.connection;
+        let negotiated = connection.negotiated_capabilities();
+        write_ready(&mut connection).await.unwrap();
+        negotiated
+    });
+    let client = connect_with_test_capabilities(
+        TcpStream::connect(address).await.unwrap(),
+        &client_identity,
+        PeerIdentity {
+            hostname: "client".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        },
+        "server",
+        &server_public,
+        client_capabilities,
+    )
+    .await
+    .unwrap();
+    (server.await.unwrap(), client.negotiated_capabilities())
+}
+
 async fn assert_read_resumes_after_cancellation(split_at: usize) {
     let (mut sender_transport, receiver_transport) = transport_pair();
     let expected = Frame::try_new(
@@ -112,6 +157,7 @@ async fn assert_read_resumes_after_cancellation(split_at: usize) {
             iroh_endpoint_id: None,
         },
         session_id: "test-session".into(),
+        negotiated_capabilities: CapabilitySet::disabled(),
     };
 
     assert!(
@@ -162,6 +208,102 @@ fn peer_identity_rejects_an_explicitly_incompatible_wire_version() {
     assert!(error.contains("peer (2.0.2) uses v2"));
     assert!(error.contains("requires v4"));
     assert!(error.contains("Update TailSync on both devices"));
+}
+
+#[test]
+fn capability_advertisements_are_backward_compatible_and_fail_closed() {
+    let identity = PeerIdentity {
+        hostname: "current".into(),
+        tailscale_ip: String::new(),
+        iroh_endpoint_id: None,
+    };
+    let legacy = encode_handshake_advertisement(identity.clone(), CapabilitySet::disabled())
+        .expect("encode legacy-compatible identity");
+    assert!(!String::from_utf8_lossy(&legacy).contains("capabilities"));
+    assert_eq!(
+        decode_handshake_advertisement(&legacy)
+            .expect("decode legacy-compatible identity")
+            .1,
+        CapabilitySet::disabled()
+    );
+
+    let enabled = CapabilitySet {
+        file_sliding_window: true,
+        image_compressed_chunks: false,
+    };
+    let encoded = encode_handshake_advertisement(identity, enabled).expect("encode capabilities");
+    assert_eq!(
+        decode_handshake_advertisement(&encoded)
+            .expect("decode capabilities")
+            .1,
+        enabled
+    );
+
+    let unknown = br#"{"hostname":"future","tailscale_ip":"","protocol_version":4,"capabilities":{"future_extension":true}}"#;
+    assert_eq!(
+        decode_handshake_advertisement(unknown)
+            .expect("unknown capabilities must be ignored")
+            .1,
+        CapabilitySet::disabled()
+    );
+    let malformed = br#"{"hostname":"bad","tailscale_ip":"","protocol_version":4,"capabilities":{"file_sliding_window":"yes"}}"#;
+    assert!(decode_handshake_advertisement(malformed).is_err());
+}
+
+#[test]
+fn capability_negotiation_requires_build_runtime_and_peer_support() {
+    let requested = CapabilitySwitches {
+        file_sliding_window: true,
+        image_compressed_chunks: true,
+    }
+    .advertised();
+    assert_eq!(
+        requested.file_sliding_window,
+        cfg!(feature = "protocol-file-sliding-window")
+    );
+    assert_eq!(
+        requested.image_compressed_chunks,
+        cfg!(feature = "protocol-image-compressed-chunks")
+    );
+
+    let both = CapabilitySet {
+        file_sliding_window: true,
+        image_compressed_chunks: true,
+    };
+    assert_eq!(
+        CapabilitySet::negotiate(both, CapabilitySet::disabled()),
+        CapabilitySet::disabled()
+    );
+    assert_eq!(
+        CapabilitySet::negotiate(
+            both,
+            CapabilitySet {
+                file_sliding_window: true,
+                image_compressed_chunks: false,
+            }
+        ),
+        CapabilitySet {
+            file_sliding_window: true,
+            image_compressed_chunks: false,
+        }
+    );
+}
+
+#[tokio::test]
+async fn negotiated_capabilities_are_bound_to_each_authenticated_session() {
+    let both = CapabilitySet {
+        file_sliding_window: true,
+        image_compressed_chunks: true,
+    };
+    let first = negotiate_capabilities_for_one_session(both, both).await;
+    assert_eq!(first, (both, both));
+
+    let image_only = CapabilitySet {
+        file_sliding_window: false,
+        image_compressed_chunks: true,
+    };
+    let second = negotiate_capabilities_for_one_session(both, image_only).await;
+    assert_eq!(second, (image_only, image_only));
 }
 
 #[tokio::test]
@@ -257,6 +399,7 @@ async fn encrypted_frame_write_does_not_wait_forever_for_a_stalled_peer() {
             iroh_endpoint_id: None,
         },
         session_id: "test-session".into(),
+        negotiated_capabilities: CapabilitySet::disabled(),
     };
     let frame = Frame::try_new(Command::TextPayload, 0, 1, b"stalled".to_vec()).unwrap();
 

@@ -8,16 +8,61 @@ use crate::identity::{DeviceIdentity, NOISE_PROTOCOL};
 use crate::protocol::{self, Command, Frame, ProtocolError};
 
 use super::{
-    AcceptedConnection, HandshakePurpose, PeerIdentity, SecureConnection, SessionIo,
+    decode_handshake_advertisement, encode_handshake_advertisement, AcceptedConnection,
+    CapabilitySet, CapabilitySwitches, HandshakePurpose, PeerIdentity, SecureConnection, SessionIo,
     TRANSPORT_WRITE_IDLE_TIMEOUT,
 };
 
 pub async fn connect<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    expected_hostname: &str,
+    expected_public_key: &[u8],
+) -> Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    connect_with_capabilities(
+        stream,
+        identity,
+        local_info,
+        expected_hostname,
+        expected_public_key,
+        CapabilitySwitches::default(),
+    )
+    .await
+}
+
+pub async fn connect_with_capabilities<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    expected_hostname: &str,
+    expected_public_key: &[u8],
+    switches: CapabilitySwitches,
+) -> Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    connect_with_advertised_capabilities(
+        stream,
+        identity,
+        local_info,
+        expected_hostname,
+        expected_public_key,
+        switches.advertised(),
+    )
+    .await
+}
+
+async fn connect_with_advertised_capabilities<S>(
     mut stream: S,
     identity: &DeviceIdentity,
     local_info: PeerIdentity,
     expected_hostname: &str,
     expected_public_key: &[u8],
+    local_capabilities: CapabilitySet,
 ) -> Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>
 where
     S: SessionIo + 'static,
@@ -40,7 +85,7 @@ where
         return Err("Handshake rejected".into());
     }
     let length = handshake.read_message(&ack.payload, &mut output)?;
-    let peer_info: PeerIdentity = serde_json::from_slice(&output[..length])?;
+    let (peer_info, peer_capabilities) = decode_handshake_advertisement(&output[..length])?;
     validate_peer_identity(&peer_info)?;
     let remote_key = handshake
         .get_remote_static()
@@ -57,7 +102,7 @@ where
     }
 
     output.fill(0);
-    let local_payload = serde_json::to_vec(&local_info)?;
+    let local_payload = encode_handshake_advertisement(local_info, local_capabilities)?;
     let length = handshake.write_message(&local_payload, &mut output)?;
     write_plain_frame(&mut stream, Command::HandshakeFinish, &output[..length]).await?;
 
@@ -73,6 +118,7 @@ where
         partial_expected: None,
         peer_identity: peer_info,
         session_id,
+        negotiated_capabilities: CapabilitySet::negotiate(local_capabilities, peer_capabilities),
     };
     let ready = secure.read_frame().await?;
     match ready.command {
@@ -98,6 +144,29 @@ where
     }
 }
 
+#[cfg(test)]
+pub(super) async fn connect_with_test_capabilities<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    expected_hostname: &str,
+    expected_public_key: &[u8],
+    local_capabilities: CapabilitySet,
+) -> Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    connect_with_advertised_capabilities(
+        stream,
+        identity,
+        local_info,
+        expected_hostname,
+        expected_public_key,
+        local_capabilities,
+    )
+    .await
+}
+
 pub async fn connect_pairing<S>(
     mut stream: S,
     identity: &DeviceIdentity,
@@ -106,6 +175,7 @@ pub async fn connect_pairing<S>(
 where
     S: SessionIo + 'static,
 {
+    let local_capabilities = CapabilitySet::disabled();
     let mut handshake = build_handshake(identity, true)?;
     let mut output = vec![0u8; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
     let length = handshake.write_message(&[], &mut output)?;
@@ -124,7 +194,7 @@ where
         return Err("Pairing handshake rejected".into());
     }
     let length = handshake.read_message(&ack.payload, &mut output)?;
-    let peer_identity: PeerIdentity = serde_json::from_slice(&output[..length])?;
+    let (peer_identity, peer_capabilities) = decode_handshake_advertisement(&output[..length])?;
     validate_peer_identity(&peer_identity)?;
     let remote_public_key = handshake
         .get_remote_static()
@@ -132,7 +202,7 @@ where
         .to_vec();
 
     output.fill(0);
-    let local_payload = serde_json::to_vec(&local_info)?;
+    let local_payload = encode_handshake_advertisement(local_info, local_capabilities)?;
     let length = handshake.write_message(&local_payload, &mut output)?;
     write_plain_frame(
         &mut stream,
@@ -153,6 +223,7 @@ where
         partial_expected: None,
         peer_identity: peer_identity.clone(),
         session_id,
+        negotiated_capabilities: CapabilitySet::negotiate(local_capabilities, peer_capabilities),
     };
     let ready = connection.read_frame().await?;
     match ready.command {
@@ -195,7 +266,14 @@ pub async fn accept<S>(
 where
     S: SessionIo + 'static,
 {
-    accept_inner(stream, identity, local_info, None).await
+    accept_inner(
+        stream,
+        identity,
+        local_info,
+        None,
+        CapabilitySet::disabled(),
+    )
+    .await
 }
 
 pub async fn accept_with_pairing_window<S>(
@@ -207,7 +285,47 @@ pub async fn accept_with_pairing_window<S>(
 where
     S: SessionIo + 'static,
 {
-    accept_inner(stream, identity, local_info, Some(pairing_enabled)).await
+    accept_inner(
+        stream,
+        identity,
+        local_info,
+        Some(pairing_enabled),
+        CapabilitySet::disabled(),
+    )
+    .await
+}
+
+pub async fn accept_with_pairing_window_and_capabilities<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    pairing_enabled: watch::Receiver<bool>,
+    switches: CapabilitySwitches,
+) -> Result<AcceptedConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    accept_inner(
+        stream,
+        identity,
+        local_info,
+        Some(pairing_enabled),
+        switches.advertised(),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(super) async fn accept_with_test_capabilities<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    local_capabilities: CapabilitySet,
+) -> Result<AcceptedConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    accept_inner(stream, identity, local_info, None, local_capabilities).await
 }
 
 async fn accept_inner<S>(
@@ -215,6 +333,7 @@ async fn accept_inner<S>(
     identity: &DeviceIdentity,
     local_info: PeerIdentity,
     mut pairing_enabled: Option<watch::Receiver<bool>>,
+    local_capabilities: CapabilitySet,
 ) -> Result<AcceptedConnection, Box<dyn std::error::Error + Send + Sync>>
 where
     S: SessionIo + 'static,
@@ -259,7 +378,7 @@ where
     }
     handshake.read_message(&request.payload, &mut output)?;
 
-    let local_payload = serde_json::to_vec(&local_info)?;
+    let local_payload = encode_handshake_advertisement(local_info, local_capabilities)?;
     let length = handshake.write_message(&local_payload, &mut output)?;
     let ack_command = match purpose {
         HandshakePurpose::Connection => Command::HandshakeAck,
@@ -294,7 +413,7 @@ where
         return Err("Expected handshake finish".into());
     }
     let length = handshake.read_message(&finish.payload, &mut output)?;
-    let peer_info: PeerIdentity = serde_json::from_slice(&output[..length])?;
+    let (peer_info, peer_capabilities) = decode_handshake_advertisement(&output[..length])?;
     validate_peer_identity(&peer_info)?;
     let remote_key = handshake
         .get_remote_static()
@@ -321,6 +440,10 @@ where
             partial_expected: None,
             peer_identity: peer_info.clone(),
             session_id,
+            negotiated_capabilities: CapabilitySet::negotiate(
+                local_capabilities,
+                peer_capabilities,
+            ),
         },
         peer_identity: peer_info,
         remote_public_key: remote_key,

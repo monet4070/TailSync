@@ -12,6 +12,83 @@ const MAX_TRANSPORT_RECORD: usize = u16::MAX as usize;
 const MAX_TRANSPORT_PLAINTEXT: usize = MAX_TRANSPORT_RECORD - 16;
 const TRANSPORT_WRITE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Fine-grained protocol extensions advertised inside the authenticated
+/// Noise handshake. Missing and unknown fields are deliberately treated as
+/// unsupported so older and newer peers safely fall back to wire-v4 behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CapabilitySet {
+    pub file_sliding_window: bool,
+    pub image_compressed_chunks: bool,
+}
+
+impl CapabilitySet {
+    pub const fn disabled() -> Self {
+        Self {
+            file_sliding_window: false,
+            image_compressed_chunks: false,
+        }
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        !self.file_sliding_window && !self.image_compressed_chunks
+    }
+
+    /// Negotiate each extension independently. A remote advertisement can
+    /// never enable a capability that the local connection did not offer.
+    pub const fn negotiate(local: Self, remote: Self) -> Self {
+        Self {
+            file_sliding_window: local.file_sliding_window && remote.file_sliding_window,
+            image_compressed_chunks: local.image_compressed_chunks
+                && remote.image_compressed_chunks,
+        }
+    }
+}
+
+/// Runtime kill switches for protocol extensions. Build support and runtime
+/// permission are both required before an extension may be advertised.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CapabilitySwitches {
+    pub file_sliding_window: bool,
+    pub image_compressed_chunks: bool,
+}
+
+impl CapabilitySwitches {
+    pub const fn advertised(self) -> CapabilitySet {
+        CapabilitySet {
+            file_sliding_window: cfg!(feature = "protocol-file-sliding-window")
+                && self.file_sliding_window,
+            image_compressed_chunks: cfg!(feature = "protocol-image-compressed-chunks")
+                && self.image_compressed_chunks,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct HandshakeAdvertisement {
+    #[serde(flatten)]
+    identity: PeerIdentity,
+    #[serde(default, skip_serializing_if = "CapabilitySet::is_empty")]
+    capabilities: CapabilitySet,
+}
+
+fn encode_handshake_advertisement(
+    identity: PeerIdentity,
+    capabilities: CapabilitySet,
+) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&HandshakeAdvertisement {
+        identity,
+        capabilities,
+    })
+}
+
+fn decode_handshake_advertisement(
+    bytes: &[u8],
+) -> Result<(PeerIdentity, CapabilitySet), serde_json::Error> {
+    let advertisement: HandshakeAdvertisement = serde_json::from_slice(bytes)?;
+    Ok((advertisement.identity, advertisement.capabilities))
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerIdentity {
     pub hostname: String,
@@ -91,6 +168,7 @@ pub struct SecureConnection {
     partial_expected: Option<usize>,
     peer_identity: PeerIdentity,
     session_id: String,
+    negotiated_capabilities: CapabilitySet,
 }
 
 pub struct AcceptedConnection {
@@ -116,6 +194,12 @@ impl SecureConnection {
     /// session. The raw handshake transcript is never exposed.
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Extensions negotiated for this exact authenticated connection. The
+    /// value is created by the handshake and is never cached across sessions.
+    pub const fn negotiated_capabilities(&self) -> CapabilitySet {
+        self.negotiated_capabilities
     }
 
     pub async fn read_frame(&mut self) -> Result<Frame, ProtocolError> {
@@ -293,11 +377,15 @@ mod handshake;
 use handshake::{flush_with_timeout, write_all_with_timeout};
 
 pub use handshake::{
-    accept, accept_with_pairing_window, connect, connect_pairing, write_error, write_ready,
+    accept, accept_with_pairing_window, accept_with_pairing_window_and_capabilities, connect,
+    connect_pairing, connect_with_capabilities, write_error, write_ready,
 };
 
 #[cfg(test)]
-use handshake::{build_handshake, read_plain_frame};
+use handshake::{
+    accept_with_test_capabilities, build_handshake, connect_with_test_capabilities,
+    read_plain_frame,
+};
 
 pub fn decode_trusted_key(encoded: &str) -> Result<Vec<u8>, String> {
     identity::decode_public_key(encoded).map_err(|error| error.to_string())

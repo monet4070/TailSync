@@ -18,7 +18,7 @@ use crate::peer::types::DeliveryReceipt;
 use crate::protocol::{
     Command, EventEnvelope, Frame, MessageId, TransferId, EVENT_ENVELOPE_HEADER_SIZE,
 };
-use crate::secure::SecureConnection;
+use crate::secure::{CapabilitySet, SecureConnection};
 
 /// Keep interactive clipboard traffic responsive without allowing a
 /// continuously readable priority queue to starve file-transfer traffic.
@@ -96,6 +96,12 @@ pub trait DeliveryConnection: Send {
     fn session_id(&self) -> Option<&str> {
         None
     }
+
+    /// Extensions negotiated for this connection. Test adapters and legacy
+    /// transports fail closed unless they explicitly override this method.
+    fn negotiated_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::disabled()
+    }
 }
 
 impl DeliveryConnection for SecureConnection {
@@ -113,6 +119,10 @@ impl DeliveryConnection for SecureConnection {
 
     fn session_id(&self) -> Option<&str> {
         Some(SecureConnection::session_id(self))
+    }
+
+    fn negotiated_capabilities(&self) -> CapabilitySet {
+        SecureConnection::negotiated_capabilities(self)
     }
 }
 

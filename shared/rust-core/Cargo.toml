@@ -46,6 +46,11 @@ security-framework-sys = "2"
 [features]
 test-support = []
 acceptance-injection = []
+# Protocol extensions stay compiled out unless their implementation commit
+# opts in explicitly. Runtime switches are applied independently during each
+# authenticated handshake.
+protocol-file-sliding-window = []
+protocol-image-compressed-chunks = []
 
 [dev-dependencies]
 proptest = "1"
