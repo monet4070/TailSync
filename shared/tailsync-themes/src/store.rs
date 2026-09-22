@@ -713,7 +713,7 @@ pub fn get_theme_asset_slot_from_package(
         .ok_or_else(|| {
             ThemeError::new("THEME_ASSET_SLOT", "asset slot is invalid", "/assetSlot")
         })?;
-    let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec()))
+    let mut archive = ZipArchive::new(Cursor::new(bytes))
         .map_err(|_| ThemeError::new("THEME_ARCHIVE", "invalid package", ""))?;
     let mut file = archive
         .by_name(key)
