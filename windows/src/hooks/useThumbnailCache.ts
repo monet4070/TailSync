@@ -2,8 +2,9 @@
 //
 // Loads image thumbnails on demand through the typed client, deduplicates
 // in-flight loads, and evicts the oldest entries (Map insertion order)
-// beyond `maxEntries`. `clear()` resets both the cache and the in-flight
-// markers so entries can be reloaded (e.g. after clearing history).
+// beyond either the entry or byte budget. `clear()` resets both the cache
+// and the in-flight markers so entries can be reloaded (e.g. after clearing
+// history).
 
 import { useCallback, useRef, useState } from "react";
 import { getImageData } from "../tailsyncClient";
@@ -14,7 +15,21 @@ export interface ThumbnailData {
   height: number;
 }
 
-export function useThumbnailCache(maxEntries: number) {
+function thumbnailMemoryCost(thumbnail: ThumbnailData): number {
+  const decodedPixels = Math.max(0, thumbnail.width) * Math.max(0, thumbnail.height) * 4;
+  const encodedString = thumbnail.b64.length * 2;
+  return Math.min(Number.MAX_SAFE_INTEGER, decodedPixels + encodedString);
+}
+
+function thumbnailCacheCost(thumbnails: Map<number, ThumbnailData>): number {
+  let total = 0;
+  for (const thumbnail of thumbnails.values()) {
+    total = Math.min(Number.MAX_SAFE_INTEGER, total + thumbnailMemoryCost(thumbnail));
+  }
+  return total;
+}
+
+export function useThumbnailCache(maxEntries: number, maxBytes = 4 * 1024 * 1024) {
   const [thumbnails, setThumbnails] = useState<Map<number, ThumbnailData>>(new Map());
   const inFlight = useRef<Set<number>>(new Set());
   const retainedIds = useRef<Set<number> | null>(null);
@@ -43,7 +58,7 @@ export function useThumbnailCache(maxEntries: number) {
               width: resp.thumbnail_width,
               height: resp.thumbnail_height,
             });
-            while (next.size > maxEntries) {
+            while (next.size > maxEntries || thumbnailCacheCost(next) > maxBytes) {
               const oldestId = next.keys().next().value;
               if (oldestId === undefined) break;
               next.delete(oldestId);
@@ -57,7 +72,7 @@ export function useThumbnailCache(maxEntries: number) {
         console.error(`Thumbnail load failed for ${id}:`, error);
       }
     },
-    [maxEntries],
+    [maxBytes, maxEntries],
   );
 
   const retain = useCallback((ids: Set<number>) => {
