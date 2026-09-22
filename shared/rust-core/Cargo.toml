@@ -45,6 +45,7 @@ security-framework-sys = "2"
 
 [features]
 test-support = []
+acceptance-injection = []
 
 [dev-dependencies]
 proptest = "1"

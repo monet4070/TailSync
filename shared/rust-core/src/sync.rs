@@ -88,6 +88,51 @@ pub struct ReceivedFile {
     pub path: PathBuf,
 }
 
+/// Durable receive-side commit boundary for a completed file batch.
+///
+/// The state is stored in the existing batch sidecar, so schema v11 and the
+/// device wire remain unchanged. Transitions are strictly forward-only and
+/// are persisted before the next externally visible action begins.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceivedBatchCommitState {
+    #[default]
+    Receiving,
+    HashVerified,
+    ClipboardStaged,
+    HistoryPersisted,
+    ReceiptPersisted,
+    Acked,
+    Cleaned,
+}
+
+impl ReceivedBatchCommitState {
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Receiving => Some(Self::HashVerified),
+            Self::HashVerified => Some(Self::ClipboardStaged),
+            Self::ClipboardStaged => Some(Self::HistoryPersisted),
+            Self::HistoryPersisted => Some(Self::ReceiptPersisted),
+            Self::ReceiptPersisted => Some(Self::Acked),
+            Self::Acked => Some(Self::Cleaned),
+            Self::Cleaned => None,
+        }
+    }
+
+    #[cfg(feature = "acceptance-injection")]
+    fn injection_name(self) -> &'static str {
+        match self {
+            Self::Receiving => "receiving",
+            Self::HashVerified => "hash_verified",
+            Self::ClipboardStaged => "clipboard_staged",
+            Self::HistoryPersisted => "history_persisted",
+            Self::ReceiptPersisted => "receipt_persisted",
+            Self::Acked => "acked",
+            Self::Cleaned => "cleaned",
+        }
+    }
+}
+
 /// Durable history work produced by the receive pipeline.
 ///
 /// Keeping the batch identity, authenticated source, and post-commit UI
@@ -265,6 +310,7 @@ struct IncomingBatch {
     local_generation: u64,
     files: Vec<Option<ReceivedFile>>,
     manifest_path: PathBuf,
+    commit_state: ReceivedBatchCommitState,
 }
 
 type ReceiveOperationKey = (String, ReceiveKey);

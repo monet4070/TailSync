@@ -1350,7 +1350,7 @@ async fn shared_receive_path_uses_transfer_scoped_state_and_commit() {
 }
 
 #[tokio::test]
-async fn shared_batch_finish_keeps_manifest_until_platform_commit() {
+async fn shared_batch_finish_keeps_manifest_until_network_ack() {
     let directory = TestDirectory::new("shared-batch-path");
     let manifest = manifest_with_sizes(&[0]);
     let batch_id = manifest.batch_id;
@@ -1391,9 +1391,16 @@ async fn shared_batch_finish_keeps_manifest_until_platform_commit() {
     verify_and_commit_received_file(&engine, "peer", pending)
         .await
         .unwrap();
+    let manifest_path = directory
+        .path()
+        .join(format!("{}.batch.json", batch_id.as_hex()));
     SyncEngine::finish_file_batch_shared(&engine, "peer", batch_id)
         .await
         .unwrap();
+    assert!(manifest_path.is_file());
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(persisted["commit_state"], "receipt_persisted");
     assert!(engine
         .lock()
         .await
@@ -1402,6 +1409,12 @@ async fn shared_batch_finish_keeps_manifest_until_platform_commit() {
         .received()
         .iter()
         .any(|event| { event.batch_id == Some(batch_id) && event.batch_complete }));
+
+    SyncEngine::acknowledge_file_batch_shared(&engine, "peer", batch_id, directory.path())
+        .await
+        .unwrap();
+    assert!(!manifest_path.exists());
+    assert!(!engine.lock().await.has_file_batch("peer", batch_id));
 }
 
 #[tokio::test]

@@ -1,3 +1,6 @@
+#[cfg(all(feature = "acceptance-injection", not(debug_assertions)))]
+compile_error!("acceptance-injection must never be enabled in a release build");
+
 pub mod cancellation;
 pub mod crypto;
 pub mod db;

@@ -29,6 +29,10 @@ pub(crate) struct PersistedIncomingBatch {
     /// default to zero, which safely prevents activating stale batches.
     #[serde(default)]
     pub(crate) local_generation: u64,
+    /// Forward-only commit boundary. Older v4/schema-v11 sidecars safely
+    /// resume at `Receiving`.
+    #[serde(default)]
+    pub(crate) commit_state: ReceivedBatchCommitState,
 }
 
 /// Resume-persistence failures (T352 migration). Display strings match the
@@ -262,6 +266,7 @@ mod tests {
             },
             files: Vec::new(),
             local_generation: 0,
+            commit_state: ReceivedBatchCommitState::Receiving,
         };
 
         persist_incoming_batch(&path, &batch).unwrap();

@@ -1,5 +1,56 @@
 use super::*;
 
+fn persisted_incoming_batch(
+    batch: &IncomingBatch,
+    commit_state: ReceivedBatchCommitState,
+) -> PersistedIncomingBatch {
+    PersistedIncomingBatch {
+        source: batch.source.clone(),
+        source_device_id: batch.source_device_id.clone(),
+        manifest: batch.manifest.clone(),
+        files: batch.files.clone(),
+        local_generation: batch.local_generation,
+        commit_state,
+    }
+}
+
+pub(super) fn transition_received_batch_commit(
+    batch: &mut IncomingBatch,
+    next: ReceivedBatchCommitState,
+) -> Result<(), String> {
+    if batch.commit_state >= next {
+        return Ok(());
+    }
+    if batch.commit_state.next() != Some(next) {
+        return Err(format!(
+            "Invalid received batch commit transition: {:?} -> {:?}",
+            batch.commit_state, next
+        ));
+    }
+    persist_incoming_batch(&batch.manifest_path, &persisted_incoming_batch(batch, next))
+        .map_err(|error| error.to_string())?;
+    batch.commit_state = next;
+    maybe_abort_received_batch_stage(next, batch.manifest.batch_id);
+    Ok(())
+}
+
+#[cfg(feature = "acceptance-injection")]
+fn maybe_abort_received_batch_stage(state: ReceivedBatchCommitState, batch_id: TransferId) {
+    let requested = std::env::var("TAILSYNC_RECEIVED_BATCH_ABORT_STAGE").unwrap_or_default();
+    if requested == state.injection_name() {
+        let batch = batch_id.as_hex();
+        eprintln!(
+            "tailsync acceptance injection: stage={} batch={} exit=70",
+            state.injection_name(),
+            &batch[..12]
+        );
+        std::process::exit(70);
+    }
+}
+
+#[cfg(not(feature = "acceptance-injection"))]
+fn maybe_abort_received_batch_stage(_state: ReceivedBatchCommitState, _batch_id: TransferId) {}
+
 fn prepare_incoming_batch(
     manifest: FileBatchManifest,
     source: String,
@@ -12,6 +63,7 @@ fn prepare_incoming_batch(
     let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
     let mut files = vec![None; manifest.files.len()];
     let mut local_generation = default_generation;
+    let mut commit_state = ReceivedBatchCommitState::Receiving;
     let mut persisted_source_device_id = source_device_id;
     let mut restored_generation = false;
     if let Ok(data) = fs::read(&manifest_path) {
@@ -23,6 +75,7 @@ fn prepare_incoming_batch(
                 return Err("Persisted file batch state has an invalid file count".to_string());
             }
             local_generation = saved.local_generation;
+            commit_state = saved.commit_state;
             if !saved.source_device_id.is_empty() {
                 persisted_source_device_id = saved.source_device_id.clone();
             }
@@ -46,6 +99,7 @@ fn prepare_incoming_batch(
             manifest: manifest.clone(),
             files: files.clone(),
             local_generation,
+            commit_state,
         },
     )
     .map_err(|error| error.to_string())?;
@@ -58,6 +112,7 @@ fn prepare_incoming_batch(
             local_generation,
             files,
             manifest_path,
+            commit_state,
         },
         restored_generation,
     ))
@@ -155,6 +210,7 @@ impl SyncEngine {
         let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
         let mut files = vec![None; manifest.files.len()];
         let mut local_generation = self.clipboard_generation.wrapping_add(1).max(1);
+        let mut commit_state = ReceivedBatchCommitState::Receiving;
         let mut persisted_source_device_id = source_device_id.clone();
         let mut restored_generation = false;
         if let Ok(data) = fs::read(&manifest_path) {
@@ -168,6 +224,7 @@ impl SyncEngine {
                     return Err("Persisted file batch state has an invalid file count".to_string());
                 }
                 local_generation = saved.local_generation;
+                commit_state = saved.commit_state;
                 if !saved.source_device_id.is_empty() {
                     persisted_source_device_id = saved.source_device_id.clone();
                 }
@@ -193,6 +250,7 @@ impl SyncEngine {
                 manifest: manifest.clone(),
                 files: files.clone(),
                 local_generation,
+                commit_state,
             },
         )
         .map_err(|error| error.to_string())?;
@@ -209,6 +267,7 @@ impl SyncEngine {
                 local_generation,
                 files,
                 manifest_path,
+                commit_state,
             },
         );
         Ok(())
@@ -346,7 +405,8 @@ impl SyncEngine {
         let key = (source.to_string(), batch_id);
         let now = chrono::Utc::now().timestamp();
         self.prune_completed_batches();
-        let Some(batch) = self.incoming_batches.get(&key) else {
+        let clipboard_generation = self.clipboard_generation;
+        let Some(batch) = self.incoming_batches.get_mut(&key) else {
             self.prune_cancelled_batches();
             if self.completed_batches.contains_key(&key)
                 || self.cancelled_batches.contains_key(&key)
@@ -361,8 +421,10 @@ impl SyncEngine {
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| "File batch is incomplete".to_string())?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::HashVerified)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::ClipboardStaged)?;
         let total = batch.manifest.files.len();
-        let activate_clipboard = batch.local_generation == self.clipboard_generation;
+        let activate_clipboard = batch.local_generation == clipboard_generation;
         let source_device_id = batch.source_device_id.clone();
         let manifest_hash = Self::file_batch_manifest_hash(&batch.manifest)?;
         let platform = self
@@ -389,9 +451,17 @@ impl SyncEngine {
 
         let batch = self
             .incoming_batches
-            .remove(&key)
+            .get_mut(&key)
             .ok_or_else(|| "File batch state disappeared".to_string())?;
-        let _ = fs::remove_file(batch.manifest_path);
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::HistoryPersisted)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::ReceiptPersisted)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::Acked)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::Cleaned)?;
+        let batch = self
+            .incoming_batches
+            .remove(&key)
+            .ok_or_else(|| "File batch state disappeared before direct-path cleanup".to_string())?;
+        fs::remove_file(&batch.manifest_path).map_err(|error| error.to_string())?;
         self.completed_batches.insert(key.clone(), now);
         self.completed_batch_manifests.insert(key, batch.manifest);
         Ok(())
@@ -451,11 +521,12 @@ impl SyncEngine {
         for receive_operation_lock in receive_operation_locks {
             receive_operation_guards.push(receive_operation_lock.lock_owned().await);
         }
-        let (commit, platform, manifest_path, manifest, now) = {
+        let (commit, platform, manifest, now) = {
             let mut engine = sync_engine.lock().await;
             let now = chrono::Utc::now().timestamp();
             engine.prune_completed_batches();
-            let Some(batch) = engine.incoming_batches.get(&key) else {
+            let clipboard_generation = engine.clipboard_generation;
+            let Some(batch) = engine.incoming_batches.get_mut(&key) else {
                 engine.prune_cancelled_batches();
                 if engine.completed_batches.contains_key(&key)
                     || engine.cancelled_batches.contains_key(&key)
@@ -470,13 +541,15 @@ impl SyncEngine {
                 .into_iter()
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| "File batch is incomplete".to_string())?;
+            transition_received_batch_commit(batch, ReceivedBatchCommitState::HashVerified)?;
+            transition_received_batch_commit(batch, ReceivedBatchCommitState::ClipboardStaged)?;
             let manifest = batch.manifest.clone();
             let commit = FileReceiveCommit {
                 batch_id: Some(batch_id),
                 files,
                 batch_total: manifest.files.len(),
                 batch_complete: true,
-                activate_clipboard: batch.local_generation == engine.clipboard_generation,
+                activate_clipboard: batch.local_generation == clipboard_generation,
                 device: source.to_string(),
                 source_device_id: batch.source_device_id.clone(),
                 manifest_hash: Some(Self::file_batch_manifest_hash(&manifest)?),
@@ -485,22 +558,84 @@ impl SyncEngine {
                 .platform
                 .clone()
                 .ok_or_else(|| "Clipboard platform is unavailable".to_string())?;
-            (commit, platform, batch.manifest_path.clone(), manifest, now)
+            (commit, platform, manifest, now)
         };
 
         platform.files_received(commit).await?;
 
         let mut engine = sync_engine.lock().await;
-        let Some(_batch) = engine.incoming_batches.remove(&key) else {
+        let Some(batch) = engine.incoming_batches.get_mut(&key) else {
             if engine.completed_batches.contains_key(&key) {
                 return Ok(());
             }
             return Err("File batch state disappeared after durable commit".to_string());
         };
-        let _ = fs::remove_file(manifest_path);
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::HistoryPersisted)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::ReceiptPersisted)?;
         engine.completed_batches.insert(key.clone(), now);
         engine.completed_batch_manifests.insert(key, manifest);
         drop(receive_operation_guards);
+        Ok(())
+    }
+
+    /// Persist the network acknowledgement boundary and only then remove the
+    /// durable receive manifest. The network server calls this after the ACK
+    /// frame has been written successfully.
+    pub async fn acknowledge_file_batch_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: &str,
+        batch_id: TransferId,
+        incoming_dir: &Path,
+    ) -> Result<(), String> {
+        let key = (source.to_string(), batch_id);
+        let operation_lock = {
+            let mut engine = sync_engine.lock().await;
+            engine.batch_operation_lock(&key)
+        };
+        let _operation_guard = operation_lock.lock().await;
+        let mut engine = sync_engine.lock().await;
+        if let Some(batch) = engine.incoming_batches.get_mut(&key) {
+            while batch.commit_state < ReceivedBatchCommitState::Acked {
+                let next = batch
+                    .commit_state
+                    .next()
+                    .ok_or_else(|| "Received batch commit state cannot advance".to_string())?;
+                transition_received_batch_commit(batch, next)?;
+            }
+            transition_received_batch_commit(batch, ReceivedBatchCommitState::Cleaned)?;
+            let batch = engine
+                .incoming_batches
+                .remove(&key)
+                .ok_or_else(|| "File batch state disappeared during cleanup".to_string())?;
+            fs::remove_file(&batch.manifest_path).map_err(|error| error.to_string())?;
+            engine
+                .completed_batches
+                .insert(key.clone(), chrono::Utc::now().timestamp());
+            engine.completed_batch_manifests.insert(key, batch.manifest);
+            return Ok(());
+        }
+
+        let manifest_path = incoming_dir.join(format!("{}.batch.json", batch_id.as_hex()));
+        let Ok(data) = fs::read(&manifest_path) else {
+            return Ok(());
+        };
+        let mut saved = serde_json::from_slice::<PersistedIncomingBatch>(&data)
+            .map_err(|error| format!("Invalid persisted file batch state: {error}"))?;
+        if saved.source != source || saved.manifest.batch_id != batch_id {
+            return Err(
+                "Persisted file batch state belongs to another source or batch".to_string(),
+            );
+        }
+        while saved.commit_state < ReceivedBatchCommitState::Cleaned {
+            let next = saved
+                .commit_state
+                .next()
+                .ok_or_else(|| "Received batch commit state cannot advance".to_string())?;
+            saved.commit_state = next;
+            persist_incoming_batch(&manifest_path, &saved).map_err(|error| error.to_string())?;
+            maybe_abort_received_batch_stage(next, batch_id);
+        }
+        fs::remove_file(manifest_path).map_err(|error| error.to_string())?;
         Ok(())
     }
 

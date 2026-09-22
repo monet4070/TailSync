@@ -618,6 +618,7 @@ async fn handle_accepted_connection_inner(
                         .await
                         .notify_file_batch_failed(Some(batch_id), error);
                 }
+                let acknowledged = result.is_ok();
                 let response = match result {
                     Ok(()) => Frame::try_new(
                         Command::FileBatchAccept,
@@ -633,6 +634,20 @@ async fn handle_accepted_connection_inner(
                     )?,
                 };
                 stream.write_frame(&response).await?;
+                if acknowledged {
+                    if let Err(error) = sync::SyncEngine::acknowledge_file_batch_shared(
+                        &sync_engine,
+                        &peer_info.hostname,
+                        batch_id,
+                        &db::get_incoming_dir(),
+                    )
+                    .await
+                    {
+                        warn!(
+                            "File batch {batch_id:?} was acknowledged but cleanup remains pending: {error}"
+                        );
+                    }
+                }
             }
             Command::FileBatchCancel => {
                 let bytes: [u8; 16] = frame
