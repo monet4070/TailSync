@@ -265,13 +265,25 @@ impl SecureConnection {
         let encrypted = std::mem::take(&mut self.partial_record);
         self.partial_expected = None;
         self.partial_header_len = 0;
-        let mut plaintext = vec![0u8; encrypted.len()];
-        let length = self
+        // Decrypt directly into the receive buffer's newly reserved tail.
+        // The previous implementation allocated a second plaintext Vec and
+        // copied it into read_buffer, doubling the peak plaintext footprint
+        // for every encrypted record.
+        let buffer_start = self.read_buffer.len();
+        self.read_buffer
+            .resize(buffer_start.saturating_add(encrypted.len()), 0);
+        let length = match self
             .transport
-            .read_message(&encrypted, &mut plaintext)
-            .map_err(|error| ProtocolError::TransportEncryption(error.to_string()))?;
-        plaintext.truncate(length);
-        self.read_buffer.extend_from_slice(&plaintext);
+            .read_message(&encrypted, &mut self.read_buffer[buffer_start..])
+        {
+            Ok(length) => length,
+            Err(error) => {
+                self.read_buffer[buffer_start..].fill(0);
+                self.read_buffer.truncate(buffer_start);
+                return Err(ProtocolError::TransportEncryption(error.to_string()));
+            }
+        };
+        self.read_buffer.truncate(buffer_start + length);
         Ok(())
     }
 }
