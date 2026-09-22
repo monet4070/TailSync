@@ -127,6 +127,18 @@ pub type PlatformResultFuture = Pin<Box<dyn Future<Output = Result<(), String>> 
 pub trait SyncPlatform: Send + Sync {
     fn write_text(&self, text: &str) -> Result<(), String>;
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String>;
+    /// Consume a platform-native receipt for a programmatic text write. The
+    /// receipt is keyed by the OS clipboard sequence/change counter, so a
+    /// user copying identical text later is not mistaken for a TailSync echo.
+    /// Platforms without a native receipt return `false` and the core shadow
+    /// filter remains the conservative fallback.
+    fn consume_text_write_receipt(&self, _hash: &str) -> bool {
+        false
+    }
+    /// Consume a platform-native receipt for a programmatic image write.
+    fn consume_image_write_receipt(&self, _hash: &str) -> bool {
+        false
+    }
     fn set_file_progress(&self, name: &str, received: u64, total: u64);
     fn clear_file_progress(&self, batch_id: Option<TransferId>, device: Option<&str>);
     fn set_file_batch_progress(&self, progress: FileBatchProgress);

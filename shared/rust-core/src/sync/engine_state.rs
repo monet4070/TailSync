@@ -350,6 +350,36 @@ impl SyncEngine {
         self.image_shadow_filter.contains(hash)
     }
 
+    /// Prefer a platform-native write receipt, falling back to the existing
+    /// conservative shadow filter when the host has no sequence/change-count
+    /// integration. A matched receipt removes the fallback entry so a later
+    /// user copy of identical content is not swallowed by a long TTL.
+    pub fn consume_text_echo(&mut self, hash: &str) -> bool {
+        let receipt = self
+            .platform
+            .as_ref()
+            .is_some_and(|platform| platform.consume_text_write_receipt(hash));
+        if receipt {
+            self.shadow_filter.remove(hash);
+            true
+        } else {
+            self.shadow_filter.contains(hash)
+        }
+    }
+
+    pub fn consume_image_echo(&mut self, hash: &str) -> bool {
+        let receipt = self
+            .platform
+            .as_ref()
+            .is_some_and(|platform| platform.consume_image_write_receipt(hash));
+        if receipt {
+            self.image_shadow_filter.remove(hash);
+            true
+        } else {
+            self.image_shadow_filter.contains(hash)
+        }
+    }
+
     pub fn remove_shadow_filter(&mut self, text: &str) {
         let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
         self.shadow_filter.remove(&hash);

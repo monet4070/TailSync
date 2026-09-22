@@ -43,6 +43,88 @@ pub struct ClipboardChangeDetector {
 }
 
 #[cfg(target_os = "windows")]
+struct WriteReceipt {
+    sequence: u32,
+    hash: String,
+}
+
+#[cfg(target_os = "windows")]
+static WRITE_RECEIPT: std::sync::OnceLock<std::sync::Mutex<Option<WriteReceipt>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn write_receipt() -> &'static std::sync::Mutex<Option<WriteReceipt>> {
+    WRITE_RECEIPT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_sequence() -> u32 {
+    unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }
+}
+
+/// Record the OS clipboard sequence produced by a programmatic text write.
+#[cfg(target_os = "windows")]
+pub fn record_text_write_receipt(hash: &str) {
+    let sequence = clipboard_sequence();
+    if sequence == 0 {
+        return;
+    }
+    *write_receipt()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WriteReceipt {
+        sequence,
+        hash: hash.to_string(),
+    });
+}
+
+/// Consume a receipt only while the clipboard sequence still identifies the
+/// write that produced it. A later user write, even with identical bytes,
+/// therefore cannot be suppressed as an echo.
+#[cfg(target_os = "windows")]
+pub fn consume_text_write_receipt(hash: &str) -> bool {
+    let sequence = clipboard_sequence();
+    let mut receipt = write_receipt()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let matches = receipt
+        .as_ref()
+        .is_some_and(|value| value.sequence == sequence && value.hash == hash);
+    let stale = receipt
+        .as_ref()
+        .is_some_and(|value| value.sequence != sequence);
+    if matches || stale {
+        receipt.take();
+    }
+    matches
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn record_text_write_receipt(_hash: &str) {}
+
+#[cfg(not(target_os = "windows"))]
+pub fn consume_text_write_receipt(_hash: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+pub fn record_image_write_receipt(hash: &str) {
+    record_text_write_receipt(hash);
+}
+
+#[cfg(target_os = "windows")]
+pub fn consume_image_write_receipt(hash: &str) -> bool {
+    consume_text_write_receipt(hash)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn record_image_write_receipt(_hash: &str) {}
+
+#[cfg(not(target_os = "windows"))]
+pub fn consume_image_write_receipt(_hash: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
 impl ClipboardChangeDetector {
     pub fn new() -> Self {
         Self {

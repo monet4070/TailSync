@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::clipboard::{self, ClipboardRuntime};
-use crate::{api, clipboard_file, crypto, db};
+use crate::{api, clipboard_change, clipboard_file, crypto, db};
 use tailsync_core::protocol::TransferId;
 use tailsync_core::sync::{
     FileBatchProgress, FileReceiveCommit, PlatformResultFuture, SyncPlatform,
@@ -55,12 +55,28 @@ impl TauriSyncPlatform {
 impl SyncPlatform for TauriSyncPlatform {
     fn write_text(&self, text: &str) -> Result<(), String> {
         clipboard::write_clipboard_text(&self.runtime, text)
-            .map_err(|error| format!("write_text failed: {error}"))
+            .map_err(|error| format!("write_text failed: {error}"))?;
+        let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+        clipboard_change::record_text_write_receipt(&hash);
+        Ok(())
+    }
+
+    fn consume_text_write_receipt(&self, hash: &str) -> bool {
+        clipboard_change::consume_text_write_receipt(hash)
     }
 
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
         clipboard::write_clipboard_image(&self.runtime, width, height, rgba)
-            .map_err(|error| format!("write_image failed: {error}"))
+            .map_err(|error| format!("write_image failed: {error}"))?;
+        if let Ok(packed) = tailsync_core::protocol::pack_rgba_image(width, height, rgba) {
+            let hash = blake3::hash(&packed).to_hex().to_string();
+            clipboard_change::record_image_write_receipt(&hash);
+        }
+        Ok(())
+    }
+
+    fn consume_image_write_receipt(&self, hash: &str) -> bool {
+        clipboard_change::consume_image_write_receipt(hash)
     }
 
     fn set_file_progress(&self, name: &str, received: u64, total: u64) {

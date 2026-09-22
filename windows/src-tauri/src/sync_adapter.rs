@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
-use crate::{api, clipboard_file, crypto, db};
+use crate::{api, clipboard_change, clipboard_file, crypto, db};
 use tailsync_core::protocol::TransferId;
 use tailsync_core::sync::{
     FileBatchProgress, FileReceiveCommit, PlatformResultFuture, SyncPlatform,
@@ -62,21 +62,42 @@ impl SyncPlatform for TauriSyncPlatform {
     fn write_text(&self, text: &str) -> Result<(), String> {
         self.clipboard()?
             .write_text(text.to_string())
-            .map_err(|error| format!("write_text failed: {error}"))
+            .map_err(|error| format!("write_text failed: {error}"))?;
+        let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+        clipboard_change::record_text_write_receipt(&hash);
+        Ok(())
+    }
+
+    fn consume_text_write_receipt(&self, hash: &str) -> bool {
+        clipboard_change::consume_text_write_receipt(hash)
     }
 
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
         let image = tauri::image::Image::new(rgba, width, height);
         match self.clipboard()?.write_image(&image) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Ok(packed) = tailsync_core::protocol::pack_rgba_image(width, height, rgba) {
+                    let hash = blake3::hash(&packed).to_hex().to_string();
+                    clipboard_change::record_image_write_receipt(&hash);
+                }
+                Ok(())
+            }
             Err(primary) => {
                 #[cfg(target_os = "windows")]
                 {
-                    clipboard_file::write_clipboard_image(width, height, rgba).map_err(|fallback| {
-                        format!(
-                            "write_image failed ({primary}); CF_DIB fallback failed ({fallback})"
-                        )
-                    })
+                    clipboard_file::write_clipboard_image(width, height, rgba)
+                        .map_err(|fallback| {
+                            format!(
+                                "write_image failed ({primary}); CF_DIB fallback failed ({fallback})"
+                            )
+                        })?;
+                    if let Ok(packed) =
+                        tailsync_core::protocol::pack_rgba_image(width, height, rgba)
+                    {
+                        let hash = blake3::hash(&packed).to_hex().to_string();
+                        clipboard_change::record_image_write_receipt(&hash);
+                    }
+                    Ok(())
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
@@ -84,6 +105,10 @@ impl SyncPlatform for TauriSyncPlatform {
                 }
             }
         }
+    }
+
+    fn consume_image_write_receipt(&self, hash: &str) -> bool {
+        clipboard_change::consume_image_write_receipt(hash)
     }
 
     fn set_file_progress(&self, name: &str, received: u64, total: u64) {

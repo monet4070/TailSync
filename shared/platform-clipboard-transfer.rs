@@ -918,7 +918,7 @@ pub(super) async fn send_batch_to_peer(
 
 pub(super) async fn shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) -> bool {
     let mut sync = sync_engine.lock().await;
-    if sync.contains_shadow_filter(hash) {
+    if sync.consume_text_echo(hash) {
         debug!("Text shadow-filter hit: {}", &hash[..8]);
         true
     } else {
@@ -931,7 +931,7 @@ pub(super) async fn image_shadow_check(
     hash: &str,
 ) -> bool {
     let mut sync = sync_engine.lock().await;
-    if sync.contains_image_shadow_filter(hash) {
+    if sync.consume_image_echo(hash) {
         debug!("Image shadow-filter hit: {}", &hash[..8]);
         true
     } else {
