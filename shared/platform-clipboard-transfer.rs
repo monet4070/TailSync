@@ -358,6 +358,19 @@ async fn deliver_prepared_batch_to_peers(
     peers: Vec<network::tailscale::PeerInfo>,
     pool: Arc<Mutex<network::ConnectionPool>>,
 ) -> (Vec<(String, String)>, Vec<(String, FileBatchDeliveryError)>) {
+    if peers.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let prepared = match validate_prepared_batch_sources(prepared).await {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let failures = peers
+                .into_iter()
+                .map(|peer| (peer.hostname, error.clone()))
+                .collect();
+            return (Vec::new(), failures);
+        }
+    };
     let mut tasks = tokio::task::JoinSet::new();
     for peer in peers {
         let hostname = peer.hostname.clone();
@@ -367,7 +380,7 @@ async fn deliver_prepared_batch_to_peers(
         tasks.spawn(async move {
             let recovery_peer = peer.clone();
             let recovery_pool = peer_pool.clone();
-            let result = send_batch_to_peer(peer_batch, peer, peer_pool).await;
+            let result = send_validated_batch_to_peer(peer_batch, peer, peer_pool).await;
             if matches!(&result, Err(FileBatchDeliveryError::Retryable(_))) {
                 recovery_pool
                     .lock()
@@ -396,7 +409,68 @@ async fn deliver_prepared_batch_to_peers(
             }
         }
     }
+    if !delivered.is_empty() {
+        if let Err(error) = validate_prepared_batch_sources(prepared.prepared.clone()).await {
+            for (hostname, _) in delivered.drain(..) {
+                warn!("File batch source changed while delivering to {hostname}: {error}");
+                failures.push((hostname, error.clone()));
+            }
+        }
+    }
     (delivered, failures)
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ValidatedPreparedFileBatch {
+    prepared: Arc<sync::PreparedFileBatch>,
+}
+
+impl ValidatedPreparedFileBatch {
+    #[cfg(test)]
+    pub(super) fn file_count(&self) -> usize {
+        self.prepared.files.len()
+    }
+}
+
+impl std::ops::Deref for ValidatedPreparedFileBatch {
+    type Target = sync::PreparedFileBatch;
+
+    fn deref(&self) -> &Self::Target {
+        &self.prepared
+    }
+}
+
+pub(super) fn validate_prepared_batch_sources_with(
+    prepared: Arc<sync::PreparedFileBatch>,
+    mut validate: impl FnMut(&sync::PreparedFile) -> Result<(), FileBatchDeliveryError>,
+) -> Result<ValidatedPreparedFileBatch, FileBatchDeliveryError> {
+    for file in &prepared.files {
+        validate(file)?;
+    }
+    Ok(ValidatedPreparedFileBatch { prepared })
+}
+
+pub(super) fn validate_prepared_file_source(
+    file: &sync::PreparedFile,
+) -> Result<(), FileBatchDeliveryError> {
+    sync::revalidate_prepared_file(file).map_err(|error| {
+        let message = error.to_string();
+        if error.requires_reselection() {
+            FileBatchDeliveryError::SourceUnavailable(message)
+        } else {
+            FileBatchDeliveryError::Retryable(message)
+        }
+    })
+}
+
+async fn validate_prepared_batch_sources(
+    prepared: Arc<sync::PreparedFileBatch>,
+) -> Result<ValidatedPreparedFileBatch, FileBatchDeliveryError> {
+    tokio::task::spawn_blocking(move || {
+        validate_prepared_batch_sources_with(prepared, validate_prepared_file_source)
+    })
+    .await
+    .map_err(|error| FileBatchDeliveryError::Retryable(error.to_string()))?
 }
 
 async fn save_local_file_batch_history(
@@ -699,8 +773,8 @@ pub(super) fn summarize_file_batch_failures(
     )
 }
 
-pub(super) async fn send_batch_to_peer(
-    prepared: Arc<sync::PreparedFileBatch>,
+async fn send_validated_batch_to_peer(
+    prepared: ValidatedPreparedFileBatch,
     peer: network::tailscale::PeerInfo,
     pool: Arc<Mutex<network::ConnectionPool>>,
 ) -> Result<(), FileBatchDeliveryError> {
@@ -740,27 +814,6 @@ pub(super) async fn send_batch_to_peer(
                 )
                 .await;
                 return Err(FileBatchDeliveryError::Cancelled);
-            }
-            let validation_file = prepared_file.clone();
-            let source_validation = tokio::task::spawn_blocking(move || {
-                sync::revalidate_prepared_file(&validation_file)
-            })
-            .await
-            .map_err(|error| FileBatchDeliveryError::Retryable(error.to_string()))?;
-            if let Err(error) = source_validation {
-                let _ = network::queue_peer_frame(
-                    &pool,
-                    &peer,
-                    Command::FileBatchCancel,
-                    batch_id.0.to_vec(),
-                )
-                .await;
-                let message = error.to_string();
-                return Err(if error.requires_reselection() {
-                    FileBatchDeliveryError::SourceUnavailable(message)
-                } else {
-                    FileBatchDeliveryError::Retryable(message)
-                });
             }
             let transfer_id = prepared_file.entry.transfer_id;
             let meta = sync::FileMeta {
