@@ -85,7 +85,7 @@ export type LocalCapabilities = {
   "supports_stable_errors": boolean;
   "wire_version": number;
 };
-function validLocalCapabilities(value: unknown): value is LocalCapabilities { return (isRecord(value) && (Object.hasOwn(value, "max_preview_bytes") && (typeof value["max_preview_bytes"] === "number" && Number.isSafeInteger(value["max_preview_bytes"]) && value["max_preview_bytes"] >= 67108864 && value["max_preview_bytes"] <= 67108864)) && (Object.hasOwn(value, "platform") && (typeof value["platform"] === "string")) && (Object.hasOwn(value, "schema_version") && (typeof value["schema_version"] === "number" && Number.isSafeInteger(value["schema_version"]) && value["schema_version"] >= 1 && value["schema_version"] <= 1)) && (Object.hasOwn(value, "supports_binary_preview") && (typeof value["supports_binary_preview"] === "boolean")) && (Object.hasOwn(value, "supports_runtime_snapshot") && (typeof value["supports_runtime_snapshot"] === "boolean")) && (Object.hasOwn(value, "supports_stable_errors") && (typeof value["supports_stable_errors"] === "boolean")) && (Object.hasOwn(value, "wire_version") && (typeof value["wire_version"] === "number" && Number.isSafeInteger(value["wire_version"]) && value["wire_version"] >= 4 && value["wire_version"] <= 4))); }
+function validLocalCapabilities(value: unknown): value is LocalCapabilities { return (isRecord(value) && (Object.hasOwn(value, "max_preview_bytes") && (typeof value["max_preview_bytes"] === "number" && Number.isSafeInteger(value["max_preview_bytes"]) && value["max_preview_bytes"] === 67108864)) && (Object.hasOwn(value, "platform") && (typeof value["platform"] === "string")) && (Object.hasOwn(value, "schema_version") && (typeof value["schema_version"] === "number" && Number.isSafeInteger(value["schema_version"]) && value["schema_version"] === 1)) && (Object.hasOwn(value, "supports_binary_preview") && (typeof value["supports_binary_preview"] === "boolean")) && (Object.hasOwn(value, "supports_runtime_snapshot") && (typeof value["supports_runtime_snapshot"] === "boolean")) && (Object.hasOwn(value, "supports_stable_errors") && (typeof value["supports_stable_errors"] === "boolean")) && (Object.hasOwn(value, "wire_version") && (typeof value["wire_version"] === "number" && Number.isSafeInteger(value["wire_version"]) && value["wire_version"] === 4))); }
 export function decodeLocalCapabilities(value: unknown): LocalCapabilities { if (!validLocalCapabilities(value)) throw new Error("Invalid LocalCapabilities response"); return value; }
 
 export type LocalDeviceSnapshot = {
@@ -221,6 +221,24 @@ export type RuntimeNotification = {
 };
 function validRuntimeNotification(value: unknown): value is RuntimeNotification { return (isRecord(value) && (Object.hasOwn(value, "id") && (typeof value["id"] === "number" && Number.isSafeInteger(value["id"]) && value["id"] >= 0)) && (Object.hasOwn(value, "level") && (typeof value["level"] === "string")) && (Object.hasOwn(value, "message") && (typeof value["message"] === "string"))); }
 export function decodeRuntimeNotification(value: unknown): RuntimeNotification { if (!validRuntimeNotification(value)) throw new Error("Invalid RuntimeNotification response"); return value; }
+
+export type StableErrorCode = "invalid_argument" | "not_found" | "temporarily_busy" | "storage_unavailable" | "unauthorized" | "protocol_incompatible" | "internal_error";
+function validStableErrorCode(value: unknown): value is StableErrorCode { return typeof value === "string"; }
+export function decodeStableErrorCode(value: unknown): StableErrorCode { if (!validStableErrorCode(value)) throw new Error("Invalid StableErrorCode response"); return ["invalid_argument","not_found","temporarily_busy","storage_unavailable","unauthorized","protocol_incompatible","internal_error"].includes(value as StableErrorCode) ? value as StableErrorCode : "internal_error"; }
+
+export type StableErrorDetailClass = "request" | "resource" | "contention" | "storage" | "authorization" | "protocol" | "internal";
+function validStableErrorDetailClass(value: unknown): value is StableErrorDetailClass { return (typeof value === "string" && (value === "request" || value === "resource" || value === "contention" || value === "storage" || value === "authorization" || value === "protocol" || value === "internal")); }
+export function decodeStableErrorDetailClass(value: unknown): StableErrorDetailClass { if (!validStableErrorDetailClass(value)) throw new Error("Invalid StableErrorDetailClass response"); return value; }
+
+export type StableErrorEnvelope = {
+  "code": StableErrorCode;
+  "detail_class": StableErrorDetailClass;
+  "message_key": string;
+  "retryable": boolean;
+  "schema_version": number;
+};
+function validStableErrorEnvelope(value: unknown): value is StableErrorEnvelope { return (isRecord(value) && (Object.hasOwn(value, "code") && validStableErrorCode(value["code"])) && (Object.hasOwn(value, "detail_class") && validStableErrorDetailClass(value["detail_class"])) && (Object.hasOwn(value, "message_key") && (typeof value["message_key"] === "string")) && (Object.hasOwn(value, "retryable") && (typeof value["retryable"] === "boolean")) && (Object.hasOwn(value, "schema_version") && (typeof value["schema_version"] === "number" && Number.isSafeInteger(value["schema_version"]) && value["schema_version"] === 1))); }
+export function decodeStableErrorEnvelope(value: unknown): StableErrorEnvelope { if (!validStableErrorEnvelope(value)) throw new Error("Invalid StableErrorEnvelope response"); return { ...value, code: decodeStableErrorCode(value.code) }; }
 
 export type StorageStatus = {
   "available": boolean;

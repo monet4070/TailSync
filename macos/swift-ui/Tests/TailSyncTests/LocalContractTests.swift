@@ -26,4 +26,11 @@ final class LocalContractTests: XCTestCase {
       XCTAssertThrowsError(try JSONDecoder().decode(ContractWindowsRuntimeSnapshot.self, from: Data((prefix + invalid + "}").utf8)))
     }
   }
+
+  func testUnknownStableErrorCodeMapsToInternalError() throws {
+    let data = Data(#"{"schema_version":1,"code":"future_error","retryable":false,"message_key":"future.error","detail_class":"internal"}"#.utf8)
+    let decoded = try JSONDecoder().decode(ContractStableErrorEnvelope.self, from: data)
+    XCTAssertEqual(decoded.code, .internal_error)
+  }
+
 }

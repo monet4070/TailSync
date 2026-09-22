@@ -588,6 +588,8 @@ pub struct ApiState {
 struct Request {
     cmd: String,
     #[serde(default)]
+    error_schema_version: Option<u32>,
+    #[serde(default)]
     request_id: Option<String>,
     #[serde(default)]
     token: Option<String>,

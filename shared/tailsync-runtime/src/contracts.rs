@@ -8,6 +8,156 @@ use serde::{Deserialize, Serialize};
 
 pub const LOCAL_CONTRACT_SCHEMA_VERSION: u32 = 1;
 pub const LOCAL_PREVIEW_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const STABLE_ERROR_SCHEMA_VERSION: u32 = 1;
+
+/// Stable local-IPC error categories. Deserializers deliberately map future
+/// categories to `internal_error` so an older UI never crashes or guesses a
+/// retry policy for an error it does not understand.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StableErrorCode {
+    InvalidArgument,
+    NotFound,
+    TemporarilyBusy,
+    StorageUnavailable,
+    Unauthorized,
+    ProtocolIncompatible,
+    #[serde(other)]
+    InternalError,
+}
+
+/// Coarse, non-sensitive context for localizing an error. These values never
+/// contain clipboard data, file paths, peer identities, keys, or tokens.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StableErrorDetailClass {
+    Request,
+    Resource,
+    Contention,
+    Storage,
+    Authorization,
+    Protocol,
+    Internal,
+}
+
+/// Versioned error returned to clients that explicitly opt in to the stable
+/// local contract. The legacy message is used only for classification and is
+/// never copied into this envelope.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct StableErrorEnvelope {
+    #[schemars(range(min = 1, max = 1))]
+    pub schema_version: u32,
+    pub code: StableErrorCode,
+    pub retryable: bool,
+    pub message_key: String,
+    pub detail_class: StableErrorDetailClass,
+}
+
+impl StableErrorEnvelope {
+    pub fn new(code: StableErrorCode) -> Self {
+        let (retryable, message_key, detail_class) = match code {
+            StableErrorCode::InvalidArgument => (
+                false,
+                "error.invalid_argument",
+                StableErrorDetailClass::Request,
+            ),
+            StableErrorCode::NotFound => {
+                (false, "error.not_found", StableErrorDetailClass::Resource)
+            }
+            StableErrorCode::TemporarilyBusy => (
+                true,
+                "error.temporarily_busy",
+                StableErrorDetailClass::Contention,
+            ),
+            StableErrorCode::StorageUnavailable => (
+                true,
+                "error.storage_unavailable",
+                StableErrorDetailClass::Storage,
+            ),
+            StableErrorCode::Unauthorized => (
+                false,
+                "error.unauthorized",
+                StableErrorDetailClass::Authorization,
+            ),
+            StableErrorCode::ProtocolIncompatible => (
+                false,
+                "error.protocol_incompatible",
+                StableErrorDetailClass::Protocol,
+            ),
+            StableErrorCode::InternalError => {
+                (false, "error.internal", StableErrorDetailClass::Internal)
+            }
+        };
+        Self {
+            schema_version: STABLE_ERROR_SCHEMA_VERSION,
+            code,
+            retryable,
+            message_key: message_key.to_string(),
+            detail_class,
+        }
+    }
+
+    /// Compatibility classifier used while platform adapters are migrated
+    /// from text errors to typed sources. Matching affects only the stable
+    /// category; the original message is intentionally discarded.
+    pub fn from_legacy_message(command: &str, message: &str) -> Self {
+        let command = command.to_ascii_lowercase();
+        let message = message.to_ascii_lowercase();
+        let contains_any = |needles: &[&str]| needles.iter().any(|needle| message.contains(needle));
+        let code = if contains_any(&["unauthorized", "permission denied", "access denied"]) {
+            StableErrorCode::Unauthorized
+        } else if contains_any(&[
+            "incompatible protocol",
+            "protocol incompatible",
+            "unsupported version",
+            "requires v4",
+        ]) {
+            StableErrorCode::ProtocolIncompatible
+        } else if contains_any(&[
+            "missing ",
+            "invalid ",
+            "malformed",
+            "must be",
+            "out of range",
+            "exceeds the",
+            "unsupported type",
+        ]) {
+            StableErrorCode::InvalidArgument
+        } else if contains_any(&[
+            "not found",
+            "no such",
+            "unknown command",
+            "does not exist",
+            "unavailable entry",
+        ]) {
+            StableErrorCode::NotFound
+        } else if contains_any(&[
+            "temporarily busy",
+            "would block",
+            "locked",
+            "timed out",
+            "timeout",
+            "try again",
+        ]) {
+            StableErrorCode::TemporarilyBusy
+        } else if command.contains("storage")
+            || contains_any(&[
+                "database",
+                "sqlite",
+                "disk",
+                "storage",
+                "quota",
+                "no space",
+                "read-only",
+            ])
+        {
+            StableErrorCode::StorageUnavailable
+        } else {
+            StableErrorCode::InternalError
+        };
+        Self::new(code)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct LocalCapabilities {
@@ -148,11 +298,67 @@ mod tests {
         assert_eq!(capabilities.schema_version, LOCAL_CONTRACT_SCHEMA_VERSION);
         assert_eq!(capabilities.wire_version, 4);
         assert_eq!(capabilities.max_preview_bytes, 64 * 1024 * 1024);
+        assert!(!capabilities.supports_stable_errors);
         let round_trip = serde_json::from_value::<LocalCapabilities>(
             serde_json::to_value(&capabilities).expect("serialize capabilities"),
         )
         .expect("decode capabilities");
         assert_eq!(round_trip, capabilities);
+    }
+
+    #[test]
+    fn stable_errors_have_fixed_policy_and_discard_legacy_details() {
+        let envelope = StableErrorEnvelope::from_legacy_message(
+            "change_storage_location",
+            r#"database failed at C:\Users\private\history.db with token secret"#,
+        );
+        assert_eq!(envelope.schema_version, STABLE_ERROR_SCHEMA_VERSION);
+        assert_eq!(envelope.code, StableErrorCode::StorageUnavailable);
+        assert!(envelope.retryable);
+        let serialized = serde_json::to_string(&envelope).expect("serialize stable error");
+        assert!(!serialized.contains("Users"));
+        assert!(!serialized.contains("private"));
+        assert!(!serialized.contains("secret"));
+    }
+
+    #[test]
+    fn unknown_stable_error_codes_fail_closed_to_internal_error() {
+        let decoded: StableErrorEnvelope = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "code": "future_error",
+            "retryable": true,
+            "message_key": "future.key",
+            "detail_class": "internal"
+        }))
+        .expect("unknown code remains decodable");
+        assert_eq!(decoded.code, StableErrorCode::InternalError);
+    }
+
+    #[test]
+    fn stable_error_classifier_covers_public_categories() {
+        let cases = [
+            ("cmd", "missing id", StableErrorCode::InvalidArgument),
+            ("cmd", "entry not found", StableErrorCode::NotFound),
+            ("cmd", "database locked", StableErrorCode::TemporarilyBusy),
+            (
+                "get_history",
+                "database unavailable",
+                StableErrorCode::StorageUnavailable,
+            ),
+            ("cmd", "unauthorized", StableErrorCode::Unauthorized),
+            (
+                "cmd",
+                "incompatible protocol version",
+                StableErrorCode::ProtocolIncompatible,
+            ),
+            ("cmd", "unexpected failure", StableErrorCode::InternalError),
+        ];
+        for (command, message, expected) in cases {
+            assert_eq!(
+                StableErrorEnvelope::from_legacy_message(command, message).code,
+                expected
+            );
+        }
     }
 }
 

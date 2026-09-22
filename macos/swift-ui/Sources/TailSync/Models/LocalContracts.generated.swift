@@ -420,6 +420,52 @@ struct ContractRuntimeNotification: Codable, Sendable {
   }
 }
 
+enum ContractStableErrorCode: String, Codable, Sendable {
+  case `invalid_argument` = "invalid_argument"
+  case `not_found` = "not_found"
+  case `temporarily_busy` = "temporarily_busy"
+  case `storage_unavailable` = "storage_unavailable"
+  case `unauthorized` = "unauthorized"
+  case `protocol_incompatible` = "protocol_incompatible"
+  case `internal_error` = "internal_error"
+  init(from decoder: Decoder) throws {
+    let value = try decoder.singleValueContainer().decode(String.self)
+    self = Self(rawValue: value) ?? .internal_error
+  }
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+}
+
+enum ContractStableErrorDetailClass: String, Codable, Sendable {
+  case `request` = "request"
+  case `resource` = "resource"
+  case `contention` = "contention"
+  case `storage` = "storage"
+  case `authorization` = "authorization"
+  case `protocol` = "protocol"
+  case `internal` = "internal"
+}
+
+struct ContractStableErrorEnvelope: Codable, Sendable {
+  let `code`: ContractStableErrorCode
+  let `detail_class`: ContractStableErrorDetailClass
+  let `message_key`: String
+  let `retryable`: Bool
+  let `schema_version`: UInt32
+  private enum CodingKeys: String, CodingKey { case `code`, `detail_class`, `message_key`, `retryable`, `schema_version` }
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    self.`code` = try c.decode(ContractStableErrorCode.self, forKey: .`code`)
+    self.`detail_class` = try c.decode(ContractStableErrorDetailClass.self, forKey: .`detail_class`)
+    self.`message_key` = try c.decode(String.self, forKey: .`message_key`)
+    self.`retryable` = try c.decode(Bool.self, forKey: .`retryable`)
+    self.`schema_version` = try c.decode(UInt32.self, forKey: .`schema_version`)
+    guard self.`schema_version` >= 1, self.`schema_version` <= 1 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Local contract constraint failed")) }
+  }
+}
+
 struct ContractStorageStatus: Codable, Sendable {
   let `available`: Bool
   let `error`: String?

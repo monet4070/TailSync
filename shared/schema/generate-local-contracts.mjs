@@ -51,8 +51,11 @@ function predicate(s, value) {
   } else if (s.type === 'null') checks.push(`${value} === null`);
   else if (s.type === 'integer' || s.type === 'number') {
     checks.push(`typeof ${value} === "number"`, `Number.${s.type === 'integer' ? 'isSafeInteger' : 'isFinite'}(${value})`);
-    if (s.minimum != null) checks.push(`${value} >= ${s.minimum}`);
-    if (s.maximum != null) checks.push(`${value} <= ${s.maximum}`);
+    if (s.minimum != null && s.maximum === s.minimum) checks.push(`${value} === ${s.minimum}`);
+    else {
+      if (s.minimum != null) checks.push(`${value} >= ${s.minimum}`);
+      if (s.maximum != null) checks.push(`${value} <= ${s.maximum}`);
+    }
   } else if (s.type) checks.push(`typeof ${value} === ${quote(s.type)}`);
   if (s.enum) checks.push(`(${s.enum.map(item => `${value} === ${quote(item)}`).join(' || ')})`);
   if (s.minLength != null) checks.push(`${value}.length >= ${s.minLength}`);
@@ -83,7 +86,11 @@ function swiftValidation(s, expression) {
   return nullable(s) ? `    if let value = ${expression} { ${guard} }\n` : `    ${guard}\n`;
 }
 function swiftDefinition(name, s) {
-  if (s.enum) return `enum Contract${name}: String, Codable, Sendable {\n${s.enum.map(v => `  case \`${v}\` = ${quote(v)}`).join('\n')}\n}\n`;
+  if (s.enum) {
+    const cases = s.enum.map(v => `  case \`${v}\` = ${quote(v)}`).join('\n');
+    if (name === 'StableErrorCode') return `enum Contract${name}: String, Codable, Sendable {\n${cases}\n  init(from decoder: Decoder) throws {\n    let value = try decoder.singleValueContainer().decode(String.self)\n    self = Self(rawValue: value) ?? .internal_error\n  }\n  func encode(to encoder: Encoder) throws {\n    var container = encoder.singleValueContainer()\n    try container.encode(rawValue)\n  }\n}\n`;
+    return `enum Contract${name}: String, Codable, Sendable {\n${cases}\n}\n`;
+  }
   if (s.type !== 'object') return `typealias Contract${name} = ${swiftType(s)}\n`;
   const fields = Object.entries(s.properties);
   const type = (key, value) => swiftType(value) + (!s.required?.includes(key) && !nullable(value) ? '?' : '');
@@ -108,10 +115,20 @@ let ts = banner + 'const isRecord = (value: unknown): value is Record<string, un
 let js = banner + 'const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);\n';
 let swift = banner + 'import Foundation\n\n';
 for (const [name, s] of Object.entries(defs)) {
-  const body = `return ${predicate(s,'value')};`;
+  const stableErrorCode = name === 'StableErrorCode';
+  const body = `return ${stableErrorCode ? 'typeof value === "string"' : predicate(s,'value')};`;
   ts += `\nexport type ${name} = ${tsType(s)};\nfunction valid${name}(value: unknown): value is ${name} { ${body} }\n`;
-  ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
-  js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
+  if (stableErrorCode) {
+    const known = quote(s.enum);
+    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return ${known}.includes(value as ${name}) ? value as ${name} : "internal_error"; }\n`;
+    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return ${known}.includes(value) ? value : "internal_error"; }\n`;
+  } else if (name === 'StableErrorEnvelope') {
+    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return { ...value, code: decodeStableErrorCode(value.code) }; }\n`;
+    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return { ...value, code: decodeStableErrorCode(value.code) }; }\n`;
+  } else {
+    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
+    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
+  }
   swift += swiftDefinition(name,s) + '\n';
 }
 swift = `${swift.trimEnd()}\n`;
@@ -149,8 +166,14 @@ for (const [name,value] of values) {
       const wrong = structuredClone(value); wrong[key] = Array.isArray(wrong[key]) ? {} : [];
       fixtures.push({ name: `${name}: wrong type ${key}`, contract: name, valid: false, value: wrong });
     }
-  } else if (definition.enum) fixtures.push({ name: `${name}: unknown enum`, contract: name, valid: false, value: 'unknown_future_enum' });
+  } else if (definition.enum) fixtures.push({ name: `${name}: unknown enum`, contract: name, valid: name === 'StableErrorCode', value: 'unknown_future_enum' });
 }
+fixtures.push({
+  name: 'StableErrorEnvelope: unknown code maps to internal_error',
+  contract: 'StableErrorEnvelope',
+  valid: true,
+  value: { ...values.get('StableErrorEnvelope'), code: 'unknown_future_error' },
+});
 fixtures.push({ name: 'safe integer boundary', contract: 'WindowsRuntimeSnapshot', valid: true, typescriptValid: false,
   value: { ...values.get('WindowsRuntimeSnapshot'), revision: 9007199254740992 } });
 outputs['shared/schema/fixtures/local-contracts.json'] = JSON.stringify(fixtures,null,2) + '\n';

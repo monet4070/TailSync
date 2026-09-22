@@ -36,4 +36,15 @@ describe("local IPC capabilities", () => {
     const { supports_stable_errors: _ignored, ...missing } = valid;
     expect(() => decodeLocalCapabilities(missing)).toThrow();
   });
+
+  it("maps an unknown stable error code to internal_error", () => {
+    const decoded = contracts.decodeStableErrorEnvelope({
+      schema_version: 1,
+      code: "future_error",
+      retryable: false,
+      message_key: "future.error",
+      detail_class: "internal",
+    });
+    expect(decoded.code).toBe("internal_error");
+  });
 });

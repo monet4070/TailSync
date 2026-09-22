@@ -4,6 +4,7 @@ use tailsync_runtime::contracts::*;
 #[derive(Serialize, schemars::JsonSchema)]
 struct LocalContractExports {
     capabilities: LocalCapabilities,
+    stable_error: StableErrorEnvelope,
     history: tailsync_core::db::HistoryQueryPage,
     favorite: tailsync_core::db::FavoriteMutation,
     mac_runtime: MacRuntimeSnapshot,
@@ -57,6 +58,7 @@ fn fixtures() -> LocalContractExports {
     };
     LocalContractExports {
         capabilities: LocalCapabilities::current("macos", 4, true, true),
+        stable_error: StableErrorEnvelope::new(StableErrorCode::TemporarilyBusy),
         history: HistoryQueryPage {
             entries: vec![HistoryEntry {
                 id: 7,

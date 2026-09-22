@@ -24,12 +24,16 @@
     "preview_error": {
       "$ref": "#/$defs/PreviewErrorInfo"
     },
+    "stable_error": {
+      "$ref": "#/$defs/StableErrorEnvelope"
+    },
     "windows_runtime": {
       "$ref": "#/$defs/WindowsRuntimeSnapshot"
     }
   },
   "required": [
     "capabilities",
+    "stable_error",
     "history",
     "favorite",
     "mac_runtime",
@@ -899,6 +903,63 @@
         "id",
         "level",
         "message"
+      ]
+    },
+    "StableErrorCode": {
+      "description": "Stable local-IPC error categories. Deserializers deliberately map future\ncategories to `internal_error` so an older UI never crashes or guesses a\nretry policy for an error it does not understand.",
+      "type": "string",
+      "enum": [
+        "invalid_argument",
+        "not_found",
+        "temporarily_busy",
+        "storage_unavailable",
+        "unauthorized",
+        "protocol_incompatible",
+        "internal_error"
+      ]
+    },
+    "StableErrorDetailClass": {
+      "description": "Coarse, non-sensitive context for localizing an error. These values never\ncontain clipboard data, file paths, peer identities, keys, or tokens.",
+      "type": "string",
+      "enum": [
+        "request",
+        "resource",
+        "contention",
+        "storage",
+        "authorization",
+        "protocol",
+        "internal"
+      ]
+    },
+    "StableErrorEnvelope": {
+      "description": "Versioned error returned to clients that explicitly opt in to the stable\nlocal contract. The legacy message is used only for classification and is\nnever copied into this envelope.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/StableErrorCode"
+        },
+        "detail_class": {
+          "$ref": "#/$defs/StableErrorDetailClass"
+        },
+        "message_key": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 1,
+          "minimum": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "code",
+        "retryable",
+        "message_key",
+        "detail_class"
       ]
     },
     "StorageStatus": {
