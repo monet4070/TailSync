@@ -316,6 +316,26 @@ fn candidate_delay_prefers_lan_without_serializing_fallbacks() {
     );
 }
 
+#[test]
+fn measured_candidate_delay_follows_route_quality_and_keeps_fallbacks_bounded() {
+    let mut fast = resolved_candidate(ConnectionInterface::Iroh, "192.168.1.3");
+    fast.candidate.latency = Some(20);
+    let mut slow = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    slow.candidate.latency = Some(80);
+    let cold = resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2");
+    let candidates = vec![fast.clone(), slow.clone(), cold.clone()];
+
+    assert_eq!(measured_candidate_delay(&fast, &candidates), Duration::ZERO);
+    assert_eq!(
+        measured_candidate_delay(&slow, &candidates),
+        Duration::from_millis(60)
+    );
+    assert_eq!(
+        measured_candidate_delay(&cold, &candidates),
+        Duration::from_millis(50)
+    );
+}
+
 #[tokio::test]
 async fn race_wins_with_first_successful_attempt() {
     let candidates = vec![

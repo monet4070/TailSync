@@ -486,7 +486,7 @@ mod race;
 mod worker;
 
 pub use executor::deliver_pending_frame;
-pub use race::{candidate_delay, race_connections};
+pub use race::{candidate_delay, measured_candidate_delay, race_connections};
 pub use worker::{run_connection_worker, ConnectionAdapter, WorkerConfig};
 
 #[cfg(test)]

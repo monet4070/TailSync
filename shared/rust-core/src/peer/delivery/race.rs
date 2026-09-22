@@ -20,6 +20,36 @@ pub fn candidate_delay(interface: ConnectionInterface, has_lan: bool, has_iroh: 
     }
 }
 
+/// Delay one connection attempt relative to the best measured route. A
+/// measured route starts immediately and slower measured routes follow by the
+/// observed delta, capped so an obsolete probe can never block fallback
+/// forever. Unmeasured routes retain the cold-start interface bias and receive
+/// a small grace period when a measured route is available.
+pub fn measured_candidate_delay(
+    candidate: &ResolvedCandidate,
+    candidates: &[ResolvedCandidate],
+) -> Duration {
+    let best = candidates
+        .iter()
+        .filter(|candidate| candidate.candidate.online)
+        .filter_map(|candidate| candidate.candidate.latency)
+        .min();
+    let Some(best) = best else {
+        let has_lan = candidates
+            .iter()
+            .any(|candidate| candidate.candidate.interface == ConnectionInterface::Lan);
+        let has_iroh = candidates
+            .iter()
+            .any(|candidate| candidate.candidate.interface == ConnectionInterface::Iroh);
+        return candidate_delay(candidate.candidate.interface, has_lan, has_iroh);
+    };
+
+    match candidate.candidate.latency {
+        Some(latency) => Duration::from_millis(latency.saturating_sub(best).min(250)),
+        None => Duration::from_millis(50),
+    }
+}
+
 /// Race connect attempts across all candidates in parallel, applying the
 /// per-interface delay bias so preferred routes win without blocking
 /// fallbacks. The first successful attempt wins and every remaining attempt
@@ -39,12 +69,6 @@ where
     if candidates.is_empty() {
         return Err("no connection candidates to race".to_string());
     }
-    let has_lan = candidates
-        .iter()
-        .any(|candidate| candidate.candidate.interface == ConnectionInterface::Lan);
-    let has_iroh = candidates
-        .iter()
-        .any(|candidate| candidate.candidate.interface == ConnectionInterface::Iroh);
     let (tx, mut rx) = mpsc::channel(candidates.len().max(1));
     // A JoinSet owns its tasks: dropping it (including early returns and
     // cancellation of the race future itself) aborts every outstanding
@@ -55,7 +79,7 @@ where
     for candidate in candidates.iter().cloned() {
         let tx = tx.clone();
         let connect = connect.clone();
-        let delay = candidate_delay(candidate.candidate.interface, has_lan, has_iroh);
+        let delay = measured_candidate_delay(&candidate, candidates);
         tasks.spawn(async move {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
