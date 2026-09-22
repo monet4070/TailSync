@@ -556,6 +556,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let sync_engine = Arc::new(Mutex::new(sync::SyncEngine::new()));
     let settings = Arc::new(Mutex::new(loaded_settings));
     let identity = Arc::new(identity::DeviceIdentity::load_or_create()?);
+    #[cfg(not(target_os = "windows"))]
     let api_token = api::load_api_token().map_err(std::io::Error::other)?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let shutdown_for_parent = shutdown_tx.clone();
@@ -585,27 +586,34 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let identity_for_iroh = identity.clone();
     let identity_for_discovery = identity.clone();
 
-    // Start JSON API server
-    let api_state = Arc::new(api::ApiState {
-        db: db.clone(),
-        sync_engine: sync_engine.clone(),
-        settings: settings.clone(),
-        identity: identity.clone(),
-        pool: pool.clone(),
-        pairing: pairing.clone(),
-        remote_invites: remote_invites.clone(),
-        token: api_token,
-        shutdown: shutdown_tx.clone(),
-        imports: Mutex::new(api::ImportRegistry::default()),
-        pending_storage_cleanup: pending_storage_cleanup.clone(),
-    });
-    let api_shutdown = shutdown_rx.clone();
-    let api_task = tauri::async_runtime::spawn(async move {
-        if let Err(e) = api::start(api_state, api_shutdown).await {
-            log::error!("API server error: {}", e);
-        }
-    });
-    track_task(&background_tasks, api_task);
+    // Windows uses Tauri invoke/event IPC for the local UI. Do not start the
+    // legacy JSON TCP API here: its 127.0.0.1:19889 listener is outside the
+    // product's authenticated local IPC boundary and violates the Windows
+    // no-TCP-listener contract. The Unix-socket API remains owned by the
+    // separate macOS target.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let api_state = Arc::new(api::ApiState {
+            db: db.clone(),
+            sync_engine: sync_engine.clone(),
+            settings: settings.clone(),
+            identity: identity.clone(),
+            pool: pool.clone(),
+            pairing: pairing.clone(),
+            remote_invites: remote_invites.clone(),
+            token: api_token,
+            shutdown: shutdown_tx.clone(),
+            imports: Mutex::new(api::ImportRegistry::default()),
+            pending_storage_cleanup: pending_storage_cleanup.clone(),
+        });
+        let api_shutdown = shutdown_rx.clone();
+        let api_task = tauri::async_runtime::spawn(async move {
+            if let Err(e) = api::start(api_state, api_shutdown).await {
+                log::error!("API server error: {}", e);
+            }
+        });
+        track_task(&background_tasks, api_task);
+    }
 
     let db_for_setup = db.clone();
     let sync_for_setup = sync_engine.clone();

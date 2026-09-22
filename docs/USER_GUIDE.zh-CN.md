@@ -569,7 +569,7 @@ TailSync 会清理文件名、限制入站连接和批次数量，并在最终�
 | 单项预览上限 | 64 MiB |
 | 未完成传输保留时间 | 最多 24 小时 |
 
-macOS 本机 API 使用用户专属目录下的 Unix socket，不监听本地 TCP 端口。Windows 本机 API 才绑定 `127.0.0.1:19889`；不要通过端口转发、代理或防火墙映射把它暴露给其他设备。
+macOS 本机 API 使用用户专属目录下的 Unix socket，不监听本地 TCP 端口。Windows 桌面端使用 Tauri invoke/event 作为本机 UI IPC，不启动本地 JSON TCP API；UDP `19889` 仅用于局域网发现与健康心跳。不要通过端口转发、代理或防火墙映射暴露本机 IPC。
 
 ## 反馈问题时建议提供的信息
 
