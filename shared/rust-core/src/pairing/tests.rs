@@ -93,7 +93,7 @@ async fn fifth_failure_closes_pairing_window() {
 }
 
 #[tokio::test]
-async fn session_timeouts_count_toward_pairing_lockout() {
+async fn session_timeouts_do_not_consume_pairing_lockout_budget() {
     let manager = PairingManager::with_policy(
         Arc::new(Mutex::new(Settings::default())),
         Arc::new(DeviceIdentity::generate_for_test()),
@@ -103,26 +103,42 @@ async fn session_timeouts_count_toward_pairing_lockout() {
     );
     manager.enable().await;
 
-    for attempt in 1..=3 {
-        let generation = {
+    for _ in 0..3 {
+        let session_id = {
             let mut state = manager.state.lock().await;
             let (control, _receiver) = mpsc::channel(1);
             state.control = Some(control);
             state.phase = PairingPhase::Verification;
-            state.generation
+            state.session_id
         };
-        manager.expire(generation).await;
+        manager.expire_session(session_id).await;
         let status = manager.status().await;
-        assert_eq!(status.failed_attempts, attempt);
-        if attempt < 3 {
-            assert!(status.pairing_enabled);
-            assert_eq!(status.phase, PairingPhase::Waiting);
-        }
+        assert!(status.pairing_enabled);
+        assert_eq!(status.failed_attempts, 0);
+        assert_eq!(status.phase, PairingPhase::Waiting);
     }
 
     let status = manager.status().await;
-    assert!(!status.pairing_enabled);
-    assert_eq!(status.phase, PairingPhase::Locked);
+    assert!(status.pairing_enabled);
+    assert_eq!(status.phase, PairingPhase::Waiting);
+}
+
+#[tokio::test]
+async fn non_ban_pairing_failure_keeps_window_and_counter() {
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        Arc::new(DeviceIdentity::generate_for_test()),
+        Duration::from_secs(1),
+        2,
+        false,
+    );
+    manager.enable().await;
+    manager.record_non_ban_failure("network unavailable").await;
+    let status = manager.status().await;
+    assert!(status.pairing_enabled);
+    assert_eq!(status.phase, PairingPhase::Waiting);
+    assert_eq!(status.failed_attempts, 0);
+    assert_eq!(status.error.as_deref(), Some("network unavailable"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -160,7 +176,7 @@ async fn a_stalled_pairing_session_releases_the_window_before_window_expiry() {
     let status = manager.status().await;
     assert!(status.pairing_enabled);
     assert_eq!(status.phase, PairingPhase::Waiting);
-    assert_eq!(status.failed_attempts, 1);
+    assert_eq!(status.failed_attempts, 0);
     assert!(status
         .error
         .as_deref()
