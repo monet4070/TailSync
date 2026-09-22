@@ -11,6 +11,7 @@ fn persisted_incoming_batch(
         files: batch.files.clone(),
         local_generation: batch.local_generation,
         commit_state,
+        clipboard_paths: batch.clipboard_paths.clone(),
     }
 }
 
@@ -51,6 +52,101 @@ fn maybe_abort_received_batch_stage(state: ReceivedBatchCommitState, batch_id: T
 #[cfg(not(feature = "acceptance-injection"))]
 fn maybe_abort_received_batch_stage(_state: ReceivedBatchCommitState, _batch_id: TransferId) {}
 
+fn clipboard_staging_directory(manifest_path: &Path) -> Result<PathBuf, String> {
+    let incoming = manifest_path
+        .parent()
+        .ok_or_else(|| "Received batch manifest has no parent directory".to_string())?;
+    if incoming.file_name().is_some_and(|name| name == "incoming") {
+        Ok(incoming
+            .parent()
+            .ok_or_else(|| "Incoming directory has no storage parent".to_string())?
+            .join("clipboard-files"))
+    } else {
+        Ok(incoming.join("clipboard-files"))
+    }
+}
+
+fn staged_clipboard_paths_are_valid(
+    directory: &Path,
+    paths: &[PathBuf],
+    files: &[ReceivedFile],
+) -> bool {
+    if paths.len() != files.len() || paths.is_empty() {
+        return false;
+    }
+    let Ok(root) = directory.canonicalize() else {
+        return false;
+    };
+    paths.iter().zip(files).all(|(path, file)| {
+        let Ok(canonical) = path.canonicalize() else {
+            return false;
+        };
+        canonical.starts_with(&root)
+            && fs::metadata(&canonical)
+                .map(|metadata| metadata.is_file() && metadata.len() == file.size)
+                .unwrap_or(false)
+            && hash_source_file(&canonical)
+                .map(|hash| hash == file.hash)
+                .unwrap_or(false)
+    })
+}
+
+fn remove_failed_clipboard_staging(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+}
+
+fn rollback_uncommitted_clipboard_staging(batch: &IncomingBatch) {
+    if batch.commit_state < ReceivedBatchCommitState::HistoryPersisted {
+        remove_failed_clipboard_staging(&batch.clipboard_paths);
+    }
+}
+
+fn stage_received_batch_files(
+    files: &[ReceivedFile],
+    source: &str,
+    directory: &Path,
+    existing: &[PathBuf],
+) -> Result<Vec<PathBuf>, String> {
+    if staged_clipboard_paths_are_valid(directory, existing, files) {
+        return Ok(existing.to_vec());
+    }
+    let mut staged = Vec::with_capacity(files.len());
+    for file in files {
+        match crate::db::materialize_remote_clipboard_file_at(
+            directory, &file.path, &file.name, source,
+        ) {
+            Ok(path) => staged.push(path),
+            Err(error) => {
+                remove_failed_clipboard_staging(&staged);
+                return Err(error.to_string());
+            }
+        }
+    }
+    if !staged_clipboard_paths_are_valid(directory, &staged, files) {
+        remove_failed_clipboard_staging(&staged);
+        return Err("Clipboard staging verification failed".to_string());
+    }
+    Ok(staged)
+}
+
+fn persist_clipboard_staging(batch: &mut IncomingBatch, paths: Vec<PathBuf>) -> Result<(), String> {
+    batch.clipboard_paths = paths;
+    if batch.commit_state < ReceivedBatchCommitState::ClipboardStaged {
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::ClipboardStaged)
+    } else {
+        persist_incoming_batch(
+            &batch.manifest_path,
+            &persisted_incoming_batch(batch, batch.commit_state),
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
 fn prepare_incoming_batch(
     manifest: FileBatchManifest,
     source: String,
@@ -64,6 +160,7 @@ fn prepare_incoming_batch(
     let mut files = vec![None; manifest.files.len()];
     let mut local_generation = default_generation;
     let mut commit_state = ReceivedBatchCommitState::Receiving;
+    let mut clipboard_paths = Vec::new();
     let mut persisted_source_device_id = source_device_id;
     let mut restored_generation = false;
     if let Ok(data) = fs::read(&manifest_path) {
@@ -76,6 +173,7 @@ fn prepare_incoming_batch(
             }
             local_generation = saved.local_generation;
             commit_state = saved.commit_state;
+            clipboard_paths = saved.clipboard_paths;
             if !saved.source_device_id.is_empty() {
                 persisted_source_device_id = saved.source_device_id.clone();
             }
@@ -100,6 +198,7 @@ fn prepare_incoming_batch(
             files: files.clone(),
             local_generation,
             commit_state,
+            clipboard_paths: clipboard_paths.clone(),
         },
     )
     .map_err(|error| error.to_string())?;
@@ -113,6 +212,7 @@ fn prepare_incoming_batch(
             files,
             manifest_path,
             commit_state,
+            clipboard_paths,
         },
         restored_generation,
     ))
@@ -211,6 +311,7 @@ impl SyncEngine {
         let mut files = vec![None; manifest.files.len()];
         let mut local_generation = self.clipboard_generation.wrapping_add(1).max(1);
         let mut commit_state = ReceivedBatchCommitState::Receiving;
+        let mut clipboard_paths = Vec::new();
         let mut persisted_source_device_id = source_device_id.clone();
         let mut restored_generation = false;
         if let Ok(data) = fs::read(&manifest_path) {
@@ -225,6 +326,7 @@ impl SyncEngine {
                 }
                 local_generation = saved.local_generation;
                 commit_state = saved.commit_state;
+                clipboard_paths = saved.clipboard_paths;
                 if !saved.source_device_id.is_empty() {
                     persisted_source_device_id = saved.source_device_id.clone();
                 }
@@ -251,6 +353,7 @@ impl SyncEngine {
                 files: files.clone(),
                 local_generation,
                 commit_state,
+                clipboard_paths: clipboard_paths.clone(),
             },
         )
         .map_err(|error| error.to_string())?;
@@ -268,6 +371,7 @@ impl SyncEngine {
                 files,
                 manifest_path,
                 commit_state,
+                clipboard_paths,
             },
         );
         Ok(())
@@ -422,9 +526,19 @@ impl SyncEngine {
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| "File batch is incomplete".to_string())?;
         transition_received_batch_commit(batch, ReceivedBatchCommitState::HashVerified)?;
-        transition_received_batch_commit(batch, ReceivedBatchCommitState::ClipboardStaged)?;
         let total = batch.manifest.files.len();
         let activate_clipboard = batch.local_generation == clipboard_generation;
+        let clipboard_paths = if activate_clipboard {
+            stage_received_batch_files(
+                &files,
+                source,
+                &clipboard_staging_directory(&batch.manifest_path)?,
+                &batch.clipboard_paths,
+            )?
+        } else {
+            Vec::new()
+        };
+        persist_clipboard_staging(batch, clipboard_paths.clone())?;
         let source_device_id = batch.source_device_id.clone();
         let manifest_hash = Self::file_batch_manifest_hash(&batch.manifest)?;
         let platform = self
@@ -446,6 +560,7 @@ impl SyncEngine {
                 device: source.to_string(),
                 source_device_id,
                 manifest_hash: Some(manifest_hash),
+                clipboard_paths: Some(clipboard_paths),
             })
             .await?;
 
@@ -521,7 +636,16 @@ impl SyncEngine {
         for receive_operation_lock in receive_operation_locks {
             receive_operation_guards.push(receive_operation_lock.lock_owned().await);
         }
-        let (commit, platform, manifest, now) = {
+        let (
+            files,
+            activate_clipboard,
+            staging_directory,
+            existing_staging,
+            source_device_id,
+            manifest,
+            platform,
+            now,
+        ) = {
             let mut engine = sync_engine.lock().await;
             let now = chrono::Utc::now().timestamp();
             engine.prune_completed_batches();
@@ -542,23 +666,62 @@ impl SyncEngine {
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| "File batch is incomplete".to_string())?;
             transition_received_batch_commit(batch, ReceivedBatchCommitState::HashVerified)?;
-            transition_received_batch_commit(batch, ReceivedBatchCommitState::ClipboardStaged)?;
             let manifest = batch.manifest.clone();
-            let commit = FileReceiveCommit {
-                batch_id: Some(batch_id),
-                files,
-                batch_total: manifest.files.len(),
-                batch_complete: true,
-                activate_clipboard: batch.local_generation == clipboard_generation,
-                device: source.to_string(),
-                source_device_id: batch.source_device_id.clone(),
-                manifest_hash: Some(Self::file_batch_manifest_hash(&manifest)?),
-            };
+            let staging_directory = clipboard_staging_directory(&batch.manifest_path)?;
+            let activate_clipboard = batch.local_generation == clipboard_generation;
+            let source_device_id = batch.source_device_id.clone();
+            let existing_staging = batch.clipboard_paths.clone();
             let platform = engine
                 .platform
                 .clone()
                 .ok_or_else(|| "Clipboard platform is unavailable".to_string())?;
-            (commit, platform, manifest, now)
+            (
+                files,
+                activate_clipboard,
+                staging_directory,
+                existing_staging,
+                source_device_id,
+                manifest,
+                platform,
+                now,
+            )
+        };
+
+        let clipboard_paths = if activate_clipboard {
+            let stage_files = files.clone();
+            let stage_source = source.to_string();
+            tokio::task::spawn_blocking(move || {
+                stage_received_batch_files(
+                    &stage_files,
+                    &stage_source,
+                    &staging_directory,
+                    &existing_staging,
+                )
+            })
+            .await
+            .map_err(|error| format!("Clipboard staging task failed: {error}"))??
+        } else {
+            Vec::new()
+        };
+        {
+            let mut engine = sync_engine.lock().await;
+            let batch = engine
+                .incoming_batches
+                .get_mut(&key)
+                .ok_or_else(|| "File batch state disappeared during staging".to_string())?;
+            persist_clipboard_staging(batch, clipboard_paths.clone())?;
+        }
+
+        let commit = FileReceiveCommit {
+            batch_id: Some(batch_id),
+            files,
+            batch_total: manifest.files.len(),
+            batch_complete: true,
+            activate_clipboard,
+            device: source.to_string(),
+            source_device_id,
+            manifest_hash: Some(Self::file_batch_manifest_hash(&manifest)?),
+            clipboard_paths: Some(clipboard_paths),
         };
 
         platform.files_received(commit).await?;
@@ -654,6 +817,7 @@ impl SyncEngine {
         self.cancelled_batches
             .insert(key.clone(), chrono::Utc::now().timestamp());
         if let Some(batch) = self.incoming_batches.remove(&key) {
+            rollback_uncommitted_clipboard_staging(&batch);
             let _ = fs::remove_file(batch.manifest_path);
             let completed = batch.files.into_iter().flatten().collect::<Vec<_>>();
             if !completed.is_empty() {
@@ -670,6 +834,7 @@ impl SyncEngine {
                             device: source.to_string(),
                             source_device_id,
                             manifest_hash,
+                            clipboard_paths: None,
                         })
                         .await
                     {
@@ -806,6 +971,7 @@ impl SyncEngine {
         }
         if let Some(batch) = batch {
             was_receiving = true;
+            rollback_uncommitted_clipboard_staging(&batch);
             let _ = fs::remove_file(&batch.manifest_path);
             let completed = batch.files.into_iter().flatten().collect::<Vec<_>>();
             if !completed.is_empty() {
@@ -822,6 +988,7 @@ impl SyncEngine {
                             device: source.to_string(),
                             source_device_id,
                             manifest_hash,
+                            clipboard_paths: None,
                         })
                         .await
                     {

@@ -232,7 +232,7 @@ pub fn materialize_remote_clipboard_file(
     )
 }
 
-pub(super) fn materialize_remote_clipboard_file_at(
+pub(crate) fn materialize_remote_clipboard_file_at(
     directory: &Path,
     source: &Path,
     original_name: &str,

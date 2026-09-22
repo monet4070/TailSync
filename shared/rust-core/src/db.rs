@@ -21,6 +21,7 @@ mod storage;
 mod test_support;
 mod types;
 
+pub(crate) use file_storage::materialize_remote_clipboard_file_at;
 pub use file_storage::{
     cleanup_clipboard_files, materialize_clipboard_bytes, materialize_clipboard_file,
     materialize_remote_clipboard_file,
@@ -32,10 +33,7 @@ use file_storage::{
     validate_history_file_size,
 };
 #[cfg(test)]
-use file_storage::{
-    materialize_clipboard_bytes_at, materialize_remote_clipboard_file_at, StoredFileReference,
-    FILE_HISTORY_BYTE_LIMIT,
-};
+use file_storage::{materialize_clipboard_bytes_at, StoredFileReference, FILE_HISTORY_BYTE_LIMIT};
 pub use paths::{
     configure_storage_dir, configure_storage_parent, get_clipboard_files_dir, get_data_dir,
     get_file_history_dir, get_history_db_path, get_image_history_dir, get_incoming_dir,

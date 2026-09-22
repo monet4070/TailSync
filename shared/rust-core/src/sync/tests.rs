@@ -181,6 +181,7 @@ struct ReceivedBatchEvent {
     batch_complete: bool,
     activate_clipboard: bool,
     device: String,
+    clipboard_paths: Option<Vec<PathBuf>>,
 }
 
 #[derive(Default)]
@@ -218,6 +219,7 @@ impl SyncPlatform for TestPlatform {
             batch_complete,
             activate_clipboard,
             device,
+            clipboard_paths,
             ..
         } = commit;
         self.received.lock().unwrap().push(ReceivedBatchEvent {
@@ -227,6 +229,7 @@ impl SyncPlatform for TestPlatform {
             batch_complete,
             activate_clipboard,
             device,
+            clipboard_paths,
         });
         let fail_receives = self.fail_receives.load(Ordering::Relaxed);
         Box::pin(async move {
@@ -239,6 +242,88 @@ impl SyncPlatform for TestPlatform {
     }
 
     fn file_batch_failed(&self, _batch_id: Option<TransferId>, _message: &str) {}
+}
+
+#[tokio::test]
+async fn shared_batch_commit_reuses_verified_plaintext_clipboard_staging() {
+    let directory = TestDirectory::new("shared-batch-staging");
+    let incoming = directory.path().join("incoming");
+    std::fs::create_dir_all(&incoming).unwrap();
+    let data = b"verified plaintext staging";
+    let batch_id = TransferId([0xC1; 16]);
+    let transfer_id = TransferId([0xC2; 16]);
+    let manifest = FileBatchManifest {
+        batch_id,
+        generation: 1,
+        total_bytes: data.len() as u64,
+        files: vec![FileBatchEntry {
+            transfer_id,
+            index: 0,
+            name: "payload.bin".to_string(),
+            source_parent: String::new(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+        }],
+    };
+    let platform = Arc::new(TestPlatform::default());
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    engine.lock().await.set_platform(platform.clone());
+    SyncEngine::begin_file_batch_shared(
+        &engine,
+        manifest.clone(),
+        "peer".to_string(),
+        "device-id".to_string(),
+        incoming.clone(),
+        1,
+    )
+    .await
+    .unwrap();
+    let progress = SyncEngine::begin_file_receive_shared(
+        &engine,
+        FileMeta {
+            transfer_id: Some(transfer_id),
+            name: "payload.bin".to_string(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: Some(FileBatchRef { batch_id, index: 0 }),
+        },
+        &incoming.join("payload.bin"),
+        "peer".to_string(),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(progress.completed.is_none());
+    let progress = SyncEngine::handle_resumable_file_chunk_shared(
+        &engine,
+        &FileChunkPayload {
+            transfer_id,
+            offset: 0,
+            data: data.to_vec(),
+        },
+        "peer".to_string(),
+    )
+    .await
+    .unwrap();
+    verify_and_commit_received_file(&engine, "peer", progress.completed.unwrap())
+        .await
+        .unwrap();
+    SyncEngine::finish_file_batch_shared(&engine, "peer", batch_id)
+        .await
+        .unwrap();
+
+    let event = platform.received().pop().unwrap();
+    let staged = event.clipboard_paths.unwrap();
+    assert_eq!(staged.len(), 1);
+    assert!(staged[0].starts_with(directory.path().join("clipboard-files")));
+    assert_eq!(std::fs::read(&staged[0]).unwrap(), data);
+    assert_ne!(staged[0], incoming.join("payload.bin"));
+
+    SyncEngine::acknowledge_file_batch_shared(&engine, "peer", batch_id, &incoming)
+        .await
+        .unwrap();
 }
 
 struct BlockingPlatform {

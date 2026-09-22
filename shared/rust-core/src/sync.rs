@@ -148,6 +148,10 @@ pub struct FileReceiveCommit {
     pub device: String,
     pub source_device_id: String,
     pub manifest_hash: Option<String>,
+    /// Verified plaintext files prepared before durable history persistence.
+    /// Batch commits set this to `Some`; legacy single-file and partial
+    /// history paths use `None` and retain the adapter fallback.
+    pub clipboard_paths: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -311,6 +315,7 @@ struct IncomingBatch {
     files: Vec<Option<ReceivedFile>>,
     manifest_path: PathBuf,
     commit_state: ReceivedBatchCommitState,
+    clipboard_paths: Vec<PathBuf>,
 }
 
 type ReceiveOperationKey = (String, ReceiveKey);

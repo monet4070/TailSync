@@ -33,6 +33,9 @@ pub(crate) struct PersistedIncomingBatch {
     /// resume at `Receiving`.
     #[serde(default)]
     pub(crate) commit_state: ReceivedBatchCommitState,
+    /// Managed plaintext staging prepared before the history transaction.
+    #[serde(default)]
+    pub(crate) clipboard_paths: Vec<PathBuf>,
 }
 
 /// Resume-persistence failures (T352 migration). Display strings match the
@@ -205,12 +208,19 @@ pub(crate) fn cleanup_expired_transfers_in(incoming: &Path, retention: Duration)
         let is_partial = file_name.ends_with(".part")
             || file_name.ends_with(".resume.json")
             || file_name.ends_with(".batch.json");
+        let acknowledged_batch = file_name.ends_with(".batch.json")
+            && fs::read(&path)
+                .ok()
+                .and_then(|data| serde_json::from_slice::<PersistedIncomingBatch>(&data).ok())
+                .is_some_and(|batch| batch.commit_state >= ReceivedBatchCommitState::Acked);
         let expired = metadata
             .modified()
             .ok()
             .and_then(|modified| modified.elapsed().ok())
             .is_some_and(|age| age > retention);
-        if expired {
+        if acknowledged_batch {
+            let _ = fs::remove_file(path);
+        } else if expired {
             if is_partial && file_name.ends_with(".batch.json") {
                 if let Ok(data) = fs::read(&path) {
                     if let Ok(batch) = serde_json::from_slice::<PersistedIncomingBatch>(&data) {
@@ -267,6 +277,7 @@ mod tests {
             files: Vec::new(),
             local_generation: 0,
             commit_state: ReceivedBatchCommitState::Receiving,
+            clipboard_paths: Vec::new(),
         };
 
         persist_incoming_batch(&path, &batch).unwrap();
@@ -276,6 +287,47 @@ mod tests {
         let restored: PersistedIncomingBatch =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(restored.source, "peer");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn maintenance_immediately_cleans_acknowledged_batch_sidecars() {
+        let directory = test_directory("acked-batch-cleanup");
+        fs::create_dir_all(&directory).unwrap();
+        let manifest = FileBatchManifest {
+            batch_id: TransferId::random(),
+            generation: 1,
+            total_bytes: 0,
+            files: Vec::new(),
+        };
+        for (name, commit_state) in [
+            (
+                "receipt.batch.json",
+                ReceivedBatchCommitState::ReceiptPersisted,
+            ),
+            ("acked.batch.json", ReceivedBatchCommitState::Acked),
+            ("cleaned.batch.json", ReceivedBatchCommitState::Cleaned),
+        ] {
+            persist_incoming_batch(
+                &directory.join(name),
+                &PersistedIncomingBatch {
+                    source: "peer".to_string(),
+                    source_device_id: "device".to_string(),
+                    manifest: manifest.clone(),
+                    files: Vec::new(),
+                    local_generation: 1,
+                    commit_state,
+                    clipboard_paths: Vec::new(),
+                },
+            )
+            .unwrap();
+        }
+
+        cleanup_expired_transfers_in(&directory, Duration::from_secs(24 * 60 * 60));
+
+        assert!(directory.join("receipt.batch.json").is_file());
+        assert!(!directory.join("acked.batch.json").exists());
+        assert!(!directory.join("cleaned.batch.json").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 

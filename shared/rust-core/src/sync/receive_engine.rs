@@ -697,6 +697,7 @@ impl SyncEngine {
                         .cloned()
                         .unwrap_or_else(|| source.to_string()),
                     manifest_hash: None,
+                    clipboard_paths: None,
                 })
                 .await?;
         }
@@ -748,6 +749,7 @@ impl SyncEngine {
             let saved_source = saved.source;
             let local_generation = saved.local_generation;
             let commit_state = saved.commit_state;
+            let clipboard_paths = saved.clipboard_paths;
             let source_device_id = if saved.source_device_id.is_empty() {
                 self.peer_device_ids
                     .get(source)
@@ -778,6 +780,7 @@ impl SyncEngine {
                     files,
                     manifest_path,
                     commit_state,
+                    clipboard_paths,
                 },
             );
         }
@@ -797,6 +800,7 @@ impl SyncEngine {
             files: files.clone(),
             local_generation: batch.local_generation,
             commit_state: batch.commit_state,
+            clipboard_paths: batch.clipboard_paths.clone(),
         };
         persist_incoming_batch(&batch.manifest_path, &persisted)
             .map_err(|error| error.to_string())?;
@@ -933,6 +937,7 @@ impl SyncEngine {
                 device: source.to_string(),
                 source_device_id,
                 manifest_hash: None,
+                clipboard_paths: None,
             };
             let platform = engine
                 .platform
@@ -1072,6 +1077,7 @@ fn rehydrate_batch_for_commit(
     }
     let manifest = saved.manifest;
     let commit_state = saved.commit_state;
+    let clipboard_paths = saved.clipboard_paths;
     let mut files = vec![None; manifest.files.len()];
     for (index, file) in saved.files.into_iter().enumerate() {
         if let Some(file) = file {
@@ -1095,6 +1101,7 @@ fn rehydrate_batch_for_commit(
         manifest_path,
         manifest,
         commit_state,
+        clipboard_paths,
     })
 }
 
@@ -1139,6 +1146,7 @@ fn persist_received_file_in_batch(
         files: files.clone(),
         local_generation: batch.local_generation,
         commit_state: batch.commit_state,
+        clipboard_paths: batch.clipboard_paths.clone(),
     };
     persist_incoming_batch(&batch.manifest_path, &persisted).map_err(|error| error.to_string())?;
     batch.files = files;

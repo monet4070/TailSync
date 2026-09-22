@@ -147,6 +147,7 @@ impl SyncPlatform for TauriSyncPlatform {
             device,
             source_device_id,
             manifest_hash,
+            clipboard_paths: staged_clipboard_paths,
         } = commit;
         let db = self.db.clone();
         let app = self.app.clone();
@@ -215,26 +216,36 @@ impl SyncPlatform for TauriSyncPlatform {
 
             let _history_version_bump = HistoryVersionBump;
             if activate_clipboard && batch_complete {
-                let mut clipboard_paths = Vec::with_capacity(stored_paths.len());
-                for (stored_path, name) in stored_paths.iter().zip(&names) {
-                    match db::materialize_remote_clipboard_file(stored_path, name, &device) {
-                        Ok(path) => clipboard_paths.push(path),
-                        Err(error) => {
-                            log::error!("Could not prepare received batch for clipboard: {error}");
-                            if notifications_enabled {
-                                let _ = app
-                                    .notification()
-                                    .builder()
-                                    .title("TailSync")
-                                    .body(format!(
-                                        "Could not place received files on the clipboard: {error}"
-                                    ))
-                                    .show();
+                let clipboard_paths = if let Some(paths) = staged_clipboard_paths {
+                    if paths.len() != names.len() {
+                        return Err("Received clipboard staging has an invalid file count".into());
+                    }
+                    paths
+                } else {
+                    let mut paths = Vec::with_capacity(stored_paths.len());
+                    for (stored_path, name) in stored_paths.iter().zip(&names) {
+                        match db::materialize_remote_clipboard_file(stored_path, name, &device) {
+                            Ok(path) => paths.push(path),
+                            Err(error) => {
+                                log::error!(
+                                    "Could not prepare received batch for clipboard: {error}"
+                                );
+                                if notifications_enabled {
+                                    let _ = app
+                                        .notification()
+                                        .builder()
+                                        .title("TailSync")
+                                        .body(format!(
+                                            "Could not place received files on the clipboard: {error}"
+                                        ))
+                                        .show();
+                                }
+                                return Ok(());
                             }
-                            return Ok(());
                         }
                     }
-                }
+                    paths
+                };
                 if api::get_clipboard_version() != activation_version {
                     log::info!("Received file batch was superseded before clipboard activation");
                 } else if let Err(error) = clipboard_file::write_clipboard_files(&clipboard_paths) {
