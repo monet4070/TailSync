@@ -133,6 +133,7 @@ assertTreeMatch('src-tauri/src', [
   'api/tests.rs',
   'clipboard/transfer.rs',
   'commands/history.rs',
+  'commands/error.rs',
   'commands/peers.rs',
   'commands/platform.rs',
   'commands/preview.rs',

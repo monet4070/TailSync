@@ -1,3 +1,4 @@
+use super::CommandError;
 use crate::network;
 use crate::pairing::{RemoteInviteStatus, RemotePairingInvite};
 use crate::AppState;
@@ -40,7 +41,7 @@ pub struct RemotePairingInvitePreview {
 #[command]
 pub async fn create_remote_pairing_invite(
     state: State<'_, AppState>,
-) -> Result<RemotePairingInviteResponse, String> {
+) -> Result<RemotePairingInviteResponse, CommandError> {
     let invite = network::create_remote_pairing_invite(
         state.pairing.clone(),
         state.settings.clone(),
@@ -55,7 +56,9 @@ pub async fn create_remote_pairing_invite(
 }
 
 #[command]
-pub fn inspect_remote_pairing_link(link: String) -> Result<RemotePairingInvitePreview, String> {
+pub fn inspect_remote_pairing_link(
+    link: String,
+) -> Result<RemotePairingInvitePreview, CommandError> {
     let invite = RemotePairingInvite::parse(&link).map_err(|error| error.to_string())?;
     Ok(RemotePairingInvitePreview {
         endpoint_id: invite.endpoint_id_string(),
@@ -68,7 +71,7 @@ pub fn inspect_remote_pairing_link(link: String) -> Result<RemotePairingInvitePr
 pub async fn start_remote_pairing(
     state: State<'_, AppState>,
     link: String,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
     network::start_remote_pairing(
         state.pairing.clone(),
         state.identity.clone(),
@@ -82,14 +85,14 @@ pub async fn start_remote_pairing(
 #[command]
 pub fn get_remote_pairing_invite_status(
     state: State<'_, AppState>,
-) -> Result<RemoteInviteStatus, String> {
+) -> Result<RemoteInviteStatus, CommandError> {
     Ok(state.remote_invites.status())
 }
 
 #[command]
 pub async fn cancel_remote_pairing_invite(
     state: State<'_, AppState>,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
     state.remote_invites.cancel();
     Ok(state.pairing.cancel().await)
 }
@@ -97,7 +100,7 @@ pub async fn cancel_remote_pairing_invite(
 #[command]
 pub fn take_pending_remote_pairing_link(
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, CommandError> {
     Ok(state
         .pending_remote_pairing_link
         .lock()

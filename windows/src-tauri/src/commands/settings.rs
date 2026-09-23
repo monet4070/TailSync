@@ -2,7 +2,7 @@ use super::*;
 
 /// Get whether this device broadcasts clipboard changes and its configured shortcut.
 #[command]
-pub async fn get_sync_state(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+pub async fn get_sync_state(state: State<'_, AppState>) -> Result<serde_json::Value, CommandError> {
     let settings = state.settings.lock().await;
     Ok(serde_json::json!({
         "enabled": settings.sync_enabled,
@@ -13,29 +13,32 @@ pub async fn get_sync_state(state: State<'_, AppState>) -> Result<serde_json::Va
 
 /// Enable or pause local clipboard broadcasting.
 #[command]
-pub async fn set_sync_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    set_sync_enabled_for_app(&app, enabled).await
+pub async fn set_sync_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), CommandError> {
+    set_sync_enabled_for_app(&app, enabled)
+        .await
+        .map_err(Into::into)
 }
 
 #[command]
-pub async fn toggle_sync(app: tauri::AppHandle) -> Result<bool, String> {
-    toggle_sync_for_app(&app).await
+pub async fn toggle_sync(app: tauri::AppHandle) -> Result<bool, CommandError> {
+    toggle_sync_for_app(&app).await.map_err(Into::into)
 }
 
 #[command]
-pub fn suspend_sync_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+pub fn suspend_sync_shortcut(app: tauri::AppHandle) -> Result<(), CommandError> {
     app.global_shortcut()
         .unregister_all()
-        .map_err(|error| error.to_string())
+        .map_err(|error| CommandError::from(error.to_string()))
 }
 
 #[command]
 pub async fn resume_sync_shortcut(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let settings = state.settings.lock().await.clone();
     install_global_shortcuts(&app, &settings.sync_shortcut, &settings.history_shortcut)
+        .map_err(Into::into)
 }
 
 #[command]
@@ -43,7 +46,7 @@ pub async fn set_sync_shortcut(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     shortcut: String,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let shortcut = shortcut.trim().to_string();
     let mut settings = state.settings.lock().await;
     let previous = settings.clone();
@@ -64,7 +67,7 @@ pub async fn set_history_shortcut(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     shortcut: String,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let shortcut = shortcut.trim().to_string();
     let mut settings = state.settings.lock().await;
     let previous = settings.clone();
@@ -82,7 +85,9 @@ pub async fn set_history_shortcut(
 
 /// Get current settings
 #[command]
-pub async fn get_settings(state: State<'_, AppState>) -> Result<crate::crypto::Settings, String> {
+pub async fn get_settings(
+    state: State<'_, AppState>,
+) -> Result<crate::crypto::Settings, CommandError> {
     let settings = state.settings.lock().await;
     Ok(settings.clone())
 }
@@ -93,7 +98,7 @@ pub async fn update_settings(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     settings_json: String,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let requested_settings: crate::crypto::Settings =
         serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
     let apply_shortcut_transaction =
@@ -128,7 +133,7 @@ pub async fn update_settings(
 
 /// Open the history window
 #[command]
-pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
     use tauri::Manager;
 
     crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::HISTORY_WINDOW_LABEL);
@@ -180,12 +185,14 @@ pub(crate) async fn toggle_history_window(app: tauri::AppHandle) -> Result<(), S
             );
         }
     }
-    open_history_window(app).await
+    open_history_window(app)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Open the favorites window that shares the history row interaction model.
 #[command]
-pub async fn open_favorites_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_favorites_window(app: tauri::AppHandle) -> Result<(), CommandError> {
     use tauri::Manager;
 
     crate::window_lifecycle::mark_window_open(
@@ -220,7 +227,7 @@ pub async fn open_favorites_window(app: tauri::AppHandle) -> Result<(), String> 
 
 /// Open the settings window
 #[command]
-pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), CommandError> {
     use tauri::Manager;
 
     crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::SETTINGS_WINDOW_LABEL);
@@ -253,25 +260,28 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[command]
-pub fn close_history_window(app: tauri::AppHandle) -> Result<(), String> {
+pub fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::HISTORY_WINDOW_LABEL,
     )
+    .map_err(Into::into)
 }
 
 #[command]
-pub fn close_favorites_window(app: tauri::AppHandle) -> Result<(), String> {
+pub fn close_favorites_window(app: tauri::AppHandle) -> Result<(), CommandError> {
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::FAVORITES_WINDOW_LABEL,
     )
+    .map_err(Into::into)
 }
 
 #[command]
-pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), CommandError> {
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
     )
+    .map_err(Into::into)
 }

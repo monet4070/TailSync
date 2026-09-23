@@ -124,7 +124,7 @@ pub async fn open_preview_window(
     controller: State<'_, PreviewWindowController>,
     app_state: State<'_, crate::AppState>,
     mut request: PreviewWindowRequest,
-) -> Result<PreviewWindowSnapshot, String> {
+) -> Result<PreviewWindowSnapshot, crate::commands::CommandError> {
     request.validate()?;
     if let Some(batch_id) = request.batch_id.as_deref() {
         let navigation = app_state
@@ -181,7 +181,7 @@ pub fn close_preview_window(
     app: AppHandle,
     controller: State<'_, PreviewWindowController>,
     owner: Option<PreviewWindowOwner>,
-) -> Result<(), String> {
+) -> Result<(), crate::commands::CommandError> {
     if owner.is_some_and(|owner| !controller.owns(owner)) {
         return Ok(());
     }
@@ -191,7 +191,7 @@ pub fn close_preview_window(
             log::debug!("Could not notify preview renderer before release: {error}");
         }
     }
-    crate::window_lifecycle::hide_then_release_window(app, PREVIEW_WINDOW_LABEL)
+    crate::window_lifecycle::hide_then_release_window(app, PREVIEW_WINDOW_LABEL).map_err(Into::into)
 }
 
 /// Keep the reusable preview paired only with the active source window's
@@ -203,7 +203,7 @@ pub fn sync_preview_window_minimized(
     controller: State<'_, PreviewWindowController>,
     owner: PreviewWindowOwner,
     minimized: bool,
-) -> Result<(), String> {
+) -> Result<(), crate::commands::CommandError> {
     if !controller.owns(owner) {
         return Ok(());
     }

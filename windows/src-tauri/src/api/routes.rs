@@ -106,13 +106,8 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         BuiltinCommand::GetLocalCapabilities => Response {
             ok: true,
-            data: serde_json::to_value(tailsync_runtime::contracts::LocalCapabilities::current(
-                "windows",
-                crate::protocol::VERSION,
-                false,
-                false,
-            ))
-            .ok(),
+            data: serde_json::to_value(crate::commands::windows_local_capabilities(false, false))
+                .ok(),
             error: None,
         },
 

@@ -148,6 +148,7 @@ where
     }
 }
 
+mod error;
 mod history;
 mod peers;
 mod platform;
@@ -157,6 +158,7 @@ mod settings;
 mod storage;
 mod themes;
 
+pub(crate) use error::CommandError;
 pub use history::*;
 pub use peers::*;
 pub use platform::*;

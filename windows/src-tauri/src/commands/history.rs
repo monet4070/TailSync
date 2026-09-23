@@ -16,9 +16,10 @@ pub async fn get_history(
     limit: Option<usize>,
     offset: Option<usize>,
     collection: Option<String>,
-) -> Result<Vec<db::HistoryEntry>, String> {
-    let collection = db::HistoryCollection::from_wire(collection.as_deref())
-        .map_err(|error| error.to_string())?;
+) -> Result<Vec<db::HistoryEntry>, CommandError> {
+    let collection = db::HistoryCollection::from_wire(collection.as_deref()).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })?;
     HistoryOperations::entries_async(
         state.db.clone(),
         HistoryPageRequestOwned::new(
@@ -26,6 +27,7 @@ pub async fn get_history(
         ),
     )
     .await
+    .map_err(Into::into)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -39,9 +41,10 @@ pub async fn get_history_page(
     limit: Option<usize>,
     offset: Option<usize>,
     collection: Option<String>,
-) -> Result<HistoryPage, String> {
-    let collection = db::HistoryCollection::from_wire(collection.as_deref())
-        .map_err(|error| error.to_string())?;
+) -> Result<HistoryPage, CommandError> {
+    let collection = db::HistoryCollection::from_wire(collection.as_deref()).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })?;
     let page = HistoryOperations::page_async(
         state.db.clone(),
         HistoryPageRequestOwned::new(
@@ -57,15 +60,17 @@ pub async fn get_history_page(
 }
 
 #[command]
-pub async fn get_history_capabilities() -> Result<serde_json::Value, String> {
+pub async fn get_history_capabilities() -> Result<serde_json::Value, CommandError> {
     Ok(crate::api::history_capabilities_data())
 }
 
 #[command]
 pub async fn get_migration_diagnostics(
     state: State<'_, AppState>,
-) -> Result<db::MigrationDiagnostics, String> {
-    HistoryOperations::migration_diagnostics_async(state.db.clone(), 50).await
+) -> Result<db::MigrationDiagnostics, CommandError> {
+    HistoryOperations::migration_diagnostics_async(state.db.clone(), 50)
+        .await
+        .map_err(Into::into)
 }
 
 /// Search history by keyword (searches description field)
@@ -73,7 +78,7 @@ pub async fn get_migration_diagnostics(
 pub async fn search_history(
     state: State<'_, AppState>,
     keyword: String,
-) -> Result<Vec<db::HistoryEntry>, String> {
+) -> Result<Vec<db::HistoryEntry>, CommandError> {
     HistoryOperations::entries_async(
         state.db.clone(),
         HistoryPageRequestOwned::new(
@@ -88,11 +93,12 @@ pub async fn search_history(
         ),
     )
     .await
+    .map_err(Into::into)
 }
 
 /// Delete a history entry
 #[command]
-pub async fn delete_entry(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+pub async fn delete_entry(state: State<'_, AppState>, id: i64) -> Result<(), CommandError> {
     HistoryOperations::delete_async_with_hook(
         state.db.clone(),
         id,
@@ -108,7 +114,7 @@ pub async fn set_history_favorite(
     state: State<'_, AppState>,
     id: i64,
     favorite: bool,
-) -> Result<db::FavoriteMutation, String> {
+) -> Result<db::FavoriteMutation, CommandError> {
     let mutation = HistoryOperations::set_favorite_async_with_hook(
         state.db.clone(),
         id,
@@ -124,7 +130,7 @@ pub async fn set_history_favorite(
 pub async fn delete_favorite_entry(
     state: State<'_, AppState>,
     id: i64,
-) -> Result<db::FavoriteMutation, String> {
+) -> Result<db::FavoriteMutation, CommandError> {
     let mutation = HistoryOperations::delete_favorite_async_with_hook(
         state.db.clone(),
         id,
@@ -136,7 +142,7 @@ pub async fn delete_favorite_entry(
 
 /// Delete all clipboard history entries.
 #[command]
-pub async fn clear_history(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn clear_history(state: State<'_, AppState>) -> Result<(), CommandError> {
     HistoryOperations::clear_async_with_hook(state.db.clone(), crate::api::bump_clipboard_version)
         .await?;
     Ok(())
@@ -145,7 +151,7 @@ pub async fn clear_history(state: State<'_, AppState>) -> Result<(), String> {
 /// Restore a history entry back to clipboard.
 /// Handles text (as text), images (as Image), and files (via CF_HDROP).
 #[command]
-pub async fn restore_entry(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+pub async fn restore_entry(state: State<'_, AppState>, id: i64) -> Result<(), CommandError> {
     let payload = HistoryOperations::restore_payload_async(state.db.clone(), id).await?;
     let entry_type = payload.entry_type;
     let file_path = payload.file_path;

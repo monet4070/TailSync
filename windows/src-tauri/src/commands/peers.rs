@@ -2,7 +2,7 @@ use super::*;
 
 /// Read the latest peer-health snapshot maintained by the background monitor.
 #[command]
-pub async fn get_peers(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+pub async fn get_peers(state: State<'_, AppState>) -> Result<serde_json::Value, CommandError> {
     let settings = state.settings.lock().await.clone();
     let mode = settings.connection_mode.clone();
     let discovery = network::cached_discover_peers(&mode).await;
@@ -15,7 +15,7 @@ pub async fn get_peers(state: State<'_, AppState>) -> Result<serde_json::Value, 
 
 /// Ask the background monitor to execute a health round immediately.
 #[command]
-pub async fn refresh_peers(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+pub async fn refresh_peers(state: State<'_, AppState>) -> Result<serde_json::Value, CommandError> {
     let mode = state.settings.lock().await.connection_mode.clone();
     network::request_peer_refresh(&mode).await?;
     get_peers(state).await
@@ -23,10 +23,12 @@ pub async fn refresh_peers(state: State<'_, AppState>) -> Result<serde_json::Val
 
 /// Measure latency over a peer's selected TailSync route.
 #[command]
-pub async fn test_connection(address: String) -> Result<serde_json::Value, String> {
+pub async fn test_connection(address: String) -> Result<serde_json::Value, CommandError> {
     let address = address.trim();
     if address.is_empty() {
-        return Err("Missing peer address".to_string());
+        return Err(CommandError::code(
+            tailsync_runtime::contracts::StableErrorCode::InvalidArgument,
+        ));
     }
     match network::test_connection(address).await {
         Ok(route) => {
@@ -35,7 +37,10 @@ pub async fn test_connection(address: String) -> Result<serde_json::Value, Strin
         }
         Err(error) => {
             network::record_address_test_failure(address);
-            Err(error)
+            let _ = error;
+            Err(CommandError::code(
+                tailsync_runtime::contracts::StableErrorCode::TemporarilyBusy,
+            ))
         }
     }
 }
@@ -47,7 +52,7 @@ pub async fn trust_peer(
     hostname: String,
     public_key: String,
     address: Option<String>,
-) -> Result<String, String> {
+) -> Result<String, CommandError> {
     let fingerprint = crate::identity::trust_peer(
         &state.identity,
         &state.settings,
@@ -73,7 +78,7 @@ pub async fn trust_peer(
 
 /// Remove a pinned peer identity. New connections are rejected immediately.
 #[command]
-pub async fn forget_peer(state: State<'_, AppState>, hostname: String) -> Result<(), String> {
+pub async fn forget_peer(state: State<'_, AppState>, hostname: String) -> Result<(), CommandError> {
     let hostname = hostname.trim();
     state
         .settings
@@ -89,14 +94,14 @@ pub async fn forget_peer(state: State<'_, AppState>, hostname: String) -> Result
 #[command]
 pub async fn enable_pairing(
     state: State<'_, AppState>,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
     Ok(state.pairing.enable().await)
 }
 
 #[command]
 pub async fn get_pairing_status(
     state: State<'_, AppState>,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
     Ok(state.pairing.status().await)
 }
 
@@ -104,7 +109,7 @@ pub async fn get_pairing_status(
 pub async fn start_pairing(
     state: State<'_, AppState>,
     address: String,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
     network::start_pairing(
         state.pairing.clone(),
         state.identity.clone(),
@@ -118,18 +123,18 @@ pub async fn start_pairing(
 #[command]
 pub async fn confirm_pairing(
     state: State<'_, AppState>,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
     state
         .pairing
         .confirm()
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| CommandError::from(error.to_string()))
 }
 
 #[command]
 pub async fn cancel_pairing(
     state: State<'_, AppState>,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
     Ok(state.pairing.cancel().await)
 }
 
@@ -139,7 +144,7 @@ pub async fn toggle_peer(
     state: State<'_, AppState>,
     hostname: String,
     enabled: bool,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let mut settings = state.settings.lock().await;
     settings
         .toggle_peer(&hostname, enabled)

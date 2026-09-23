@@ -10,6 +10,21 @@ afterEach(() => {
 });
 
 describe("local IPC diagnostic metrics", () => {
+  it("normalizes a versioned Tauri rejection at the shared invoke boundary", async () => {
+    tauriInvokeMock.mockRejectedValueOnce({
+      schema_version: 1,
+      code: "storage_unavailable",
+      retryable: true,
+      message_key: "untrusted",
+      detail_class: "storage",
+    });
+    await expect(invoke("get_storage_status")).rejects.toMatchObject({
+      name: "StableIpcError",
+      code: "storage_unavailable",
+      retryable: true,
+      messageKey: "error.storage_unavailable",
+    });
+  });
   it("reports only bounded command counts and timing percentiles", () => {
     const metrics = new LocalIpcMetrics();
     for (let index = 0; index < 300; index += 1) {

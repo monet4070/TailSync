@@ -309,5 +309,12 @@
   "tray.settings": "设置",
   "tray.quit": "退出",
   "tray.tooltip": "TailSync",
-  "settings.colorThemeMissing": "所选自定义主题在主题文件夹中不存在，已改用默认主题。"
+  "settings.colorThemeMissing": "所选自定义主题在主题文件夹中不存在，已改用默认主题。",
+  "error.invalid_argument": "请求参数无效。",
+  "error.not_found": "未找到请求的内容。",
+  "error.temporarily_busy": "TailSync 正忙，请重试。",
+  "error.storage_unavailable": "存储暂不可用，请重试。",
+  "error.unauthorized": "没有执行此操作的权限。",
+  "error.protocol_incompatible": "连接的设备使用不兼容的协议。",
+  "error.internal": "TailSync 无法完成此操作。"
 }

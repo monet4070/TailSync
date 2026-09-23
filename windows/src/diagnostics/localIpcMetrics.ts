@@ -1,4 +1,5 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { normalizeIpcError } from "../utils/stableIpcError";
 
 const MAX_DURATION_SAMPLES = 256;
 
@@ -84,7 +85,7 @@ export function invoke<T>(
   args?: Parameters<typeof tauriInvoke>[1],
 ): Promise<T> {
   if (import.meta.env.VITE_TAILSYNC_DIAGNOSTICS !== "1") {
-    return invokeTauri<T>(command, args);
+    return invokeTauri<T>(command, args).catch(error => { throw normalizeIpcError(error); });
   }
   const startedMs = performance.now();
   return invokeTauri<T>(command, args).then(
@@ -94,7 +95,7 @@ export function invoke<T>(
     },
     error => {
       metrics.record(command, startedMs, performance.now(), false);
-      throw error;
+      throw normalizeIpcError(error);
     },
   );
 }
