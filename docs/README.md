@@ -1,7 +1,9 @@
 # TailSync 文档索引
 
-本文档集最近一次按 `codex/reliability-hardening@d6c4b24` 的实现复核。版本、协议和数据库 schema
-以仓库根目录 `README.md` 与代码常量为准。
+**想知道现在做到哪一步，请先看 [`CURRENT-STATUS.md`](CURRENT-STATUS.md)。**
+
+本文档集曾按 `codex/reliability-hardening@d6c4b24` 的实现复核。版本、协议和数据库 schema
+以仓库根目录 `README.md` 与代码常量为准；该历史基线不能代表后续 O08 代码的验收状态。
 
 该实现基线的 [CI run 33343172090](https://github.com/monet4070/TailSync/actions/runs/33343172090)
 已完成并通过全部 5 个 job，包括 Windows NSIS 构建/烟测、macOS bundle/daemon 验证、双向互操作、
