@@ -152,6 +152,13 @@ fn legacy_data_directory() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("TAILSYNC_V1_DATA_DIR") {
         return Some(PathBuf::from(path));
     }
+    // An explicit data/storage root is an isolated session. Never discover
+    // the account's unrelated v1 store unless its source was also specified.
+    if std::env::var_os("TAILSYNC_DATA_DIR").is_some()
+        || std::env::var_os("TAILSYNC_STORAGE_DIR").is_some()
+    {
+        return None;
+    }
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
