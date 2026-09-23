@@ -1,5 +1,11 @@
 # TailSync 外部验收与未闭环修复报告（2026-09-23）
 
+## 当日晚间补充：稳定错误解码策略（源码提交 `73501ac`）
+
+本报告其余章节中的“当前 HEAD”和产品包，均指 12:33 前验收的产品源码 `ba7bbd5`；它们不是本次晚间代码提交的构建证据。提交 `73501ac` 修复 O08 基础层的错误解码：Rust、TypeScript、Swift 对已知错误码均从 Rust 导出的固定策略确定重试标志、文案键和脱敏类别；未知错误码及未来类别安全收敛为 `internal_error`；TypeScript 解码还丢弃响应中的额外字段。修复前 Rust/TypeScript 最小回归测试失败，修复后通过。`LocalCapabilities.current().supports_stable_errors` 仍为 `false`，因为平台命令尚未全量迁移；本次没有重新打包或修改公开发布的 NO-GO 结论。
+
+本机完整回归的逐命令起止时间、退出码与原始日志位于 `audit/stable-error-policy-2026-09-23/run-20260923-183238/validation.json` 及同目录日志：Core、Runtime、Themes、Windows/macOS Rust（Windows host）、Windows 前端测试/构建/lint、本地契约与跨平台检查全部退出码 0。最终生成器调整后又重跑 Windows 前端 226 项测试、构建、契约检查及 Runtime 格式检查，均通过。Swift/SwiftUI 测试因本机没有 Swift 工具链仍为 `BLOCKED`；不能把 Windows host 的 macOS Rust 测试等同于真实 macOS 验收。原有 Windows schema 修改及未跟踪审计目录没有纳入此代码提交。
+
 ## 结论与边界
 
 **公开发布：NO-GO。** 被验收的产品源码提交 `ba7bbd5701b176c3179bbffbd0fcbb9e061e4edf` 的隔离旧版历史迁移缺陷已红/绿复现并通过完整本机回归；该源码提交的 Windows 无签名 development 包构建、隔离 portable/deep-link smoke、运行中与退出后的 TCP 19889 空端口，以及系统级忙碌文件剪贴板读取三档已通过。后续提交本报告只会使仓库 Git HEAD 前进，**不会改变安装包清单中的 `sourceCommit=ba7bbd5`，也不代表重新构建**。签名、干净安装/升级/卸载、真实双/三设备、产品剪贴板监视器端到端广播、产品进程崩溃矩阵和 WebView2 长时内存验收仍无证据。用户确认本轮没有干净 Windows 环境或第二台设备；这些项保持 `BLOCKED`，不得以本机测试替代。
