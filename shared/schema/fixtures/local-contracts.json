@@ -5867,7 +5867,7 @@
     "valid": true,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -5880,7 +5880,7 @@
     "valid": true,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -5893,7 +5893,7 @@
     "contract": "PreviewErrorInfo",
     "valid": false,
     "value": {
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -5906,7 +5906,7 @@
     "valid": false,
     "value": {
       "code": [],
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -5944,7 +5944,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "size_bytes": null,
       "limit_bytes": null,
       "retryable": false
@@ -5956,7 +5956,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": [],
       "size_bytes": null,
       "limit_bytes": null,
@@ -5969,7 +5969,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "limit_bytes": null,
       "retryable": false
@@ -5981,7 +5981,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": [],
       "limit_bytes": null,
@@ -5994,7 +5994,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "retryable": false
@@ -6006,7 +6006,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": [],
@@ -6019,7 +6019,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null
@@ -6031,7 +6031,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,

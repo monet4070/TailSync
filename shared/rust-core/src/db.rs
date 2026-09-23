@@ -97,6 +97,7 @@ impl PreviewError {
 
 impl From<PreviewError> for PreviewErrorInfo {
     fn from(error: PreviewError) -> Self {
+        let code = error.code();
         let (entry_id, size_bytes, limit_bytes, retryable) = match &error {
             PreviewError::EntryNotFound { entry_id }
             | PreviewError::MetadataUnavailable { entry_id, .. }
@@ -119,8 +120,8 @@ impl From<PreviewError> for PreviewErrorInfo {
             | PreviewError::InvalidSize { .. } => (None, None, None, false),
         };
         Self {
-            code: error.code(),
-            message: error.to_string(),
+            code,
+            message: public_preview_message(code).to_string(),
             entry_id,
             size_bytes,
             limit_bytes,
@@ -130,15 +131,31 @@ impl From<PreviewError> for PreviewErrorInfo {
 }
 
 impl PreviewErrorInfo {
-    pub fn payload_unavailable(entry_id: i64, message: impl Into<String>) -> Self {
+    pub fn payload_unavailable(entry_id: i64, _message: impl Into<String>) -> Self {
         Self {
             code: PreviewErrorCode::PayloadUnavailable,
-            message: message.into(),
+            message: public_preview_message(PreviewErrorCode::PayloadUnavailable).to_string(),
             entry_id: Some(entry_id),
             size_bytes: None,
             limit_bytes: None,
             retryable: false,
         }
+    }
+}
+
+/// The local UI receives this text. Source errors may contain private paths,
+/// peer identities, SQL details, or clipboard content, so only fixed phrases
+/// are allowed into the preview error contract.
+const fn public_preview_message(code: PreviewErrorCode) -> &'static str {
+    match code {
+        PreviewErrorCode::EntryNotFound => "History entry is unavailable.",
+        PreviewErrorCode::BatchNotFound => "History batch is unavailable.",
+        PreviewErrorCode::EntryNotInBatch => "History entry is not in this batch.",
+        PreviewErrorCode::MetadataUnavailable => "Preview metadata is unavailable.",
+        PreviewErrorCode::PayloadUnavailable => "Preview payload is unavailable.",
+        PreviewErrorCode::PreviewTooLarge => "Preview payload is too large.",
+        PreviewErrorCode::UnsupportedType => "Preview type is unsupported.",
+        PreviewErrorCode::InvalidSize => "History entry has an invalid size.",
     }
 }
 

@@ -130,58 +130,78 @@ impl StableErrorEnvelope {
     /// Compatibility classifier used while platform adapters are migrated
     /// from text errors to typed sources. Matching affects only the stable
     /// category; the original message is intentionally discarded.
-    pub fn from_legacy_message(command: &str, message: &str) -> Self {
-        let command = command.to_ascii_lowercase();
-        let message = message.to_ascii_lowercase();
-        let contains_any = |needles: &[&str]| needles.iter().any(|needle| message.contains(needle));
-        let code = if contains_any(&["unauthorized", "permission denied", "access denied"]) {
+    pub fn from_legacy_message(_command: &str, message: &str) -> Self {
+        let message = message.trim().to_ascii_lowercase();
+        let starts_with_any =
+            |prefixes: &[&str]| prefixes.iter().any(|prefix| message.starts_with(prefix));
+        // Only recognize fixed route messages or unambiguous leading error
+        // categories. A private path or database detail containing words such
+        // as "missing" must never turn a storage failure into a request error.
+        let code = if message == "unauthorized" || message.starts_with("unauthorized:") {
             StableErrorCode::Unauthorized
-        } else if contains_any(&[
+        } else if starts_with_any(&[
             "incompatible protocol",
             "protocol incompatible",
             "unsupported version",
             "requires v4",
         ]) {
             StableErrorCode::ProtocolIncompatible
-        } else if contains_any(&[
-            "missing ",
-            "invalid ",
-            "malformed",
-            "must be",
-            "out of range",
-            "exceeds the",
-            "unsupported type",
-        ]) {
-            StableErrorCode::InvalidArgument
-        } else if contains_any(&[
-            "not found",
-            "no such",
-            "unknown command",
-            "does not exist",
-            "unavailable entry",
-        ]) {
-            StableErrorCode::NotFound
-        } else if contains_any(&[
+        } else if starts_with_any(&[
+            "database locked",
+            "database busy",
             "temporarily busy",
             "would block",
-            "locked",
             "timed out",
             "timeout",
-            "try again",
         ]) {
             StableErrorCode::TemporarilyBusy
-        } else if command.contains("storage")
-            || contains_any(&[
-                "database",
-                "sqlite",
-                "disk",
-                "storage",
-                "quota",
-                "no space",
-                "read-only",
-            ])
-        {
+        } else if starts_with_any(&[
+            "database ",
+            "sqlite ",
+            "disk ",
+            "storage ",
+            "quota ",
+            "no space",
+            "read-only ",
+        ]) {
             StableErrorCode::StorageUnavailable
+        } else if message == "entry not found"
+            || message == "batch not found"
+            || message.starts_with("unknown command:")
+        {
+            StableErrorCode::NotFound
+        } else if matches!(
+            message.as_str(),
+            "missing id"
+                | "missing batch_id"
+                | "missing peer address"
+                | "missing invite_link"
+                | "missing fields"
+                | "missing settings"
+                | "missing parent"
+                | "missing path"
+                | "missing hostname"
+                | "missing address"
+                | "missing time"
+                | "missing type"
+                | "missing description"
+                | "missing total_size"
+                | "missing import_id"
+                | "missing import_offset"
+                | "missing chunk_b64"
+                | "missing expected digest"
+                | "missing theme id"
+                | "missing theme_id or storage_handle"
+                | "missing theme digest"
+                | "missing asset slot"
+                | "missing digest"
+                | "invalid request_id"
+                | "invalid hostname"
+                | "invalid import timestamp"
+                | "unknown type"
+        ) || message.starts_with("invalid request json:")
+        {
+            StableErrorCode::InvalidArgument
         } else {
             StableErrorCode::InternalError
         };
@@ -408,6 +428,23 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn legacy_classifier_does_not_infer_codes_from_private_details() {
+        let storage = StableErrorEnvelope::from_legacy_message(
+            "get_history",
+            "database missing table at C:\\private\\history.db",
+        );
+        assert_eq!(storage.code, StableErrorCode::StorageUnavailable);
+        let unknown = StableErrorEnvelope::from_legacy_message(
+            "get_history",
+            "Could not open C:\\private\\not found\\history.db",
+        );
+        assert_eq!(unknown.code, StableErrorCode::InternalError);
+        let bad_request =
+            StableErrorEnvelope::from_legacy_message("change_storage_location", "missing parent");
+        assert_eq!(bad_request.code, StableErrorCode::InvalidArgument);
     }
 }
 

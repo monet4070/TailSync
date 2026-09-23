@@ -1,5 +1,11 @@
 use super::*;
 
+fn parse_settings_json(settings_json: &str) -> Result<crate::crypto::Settings, CommandError> {
+    serde_json::from_str(settings_json).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })
+}
+
 /// Get whether this device broadcasts clipboard changes and its configured shortcut.
 #[command]
 pub async fn get_sync_state(state: State<'_, AppState>) -> Result<serde_json::Value, CommandError> {
@@ -99,8 +105,7 @@ pub async fn update_settings(
     state: State<'_, AppState>,
     settings_json: String,
 ) -> Result<(), CommandError> {
-    let requested_settings: crate::crypto::Settings =
-        serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
+    let requested_settings = parse_settings_json(&settings_json)?;
     let apply_shortcut_transaction =
         |previous: &crate::crypto::Settings, new_settings: &crate::crypto::Settings| {
             let register = |candidate: &crate::crypto::Settings| {
@@ -284,4 +289,16 @@ pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), CommandError> 
         crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
     )
     .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod stable_input_error_tests {
+    #[test]
+    fn malformed_settings_are_invalid_arguments() {
+        let error = super::parse_settings_json("{").unwrap_err();
+        assert_eq!(
+            error.envelope().code,
+            tailsync_runtime::contracts::StableErrorCode::InvalidArgument
+        );
+    }
 }

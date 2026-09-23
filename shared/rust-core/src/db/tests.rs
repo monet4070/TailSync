@@ -1,5 +1,26 @@
 use super::*;
 
+#[test]
+fn preview_errors_never_serialize_source_details() {
+    let source = r#"C:\Users\private\history.db contains secret clipboard text"#;
+    let errors = [
+        PreviewErrorInfo::from(PreviewError::PayloadUnavailable {
+            entry_id: 7,
+            reason: source.into(),
+        }),
+        PreviewErrorInfo::from(PreviewError::BatchNotFound {
+            batch_id: source.into(),
+        }),
+        PreviewErrorInfo::payload_unavailable(7, source),
+    ];
+    for error in errors {
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(!json.contains("private"));
+        assert!(!json.contains("secret"));
+        assert!(!json.contains("history.db"));
+    }
+}
+
 fn percentile_millis(samples: &[f64], percentile: f64) -> f64 {
     let mut ordered = samples.to_vec();
     ordered.sort_by(f64::total_cmp);

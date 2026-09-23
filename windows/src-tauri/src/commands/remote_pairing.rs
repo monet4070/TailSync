@@ -38,6 +38,12 @@ pub struct RemotePairingInvitePreview {
     pub remaining_seconds: u64,
 }
 
+fn parse_invite_for_ipc(link: &str) -> Result<RemotePairingInvite, CommandError> {
+    RemotePairingInvite::parse(link).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })
+}
+
 #[command]
 pub async fn create_remote_pairing_invite(
     state: State<'_, AppState>,
@@ -59,7 +65,7 @@ pub async fn create_remote_pairing_invite(
 pub fn inspect_remote_pairing_link(
     link: String,
 ) -> Result<RemotePairingInvitePreview, CommandError> {
-    let invite = RemotePairingInvite::parse(&link).map_err(|error| error.to_string())?;
+    let invite = parse_invite_for_ipc(&link)?;
     Ok(RemotePairingInvitePreview {
         endpoint_id: invite.endpoint_id_string(),
         expires_at: invite.expires_at(),
@@ -72,6 +78,7 @@ pub async fn start_remote_pairing(
     state: State<'_, AppState>,
     link: String,
 ) -> Result<crate::pairing::PairingStatus, CommandError> {
+    parse_invite_for_ipc(&link)?;
     network::start_remote_pairing(
         state.pairing.clone(),
         state.identity.clone(),
@@ -172,6 +179,15 @@ mod tests {
                 "--background".to_string()
             ]),
             None
+        );
+    }
+
+    #[test]
+    fn malformed_invite_is_an_invalid_argument_at_ipc_boundary() {
+        let error = parse_invite_for_ipc("tailsync://settings").unwrap_err();
+        assert_eq!(
+            error.envelope().code,
+            tailsync_runtime::contracts::StableErrorCode::InvalidArgument
         );
     }
 }

@@ -585,7 +585,7 @@ mod tests {
             &mut writer,
             false,
             None,
-            "/private/history.db database failure",
+            "database failure at /private/history.db",
             "change_storage_location",
             stable,
         )
