@@ -45,4 +45,30 @@ final class LocalContractTests: XCTestCase {
     XCTAssertEqual(decoded.detail_class, .authorization)
   }
 
+  func testApiClientUsesFixedStableErrorTextAndLegacyFallback() {
+    let stable: [String: Any] = ["ok": false, "error": [
+      "schema_version": 1, "code": "unauthorized", "retryable": true,
+      "message_key": "private/token", "detail_class": "private",
+    ]]
+    let normalized = ApiClient.normalizedStableErrorResponse(stable)
+    XCTAssertEqual(normalized["error"] as? String, Loc.t("error.unauthorized"))
+
+    let future: [String: Any] = ["ok": false, "error": [
+      "schema_version": 1, "code": "future_code", "retryable": true,
+      "message_key": "private/path", "detail_class": "future",
+    ]]
+    XCTAssertEqual(
+      ApiClient.normalizedStableErrorResponse(future)["error"] as? String,
+      Loc.t("error.internal")
+    )
+    XCTAssertEqual(
+      ApiClient.normalizedStableErrorResponse(["ok": false, "error": ["message_key": "private/path"]])["error"] as? String,
+      Loc.t("error.internal")
+    )
+    XCTAssertEqual(
+      ApiClient.normalizedStableErrorResponse(["ok": false, "error": "legacy failure"])["error"] as? String,
+      "legacy failure"
+    )
+  }
+
 }

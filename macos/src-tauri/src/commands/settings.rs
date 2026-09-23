@@ -2,7 +2,9 @@ use super::*;
 
 /// Get current settings
 #[command]
-pub async fn get_settings(state: State<'_, AppState>) -> Result<crate::crypto::Settings, String> {
+pub async fn get_settings(
+    state: State<'_, AppState>,
+) -> Result<crate::crypto::Settings, CommandError> {
     let settings = state.settings.lock().await;
     Ok(settings.clone())
 }
@@ -12,9 +14,11 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<crate::crypto::S
 pub async fn update_settings(
     state: State<'_, AppState>,
     settings_json: String,
-) -> Result<(), String> {
-    let requested_settings: crate::crypto::Settings =
-        serde_json::from_str(&settings_json).map_err(|e| e.to_string())?;
+) -> Result<(), CommandError> {
+    let requested_settings: crate::crypto::Settings = serde_json::from_str(&settings_json)
+        .map_err(|_| {
+            CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+        })?;
     let outcome = crate::crypto::apply_settings_update(
         &state.settings,
         &state.db,
@@ -37,7 +41,7 @@ pub async fn update_settings(
 pub async fn get_image_data(
     state: State<'_, AppState>,
     id: i64,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, CommandError> {
     let data =
         tailsync_runtime::history::HistoryOperations::data_async(state.db.clone(), id).await?;
     let image = crate::protocol::PackedImage::try_from(data.as_slice())
