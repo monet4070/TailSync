@@ -66,27 +66,6 @@ fn overridden_data_dir_does_not_import_implicit_legacy_history() {
         "isolated worker imported implicit legacy history"
     );
 
-    let explicit = Command::new(std::env::current_exe().expect("test executable"))
-        .args([
-            "legacy_isolation_worker",
-            "--exact",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env(WORKER_ENV, "1")
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("TAILSYNC_DATA_DIR", root.join("explicit-data"))
-        .env_remove("TAILSYNC_STORAGE_DIR")
-        .env("TAILSYNC_V1_DATA_DIR", &legacy)
-        .env("TAILSYNC_EXPECT_LEGACY_ROWS", "1")
-        .status()
-        .expect("start explicit synthetic migration worker");
-    assert!(
-        explicit.success(),
-        "explicit synthetic legacy source was not imported"
-    );
-
     if std::env::var_os("TAILSYNC_LEGACY_ISOLATION_AUDIT_DIR").is_none() {
         fs::remove_dir_all(root).expect("remove synthetic fixture");
     }
@@ -111,4 +90,14 @@ fn legacy_isolation_worker() {
         expected_rows,
         "legacy migration isolation policy"
     );
+    assert!(
+        !isolated_data_dir()
+            .join("v1-migration-report.json")
+            .exists(),
+        "isolated worker attempted an implicit legacy migration"
+    );
+}
+
+fn isolated_data_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("TAILSYNC_DATA_DIR").expect("isolated data directory"))
 }

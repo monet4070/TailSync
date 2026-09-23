@@ -149,20 +149,31 @@ fn read_legacy_rows(connection: &Connection) -> Result<Vec<LegacyRow>, rusqlite:
 }
 
 fn legacy_data_directory() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("TAILSYNC_V1_DATA_DIR") {
-        return Some(PathBuf::from(path));
+    legacy_data_directory_from(
+        std::env::var_os("TAILSYNC_V1_DATA_DIR").map(PathBuf::from),
+        std::env::var_os("TAILSYNC_DATA_DIR").is_some(),
+        std::env::var_os("TAILSYNC_STORAGE_DIR").is_some(),
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from),
+    )
+}
+
+fn legacy_data_directory_from(
+    explicit_legacy: Option<PathBuf>,
+    explicit_data: bool,
+    explicit_storage: bool,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(path) = explicit_legacy {
+        return Some(path);
     }
     // An explicit data/storage root is an isolated session. Never discover
     // the account's unrelated v1 store unless its source was also specified.
-    if std::env::var_os("TAILSYNC_DATA_DIR").is_some()
-        || std::env::var_os("TAILSYNC_STORAGE_DIR").is_some()
-    {
+    if explicit_data || explicit_storage {
         return None;
     }
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .map(|home| home.join("TailSync_History"))
+    home.map(|home| home.join("TailSync_History"))
 }
 
 fn report_matches_source(path: &Path, source_size: u64, source_modified_nanos: u128) -> bool {
@@ -187,6 +198,28 @@ fn write_report_atomic(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_legacy_source_overrides_isolated_roots() {
+        let legacy = PathBuf::from("/synthetic/legacy");
+        let home = PathBuf::from("/synthetic/home");
+        assert_eq!(
+            legacy_data_directory_from(Some(legacy.clone()), true, true, Some(home.clone())),
+            Some(legacy)
+        );
+        assert_eq!(
+            legacy_data_directory_from(None, true, false, Some(home.clone())),
+            None
+        );
+        assert_eq!(
+            legacy_data_directory_from(None, false, true, Some(home.clone())),
+            None
+        );
+        assert_eq!(
+            legacy_data_directory_from(None, false, false, Some(home.clone())),
+            Some(home.join("TailSync_History"))
+        );
+    }
 
     fn temporary_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
