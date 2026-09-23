@@ -6611,7 +6611,19 @@
       "code": "unknown_future_error",
       "retryable": true,
       "message_key": "error.temporarily_busy",
-      "detail_class": "contention"
+      "detail_class": "future_detail"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: known code ignores untrusted policy",
+    "contract": "StableErrorEnvelope",
+    "valid": true,
+    "value": {
+      "schema_version": 1,
+      "code": "unauthorized",
+      "retryable": true,
+      "message_key": "untrusted.message",
+      "detail_class": "future_detail"
     }
   },
   {

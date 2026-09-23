@@ -13,6 +13,13 @@ const refName = s => s.$ref.slice('#/$defs/'.length);
 const variants = s => s.anyOf ?? (Array.isArray(s.type) ? s.type.map(type => ({ ...s, type })) : null);
 const nonNull = s => variants(s)?.filter(v => v.type !== 'null') ?? [s];
 const nullable = s => variants(s)?.some(v => v.type === 'null') ?? s.type === 'null';
+const policiesResult = spawnSync('cargo', ['run', '--quiet', '--locked', '-p', 'tailsync-runtime', '--example', 'generate_local_contracts', '--', '--stable-error-policies'], { cwd: root, encoding: 'utf8' });
+if (policiesResult.status !== 0) throw new Error(policiesResult.stderr || 'Rust stable error policy export failed');
+const stableErrorPolicies = Object.fromEntries(JSON.parse(policiesResult.stdout).map(({ code, retryable, message_key, detail_class }) =>
+  [code, { retryable, message_key, detail_class }]));
+if (quote(Object.keys(stableErrorPolicies).sort()) !== quote([...defs.StableErrorCode.enum].sort())) {
+  throw new Error('Stable error policies do not cover every Rust code');
+}
 
 function tsType(s) {
   if (s.$ref) return refName(s);
@@ -105,19 +112,15 @@ function swiftDefinition(name, s) {
     guard version == 1 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unsupported stable error schema version")) }
     self.schema_version = version
     let rawCode = try c.decode(String.self, forKey: .code)
-    let retryable = try c.decode(Bool.self, forKey: .retryable)
-    let messageKey = try c.decode(String.self, forKey: .message_key)
-    let detailClass = try c.decode(ContractStableErrorDetailClass.self, forKey: .detail_class)
-    if let knownCode = ContractStableErrorCode(rawValue: rawCode) {
-      self.code = knownCode
-      self.retryable = retryable
-      self.message_key = messageKey
-      self.detail_class = detailClass
-    } else {
-      self.code = .internal_error
-      self.retryable = false
-      self.message_key = "error.internal"
-      self.detail_class = .internal
+    _ = try c.decode(Bool.self, forKey: .retryable)
+    _ = try c.decode(String.self, forKey: .message_key)
+    _ = try c.decode(String.self, forKey: .detail_class)
+    self.code = ContractStableErrorCode(rawValue: rawCode) ?? .internal_error
+    switch self.code {
+${Object.entries(stableErrorPolicies).map(([code, policy]) => `    case .${code}:
+      self.retryable = ${policy.retryable}
+      self.message_key = ${quote(policy.message_key)}
+      self.detail_class = .${policy.detail_class}`).join('\n')}
     }
   }
 }
@@ -146,15 +149,18 @@ let js = banner + 'const isRecord = value => value !== null && typeof value === 
 let swift = banner + 'import Foundation\n\n';
 for (const [name, s] of Object.entries(defs)) {
   const stableErrorCode = name === 'StableErrorCode';
-  const body = `return ${stableErrorCode ? 'typeof value === "string"' : predicate(s,'value')};`;
+  const validationSchema = name === 'StableErrorEnvelope'
+    ? { ...s, properties: { ...s.properties, detail_class: { type: 'string' } } }
+    : s;
+  const body = `return ${stableErrorCode ? 'typeof value === "string"' : predicate(validationSchema,'value')};`;
   ts += `\nexport type ${name} = ${tsType(s)};\nfunction valid${name}(value: unknown): value is ${name} { ${body} }\n`;
   if (stableErrorCode) {
     const known = quote(s.enum);
     ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return ${known}.includes(value as ${name}) ? value as ${name} : "internal_error"; }\n`;
     js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return ${known}.includes(value) ? value : "internal_error"; }\n`;
   } else if (name === 'StableErrorEnvelope') {
-    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); const code = decodeStableErrorCode(value.code); return code === "internal_error" && value.code !== "internal_error" ? { ...value, code, retryable: false, message_key: "error.internal", detail_class: "internal" } : value; }\n`;
-    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); const code = decodeStableErrorCode(value.code); return code === "internal_error" && value.code !== "internal_error" ? { ...value, code, retryable: false, message_key: "error.internal", detail_class: "internal" } : value; }\n`;
+    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); const code = decodeStableErrorCode(value.code); const policy = (${quote(stableErrorPolicies)} as const)[code]; return { schema_version: value.schema_version, code, ...policy }; }\n`;
+    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); const code = decodeStableErrorCode(value.code); const policy = ${quote(stableErrorPolicies)}[code]; return { schema_version: value.schema_version, code, ...policy }; }\n`;
   } else {
     ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
     js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
@@ -202,7 +208,13 @@ fixtures.push({
   name: 'StableErrorEnvelope: unknown code maps to internal_error',
   contract: 'StableErrorEnvelope',
   valid: true,
-  value: { ...values.get('StableErrorEnvelope'), code: 'unknown_future_error' },
+  value: { ...values.get('StableErrorEnvelope'), code: 'unknown_future_error', detail_class: 'future_detail' },
+});
+fixtures.push({
+  name: 'StableErrorEnvelope: known code ignores untrusted policy',
+  contract: 'StableErrorEnvelope',
+  valid: true,
+  value: { ...values.get('StableErrorEnvelope'), code: 'unauthorized', retryable: true, message_key: 'untrusted.message', detail_class: 'future_detail' },
 });
 fixtures.push({ name: 'safe integer boundary', contract: 'WindowsRuntimeSnapshot', valid: true, typescriptValid: false,
   value: { ...values.get('WindowsRuntimeSnapshot'), revision: 9007199254740992 } });

@@ -15,6 +15,20 @@ struct LocalContractExports {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--stable-error-policies") {
+        let codes = [
+            StableErrorCode::InvalidArgument,
+            StableErrorCode::NotFound,
+            StableErrorCode::TemporarilyBusy,
+            StableErrorCode::StorageUnavailable,
+            StableErrorCode::Unauthorized,
+            StableErrorCode::ProtocolIncompatible,
+            StableErrorCode::InternalError,
+        ];
+        let policies = codes.map(StableErrorEnvelope::new);
+        println!("{}", serde_json::to_string(&policies).unwrap());
+        return;
+    }
     if std::env::args().any(|arg| arg == "--fixtures") {
         println!("{}", serde_json::to_string_pretty(&fixtures()).unwrap());
         return;

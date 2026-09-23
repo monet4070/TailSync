@@ -461,16 +461,36 @@ struct ContractStableErrorEnvelope: Codable, Sendable {
     guard version == 1 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unsupported stable error schema version")) }
     self.schema_version = version
     let rawCode = try c.decode(String.self, forKey: .code)
-    let retryable = try c.decode(Bool.self, forKey: .retryable)
-    let messageKey = try c.decode(String.self, forKey: .message_key)
-    let detailClass = try c.decode(ContractStableErrorDetailClass.self, forKey: .detail_class)
-    if let knownCode = ContractStableErrorCode(rawValue: rawCode) {
-      self.code = knownCode
-      self.retryable = retryable
-      self.message_key = messageKey
-      self.detail_class = detailClass
-    } else {
-      self.code = .internal_error
+    _ = try c.decode(Bool.self, forKey: .retryable)
+    _ = try c.decode(String.self, forKey: .message_key)
+    _ = try c.decode(String.self, forKey: .detail_class)
+    self.code = ContractStableErrorCode(rawValue: rawCode) ?? .internal_error
+    switch self.code {
+    case .invalid_argument:
+      self.retryable = false
+      self.message_key = "error.invalid_argument"
+      self.detail_class = .request
+    case .not_found:
+      self.retryable = false
+      self.message_key = "error.not_found"
+      self.detail_class = .resource
+    case .temporarily_busy:
+      self.retryable = true
+      self.message_key = "error.temporarily_busy"
+      self.detail_class = .contention
+    case .storage_unavailable:
+      self.retryable = true
+      self.message_key = "error.storage_unavailable"
+      self.detail_class = .storage
+    case .unauthorized:
+      self.retryable = false
+      self.message_key = "error.unauthorized"
+      self.detail_class = .authorization
+    case .protocol_incompatible:
+      self.retryable = false
+      self.message_key = "error.protocol_incompatible"
+      self.detail_class = .protocol
+    case .internal_error:
       self.retryable = false
       self.message_key = "error.internal"
       self.detail_class = .internal

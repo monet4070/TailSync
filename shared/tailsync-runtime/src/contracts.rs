@@ -61,7 +61,7 @@ impl<'de> Deserialize<'de> for StableErrorEnvelope {
             code: String,
             retryable: bool,
             message_key: String,
-            detail_class: StableErrorDetailClass,
+            detail_class: String,
         }
 
         let wire = WireEnvelope::deserialize(deserializer)?;
@@ -78,13 +78,8 @@ impl<'de> Deserialize<'de> for StableErrorEnvelope {
             "internal_error" => StableErrorCode::InternalError,
             _ => return Ok(Self::new(StableErrorCode::InternalError)),
         };
-        Ok(Self {
-            schema_version: wire.schema_version,
-            code,
-            retryable: wire.retryable,
-            message_key: wire.message_key,
-            detail_class: wire.detail_class,
-        })
+        let _ = (wire.retryable, wire.message_key, wire.detail_class);
+        Ok(Self::new(code))
     }
 }
 
@@ -363,13 +358,29 @@ mod tests {
             "code": "future_error",
             "retryable": true,
             "message_key": "future.key",
-            "detail_class": "internal"
+            "detail_class": "future_detail"
         }))
         .expect("unknown code remains decodable");
         assert_eq!(decoded.code, StableErrorCode::InternalError);
         assert!(!decoded.retryable);
         assert_eq!(decoded.message_key, "error.internal");
         assert_eq!(decoded.detail_class, StableErrorDetailClass::Internal);
+    }
+
+    #[test]
+    fn known_stable_error_codes_use_fixed_policy() {
+        let decoded: StableErrorEnvelope = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "code": "unauthorized",
+            "retryable": true,
+            "message_key": "untrusted.message",
+            "detail_class": "future_detail"
+        }))
+        .expect("known code remains decodable");
+        assert_eq!(
+            decoded,
+            StableErrorEnvelope::new(StableErrorCode::Unauthorized)
+        );
     }
 
     #[test]
