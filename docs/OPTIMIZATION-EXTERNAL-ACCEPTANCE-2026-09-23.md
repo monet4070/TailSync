@@ -2,7 +2,7 @@
 
 ## 结论与边界
 
-**公开发布：NO-GO。** 当前 HEAD `ba7bbd5701b176c3179bbffbd0fcbb9e061e4edf` 的隔离旧版历史迁移缺陷已红/绿复现并通过完整本机回归；该 HEAD 的 Windows 无签名 development 包构建、隔离 portable/deep-link smoke、运行中与退出后的 TCP 19889 空端口，以及系统级忙碌文件剪贴板读取三档已通过。签名、干净安装/升级/卸载、真实双/三设备、产品剪贴板监视器端到端广播、产品进程崩溃矩阵和 WebView2 长时内存验收仍无证据。用户确认本轮没有干净 Windows 环境或第二台设备；这些项保持 `BLOCKED`，不得以本机测试替代。
+**公开发布：NO-GO。** 被验收的产品源码提交 `ba7bbd5701b176c3179bbffbd0fcbb9e061e4edf` 的隔离旧版历史迁移缺陷已红/绿复现并通过完整本机回归；该源码提交的 Windows 无签名 development 包构建、隔离 portable/deep-link smoke、运行中与退出后的 TCP 19889 空端口，以及系统级忙碌文件剪贴板读取三档已通过。后续提交本报告只会使仓库 Git HEAD 前进，**不会改变安装包清单中的 `sourceCommit=ba7bbd5`，也不代表重新构建**。签名、干净安装/升级/卸载、真实双/三设备、产品剪贴板监视器端到端广播、产品进程崩溃矩阵和 WebView2 长时内存验收仍无证据。用户确认本轮没有干净 Windows 环境或第二台设备；这些项保持 `BLOCKED`，不得以本机测试替代。
 
 本报告仅给实际运行的检查标记 `PASS`。早前回归日志目录为 `audit/external-acceptance-2026-09-23/run-20260923-100129/`（下文 `R/`）；更早旧 HEAD 的打包目录为 `audit/external-acceptance-2026-09-23/run-20260923-101547/`（下文 `P/`）。身份修复 HEAD 的打包目录为 `audit/frozen-spec-identity-race-2026-09-23/run-20260923-113636/`（下文 `Q/`），该 HEAD 的合成基线目录为 `audit/frozen-spec-local-baseline-2026-09-23/run-20260923-114158/`（下文 `B/`）。剪贴板测试目录为 `audit/frozen-spec-clipboard-2026-09-23/run-20260923-120000/`（下文 `T/`），上一 HEAD 打包目录为 `audit/frozen-spec-clipboard-2026-09-23/run-20260923-121000/`（下文 `C/`）；迁移隔离修复的证据目录为 `audit/frozen-spec-legacy-isolation-2026-09-23/run-20260923-122000/`（下文 `L/`），**当前 HEAD 打包目录**为 `audit/frozen-spec-legacy-isolation-2026-09-23/run-20260923-123000/`（下文 `D/`）。执行时间均为 2026-09-23，Asia/Pyongyang（UTC+09:00）；逐命令起止时间见各 `*-validation.json`。无本轮产品 PDF 预览截图；旧的合成 PDF 渲染截图单独标注，不充作 WebView2 证据。
 
