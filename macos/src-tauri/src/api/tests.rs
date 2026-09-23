@@ -3,8 +3,7 @@ use super::{
     get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
     read_request_with_limits, set_file_batch_progress, thumbnail_rgba, wait_for_runtime_revision,
     ApiToken, FileProgress, ProgressRevisionAction, ProgressRevisionGate, Request,
-    RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS,
-    THUMBNAIL_MAX_SIDE,
+    RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS, THUMBNAIL_MAX_SIDE,
 };
 use crate::crypto::Settings;
 use crate::identity::DeviceIdentity;
