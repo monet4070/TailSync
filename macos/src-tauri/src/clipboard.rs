@@ -19,6 +19,7 @@ use crate::sync;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub enum ClipboardRuntime {
     Tauri(AppHandle),
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Headless,
 }
 
