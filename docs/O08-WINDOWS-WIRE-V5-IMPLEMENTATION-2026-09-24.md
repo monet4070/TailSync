@@ -14,7 +14,7 @@
 
 - 验证脚本 `audit/stable-error-policy-2026-09-23/validate.ps1` 覆盖 Core、Runtime、Themes、Windows/macOS Rust test 与 clippy、Windows 前端 test/build/lint、本地 schema 契约和跨平台检查；日志及退出码保存在 `audit/o08-windows-2026-09-23/`。
 - 共享 Core 测试覆盖 v4→v4、v4↔v5、v5→v5；滑窗与旧会话回退、部分 ACK 后超时恢复；图片压缩重组、伪造尺寸、解压炸弹、乱序、重复与摘要损坏。
-- 4 MiB 同素材模拟 ACK 延迟：80 ms 时逐片等待 373 ms、滑窗 105 ms；150 ms 时逐片等待 636 ms、滑窗 164 ms。数据来自本机内存连接，仅证明实现减少确认轮次。
+- 4 MiB 同素材模拟 ACK 延迟：80 ms 时逐片等待 378 ms、滑窗 104 ms；150 ms 时逐片等待 639 ms、滑窗 168 ms。原始输出位于 `audit/o08-windows-2026-09-23/run-final-20260923/window-latency.log`。数据来自本机内存连接，仅证明实现减少确认轮次。
 
 ## 仍需外部验收
 
