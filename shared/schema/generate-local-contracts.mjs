@@ -92,6 +92,36 @@ function swiftDefinition(name, s) {
     return `enum Contract${name}: String, Codable, Sendable {\n${cases}\n}\n`;
   }
   if (s.type !== 'object') return `typealias Contract${name} = ${swiftType(s)}\n`;
+  if (name === 'StableErrorEnvelope') return `struct ContractStableErrorEnvelope: Codable, Sendable {
+  let schema_version: UInt32
+  let code: ContractStableErrorCode
+  let retryable: Bool
+  let message_key: String
+  let detail_class: ContractStableErrorDetailClass
+  private enum CodingKeys: String, CodingKey { case schema_version, code, retryable, message_key, detail_class }
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    let version = try c.decode(UInt32.self, forKey: .schema_version)
+    guard version == 1 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unsupported stable error schema version")) }
+    self.schema_version = version
+    let rawCode = try c.decode(String.self, forKey: .code)
+    let retryable = try c.decode(Bool.self, forKey: .retryable)
+    let messageKey = try c.decode(String.self, forKey: .message_key)
+    let detailClass = try c.decode(ContractStableErrorDetailClass.self, forKey: .detail_class)
+    if let knownCode = ContractStableErrorCode(rawValue: rawCode) {
+      self.code = knownCode
+      self.retryable = retryable
+      self.message_key = messageKey
+      self.detail_class = detailClass
+    } else {
+      self.code = .internal_error
+      self.retryable = false
+      self.message_key = "error.internal"
+      self.detail_class = .internal
+    }
+  }
+}
+`;
   const fields = Object.entries(s.properties);
   const type = (key, value) => swiftType(value) + (!s.required?.includes(key) && !nullable(value) ? '?' : '');
   let text = `struct Contract${name}: Codable, Sendable {\n`;
@@ -123,8 +153,8 @@ for (const [name, s] of Object.entries(defs)) {
     ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return ${known}.includes(value as ${name}) ? value as ${name} : "internal_error"; }\n`;
     js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return ${known}.includes(value) ? value : "internal_error"; }\n`;
   } else if (name === 'StableErrorEnvelope') {
-    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return { ...value, code: decodeStableErrorCode(value.code) }; }\n`;
-    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return { ...value, code: decodeStableErrorCode(value.code) }; }\n`;
+    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); const code = decodeStableErrorCode(value.code); return code === "internal_error" && value.code !== "internal_error" ? { ...value, code, retryable: false, message_key: "error.internal", detail_class: "internal" } : value; }\n`;
+    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); const code = decodeStableErrorCode(value.code); return code === "internal_error" && value.code !== "internal_error" ? { ...value, code, retryable: false, message_key: "error.internal", detail_class: "internal" } : value; }\n`;
   } else {
     ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
     js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;

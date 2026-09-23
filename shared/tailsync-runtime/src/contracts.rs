@@ -4,7 +4,7 @@
 //! an optional transport optimization without guessing from platform names or
 //! falling back after an authentication or protocol error.
 
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 pub const LOCAL_CONTRACT_SCHEMA_VERSION: u32 = 1;
 pub const LOCAL_PREVIEW_MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -43,7 +43,7 @@ pub enum StableErrorDetailClass {
 /// Versioned error returned to clients that explicitly opt in to the stable
 /// local contract. The legacy message is used only for classification and is
 /// never copied into this envelope.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct StableErrorEnvelope {
     #[schemars(range(min = 1, max = 1))]
     pub schema_version: u32,
@@ -51,6 +51,41 @@ pub struct StableErrorEnvelope {
     pub retryable: bool,
     pub message_key: String,
     pub detail_class: StableErrorDetailClass,
+}
+
+impl<'de> Deserialize<'de> for StableErrorEnvelope {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct WireEnvelope {
+            schema_version: u32,
+            code: String,
+            retryable: bool,
+            message_key: String,
+            detail_class: StableErrorDetailClass,
+        }
+
+        let wire = WireEnvelope::deserialize(deserializer)?;
+        if wire.schema_version != STABLE_ERROR_SCHEMA_VERSION {
+            return Err(D::Error::custom("unsupported stable error schema version"));
+        }
+        let code = match wire.code.as_str() {
+            "invalid_argument" => StableErrorCode::InvalidArgument,
+            "not_found" => StableErrorCode::NotFound,
+            "temporarily_busy" => StableErrorCode::TemporarilyBusy,
+            "storage_unavailable" => StableErrorCode::StorageUnavailable,
+            "unauthorized" => StableErrorCode::Unauthorized,
+            "protocol_incompatible" => StableErrorCode::ProtocolIncompatible,
+            "internal_error" => StableErrorCode::InternalError,
+            _ => return Ok(Self::new(StableErrorCode::InternalError)),
+        };
+        Ok(Self {
+            schema_version: wire.schema_version,
+            code,
+            retryable: wire.retryable,
+            message_key: wire.message_key,
+            detail_class: wire.detail_class,
+        })
+    }
 }
 
 impl StableErrorEnvelope {
@@ -332,6 +367,9 @@ mod tests {
         }))
         .expect("unknown code remains decodable");
         assert_eq!(decoded.code, StableErrorCode::InternalError);
+        assert!(!decoded.retryable);
+        assert_eq!(decoded.message_key, "error.internal");
+        assert_eq!(decoded.detail_class, StableErrorDetailClass::Internal);
     }
 
     #[test]

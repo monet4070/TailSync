@@ -28,9 +28,12 @@ final class LocalContractTests: XCTestCase {
   }
 
   func testUnknownStableErrorCodeMapsToInternalError() throws {
-    let data = Data(#"{"schema_version":1,"code":"future_error","retryable":false,"message_key":"future.error","detail_class":"internal"}"#.utf8)
+    let data = Data(#"{"schema_version":1,"code":"future_error","retryable":true,"message_key":"future.error","detail_class":"internal"}"#.utf8)
     let decoded = try JSONDecoder().decode(ContractStableErrorEnvelope.self, from: data)
     XCTAssertEqual(decoded.code, .internal_error)
+    XCTAssertFalse(decoded.retryable)
+    XCTAssertEqual(decoded.message_key, "error.internal")
+    XCTAssertEqual(decoded.detail_class, .internal)
   }
 
 }

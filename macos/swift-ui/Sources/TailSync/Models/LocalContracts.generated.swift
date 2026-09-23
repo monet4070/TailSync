@@ -449,20 +449,32 @@ enum ContractStableErrorDetailClass: String, Codable, Sendable {
 }
 
 struct ContractStableErrorEnvelope: Codable, Sendable {
-  let `code`: ContractStableErrorCode
-  let `detail_class`: ContractStableErrorDetailClass
-  let `message_key`: String
-  let `retryable`: Bool
-  let `schema_version`: UInt32
-  private enum CodingKeys: String, CodingKey { case `code`, `detail_class`, `message_key`, `retryable`, `schema_version` }
+  let schema_version: UInt32
+  let code: ContractStableErrorCode
+  let retryable: Bool
+  let message_key: String
+  let detail_class: ContractStableErrorDetailClass
+  private enum CodingKeys: String, CodingKey { case schema_version, code, retryable, message_key, detail_class }
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
-    self.`code` = try c.decode(ContractStableErrorCode.self, forKey: .`code`)
-    self.`detail_class` = try c.decode(ContractStableErrorDetailClass.self, forKey: .`detail_class`)
-    self.`message_key` = try c.decode(String.self, forKey: .`message_key`)
-    self.`retryable` = try c.decode(Bool.self, forKey: .`retryable`)
-    self.`schema_version` = try c.decode(UInt32.self, forKey: .`schema_version`)
-    guard self.`schema_version` >= 1, self.`schema_version` <= 1 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Local contract constraint failed")) }
+    let version = try c.decode(UInt32.self, forKey: .schema_version)
+    guard version == 1 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unsupported stable error schema version")) }
+    self.schema_version = version
+    let rawCode = try c.decode(String.self, forKey: .code)
+    let retryable = try c.decode(Bool.self, forKey: .retryable)
+    let messageKey = try c.decode(String.self, forKey: .message_key)
+    let detailClass = try c.decode(ContractStableErrorDetailClass.self, forKey: .detail_class)
+    if let knownCode = ContractStableErrorCode(rawValue: rawCode) {
+      self.code = knownCode
+      self.retryable = retryable
+      self.message_key = messageKey
+      self.detail_class = detailClass
+    } else {
+      self.code = .internal_error
+      self.retryable = false
+      self.message_key = "error.internal"
+      self.detail_class = .internal
+    }
   }
 }
 

@@ -238,7 +238,7 @@ export type StableErrorEnvelope = {
   "schema_version": number;
 };
 function validStableErrorEnvelope(value: unknown): value is StableErrorEnvelope { return (isRecord(value) && (Object.hasOwn(value, "code") && validStableErrorCode(value["code"])) && (Object.hasOwn(value, "detail_class") && validStableErrorDetailClass(value["detail_class"])) && (Object.hasOwn(value, "message_key") && (typeof value["message_key"] === "string")) && (Object.hasOwn(value, "retryable") && (typeof value["retryable"] === "boolean")) && (Object.hasOwn(value, "schema_version") && (typeof value["schema_version"] === "number" && Number.isSafeInteger(value["schema_version"]) && value["schema_version"] === 1))); }
-export function decodeStableErrorEnvelope(value: unknown): StableErrorEnvelope { if (!validStableErrorEnvelope(value)) throw new Error("Invalid StableErrorEnvelope response"); return { ...value, code: decodeStableErrorCode(value.code) }; }
+export function decodeStableErrorEnvelope(value: unknown): StableErrorEnvelope { if (!validStableErrorEnvelope(value)) throw new Error("Invalid StableErrorEnvelope response"); const code = decodeStableErrorCode(value.code); return code === "internal_error" && value.code !== "internal_error" ? { ...value, code, retryable: false, message_key: "error.internal", detail_class: "internal" } : value; }
 
 export type StorageStatus = {
   "available": boolean;

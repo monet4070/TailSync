@@ -41,10 +41,13 @@ describe("local IPC capabilities", () => {
     const decoded = contracts.decodeStableErrorEnvelope({
       schema_version: 1,
       code: "future_error",
-      retryable: false,
+      retryable: true,
       message_key: "future.error",
       detail_class: "internal",
     });
     expect(decoded.code).toBe("internal_error");
+    expect(decoded.retryable).toBe(false);
+    expect(decoded.message_key).toBe("error.internal");
+    expect(decoded.detail_class).toBe("internal");
   });
 });
