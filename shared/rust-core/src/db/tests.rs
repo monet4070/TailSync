@@ -9,15 +9,40 @@ fn percentile_millis(samples: &[f64], percentile: f64) -> f64 {
     ordered[index]
 }
 
+fn operations_per_second(samples_ms: &[f64]) -> f64 {
+    let total_ms = samples_ms.iter().sum::<f64>();
+    if total_ms > 0.0 {
+        samples_ms.len() as f64 * 1000.0 / total_ms
+    } else {
+        0.0
+    }
+}
+
+#[test]
+fn synthetic_baseline_percentiles_use_nearest_rank() {
+    let samples = [9.0, 1.0, 5.0, 3.0, 7.0];
+    assert_eq!(percentile_millis(&samples, 0.50), 5.0);
+    assert_eq!(percentile_millis(&samples, 0.95), 9.0);
+    assert_eq!(operations_per_second(&[10.0, 20.0]), 1000.0 / 15.0);
+}
+
+#[derive(Default)]
+struct SyntheticScan {
+    matches: usize,
+    candidate_rows: usize,
+    candidate_payload_bytes: u64,
+    chunks: usize,
+}
+
 fn scan_synthetic_history(
     database: &HistoryDB,
     keyword: Option<&str>,
     stop_after: Option<usize>,
-) -> Result<usize, HistoryReadError> {
+) -> Result<SyntheticScan, HistoryReadError> {
     let revision = database.read_revision()?;
     let cancellation = crate::cancellation::Cancellation::default();
     let mut cursor = None;
-    let mut matched = 0usize;
+    let mut scan = SyntheticScan::default();
     loop {
         let chunk = database.prepare_read_chunk(
             HistoryQuery {
@@ -35,10 +60,13 @@ fn scan_synthetic_history(
         )?;
         let exhausted = chunk.exhausted;
         cursor = chunk.cursor.clone();
-        matched += chunk.matching_entries(keyword, &cancellation)?.len();
+        scan.candidate_rows += chunk.candidate_count();
+        scan.candidate_payload_bytes += chunk.candidate_payload_bytes();
+        scan.chunks += 1;
+        scan.matches += chunk.matching_entries(keyword, &cancellation)?.len();
         if let Some(limit) = stop_after {
-            if matched >= limit {
-                matched = limit;
+            if scan.matches >= limit {
+                scan.matches = limit;
                 break;
             }
         }
@@ -47,7 +75,7 @@ fn scan_synthetic_history(
         }
     }
     database.validate_read_revision(&revision)?;
-    Ok(matched)
+    Ok(scan)
 }
 
 /// Manual O04 performance evidence. The fixture uses a private temporary
@@ -85,29 +113,47 @@ fn synthetic_history_performance_baseline() {
         let cold_no_match = scan_synthetic_history(&database, Some("absent-baseline-token"), None)
             .expect("cold no-match scan");
         let cold_no_match_ms = cold_started.elapsed().as_secs_f64() * 1000.0;
-        assert_eq!(cold_no_match, 0);
+        assert_eq!(cold_no_match.matches, 0);
 
         let mut first_page_ms = Vec::with_capacity(rounds);
         let mut matching_page_ms = Vec::with_capacity(rounds);
         let mut no_match_ms = Vec::with_capacity(rounds);
+        let mut first_page_rows = Vec::with_capacity(rounds);
+        let mut matching_page_rows = Vec::with_capacity(rounds);
+        let mut no_match_rows = Vec::with_capacity(rounds);
+        let mut first_page_bytes = Vec::with_capacity(rounds);
+        let mut matching_page_bytes = Vec::with_capacity(rounds);
+        let mut no_match_bytes = Vec::with_capacity(rounds);
+        let mut first_page_chunks = Vec::with_capacity(rounds);
+        let mut matching_page_chunks = Vec::with_capacity(rounds);
+        let mut no_match_chunks = Vec::with_capacity(rounds);
         for _ in 0..rounds {
             let started = std::time::Instant::now();
             let matches =
                 scan_synthetic_history(&database, None, Some(50)).expect("first-page scan");
             first_page_ms.push(started.elapsed().as_secs_f64() * 1000.0);
-            assert!(matches >= 50.min(row_count));
+            assert!(matches.matches >= 50.min(row_count));
+            first_page_rows.push(matches.candidate_rows);
+            first_page_bytes.push(matches.candidate_payload_bytes);
+            first_page_chunks.push(matches.chunks);
 
             let started = std::time::Instant::now();
             let matches = scan_synthetic_history(&database, Some("needle"), Some(50))
                 .expect("matching page scan");
             matching_page_ms.push(started.elapsed().as_secs_f64() * 1000.0);
-            assert_eq!(matches, 50.min(row_count.div_ceil(17)));
+            assert_eq!(matches.matches, 50.min(row_count.div_ceil(17)));
+            matching_page_rows.push(matches.candidate_rows);
+            matching_page_bytes.push(matches.candidate_payload_bytes);
+            matching_page_chunks.push(matches.chunks);
 
             let started = std::time::Instant::now();
             let matches = scan_synthetic_history(&database, Some("absent-baseline-token"), None)
                 .expect("warm no-match scan");
             no_match_ms.push(started.elapsed().as_secs_f64() * 1000.0);
-            assert_eq!(matches, 0);
+            assert_eq!(matches.matches, 0);
+            no_match_rows.push(matches.candidate_rows);
+            no_match_bytes.push(matches.candidate_payload_bytes);
+            no_match_chunks.push(matches.chunks);
         }
 
         reports.push(serde_json::json!({
@@ -115,10 +161,30 @@ fn synthetic_history_performance_baseline() {
             "rounds": rounds,
             "dataset_digest": dataset_digest,
             "seed_ms": seed_ms,
+            "logical_write_rows": row_count,
+            "logical_write_plaintext_bytes": (0..row_count).map(|index| if index % 1000 == 0 { 64 * 1024_u64 } else { 1024_u64 }).sum::<u64>(),
             "cold_no_match_ms": cold_no_match_ms,
+            "cold_no_match_logical_read_rows": cold_no_match.candidate_rows,
+            "cold_no_match_logical_payload_bytes": cold_no_match.candidate_payload_bytes,
+            "cold_no_match_read_chunks": cold_no_match.chunks,
             "first_page_ms": first_page_ms,
+            "first_page_p50_ms": percentile_millis(&first_page_ms, 0.50),
             "matching_page_ms": matching_page_ms,
+            "matching_page_p50_ms": percentile_millis(&matching_page_ms, 0.50),
             "no_match_ms": no_match_ms,
+            "no_match_p50_ms": percentile_millis(&no_match_ms, 0.50),
+            "first_page_logical_read_rows": first_page_rows,
+            "matching_page_logical_read_rows": matching_page_rows,
+            "no_match_logical_read_rows": no_match_rows,
+            "first_page_logical_payload_bytes": first_page_bytes,
+            "matching_page_logical_payload_bytes": matching_page_bytes,
+            "no_match_logical_payload_bytes": no_match_bytes,
+            "first_page_read_chunks": first_page_chunks,
+            "matching_page_read_chunks": matching_page_chunks,
+            "no_match_read_chunks": no_match_chunks,
+            "first_page_operations_per_second": operations_per_second(&first_page_ms),
+            "matching_page_operations_per_second": operations_per_second(&matching_page_ms),
+            "no_match_operations_per_second": operations_per_second(&no_match_ms),
             "first_page_p95_ms": percentile_millis(&first_page_ms, 0.95),
             "first_page_p99_ms": percentile_millis(&first_page_ms, 0.99),
             "matching_page_p95_ms": percentile_millis(&matching_page_ms, 0.95),

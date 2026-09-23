@@ -136,6 +136,20 @@ pub struct HistoryReadChunk {
 }
 
 impl HistoryReadChunk {
+    /// Number of candidate rows read from SQLite before payload filtering.
+    /// Useful for diagnostic accounting without exposing row contents.
+    pub fn candidate_count(&self) -> usize {
+        self.candidates.len()
+    }
+
+    /// Sum of declared plaintext payload sizes for those candidate rows.
+    /// This is logical read volume, not a measurement of physical disk I/O.
+    pub fn candidate_payload_bytes(&self) -> u64 {
+        self.candidates.iter().fold(0_u64, |sum, candidate| {
+            sum.saturating_add(candidate.entry.size_bytes.max(0) as u64)
+        })
+    }
+
     /// Decrypt one candidate at a time and observe cancellation between rows.
     /// Corrupt text retains its metadata fallback, matching the legacy query.
     pub fn matching_entries(
