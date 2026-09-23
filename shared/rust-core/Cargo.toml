@@ -30,6 +30,7 @@ snow = "0.10"
 tailsync-history-classifier = { path = "../tailsync-history-classifier" }
 tailsync-protocol = { path = "../tailsync-protocol" }
 tailsync-themes = { path = "../tailsync-themes" }
+flate2 = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
@@ -46,9 +47,8 @@ security-framework-sys = "2"
 [features]
 test-support = []
 acceptance-injection = []
-# Protocol extensions stay compiled out unless their implementation commit
-# opts in explicitly. Runtime switches are applied independently during each
-# authenticated handshake.
+# Protocol extensions are selected by each platform build. Runtime switches
+# are applied independently during each authenticated handshake.
 protocol-file-sliding-window = []
 protocol-image-compressed-chunks = []
 

@@ -3,7 +3,7 @@
 /// Frame structure:
 /// ┌──────────┬───────┬───────┬───────┬───────┬───────┬──────────┬──────────┐
 /// │ Magic(4) │ Ver(1)│Flags(1)│Cmd(2) │ Seq(4)│ Len(4)│ Payload   │Blake3(32)│
-/// │ "TSYN"   │ 0x04  │       │       │       │       │ (var)     │          │
+/// │ "TSYN"   │ 0x04/5│       │       │       │       │ (var)     │          │
 /// └──────────┴───────┴───────┴───────┴───────┴───────┴──────────┴──────────┘
 /// Total header: 16 bytes + 32 byte checksum = 48 bytes overhead per frame
 use blake3::Hasher;
@@ -12,16 +12,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 pub const MAGIC: [u8; 4] = *b"TSYN";
-/// Protocol v4 introduces atomic pairing completion and retains atomic file
-/// batches. Older peers are intentionally
-/// rejected at framing time; their pinned identity remains valid after upgrade.
-pub const VERSION: u8 = 0x04;
+/// The handshake and pairing remain on v4 so an existing peer can negotiate
+/// without first understanding the v5 data-frame header.
+pub const LEGACY_VERSION: u8 = 0x04;
+pub const VERSION: u8 = 0x05;
 pub const HEADER_SIZE: usize = 16;
 pub const CHECKSUM_SIZE: usize = 32;
 pub const MAX_HANDSHAKE_PAYLOAD_SIZE: usize = 4 * 1024;
 pub const MAX_CONTROL_PAYLOAD_SIZE: usize = 4 * 1024;
 pub const MAX_TEXT_PAYLOAD_SIZE: usize = 1024 * 1024;
 pub const MAX_IMAGE_PAYLOAD_SIZE: usize = 32 * 1024 * 1024;
+pub const MAX_IMAGE_CHUNK_PAYLOAD_SIZE: usize = 512 * 1024 + 72;
 pub const MAX_FILE_META_PAYLOAD_SIZE: usize = 16 * 1024;
 pub const FILE_CHUNK_SIZE: usize = 1024 * 1024;
 pub const MIN_FILE_CHUNK_PAYLOAD_SIZE: usize = FILE_CHUNK_HEADER_SIZE + 1;
@@ -275,6 +276,7 @@ pub enum Command {
     // Content transfer
     TextPayload = 0x0101,
     ImagePayload = 0x0102,
+    ImageChunk = 0x010d,
     FileMeta = 0x0103,
     FileChunk = 0x0104,
     FileAck = 0x0105,
@@ -309,6 +311,7 @@ impl Command {
             0x0010 => Some(Self::PairingPersisted),
             0x0101 => Some(Self::TextPayload),
             0x0102 => Some(Self::ImagePayload),
+            0x010d => Some(Self::ImageChunk),
             0x0103 => Some(Self::FileMeta),
             0x0104 => Some(Self::FileChunk),
             0x0105 => Some(Self::FileAck),
@@ -336,6 +339,7 @@ impl Command {
             | Self::PairingHandshakeFinish => MAX_HANDSHAKE_PAYLOAD_SIZE,
             Self::TextPayload => MAX_TEXT_PAYLOAD_SIZE,
             Self::ImagePayload => MAX_IMAGE_PAYLOAD_SIZE,
+            Self::ImageChunk => MAX_IMAGE_CHUNK_PAYLOAD_SIZE,
             Self::FileMeta | Self::FileResume | Self::FileBatchStart => MAX_FILE_META_PAYLOAD_SIZE,
             Self::FileChunk => MAX_FILE_CHUNK_PAYLOAD_SIZE,
             Self::Heartbeat
@@ -399,6 +403,8 @@ pub enum ProtocolError {
     InvalidEventEnvelope,
     #[error("invalid event acknowledgement")]
     InvalidEventAck,
+    #[error("invalid compressed image chunk")]
+    InvalidImageChunk,
     #[error("event timestamp is outside the accepted window")]
     EventTimestampOutsideWindow,
     #[error("file chunk exceeds the {FILE_CHUNK_SIZE} byte logical block size: {0}")]
@@ -515,10 +521,7 @@ impl Frame {
 
     /// Encode a control response for a peer whose framing version is unsupported.
     ///
-    /// Not for normal traffic: regular frames must always use [`VERSION`] via
-    /// [`Frame::encode`]. Exposed as `#[doc(hidden)] pub` (rather than crate-private)
-    /// only so `tailsync-core`'s handshake layer can reply to peers pinned to an
-    /// unsupported version now that the wire protocol lives in its own crate.
+    /// The authenticated session selects this version after a v4 handshake.
     #[doc(hidden)]
     pub fn encode_with_version(&self, version: u8) -> Vec<u8> {
         let payload_len = self.payload.len() as u32;
@@ -546,6 +549,17 @@ impl Frame {
 
     /// Decode a frame from bytes. Returns (frame, bytes_consumed).
     pub fn decode(data: &[u8]) -> Result<(Self, usize), ProtocolError> {
+        Self::decode_with_version(data, VERSION)
+    }
+
+    /// Decode only the version selected for this authenticated session.
+    pub fn decode_with_version(
+        data: &[u8],
+        expected_version: u8,
+    ) -> Result<(Self, usize), ProtocolError> {
+        if expected_version != VERSION && expected_version != LEGACY_VERSION {
+            return Err(ProtocolError::UnsupportedVersion(expected_version));
+        }
         if data.len() < HEADER_SIZE + CHECKSUM_SIZE {
             return Err(ProtocolError::IncompleteFrame {
                 expected: HEADER_SIZE + CHECKSUM_SIZE,
@@ -560,13 +574,16 @@ impl Frame {
         }
 
         let version = data[4];
-        if version != VERSION {
+        if version != expected_version {
             return Err(ProtocolError::UnsupportedVersion(version));
         }
 
         let flags = data[5];
         let cmd = u16::from_be_bytes([data[6], data[7]]);
         let command = Command::from_u16(cmd).ok_or(ProtocolError::UnknownCommand(cmd))?;
+        if expected_version == LEGACY_VERSION && command == Command::ImageChunk {
+            return Err(ProtocolError::UnsupportedVersion(LEGACY_VERSION));
+        }
         let sequence = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
         let payload_len = u32::from_be_bytes([data[12], data[13], data[14], data[15]]) as usize;
 

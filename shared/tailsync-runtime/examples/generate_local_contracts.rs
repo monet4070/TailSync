@@ -71,7 +71,7 @@ fn fixtures() -> LocalContractExports {
         can_stop: true,
     };
     LocalContractExports {
-        capabilities: LocalCapabilities::current("macos", 4, true, true),
+        capabilities: LocalCapabilities::current("macos", 5, true, true),
         stable_error: StableErrorEnvelope::new(StableErrorCode::TemporarilyBusy),
         history: HistoryQueryPage {
             entries: vec![HistoryEntry {

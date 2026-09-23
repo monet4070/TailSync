@@ -5,7 +5,7 @@
     "valid": true,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -19,7 +19,7 @@
     "valid": true,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -33,7 +33,7 @@
     "contract": "LocalCapabilities",
     "valid": false,
     "value": {
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -47,7 +47,7 @@
     "valid": false,
     "value": {
       "schema_version": [],
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -88,7 +88,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
       "supports_runtime_snapshot": true,
@@ -101,7 +101,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": [],
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -115,7 +115,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "supports_binary_preview": true,
       "supports_runtime_snapshot": true,
@@ -128,7 +128,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": [],
       "supports_binary_preview": true,
@@ -142,7 +142,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_runtime_snapshot": true,
@@ -155,7 +155,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": [],
@@ -169,7 +169,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -182,7 +182,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -196,7 +196,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -209,7 +209,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,

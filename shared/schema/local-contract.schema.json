@@ -360,7 +360,7 @@
         "wire_version": {
           "type": "integer",
           "format": "uint32",
-          "maximum": 4,
+          "maximum": 5,
           "minimum": 4
         }
       },

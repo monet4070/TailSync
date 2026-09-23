@@ -6020,6 +6020,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "directories",
  "fernet",
+ "flate2",
  "fs2",
  "hex",
  "iroh",

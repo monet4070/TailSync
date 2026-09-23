@@ -893,34 +893,50 @@ async fn send_validated_batch_to_peer(
                     .await;
                     return Err(FileBatchDeliveryError::Cancelled);
                 }
-                let remaining =
-                    usize::try_from((meta.size - confirmed).min(FILE_CHUNK_SIZE as u64))
-                        .unwrap_or(FILE_CHUNK_SIZE);
-                let count = file
-                    .read(&mut buffer[..remaining])
-                    .await
-                    .map_err(|error| error.to_string())?;
-                if count == 0 {
-                    return Err(FileBatchDeliveryError::SourceUnavailable(format!(
-                        "{} ended before its declared size",
-                        meta.name
-                    )));
+                let window_size = if cfg!(feature = "protocol-file-sliding-window") {
+                    4
+                } else {
+                    1
+                };
+                let mut payloads = Vec::with_capacity(window_size);
+                let mut next_offset = confirmed;
+                while next_offset < meta.size && payloads.len() < window_size {
+                    let remaining =
+                        usize::try_from((meta.size - next_offset).min(FILE_CHUNK_SIZE as u64))
+                            .unwrap_or(FILE_CHUNK_SIZE);
+                    let count = file
+                        .read(&mut buffer[..remaining])
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if count == 0 {
+                        return Err(FileBatchDeliveryError::SourceUnavailable(format!(
+                            "{} ended before its declared size",
+                            meta.name
+                        )));
+                    }
+                    payloads.push(
+                        FileChunkPayload {
+                            transfer_id,
+                            offset: next_offset,
+                            data: buffer[..count].to_vec(),
+                        }
+                        .encode()
+                        .map_err(|error| error.to_string())?,
+                    );
+                    next_offset += count as u64;
                 }
-                let payload = FileChunkPayload {
-                    transfer_id,
-                    offset: confirmed,
-                    data: buffer[..count].to_vec(),
-                }
-                .encode()
-                .map_err(|error| error.to_string())?;
-                let receipt = network::queue_peer_file_frame(
-                    &pool,
-                    &peer,
-                    Command::FileChunk,
-                    payload,
-                    transfer_id,
-                )
-                .await?;
+                let receipt = if payloads.len() == 1 {
+                    network::queue_peer_file_frame(
+                        &pool,
+                        &peer,
+                        Command::FileChunk,
+                        payloads.pop().expect("one payload"),
+                        transfer_id,
+                    )
+                    .await?
+                } else {
+                    network::queue_peer_file_window(&pool, &peer, payloads, transfer_id).await?
+                };
                 if receipt.resume_required {
                     resume_attempts = resume_attempts.saturating_add(1);
                     if resume_attempts > 32 {
@@ -931,7 +947,14 @@ async fn send_validated_batch_to_peer(
                     }
                     continue 'restart_batch;
                 }
-                confirmed = receipt.next_offset.unwrap_or(confirmed);
+                let next_confirmed = receipt.next_offset.unwrap_or(confirmed);
+                if next_confirmed <= confirmed || next_confirmed > meta.size {
+                    return Err(FileBatchDeliveryError::Retryable(format!(
+                        "{} returned an invalid file acknowledgement offset",
+                        peer.hostname
+                    )));
+                }
+                confirmed = next_confirmed;
                 file.seek(std::io::SeekFrom::Start(confirmed))
                     .await
                     .map_err(|error| error.to_string())?;

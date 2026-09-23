@@ -233,6 +233,39 @@ pub async fn queue_peer_file_frame(
     .await
 }
 
+pub async fn queue_peer_file_window(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &tailscale::PeerInfo,
+    payloads: Vec<Vec<u8>>,
+    transfer_id: TransferId,
+) -> Result<DeliveryReceipt, String> {
+    let settings = { pool.lock().await.settings.clone() };
+    let trusted_key = settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .get(&peer.hostname)
+        .cloned()
+        .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
+    secure::decode_trusted_key(&trusted_key)
+        .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
+    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let preferred = resolve_candidates(peer, TCP_PORT)?
+        .first()
+        .map(|candidate| candidate.target.clone())
+        .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    let (completion_tx, completion_rx) = oneshot::channel();
+    let queued = QueuedFrame::confirmed_file_window(payloads, transfer_id, completion_tx)?;
+    enqueue_queued_frame(tx, preferred, queued).await?;
+    tailsync_core::peer::pool::await_delivery(
+        completion_rx,
+        Command::FileChunk,
+        &peer.hostname,
+        FILE_CONFIRM_TIMEOUT,
+    )
+    .await
+}
+
 pub async fn queue_peer_batch_frame(
     pool: &Arc<Mutex<ConnectionPool>>,
     peer: &tailscale::PeerInfo,
@@ -525,12 +558,13 @@ async fn connect_and_handshake(
     let connection = match target {
         ResolvedTarget::Tcp(address) => {
             let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(address)).await??;
-            secure::connect(
+            secure::connect_with_capabilities(
                 stream,
                 identity,
                 local_peer_identity(&mode),
                 hostname,
                 &expected_key,
+                secure::CapabilitySwitches::runtime_defaults(),
             )
             .await?
         }
@@ -540,12 +574,13 @@ async fn connect_and_handshake(
                 .connect(endpoint_id)
                 .await
                 .map_err(std::io::Error::other)?;
-            secure::connect(
+            secure::connect_with_capabilities(
                 stream,
                 identity,
                 local_peer_identity(&mode),
                 hostname,
                 &expected_key,
+                secure::CapabilitySwitches::runtime_defaults(),
             )
             .await?
         }

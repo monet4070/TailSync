@@ -193,7 +193,7 @@ impl StableErrorEnvelope {
 pub struct LocalCapabilities {
     #[schemars(range(min = 1, max = 1))]
     pub schema_version: u32,
-    #[schemars(range(min = 4, max = 4))]
+    #[schemars(range(min = 4, max = 5))]
     pub wire_version: u32,
     pub platform: String,
     #[schemars(range(min = 67108864, max = 67108864))]
@@ -324,9 +324,9 @@ mod tests {
 
     #[test]
     fn current_capabilities_are_stable_and_json_safe() {
-        let capabilities = LocalCapabilities::current("macos", 4, true, true);
+        let capabilities = LocalCapabilities::current("macos", 5, true, true);
         assert_eq!(capabilities.schema_version, LOCAL_CONTRACT_SCHEMA_VERSION);
-        assert_eq!(capabilities.wire_version, 4);
+        assert_eq!(capabilities.wire_version, 5);
         assert_eq!(capabilities.max_preview_bytes, 64 * 1024 * 1024);
         assert!(!capabilities.supports_stable_errors);
         let round_trip = serde_json::from_value::<LocalCapabilities>(

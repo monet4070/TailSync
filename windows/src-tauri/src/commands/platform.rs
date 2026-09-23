@@ -9,7 +9,7 @@ pub async fn get_version() -> Result<serde_json::Value, CommandError> {
 }
 
 /// Report the versioned local UI contract before an optional optimized path is
-/// selected.  The capability is transport-local and does not change wire v4.
+/// selected. The stable-error capability is local to the UI transport.
 #[command]
 pub fn get_local_capabilities() -> tailsync_runtime::contracts::LocalCapabilities {
     windows_local_capabilities(true, true)

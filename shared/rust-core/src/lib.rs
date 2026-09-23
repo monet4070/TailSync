@@ -7,6 +7,7 @@ pub mod db;
 pub mod diagnostics;
 pub mod history_classifier;
 pub mod identity;
+pub mod image_chunks;
 pub mod import;
 pub mod iroh_transport;
 pub mod observability;

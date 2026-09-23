@@ -180,8 +180,9 @@ fn maintain_offline_queue(
             }
         };
         let Some(queued) = queued else { return };
+        let span = queued.sequence_span();
         let frame = PendingFrame::new_for_peer(queued, *next_sequence, hostname);
-        *next_sequence = next_sequence.wrapping_add(1).max(1);
+        *next_sequence = next_sequence.wrapping_add(span).max(1);
         if frame.is_expired(ttl) {
             complete_expired_frame(frame, hostname);
         } else {
@@ -374,8 +375,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                         &route,
                         &candidates,
                     );
+                    let reconnect_for_window_resume =
+                        frame.queued.file_window.is_some() && receipt.resume_required;
                     frame.complete(Ok(receipt));
-                    if reselect_route {
+                    if reselect_route || reconnect_for_window_resume {
                         log::debug!(
                             "Receiver requested file batch replay over fallback route {target}; reselecting preferred path"
                         );
@@ -386,7 +389,11 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     record_permanent_delivery_warning(&hostname, &error);
                     log::warn!("Dropping event rejected by remote peer: {error}");
                     log::debug!("Rejected event route: {target}");
+                    let window_failed = frame.queued.file_window.is_some();
                     frame.complete(Err(error));
+                    if window_failed {
+                        continue 'connection;
+                    }
                 }
                 Err(error) => {
                     log::debug!(
@@ -446,8 +453,9 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
             };
             match next {
                 Ok(Some(queued)) => {
+                    let span = queued.sequence_span();
                     let frame = PendingFrame::new_for_peer(queued, next_sequence, &hostname);
-                    next_sequence = next_sequence.wrapping_add(1).max(1);
+                    next_sequence = next_sequence.wrapping_add(span).max(1);
                     if frame.is_expired(config.pending_frame_ttl) {
                         complete_expired_frame(frame, &hostname);
                         continue;
@@ -485,8 +493,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                                 &route,
                                 &candidates,
                             );
+                            let reconnect_for_window_resume =
+                                frame.queued.file_window.is_some() && receipt.resume_required;
                             frame.complete(Ok(receipt));
-                            if reselect_route {
+                            if reselect_route || reconnect_for_window_resume {
                                 log::debug!(
                                     "Receiver requested file batch replay over fallback route {target}; reselecting preferred path"
                                 );
@@ -497,7 +507,11 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                             record_permanent_delivery_warning(&hostname, &error);
                             log::warn!("Dropping event rejected by remote peer: {error}");
                             log::debug!("Rejected event route: {target}");
+                            let window_failed = frame.queued.file_window.is_some();
                             frame.complete(Err(error));
+                            if window_failed {
+                                continue 'connection;
+                            }
                         }
                         Err(error) => {
                             pending = Some(frame);

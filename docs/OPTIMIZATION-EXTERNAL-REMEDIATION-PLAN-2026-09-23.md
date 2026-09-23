@@ -3,7 +3,7 @@
 日期：2026-09-23
 已验收的产品代码基线：`2.2.2`、wire `v4`、数据库 schema `v11`、源码提交 `ba7bbd5701b176c3179bbffbd0fcbb9e061e4edf`。后续文档提交只使仓库 HEAD 前进，不代表重新构建产品。本文件第 2、4、5 节保留原始实施步骤；执行前先对照本页的状态更新和同日外部验收报告，不要重复已完成的提交。
 
-本文件不是通过声明。当前候选仍为 **NO-GO**：当前 HEAD 的 Windows unsigned 包 smoke、打包后及同 SHA portable 存活期间 TCP 19889 空端口、系统级忙碌文件剪贴板读取三档已通过。隔离数据目录误探测账户旧历史的代码缺陷已由 `ba7bbd5` 红/绿复现、最小修复、完整本机回归和当前 portable 日志复核；不再把它列为未修复代码项。正式签名、干净安装生命周期、真实双/三设备、产品剪贴板监视器端到端广播、产品进程级阶段崩溃验收和 WebView2 长时内存证据仍未闭环。`ReceivedBatchCommit` core 六阶段终止/恢复矩阵和按 dispatch 共享源校验已实现并测试；Phase 0A 新增了合成历史基线和 Windows 诊断模式 IPC 计数入口，但真实 IPC/DB 锁/连接/内存曲线仍缺；O08 仍未全命令迁移，wire v4 能力协商仅为默认关闭的基础层，滑窗/压缩图片仍未实现。
+本文件不是通过声明。当前候选仍为 **NO-GO**：Windows unsigned 包 smoke、打包后及同 SHA portable 存活期间 TCP 19889 空端口、系统级忙碌文件剪贴板读取三档已通过。隔离数据目录误探测账户旧历史的代码缺陷已由 `ba7bbd5` 修复。正式签名、干净安装生命周期、真实双/三设备、产品剪贴板监视器端到端广播、产品进程级阶段崩溃验收和 WebView2 长时内存证据仍未闭环。`ReceivedBatchCommit` core 六阶段终止/恢复矩阵和按 dispatch 共享源校验已实现并测试；Phase 0A 新增了合成历史基线和 Windows 诊断模式 IPC 计数入口，但真实 IPC/DB 锁/连接/内存曲线仍缺。2026-09-24 的 O08 代码状态见同日实现记录：Windows 74 个 Tauri 命令均使用稳定错误边界，wire v5 协商、4 MiB 文件滑窗和压缩图片分片已实现并通过本机测试；真实 N-1、跨设备和发行包验证仍未完成。
 
 ## 0. 执行纪律
 
@@ -24,8 +24,8 @@
 | P0 | 正式包 | 当前只有 `development`、`NotSigned` unsigned 包 | 在隔离签名环境注入 updater 私钥及 Authenticode 证书，生成并验签同一 SHA 的 community/trusted 包；日志只记录布尔存在性和公钥/产物 hash |
 | P0 | 双/三设备 | 没有受控第二台/第三台设备，因此 direct、Tailscale、Iroh direct/relay、glare、N-1、睡眠唤醒都不能 PASS | 两台真实成品包设备；多 Peer/多路径再增加第三台设备，记录实际 route、RTT、吞吐和双方 SHA |
 | P1 | ReceivedBatchCommit 外部验收 | `01330fa` 已实现显式状态机与 debug-only 注入；六阶段 core 子进程退出/重启矩阵已通过。产品进程、真实 `.part` 和长时维护尚未测 | 在 Windows/macOS 产品进程逐阶段注入终止，重启核对 manifest、ACK、history、`.part`、清理和幂等；第 2 节仅作原始设计参考 |
-| P1 | O08 稳定错误 | `LocalCapabilities.current()` 仍返回 `supports_stable_errors=false`，多数命令仍是兼容文本错误 | 完成第 3 节错误 envelope，所有命令迁移并由 Swift/TypeScript 解码器验证后才改为 `true` |
-| P1 | wire v5 | 当前设备间协议仍是 v4；`fd419e0` 已加入握手能力协商基础，但两个能力默认关闭，滑窗/压缩图片未实现 | 先完成 v4↔v5 fallback 矩阵，再分别实现并启用两个能力，通过恶意输入和延迟吞吐门禁 |
+| P1 | O08 稳定错误 | Windows 74 个 Tauri 命令已使用稳定错误边界，Windows capability 为 `true`；macOS capability 仍为 `false` | 在真实 macOS 上完成命令迁移、Swift 测试和旧客户端回退验证 |
+| P1 | wire v5 | Windows v5 与两项能力已实现，本机 v4/v5 回退、恶意输入及延迟吞吐测试通过；真实 N-1 和跨设备证据仍缺 | 用旧版与新版成品包完成双向互通、断线恢复、长文件/图片及多路径验收 |
 | P1 | 忙碌剪贴板/PDF | 独立 Win32 owner 已验证 40/200/500ms 各 20 次文件读取及 900ms 类型化 `Busy`；产品广播链路和 WebView2 长时采样仍缺 | 在隔离产品会话观察无文本路径广播，并采样 100/500 页 PDF 的 RSS/page-count 曲线 |
 
 ## 2. ReceivedBatchCommit 最小实现方案（先 12a，再 12b）
@@ -108,7 +108,7 @@ cargo test --manifest-path shared/rust-core/Cargo.toml --features acceptance-inj
 
 ## 5. Wire v5 细粒度能力与后续能力
 
-**状态更新：** `fd419e0` 仅实现认证握手中的能力协商基础，两个能力仍默认关闭；本节滑窗、压缩分片及 v5 互通仍是待执行任务。
+**状态更新（2026-09-24）：** Windows 已实现 wire v5 会话协商、4 MiB 滑窗与压缩图片分片，本机回退、畸形输入和 80/150 ms 模拟延迟测试通过。以下为原始实施门禁；真实 N-1 成品包及多设备验收仍待执行。
 
 当前发行基线继续锁定 v4。先实现 capability foundation，再实现两个独立能力：
 

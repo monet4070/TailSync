@@ -130,11 +130,12 @@ async fn handle_connection(
 
     let accepted = timeout(
         HANDSHAKE_TIMEOUT,
-        secure::accept_with_pairing_window(
+        secure::accept_with_pairing_window_and_capabilities(
             stream,
             &identity,
             local_peer_identity(&mode),
             pairing.subscribe_window(),
+            secure::CapabilitySwitches::runtime_defaults(),
         ),
     )
     .await
@@ -170,11 +171,12 @@ pub(super) async fn handle_iroh_connection(
     }
     let accepted = timeout(
         HANDSHAKE_TIMEOUT,
-        secure::accept_with_pairing_window(
+        secure::accept_with_pairing_window_and_capabilities(
             stream,
             &identity,
             local_peer_identity(&mode),
             pairing.subscribe_window(),
+            secure::CapabilitySwitches::runtime_defaults(),
         ),
     )
     .await
@@ -388,11 +390,20 @@ async fn handle_accepted_connection_inner(
     // ── Receive loop ─────────────────────────────────────────────
     let mut last_activity = tokio::time::Instant::now();
     let mut last_reliable_sequence = None;
+    let mut image_assembler = tailsync_core::image_chunks::ImageAssembler::default();
+    let mut image_chunks_enabled = stream.negotiated_capabilities().image_compressed_chunks;
 
     loop {
         let frame = match timeout(
             CONNECTION_TIMEOUT,
             stream.read_frame_with_admission(|command, payload_length| match command {
+                Command::ImageChunk => {
+                    tailsync_core::peer::rate_limit::check_peer_chunk_bytes(
+                        &peer_info.hostname,
+                        payload_length,
+                    )
+                    .map_err(ProtocolError::AdmissionRejected)
+                }
                 Command::TextPayload | Command::ImagePayload | Command::FileBatchStart => {
                     check_peer_event_budget(&peer_info.hostname, payload_length)
                         .map_err(ProtocolError::AdmissionRejected)
@@ -483,6 +494,59 @@ async fn handle_accepted_connection_inner(
                     warn!("Rejected image event from remote peer: {error}");
                     debug!("Rejected image event address: {peer_addr}");
                     secure::write_error(&mut stream, &error.to_string()).await?;
+                }
+            }
+            Command::ImageChunk => {
+                if !image_chunks_enabled {
+                    secure::write_image_chunk_error(&mut stream).await?;
+                    continue;
+                }
+                if frame.payload.get(28..30) == Some(&[0, 0]) {
+                    if let Err(error) = check_peer_event_budget(&peer_info.hostname, 0) {
+                        secure::write_error(&mut stream, &error).await?;
+                        continue;
+                    }
+                }
+                match image_assembler.accept(&frame.payload) {
+                    Ok((message_id, None)) => {
+                        let ack = Frame::try_new(
+                            Command::EventAck,
+                            0,
+                            frame.sequence,
+                            message_id.ack_payload(),
+                        )?;
+                        stream.write_frame(&ack).await?;
+                    }
+                    Ok((_, Some(envelope))) => {
+                        let image_frame = Frame::try_new(
+                            Command::ImagePayload,
+                            0,
+                            frame.sequence,
+                            envelope.encode(),
+                        )?;
+                        if let Err(error) = process_reliable_event(
+                            &mut stream,
+                            &image_frame,
+                            &peer_info.hostname,
+                            &sync_engine,
+                            &database,
+                            &mut last_reliable_sequence,
+                            crate::api::bump_clipboard_version,
+                        )
+                        .await
+                        {
+                            if error.is_retryable() {
+                                warn!("Temporarily unable to apply compressed image: {error}");
+                            } else {
+                                secure::write_error(&mut stream, &error.to_string()).await?;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!("Disabling compressed image chunks for this session: {error}");
+                        image_chunks_enabled = false;
+                        secure::write_image_chunk_error(&mut stream).await?;
+                    }
                 }
             }
             Command::FileBatchStart => {

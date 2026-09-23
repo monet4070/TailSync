@@ -63,6 +63,8 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+protocol-file-sliding-window = ["tailsync-core/protocol-file-sliding-window"]
+protocol-image-compressed-chunks = ["tailsync-core/protocol-image-compressed-chunks"]
 
 [profile.release]
 strip = "symbols"

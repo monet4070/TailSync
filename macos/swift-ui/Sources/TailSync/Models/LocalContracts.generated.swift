@@ -159,7 +159,7 @@ struct ContractLocalCapabilities: Codable, Sendable {
     self.`supports_runtime_snapshot` = try c.decode(Bool.self, forKey: .`supports_runtime_snapshot`)
     self.`supports_stable_errors` = try c.decode(Bool.self, forKey: .`supports_stable_errors`)
     self.`wire_version` = try c.decode(UInt32.self, forKey: .`wire_version`)
-    guard self.`wire_version` >= 4, self.`wire_version` <= 4 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Local contract constraint failed")) }
+    guard self.`wire_version` >= 4, self.`wire_version` <= 5 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Local contract constraint failed")) }
   }
 }
 
