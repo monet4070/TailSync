@@ -1,23 +1,54 @@
 import SwiftUI
 
 extension SettingsView {
-    var remotePairingSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "globe")
-                    .foregroundColor(palette.accentColor)
-                    .frame(width: 24)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(Loc.t("settings.remotePairing"))
-                        .font(.body.weight(.medium))
-                    Text(Loc.t("settings.remotePairingDescription"))
-                        .font(.caption2)
-                        .foregroundColor(palette.tertiaryColor)
-                        .fixedSize(horizontal: false, vertical: true)
+    /// Collapsed-by-default drawer for the remote Iroh pairing module. The
+    /// header is a single row; the invite flow only occupies space once the
+    /// user expands it, so the device list stays the visual focus above.
+    @ViewBuilder
+    var remotePairingDrawer: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    remotePairingExpanded.toggle()
                 }
-                Spacer()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "globe")
+                        .foregroundColor(palette.accentColor)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Loc.t("settings.remotePairing"))
+                            .font(.body.weight(.medium))
+                            .foregroundColor(palette.primaryColor)
+                        if !remotePairingExpanded {
+                            Text(Loc.t("settings.remotePairingDescription"))
+                                .font(.caption2)
+                                .foregroundColor(palette.tertiaryColor)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(palette.tertiaryColor)
+                        .rotationEffect(.degrees(remotePairingExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .frame(minHeight: 36)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
+            if remotePairingExpanded {
+                remotePairingBody
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private var remotePairingBody: some View {
+        VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 7) {
                 Text(Loc.t("settings.createRemoteInvite"))
                     .font(.caption.weight(.semibold))
@@ -111,6 +142,6 @@ extension SettingsView {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.bottom, 10)
     }
 }

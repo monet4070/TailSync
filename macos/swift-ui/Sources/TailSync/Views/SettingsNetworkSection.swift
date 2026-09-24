@@ -5,7 +5,7 @@ extension SettingsView {
     var networkSection: some View {
         settingsCard(title: Loc.t("settings.network")) {
             settingRow {
-                Text(Loc.t("settings.connectionMode"))
+                settingTitle("settings.connectionMode", descriptionKey: "settings.connectionModeDescription")
                 Spacer()
                 Picker("", selection: $settings.connection_mode) {
                     Text(Loc.t("settings.modeAuto")).tag("auto")
@@ -27,10 +27,10 @@ extension SettingsView {
             pairingPanel
 
             themedDivider.padding(.leading, 16)
-            remotePairingSection
+            peerList
 
             themedDivider.padding(.leading, 16)
-            peerList
+            remotePairingDrawer
         }
     }
 

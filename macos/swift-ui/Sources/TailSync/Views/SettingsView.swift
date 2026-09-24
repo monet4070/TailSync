@@ -34,6 +34,10 @@ struct SettingsView: View {
             self == .sync ? "settings.syncShortcut" : "settings.historyShortcut"
         }
 
+        var descriptionKey: String {
+            self == .sync ? "settings.syncShortcutDescription" : "settings.historyShortcutDescription"
+        }
+
         var recordKey: String {
             self == .sync ? "settings.shortcutRecord" : "settings.historyShortcutRecord"
         }
@@ -77,6 +81,7 @@ struct SettingsView: View {
     @State var settings = AppSettings()
     @State var persistedSettings = AppSettings()
     @State var applyingPersistedSettings = false
+    @State var remotePairingExpanded = false
     @State var localDevice: ApiClient.DeviceSnapshot?
     @State var peers: [ApiClient.PeerSnapshot] = []
     @State var isLoading = true

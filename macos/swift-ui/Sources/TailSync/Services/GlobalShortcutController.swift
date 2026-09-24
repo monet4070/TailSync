@@ -184,22 +184,28 @@ enum ShortcutDisplayFormatter {
     ]
 
     static func string(for shortcut: String) -> String {
+        tokens(for: shortcut).joined()
+    }
+
+    /// Splits a shortcut ("Shift+CommandOrControl+S") into display tokens
+    /// ("⇧", "⌘", "S"), ordered to match the macOS convention.
+    static func tokens(for shortcut: String) -> [String] {
         let parts = shortcut
             .trimmingCharacters(in: .whitespaces)
             .split(separator: "+")
             .map(String.init)
-        guard !parts.isEmpty else { return "" }
+        guard !parts.isEmpty else { return [] }
 
-        let tokens = Set(parts)
-        var result = ""
-        if tokens.contains("Control") { result += "⌃" }
-        if tokens.contains("Alt") || tokens.contains("Option") { result += "⌥" }
-        if tokens.contains("Shift") { result += "⇧" }
-        if tokens.contains("Command") || tokens.contains("CommandOrControl") { result += "⌘" }
+        let tokenSet = Set(parts)
+        var tokens: [String] = []
+        if tokenSet.contains("Control") { tokens.append("⌃") }
+        if tokenSet.contains("Alt") || tokenSet.contains("Option") { tokens.append("⌥") }
+        if tokenSet.contains("Shift") { tokens.append("⇧") }
+        if tokenSet.contains("Command") || tokenSet.contains("CommandOrControl") { tokens.append("⌘") }
 
         let keys = parts.filter { !modifierNames.contains($0) }.map(keyLabel)
-        result += keys.joined(separator: "+")
-        return result
+        tokens.append(contentsOf: keys)
+        return tokens
     }
 
     private static func keyLabel(_ name: String) -> String {
