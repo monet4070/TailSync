@@ -29,8 +29,10 @@ extension SettingsView {
             themedDivider.padding(.leading, 16)
             peerList
 
-            themedDivider.padding(.leading, 16)
-            remotePairingDrawer
+            if ["auto", "iroh_only"].contains(settings.connection_mode) {
+                themedDivider.padding(.leading, 16)
+                remotePairingDrawer
+            }
         }
     }
 

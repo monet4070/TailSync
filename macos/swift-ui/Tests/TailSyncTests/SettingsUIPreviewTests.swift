@@ -60,6 +60,11 @@ final class SettingsUIPreviewTests: XCTestCase {
         try render(name: "network-zh-light.png", lang: "zh-CN", scheme: .light) {
             SettingsView().networkSection
         }
+        try render(name: "network-lan-zh-light.png", lang: "zh-CN", scheme: .light) {
+            let view = SettingsView()
+            view.settings.connection_mode = "lan_only"
+            return view.networkSection
+        }
         try render(name: "network-en-light.png", lang: "en", scheme: .light) {
             SettingsView().networkSection
         }
