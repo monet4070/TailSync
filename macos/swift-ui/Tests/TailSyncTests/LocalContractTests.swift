@@ -71,4 +71,27 @@ final class LocalContractTests: XCTestCase {
     )
   }
 
+  func testStableErrorCodesUseFixedEnglishAndChineseText() {
+    let loc = Loc.shared
+    let previousLanguage = loc.lang
+    defer { loc.lang = previousLanguage }
+    let codes = [
+      "invalid_argument", "not_found", "temporarily_busy", "storage_unavailable",
+      "unauthorized", "protocol_incompatible", "internal_error"
+    ]
+    for language in ["en", "zh-CN"] {
+      loc.lang = language
+      for code in codes {
+        let response: [String: Any] = ["ok": false, "error": [
+          "schema_version": 1, "code": code, "retryable": true,
+          "message_key": "private/path", "detail_class": "private"
+        ]]
+        let normalized = ApiClient.normalizedStableErrorResponse(response)
+        let key = code == "internal_error" ? "error.internal" : "error.\(code)"
+        XCTAssertEqual(normalized["error"] as? String, Loc.t(key), "\(language): \(code)")
+        XCTAssertNotEqual(normalized["error"] as? String, "private/path")
+      }
+    }
+  }
+
 }

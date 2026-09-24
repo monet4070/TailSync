@@ -417,6 +417,68 @@ fn peer_snapshot_does_not_infer_a_connection_from_selected_mode() {
 }
 
 #[test]
+fn peer_snapshot_exposes_protocol_upgrade_notice_for_a_trusted_peer() {
+    let identity = DeviceIdentity::generate_for_test();
+    let hostname = format!("incompatible-test-{}", rand::random::<u64>());
+    let mut settings = Settings {
+        connection_mode: "tailscale_only".into(),
+        ..Settings::default()
+    };
+    settings
+        .paired_peer_endpoints
+        .insert(hostname.clone(), "100.64.0.2".into());
+    settings.trusted_peer_keys.insert(
+        hostname.clone(),
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            DeviceIdentity::generate_for_test().public_key(),
+        ),
+    );
+    crate::network::record_protocol_compatibility_error(
+        &hostname,
+        "Incompatible TailSync protocol: peer uses v2",
+    );
+    let peer = PeerInfo {
+        hostname: hostname.clone(),
+        tailscale_ip: "100.64.0.2".into(),
+        online: true,
+        enabled: true,
+        address: "100.64.0.2".into(),
+        connection_mode: "tailscale".into(),
+        trusted: true,
+        fingerprint: String::new(),
+        candidates: vec![PeerCandidate::new(
+            ConnectionInterface::Tailscale,
+            "100.64.0.2",
+        )],
+        current_interface: None,
+        current_address: None,
+        status: Default::default(),
+    };
+    let data = peer_snapshot_data(
+        &identity,
+        &settings,
+        Ok((
+            LocalInfo {
+                hostname: "macbook".into(),
+                tailscale_ip: "100.64.0.1".into(),
+                candidates: Vec::new(),
+            },
+            vec![peer],
+        )),
+    );
+    crate::network::clear_protocol_compatibility_error(&hostname);
+    assert_eq!(
+        data["peers"][0]["protocol_error"],
+        "Incompatible TailSync protocol: peer uses v2"
+    );
+    assert_eq!(
+        data["peers"][0]["required_protocol_version"],
+        crate::protocol::VERSION
+    );
+}
+
+#[test]
 fn iroh_only_snapshot_exposes_the_local_endpoint_route() {
     let identity = DeviceIdentity::generate_for_test();
     let settings = Settings {

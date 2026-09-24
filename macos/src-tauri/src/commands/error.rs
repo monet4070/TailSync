@@ -11,6 +11,16 @@ impl CommandError {
         Self(StableErrorEnvelope::new(code))
     }
 
+    pub(crate) fn from_pairing_failure(message: &str) -> Self {
+        let code =
+            if message.starts_with("Pairing handshake failed: Incompatible TailSync protocol:") {
+                StableErrorCode::ProtocolIncompatible
+            } else {
+                StableErrorCode::InternalError
+            };
+        Self::code(code)
+    }
+
     #[cfg(test)]
     pub(crate) fn envelope(&self) -> &StableErrorEnvelope {
         &self.0
@@ -76,5 +86,16 @@ mod tests {
         let error = CommandError::code(StableErrorCode::Unauthorized);
         assert!(!error.envelope().retryable);
         assert_eq!(error.envelope().message_key, "error.unauthorized");
+    }
+
+    #[test]
+    fn incompatible_pairing_error_uses_fixed_code_without_peer_details() {
+        let error = CommandError::from_pairing_failure(
+            "Pairing handshake failed: Incompatible TailSync protocol: peer at /private/peer uses v2",
+        );
+        let encoded = serde_json::to_string(&error).unwrap();
+        assert_eq!(error.envelope().code, StableErrorCode::ProtocolIncompatible);
+        assert_eq!(error.envelope().message_key, "error.protocol_incompatible");
+        assert!(!encoded.contains("/private/peer"));
     }
 }

@@ -92,9 +92,22 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                         .map_err(|error| DeliveryError::protocol(error.to_string()))?
                         .map_err(|error| DeliveryError::protocol(error.to_string()))?;
                 if let Some(chunks) = compressed {
+                    tracing::info!(
+                        session_id = ?stream.session_id(),
+                        path = "compressed_chunks",
+                        chunks = chunks.len(),
+                        "image delivery path selected"
+                    );
                     return deliver_compressed_image(stream, pending, chunks, message_id, config)
                         .await;
                 }
+            }
+            if pending.queued.command == Command::ImagePayload {
+                tracing::info!(
+                    session_id = ?stream.session_id(),
+                    path = "raw_image",
+                    "image delivery path selected"
+                );
             }
             let frame = Frame::try_new(
                 pending.queued.command,
@@ -212,6 +225,12 @@ async fn deliver_file_window<T: DeliveryConnection>(
     // A legacy or locally disabled peer gets the same ordered chunks with
     // stop-and-wait ACKs. The queue remains valid across a reconnect.
     if !stream.negotiated_capabilities().file_sliding_window {
+        tracing::info!(
+            session_id = ?stream.session_id(),
+            path = "stop_and_wait",
+            chunks = frames.len(),
+            "file delivery path selected"
+        );
         let mut receipt = DeliveryReceipt::default();
         for frame in &frames {
             receipt = deliver_file_frame(stream, pending, frame, transfer_id, config).await?;
@@ -222,6 +241,13 @@ async fn deliver_file_window<T: DeliveryConnection>(
         return Ok(receipt);
     }
 
+    tracing::info!(
+        session_id = ?stream.session_id(),
+        path = "sliding_window",
+        chunks = frames.len(),
+        window_end,
+        "file delivery path selected"
+    );
     for frame in &frames {
         stream
             .write_frame(frame)
@@ -273,6 +299,13 @@ async fn deliver_file_window<T: DeliveryConnection>(
             }
         }
     }
+    tracing::info!(
+        session_id = ?stream.session_id(),
+        path = "sliding_window",
+        confirmed_offset = confirmed,
+        resume_required = resume_required || confirmed < window_end,
+        "file delivery window acknowledged"
+    );
     Ok(DeliveryReceipt {
         next_offset: Some(confirmed),
         resume_required: resume_required || confirmed < window_end,

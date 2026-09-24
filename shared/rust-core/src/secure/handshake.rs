@@ -133,6 +133,13 @@ where
                 peer = %secure.peer_identity.hostname,
                 peer_id = %crate::observability::peer_id(&remote_key),
                 purpose = "connection",
+                wire_version = secure.wire_version(),
+                local_file_window = local_capabilities.file_sliding_window,
+                local_image_chunks = local_capabilities.image_compressed_chunks,
+                peer_file_window = peer_capabilities.file_sliding_window,
+                peer_image_chunks = peer_capabilities.image_compressed_chunks,
+                negotiated_file_window = secure.negotiated_capabilities().file_sliding_window,
+                negotiated_image_chunks = secure.negotiated_capabilities().image_compressed_chunks,
                 "secure handshake ready"
             );
             Ok(secure)
@@ -434,11 +441,22 @@ where
     } else {
         remote_wire_version
     };
+    let negotiated_capabilities = capabilities_for_wire(
+        CapabilitySet::negotiate(local_capabilities, peer_capabilities),
+        wire_version,
+    );
     tracing::info!(
         session_id = %session_id,
         peer = %peer_info.hostname,
         peer_id = %crate::observability::peer_id(&remote_key),
         purpose = ?purpose,
+        wire_version,
+        local_file_window = local_capabilities.file_sliding_window,
+        local_image_chunks = local_capabilities.image_compressed_chunks,
+        peer_file_window = peer_capabilities.file_sliding_window,
+        peer_image_chunks = peer_capabilities.image_compressed_chunks,
+        negotiated_file_window = negotiated_capabilities.file_sliding_window,
+        negotiated_image_chunks = negotiated_capabilities.image_compressed_chunks,
         "secure handshake accepted"
     );
     Ok(AcceptedConnection {
@@ -452,10 +470,7 @@ where
             partial_expected: None,
             peer_identity: peer_info.clone(),
             session_id,
-            negotiated_capabilities: capabilities_for_wire(
-                CapabilitySet::negotiate(local_capabilities, peer_capabilities),
-                wire_version,
-            ),
+            negotiated_capabilities,
             wire_version,
         },
         peer_identity: peer_info,

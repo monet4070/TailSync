@@ -130,7 +130,7 @@ impl StableErrorEnvelope {
     /// Compatibility classifier used while platform adapters are migrated
     /// from text errors to typed sources. Matching affects only the stable
     /// category; the original message is intentionally discarded.
-    pub fn from_legacy_message(_command: &str, message: &str) -> Self {
+    pub fn from_legacy_message(command: &str, message: &str) -> Self {
         let message = message.trim().to_ascii_lowercase();
         let starts_with_any =
             |prefixes: &[&str]| prefixes.iter().any(|prefix| message.starts_with(prefix));
@@ -141,6 +141,8 @@ impl StableErrorEnvelope {
             StableErrorCode::Unauthorized
         } else if starts_with_any(&[
             "incompatible protocol",
+            "incompatible tailsync protocol:",
+            "pairing handshake failed: incompatible tailsync protocol:",
             "protocol incompatible",
             "unsupported version",
             "requires v4",
@@ -200,8 +202,14 @@ impl StableErrorEnvelope {
                 | "invalid import timestamp"
                 | "unknown type"
         ) || message.starts_with("invalid request json:")
+            || message.starts_with("unsupported history collection:")
         {
             StableErrorCode::InvalidArgument
+        } else if command == "change_storage_location" {
+            // Every remaining route failure is a typed storage-migration
+            // failure. OS messages such as "File exists (os error 17)" do
+            // not carry a stable prefix, so classify by the command boundary.
+            StableErrorCode::StorageUnavailable
         } else {
             StableErrorCode::InternalError
         };
@@ -407,6 +415,31 @@ mod tests {
     fn stable_error_classifier_covers_public_categories() {
         let cases = [
             ("cmd", "missing id", StableErrorCode::InvalidArgument),
+            (
+                "get_history",
+                "unsupported history collection: bogus",
+                StableErrorCode::InvalidArgument,
+            ),
+            (
+                "change_storage_location",
+                "File exists (os error 17)",
+                StableErrorCode::StorageUnavailable,
+            ),
+            (
+                "change_storage_location",
+                "missing parent",
+                StableErrorCode::InvalidArgument,
+            ),
+            (
+                "change_storage_location",
+                "Timed out waiting for active file transfers to finish",
+                StableErrorCode::TemporarilyBusy,
+            ),
+            (
+                "start_pairing",
+                "Pairing handshake failed: Incompatible TailSync protocol: peer uses v2",
+                StableErrorCode::ProtocolIncompatible,
+            ),
             ("cmd", "entry not found", StableErrorCode::NotFound),
             ("cmd", "database locked", StableErrorCode::TemporarilyBusy),
             (

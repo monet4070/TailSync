@@ -116,7 +116,8 @@ pub async fn start_pairing(
         state.settings.clone(),
         &address,
     )
-    .await?;
+    .await
+    .map_err(|error| CommandError::from_pairing_failure(&error))?;
     Ok(state.pairing.status().await)
 }
 

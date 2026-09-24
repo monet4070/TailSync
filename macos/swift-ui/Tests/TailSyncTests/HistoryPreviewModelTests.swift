@@ -327,4 +327,18 @@ final class HistoryPreviewModelTests: XCTestCase {
             HistoryPreviewFailure(kind: .corrupt, canRetry: false)
         )
     }
+
+    func testLegacyTextPreviewErrorsUseSafeFailureClassification() {
+        let cases: [(String, HistoryPreviewFailure)] = [
+            ("preview is too large", HistoryPreviewFailure(kind: .tooLarge, canRetry: false)),
+            ("unsupported preview type", HistoryPreviewFailure(kind: .unsupported, canRetry: false)),
+            ("decryption failed", HistoryPreviewFailure(kind: .decryption, canRetry: true)),
+            ("corrupt preview data", HistoryPreviewFailure(kind: .corrupt, canRetry: true)),
+            ("unknown private path /tmp/secret", HistoryPreviewFailure(kind: .unavailable, canRetry: true))
+        ]
+        for (message, expected) in cases {
+            let error = HistoryPreviewRemoteError(code: nil, message: message)
+            XCTAssertEqual(HistoryPreviewFailure.classify(error), expected, message)
+        }
+    }
 }

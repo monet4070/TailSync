@@ -174,17 +174,7 @@ struct SettingsView: View {
                     .padding(.vertical, 12)
                 }
                 .overlay(alignment: .bottom) {
-                    if saved || actionErrorMessage != nil {
-                        let toast = component("toast")
-                        Text(actionErrorMessage ?? Loc.t("settings.saved"))
-                            .font(.caption)
-                            .foregroundColor(toast?.foregroundColor ?? palette.toastTextColor)
-                            .padding(.horizontal, toast?.padding ?? 12)
-                            .padding(.vertical, 6)
-                            .background(toast?.backgroundColor ?? palette.toastColor)
-                            .clipShape(RoundedRectangle(cornerRadius: toast?.radius ?? 999, style: .continuous))
-                            .padding(.bottom, 8)
-                    }
+                    actionToast
                 }
             }
         }
@@ -249,6 +239,25 @@ struct SettingsView: View {
             }
         }
         .tailSyncThemed()
+    }
+
+    @ViewBuilder
+    var actionToast: some View {
+        if saved || actionErrorMessage != nil {
+            toast(message: actionErrorMessage ?? Loc.t("settings.saved"))
+        }
+    }
+
+    func toast(message: String) -> some View {
+        let tokens = component("toast")
+        return Text(message)
+            .font(.caption)
+            .foregroundColor(tokens?.foregroundColor ?? palette.toastTextColor)
+            .padding(.horizontal, tokens?.padding ?? 12)
+            .padding(.vertical, 6)
+            .background(tokens?.backgroundColor ?? palette.toastColor)
+            .clipShape(RoundedRectangle(cornerRadius: tokens?.radius ?? 999, style: .continuous))
+            .padding(.bottom, 8)
     }
 
 

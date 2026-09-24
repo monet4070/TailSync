@@ -608,6 +608,32 @@ mod tests {
         assert!(!stable.to_string().contains("private"));
     }
 
+    #[tokio::test]
+    async fn incompatible_protocol_socket_error_has_a_fixed_public_envelope() {
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        send_json(
+            &mut writer,
+            false,
+            None,
+            "Pairing handshake failed: Incompatible TailSync protocol: peer at /private/peer uses v2, token=secret",
+            "start_pairing",
+            true,
+        )
+        .await
+        .unwrap();
+        let mut line = String::new();
+        BufReader::new(reader).read_line(&mut line).await.unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["error"]["schema_version"], 1);
+        assert_eq!(response["error"]["code"], "protocol_incompatible");
+        assert_eq!(
+            response["error"]["message_key"],
+            "error.protocol_incompatible"
+        );
+        assert!(!line.contains("/private/peer"));
+        assert!(!line.contains("token=secret"));
+    }
+
     #[test]
     fn preview_response_gets_extended_write_timeout_only() {
         assert_eq!(

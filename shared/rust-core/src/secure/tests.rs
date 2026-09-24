@@ -828,6 +828,48 @@ async fn oversized_handshake_is_rejected_from_header_before_body_read() {
     sender.await.unwrap();
 }
 
+#[test]
+fn oversized_image_chunk_is_rejected_from_decrypted_header_before_body_read() {
+    let (_, receiver_transport) = transport_pair();
+    let mut header = [0u8; protocol::HEADER_SIZE];
+    header[..4].copy_from_slice(&protocol::MAGIC);
+    header[4] = protocol::VERSION;
+    header[6..8].copy_from_slice(&(Command::ImageChunk as u16).to_be_bytes());
+    header[12..16]
+        .copy_from_slice(&((protocol::MAX_IMAGE_CHUNK_PAYLOAD_SIZE + 1) as u32).to_be_bytes());
+    let (_, reader) = tokio::io::duplex(64);
+    let secure = SecureConnection {
+        stream: Box::new(reader),
+        transport: receiver_transport,
+        read_buffer: header.to_vec(),
+        partial_header: [0; 2],
+        partial_header_len: 0,
+        partial_record: Vec::new(),
+        partial_expected: None,
+        peer_identity: PeerIdentity {
+            hostname: "sender".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        },
+        session_id: "oversized-image-test".into(),
+        negotiated_capabilities: CapabilitySet {
+            file_sliding_window: false,
+            image_compressed_chunks: true,
+        },
+        wire_version: protocol::VERSION,
+    };
+    assert!(matches!(
+        secure.pending_frame_metadata(),
+        Err(ProtocolError::CommandPayloadTooLarge {
+            command: Command::ImageChunk,
+            actual,
+            limit,
+        }) if actual == protocol::MAX_IMAGE_CHUNK_PAYLOAD_SIZE + 1
+            && limit == protocol::MAX_IMAGE_CHUNK_PAYLOAD_SIZE
+    ));
+    assert_eq!(secure.read_buffer.len(), protocol::HEADER_SIZE);
+}
+
 #[tokio::test]
 async fn incompatible_handshake_gets_an_actionable_response_in_the_peer_version() {
     let server_identity = DeviceIdentity::generate_for_test();
