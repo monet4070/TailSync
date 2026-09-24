@@ -236,6 +236,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GlobalShortcutController.shared.onHistoryActivate = {
             Self.toggleHistory()
         }
+
+        if CommandLine.arguments.contains("--open-settings") {
+            DispatchQueue.main.async {
+                Self.showSettings()
+            }
+        }
     }
 
     /// Request notification permission for UNUserNotificationCenter (needed
