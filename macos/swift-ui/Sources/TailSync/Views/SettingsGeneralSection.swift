@@ -1,37 +1,26 @@
 import SwiftUI
 import AppKit
 
-/// A three-dimensional macOS keycap badge for one shortcut token (⌘, ⇧, S…).
+/// A single keycap badge, matching the macOS native keycap design from the prototype.
 struct KeycapBadge: View {
-    @Environment(\.colorScheme) private var colorScheme
     let palette: TailSyncThemePalette
     let token: String
 
     var body: some View {
         Text(token)
-            .font(.caption2.monospaced().weight(.medium))
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
             .foregroundColor(palette.primaryColor)
-            .frame(minWidth: token.count > 1 ? 24 : 20, minHeight: 20)
-            .padding(.horizontal, 5)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                palette.raisedColor,
-                                palette.surfaceColor,
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(palette.surfaceColor)
             )
-            .overlay {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(palette.borderColor.opacity(0.9), lineWidth: 0.8)
-            }
-            .shadow(color: .black.opacity(0.14), radius: 1, y: 1)
-            .shadow(color: .white.opacity(colorScheme == .light ? 0.55 : 0.12), radius: 0.6, y: -0.6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(palette.borderColor, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.08), radius: 1, y: 1)
     }
 }
 
@@ -42,7 +31,7 @@ struct ShortcutKeycapRow: View {
 
     var body: some View {
         let tokens = ShortcutDisplayFormatter.tokens(for: shortcut)
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             ForEach(Array(tokens.enumerated()), id: \.offset) { _, token in
                 KeycapBadge(palette: palette, token: token)
             }
@@ -140,9 +129,14 @@ extension SettingsView {
     }
 
     func shortcutRow(_ kind: ShortcutKind) -> some View {
-        settingRow {
+        let currentValue = kind.value(in: settings)
+        let defaultValue = kind == .sync ? "Shift+CommandOrControl+S" : "CommandOrControl+Shift+V"
+        let isRecording = recordingShortcut == kind
+
+        return settingRow {
             VStack(alignment: .leading, spacing: 2) {
                 Text(Loc.t(kind.titleKey))
+                    .foregroundColor(palette.primaryColor)
                 Text(Loc.t(kind.descriptionKey))
                     .font(.caption2)
                     .foregroundColor(palette.tertiaryColor)
@@ -154,64 +148,85 @@ extension SettingsView {
                         .lineLimit(2)
                 }
             }
-            Spacer()
-            if recordingShortcut == kind {
-                HStack(spacing: 8) {
-                    if shortcutDraft.isEmpty {
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(palette.accentColor)
-                                .frame(width: 6, height: 6)
-                            Text(Loc.t("settings.shortcutRecording"))
-                                .font(.caption2.monospaced())
-                                .foregroundColor(palette.accentColor)
+            Spacer(minLength: 16)
+
+            HStack(spacing: 6) {
+                // Integrated capsule keyboard control
+                Button {
+                    if isRecording {
+                        if !shortcutDraft.isEmpty {
+                            confirmShortcut(kind)
+                        } else {
+                            cancelShortcutRecording(kind)
                         }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(palette.accentSoftColor.opacity(0.45))
-                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     } else {
-                        ShortcutKeycapRow(palette: palette, shortcut: shortcutDraft)
-                    }
-
-                    Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording(kind) }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(shortcutBusy)
-
-                    Button(Loc.t("settings.shortcutSave")) { confirmShortcut(kind) }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(shortcutDraft.isEmpty || shortcutBusy)
-                }
-            } else {
-                HStack(spacing: 10) {
-                    if kind.value(in: settings).isEmpty {
-                        Text(Loc.t("settings.shortcutNone"))
-                            .font(.caption2.monospaced())
-                            .foregroundColor(palette.tertiaryColor)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .fill(palette.surfaceColor)
-                            )
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .stroke(palette.borderColor.opacity(0.7), lineWidth: 0.8)
-                            }
-                    } else {
-                        ShortcutKeycapRow(palette: palette, shortcut: kind.value(in: settings))
-                    }
-
-                    Button(kind.value(in: settings).isEmpty ? Loc.t("settings.shortcutRecord") : Loc.t("settings.shortcutChange")) {
                         startShortcutRecording(kind)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .frame(minWidth: 54)
-                    .disabled(shortcutBusy || recordingShortcut != nil)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 11))
+                            .foregroundColor(isRecording ? palette.accentColor : palette.secondaryColor)
+
+                        if isRecording {
+                            Text(shortcutDraft.isEmpty ? Loc.t("settings.shortcutRecording") : ShortcutDisplayFormatter.string(for: shortcutDraft))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(palette.accentColor)
+                        } else if currentValue.isEmpty {
+                            Text(Loc.t("settings.shortcutNone"))
+                                .font(.system(size: 11))
+                                .foregroundColor(palette.tertiaryColor)
+                        } else {
+                            ShortcutKeycapRow(palette: palette, shortcut: currentValue)
+                        }
+
+                        Image(systemName: isRecording ? "checkmark" : "pencil")
+                            .font(.system(size: 10))
+                            .foregroundColor(isRecording ? palette.accentColor : palette.tertiaryColor)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(palette.surfaceColor)
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(isRecording ? palette.accentColor : palette.borderColor, lineWidth: 1)
+                    )
                 }
+                .buttonStyle(.plain)
+                .disabled(shortcutBusy)
+
+                // Reset to default button
+                Button {
+                    applyShortcut(kind, value: defaultValue)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 11))
+                        .foregroundColor(currentValue == defaultValue ? palette.tertiaryColor.opacity(0.4) : palette.secondaryColor)
+                        .frame(width: 24, height: 24)
+                        .background(palette.surfaceColor)
+                        .cornerRadius(5)
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(palette.borderColor, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(currentValue == defaultValue || shortcutBusy || isRecording)
+                .help(Loc.t("settings.resetDefault"))
+
+                // Clear shortcut button
+                Button {
+                    applyShortcut(kind, value: "")
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11))
+                        .foregroundColor(currentValue.isEmpty ? palette.tertiaryColor.opacity(0.4) : palette.secondaryColor)
+                        .frame(width: 24, height: 24)
+                        .background(palette.surfaceColor)
+                        .cornerRadius(5)
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(palette.borderColor, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(currentValue.isEmpty || shortcutBusy || isRecording)
+                .help(Loc.t("settings.clearShortcut"))
             }
         }
     }
@@ -229,6 +244,7 @@ extension SettingsView {
             if let shortcut = Self.capturedShortcut(from: event) {
                 shortcutDraft = shortcut
                 shortcutError = ""
+                confirmShortcut(kind)
             }
             return nil
         }
@@ -259,7 +275,10 @@ extension SettingsView {
 
     func confirmShortcut(_ kind: ShortcutKind) {
         guard recordingShortcut == kind, !shortcutDraft.isEmpty else { return }
-        let next = shortcutDraft
+        applyShortcut(kind, value: shortcutDraft)
+    }
+
+    func applyShortcut(_ kind: ShortcutKind, value: String) {
         let previous = kind.value(in: settings)
         let controller = GlobalShortcutController.shared
         shortcutBusy = true
@@ -268,7 +287,7 @@ extension SettingsView {
         Task { @MainActor in
             let error = await GlobalShortcutController.apply(
                 previous: previous,
-                next: next,
+                next: value,
                 register: { candidate in
                     controller.register(
                         syncShortcut: kind == .sync ? candidate : settings.sync_shortcut,
@@ -289,11 +308,11 @@ extension SettingsView {
             }
             finishShortcutRecording()
             if kind == .sync {
-                settings.sync_shortcut = next
-                persistedSettings.sync_shortcut = next
+                settings.sync_shortcut = value
+                persistedSettings.sync_shortcut = value
             } else {
-                settings.history_shortcut = next
-                persistedSettings.history_shortcut = next
+                settings.history_shortcut = value
+                persistedSettings.history_shortcut = value
             }
         }
     }
@@ -309,5 +328,4 @@ extension SettingsView {
         guard let name = ShortcutParser.keyCodeName(for: keyCode) else { return nil }
         return (modifiers + [name]).joined(separator: "+")
     }
-
 }
