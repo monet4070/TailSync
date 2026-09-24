@@ -62,12 +62,40 @@ enum TailSyncAppVersion {
     }
 }
 
+private struct SettingsRedirectView: View {
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .task { @MainActor in
+                for window in NSApp.windows where window !== AppDelegate.settingsWindow {
+                    let title = window.title
+                    let identifier = window.identifier?.rawValue ?? ""
+                    if identifier.contains("Settings") || title == "Settings" || title == "设置" || window.frame.size.width <= 100 {
+                        window.orderOut(nil)
+                        window.close()
+                    }
+                }
+                AppDelegate.showSettings()
+            }
+    }
+}
+
 @main
 struct TailSyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     var body: some Scene {
-        Settings { EmptyView() }
+        Settings {
+            SettingsRedirectView()
+        }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button(Loc.shared.lang.hasPrefix("zh") ? "设置…" : "Settings…") {
+                    AppDelegate.showSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 }
 
@@ -184,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         setupStatusItem()
+        configureApplicationMenu()
         launchDaemon()
         requestNotificationPermission()
         startNotificationPoller()
@@ -516,7 +545,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openHistory() { Self.showHistory() }
-    @objc private func openSettings() { Self.showSettings() }
+    @objc func openSettings() { Self.showSettings() }
+
+    func configureApplicationMenu() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let menu = NSApp.mainMenu else { return }
+            for item in menu.items {
+                if let submenu = item.submenu {
+                    for subitem in submenu.items {
+                        if subitem.keyEquivalent == "," {
+                            subitem.target = self
+                            subitem.action = #selector(self.openSettings)
+                        }
+                    }
+                }
+            }
+        }
+    }
     @objc private func checkForUpdatesAction() { scheduleUpdateCheck(showWhenCurrent: true) }
     @objc private func toggleSyncAction() {
         Task { @MainActor [weak self] in
@@ -985,6 +1030,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             NSApp.activate(ignoringOtherApps: true)
         }
+    }
+
+    static var settingsWindow: NSWindow? {
+        settingsWC?.window
     }
 
     static func showSettings() {
