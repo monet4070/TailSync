@@ -9,6 +9,12 @@ use crate::{crypto, db};
 pub const NOISE_PROTOCOL: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 const KEY_SIZE: usize = 32;
 
+// The create-only hard-link protocol protects identity contents across
+// processes. Within one process, keep its load/create/restrict sequence
+// together so concurrent startup callers cannot race its Windows ACL work.
+#[cfg(windows)]
+static IDENTITY_INITIALIZATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Error)]
 pub enum IdentityError {
     #[error("device identity does not exist")]
@@ -73,6 +79,10 @@ impl DeviceIdentity {
     }
 
     fn load_or_create_at(path: &Path) -> Result<Self, IdentityError> {
+        #[cfg(windows)]
+        let _guard = IDENTITY_INITIALIZATION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match Self::load(path) {
             Ok(identity) => return Ok(identity),
             Err(IdentityError::NotFound) => {}

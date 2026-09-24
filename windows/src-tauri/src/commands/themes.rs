@@ -32,31 +32,31 @@ pub async fn validate_theme(
 pub async fn install_theme(
     path: String,
     expected_digest: String,
-) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, CommandError> {
     let package = v2_package(&path).map_err(|error| *error)?;
-    tailsync_core::themes_v2::install_theme(&package, &expected_digest)
+    tailsync_core::themes_v2::install_theme(&package, &expected_digest).map_err(Into::into)
 }
 #[command]
 pub async fn update_theme(
     path: String,
     expected_digest: String,
     options: tailsync_core::themes_v2::UpdateThemeOptions,
-) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, CommandError> {
     let package = v2_package(&path).map_err(|error| *error)?;
-    tailsync_core::themes_v2::update_theme(&package, &expected_digest, options)
+    tailsync_core::themes_v2::update_theme(&package, &expected_digest, options).map_err(Into::into)
 }
 #[command]
 pub async fn rollback_theme(
     theme_id: String,
-) -> Result<tailsync_core::themes_v2::ThemeDescriptor, tailsync_core::themes_v2::ThemeError> {
-    tailsync_core::themes_v2::rollback_theme(&theme_id)
+) -> Result<tailsync_core::themes_v2::ThemeDescriptor, CommandError> {
+    tailsync_core::themes_v2::rollback_theme(&theme_id).map_err(Into::into)
 }
 #[command]
 pub async fn delete_theme_v2(
     app: AppHandle,
     theme_id: String,
     storage_handle: Option<String>,
-) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+) -> Result<(), CommandError> {
     if let Some(handle) = storage_handle {
         tailsync_core::themes_v2::delete_theme_by_handle_for_theme(&handle, &theme_id)?;
     } else {
@@ -80,7 +80,7 @@ pub async fn get_local_theme_settings() -> tailsync_core::themes_v2::LocalThemeS
 pub async fn set_local_theme_settings(
     app: AppHandle,
     settings: tailsync_core::themes_v2::LocalThemeSettings,
-) -> Result<(), tailsync_core::themes_v2::ThemeError> {
+) -> Result<(), CommandError> {
     tailsync_core::themes_v2::set_local_theme_settings(settings.clone())?;
     // Theme selection is deliberately local, but every open webview must see
     // it immediately.  Do not use the synchronised AppSettings channel here.
@@ -93,8 +93,9 @@ pub async fn resolve_theme(
     mode: String,
     platform: String,
     high_contrast: bool,
-) -> Result<tailsync_core::themes_v2::ResolvedTheme, tailsync_core::themes_v2::ThemeError> {
+) -> Result<tailsync_core::themes_v2::ResolvedTheme, CommandError> {
     tailsync_core::themes_v2::resolve_theme(&theme_id, &mode, &platform, high_contrast)
+        .map_err(Into::into)
 }
 
 /// Raw binary IPC; MIME and dimensions are supplied by the descriptor's asset
@@ -104,7 +105,7 @@ pub async fn get_theme_asset(
     theme_id: String,
     digest: String,
     asset_key: String,
-) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+) -> Result<tauri::ipc::Response, CommandError> {
     let (_mime, bytes) = tailsync_core::themes_v2::get_theme_asset(&theme_id, &digest, &asset_key)?;
     Ok(tauri::ipc::Response::new(bytes))
 }
@@ -114,7 +115,7 @@ pub async fn get_theme_asset_slot(
     theme_id: String,
     digest: String,
     slot: String,
-) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+) -> Result<tauri::ipc::Response, CommandError> {
     let (_descriptor, bytes) =
         tailsync_core::themes_v2::get_theme_asset_slot(&theme_id, &digest, &slot)?;
     Ok(tauri::ipc::Response::new(bytes))
@@ -125,7 +126,7 @@ pub async fn preview_theme_asset_slot(
     path: String,
     digest: String,
     slot: String,
-) -> Result<tauri::ipc::Response, tailsync_core::themes_v2::ThemeError> {
+) -> Result<tauri::ipc::Response, CommandError> {
     let bytes = v2_package(&path).map_err(|error| *error)?;
     let (_descriptor, asset) =
         tailsync_core::themes_v2::get_theme_asset_slot_from_package(&bytes, &digest, &slot)?;

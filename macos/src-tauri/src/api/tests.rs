@@ -2,8 +2,8 @@ use super::{
     bind_api_listener, bump_runtime_revision, clear_file_progress, clear_file_progress_scope,
     get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
     read_request_with_limits, set_file_batch_progress, thumbnail_rgba, wait_for_runtime_revision,
-    ApiToken, FileProgress, Request, RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS,
-    THUMBNAIL_MAX_SIDE,
+    ApiToken, FileProgress, ProgressRevisionAction, ProgressRevisionGate, Request,
+    RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS, THUMBNAIL_MAX_SIDE,
 };
 use crate::crypto::Settings;
 use crate::identity::DeviceIdentity;
@@ -101,6 +101,32 @@ fn progress_scope_keeps_other_concurrent_devices_visible() {
     assert_eq!(remaining.batch_id, "batch-a");
     assert_eq!(remaining.device, "peer-a");
     clear_file_progress();
+}
+
+#[test]
+fn progress_revision_gate_coalesces_updates_and_flushes_terminal_state() {
+    let mut gate = ProgressRevisionGate::default();
+    let start = std::time::Instant::now();
+    assert!(matches!(
+        gate.on_update(start, false, true),
+        ProgressRevisionAction::Emit
+    ));
+    assert!(matches!(
+        gate.on_update(start + Duration::from_millis(10), false, true),
+        ProgressRevisionAction::Schedule(_)
+    ));
+    assert!(matches!(
+        gate.on_update(start + Duration::from_millis(20), false, true),
+        ProgressRevisionAction::None
+    ));
+    assert!(matches!(
+        gate.on_timer(start + Duration::from_millis(125)),
+        ProgressRevisionAction::Emit
+    ));
+    assert!(matches!(
+        gate.on_update(start + Duration::from_millis(130), true, true),
+        ProgressRevisionAction::Emit
+    ));
 }
 
 #[tokio::test]
@@ -388,6 +414,68 @@ fn peer_snapshot_does_not_infer_a_connection_from_selected_mode() {
     assert_eq!(routes[0]["pairing_endpoint"].as_bool(), Some(true));
     assert_eq!(routes[0]["rtt_capable"].as_bool(), Some(true));
     assert_eq!(data["self"]["routes"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn peer_snapshot_exposes_protocol_upgrade_notice_for_a_trusted_peer() {
+    let identity = DeviceIdentity::generate_for_test();
+    let hostname = format!("incompatible-test-{}", rand::random::<u64>());
+    let mut settings = Settings {
+        connection_mode: "tailscale_only".into(),
+        ..Settings::default()
+    };
+    settings
+        .paired_peer_endpoints
+        .insert(hostname.clone(), "100.64.0.2".into());
+    settings.trusted_peer_keys.insert(
+        hostname.clone(),
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            DeviceIdentity::generate_for_test().public_key(),
+        ),
+    );
+    crate::network::record_protocol_compatibility_error(
+        &hostname,
+        "Incompatible TailSync protocol: peer uses v2",
+    );
+    let peer = PeerInfo {
+        hostname: hostname.clone(),
+        tailscale_ip: "100.64.0.2".into(),
+        online: true,
+        enabled: true,
+        address: "100.64.0.2".into(),
+        connection_mode: "tailscale".into(),
+        trusted: true,
+        fingerprint: String::new(),
+        candidates: vec![PeerCandidate::new(
+            ConnectionInterface::Tailscale,
+            "100.64.0.2",
+        )],
+        current_interface: None,
+        current_address: None,
+        status: Default::default(),
+    };
+    let data = peer_snapshot_data(
+        &identity,
+        &settings,
+        Ok((
+            LocalInfo {
+                hostname: "macbook".into(),
+                tailscale_ip: "100.64.0.1".into(),
+                candidates: Vec::new(),
+            },
+            vec![peer],
+        )),
+    );
+    crate::network::clear_protocol_compatibility_error(&hostname);
+    assert_eq!(
+        data["peers"][0]["protocol_error"],
+        "Incompatible TailSync protocol: peer uses v2"
+    );
+    assert_eq!(
+        data["peers"][0]["required_protocol_version"],
+        crate::protocol::VERSION
+    );
 }
 
 #[test]

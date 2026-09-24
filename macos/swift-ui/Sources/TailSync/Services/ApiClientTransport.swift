@@ -235,8 +235,14 @@ final class ApiClient: @unchecked Sendable {
     timeoutSeconds: Int = 3,
     maxResponseBytes: Int = 4 * 1024 * 1024
   ) async throws -> [String: Any] {
+    var request = json
+    // Preview failures have a separate, richer error code used by navigation.
+    // Other JSON commands opt into the fixed local error envelope.
+    if json["cmd"] as? String != "get_preview_data" {
+      request["error_schema_version"] = 1
+    }
     let line = try await requestData(
-      json,
+      request,
       timeoutSeconds: timeoutSeconds,
       maxResponseBytes: maxResponseBytes,
       framing: .jsonLine
@@ -244,7 +250,20 @@ final class ApiClient: @unchecked Sendable {
     guard let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
       throw ApiError.invalidJson
     }
-    return response
+    return Self.normalizedStableErrorResponse(response)
+  }
+
+  static func normalizedStableErrorResponse(_ response: [String: Any]) -> [String: Any] {
+    guard let error = response["error"] as? [String: Any] else { return response }
+    var normalized = response
+    let envelope = try? JSONDecoder().decode(
+      ContractStableErrorEnvelope.self,
+      from: JSONSerialization.data(withJSONObject: error)
+    )
+    // The generated decoder derives the display key from the code. Never use
+    // untrusted server message_key or detail fields as visible text.
+    normalized["error"] = Loc.t(envelope?.message_key ?? "error.internal")
+    return normalized
   }
 
   /// Send an authenticated one-shot command and retain the raw response.

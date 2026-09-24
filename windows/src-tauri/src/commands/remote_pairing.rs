@@ -1,3 +1,4 @@
+use super::CommandError;
 use crate::network;
 use crate::pairing::{RemoteInviteStatus, RemotePairingInvite};
 use crate::AppState;
@@ -37,10 +38,16 @@ pub struct RemotePairingInvitePreview {
     pub remaining_seconds: u64,
 }
 
+fn parse_invite_for_ipc(link: &str) -> Result<RemotePairingInvite, CommandError> {
+    RemotePairingInvite::parse(link).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })
+}
+
 #[command]
 pub async fn create_remote_pairing_invite(
     state: State<'_, AppState>,
-) -> Result<RemotePairingInviteResponse, String> {
+) -> Result<RemotePairingInviteResponse, CommandError> {
     let invite = network::create_remote_pairing_invite(
         state.pairing.clone(),
         state.settings.clone(),
@@ -55,8 +62,10 @@ pub async fn create_remote_pairing_invite(
 }
 
 #[command]
-pub fn inspect_remote_pairing_link(link: String) -> Result<RemotePairingInvitePreview, String> {
-    let invite = RemotePairingInvite::parse(&link).map_err(|error| error.to_string())?;
+pub fn inspect_remote_pairing_link(
+    link: String,
+) -> Result<RemotePairingInvitePreview, CommandError> {
+    let invite = parse_invite_for_ipc(&link)?;
     Ok(RemotePairingInvitePreview {
         endpoint_id: invite.endpoint_id_string(),
         expires_at: invite.expires_at(),
@@ -68,7 +77,8 @@ pub fn inspect_remote_pairing_link(link: String) -> Result<RemotePairingInvitePr
 pub async fn start_remote_pairing(
     state: State<'_, AppState>,
     link: String,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
+    parse_invite_for_ipc(&link)?;
     network::start_remote_pairing(
         state.pairing.clone(),
         state.identity.clone(),
@@ -82,14 +92,14 @@ pub async fn start_remote_pairing(
 #[command]
 pub fn get_remote_pairing_invite_status(
     state: State<'_, AppState>,
-) -> Result<RemoteInviteStatus, String> {
+) -> Result<RemoteInviteStatus, CommandError> {
     Ok(state.remote_invites.status())
 }
 
 #[command]
 pub async fn cancel_remote_pairing_invite(
     state: State<'_, AppState>,
-) -> Result<crate::pairing::PairingStatus, String> {
+) -> Result<crate::pairing::PairingStatus, CommandError> {
     state.remote_invites.cancel();
     Ok(state.pairing.cancel().await)
 }
@@ -97,7 +107,7 @@ pub async fn cancel_remote_pairing_invite(
 #[command]
 pub fn take_pending_remote_pairing_link(
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, CommandError> {
     Ok(state
         .pending_remote_pairing_link
         .lock()
@@ -169,6 +179,15 @@ mod tests {
                 "--background".to_string()
             ]),
             None
+        );
+    }
+
+    #[test]
+    fn malformed_invite_is_an_invalid_argument_at_ipc_boundary() {
+        let error = parse_invite_for_ipc("tailsync://settings").unwrap_err();
+        assert_eq!(
+            error.envelope().code,
+            tailsync_runtime::contracts::StableErrorCode::InvalidArgument
         );
     }
 }

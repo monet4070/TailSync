@@ -13,6 +13,13 @@ const refName = s => s.$ref.slice('#/$defs/'.length);
 const variants = s => s.anyOf ?? (Array.isArray(s.type) ? s.type.map(type => ({ ...s, type })) : null);
 const nonNull = s => variants(s)?.filter(v => v.type !== 'null') ?? [s];
 const nullable = s => variants(s)?.some(v => v.type === 'null') ?? s.type === 'null';
+const policiesResult = spawnSync('cargo', ['run', '--quiet', '--locked', '-p', 'tailsync-runtime', '--example', 'generate_local_contracts', '--', '--stable-error-policies'], { cwd: root, encoding: 'utf8' });
+if (policiesResult.status !== 0) throw new Error(policiesResult.stderr || 'Rust stable error policy export failed');
+const stableErrorPolicies = Object.fromEntries(JSON.parse(policiesResult.stdout).map(({ code, retryable, message_key, detail_class }) =>
+  [code, { retryable, message_key, detail_class }]));
+if (quote(Object.keys(stableErrorPolicies).sort()) !== quote([...defs.StableErrorCode.enum].sort())) {
+  throw new Error('Stable error policies do not cover every Rust code');
+}
 
 function tsType(s) {
   if (s.$ref) return refName(s);
@@ -51,8 +58,11 @@ function predicate(s, value) {
   } else if (s.type === 'null') checks.push(`${value} === null`);
   else if (s.type === 'integer' || s.type === 'number') {
     checks.push(`typeof ${value} === "number"`, `Number.${s.type === 'integer' ? 'isSafeInteger' : 'isFinite'}(${value})`);
-    if (s.minimum != null) checks.push(`${value} >= ${s.minimum}`);
-    if (s.maximum != null) checks.push(`${value} <= ${s.maximum}`);
+    if (s.minimum != null && s.maximum === s.minimum) checks.push(`${value} === ${s.minimum}`);
+    else {
+      if (s.minimum != null) checks.push(`${value} >= ${s.minimum}`);
+      if (s.maximum != null) checks.push(`${value} <= ${s.maximum}`);
+    }
   } else if (s.type) checks.push(`typeof ${value} === ${quote(s.type)}`);
   if (s.enum) checks.push(`(${s.enum.map(item => `${value} === ${quote(item)}`).join(' || ')})`);
   if (s.minLength != null) checks.push(`${value}.length >= ${s.minLength}`);
@@ -83,8 +93,38 @@ function swiftValidation(s, expression) {
   return nullable(s) ? `    if let value = ${expression} { ${guard} }\n` : `    ${guard}\n`;
 }
 function swiftDefinition(name, s) {
-  if (s.enum) return `enum Contract${name}: String, Codable, Sendable {\n${s.enum.map(v => `  case \`${v}\` = ${quote(v)}`).join('\n')}\n}\n`;
+  if (s.enum) {
+    const cases = s.enum.map(v => `  case \`${v}\` = ${quote(v)}`).join('\n');
+    if (name === 'StableErrorCode') return `enum Contract${name}: String, Codable, Sendable {\n${cases}\n  init(from decoder: Decoder) throws {\n    let value = try decoder.singleValueContainer().decode(String.self)\n    self = Self(rawValue: value) ?? .internal_error\n  }\n  func encode(to encoder: Encoder) throws {\n    var container = encoder.singleValueContainer()\n    try container.encode(rawValue)\n  }\n}\n`;
+    return `enum Contract${name}: String, Codable, Sendable {\n${cases}\n}\n`;
+  }
   if (s.type !== 'object') return `typealias Contract${name} = ${swiftType(s)}\n`;
+  if (name === 'StableErrorEnvelope') return `struct ContractStableErrorEnvelope: Codable, Sendable {
+  let schema_version: UInt32
+  let code: ContractStableErrorCode
+  let retryable: Bool
+  let message_key: String
+  let detail_class: ContractStableErrorDetailClass
+  private enum CodingKeys: String, CodingKey { case schema_version, code, retryable, message_key, detail_class }
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    let version = try c.decode(UInt32.self, forKey: .schema_version)
+    guard version == 1 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unsupported stable error schema version")) }
+    self.schema_version = version
+    let rawCode = try c.decode(String.self, forKey: .code)
+    _ = try c.decode(Bool.self, forKey: .retryable)
+    _ = try c.decode(String.self, forKey: .message_key)
+    _ = try c.decode(String.self, forKey: .detail_class)
+    self.code = ContractStableErrorCode(rawValue: rawCode) ?? .internal_error
+    switch self.code {
+${Object.entries(stableErrorPolicies).map(([code, policy]) => `    case .${code}:
+      self.retryable = ${policy.retryable}
+      self.message_key = ${quote(policy.message_key)}
+      self.detail_class = .${policy.detail_class}`).join('\n')}
+    }
+  }
+}
+`;
   const fields = Object.entries(s.properties);
   const type = (key, value) => swiftType(value) + (!s.required?.includes(key) && !nullable(value) ? '?' : '');
   let text = `struct Contract${name}: Codable, Sendable {\n`;
@@ -108,10 +148,23 @@ let ts = banner + 'const isRecord = (value: unknown): value is Record<string, un
 let js = banner + 'const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);\n';
 let swift = banner + 'import Foundation\n\n';
 for (const [name, s] of Object.entries(defs)) {
-  const body = `return ${predicate(s,'value')};`;
+  const stableErrorCode = name === 'StableErrorCode';
+  const validationSchema = name === 'StableErrorEnvelope'
+    ? { ...s, properties: { ...s.properties, detail_class: { type: 'string' } } }
+    : s;
+  const body = `return ${stableErrorCode ? 'typeof value === "string"' : predicate(validationSchema,'value')};`;
   ts += `\nexport type ${name} = ${tsType(s)};\nfunction valid${name}(value: unknown): value is ${name} { ${body} }\n`;
-  ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
-  js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
+  if (stableErrorCode) {
+    const known = quote(s.enum);
+    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return ${known}.includes(value as ${name}) ? value as ${name} : "internal_error"; }\n`;
+    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return ${known}.includes(value) ? value : "internal_error"; }\n`;
+  } else if (name === 'StableErrorEnvelope') {
+    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); const code = decodeStableErrorCode(value.code); const policy = (${quote(stableErrorPolicies)} as const)[code]; return { schema_version: value.schema_version, code, ...policy }; }\n`;
+    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); const code = decodeStableErrorCode(value.code); const policy = ${quote(stableErrorPolicies)}[code]; return { schema_version: value.schema_version, code, ...policy }; }\n`;
+  } else {
+    ts += `export function decode${name}(value: unknown): ${name} { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
+    js += `\nfunction valid${name}(value) { ${body} }\nexport function decode${name}(value) { if (!valid${name}(value)) throw new Error("Invalid ${name} response"); return value; }\n`;
+  }
   swift += swiftDefinition(name,s) + '\n';
 }
 swift = `${swift.trimEnd()}\n`;
@@ -149,8 +202,20 @@ for (const [name,value] of values) {
       const wrong = structuredClone(value); wrong[key] = Array.isArray(wrong[key]) ? {} : [];
       fixtures.push({ name: `${name}: wrong type ${key}`, contract: name, valid: false, value: wrong });
     }
-  } else if (definition.enum) fixtures.push({ name: `${name}: unknown enum`, contract: name, valid: false, value: 'unknown_future_enum' });
+  } else if (definition.enum) fixtures.push({ name: `${name}: unknown enum`, contract: name, valid: name === 'StableErrorCode', value: 'unknown_future_enum' });
 }
+fixtures.push({
+  name: 'StableErrorEnvelope: unknown code maps to internal_error',
+  contract: 'StableErrorEnvelope',
+  valid: true,
+  value: { ...values.get('StableErrorEnvelope'), code: 'unknown_future_error', detail_class: 'future_detail' },
+});
+fixtures.push({
+  name: 'StableErrorEnvelope: known code ignores untrusted policy',
+  contract: 'StableErrorEnvelope',
+  valid: true,
+  value: { ...values.get('StableErrorEnvelope'), code: 'unauthorized', retryable: true, message_key: 'untrusted.message', detail_class: 'future_detail' },
+});
 fixtures.push({ name: 'safe integer boundary', contract: 'WindowsRuntimeSnapshot', valid: true, typescriptValid: false,
   value: { ...values.get('WindowsRuntimeSnapshot'), revision: 9007199254740992 } });
 outputs['shared/schema/fixtures/local-contracts.json'] = JSON.stringify(fixtures,null,2) + '\n';

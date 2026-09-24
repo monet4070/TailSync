@@ -12,6 +12,119 @@ const MAX_TRANSPORT_RECORD: usize = u16::MAX as usize;
 const MAX_TRANSPORT_PLAINTEXT: usize = MAX_TRANSPORT_RECORD - 16;
 const TRANSPORT_WRITE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Fine-grained protocol extensions advertised inside the authenticated
+/// Noise handshake. Missing and unknown fields are deliberately treated as
+/// unsupported so older and newer peers safely fall back to wire-v4 behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CapabilitySet {
+    pub file_sliding_window: bool,
+    pub image_compressed_chunks: bool,
+}
+
+impl CapabilitySet {
+    pub const fn disabled() -> Self {
+        Self {
+            file_sliding_window: false,
+            image_compressed_chunks: false,
+        }
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        !self.file_sliding_window && !self.image_compressed_chunks
+    }
+
+    /// Negotiate each extension independently. A remote advertisement can
+    /// never enable a capability that the local connection did not offer.
+    pub const fn negotiate(local: Self, remote: Self) -> Self {
+        Self {
+            file_sliding_window: local.file_sliding_window && remote.file_sliding_window,
+            image_compressed_chunks: local.image_compressed_chunks
+                && remote.image_compressed_chunks,
+        }
+    }
+}
+
+/// Runtime kill switches for protocol extensions. Build support and runtime
+/// permission are both required before an extension may be advertised.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CapabilitySwitches {
+    pub file_sliding_window: bool,
+    pub image_compressed_chunks: bool,
+}
+
+impl CapabilitySwitches {
+    /// Build flags are the default policy; operators can disable either
+    /// extension before starting the process for an immediate rollback.
+    pub fn runtime_defaults() -> Self {
+        Self {
+            file_sliding_window: std::env::var_os("TAILSYNC_DISABLE_FILE_WINDOW").is_none(),
+            image_compressed_chunks: std::env::var_os("TAILSYNC_DISABLE_IMAGE_CHUNKS").is_none(),
+        }
+    }
+
+    pub const fn advertised(self) -> CapabilitySet {
+        CapabilitySet {
+            file_sliding_window: cfg!(feature = "protocol-file-sliding-window")
+                && self.file_sliding_window,
+            image_compressed_chunks: cfg!(feature = "protocol-image-compressed-chunks")
+                && self.image_compressed_chunks,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct HandshakeAdvertisement {
+    #[serde(flatten)]
+    identity: PeerIdentity,
+    #[serde(default, skip_serializing_if = "CapabilitySet::is_empty")]
+    capabilities: CapabilitySet,
+    #[serde(default = "legacy_wire_version")]
+    max_wire_version: u8,
+}
+
+const fn legacy_wire_version() -> u8 {
+    protocol::LEGACY_VERSION
+}
+
+const fn negotiated_wire_version(remote: u8) -> u8 {
+    if remote >= protocol::VERSION {
+        protocol::VERSION
+    } else {
+        protocol::LEGACY_VERSION
+    }
+}
+
+const fn capabilities_for_wire(capabilities: CapabilitySet, wire_version: u8) -> CapabilitySet {
+    CapabilitySet {
+        file_sliding_window: capabilities.file_sliding_window,
+        image_compressed_chunks: wire_version == protocol::VERSION
+            && capabilities.image_compressed_chunks,
+    }
+}
+
+fn encode_handshake_advertisement(
+    identity: PeerIdentity,
+    capabilities: CapabilitySet,
+) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&HandshakeAdvertisement {
+        identity,
+        capabilities,
+        max_wire_version: protocol::VERSION,
+    })
+}
+
+fn decode_handshake_advertisement(
+    bytes: &[u8],
+) -> Result<(PeerIdentity, CapabilitySet, u8), serde_json::Error> {
+    let advertisement: HandshakeAdvertisement = serde_json::from_slice(bytes)?;
+    Ok((
+        advertisement.identity,
+        advertisement.capabilities,
+        negotiated_wire_version(advertisement.max_wire_version),
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerIdentity {
     pub hostname: String,
@@ -30,7 +143,7 @@ impl Serialize for PeerIdentity {
         if let Some(endpoint_id) = &self.iroh_endpoint_id {
             state.serialize_field("iroh_endpoint_id", endpoint_id)?;
         }
-        state.serialize_field("protocol_version", &protocol::VERSION)?;
+        state.serialize_field("protocol_version", &protocol::LEGACY_VERSION)?;
         state.serialize_field("app_version", env!("CARGO_PKG_VERSION"))?;
         state.end()
     }
@@ -55,7 +168,7 @@ impl<'de> Deserialize<'de> for PeerIdentity {
 
         let identity = WireIdentity::deserialize(deserializer)?;
         if let Some(version) = identity.protocol_version {
-            if version != protocol::VERSION {
+            if version != protocol::LEGACY_VERSION {
                 let app = identity
                     .app_version
                     .as_deref()
@@ -63,7 +176,7 @@ impl<'de> Deserialize<'de> for PeerIdentity {
                     .unwrap_or_default();
                 return Err(D::Error::custom(format!(
                     "Incompatible TailSync protocol: peer{app} uses v{version}, this version requires v{}. Update TailSync on both devices.",
-                    protocol::VERSION
+                    protocol::LEGACY_VERSION
                 )));
             }
         }
@@ -91,6 +204,8 @@ pub struct SecureConnection {
     partial_expected: Option<usize>,
     peer_identity: PeerIdentity,
     session_id: String,
+    negotiated_capabilities: CapabilitySet,
+    wire_version: u8,
 }
 
 pub struct AcceptedConnection {
@@ -118,6 +233,16 @@ impl SecureConnection {
         &self.session_id
     }
 
+    /// Extensions negotiated for this exact authenticated connection. The
+    /// value is created by the handshake and is never cached across sessions.
+    pub const fn negotiated_capabilities(&self) -> CapabilitySet {
+        self.negotiated_capabilities
+    }
+
+    pub const fn wire_version(&self) -> u8 {
+        self.wire_version
+    }
+
     pub async fn read_frame(&mut self) -> Result<Frame, ProtocolError> {
         self.read_frame_with_admission(|_, _| Ok(())).await
     }
@@ -142,7 +267,8 @@ impl SecureConnection {
             if let Some(total_size) = expected_size {
                 if self.read_buffer.len() >= total_size {
                     let frame_bytes: Vec<u8> = self.read_buffer.drain(..total_size).collect();
-                    return Frame::decode(&frame_bytes).map(|(frame, _)| frame);
+                    return Frame::decode_with_version(&frame_bytes, self.wire_version)
+                        .map(|(frame, _)| frame);
                 }
             }
             self.read_transport_record().await?;
@@ -153,6 +279,9 @@ impl SecureConnection {
         &mut self,
         frame: &Frame,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.wire_version == protocol::LEGACY_VERSION && frame.command == Command::ImageChunk {
+            return Err(ProtocolError::UnsupportedVersion(self.wire_version).into());
+        }
         if frame.payload.len() > frame.command.payload_limit() {
             return Err(ProtocolError::CommandPayloadTooLarge {
                 command: frame.command,
@@ -162,7 +291,7 @@ impl SecureConnection {
             .into());
         }
 
-        let encoded = frame.encode();
+        let encoded = frame.encode_with_version(self.wire_version);
         for chunk in encoded.chunks(MAX_TRANSPORT_PLAINTEXT) {
             let mut encrypted = vec![0u8; chunk.len() + 32];
             let length = self.transport.write_message(chunk, &mut encrypted)?;
@@ -191,12 +320,15 @@ impl SecureConnection {
         if self.read_buffer[..4] != protocol::MAGIC {
             return Err(ProtocolError::InvalidMagic);
         }
-        if self.read_buffer[4] != protocol::VERSION {
+        if self.read_buffer[4] != self.wire_version {
             return Err(ProtocolError::UnsupportedVersion(self.read_buffer[4]));
         }
         let command_code = u16::from_be_bytes([self.read_buffer[6], self.read_buffer[7]]);
         let command =
             Command::from_u16(command_code).ok_or(ProtocolError::UnknownCommand(command_code))?;
+        if self.wire_version == protocol::LEGACY_VERSION && command == Command::ImageChunk {
+            return Err(ProtocolError::UnsupportedVersion(protocol::LEGACY_VERSION));
+        }
         let payload_length = u32::from_be_bytes([
             self.read_buffer[12],
             self.read_buffer[13],
@@ -265,13 +397,25 @@ impl SecureConnection {
         let encrypted = std::mem::take(&mut self.partial_record);
         self.partial_expected = None;
         self.partial_header_len = 0;
-        let mut plaintext = vec![0u8; encrypted.len()];
-        let length = self
+        // Decrypt directly into the receive buffer's newly reserved tail.
+        // The previous implementation allocated a second plaintext Vec and
+        // copied it into read_buffer, doubling the peak plaintext footprint
+        // for every encrypted record.
+        let buffer_start = self.read_buffer.len();
+        self.read_buffer
+            .resize(buffer_start.saturating_add(encrypted.len()), 0);
+        let length = match self
             .transport
-            .read_message(&encrypted, &mut plaintext)
-            .map_err(|error| ProtocolError::TransportEncryption(error.to_string()))?;
-        plaintext.truncate(length);
-        self.read_buffer.extend_from_slice(&plaintext);
+            .read_message(&encrypted, &mut self.read_buffer[buffer_start..])
+        {
+            Ok(length) => length,
+            Err(error) => {
+                self.read_buffer[buffer_start..].fill(0);
+                self.read_buffer.truncate(buffer_start);
+                return Err(ProtocolError::TransportEncryption(error.to_string()));
+            }
+        };
+        self.read_buffer.truncate(buffer_start + length);
         Ok(())
     }
 }
@@ -281,11 +425,15 @@ mod handshake;
 use handshake::{flush_with_timeout, write_all_with_timeout};
 
 pub use handshake::{
-    accept, accept_with_pairing_window, connect, connect_pairing, write_error, write_ready,
+    accept, accept_with_pairing_window, accept_with_pairing_window_and_capabilities, connect,
+    connect_pairing, connect_with_capabilities, write_error, write_image_chunk_error, write_ready,
 };
 
 #[cfg(test)]
-use handshake::{build_handshake, read_plain_frame};
+use handshake::{
+    accept_with_test_capabilities, build_handshake, connect_with_test_capabilities,
+    read_plain_frame,
+};
 
 pub fn decode_trusted_key(encoded: &str) -> Result<Vec<u8>, String> {
     identity::decode_public_key(encoded).map_err(|error| error.to_string())

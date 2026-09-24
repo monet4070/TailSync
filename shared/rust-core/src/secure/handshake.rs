@@ -8,16 +8,61 @@ use crate::identity::{DeviceIdentity, NOISE_PROTOCOL};
 use crate::protocol::{self, Command, Frame, ProtocolError};
 
 use super::{
-    AcceptedConnection, HandshakePurpose, PeerIdentity, SecureConnection, SessionIo,
-    TRANSPORT_WRITE_IDLE_TIMEOUT,
+    capabilities_for_wire, decode_handshake_advertisement, encode_handshake_advertisement,
+    AcceptedConnection, CapabilitySet, CapabilitySwitches, HandshakePurpose, PeerIdentity,
+    SecureConnection, SessionIo, TRANSPORT_WRITE_IDLE_TIMEOUT,
 };
 
 pub async fn connect<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    expected_hostname: &str,
+    expected_public_key: &[u8],
+) -> Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    connect_with_capabilities(
+        stream,
+        identity,
+        local_info,
+        expected_hostname,
+        expected_public_key,
+        CapabilitySwitches::default(),
+    )
+    .await
+}
+
+pub async fn connect_with_capabilities<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    expected_hostname: &str,
+    expected_public_key: &[u8],
+    switches: CapabilitySwitches,
+) -> Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    connect_with_advertised_capabilities(
+        stream,
+        identity,
+        local_info,
+        expected_hostname,
+        expected_public_key,
+        switches.advertised(),
+    )
+    .await
+}
+
+async fn connect_with_advertised_capabilities<S>(
     mut stream: S,
     identity: &DeviceIdentity,
     local_info: PeerIdentity,
     expected_hostname: &str,
     expected_public_key: &[u8],
+    local_capabilities: CapabilitySet,
 ) -> Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>
 where
     S: SessionIo + 'static,
@@ -40,7 +85,8 @@ where
         return Err("Handshake rejected".into());
     }
     let length = handshake.read_message(&ack.payload, &mut output)?;
-    let peer_info: PeerIdentity = serde_json::from_slice(&output[..length])?;
+    let (peer_info, peer_capabilities, wire_version) =
+        decode_handshake_advertisement(&output[..length])?;
     validate_peer_identity(&peer_info)?;
     let remote_key = handshake
         .get_remote_static()
@@ -57,7 +103,7 @@ where
     }
 
     output.fill(0);
-    let local_payload = serde_json::to_vec(&local_info)?;
+    let local_payload = encode_handshake_advertisement(local_info, local_capabilities)?;
     let length = handshake.write_message(&local_payload, &mut output)?;
     write_plain_frame(&mut stream, Command::HandshakeFinish, &output[..length]).await?;
 
@@ -73,6 +119,11 @@ where
         partial_expected: None,
         peer_identity: peer_info,
         session_id,
+        negotiated_capabilities: capabilities_for_wire(
+            CapabilitySet::negotiate(local_capabilities, peer_capabilities),
+            wire_version,
+        ),
+        wire_version,
     };
     let ready = secure.read_frame().await?;
     match ready.command {
@@ -82,6 +133,13 @@ where
                 peer = %secure.peer_identity.hostname,
                 peer_id = %crate::observability::peer_id(&remote_key),
                 purpose = "connection",
+                wire_version = secure.wire_version(),
+                local_file_window = local_capabilities.file_sliding_window,
+                local_image_chunks = local_capabilities.image_compressed_chunks,
+                peer_file_window = peer_capabilities.file_sliding_window,
+                peer_image_chunks = peer_capabilities.image_compressed_chunks,
+                negotiated_file_window = secure.negotiated_capabilities().file_sliding_window,
+                negotiated_image_chunks = secure.negotiated_capabilities().image_compressed_chunks,
                 "secure handshake ready"
             );
             Ok(secure)
@@ -98,6 +156,29 @@ where
     }
 }
 
+#[cfg(test)]
+pub(super) async fn connect_with_test_capabilities<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    expected_hostname: &str,
+    expected_public_key: &[u8],
+    local_capabilities: CapabilitySet,
+) -> Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    connect_with_advertised_capabilities(
+        stream,
+        identity,
+        local_info,
+        expected_hostname,
+        expected_public_key,
+        local_capabilities,
+    )
+    .await
+}
+
 pub async fn connect_pairing<S>(
     mut stream: S,
     identity: &DeviceIdentity,
@@ -106,6 +187,7 @@ pub async fn connect_pairing<S>(
 where
     S: SessionIo + 'static,
 {
+    let local_capabilities = CapabilitySet::disabled();
     let mut handshake = build_handshake(identity, true)?;
     let mut output = vec![0u8; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
     let length = handshake.write_message(&[], &mut output)?;
@@ -124,7 +206,7 @@ where
         return Err("Pairing handshake rejected".into());
     }
     let length = handshake.read_message(&ack.payload, &mut output)?;
-    let peer_identity: PeerIdentity = serde_json::from_slice(&output[..length])?;
+    let (peer_identity, peer_capabilities, _) = decode_handshake_advertisement(&output[..length])?;
     validate_peer_identity(&peer_identity)?;
     let remote_public_key = handshake
         .get_remote_static()
@@ -132,7 +214,7 @@ where
         .to_vec();
 
     output.fill(0);
-    let local_payload = serde_json::to_vec(&local_info)?;
+    let local_payload = encode_handshake_advertisement(local_info, local_capabilities)?;
     let length = handshake.write_message(&local_payload, &mut output)?;
     write_plain_frame(
         &mut stream,
@@ -153,6 +235,8 @@ where
         partial_expected: None,
         peer_identity: peer_identity.clone(),
         session_id,
+        negotiated_capabilities: CapabilitySet::negotiate(local_capabilities, peer_capabilities),
+        wire_version: protocol::LEGACY_VERSION,
     };
     let ready = connection.read_frame().await?;
     match ready.command {
@@ -195,7 +279,14 @@ pub async fn accept<S>(
 where
     S: SessionIo + 'static,
 {
-    accept_inner(stream, identity, local_info, None).await
+    accept_inner(
+        stream,
+        identity,
+        local_info,
+        None,
+        CapabilitySet::disabled(),
+    )
+    .await
 }
 
 pub async fn accept_with_pairing_window<S>(
@@ -207,7 +298,47 @@ pub async fn accept_with_pairing_window<S>(
 where
     S: SessionIo + 'static,
 {
-    accept_inner(stream, identity, local_info, Some(pairing_enabled)).await
+    accept_inner(
+        stream,
+        identity,
+        local_info,
+        Some(pairing_enabled),
+        CapabilitySet::disabled(),
+    )
+    .await
+}
+
+pub async fn accept_with_pairing_window_and_capabilities<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    pairing_enabled: watch::Receiver<bool>,
+    switches: CapabilitySwitches,
+) -> Result<AcceptedConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    accept_inner(
+        stream,
+        identity,
+        local_info,
+        Some(pairing_enabled),
+        switches.advertised(),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(super) async fn accept_with_test_capabilities<S>(
+    stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    local_capabilities: CapabilitySet,
+) -> Result<AcceptedConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    accept_inner(stream, identity, local_info, None, local_capabilities).await
 }
 
 async fn accept_inner<S>(
@@ -215,6 +346,7 @@ async fn accept_inner<S>(
     identity: &DeviceIdentity,
     local_info: PeerIdentity,
     mut pairing_enabled: Option<watch::Receiver<bool>>,
+    local_capabilities: CapabilitySet,
 ) -> Result<AcceptedConnection, Box<dyn std::error::Error + Send + Sync>>
 where
     S: SessionIo + 'static,
@@ -259,7 +391,7 @@ where
     }
     handshake.read_message(&request.payload, &mut output)?;
 
-    let local_payload = serde_json::to_vec(&local_info)?;
+    let local_payload = encode_handshake_advertisement(local_info, local_capabilities)?;
     let length = handshake.write_message(&local_payload, &mut output)?;
     let ack_command = match purpose {
         HandshakePurpose::Connection => Command::HandshakeAck,
@@ -294,7 +426,8 @@ where
         return Err("Expected handshake finish".into());
     }
     let length = handshake.read_message(&finish.payload, &mut output)?;
-    let peer_info: PeerIdentity = serde_json::from_slice(&output[..length])?;
+    let (peer_info, peer_capabilities, remote_wire_version) =
+        decode_handshake_advertisement(&output[..length])?;
     validate_peer_identity(&peer_info)?;
     let remote_key = handshake
         .get_remote_static()
@@ -303,11 +436,27 @@ where
     let handshake_hash = handshake.get_handshake_hash().to_vec();
     let session_id = crate::observability::session_id(&handshake_hash);
     let transport = handshake.into_transport_mode()?;
+    let wire_version = if purpose == HandshakePurpose::Pairing {
+        protocol::LEGACY_VERSION
+    } else {
+        remote_wire_version
+    };
+    let negotiated_capabilities = capabilities_for_wire(
+        CapabilitySet::negotiate(local_capabilities, peer_capabilities),
+        wire_version,
+    );
     tracing::info!(
         session_id = %session_id,
         peer = %peer_info.hostname,
         peer_id = %crate::observability::peer_id(&remote_key),
         purpose = ?purpose,
+        wire_version,
+        local_file_window = local_capabilities.file_sliding_window,
+        local_image_chunks = local_capabilities.image_compressed_chunks,
+        peer_file_window = peer_capabilities.file_sliding_window,
+        peer_image_chunks = peer_capabilities.image_compressed_chunks,
+        negotiated_file_window = negotiated_capabilities.file_sliding_window,
+        negotiated_image_chunks = negotiated_capabilities.image_compressed_chunks,
         "secure handshake accepted"
     );
     Ok(AcceptedConnection {
@@ -321,6 +470,8 @@ where
             partial_expected: None,
             peer_identity: peer_info.clone(),
             session_id,
+            negotiated_capabilities,
+            wire_version,
         },
         peer_identity: peer_info,
         remote_public_key: remote_key,
@@ -372,6 +523,17 @@ pub async fn write_error(
     secure.write_frame(&frame).await
 }
 
+/// v5 peer-error payload with a fixed protocol code. No untrusted image
+/// bytes or local paths are reflected to the sender.
+pub async fn write_image_chunk_error(
+    secure: &mut SecureConnection,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const PAYLOAD: &[u8] =
+        br#"{"schema_version":1,"code":"invalid_image_chunk","retryable":false}"#;
+    let frame = Frame::try_new(Command::PeerError, 0, 0, PAYLOAD.to_vec())?;
+    secure.write_frame(&frame).await
+}
+
 pub(super) fn build_handshake(
     identity: &DeviceIdentity,
     initiator: bool,
@@ -417,7 +579,7 @@ where
         .into());
     }
     let frame = Frame::try_new(command, 0, 0, payload.to_vec())?;
-    write_all_with_timeout(stream, &frame.encode()).await?;
+    write_all_with_timeout(stream, &frame.encode_with_version(protocol::LEGACY_VERSION)).await?;
     flush_with_timeout(stream).await?;
     Ok(())
 }
@@ -496,7 +658,7 @@ where
     if header[..4] != protocol::MAGIC {
         return Err(ProtocolError::InvalidMagic);
     }
-    if header[4] != protocol::VERSION {
+    if header[4] != protocol::LEGACY_VERSION {
         let payload_length =
             u32::from_be_bytes([header[12], header[13], header[14], header[15]]) as usize;
         if payload_length > max_payload {
@@ -531,5 +693,5 @@ where
     let mut checksum = [0u8; protocol::CHECKSUM_SIZE];
     stream.read_exact(&mut checksum).await?;
     encoded.extend_from_slice(&checksum);
-    Frame::decode(&encoded).map(|(frame, _)| frame)
+    Frame::decode_with_version(&encoded, protocol::LEGACY_VERSION).map(|(frame, _)| frame)
 }

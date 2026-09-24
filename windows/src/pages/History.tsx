@@ -51,6 +51,7 @@ import { CalendarDays, Filter } from "lucide-react";
 import {
   CATEGORY_FILTERS,
   CATEGORY_ICONS,
+  MAX_CACHED_THUMBNAIL_BYTES,
   MAX_CACHED_THUMBNAILS,
   NEW_GLOW_DURATION_MS,
   PAGE_SIZE,
@@ -91,7 +92,7 @@ export function History({ collection = "all" }: HistoryProps) {
   const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
   const [migrationDiagnostics, setMigrationDiagnostics] = useState<MigrationDiagnostics | null>(null);
   const { thumbnails, loadThumbnail, retain: retainThumbnails, clear: clearThumbnails } =
-    useThumbnailCache(MAX_CACHED_THUMBNAILS);
+    useThumbnailCache(MAX_CACHED_THUMBNAILS, MAX_CACHED_THUMBNAIL_BYTES);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [keyword, setKeyword] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<"all" | HistoryCategory>("all");

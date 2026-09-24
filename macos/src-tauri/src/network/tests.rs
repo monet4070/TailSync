@@ -448,6 +448,7 @@ async fn connection_worker_stops_when_the_pool_disconnects_it() {
         client_identity,
         settings,
         shutdown_rx,
+        Arc::new(tokio::sync::Notify::new()),
     ));
 
     tokio::task::yield_now().await;
@@ -718,6 +719,7 @@ async fn fifteen_minute_old_event_is_not_revived_after_reconnect() {
         client_identity,
         settings,
         shutdown_rx,
+        Arc::new(tokio::sync::Notify::new()),
     ));
     let delivered = timeout(Duration::from_secs(3), server)
         .await

@@ -9,6 +9,17 @@ mod theme;
 
 pub(crate) use history::preview_binary_response;
 
+fn socket_local_capabilities() -> tailsync_runtime::contracts::LocalCapabilities {
+    let mut capabilities = tailsync_runtime::contracts::LocalCapabilities::current(
+        "macos",
+        crate::protocol::VERSION,
+        true,
+        true,
+    );
+    capabilities.supports_stable_errors = true;
+    capabilities
+}
+
 /// Filesystem policy is shared with Windows through the themes Core module.
 /// This small Adapter only keeps the existing route-local call sites readable.
 #[allow(clippy::result_large_err)]
@@ -173,13 +184,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         BuiltinCommand::GetLocalCapabilities => Response {
             ok: true,
-            data: serde_json::to_value(tailsync_runtime::contracts::LocalCapabilities::current(
-                "macos",
-                crate::protocol::VERSION,
-                true,
-                true,
-            ))
-            .ok(),
+            data: serde_json::to_value(socket_local_capabilities()).ok(),
             error: None,
         },
 
@@ -690,4 +695,12 @@ pub(crate) fn history_capabilities_data() -> Value {
         "multiple_labels": true,
         "date_range_filter": true,
     })
+}
+
+#[cfg(test)]
+mod stable_capability_tests {
+    #[test]
+    fn macos_socket_advertises_stable_errors() {
+        assert!(super::socket_local_capabilities().supports_stable_errors);
+    }
 }

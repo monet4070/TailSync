@@ -159,7 +159,7 @@ struct ContractLocalCapabilities: Codable, Sendable {
     self.`supports_runtime_snapshot` = try c.decode(Bool.self, forKey: .`supports_runtime_snapshot`)
     self.`supports_stable_errors` = try c.decode(Bool.self, forKey: .`supports_stable_errors`)
     self.`wire_version` = try c.decode(UInt32.self, forKey: .`wire_version`)
-    guard self.`wire_version` >= 4, self.`wire_version` <= 4 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Local contract constraint failed")) }
+    guard self.`wire_version` >= 4, self.`wire_version` <= 5 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Local contract constraint failed")) }
   }
 }
 
@@ -417,6 +417,84 @@ struct ContractRuntimeNotification: Codable, Sendable {
     self.`id` = try c.decode(UInt64.self, forKey: .`id`)
     self.`level` = try c.decode(String.self, forKey: .`level`)
     self.`message` = try c.decode(String.self, forKey: .`message`)
+  }
+}
+
+enum ContractStableErrorCode: String, Codable, Sendable {
+  case `invalid_argument` = "invalid_argument"
+  case `not_found` = "not_found"
+  case `temporarily_busy` = "temporarily_busy"
+  case `storage_unavailable` = "storage_unavailable"
+  case `unauthorized` = "unauthorized"
+  case `protocol_incompatible` = "protocol_incompatible"
+  case `internal_error` = "internal_error"
+  init(from decoder: Decoder) throws {
+    let value = try decoder.singleValueContainer().decode(String.self)
+    self = Self(rawValue: value) ?? .internal_error
+  }
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+}
+
+enum ContractStableErrorDetailClass: String, Codable, Sendable {
+  case `request` = "request"
+  case `resource` = "resource"
+  case `contention` = "contention"
+  case `storage` = "storage"
+  case `authorization` = "authorization"
+  case `protocol` = "protocol"
+  case `internal` = "internal"
+}
+
+struct ContractStableErrorEnvelope: Codable, Sendable {
+  let schema_version: UInt32
+  let code: ContractStableErrorCode
+  let retryable: Bool
+  let message_key: String
+  let detail_class: ContractStableErrorDetailClass
+  private enum CodingKeys: String, CodingKey { case schema_version, code, retryable, message_key, detail_class }
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    let version = try c.decode(UInt32.self, forKey: .schema_version)
+    guard version == 1 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unsupported stable error schema version")) }
+    self.schema_version = version
+    let rawCode = try c.decode(String.self, forKey: .code)
+    _ = try c.decode(Bool.self, forKey: .retryable)
+    _ = try c.decode(String.self, forKey: .message_key)
+    _ = try c.decode(String.self, forKey: .detail_class)
+    self.code = ContractStableErrorCode(rawValue: rawCode) ?? .internal_error
+    switch self.code {
+    case .invalid_argument:
+      self.retryable = false
+      self.message_key = "error.invalid_argument"
+      self.detail_class = .request
+    case .not_found:
+      self.retryable = false
+      self.message_key = "error.not_found"
+      self.detail_class = .resource
+    case .temporarily_busy:
+      self.retryable = true
+      self.message_key = "error.temporarily_busy"
+      self.detail_class = .contention
+    case .storage_unavailable:
+      self.retryable = true
+      self.message_key = "error.storage_unavailable"
+      self.detail_class = .storage
+    case .unauthorized:
+      self.retryable = false
+      self.message_key = "error.unauthorized"
+      self.detail_class = .authorization
+    case .protocol_incompatible:
+      self.retryable = false
+      self.message_key = "error.protocol_incompatible"
+      self.detail_class = .protocol
+    case .internal_error:
+      self.retryable = false
+      self.message_key = "error.internal"
+      self.detail_class = .internal
+    }
   }
 }
 

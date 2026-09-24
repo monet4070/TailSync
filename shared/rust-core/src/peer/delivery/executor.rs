@@ -29,9 +29,17 @@ pub(crate) fn validate_file_ack(
     pending: &PendingFrame,
     transfer_id: TransferId,
 ) -> Result<DeliveryReceipt, DeliveryError> {
+    validate_file_ack_sequence(ack, pending.sequence, transfer_id)
+}
+
+fn validate_file_ack_sequence(
+    ack: &Frame,
+    sequence: u32,
+    transfer_id: TransferId,
+) -> Result<DeliveryReceipt, DeliveryError> {
     let offset =
         FileOffset::decode(&ack.payload).map_err(|e| DeliveryError::protocol(e.to_string()))?;
-    if ack.sequence != pending.sequence || offset.transfer_id != transfer_id {
+    if ack.sequence != sequence || offset.transfer_id != transfer_id {
         return Err(DeliveryError::protocol(
             "received a file acknowledgement for another transfer",
         ));
@@ -75,6 +83,32 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                     "queued event ID does not match its acknowledgement",
                 ));
             }
+            if pending.queued.command == Command::ImagePayload
+                && stream.negotiated_capabilities().image_compressed_chunks
+            {
+                let compressed =
+                    tokio::task::spawn_blocking(move || crate::image_chunks::compress(&envelope))
+                        .await
+                        .map_err(|error| DeliveryError::protocol(error.to_string()))?
+                        .map_err(|error| DeliveryError::protocol(error.to_string()))?;
+                if let Some(chunks) = compressed {
+                    tracing::info!(
+                        session_id = ?stream.session_id(),
+                        path = "compressed_chunks",
+                        chunks = chunks.len(),
+                        "image delivery path selected"
+                    );
+                    return deliver_compressed_image(stream, pending, chunks, message_id, config)
+                        .await;
+                }
+            }
+            if pending.queued.command == Command::ImagePayload {
+                tracing::info!(
+                    session_id = ?stream.session_id(),
+                    path = "raw_image",
+                    "image delivery path selected"
+                );
+            }
             let frame = Frame::try_new(
                 pending.queued.command,
                 0,
@@ -86,6 +120,9 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
             Ok(DeliveryReceipt::default())
         }
         AckExpectation::File(transfer_id) => {
+            if let Some(chunks) = &pending.queued.file_window {
+                return deliver_file_window(stream, pending, chunks, transfer_id, config).await;
+            }
             let frame = Frame::try_new(
                 pending.queued.command,
                 0,
@@ -106,6 +143,173 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
             deliver_batch_frame(stream, pending, &frame, batch_id, config).await
         }
     }
+}
+
+async fn deliver_compressed_image<T: DeliveryConnection>(
+    stream: &mut T,
+    pending: &PendingFrame,
+    chunks: Vec<Vec<u8>>,
+    message_id: MessageId,
+    config: &DeliveryConfig,
+) -> Result<DeliveryReceipt, DeliveryError> {
+    for (index, payload) in chunks.into_iter().enumerate() {
+        let sequence = pending.sequence.wrapping_add(index as u32);
+        let frame = Frame::try_new(Command::ImageChunk, 0, sequence, payload)
+            .map_err(|error| DeliveryError::protocol(error.to_string()))?;
+        stream
+            .write_frame(&frame)
+            .await
+            .map_err(|error| DeliveryError::transport(error.to_string()))?;
+        match timeout(
+            config.event_ack_timeout.max(Duration::from_secs(10)),
+            stream.read_frame(),
+        )
+        .await
+        {
+            Ok(Ok(ack)) if ack.command == Command::EventAck => {
+                let received_id = MessageId::from_ack_payload(&ack.payload)
+                    .map_err(|error| DeliveryError::protocol(error.to_string()))?;
+                if ack.sequence != sequence || received_id != message_id {
+                    return Err(DeliveryError::protocol("image chunk ACK mismatch"));
+                }
+            }
+            Ok(Ok(error)) if error.command == Command::PeerError => {
+                return Err(DeliveryError::rejected(format!(
+                    "image: {}",
+                    String::from_utf8_lossy(&error.payload)
+                )));
+            }
+            Ok(Ok(other)) => {
+                return Err(DeliveryError::protocol(format!(
+                    "expected image chunk ACK, received {:?}",
+                    other.command
+                )));
+            }
+            Ok(Err(error)) => return Err(DeliveryError::transport(error.to_string())),
+            Err(_) => {
+                // Reconnect before replay so no delayed ACK from the old
+                // connection can be mistaken for an ACK of the new attempt.
+                return Err(DeliveryError::Timeout(
+                    "image chunk acknowledgement timed out".into(),
+                ));
+            }
+        }
+    }
+    Ok(DeliveryReceipt::default())
+}
+
+async fn deliver_file_window<T: DeliveryConnection>(
+    stream: &mut T,
+    pending: &PendingFrame,
+    chunks: &[Vec<u8>],
+    transfer_id: TransferId,
+    config: &DeliveryConfig,
+) -> Result<DeliveryReceipt, DeliveryError> {
+    let mut frames = Vec::with_capacity(chunks.len());
+    let mut window_end = 0_u64;
+    for (index, payload) in chunks.iter().enumerate() {
+        let chunk = crate::protocol::FileChunkPayload::decode(payload)
+            .map_err(|error| DeliveryError::protocol(error.to_string()))?;
+        window_end = window_end.max(chunk.offset + chunk.data.len() as u64);
+        frames.push(
+            Frame::try_new(
+                Command::FileChunk,
+                0,
+                pending.sequence.wrapping_add(index as u32),
+                payload.clone(),
+            )
+            .map_err(|error| DeliveryError::protocol(error.to_string()))?,
+        );
+    }
+
+    // A legacy or locally disabled peer gets the same ordered chunks with
+    // stop-and-wait ACKs. The queue remains valid across a reconnect.
+    if !stream.negotiated_capabilities().file_sliding_window {
+        tracing::info!(
+            session_id = ?stream.session_id(),
+            path = "stop_and_wait",
+            chunks = frames.len(),
+            "file delivery path selected"
+        );
+        let mut receipt = DeliveryReceipt::default();
+        for frame in &frames {
+            receipt = deliver_file_frame(stream, pending, frame, transfer_id, config).await?;
+            if receipt.resume_required {
+                return Ok(receipt);
+            }
+        }
+        return Ok(receipt);
+    }
+
+    tracing::info!(
+        session_id = ?stream.session_id(),
+        path = "sliding_window",
+        chunks = frames.len(),
+        window_end,
+        "file delivery path selected"
+    );
+    for frame in &frames {
+        stream
+            .write_frame(frame)
+            .await
+            .map_err(|error| DeliveryError::transport(error.to_string()))?;
+    }
+    let mut confirmed = 0_u64;
+    let mut resume_required = false;
+    for frame in &frames {
+        match timeout(config.file_ack_timeout, stream.read_frame()).await {
+            Ok(Ok(ack)) if matches!(ack.command, Command::FileAck | Command::FileResume) => {
+                if ack.sequence != frame.sequence {
+                    return Err(DeliveryError::protocol("file window ACK sequence mismatch"));
+                }
+                let offset = crate::protocol::FileOffset::decode(&ack.payload)
+                    .map_err(|error| DeliveryError::protocol(error.to_string()))?;
+                if offset.transfer_id != transfer_id || offset.next_offset > window_end {
+                    return Err(DeliveryError::protocol("invalid file window ACK offset"));
+                }
+                confirmed = confirmed.max(offset.next_offset);
+                resume_required |= ack.command == Command::FileResume;
+            }
+            Ok(Ok(error)) if error.command == Command::PeerError => {
+                return Err(DeliveryError::rejected(format!(
+                    "file: {}",
+                    String::from_utf8_lossy(&error.payload)
+                )));
+            }
+            Ok(Ok(other)) => {
+                return Err(DeliveryError::protocol(format!(
+                    "expected file window ACK, received {:?}",
+                    other.command
+                )));
+            }
+            Ok(Err(error)) => return Err(DeliveryError::transport(error.to_string())),
+            Err(_) => {
+                // A TCP record can have reached durable storage even when
+                // its ACK was lost. Report the last cumulative offset and
+                // resume only the missing suffix on a fresh connection.
+                if confirmed > 0 {
+                    return Ok(DeliveryReceipt {
+                        next_offset: Some(confirmed),
+                        resume_required: true,
+                    });
+                }
+                return Err(DeliveryError::Timeout(
+                    "file window acknowledgement timed out".into(),
+                ));
+            }
+        }
+    }
+    tracing::info!(
+        session_id = ?stream.session_id(),
+        path = "sliding_window",
+        confirmed_offset = confirmed,
+        resume_required = resume_required || confirmed < window_end,
+        "file delivery window acknowledged"
+    );
+    Ok(DeliveryReceipt {
+        next_offset: Some(confirmed),
+        resume_required: resume_required || confirmed < window_end,
+    })
 }
 
 async fn deliver_event_frame<T: DeliveryConnection>(
@@ -183,7 +387,11 @@ async fn deliver_file_frame<T: DeliveryConnection>(
             .map_err(|error| DeliveryError::transport(error.to_string()))?;
         match timeout(config.file_ack_timeout, stream.read_frame()).await {
             Ok(Ok(ack)) if matches!(ack.command, Command::FileAck | Command::FileResume) => {
-                return validate_file_ack(&ack, pending, transfer_id);
+                return if frame.sequence == pending.sequence {
+                    validate_file_ack(&ack, pending, transfer_id)
+                } else {
+                    validate_file_ack_sequence(&ack, frame.sequence, transfer_id)
+                };
             }
             Ok(Ok(frame)) => {
                 if frame.command == Command::PeerError {

@@ -36,4 +36,35 @@ describe("local IPC capabilities", () => {
     const { supports_stable_errors: _ignored, ...missing } = valid;
     expect(() => decodeLocalCapabilities(missing)).toThrow();
   });
+
+  it("maps an unknown stable error code to internal_error", () => {
+    const decoded = contracts.decodeStableErrorEnvelope({
+      schema_version: 1,
+      code: "future_error",
+      retryable: true,
+      message_key: "future.error",
+      detail_class: "future_detail",
+    });
+    expect(decoded.code).toBe("internal_error");
+    expect(decoded.retryable).toBe(false);
+    expect(decoded.message_key).toBe("error.internal");
+    expect(decoded.detail_class).toBe("internal");
+  });
+
+  it("uses fixed policy for known stable error codes", () => {
+    expect(contracts.decodeStableErrorEnvelope({
+      schema_version: 1,
+      code: "unauthorized",
+      retryable: true,
+      message_key: "untrusted.message",
+      detail_class: "future_detail",
+      private_path: "C:\\private\\history.db",
+    })).toEqual({
+      schema_version: 1,
+      code: "unauthorized",
+      retryable: false,
+      message_key: "error.unauthorized",
+      detail_class: "authorization",
+    });
+  });
 });

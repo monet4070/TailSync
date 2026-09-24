@@ -2,6 +2,7 @@ use super::*;
 
 const OUTGOING_RECOVERY_PENDING_DELAY: Duration = Duration::from_secs(2);
 const OUTGOING_RECOVERY_IDLE_DELAY: Duration = Duration::from_secs(30);
+const EXPIRED_TRANSFER_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30 * 60);
 static OUTGOING_RECOVERY_NOTIFY: std::sync::LazyLock<tokio::sync::Notify> =
     std::sync::LazyLock::new(tokio::sync::Notify::new);
 
@@ -83,6 +84,47 @@ pub(super) async fn run_outgoing_recovery_loop<F, Fut>(
             }
         }
     }
+}
+
+/// Run bounded, serialized transfer maintenance until application shutdown.
+/// The callback is injected so the scheduling and shutdown semantics can be
+/// tested without touching a real TailSync data directory.
+pub(super) async fn run_periodic_maintenance<F, Fut>(
+    mut shutdown: watch::Receiver<bool>,
+    interval: Duration,
+    mut maintenance: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => maintenance().await,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Periodically remove expired incoming/outgoing transfer state. The file
+/// walk is blocking I/O and therefore runs outside the async executor.
+pub(super) async fn run_expired_transfer_maintenance(shutdown: watch::Receiver<bool>) {
+    run_periodic_maintenance(
+        shutdown,
+        EXPIRED_TRANSFER_MAINTENANCE_INTERVAL,
+        || async {
+            if let Err(error) = tokio::task::spawn_blocking(sync::cleanup_expired_transfers).await {
+                warn!("Expired-transfer maintenance task failed: {error}");
+            }
+        },
+    )
+    .await;
 }
 
 pub(super) async fn send_file_batch_to_peers(
@@ -316,6 +358,19 @@ async fn deliver_prepared_batch_to_peers(
     peers: Vec<network::tailscale::PeerInfo>,
     pool: Arc<Mutex<network::ConnectionPool>>,
 ) -> (Vec<(String, String)>, Vec<(String, FileBatchDeliveryError)>) {
+    if peers.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let prepared = match validate_prepared_batch_sources(prepared).await {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let failures = peers
+                .into_iter()
+                .map(|peer| (peer.hostname, error.clone()))
+                .collect();
+            return (Vec::new(), failures);
+        }
+    };
     let mut tasks = tokio::task::JoinSet::new();
     for peer in peers {
         let hostname = peer.hostname.clone();
@@ -325,7 +380,7 @@ async fn deliver_prepared_batch_to_peers(
         tasks.spawn(async move {
             let recovery_peer = peer.clone();
             let recovery_pool = peer_pool.clone();
-            let result = send_batch_to_peer(peer_batch, peer, peer_pool).await;
+            let result = send_validated_batch_to_peer(peer_batch, peer, peer_pool).await;
             if matches!(&result, Err(FileBatchDeliveryError::Retryable(_))) {
                 recovery_pool
                     .lock()
@@ -354,7 +409,68 @@ async fn deliver_prepared_batch_to_peers(
             }
         }
     }
+    if !delivered.is_empty() {
+        if let Err(error) = validate_prepared_batch_sources(prepared.prepared.clone()).await {
+            for (hostname, _) in delivered.drain(..) {
+                warn!("File batch source changed while delivering to {hostname}: {error}");
+                failures.push((hostname, error.clone()));
+            }
+        }
+    }
     (delivered, failures)
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ValidatedPreparedFileBatch {
+    prepared: Arc<sync::PreparedFileBatch>,
+}
+
+impl ValidatedPreparedFileBatch {
+    #[cfg(test)]
+    pub(super) fn file_count(&self) -> usize {
+        self.prepared.files.len()
+    }
+}
+
+impl std::ops::Deref for ValidatedPreparedFileBatch {
+    type Target = sync::PreparedFileBatch;
+
+    fn deref(&self) -> &Self::Target {
+        &self.prepared
+    }
+}
+
+pub(super) fn validate_prepared_batch_sources_with(
+    prepared: Arc<sync::PreparedFileBatch>,
+    mut validate: impl FnMut(&sync::PreparedFile) -> Result<(), FileBatchDeliveryError>,
+) -> Result<ValidatedPreparedFileBatch, FileBatchDeliveryError> {
+    for file in &prepared.files {
+        validate(file)?;
+    }
+    Ok(ValidatedPreparedFileBatch { prepared })
+}
+
+pub(super) fn validate_prepared_file_source(
+    file: &sync::PreparedFile,
+) -> Result<(), FileBatchDeliveryError> {
+    sync::revalidate_prepared_file(file).map_err(|error| {
+        let message = error.to_string();
+        if error.requires_reselection() {
+            FileBatchDeliveryError::SourceUnavailable(message)
+        } else {
+            FileBatchDeliveryError::Retryable(message)
+        }
+    })
+}
+
+async fn validate_prepared_batch_sources(
+    prepared: Arc<sync::PreparedFileBatch>,
+) -> Result<ValidatedPreparedFileBatch, FileBatchDeliveryError> {
+    tokio::task::spawn_blocking(move || {
+        validate_prepared_batch_sources_with(prepared, validate_prepared_file_source)
+    })
+    .await
+    .map_err(|error| FileBatchDeliveryError::Retryable(error.to_string()))?
 }
 
 async fn save_local_file_batch_history(
@@ -657,8 +773,8 @@ pub(super) fn summarize_file_batch_failures(
     )
 }
 
-pub(super) async fn send_batch_to_peer(
-    prepared: Arc<sync::PreparedFileBatch>,
+async fn send_validated_batch_to_peer(
+    prepared: ValidatedPreparedFileBatch,
     peer: network::tailscale::PeerInfo,
     pool: Arc<Mutex<network::ConnectionPool>>,
 ) -> Result<(), FileBatchDeliveryError> {
@@ -698,27 +814,6 @@ pub(super) async fn send_batch_to_peer(
                 )
                 .await;
                 return Err(FileBatchDeliveryError::Cancelled);
-            }
-            let validation_file = prepared_file.clone();
-            let source_validation = tokio::task::spawn_blocking(move || {
-                sync::revalidate_prepared_file(&validation_file)
-            })
-            .await
-            .map_err(|error| FileBatchDeliveryError::Retryable(error.to_string()))?;
-            if let Err(error) = source_validation {
-                let _ = network::queue_peer_frame(
-                    &pool,
-                    &peer,
-                    Command::FileBatchCancel,
-                    batch_id.0.to_vec(),
-                )
-                .await;
-                let message = error.to_string();
-                return Err(if error.requires_reselection() {
-                    FileBatchDeliveryError::SourceUnavailable(message)
-                } else {
-                    FileBatchDeliveryError::Retryable(message)
-                });
             }
             let transfer_id = prepared_file.entry.transfer_id;
             let meta = sync::FileMeta {
@@ -798,34 +893,50 @@ pub(super) async fn send_batch_to_peer(
                     .await;
                     return Err(FileBatchDeliveryError::Cancelled);
                 }
-                let remaining =
-                    usize::try_from((meta.size - confirmed).min(FILE_CHUNK_SIZE as u64))
-                        .unwrap_or(FILE_CHUNK_SIZE);
-                let count = file
-                    .read(&mut buffer[..remaining])
-                    .await
-                    .map_err(|error| error.to_string())?;
-                if count == 0 {
-                    return Err(FileBatchDeliveryError::SourceUnavailable(format!(
-                        "{} ended before its declared size",
-                        meta.name
-                    )));
+                let window_size = if cfg!(feature = "protocol-file-sliding-window") {
+                    4
+                } else {
+                    1
+                };
+                let mut payloads = Vec::with_capacity(window_size);
+                let mut next_offset = confirmed;
+                while next_offset < meta.size && payloads.len() < window_size {
+                    let remaining =
+                        usize::try_from((meta.size - next_offset).min(FILE_CHUNK_SIZE as u64))
+                            .unwrap_or(FILE_CHUNK_SIZE);
+                    let count = file
+                        .read(&mut buffer[..remaining])
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if count == 0 {
+                        return Err(FileBatchDeliveryError::SourceUnavailable(format!(
+                            "{} ended before its declared size",
+                            meta.name
+                        )));
+                    }
+                    payloads.push(
+                        FileChunkPayload {
+                            transfer_id,
+                            offset: next_offset,
+                            data: buffer[..count].to_vec(),
+                        }
+                        .encode()
+                        .map_err(|error| error.to_string())?,
+                    );
+                    next_offset += count as u64;
                 }
-                let payload = FileChunkPayload {
-                    transfer_id,
-                    offset: confirmed,
-                    data: buffer[..count].to_vec(),
-                }
-                .encode()
-                .map_err(|error| error.to_string())?;
-                let receipt = network::queue_peer_file_frame(
-                    &pool,
-                    &peer,
-                    Command::FileChunk,
-                    payload,
-                    transfer_id,
-                )
-                .await?;
+                let receipt = if payloads.len() == 1 {
+                    network::queue_peer_file_frame(
+                        &pool,
+                        &peer,
+                        Command::FileChunk,
+                        payloads.pop().expect("one payload"),
+                        transfer_id,
+                    )
+                    .await?
+                } else {
+                    network::queue_peer_file_window(&pool, &peer, payloads, transfer_id).await?
+                };
                 if receipt.resume_required {
                     resume_attempts = resume_attempts.saturating_add(1);
                     if resume_attempts > 32 {
@@ -836,7 +947,14 @@ pub(super) async fn send_batch_to_peer(
                     }
                     continue 'restart_batch;
                 }
-                confirmed = receipt.next_offset.unwrap_or(confirmed);
+                let next_confirmed = receipt.next_offset.unwrap_or(confirmed);
+                if next_confirmed <= confirmed || next_confirmed > meta.size {
+                    return Err(FileBatchDeliveryError::Retryable(format!(
+                        "{} returned an invalid file acknowledgement offset",
+                        peer.hostname
+                    )));
+                }
+                confirmed = next_confirmed;
                 file.seek(std::io::SeekFrom::Start(confirmed))
                     .await
                     .map_err(|error| error.to_string())?;
@@ -876,7 +994,7 @@ pub(super) async fn send_batch_to_peer(
 
 pub(super) async fn shadow_check(sync_engine: &Arc<Mutex<sync::SyncEngine>>, hash: &str) -> bool {
     let mut sync = sync_engine.lock().await;
-    if sync.contains_shadow_filter(hash) {
+    if sync.consume_text_echo(hash) {
         debug!("Text shadow-filter hit: {}", &hash[..8]);
         true
     } else {
@@ -889,7 +1007,7 @@ pub(super) async fn image_shadow_check(
     hash: &str,
 ) -> bool {
     let mut sync = sync_engine.lock().await;
-    if sync.contains_image_shadow_filter(hash) {
+    if sync.consume_image_echo(hash) {
         debug!("Image shadow-filter hit: {}", &hash[..8]);
         true
     } else {

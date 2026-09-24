@@ -18,7 +18,7 @@ use crate::peer::types::DeliveryReceipt;
 use crate::protocol::{
     Command, EventEnvelope, Frame, MessageId, TransferId, EVENT_ENVELOPE_HEADER_SIZE,
 };
-use crate::secure::SecureConnection;
+use crate::secure::{CapabilitySet, SecureConnection};
 
 /// Keep interactive clipboard traffic responsive without allowing a
 /// continuously readable priority queue to starve file-transfer traffic.
@@ -96,6 +96,12 @@ pub trait DeliveryConnection: Send {
     fn session_id(&self) -> Option<&str> {
         None
     }
+
+    /// Extensions negotiated for this connection. Test adapters and legacy
+    /// transports fail closed unless they explicitly override this method.
+    fn negotiated_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::disabled()
+    }
 }
 
 impl DeliveryConnection for SecureConnection {
@@ -113,6 +119,10 @@ impl DeliveryConnection for SecureConnection {
 
     fn session_id(&self) -> Option<&str> {
         Some(SecureConnection::session_id(self))
+    }
+
+    fn negotiated_capabilities(&self) -> CapabilitySet {
+        SecureConnection::negotiated_capabilities(self)
     }
 }
 
@@ -153,9 +163,20 @@ pub struct QueuedFrame {
     acknowledgement: AckExpectation,
     completion: Option<oneshot::Sender<Result<DeliveryReceipt, DeliveryError>>>,
     enqueued_at: Instant,
+    file_window: Option<Vec<Vec<u8>>>,
 }
 
 impl QueuedFrame {
+    pub fn sequence_span(&self) -> u32 {
+        if self.command == Command::ImagePayload {
+            64
+        } else {
+            self.file_window
+                .as_ref()
+                .map_or(1, |chunks| chunks.len() as u32)
+        }
+    }
+
     pub fn command(&self) -> Command {
         self.command
     }
@@ -206,6 +227,7 @@ impl QueuedFrame {
             acknowledgement,
             completion: None,
             enqueued_at: Instant::now(),
+            file_window: None,
         })
     }
 
@@ -229,6 +251,7 @@ impl QueuedFrame {
             acknowledgement: AckExpectation::Event(envelope.message_id),
             completion: None,
             enqueued_at: Instant::now(),
+            file_window: None,
         })
     }
 
@@ -259,6 +282,45 @@ impl QueuedFrame {
             acknowledgement: AckExpectation::File(transfer_id),
             completion: Some(completion),
             enqueued_at: Instant::now(),
+            file_window: None,
+        })
+    }
+
+    /// A bounded four MiB file window. The worker sends these chunks on one
+    /// authenticated connection and consumes one cumulative ACK per chunk.
+    pub fn confirmed_file_window(
+        chunks: Vec<Vec<u8>>,
+        transfer_id: TransferId,
+        completion: oneshot::Sender<Result<DeliveryReceipt, DeliveryError>>,
+    ) -> Result<Self, String> {
+        if chunks.is_empty() || chunks.len() > 4 {
+            return Err("file window must contain one to four chunks".into());
+        }
+        let mut expected_offset = None;
+        for payload in &chunks {
+            if payload.len() > Command::FileChunk.payload_limit() {
+                return Err("file window chunk exceeds payload limit".into());
+            }
+            let chunk = crate::protocol::FileChunkPayload::decode(payload)
+                .map_err(|error| error.to_string())?;
+            if chunk.transfer_id != transfer_id {
+                return Err("file window contains another transfer".into());
+            }
+            if expected_offset.is_some_and(|offset| chunk.offset != offset) {
+                return Err("file window chunks must be contiguous".into());
+            }
+            expected_offset = chunk.offset.checked_add(chunk.data.len() as u64);
+            if expected_offset.is_none() {
+                return Err("file window offset overflow".into());
+            }
+        }
+        Ok(Self {
+            command: Command::FileChunk,
+            payload: Payload::Owned(Vec::new()),
+            acknowledgement: AckExpectation::File(transfer_id),
+            completion: Some(completion),
+            enqueued_at: Instant::now(),
+            file_window: Some(chunks),
         })
     }
 
@@ -285,6 +347,7 @@ impl QueuedFrame {
             acknowledgement: AckExpectation::Batch(batch_id),
             completion: Some(completion),
             enqueued_at: Instant::now(),
+            file_window: None,
         })
     }
 }
@@ -351,6 +414,7 @@ impl SharedEvent {
             acknowledgement: AckExpectation::Event(self.message_id),
             completion: None,
             enqueued_at: Instant::now(),
+            file_window: None,
         }
     }
 }
@@ -486,7 +550,7 @@ mod race;
 mod worker;
 
 pub use executor::deliver_pending_frame;
-pub use race::{candidate_delay, race_connections};
+pub use race::{candidate_delay, measured_candidate_delay, race_connections};
 pub use worker::{run_connection_worker, ConnectionAdapter, WorkerConfig};
 
 #[cfg(test)]

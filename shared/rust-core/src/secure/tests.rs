@@ -78,6 +78,215 @@ fn encrypted_record(transport: &mut TransportState, frame: &Frame) -> Vec<u8> {
     record
 }
 
+async fn negotiate_capabilities_for_one_session(
+    server_capabilities: CapabilitySet,
+    client_capabilities: CapabilitySet,
+) -> (CapabilitySet, CapabilitySet) {
+    let server_identity = DeviceIdentity::generate_for_test();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let server_public = server_identity.public_key().to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let accepted = accept_with_test_capabilities(
+            stream,
+            &server_identity,
+            PeerIdentity {
+                hostname: "server".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+            server_capabilities,
+        )
+        .await
+        .unwrap();
+        let mut connection = accepted.connection;
+        assert_eq!(connection.wire_version(), protocol::VERSION);
+        let negotiated = connection.negotiated_capabilities();
+        write_ready(&mut connection).await.unwrap();
+        negotiated
+    });
+    let client = connect_with_test_capabilities(
+        TcpStream::connect(address).await.unwrap(),
+        &client_identity,
+        PeerIdentity {
+            hostname: "client".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        },
+        "server",
+        &server_public,
+        client_capabilities,
+    )
+    .await
+    .unwrap();
+    assert_eq!(client.wire_version(), protocol::VERSION);
+    (server.await.unwrap(), client.negotiated_capabilities())
+}
+
+#[tokio::test]
+async fn current_client_uses_v4_data_frames_with_legacy_server() {
+    let server_identity = DeviceIdentity::generate_for_test();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let server_public = server_identity.public_key().to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut handshake = build_handshake(&server_identity, false).unwrap();
+        let mut output = vec![0; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
+        let request = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
+            .await
+            .unwrap();
+        handshake
+            .read_message(&request.payload, &mut output)
+            .unwrap();
+        let bare_identity = serde_json::to_vec(&PeerIdentity {
+            hostname: "legacy".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        })
+        .unwrap();
+        let length = handshake
+            .write_message(&bare_identity, &mut output)
+            .unwrap();
+        let ack = Frame::try_new(Command::HandshakeAck, 0, 0, output[..length].to_vec()).unwrap();
+        stream
+            .write_all(&ack.encode_with_version(protocol::LEGACY_VERSION))
+            .await
+            .unwrap();
+        let finish = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
+            .await
+            .unwrap();
+        handshake
+            .read_message(&finish.payload, &mut output)
+            .unwrap();
+        let mut connection = SecureConnection {
+            stream: Box::new(stream),
+            transport: handshake.into_transport_mode().unwrap(),
+            read_buffer: Vec::new(),
+            partial_header: [0; 2],
+            partial_header_len: 0,
+            partial_record: Vec::new(),
+            partial_expected: None,
+            peer_identity: PeerIdentity {
+                hostname: "current".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+            session_id: "legacy-fixture".into(),
+            negotiated_capabilities: CapabilitySet::disabled(),
+            wire_version: protocol::LEGACY_VERSION,
+        };
+        write_ready(&mut connection).await.unwrap();
+        let frame = connection.read_frame().await.unwrap();
+        assert_eq!(frame.command, Command::TextPayload);
+        assert_eq!(frame.payload, b"v4 fallback");
+    });
+    let mut client = connect(
+        TcpStream::connect(address).await.unwrap(),
+        &client_identity,
+        PeerIdentity {
+            hostname: "current".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        },
+        "legacy",
+        &server_public,
+    )
+    .await
+    .unwrap();
+    assert_eq!(client.wire_version(), protocol::LEGACY_VERSION);
+    client
+        .write_frame(&Frame::try_new(Command::TextPayload, 0, 1, b"v4 fallback".to_vec()).unwrap())
+        .await
+        .unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn current_server_uses_v4_data_frames_with_legacy_client() {
+    let server_identity = DeviceIdentity::generate_for_test();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let accepted = accept(
+            stream,
+            &server_identity,
+            PeerIdentity {
+                hostname: "current-server".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut connection = accepted.connection;
+        assert_eq!(connection.wire_version(), protocol::LEGACY_VERSION);
+        write_ready(&mut connection).await.unwrap();
+        let frame = connection.read_frame().await.unwrap();
+        assert_eq!(frame.payload, b"legacy to current");
+    });
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    let mut handshake = build_handshake(&client_identity, true).unwrap();
+    let mut output = vec![0; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
+    let length = handshake.write_message(&[], &mut output).unwrap();
+    let request = Frame::try_new(Command::HandshakeReq, 0, 0, output[..length].to_vec()).unwrap();
+    stream
+        .write_all(&request.encode_with_version(protocol::LEGACY_VERSION))
+        .await
+        .unwrap();
+    let ack = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
+        .await
+        .unwrap();
+    handshake.read_message(&ack.payload, &mut output).unwrap();
+    let bare_identity = serde_json::to_vec(&PeerIdentity {
+        hostname: "legacy-client".into(),
+        tailscale_ip: String::new(),
+        iroh_endpoint_id: None,
+    })
+    .unwrap();
+    let length = handshake
+        .write_message(&bare_identity, &mut output)
+        .unwrap();
+    let finish = Frame::try_new(Command::HandshakeFinish, 0, 0, output[..length].to_vec()).unwrap();
+    stream
+        .write_all(&finish.encode_with_version(protocol::LEGACY_VERSION))
+        .await
+        .unwrap();
+    let mut connection = SecureConnection {
+        stream: Box::new(stream),
+        transport: handshake.into_transport_mode().unwrap(),
+        read_buffer: Vec::new(),
+        partial_header: [0; 2],
+        partial_header_len: 0,
+        partial_record: Vec::new(),
+        partial_expected: None,
+        peer_identity: PeerIdentity {
+            hostname: "current-server".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        },
+        session_id: "legacy-fixture".into(),
+        negotiated_capabilities: CapabilitySet::disabled(),
+        wire_version: protocol::LEGACY_VERSION,
+    };
+    assert_eq!(
+        connection.read_frame().await.unwrap().command,
+        Command::HandshakeReady
+    );
+    connection
+        .write_frame(
+            &Frame::try_new(Command::TextPayload, 0, 1, b"legacy to current".to_vec()).unwrap(),
+        )
+        .await
+        .unwrap();
+    server.await.unwrap();
+}
+
 async fn assert_read_resumes_after_cancellation(split_at: usize) {
     let (mut sender_transport, receiver_transport) = transport_pair();
     let expected = Frame::try_new(
@@ -112,6 +321,8 @@ async fn assert_read_resumes_after_cancellation(split_at: usize) {
             iroh_endpoint_id: None,
         },
         session_id: "test-session".into(),
+        negotiated_capabilities: CapabilitySet::disabled(),
+        wire_version: protocol::VERSION,
     };
 
     assert!(
@@ -162,6 +373,114 @@ fn peer_identity_rejects_an_explicitly_incompatible_wire_version() {
     assert!(error.contains("peer (2.0.2) uses v2"));
     assert!(error.contains("requires v4"));
     assert!(error.contains("Update TailSync on both devices"));
+}
+
+#[test]
+fn capability_advertisements_are_backward_compatible_and_fail_closed() {
+    let identity = PeerIdentity {
+        hostname: "current".into(),
+        tailscale_ip: String::new(),
+        iroh_endpoint_id: None,
+    };
+    let legacy = encode_handshake_advertisement(identity.clone(), CapabilitySet::disabled())
+        .expect("encode legacy-compatible identity");
+    assert!(!String::from_utf8_lossy(&legacy).contains("capabilities"));
+    assert_eq!(
+        decode_handshake_advertisement(&legacy)
+            .expect("decode legacy-compatible identity")
+            .1,
+        CapabilitySet::disabled()
+    );
+
+    let enabled = CapabilitySet {
+        file_sliding_window: true,
+        image_compressed_chunks: false,
+    };
+    let encoded = encode_handshake_advertisement(identity, enabled).expect("encode capabilities");
+    assert_eq!(
+        decode_handshake_advertisement(&encoded)
+            .expect("decode capabilities")
+            .1,
+        enabled
+    );
+
+    let unknown = br#"{"hostname":"future","tailscale_ip":"","protocol_version":4,"capabilities":{"future_extension":true}}"#;
+    assert_eq!(
+        decode_handshake_advertisement(unknown)
+            .expect("unknown capabilities must be ignored")
+            .1,
+        CapabilitySet::disabled()
+    );
+    assert_eq!(
+        decode_handshake_advertisement(unknown)
+            .expect("legacy peers select v4")
+            .2,
+        protocol::LEGACY_VERSION
+    );
+    assert_eq!(
+        decode_handshake_advertisement(&encoded)
+            .expect("modern peers select v5")
+            .2,
+        protocol::VERSION
+    );
+    let malformed = br#"{"hostname":"bad","tailscale_ip":"","protocol_version":4,"capabilities":{"file_sliding_window":"yes"}}"#;
+    assert!(decode_handshake_advertisement(malformed).is_err());
+}
+
+#[test]
+fn capability_negotiation_requires_build_runtime_and_peer_support() {
+    let requested = CapabilitySwitches {
+        file_sliding_window: true,
+        image_compressed_chunks: true,
+    }
+    .advertised();
+    assert_eq!(
+        requested.file_sliding_window,
+        cfg!(feature = "protocol-file-sliding-window")
+    );
+    assert_eq!(
+        requested.image_compressed_chunks,
+        cfg!(feature = "protocol-image-compressed-chunks")
+    );
+
+    let both = CapabilitySet {
+        file_sliding_window: true,
+        image_compressed_chunks: true,
+    };
+    assert_eq!(
+        CapabilitySet::negotiate(both, CapabilitySet::disabled()),
+        CapabilitySet::disabled()
+    );
+    assert_eq!(
+        CapabilitySet::negotiate(
+            both,
+            CapabilitySet {
+                file_sliding_window: true,
+                image_compressed_chunks: false,
+            }
+        ),
+        CapabilitySet {
+            file_sliding_window: true,
+            image_compressed_chunks: false,
+        }
+    );
+}
+
+#[tokio::test]
+async fn negotiated_capabilities_are_bound_to_each_authenticated_session() {
+    let both = CapabilitySet {
+        file_sliding_window: true,
+        image_compressed_chunks: true,
+    };
+    let first = negotiate_capabilities_for_one_session(both, both).await;
+    assert_eq!(first, (both, both));
+
+    let image_only = CapabilitySet {
+        file_sliding_window: false,
+        image_compressed_chunks: true,
+    };
+    let second = negotiate_capabilities_for_one_session(both, image_only).await;
+    assert_eq!(second, (image_only, image_only));
 }
 
 #[tokio::test]
@@ -257,6 +576,8 @@ async fn encrypted_frame_write_does_not_wait_forever_for_a_stalled_peer() {
             iroh_endpoint_id: None,
         },
         session_id: "test-session".into(),
+        negotiated_capabilities: CapabilitySet::disabled(),
+        wire_version: protocol::VERSION,
     };
     let frame = Frame::try_new(Command::TextPayload, 0, 1, b"stalled".to_vec()).unwrap();
 
@@ -489,7 +810,7 @@ async fn oversized_handshake_is_rejected_from_header_before_body_read() {
         let mut stream = TcpStream::connect(address).await.unwrap();
         let mut header = [0u8; protocol::HEADER_SIZE];
         header[..4].copy_from_slice(&protocol::MAGIC);
-        header[4] = protocol::VERSION;
+        header[4] = protocol::LEGACY_VERSION;
         header[6..8].copy_from_slice(&(Command::HandshakeReq as u16).to_be_bytes());
         header[12..16]
             .copy_from_slice(&((protocol::MAX_HANDSHAKE_PAYLOAD_SIZE + 1) as u32).to_be_bytes());
@@ -505,6 +826,48 @@ async fn oversized_handshake_is_rejected_from_header_before_body_read() {
         })
     ));
     sender.await.unwrap();
+}
+
+#[test]
+fn oversized_image_chunk_is_rejected_from_decrypted_header_before_body_read() {
+    let (_, receiver_transport) = transport_pair();
+    let mut header = [0u8; protocol::HEADER_SIZE];
+    header[..4].copy_from_slice(&protocol::MAGIC);
+    header[4] = protocol::VERSION;
+    header[6..8].copy_from_slice(&(Command::ImageChunk as u16).to_be_bytes());
+    header[12..16]
+        .copy_from_slice(&((protocol::MAX_IMAGE_CHUNK_PAYLOAD_SIZE + 1) as u32).to_be_bytes());
+    let (_, reader) = tokio::io::duplex(64);
+    let secure = SecureConnection {
+        stream: Box::new(reader),
+        transport: receiver_transport,
+        read_buffer: header.to_vec(),
+        partial_header: [0; 2],
+        partial_header_len: 0,
+        partial_record: Vec::new(),
+        partial_expected: None,
+        peer_identity: PeerIdentity {
+            hostname: "sender".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        },
+        session_id: "oversized-image-test".into(),
+        negotiated_capabilities: CapabilitySet {
+            file_sliding_window: false,
+            image_compressed_chunks: true,
+        },
+        wire_version: protocol::VERSION,
+    };
+    assert!(matches!(
+        secure.pending_frame_metadata(),
+        Err(ProtocolError::CommandPayloadTooLarge {
+            command: Command::ImageChunk,
+            actual,
+            limit,
+        }) if actual == protocol::MAX_IMAGE_CHUNK_PAYLOAD_SIZE + 1
+            && limit == protocol::MAX_IMAGE_CHUNK_PAYLOAD_SIZE
+    ));
+    assert_eq!(secure.read_buffer.len(), protocol::HEADER_SIZE);
 }
 
 #[tokio::test]

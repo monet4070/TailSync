@@ -7,6 +7,6 @@ import { validateFixtures } from "./check-local-contracts.mjs";
 test("local contract fixtures accept valid samples and reject invalid samples", () => {
   assert.deepEqual(validateFixtures(resolve(dirname(fileURLToPath(import.meta.url)), "..")), {
     schemaVersion: 1,
-    wireVersion: 4,
+    wireVersion: 5,
   });
 });

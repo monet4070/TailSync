@@ -4,6 +4,72 @@ import XCTest
 @testable import TailSync
 
 final class ApiClientCancellationTests: XCTestCase {
+  func testAuthenticatedSocketStableErrorsReachTheLocalizedClientBoundary() async throws {
+    let loc = Loc.shared
+    let previousLanguage = loc.lang
+    defer { loc.lang = previousLanguage }
+    for language in ["en", "zh-CN"] {
+      loc.lang = language
+      for code in ["protocol_incompatible", "storage_unavailable", "internal_error"] {
+        let server = try LocalTestSocket()
+        let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+        let responseSent = expectation(description: "\(language) \(code) response sent")
+        let connectionClosed = expectation(description: "\(language) \(code) connection closed")
+        let response = Data(
+          "{\"ok\":false,\"error\":{\"schema_version\":1,\"code\":\"\(code)\",\"retryable\":false,\"message_key\":\"private/path\",\"detail_class\":\"private\"}}\n".utf8
+        )
+        DispatchQueue.global().async {
+          server.respond(
+            with: response,
+            closeDelay: 0,
+            responseSent: responseSent,
+            connectionClosed: connectionClosed
+          )
+        }
+        let result = try await client.request(["cmd": "get_peers"])
+        let key = code == "internal_error" ? "error.internal" : "error.\(code)"
+        XCTAssertEqual(result["error"] as? String, Loc.t(key), "\(language) \(code)")
+        XCTAssertFalse((result["error"] as? String ?? "").contains("private/path"))
+        await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
+      }
+    }
+  }
+
+  func testLegacyDaemonTextPreviewErrorUsesJsonCompatibilityPath() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let capabilitySent = expectation(description: "legacy capability response sent")
+    let capabilityClosed = expectation(description: "legacy capability connection closed")
+    let previewSent = expectation(description: "legacy preview response sent")
+    let previewClosed = expectation(description: "legacy preview connection closed")
+    DispatchQueue.global().async {
+      server.respond(
+        with: Data(#"{"ok":false,"error":"unknown command: get_local_capabilities"}"#.utf8) + Data([0x0A]),
+        closeDelay: 0,
+        responseSent: capabilitySent,
+        connectionClosed: capabilityClosed
+      )
+      server.respond(
+        with: Data(#"{"ok":false,"error":"preview is too large"}"#.utf8) + Data([0x0A]),
+        closeDelay: 0,
+        responseSent: previewSent,
+        connectionClosed: previewClosed
+      )
+    }
+
+    do {
+      _ = try await client.getPreviewData(id: 7)
+      XCTFail("legacy preview error must be surfaced")
+    } catch let error as HistoryPreviewRemoteError {
+      XCTAssertNil(error.code)
+      XCTAssertEqual(
+        HistoryPreviewFailure.classify(error),
+        HistoryPreviewFailure(kind: .tooLarge, canRetry: false)
+      )
+    }
+    await fulfillment(of: [capabilitySent, capabilityClosed, previewSent, previewClosed], timeout: 4)
+  }
+
   func testSixtyFourMiBBinaryPreviewCompletesAtDeclaredLengthWithoutWaitingForEOF() async throws {
     let server = try LocalTestSocket()
     let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))

@@ -20,7 +20,7 @@ extension ApiClient {
       let encoded = try? JSONSerialization.data(withJSONObject: data),
       let capabilities = try? JSONDecoder().decode(LocalCapabilities.self, from: encoded),
       capabilities.schemaVersion == 1,
-      capabilities.wireVersion == 4,
+      (capabilities.wireVersion == 4 || capabilities.wireVersion == 5),
       !capabilities.platform.isEmpty,
       capabilities.maxPreviewBytes == UInt64(HistoryPreviewData.maxBytes),
       capabilities.platform == "macos" || capabilities.platform == "windows"

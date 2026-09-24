@@ -19,6 +19,15 @@ function thumbnail(id: number) {
   };
 }
 
+function sizedThumbnail(id: number, width: number, height: number) {
+  return {
+    id,
+    thumbnail_b64: `b64-${id}`,
+    thumbnail_width: width,
+    thumbnail_height: height,
+  };
+}
+
 describe("useThumbnailCache", () => {
   beforeEach(() => {
     mockedGetImageData.mockReset();
@@ -59,6 +68,19 @@ describe("useThumbnailCache", () => {
     expect(result.current.thumbnails.has(1)).toBe(false);
     expect(result.current.thumbnails.has(2)).toBe(true);
     expect(result.current.thumbnails.has(3)).toBe(true);
+  });
+
+  it("evicts oldest thumbnails when their decoded pixels exceed the byte budget", async () => {
+    mockedGetImageData.mockImplementation(async (id: number) => sizedThumbnail(id, 10, 10));
+    const { result } = renderHook(() => useThumbnailCache(10, 900));
+
+    await act(async () => {
+      result.current.loadThumbnail(1);
+      result.current.loadThumbnail(2);
+      result.current.loadThumbnail(3);
+    });
+    await waitFor(() => expect(result.current.thumbnails.size).toBe(2));
+    expect([...result.current.thumbnails.keys()]).toEqual([2, 3]);
   });
 
   it("clear resets the cache and allows reloading", async () => {

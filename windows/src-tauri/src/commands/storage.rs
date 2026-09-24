@@ -3,17 +3,23 @@ use tailsync_runtime::history::HistoryOperations;
 
 /// Get current file transfer progress (for progress bar)
 #[command]
-pub async fn get_file_progress() -> Result<serde_json::Value, String> {
+pub async fn get_file_progress() -> Result<serde_json::Value, CommandError> {
     let info = crate::api::get_file_progress();
     info.map_or_else(
         || Ok(serde_json::json!({"active": false})),
         |progress| serde_json::to_value(progress).map_err(|error| error.to_string()),
     )
+    .map_err(Into::into)
 }
 
 #[command]
-pub async fn cancel_file_batch(state: State<'_, AppState>, batch_id: String) -> Result<(), String> {
-    let id = crate::protocol::TransferId::from_hex(&batch_id)?;
+pub async fn cancel_file_batch(
+    state: State<'_, AppState>,
+    batch_id: String,
+) -> Result<(), CommandError> {
+    let id = crate::protocol::TransferId::from_hex(&batch_id).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })?;
     cancel_file_batch_impl(&state.sync_engine, &state.pool, &state.settings, id).await;
     Ok(())
 }
@@ -42,7 +48,9 @@ pub(crate) async fn cancel_file_batch_impl(
 }
 
 #[command]
-pub async fn get_storage_status(state: State<'_, AppState>) -> Result<db::StorageStatus, String> {
+pub async fn get_storage_status(
+    state: State<'_, AppState>,
+) -> Result<db::StorageStatus, CommandError> {
     Ok(db::storage_status_async(&state.db).await)
 }
 
@@ -51,7 +59,7 @@ pub async fn change_storage_location(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     parent: String,
-) -> Result<db::StorageMigrationResult, String> {
+) -> Result<db::StorageMigrationResult, CommandError> {
     use tauri_plugin_notification::NotificationExt;
     let parent = std::path::PathBuf::from(parent);
     let notifications_enabled = state.settings.lock().await.notifications_enabled;
@@ -82,16 +90,12 @@ pub async fn change_storage_location(
     .await
     .map_err(|failure| match failure {
         db::StorageMigrationFailure::TimedOutWaitingForTransfers => {
-            "Timed out waiting for active file transfers to finish".to_string()
+            CommandError::code(tailsync_runtime::contracts::StableErrorCode::TemporarilyBusy)
         }
-        db::StorageMigrationFailure::Migrate(error) => error,
-        db::StorageMigrationFailure::SaveFailedAfterRollback { save_error } => format!(
-            "Could not save the new storage location; TailSync returned to the old location: {save_error}"
-        ),
-        db::StorageMigrationFailure::RollbackAlsoFailed { save_error, rollback_error } => {
-            format!(
-                "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
-            )
+        db::StorageMigrationFailure::Migrate(_)
+        | db::StorageMigrationFailure::SaveFailedAfterRollback { .. }
+        | db::StorageMigrationFailure::RollbackAlsoFailed { .. } => {
+            CommandError::code(tailsync_runtime::contracts::StableErrorCode::StorageUnavailable)
         }
     })?;
     *state.pending_storage_cleanup.lock().await =
@@ -104,7 +108,7 @@ pub async fn set_history_pinned(
     state: State<'_, AppState>,
     id: i64,
     pinned: bool,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     HistoryOperations::set_favorite_async_with_hook(
         state.db.clone(),
         id,
@@ -116,7 +120,10 @@ pub async fn set_history_pinned(
 }
 
 #[command]
-pub async fn delete_old_storage(state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub async fn delete_old_storage(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), CommandError> {
     let requested = std::path::PathBuf::from(path);
     let authorized = state
         .pending_storage_cleanup
@@ -125,9 +132,9 @@ pub async fn delete_old_storage(state: State<'_, AppState>, path: String) -> Res
         .as_ref()
         .is_some_and(|expected| paths_equivalent(expected, &requested));
     if !authorized {
-        return Err(
-            "The requested storage directory was not issued by a completed migration".into(),
-        );
+        return Err(CommandError::code(
+            tailsync_runtime::contracts::StableErrorCode::Unauthorized,
+        ));
     }
     let result = tokio::task::spawn_blocking(move || {
         db::delete_old_storage(&requested).map_err(|error| error.to_string())
@@ -137,7 +144,7 @@ pub async fn delete_old_storage(state: State<'_, AppState>, path: String) -> Res
     if result.is_ok() {
         *state.pending_storage_cleanup.lock().await = None;
     }
-    result
+    result.map_err(Into::into)
 }
 
 pub(super) fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {
@@ -155,7 +162,7 @@ pub(super) fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) 
 pub async fn restore_file_batch(
     state: State<'_, AppState>,
     batch_id: String,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let paths = materialize_file_batch_paths(state.db.clone(), batch_id).await?;
     crate::clipboard_file::write_clipboard_files(&paths)?;
     crate::api::bump_clipboard_version();

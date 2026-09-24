@@ -5,7 +5,7 @@
 // names and payload shapes are the wire contract and must not change.
 
 import * as Contract from "./types/localContracts.generated";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./diagnostics/localIpcMetrics";
 import type { PreviewResponseInput } from "./utils/historyPreview";
 import type { SettingsData } from "./types/settings.generated";
 

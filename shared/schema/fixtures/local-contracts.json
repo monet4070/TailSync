@@ -5,7 +5,7 @@
     "valid": true,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -19,7 +19,7 @@
     "valid": true,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -33,7 +33,7 @@
     "contract": "LocalCapabilities",
     "valid": false,
     "value": {
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -47,7 +47,7 @@
     "valid": false,
     "value": {
       "schema_version": [],
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -88,7 +88,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
       "supports_runtime_snapshot": true,
@@ -101,7 +101,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": [],
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -115,7 +115,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "supports_binary_preview": true,
       "supports_runtime_snapshot": true,
@@ -128,7 +128,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": [],
       "supports_binary_preview": true,
@@ -142,7 +142,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_runtime_snapshot": true,
@@ -155,7 +155,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": [],
@@ -169,7 +169,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -182,7 +182,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -196,7 +196,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -209,7 +209,7 @@
     "valid": false,
     "value": {
       "schema_version": 1,
-      "wire_version": 4,
+      "wire_version": 5,
       "platform": "macos",
       "max_preview_bytes": 67108864,
       "supports_binary_preview": true,
@@ -5867,7 +5867,7 @@
     "valid": true,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -5880,7 +5880,7 @@
     "valid": true,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -5893,7 +5893,7 @@
     "contract": "PreviewErrorInfo",
     "valid": false,
     "value": {
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -5906,7 +5906,7 @@
     "valid": false,
     "value": {
       "code": [],
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -5944,7 +5944,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "size_bytes": null,
       "limit_bytes": null,
       "retryable": false
@@ -5956,7 +5956,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": [],
       "size_bytes": null,
       "limit_bytes": null,
@@ -5969,7 +5969,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "limit_bytes": null,
       "retryable": false
@@ -5981,7 +5981,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": [],
       "limit_bytes": null,
@@ -5994,7 +5994,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "retryable": false
@@ -6006,7 +6006,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": [],
@@ -6019,7 +6019,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null
@@ -6031,7 +6031,7 @@
     "valid": false,
     "value": {
       "code": "payload_unavailable",
-      "message": "synthetic cancellation",
+      "message": "Preview payload is unavailable.",
       "entry_id": 7,
       "size_bytes": null,
       "limit_bytes": null,
@@ -6047,6 +6047,170 @@
   {
     "name": "PreviewErrorCode: unknown enum",
     "contract": "PreviewErrorCode",
+    "valid": false,
+    "value": "unknown_future_enum"
+  },
+  {
+    "name": "StableErrorEnvelope: production output",
+    "contract": "StableErrorEnvelope",
+    "valid": true,
+    "value": {
+      "schema_version": 1,
+      "code": "temporarily_busy",
+      "retryable": true,
+      "message_key": "error.temporarily_busy",
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: additive field",
+    "contract": "StableErrorEnvelope",
+    "valid": true,
+    "value": {
+      "schema_version": 1,
+      "code": "temporarily_busy",
+      "retryable": true,
+      "message_key": "error.temporarily_busy",
+      "detail_class": "contention",
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: missing schema_version",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "code": "temporarily_busy",
+      "retryable": true,
+      "message_key": "error.temporarily_busy",
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: wrong type schema_version",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": [],
+      "code": "temporarily_busy",
+      "retryable": true,
+      "message_key": "error.temporarily_busy",
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: missing code",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "retryable": true,
+      "message_key": "error.temporarily_busy",
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: wrong type code",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "code": [],
+      "retryable": true,
+      "message_key": "error.temporarily_busy",
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: missing retryable",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "code": "temporarily_busy",
+      "message_key": "error.temporarily_busy",
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: wrong type retryable",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "code": "temporarily_busy",
+      "retryable": [],
+      "message_key": "error.temporarily_busy",
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: missing message_key",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "code": "temporarily_busy",
+      "retryable": true,
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: wrong type message_key",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "code": "temporarily_busy",
+      "retryable": true,
+      "message_key": [],
+      "detail_class": "contention"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: missing detail_class",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "code": "temporarily_busy",
+      "retryable": true,
+      "message_key": "error.temporarily_busy"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: wrong type detail_class",
+    "contract": "StableErrorEnvelope",
+    "valid": false,
+    "value": {
+      "schema_version": 1,
+      "code": "temporarily_busy",
+      "retryable": true,
+      "message_key": "error.temporarily_busy",
+      "detail_class": []
+    }
+  },
+  {
+    "name": "StableErrorCode: production output",
+    "contract": "StableErrorCode",
+    "valid": true,
+    "value": "temporarily_busy"
+  },
+  {
+    "name": "StableErrorCode: unknown enum",
+    "contract": "StableErrorCode",
+    "valid": true,
+    "value": "unknown_future_enum"
+  },
+  {
+    "name": "StableErrorDetailClass: production output",
+    "contract": "StableErrorDetailClass",
+    "valid": true,
+    "value": "contention"
+  },
+  {
+    "name": "StableErrorDetailClass: unknown enum",
+    "contract": "StableErrorDetailClass",
     "valid": false,
     "value": "unknown_future_enum"
   },
@@ -6436,6 +6600,30 @@
       "kind": "expired_event",
       "peer": "fixture-peer",
       "occurred_at_ms": []
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: unknown code maps to internal_error",
+    "contract": "StableErrorEnvelope",
+    "valid": true,
+    "value": {
+      "schema_version": 1,
+      "code": "unknown_future_error",
+      "retryable": true,
+      "message_key": "error.temporarily_busy",
+      "detail_class": "future_detail"
+    }
+  },
+  {
+    "name": "StableErrorEnvelope: known code ignores untrusted policy",
+    "contract": "StableErrorEnvelope",
+    "valid": true,
+    "value": {
+      "schema_version": 1,
+      "code": "unauthorized",
+      "retryable": true,
+      "message_key": "untrusted.message",
+      "detail_class": "future_detail"
     }
   },
   {

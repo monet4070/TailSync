@@ -2,27 +2,37 @@ use super::*;
 
 /// Get current clipboard version (for polling-based refresh)
 #[command]
-pub async fn get_version() -> Result<serde_json::Value, String> {
+pub async fn get_version() -> Result<serde_json::Value, CommandError> {
     Ok(serde_json::json!({
         "version": crate::api::get_clipboard_version()
     }))
 }
 
 /// Report the versioned local UI contract before an optional optimized path is
-/// selected.  The capability is transport-local and does not change wire v4.
+/// selected. The stable error capability is local to the UI transport.
 #[command]
 pub fn get_local_capabilities() -> tailsync_runtime::contracts::LocalCapabilities {
-    tailsync_runtime::contracts::LocalCapabilities::current(
+    let mut capabilities = tailsync_runtime::contracts::LocalCapabilities::current(
         "macos",
         crate::protocol::VERSION,
         false,
         false,
-    )
+    );
+    capabilities.supports_stable_errors = true;
+    capabilities
+}
+
+#[cfg(test)]
+mod stable_capability_tests {
+    #[test]
+    fn macos_tauri_advertises_stable_errors() {
+        assert!(super::get_local_capabilities().supports_stable_errors);
+    }
 }
 
 #[command]
-pub async fn get_sync_warning() -> Result<Option<tailsync_core::sync_warning::SyncWarning>, String>
-{
+pub async fn get_sync_warning(
+) -> Result<Option<tailsync_core::sync_warning::SyncWarning>, CommandError> {
     Ok(tailsync_core::sync_warning::take())
 }
 

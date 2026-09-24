@@ -62,12 +62,40 @@ enum TailSyncAppVersion {
     }
 }
 
+private struct SettingsRedirectView: View {
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .task { @MainActor in
+                for window in NSApp.windows where window !== AppDelegate.settingsWindow {
+                    let title = window.title
+                    let identifier = window.identifier?.rawValue ?? ""
+                    if identifier.contains("Settings") || title == "Settings" || title == "设置" || window.frame.size.width <= 100 {
+                        window.orderOut(nil)
+                        window.close()
+                    }
+                }
+                AppDelegate.showSettings()
+            }
+    }
+}
+
 @main
 struct TailSyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     var body: some Scene {
-        Settings { EmptyView() }
+        Settings {
+            SettingsRedirectView()
+        }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button(Loc.shared.lang.hasPrefix("zh") ? "设置…" : "Settings…") {
+                    AppDelegate.showSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 }
 
@@ -184,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         setupStatusItem()
+        configureApplicationMenu()
         launchDaemon()
         requestNotificationPermission()
         startNotificationPoller()
@@ -205,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         GlobalShortcutController.shared.onHistoryActivate = {
-            Self.showHistory()
+            Self.toggleHistory()
         }
     }
 
@@ -516,7 +545,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openHistory() { Self.showHistory() }
-    @objc private func openSettings() { Self.showSettings() }
+    @objc func openSettings() { Self.showSettings() }
+
+    func configureApplicationMenu() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let menu = NSApp.mainMenu else { return }
+            for item in menu.items {
+                if let submenu = item.submenu {
+                    for subitem in submenu.items {
+                        if subitem.keyEquivalent == "," {
+                            subitem.target = self
+                            subitem.action = #selector(self.openSettings)
+                        }
+                    }
+                }
+            }
+        }
+    }
     @objc private func checkForUpdatesAction() { scheduleUpdateCheck(showWhenCurrent: true) }
     @objc private func toggleSyncAction() {
         Task { @MainActor [weak self] in
@@ -821,10 +866,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let retryAfter = self.watchdogRetryAfter, Date() < retryAfter { return }
                 self.watchdogCheckRunning = true
                 defer { self.watchdogCheckRunning = false }
-                // A zero revision requests an immediate consolidated snapshot;
-                // this keeps the watchdog independent while avoiding four
-                // separate status/progress/storage/settings round trips.
-                guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: 0) else {
+                // Liveness must use the daemon's constant-time ping. A
+                // consolidated snapshot also reads storage metadata and may
+                // legitimately wait behind a migration or a long database
+                // query; it must never be treated as process death.
+                guard await ApiClient.shared.ping() else {
                     self.consecutiveWatchdogFailures += 1
                     if self.consecutiveWatchdogFailures >= 2 {
                         print("[TailSync] daemon API unresponsive — restarting...")
@@ -834,6 +880,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.consecutiveWatchdogFailures = 0
                         self.scheduleWatchdogRetry()
                     }
+                    return
+                }
+                self.consecutiveWatchdogFailures = 0
+                self.resetWatchdogBackoff()
+                // A zero revision requests an immediate consolidated snapshot
+                // for menu/UI refresh only. Failure here leaves the daemon
+                // alone because the independent ping above already succeeded.
+                guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: 0) else {
                     return
                 }
                 let status = snapshot.status
@@ -876,31 +930,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.activeRouteSummary = routeSummary
                     self.rebuildMenu()
                 }
-                // Clipboard polling is part of daemon health; a live API and
-                // listener alone do not prove synchronization is working.
-                if status.alive && status.tcpServerHealthy && status.clipboardMonitorHealthy {
-                    self.consecutiveWatchdogFailures = 0
-                    self.resetWatchdogBackoff()
-                } else {
-                    let reason: String
-                    if !status.alive {
-                        reason = "API unresponsive"
-                    } else if !status.tcpServerHealthy {
-                        reason = "TCP server unhealthy"
-                    } else {
-                        reason = "clipboard monitor stalled"
-                    }
-                    self.consecutiveWatchdogFailures += 1
-                    // Restart after 2 consecutive failures (~6s of downtime)
-                    if self.consecutiveWatchdogFailures >= 2 {
-                        print("[TailSync] daemon \(reason) — restarting...")
-                        await Self.stopDaemonForRestart()
-                        guard self.daemonActivityAllowed else { return }
-                        self.launchDaemon()
-                        self.consecutiveWatchdogFailures = 0
-                        self.scheduleWatchdogRetry()
-                    }
-                }
+                // Health fields remain visible in the snapshot for UI
+                // diagnostics, but are deliberately not restart signals here:
+                // only the pure process-liveness ping can trigger recovery.
             }
         }
     }
@@ -950,6 +982,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    static func toggleHistory() {
+        DispatchQueue.main.async {
+            if historyWC?.window != nil {
+                HistoryWindowController.shared.toggle()
+            } else {
+                showHistory()
+            }
+        }
+    }
+
     static func showFavorites() {
         DispatchQueue.main.async {
             Self.forceAccessory()
@@ -988,6 +1030,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             NSApp.activate(ignoringOtherApps: true)
         }
+    }
+
+    static var settingsWindow: NSWindow? {
+        settingsWC?.window
     }
 
     static func showSettings() {

@@ -8,7 +8,7 @@ use tailsync_runtime::preview as shared_preview;
 pub async fn get_image_data(
     state: State<'_, AppState>,
     id: i64,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, CommandError> {
     let data = HistoryOperations::data_async(state.db.clone(), id).await?;
     let image = crate::protocol::PackedImage::try_from(data.as_slice())
         .map_err(|error| error.to_string())?;

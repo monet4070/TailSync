@@ -509,7 +509,24 @@ pub fn resolve_candidates(
             .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
         candidates.push(PeerCandidate::new(interface, address));
     }
-    candidates.sort_by_key(|candidate| candidate.priority);
+    // A fresh health projection may include a measured RTT for more than one
+    // route. Prefer an online measured route with the lowest latency, while
+    // retaining the interface priority as the deterministic fallback for
+    // routes that have not been probed yet. This keeps discovery order stable
+    // on cold start without ignoring the route-quality data learned later.
+    candidates.sort_by(|left, right| {
+        right
+            .online
+            .cmp(&left.online)
+            .then_with(|| match (left.latency, right.latency) {
+                (Some(left), Some(right)) => left.cmp(&right),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| left.priority.cmp(&right.priority))
+            .then_with(|| left.address.cmp(&right.address))
+    });
     let resolved = candidates
         .into_iter()
         .map(|candidate| {
@@ -1038,6 +1055,49 @@ mod tests {
         assert_eq!(
             resolved[1].target,
             ResolvedTarget::Tcp("100.101.102.103:19890".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn resolve_candidates_prefers_the_fastest_measured_online_route() {
+        let mut lan = PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.5");
+        lan.latency = Some(40);
+        let mut iroh = PeerCandidate::new(
+            ConnectionInterface::Iroh,
+            "5866666666666666666666666666666666666666666666666666666666666666",
+        );
+        iroh.latency = Some(20);
+        let mut tailscale = PeerCandidate::new(ConnectionInterface::Tailscale, "100.64.1.5");
+        tailscale.latency = Some(10);
+        let peer = peer_with_candidates("mac", vec![lan, iroh, tailscale]);
+
+        let resolved = resolve_candidates(&peer, 19890).unwrap();
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|candidate| candidate.candidate.interface)
+                .collect::<Vec<_>>(),
+            vec![
+                ConnectionInterface::Tailscale,
+                ConnectionInterface::Iroh,
+                ConnectionInterface::Lan,
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_candidates_keeps_online_unmeasured_routes_before_offline_measurements() {
+        let mut offline = PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.5");
+        offline.online = false;
+        offline.status = PeerStatus::Offline;
+        offline.latency = Some(1);
+        let online = PeerCandidate::new(ConnectionInterface::Tailscale, "100.64.1.5");
+        let peer = peer_with_candidates("mac", vec![offline, online]);
+
+        let resolved = resolve_candidates(&peer, 19890).unwrap();
+        assert_eq!(
+            resolved[0].candidate.interface,
+            ConnectionInterface::Tailscale
         );
     }
 

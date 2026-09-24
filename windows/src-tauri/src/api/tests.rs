@@ -2,7 +2,8 @@ use super::{
     bind_api_listener, bump_runtime_revision, clear_file_progress, clear_file_progress_scope,
     get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
     read_request_with_limits, set_file_batch_progress, wait_for_runtime_revision, ApiToken,
-    FileProgress, Request, RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS,
+    FileProgress, ProgressRevisionAction, ProgressRevisionGate, Request, RuntimeNotificationBuffer,
+    MAX_RUNTIME_NOTIFICATIONS,
 };
 use crate::crypto::Settings;
 use crate::identity::DeviceIdentity;
@@ -38,6 +39,32 @@ fn progress_scope_keeps_other_concurrent_devices_visible() {
     assert_eq!(remaining.batch_id, "batch-a");
     assert_eq!(remaining.device, "peer-a");
     clear_file_progress();
+}
+
+#[test]
+fn progress_revision_gate_coalesces_updates_and_flushes_terminal_state() {
+    let mut gate = ProgressRevisionGate::default();
+    let start = std::time::Instant::now();
+    assert!(matches!(
+        gate.on_update(start, false, true),
+        ProgressRevisionAction::Emit
+    ));
+    assert!(matches!(
+        gate.on_update(start + Duration::from_millis(10), false, true),
+        ProgressRevisionAction::Schedule(_)
+    ));
+    assert!(matches!(
+        gate.on_update(start + Duration::from_millis(20), false, true),
+        ProgressRevisionAction::None
+    ));
+    assert!(matches!(
+        gate.on_timer(start + Duration::from_millis(125)),
+        ProgressRevisionAction::Emit
+    ));
+    assert!(matches!(
+        gate.on_update(start + Duration::from_millis(130), true, true),
+        ProgressRevisionAction::Emit
+    ));
 }
 
 #[test]

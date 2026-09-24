@@ -617,7 +617,7 @@ mod tests {
     use super::*;
     use crate::crypto::Settings;
     use crate::identity::DeviceIdentity;
-    use crate::pairing::{PairingManager, PairingPhase, PendingPairing};
+    use crate::pairing::{PairingDirection, PairingManager, PairingPhase, PendingPairing};
     use crate::secure::{self, HandshakePurpose, PeerIdentity};
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -832,6 +832,7 @@ mod tests {
                         address: client_endpoint_id,
                         interface: "iroh".into(),
                         remote_invite: None,
+                        direction: PairingDirection::Inbound,
                     })
                     .await
                     .unwrap();
@@ -859,6 +860,7 @@ mod tests {
                 address: server_endpoint_id,
                 interface: "iroh".into(),
                 remote_invite: None,
+                direction: PairingDirection::Outbound,
             })
             .await
             .unwrap();
@@ -1000,6 +1002,7 @@ mod tests {
                         address: client_endpoint_id,
                         interface: "iroh".into(),
                         remote_invite: Some(claim),
+                        direction: PairingDirection::Inbound,
                     })
                     .await
                     .unwrap();
@@ -1039,6 +1042,7 @@ mod tests {
                 address: server_endpoint_id,
                 interface: "iroh".into(),
                 remote_invite: None,
+                direction: PairingDirection::Outbound,
             })
             .await
             .unwrap();

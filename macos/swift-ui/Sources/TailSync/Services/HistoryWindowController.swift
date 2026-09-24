@@ -51,6 +51,18 @@ final class HistoryWindowController: ObservableObject {
         window.makeKey()
     }
 
+    /// Toggle the history window for the global shortcut. Only a focused,
+    /// visible window is hidden; invoking the shortcut while another app or a
+    /// different TailSync window is focused restores history instead.
+    func toggle() {
+        guard let window else { return }
+        if window.isVisible && window.isKeyWindow {
+            window.orderOut(nil)
+        } else {
+            present()
+        }
+    }
+
     private func applyPresentationPolicy() {
         guard let window else { return }
         HistoryWindowPresentationPolicy.configure(window, isPinned: isPinned)

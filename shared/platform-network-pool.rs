@@ -53,7 +53,7 @@ impl ConnectionPool {
         self.core.sender_for_candidates(
             hostname,
             candidates,
-            move |candidates, hostname, priority_rx, bulk_rx, shutdown_rx| {
+            move |candidates, hostname, priority_rx, bulk_rx, shutdown_rx, retry_wakeup| {
                 tokio::spawn(connection_task(
                     candidates,
                     hostname,
@@ -62,6 +62,7 @@ impl ConnectionPool {
                     identity,
                     settings,
                     shutdown_rx,
+                    retry_wakeup,
                 ));
             },
         )
@@ -232,6 +233,39 @@ pub async fn queue_peer_file_frame(
     .await
 }
 
+pub async fn queue_peer_file_window(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &tailscale::PeerInfo,
+    payloads: Vec<Vec<u8>>,
+    transfer_id: TransferId,
+) -> Result<DeliveryReceipt, String> {
+    let settings = { pool.lock().await.settings.clone() };
+    let trusted_key = settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .get(&peer.hostname)
+        .cloned()
+        .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
+    secure::decode_trusted_key(&trusted_key)
+        .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
+    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let preferred = resolve_candidates(peer, TCP_PORT)?
+        .first()
+        .map(|candidate| candidate.target.clone())
+        .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    let (completion_tx, completion_rx) = oneshot::channel();
+    let queued = QueuedFrame::confirmed_file_window(payloads, transfer_id, completion_tx)?;
+    enqueue_queued_frame(tx, preferred, queued).await?;
+    tailsync_core::peer::pool::await_delivery(
+        completion_rx,
+        Command::FileChunk,
+        &peer.hostname,
+        FILE_CONFIRM_TIMEOUT,
+    )
+    .await
+}
+
 pub async fn queue_peer_batch_frame(
     pool: &Arc<Mutex<ConnectionPool>>,
     peer: &tailscale::PeerInfo,
@@ -382,6 +416,7 @@ impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
 /// Background task for one pooled connection: delegates the entire lifecycle
 /// loop (reconnect, heartbeat, keep-frame, queue priority) to the shared
 /// worker in `tailsync_core`.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn connection_task(
     candidates: Vec<ResolvedCandidate>,
     hostname: String,
@@ -390,11 +425,16 @@ pub(super) async fn connection_task(
     identity: Arc<DeviceIdentity>,
     settings: Arc<Mutex<crypto::Settings>>,
     shutdown: watch::Receiver<bool>,
+    retry_wakeup: Arc<tokio::sync::Notify>,
 ) {
     let adapter = PoolAdapter { identity, settings };
+    let config = tailsync_core::peer::delivery::WorkerConfig {
+        retry_wakeup,
+        ..Default::default()
+    };
     tailsync_core::peer::delivery::run_connection_worker(
         &adapter,
-        &tailsync_core::peer::delivery::WorkerConfig::default(),
+        &config,
         candidates,
         hostname,
         priority_rx,
@@ -518,12 +558,13 @@ async fn connect_and_handshake(
     let connection = match target {
         ResolvedTarget::Tcp(address) => {
             let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(address)).await??;
-            secure::connect(
+            secure::connect_with_capabilities(
                 stream,
                 identity,
                 local_peer_identity(&mode),
                 hostname,
                 &expected_key,
+                secure::CapabilitySwitches::runtime_defaults(),
             )
             .await?
         }
@@ -533,12 +574,13 @@ async fn connect_and_handshake(
                 .connect(endpoint_id)
                 .await
                 .map_err(std::io::Error::other)?;
-            secure::connect(
+            secure::connect_with_capabilities(
                 stream,
                 identity,
                 local_peer_identity(&mode),
                 hostname,
                 &expected_key,
+                secure::CapabilitySwitches::runtime_defaults(),
             )
             .await?
         }

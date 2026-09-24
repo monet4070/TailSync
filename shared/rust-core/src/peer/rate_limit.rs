@@ -69,11 +69,23 @@ impl PeerBudget {
         self.bytes.tokens -= bytes as f64;
         Ok(())
     }
+
+    fn allow_bytes(&mut self, bytes: usize, now: Instant) -> Result<(), &'static str> {
+        self.bytes.refill(now);
+        self.last_seen = now;
+        if self.bytes.tokens < bytes as f64 {
+            return Err("peer event byte rate limit exceeded");
+        }
+        self.bytes.tokens -= bytes as f64;
+        Ok(())
+    }
 }
 
 struct PeerBudgetTable {
     peers: HashMap<String, PeerBudget>,
 }
+
+static BUDGETS: OnceLock<Mutex<PeerBudgetTable>> = OnceLock::new();
 
 /// Checks whether a peer may send another event of `bytes` bytes.
 ///
@@ -81,7 +93,15 @@ struct PeerBudgetTable {
 /// strings are part of the observable contract (callers surface them in
 /// logs); keep them stable.
 pub fn check_peer_event_budget(peer: &str, bytes: usize) -> Result<(), String> {
-    static BUDGETS: OnceLock<Mutex<PeerBudgetTable>> = OnceLock::new();
+    check_peer_budget(peer, bytes, true)
+}
+
+/// Charge only bytes for continuation chunks of one image event.
+pub fn check_peer_chunk_bytes(peer: &str, bytes: usize) -> Result<(), String> {
+    check_peer_budget(peer, bytes, false)
+}
+
+fn check_peer_budget(peer: &str, bytes: usize, event: bool) -> Result<(), String> {
     let now = Instant::now();
     let mut budgets = BUDGETS
         .get_or_init(|| {
@@ -104,12 +124,16 @@ pub fn check_peer_event_budget(peer: &str, bytes: usize) -> Result<(), String> {
             budgets.peers.remove(&oldest);
         }
     }
-    budgets
+    let budget = budgets
         .peers
         .entry(peer.to_string())
-        .or_insert_with(|| PeerBudget::new(now))
-        .allow(bytes, now)
-        .map_err(str::to_string)
+        .or_insert_with(|| PeerBudget::new(now));
+    if event {
+        budget.allow(bytes, now)
+    } else {
+        budget.allow_bytes(bytes, now)
+    }
+    .map_err(str::to_string)
 }
 
 #[cfg(test)]
@@ -131,6 +155,18 @@ mod tests {
             bytes.allow(1, now),
             Err("peer event byte rate limit exceeded")
         );
+    }
+
+    #[test]
+    fn image_continuation_chunks_consume_bytes_without_exhausting_event_burst() {
+        let now = Instant::now();
+        let mut budget = PeerBudget::new(now);
+        for _ in 0..30 {
+            assert!(budget.allow(0, now).is_ok());
+        }
+        assert_eq!(budget.allow(0, now), Err("peer event rate limit exceeded"));
+        assert!(budget.allow_bytes(512 * 1024, now).is_ok());
+        assert!(budget.allow_bytes(64 * 1024 * 1024, now).is_err());
     }
 
     #[test]

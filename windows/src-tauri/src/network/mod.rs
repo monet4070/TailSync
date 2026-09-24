@@ -12,8 +12,8 @@ use crate::crypto;
 use crate::db;
 use crate::identity::DeviceIdentity;
 use crate::pairing::{
-    PairingManager, PendingPairing, RemotePairingInvite, RemotePairingInviteManager,
-    DEFAULT_INVITE_TTL,
+    PairingDirection, PairingManager, PendingPairing, RemotePairingInvite,
+    RemotePairingInviteManager, DEFAULT_INVITE_TTL,
 };
 use crate::protocol::{Command, FileChunkPayload, FileOffset, Frame, ProtocolError, TransferId};
 use crate::sync;
@@ -97,7 +97,7 @@ mod pool;
 use pool::wait_for_shutdown;
 pub use pool::{
     acquire_peer_file_batch, prewarm_connections, queue_peer_batch_frame, queue_peer_file_frame,
-    queue_peer_frame, queue_peer_shared_event, ConnectionPool, SharedEvent,
+    queue_peer_file_window, queue_peer_frame, queue_peer_shared_event, ConnectionPool, SharedEvent,
 };
 #[cfg(test)]
 use pool::{
@@ -254,7 +254,7 @@ pub async fn start_pairing(
     let target = tailsync_core::peer::directory::parse_pairing_target(address)?;
     let mode = settings.lock().await.connection_mode.clone();
     if let Err(message) = tailsync_core::peer::directory::validate_pairing_target(&target, &mode) {
-        pairing.record_failure(message.clone()).await;
+        pairing.record_non_ban_failure(message.clone()).await;
         return Err(message);
     }
     pairing
@@ -303,12 +303,12 @@ pub async fn start_pairing(
                     Ok(Ok(accepted)) => accepted,
                     Ok(Err(error)) => {
                         let message = format!("Pairing handshake failed: {error}");
-                        pairing.record_failure(message.clone()).await;
+                        pairing.record_non_ban_failure(message.clone()).await;
                         return Err(message);
                     }
                     Err(_) => {
                         let message = "Pairing handshake timed out".to_string();
-                        pairing.record_failure(message.clone()).await;
+                        pairing.record_non_ban_failure(message.clone()).await;
                         return Err(message);
                     }
                 };
@@ -330,6 +330,7 @@ pub async fn start_pairing(
             address: pairing_address,
             interface: pairing_interface.as_str().to_string(),
             remote_invite: None,
+            direction: PairingDirection::Outbound,
         })
         .await
         .map_err(|error| error.to_string())
@@ -427,7 +428,7 @@ pub async fn start_remote_pairing(
                     Ok(accepted) => accepted,
                     Err(error) => {
                         let message = format!("Remote pairing failed: {error}");
-                        pairing.record_failure(message.clone()).await;
+                        pairing.record_non_ban_failure(message.clone()).await;
                         return Err(message);
                     }
                 };
@@ -449,6 +450,7 @@ pub async fn start_remote_pairing(
             address: pairing_address,
             interface: ConnectionInterface::Iroh.as_str().to_string(),
             remote_invite: None,
+            direction: PairingDirection::Outbound,
         })
         .await
         .map_err(|error| error.to_string())

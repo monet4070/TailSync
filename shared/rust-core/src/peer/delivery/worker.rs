@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::{timeout, Duration};
 use tracing::Instrument;
 
@@ -10,7 +12,7 @@ use super::*;
 /// Timing for the per-peer connection worker loop. Defaults match the shared
 /// platform constants (30 s heartbeat, 10 s heartbeat ACK window, 5 s
 /// reconnect delay).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct WorkerConfig {
     pub heartbeat_interval: Duration,
     pub heartbeat_ack_timeout: Duration,
@@ -25,6 +27,10 @@ pub struct WorkerConfig {
     /// frames whose caller has already timed out.
     pub pending_frame_ttl: Duration,
     pub delivery: DeliveryConfig,
+    /// Notified by the pool whenever a new frame enters either queue. This
+    /// lets a disconnected worker interrupt reconnect backoff without
+    /// consuming the frame or adding a polling loop.
+    pub retry_wakeup: Arc<Notify>,
 }
 
 impl Default for WorkerConfig {
@@ -36,6 +42,7 @@ impl Default for WorkerConfig {
             refresh_timeout: Duration::from_secs(5),
             pending_frame_ttl: Duration::from_secs(5 * 60),
             delivery: DeliveryConfig::DEFAULT,
+            retry_wakeup: Arc::new(Notify::new()),
         }
     }
 }
@@ -173,8 +180,9 @@ fn maintain_offline_queue(
             }
         };
         let Some(queued) = queued else { return };
+        let span = queued.sequence_span();
         let frame = PendingFrame::new_for_peer(queued, *next_sequence, hostname);
-        *next_sequence = next_sequence.wrapping_add(1).max(1);
+        *next_sequence = next_sequence.wrapping_add(span).max(1);
         if frame.is_expired(ttl) {
             complete_expired_frame(frame, hostname);
         } else {
@@ -272,6 +280,13 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                         crate::sync_warning::record_delivery_shutdown(&hostname);
                         return;
                     },
+                    _ = config.retry_wakeup.notified() => {
+                        log::debug!(
+                            "New queued work woke reconnect for {} before {:?} elapsed",
+                            hostname,
+                            config.reconnect_delay
+                        );
+                    },
                     _ = tokio::time::sleep(config.reconnect_delay) => {}
                 }
                 continue;
@@ -360,8 +375,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                         &route,
                         &candidates,
                     );
+                    let reconnect_for_window_resume =
+                        frame.queued.file_window.is_some() && receipt.resume_required;
                     frame.complete(Ok(receipt));
-                    if reselect_route {
+                    if reselect_route || reconnect_for_window_resume {
                         log::debug!(
                             "Receiver requested file batch replay over fallback route {target}; reselecting preferred path"
                         );
@@ -372,7 +389,11 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     record_permanent_delivery_warning(&hostname, &error);
                     log::warn!("Dropping event rejected by remote peer: {error}");
                     log::debug!("Rejected event route: {target}");
+                    let window_failed = frame.queued.file_window.is_some();
                     frame.complete(Err(error));
+                    if window_failed {
+                        continue 'connection;
+                    }
                 }
                 Err(error) => {
                     log::debug!(
@@ -432,8 +453,9 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
             };
             match next {
                 Ok(Some(queued)) => {
+                    let span = queued.sequence_span();
                     let frame = PendingFrame::new_for_peer(queued, next_sequence, &hostname);
-                    next_sequence = next_sequence.wrapping_add(1).max(1);
+                    next_sequence = next_sequence.wrapping_add(span).max(1);
                     if frame.is_expired(config.pending_frame_ttl) {
                         complete_expired_frame(frame, &hostname);
                         continue;
@@ -471,8 +493,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                                 &route,
                                 &candidates,
                             );
+                            let reconnect_for_window_resume =
+                                frame.queued.file_window.is_some() && receipt.resume_required;
                             frame.complete(Ok(receipt));
-                            if reselect_route {
+                            if reselect_route || reconnect_for_window_resume {
                                 log::debug!(
                                     "Receiver requested file batch replay over fallback route {target}; reselecting preferred path"
                                 );
@@ -483,7 +507,11 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                             record_permanent_delivery_warning(&hostname, &error);
                             log::warn!("Dropping event rejected by remote peer: {error}");
                             log::debug!("Rejected event route: {target}");
+                            let window_failed = frame.queued.file_window.is_some();
                             frame.complete(Err(error));
+                            if window_failed {
+                                continue 'connection;
+                            }
                         }
                         Err(error) => {
                             pending = Some(frame);

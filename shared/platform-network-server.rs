@@ -130,11 +130,12 @@ async fn handle_connection(
 
     let accepted = timeout(
         HANDSHAKE_TIMEOUT,
-        secure::accept_with_pairing_window(
+        secure::accept_with_pairing_window_and_capabilities(
             stream,
             &identity,
             local_peer_identity(&mode),
             pairing.subscribe_window(),
+            secure::CapabilitySwitches::runtime_defaults(),
         ),
     )
     .await
@@ -170,11 +171,12 @@ pub(super) async fn handle_iroh_connection(
     }
     let accepted = timeout(
         HANDSHAKE_TIMEOUT,
-        secure::accept_with_pairing_window(
+        secure::accept_with_pairing_window_and_capabilities(
             stream,
             &identity,
             local_peer_identity(&mode),
             pairing.subscribe_window(),
+            secure::CapabilitySwitches::runtime_defaults(),
         ),
     )
     .await
@@ -388,11 +390,20 @@ async fn handle_accepted_connection_inner(
     // ── Receive loop ─────────────────────────────────────────────
     let mut last_activity = tokio::time::Instant::now();
     let mut last_reliable_sequence = None;
+    let mut image_assembler = tailsync_core::image_chunks::ImageAssembler::default();
+    let mut image_chunks_enabled = stream.negotiated_capabilities().image_compressed_chunks;
 
     loop {
         let frame = match timeout(
             CONNECTION_TIMEOUT,
             stream.read_frame_with_admission(|command, payload_length| match command {
+                Command::ImageChunk => {
+                    tailsync_core::peer::rate_limit::check_peer_chunk_bytes(
+                        &peer_info.hostname,
+                        payload_length,
+                    )
+                    .map_err(ProtocolError::AdmissionRejected)
+                }
                 Command::TextPayload | Command::ImagePayload | Command::FileBatchStart => {
                     check_peer_event_budget(&peer_info.hostname, payload_length)
                         .map_err(ProtocolError::AdmissionRejected)
@@ -483,6 +494,59 @@ async fn handle_accepted_connection_inner(
                     warn!("Rejected image event from remote peer: {error}");
                     debug!("Rejected image event address: {peer_addr}");
                     secure::write_error(&mut stream, &error.to_string()).await?;
+                }
+            }
+            Command::ImageChunk => {
+                if !image_chunks_enabled {
+                    secure::write_image_chunk_error(&mut stream).await?;
+                    continue;
+                }
+                if frame.payload.get(28..30) == Some(&[0, 0]) {
+                    if let Err(error) = check_peer_event_budget(&peer_info.hostname, 0) {
+                        secure::write_error(&mut stream, &error).await?;
+                        continue;
+                    }
+                }
+                match image_assembler.accept(&frame.payload) {
+                    Ok((message_id, None)) => {
+                        let ack = Frame::try_new(
+                            Command::EventAck,
+                            0,
+                            frame.sequence,
+                            message_id.ack_payload(),
+                        )?;
+                        stream.write_frame(&ack).await?;
+                    }
+                    Ok((_, Some(envelope))) => {
+                        let image_frame = Frame::try_new(
+                            Command::ImagePayload,
+                            0,
+                            frame.sequence,
+                            envelope.encode(),
+                        )?;
+                        if let Err(error) = process_reliable_event(
+                            &mut stream,
+                            &image_frame,
+                            &peer_info.hostname,
+                            &sync_engine,
+                            &database,
+                            &mut last_reliable_sequence,
+                            crate::api::bump_clipboard_version,
+                        )
+                        .await
+                        {
+                            if error.is_retryable() {
+                                warn!("Temporarily unable to apply compressed image: {error}");
+                            } else {
+                                secure::write_error(&mut stream, &error.to_string()).await?;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!("Disabling compressed image chunks for this session: {error}");
+                        image_chunks_enabled = false;
+                        secure::write_image_chunk_error(&mut stream).await?;
+                    }
                 }
             }
             Command::FileBatchStart => {
@@ -618,6 +682,7 @@ async fn handle_accepted_connection_inner(
                         .await
                         .notify_file_batch_failed(Some(batch_id), error);
                 }
+                let acknowledged = result.is_ok();
                 let response = match result {
                     Ok(()) => Frame::try_new(
                         Command::FileBatchAccept,
@@ -633,6 +698,20 @@ async fn handle_accepted_connection_inner(
                     )?,
                 };
                 stream.write_frame(&response).await?;
+                if acknowledged {
+                    if let Err(error) = sync::SyncEngine::acknowledge_file_batch_shared(
+                        &sync_engine,
+                        &peer_info.hostname,
+                        batch_id,
+                        &db::get_incoming_dir(),
+                    )
+                    .await
+                    {
+                        warn!(
+                            "File batch {batch_id:?} was acknowledged but cleanup remains pending: {error}"
+                        );
+                    }
+                }
             }
             Command::FileBatchCancel => {
                 let bytes: [u8; 16] = frame
@@ -900,5 +979,321 @@ pub(super) fn local_peer_identity(mode: &str) -> secure::PeerIdentity {
             })
             .then(iroh::local_endpoint_id)
             .flatten(),
+    }
+}
+
+#[cfg(test)]
+mod acceptance_tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct RecordingPlatform {
+        image_writes: AtomicUsize,
+    }
+
+    impl sync::SyncPlatform for RecordingPlatform {
+        fn write_text(&self, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn write_image(&self, _width: u32, _height: u32, _rgba: &[u8]) -> Result<(), String> {
+            self.image_writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn set_file_progress(&self, _name: &str, _received: u64, _total: u64) {}
+
+        fn clear_file_progress(&self, _batch_id: Option<TransferId>, _device: Option<&str>) {}
+
+        fn set_file_batch_progress(&self, _progress: sync::FileBatchProgress) {}
+
+        fn files_received(&self, _commit: sync::FileReceiveCommit) -> sync::PlatformResultFuture {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn file_batch_failed(&self, _batch_id: Option<TransferId>, _message: &str) {}
+    }
+
+    async fn open_session(
+        server_identity: Arc<DeviceIdentity>,
+        client_identity: &DeviceIdentity,
+        settings: Arc<Mutex<crypto::Settings>>,
+        sync_engine: Arc<Mutex<sync::SyncEngine>>,
+        database: Arc<Mutex<db::HistoryDB>>,
+    ) -> (Result<secure::SecureConnection, String>, tokio::task::JoinHandle<()>) {
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let expected_server_key = server_identity.public_key().to_vec();
+        let server = tokio::spawn(async move {
+            let (_, pairing_window) = watch::channel(false);
+            let accepted = secure::accept_with_pairing_window_and_capabilities(
+                server_io,
+                &server_identity,
+                secure::PeerIdentity {
+                    hostname: "server".into(),
+                    tailscale_ip: String::new(),
+                    iroh_endpoint_id: None,
+                },
+                pairing_window,
+                secure::CapabilitySwitches {
+                    file_sliding_window: true,
+                    image_compressed_chunks: true,
+                },
+            )
+            .await
+            .expect("fixture handshake");
+            handle_accepted_connection(
+                accepted,
+                InboundSource::Tcp("127.0.0.1:49152".parse().unwrap()),
+                sync_engine,
+                database,
+                settings,
+                None,
+                None,
+            )
+            .await
+            .expect("fixture receive session");
+        });
+        let client = secure::connect_with_capabilities(
+            client_io,
+            client_identity,
+            secure::PeerIdentity {
+                hostname: "client".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+            "server",
+            &expected_server_key,
+            secure::CapabilitySwitches {
+                file_sliding_window: true,
+                image_compressed_chunks: true,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string());
+        (client, server)
+    }
+
+    fn image_fixture() -> Vec<Vec<u8>> {
+        let mut rgba = vec![0_u8; 1024 * 1024 * 4];
+        let mut state = 0x7ace_b00c_u32;
+        for byte in rgba.iter_mut().take(1024 * 1024) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = state as u8;
+        }
+        let packed = tailsync_core::protocol::pack_rgba_image(1024, 1024, &rgba).unwrap();
+        let envelope = tailsync_core::protocol::EventEnvelope::new(packed);
+        let chunks = tailsync_core::image_chunks::compress(&envelope)
+            .unwrap()
+            .expect("fixture must use compressed chunks");
+        assert!(chunks.len() >= 2, "fixture must exercise a partial assembly");
+        chunks
+    }
+
+    #[tokio::test]
+    async fn malformed_image_chunk_is_rejected_without_partial_apply_and_next_session_recovers() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let mut trusted = crypto::Settings {
+            connection_mode: "auto".into(),
+            ..crypto::Settings::default()
+        };
+        trusted.trusted_peer_keys.insert(
+            "client".into(),
+            STANDARD.encode(client_identity.public_key()),
+        );
+        let settings = Arc::new(Mutex::new(trusted));
+        let platform = Arc::new(RecordingPlatform::default());
+        let mut engine = sync::SyncEngine::new();
+        engine.set_platform(platform.clone());
+        let sync_engine = Arc::new(Mutex::new(engine));
+        let database = Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap()));
+        let chunks = image_fixture();
+        let first = chunks[0].clone();
+        let second = chunks[1].clone();
+
+        let (client, server) = open_session(
+            server_identity.clone(),
+            &client_identity,
+            settings.clone(),
+            sync_engine.clone(),
+            database.clone(),
+        )
+        .await;
+        let mut client = client.expect("trusted fixture must connect");
+        assert!(client.negotiated_capabilities().image_compressed_chunks);
+        client
+            .write_frame(&Frame::try_new(Command::ImageChunk, 0, 1, first.clone()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(client.read_frame().await.unwrap().command, Command::EventAck);
+        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        assert_eq!(platform.image_writes.load(Ordering::SeqCst), 0);
+
+        // A duplicate/late first chunk is invalid while the second is due.
+        client
+            .write_frame(&Frame::try_new(Command::ImageChunk, 0, 2, first.clone()).unwrap())
+            .await
+            .unwrap();
+        let error = client.read_frame().await.unwrap();
+        assert_eq!(error.command, Command::PeerError);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&error.payload).unwrap()["code"],
+            "invalid_image_chunk"
+        );
+        client
+            .write_frame(&Frame::try_new(Command::ImageChunk, 0, 3, second.clone()).unwrap())
+            .await
+            .unwrap();
+        let disabled = client.read_frame().await.unwrap();
+        assert_eq!(disabled.command, Command::PeerError);
+        assert_eq!(disabled.payload, error.payload);
+        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        assert_eq!(platform.image_writes.load(Ordering::SeqCst), 0);
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut forged_raw_length = first.clone();
+        forged_raw_length[36..40].copy_from_slice(&u32::MAX.to_be_bytes());
+        let mut bad_digest = chunks.clone();
+        for chunk in &mut bad_digest {
+            chunk[40] ^= 1;
+        }
+        let mut inflated = chunks.clone();
+        for chunk in &mut inflated {
+            chunk[36..40].copy_from_slice(&12_u32.to_be_bytes());
+        }
+        for (case, payloads) in [
+            ("out_of_order", vec![second.clone()]),
+            ("forged_raw_length", vec![forged_raw_length]),
+            ("bad_digest", bad_digest),
+            ("inflated_image", inflated),
+        ] {
+            let (candidate, task) = open_session(
+                server_identity.clone(),
+                &client_identity,
+                settings.clone(),
+                sync_engine.clone(),
+                database.clone(),
+            )
+            .await;
+            let mut candidate = candidate.expect("trusted fixture must connect");
+            for (index, payload) in payloads.iter().enumerate() {
+                candidate
+                    .write_frame(
+                        &Frame::try_new(Command::ImageChunk, 0, index as u32 + 1, payload.clone())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let response = candidate.read_frame().await.unwrap();
+                if index + 1 == payloads.len() {
+                    assert_eq!(response.command, Command::PeerError, "{case}");
+                    assert_eq!(response.payload, error.payload, "{case}");
+                } else {
+                    assert_eq!(response.command, Command::EventAck, "{case}");
+                }
+            }
+            assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+            assert_eq!(platform.image_writes.load(Ordering::SeqCst), 0, "{case}");
+            drop(candidate);
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+
+        let (fresh, fresh_server) = open_session(
+            server_identity,
+            &client_identity,
+            settings,
+            sync_engine,
+            database.clone(),
+        )
+        .await;
+        let mut fresh = fresh.expect("fresh trusted fixture must connect");
+        fresh
+            .write_frame(&Frame::try_new(Command::ImageChunk, 0, 1, first).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(fresh.read_frame().await.unwrap().command, Command::EventAck);
+        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        assert_eq!(platform.image_writes.load(Ordering::SeqCst), 0);
+        drop(fresh);
+        tokio::time::timeout(Duration::from_secs(2), fresh_server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn authenticated_but_unpaired_peer_cannot_enter_receive_loop() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let settings = Arc::new(Mutex::new(crypto::Settings::default()));
+        let database = Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap()));
+        let (client, server) = open_session(
+            server_identity,
+            &client_identity,
+            settings,
+            Arc::new(Mutex::new(sync::SyncEngine::new())),
+            database.clone(),
+        )
+        .await;
+        assert!(client.err().expect("unpaired peer must be rejected").contains("not paired"));
+        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn disabling_a_paired_peer_revokes_its_active_receive_session() {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let mut trusted = crypto::Settings {
+            connection_mode: "auto".into(),
+            ..crypto::Settings::default()
+        };
+        trusted.trusted_peer_keys.insert(
+            "client".into(),
+            STANDARD.encode(client_identity.public_key()),
+        );
+        let settings = Arc::new(Mutex::new(trusted));
+        let database = Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap()));
+        let (client, server) = open_session(
+            server_identity,
+            &client_identity,
+            settings.clone(),
+            Arc::new(Mutex::new(sync::SyncEngine::new())),
+            database.clone(),
+        )
+        .await;
+        let mut client = client.expect("paired peer must connect");
+        settings
+            .lock()
+            .await
+            .enabled_peers
+            .insert("client".into(), false);
+        client
+            .write_frame(&Frame::try_new(Command::Heartbeat, 0, 1, Vec::new()).unwrap())
+            .await
+            .unwrap();
+        let rejection = client.read_frame().await.unwrap();
+        assert_eq!(rejection.command, Command::PeerError);
+        assert!(String::from_utf8_lossy(&rejection.payload).contains("revoked"));
+        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

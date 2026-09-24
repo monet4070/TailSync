@@ -88,6 +88,51 @@ pub struct ReceivedFile {
     pub path: PathBuf,
 }
 
+/// Durable receive-side commit boundary for a completed file batch.
+///
+/// The state is stored in the existing batch sidecar, so schema v11 and the
+/// device wire remain unchanged. Transitions are strictly forward-only and
+/// are persisted before the next externally visible action begins.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceivedBatchCommitState {
+    #[default]
+    Receiving,
+    HashVerified,
+    ClipboardStaged,
+    HistoryPersisted,
+    ReceiptPersisted,
+    Acked,
+    Cleaned,
+}
+
+impl ReceivedBatchCommitState {
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Receiving => Some(Self::HashVerified),
+            Self::HashVerified => Some(Self::ClipboardStaged),
+            Self::ClipboardStaged => Some(Self::HistoryPersisted),
+            Self::HistoryPersisted => Some(Self::ReceiptPersisted),
+            Self::ReceiptPersisted => Some(Self::Acked),
+            Self::Acked => Some(Self::Cleaned),
+            Self::Cleaned => None,
+        }
+    }
+
+    #[cfg(feature = "acceptance-injection")]
+    fn injection_name(self) -> &'static str {
+        match self {
+            Self::Receiving => "receiving",
+            Self::HashVerified => "hash_verified",
+            Self::ClipboardStaged => "clipboard_staged",
+            Self::HistoryPersisted => "history_persisted",
+            Self::ReceiptPersisted => "receipt_persisted",
+            Self::Acked => "acked",
+            Self::Cleaned => "cleaned",
+        }
+    }
+}
+
 /// Durable history work produced by the receive pipeline.
 ///
 /// Keeping the batch identity, authenticated source, and post-commit UI
@@ -103,6 +148,10 @@ pub struct FileReceiveCommit {
     pub device: String,
     pub source_device_id: String,
     pub manifest_hash: Option<String>,
+    /// Verified plaintext files prepared before durable history persistence.
+    /// Batch commits set this to `Some`; legacy single-file and partial
+    /// history paths use `None` and retain the adapter fallback.
+    pub clipboard_paths: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,6 +176,18 @@ pub type PlatformResultFuture = Pin<Box<dyn Future<Output = Result<(), String>> 
 pub trait SyncPlatform: Send + Sync {
     fn write_text(&self, text: &str) -> Result<(), String>;
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String>;
+    /// Consume a platform-native receipt for a programmatic text write. The
+    /// receipt is keyed by the OS clipboard sequence/change counter, so a
+    /// user copying identical text later is not mistaken for a TailSync echo.
+    /// Platforms without a native receipt return `false` and the core shadow
+    /// filter remains the conservative fallback.
+    fn consume_text_write_receipt(&self, _hash: &str) -> bool {
+        false
+    }
+    /// Consume a platform-native receipt for a programmatic image write.
+    fn consume_image_write_receipt(&self, _hash: &str) -> bool {
+        false
+    }
     fn set_file_progress(&self, name: &str, received: u64, total: u64);
     fn clear_file_progress(&self, batch_id: Option<TransferId>, device: Option<&str>);
     fn set_file_batch_progress(&self, progress: FileBatchProgress);
@@ -253,6 +314,8 @@ struct IncomingBatch {
     local_generation: u64,
     files: Vec<Option<ReceivedFile>>,
     manifest_path: PathBuf,
+    commit_state: ReceivedBatchCommitState,
+    clipboard_paths: Vec<PathBuf>,
 }
 
 type ReceiveOperationKey = (String, ReceiveKey);

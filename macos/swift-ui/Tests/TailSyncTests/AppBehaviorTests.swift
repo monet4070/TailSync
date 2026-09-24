@@ -476,4 +476,26 @@ final class AppBehaviorTests: XCTestCase {
         }
         return try JSONDecoder().decode(HistoryEntry.self, from: Data(json.utf8))
     }
+
+    func testConfigureApplicationMenuRedirectsSettingsKeyEquivalent() {
+        let delegate = AppDelegate()
+        let mainMenu = NSMenu()
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu(title: "TailSync")
+        let settingsItem = NSMenuItem(title: "Settings…", action: nil, keyEquivalent: ",")
+        appMenu.addItem(settingsItem)
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+        NSApp.mainMenu = mainMenu
+
+        let expectation = expectation(description: "menu configured")
+        delegate.configureApplicationMenu()
+        DispatchQueue.main.async {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 0.5)
+
+        XCTAssertTrue(settingsItem.target === delegate)
+        XCTAssertEqual(settingsItem.action, #selector(delegate.openSettings))
+    }
 }

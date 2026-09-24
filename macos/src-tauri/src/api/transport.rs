@@ -181,12 +181,33 @@ async fn serve_connection<S>(
     let req = match read_request(&mut reader).await {
         Ok(req) => req,
         Err(error) => {
-            let _ = write_response(&mut writer, false, None, &error, API_WRITE_TIMEOUT).await;
+            let _ = write_response(
+                &mut writer,
+                false,
+                None,
+                &error,
+                "request",
+                false,
+                API_WRITE_TIMEOUT,
+            )
+            .await;
             return;
         }
     };
+    let command = req.cmd.clone();
+    let stable_errors =
+        req.error_schema_version == Some(tailsync_runtime::contracts::STABLE_ERROR_SCHEMA_VERSION);
     if !state.token.matches(req.token.as_deref()) {
-        let _ = write_response(&mut writer, false, None, "unauthorized", API_WRITE_TIMEOUT).await;
+        let _ = write_response(
+            &mut writer,
+            false,
+            None,
+            "unauthorized",
+            &command,
+            stable_errors,
+            API_WRITE_TIMEOUT,
+        )
+        .await;
         return;
     }
 
@@ -201,6 +222,8 @@ async fn serve_connection<S>(
             false,
             None,
             "invalid request_id",
+            &command,
+            stable_errors,
             API_WRITE_TIMEOUT,
         )
         .await;
@@ -230,6 +253,8 @@ async fn serve_connection<S>(
                     false,
                     None,
                     &error,
+                    &command,
+                    stable_errors,
                     response_timeout_for_command(&req.cmd),
                 )
                 .await;
@@ -259,6 +284,8 @@ async fn serve_connection<S>(
         response.ok,
         response.data,
         &response.error.unwrap_or_default(),
+        &command,
+        stable_errors,
         response_timeout,
     )
     .await;
@@ -479,12 +506,17 @@ async fn write_response(
     ok: bool,
     data: Option<Value>,
     error: &str,
+    command: &str,
+    stable_errors: bool,
     timeout_duration: Duration,
 ) -> Result<(), String> {
-    timeout(timeout_duration, send_json(writer, ok, data, error))
-        .await
-        .map_err(|_| "response write timed out".to_string())?
-        .map_err(|error| error.to_string())
+    timeout(
+        timeout_duration,
+        send_json(writer, ok, data, error, command, stable_errors),
+    )
+    .await
+    .map_err(|_| "response write timed out".to_string())?
+    .map_err(|error| error.to_string())
 }
 
 async fn write_binary_response(
@@ -521,9 +553,18 @@ async fn send_json(
     ok: bool,
     data: Option<Value>,
     error: &str,
+    command: &str,
+    stable_errors: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resp = if ok {
         serde_json::json!({ "ok": true, "data": data })
+    } else if stable_errors {
+        serde_json::json!({
+            "ok": false,
+            "error": tailsync_runtime::contracts::StableErrorEnvelope::from_legacy_message(
+                command, error,
+            )
+        })
     } else {
         serde_json::json!({ "ok": false, "error": error })
     };
@@ -537,6 +578,61 @@ async fn send_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn encoded_error(stable: bool) -> Value {
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        send_json(
+            &mut writer,
+            false,
+            None,
+            "database failure at /private/history.db",
+            "change_storage_location",
+            stable,
+        )
+        .await
+        .unwrap();
+        let mut line = String::new();
+        BufReader::new(reader).read_line(&mut line).await.unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[tokio::test]
+    async fn stable_error_opt_in_preserves_legacy_and_redacts_details() {
+        let legacy = encoded_error(false).await;
+        assert!(legacy["error"].as_str().unwrap().contains("private"));
+
+        let stable = encoded_error(true).await;
+        assert_eq!(stable["error"]["schema_version"], 1);
+        assert_eq!(stable["error"]["code"], "storage_unavailable");
+        assert_eq!(stable["error"]["retryable"], true);
+        assert!(!stable.to_string().contains("private"));
+    }
+
+    #[tokio::test]
+    async fn incompatible_protocol_socket_error_has_a_fixed_public_envelope() {
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        send_json(
+            &mut writer,
+            false,
+            None,
+            "Pairing handshake failed: Incompatible TailSync protocol: peer at /private/peer uses v2, token=secret",
+            "start_pairing",
+            true,
+        )
+        .await
+        .unwrap();
+        let mut line = String::new();
+        BufReader::new(reader).read_line(&mut line).await.unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["error"]["schema_version"], 1);
+        assert_eq!(response["error"]["code"], "protocol_incompatible");
+        assert_eq!(
+            response["error"]["message_key"],
+            "error.protocol_incompatible"
+        );
+        assert!(!line.contains("/private/peer"));
+        assert!(!line.contains("token=secret"));
+    }
 
     #[test]
     fn preview_response_gets_extended_write_timeout_only() {

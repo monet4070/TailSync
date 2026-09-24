@@ -1,8 +1,14 @@
-//! JSON-line TCP API server for the SwiftUI frontend.
+//! Legacy JSON-line API support shared with the macOS transport.
+//!
+//! The Windows target keeps the command/response helpers used by tests and
+//! compatibility tooling, but does not start the TCP transport. Windows UI
+//! traffic uses Tauri invoke/event IPC instead.
 //!
 //! Protocol: one JSON object per line, terminated by `\n`.
 //! Request:  `{"cmd": "...", ...params}`
 //! Response: `{"ok": true, ...data}` or `{"ok": false, "error": "..."}`
+#![cfg_attr(target_os = "windows", allow(dead_code, unused_imports))]
+
 mod imports;
 mod routes;
 mod transport;
@@ -13,6 +19,7 @@ use imports::{
 use routes::handle_cmd;
 pub(crate) use routes::{history_capabilities_data, peer_snapshot_data};
 pub(crate) use tailsync_core::import::ImportRegistry;
+#[cfg(not(target_os = "windows"))]
 pub use transport::start;
 #[cfg(test)]
 use transport::{bind_api_listener, read_request_with_limits};
@@ -123,7 +130,122 @@ static FILE_PROGRESS: LazyLock<StdMutex<HashMap<String, TrackedFileProgress>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 static CANCELLED_FILE_BATCHES: LazyLock<StdMutex<HashSet<String>>> =
     LazyLock::new(|| StdMutex::new(HashSet::new()));
+const PROGRESS_NOTIFY_INTERVAL: Duration = Duration::from_millis(125);
 pub use tailsync_runtime::contracts::FileProgress;
+
+#[derive(Default)]
+struct ProgressRevisionGate {
+    last_emitted: Option<Instant>,
+    flush_scheduled: bool,
+}
+
+enum ProgressRevisionAction {
+    Emit,
+    Schedule(Duration),
+    None,
+}
+
+impl ProgressRevisionGate {
+    fn on_update(
+        &mut self,
+        now: Instant,
+        immediate: bool,
+        can_schedule: bool,
+    ) -> ProgressRevisionAction {
+        if immediate
+            || self
+                .last_emitted
+                .is_none_or(|last| now.duration_since(last) >= PROGRESS_NOTIFY_INTERVAL)
+        {
+            self.last_emitted = Some(now);
+            self.flush_scheduled = false;
+            return ProgressRevisionAction::Emit;
+        }
+        if can_schedule && !self.flush_scheduled {
+            self.flush_scheduled = true;
+            let elapsed = now.duration_since(self.last_emitted.unwrap());
+            return ProgressRevisionAction::Schedule(
+                PROGRESS_NOTIFY_INTERVAL.saturating_sub(elapsed),
+            );
+        }
+        ProgressRevisionAction::None
+    }
+
+    fn on_timer(&mut self, now: Instant) -> ProgressRevisionAction {
+        if !self.flush_scheduled {
+            return ProgressRevisionAction::None;
+        }
+        let elapsed = self
+            .last_emitted
+            .map(|last| now.duration_since(last))
+            .unwrap_or(PROGRESS_NOTIFY_INTERVAL);
+        if elapsed >= PROGRESS_NOTIFY_INTERVAL {
+            self.last_emitted = Some(now);
+            self.flush_scheduled = false;
+            ProgressRevisionAction::Emit
+        } else {
+            ProgressRevisionAction::Schedule(PROGRESS_NOTIFY_INTERVAL.saturating_sub(elapsed))
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.flush_scheduled = false;
+    }
+}
+
+static PROGRESS_REVISION_GATE: LazyLock<StdMutex<ProgressRevisionGate>> =
+    LazyLock::new(|| StdMutex::new(ProgressRevisionGate::default()));
+
+fn progress_is_terminal(progress: &FileProgress) -> bool {
+    !progress.active
+        || matches!(
+            progress.status.as_str(),
+            "completed" | "failed" | "cancelled" | "error"
+        )
+}
+
+fn apply_progress_revision_action(action: ProgressRevisionAction) {
+    match action {
+        ProgressRevisionAction::Emit => bump_runtime_revision(),
+        ProgressRevisionAction::Schedule(delay) => {
+            let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                if let Ok(mut gate) = PROGRESS_REVISION_GATE.lock() {
+                    gate.cancel();
+                }
+                return;
+            };
+            handle.spawn(async move {
+                tokio::time::sleep(delay).await;
+                let action = PROGRESS_REVISION_GATE
+                    .lock()
+                    .map(|mut gate| gate.on_timer(Instant::now()))
+                    .unwrap_or(ProgressRevisionAction::None);
+                apply_progress_revision_action(action);
+            });
+        }
+        ProgressRevisionAction::None => {}
+    }
+}
+
+fn notify_progress_revision(progress: &FileProgress) {
+    let action = PROGRESS_REVISION_GATE
+        .lock()
+        .map(|mut gate| {
+            gate.on_update(
+                Instant::now(),
+                progress_is_terminal(progress),
+                tokio::runtime::Handle::try_current().is_ok(),
+            )
+        })
+        .unwrap_or(ProgressRevisionAction::Emit);
+    apply_progress_revision_action(action);
+}
+
+fn cancel_progress_revision_flush() {
+    if let Ok(mut gate) = PROGRESS_REVISION_GATE.lock() {
+        gate.cancel();
+    }
+}
 
 struct TrackedFileProgress {
     progress: FileProgress,
@@ -198,8 +320,9 @@ pub fn set_file_batch_progress(mut progress: FileProgress) {
         }
         tracked.progress = progress;
         tracked.updated_at = now;
+        let latest = tracked.progress.clone();
         drop(state);
-        bump_runtime_revision();
+        notify_progress_revision(&latest);
     }
 }
 pub fn clear_file_progress() {
@@ -208,6 +331,7 @@ pub fn clear_file_progress() {
         progress.clear();
         drop(progress);
         if changed {
+            cancel_progress_revision_flush();
             bump_runtime_revision();
         }
     }
@@ -225,6 +349,7 @@ pub fn clear_file_progress_scope(batch_id: Option<&str>, device: Option<&str>) {
         let changed = progress.len() != previous_count;
         drop(progress);
         if changed {
+            cancel_progress_revision_flush();
             bump_runtime_revision();
         }
     }
@@ -444,6 +569,8 @@ pub struct ApiState {
 #[derive(Debug, Deserialize)]
 struct Request {
     cmd: String,
+    #[serde(default)]
+    error_schema_version: Option<u32>,
     #[serde(default)]
     token: Option<String>,
     #[serde(default)]

@@ -1,7 +1,9 @@
 use super::{
     files_to_broadcast, outgoing_batch_failure_disposition, peer_is_transfer_eligible,
-    run_outgoing_recovery_loop, summarize_file_batch_failures, ClipboardEventGate,
-    FileBatchDeliveryError, OutgoingBatchFailureDisposition, IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS,
+    run_outgoing_recovery_loop, run_periodic_maintenance, summarize_file_batch_failures,
+    validate_prepared_batch_sources_with, validate_prepared_file_source, ClipboardEventGate,
+    FileBatchDeliveryError, OutgoingBatchFailureDisposition,
+    IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -152,6 +154,105 @@ async fn outgoing_recovery_retries_pending_work_after_the_peer_returns() {
     shutdown_tx.send(true).unwrap();
     worker.await.unwrap();
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn source_validation_is_shared_for_one_two_and_eight_peers() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-shared-source-validation-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let first = root.join("first.bin");
+    let second = root.join("second.bin");
+    std::fs::write(&first, b"first").unwrap();
+    std::fs::write(&second, b"second").unwrap();
+    let prepared = crate::sync::prepare_file_batch(vec![first, second], 1).unwrap();
+    for peer_count in [1, 2, 8] {
+        let calls = AtomicUsize::new(0);
+        let validated = validate_prepared_batch_sources_with(Arc::new(prepared.clone()), |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        let peer_views = (0..peer_count)
+            .map(|_| validated.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(peer_views.len(), peer_count);
+        assert_eq!(peer_views[0].file_count(), prepared.files.len());
+        assert_eq!(calls.load(Ordering::SeqCst), prepared.files.len());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn shared_source_validation_rejects_changes_and_missing_files() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-shared-source-mutation-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let changed = root.join("changed.bin");
+    let missing = root.join("missing.bin");
+    std::fs::write(&changed, b"first").unwrap();
+    std::fs::write(&missing, b"second").unwrap();
+    let prepared = crate::sync::prepare_file_batch(vec![changed.clone(), missing.clone()], 1).unwrap();
+
+    std::fs::write(&changed, b"other").unwrap();
+    let changed_error = validate_prepared_batch_sources_with(
+        Arc::new(prepared.clone()),
+        validate_prepared_file_source,
+    )
+    .unwrap_err();
+    assert!(matches!(changed_error, FileBatchDeliveryError::SourceUnavailable(_)));
+
+    std::fs::write(&changed, b"first").unwrap();
+    let missing_prepared =
+        crate::sync::prepare_file_batch(vec![missing.clone()], 2).unwrap();
+    std::fs::remove_file(&missing).unwrap();
+    let missing_error = validate_prepared_batch_sources_with(
+        Arc::new(missing_prepared),
+        validate_prepared_file_source,
+    )
+    .unwrap_err();
+    assert!(matches!(missing_error, FileBatchDeliveryError::SourceUnavailable(_)));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn periodic_maintenance_runs_and_stops_on_shutdown() {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let runs_for_worker = runs.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(run_periodic_maintenance(
+        shutdown_rx,
+        Duration::from_millis(1),
+        move || {
+            let runs = runs_for_worker.clone();
+            async move {
+                if runs.fetch_add(1, Ordering::SeqCst) >= 1 {
+                    // The test controls shutdown below; this branch simply
+                    // proves one slow callback does not create overlap.
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }
+        },
+    ));
+
+    tokio::time::timeout(Duration::from_millis(250), async {
+        while runs.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("periodic maintenance did not run twice");
+    shutdown_tx.send(true).unwrap();
+    worker.await.unwrap();
+    let completed = runs.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert_eq!(runs.load(Ordering::SeqCst), completed);
 }
 
 #[test]

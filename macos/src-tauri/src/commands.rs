@@ -6,6 +6,7 @@ use tauri::{command, AppHandle, Manager, State};
 
 pub use db::HistoryQueryPage as HistoryPage;
 
+mod error;
 mod history;
 mod peers;
 mod platform;
@@ -17,6 +18,7 @@ use platform::rgba_to_dib;
 #[cfg(target_os = "windows")]
 use platform::set_clipboard_dib;
 
+pub use error::CommandError;
 pub use history::*;
 pub use peers::*;
 pub use platform::*;

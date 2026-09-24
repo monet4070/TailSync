@@ -93,7 +93,7 @@ async fn fifth_failure_closes_pairing_window() {
 }
 
 #[tokio::test]
-async fn session_timeouts_count_toward_pairing_lockout() {
+async fn session_timeouts_do_not_consume_pairing_lockout_budget() {
     let manager = PairingManager::with_policy(
         Arc::new(Mutex::new(Settings::default())),
         Arc::new(DeviceIdentity::generate_for_test()),
@@ -103,26 +103,128 @@ async fn session_timeouts_count_toward_pairing_lockout() {
     );
     manager.enable().await;
 
-    for attempt in 1..=3 {
-        let generation = {
+    for _ in 0..3 {
+        let session_id = {
             let mut state = manager.state.lock().await;
             let (control, _receiver) = mpsc::channel(1);
             state.control = Some(control);
             state.phase = PairingPhase::Verification;
-            state.generation
+            state.session_id
         };
-        manager.expire(generation).await;
+        manager.expire_session(session_id).await;
         let status = manager.status().await;
-        assert_eq!(status.failed_attempts, attempt);
-        if attempt < 3 {
-            assert!(status.pairing_enabled);
-            assert_eq!(status.phase, PairingPhase::Waiting);
-        }
+        assert!(status.pairing_enabled);
+        assert_eq!(status.failed_attempts, 0);
+        assert_eq!(status.phase, PairingPhase::Waiting);
     }
 
     let status = manager.status().await;
-    assert!(!status.pairing_enabled);
-    assert_eq!(status.phase, PairingPhase::Locked);
+    assert!(status.pairing_enabled);
+    assert_eq!(status.phase, PairingPhase::Waiting);
+}
+
+#[tokio::test]
+async fn non_ban_pairing_failure_keeps_window_and_counter() {
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        Arc::new(DeviceIdentity::generate_for_test()),
+        Duration::from_secs(1),
+        2,
+        false,
+    );
+    manager.enable().await;
+    manager.record_non_ban_failure("network unavailable").await;
+    let status = manager.status().await;
+    assert!(status.pairing_enabled);
+    assert_eq!(status.phase, PairingPhase::Waiting);
+    assert_eq!(status.failed_attempts, 0);
+    assert_eq!(status.error.as_deref(), Some("network unavailable"));
+}
+
+#[tokio::test]
+async fn glare_arbitration_keeps_one_deterministic_session_without_banning() {
+    let local_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let remote_identity = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        local_identity.clone(),
+        Duration::from_secs(5),
+        3,
+        false,
+    );
+    manager.enable().await;
+
+    let preferred = if local_identity.public_key() < remote_identity.public_key() {
+        PairingDirection::Outbound
+    } else {
+        PairingDirection::Inbound
+    };
+    let losing = match preferred {
+        PairingDirection::Inbound => PairingDirection::Outbound,
+        PairingDirection::Outbound => PairingDirection::Inbound,
+    };
+
+    let (mut old_client, old_server) =
+        establish_in_memory_pair(&local_identity, &remote_identity).await;
+    manager
+        .install_session(PendingPairing {
+            connection: old_server,
+            hostname: "remote".into(),
+            remote_public_key: remote_identity.public_key().to_vec(),
+            handshake_hash: vec![1; 32],
+            address: "127.0.0.1".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: losing,
+        })
+        .await
+        .unwrap();
+
+    let (_new_client, new_server) =
+        establish_in_memory_pair(&local_identity, &remote_identity).await;
+    manager
+        .install_session(PendingPairing {
+            connection: new_server,
+            hostname: "remote".into(),
+            remote_public_key: remote_identity.public_key().to_vec(),
+            handshake_hash: vec![2; 32],
+            address: "127.0.0.1".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: preferred,
+        })
+        .await
+        .unwrap();
+
+    let cancel = tokio::time::timeout(Duration::from_secs(1), old_client.read_frame())
+        .await
+        .expect("losing glare session should be cancelled")
+        .expect("losing glare session should receive a cancellation frame");
+    assert_eq!(cancel.command, Command::PairingCancel);
+
+    for attempt in 0..100 {
+        let (_client, server) = establish_in_memory_pair(&local_identity, &remote_identity).await;
+        let error = manager
+            .install_session(PendingPairing {
+                connection: server,
+                hostname: "remote".into(),
+                remote_public_key: remote_identity.public_key().to_vec(),
+                handshake_hash: vec![attempt as u8; 32],
+                address: "127.0.0.1".into(),
+                interface: "lan".into(),
+                remote_invite: None,
+                direction: losing,
+            })
+            .await
+            .expect_err("losing glare session must be rejected");
+        assert!(matches!(error, PairingError::GlareSuperseded));
+    }
+
+    let status = manager.status().await;
+    assert!(status.pairing_enabled);
+    assert_eq!(status.phase, PairingPhase::Verification);
+    assert_eq!(status.failed_attempts, 0);
+    manager.cancel().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -147,6 +249,7 @@ async fn a_stalled_pairing_session_releases_the_window_before_window_expiry() {
             address: "192.168.1.5".into(),
             interface: "lan".into(),
             remote_invite: None,
+            direction: PairingDirection::Inbound,
         })
         .await
         .unwrap();
@@ -160,7 +263,7 @@ async fn a_stalled_pairing_session_releases_the_window_before_window_expiry() {
     let status = manager.status().await;
     assert!(status.pairing_enabled);
     assert_eq!(status.phase, PairingPhase::Waiting);
-    assert_eq!(status.failed_attempts, 1);
+    assert_eq!(status.failed_attempts, 0);
     assert!(status
         .error
         .as_deref()
@@ -222,6 +325,7 @@ async fn both_confirmations_save_both_peer_keys_and_close_windows() {
                 address: IROH_ENDPOINT_ID.into(),
                 interface: "iroh".into(),
                 remote_invite: None,
+                direction: PairingDirection::Inbound,
             })
             .await
             .unwrap();
@@ -247,6 +351,7 @@ async fn both_confirmations_save_both_peer_keys_and_close_windows() {
             address: IROH_ENDPOINT_ID.into(),
             interface: "iroh".into(),
             remote_invite: None,
+            direction: PairingDirection::Outbound,
         })
         .await
         .unwrap();
@@ -335,6 +440,7 @@ async fn pairing_waits_for_remote_persisted_ack_before_marking_paired() {
             address: "5866666666666666666666666666666666666666666666666666666666666666".into(),
             interface: "iroh".into(),
             remote_invite: None,
+            direction: PairingDirection::Inbound,
         })
         .await
         .unwrap();
@@ -400,6 +506,7 @@ async fn remote_invite_is_consumed_only_after_both_peers_persist_trust() {
             address: IROH_ENDPOINT_ID.into(),
             interface: "iroh".into(),
             remote_invite: Some(claim),
+            direction: PairingDirection::Inbound,
         })
         .await
         .unwrap();

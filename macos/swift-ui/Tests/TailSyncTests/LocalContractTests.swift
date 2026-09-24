@@ -26,4 +26,72 @@ final class LocalContractTests: XCTestCase {
       XCTAssertThrowsError(try JSONDecoder().decode(ContractWindowsRuntimeSnapshot.self, from: Data((prefix + invalid + "}").utf8)))
     }
   }
+
+  func testUnknownStableErrorCodeMapsToInternalError() throws {
+    let data = Data(#"{"schema_version":1,"code":"future_error","retryable":true,"message_key":"future.error","detail_class":"future_detail"}"#.utf8)
+    let decoded = try JSONDecoder().decode(ContractStableErrorEnvelope.self, from: data)
+    XCTAssertEqual(decoded.code, .internal_error)
+    XCTAssertFalse(decoded.retryable)
+    XCTAssertEqual(decoded.message_key, "error.internal")
+    XCTAssertEqual(decoded.detail_class, .internal)
+  }
+
+  func testKnownStableErrorCodeUsesFixedPolicy() throws {
+    let data = Data(#"{"schema_version":1,"code":"unauthorized","retryable":true,"message_key":"untrusted.message","detail_class":"future_detail"}"#.utf8)
+    let decoded = try JSONDecoder().decode(ContractStableErrorEnvelope.self, from: data)
+    XCTAssertEqual(decoded.code, .unauthorized)
+    XCTAssertFalse(decoded.retryable)
+    XCTAssertEqual(decoded.message_key, "error.unauthorized")
+    XCTAssertEqual(decoded.detail_class, .authorization)
+  }
+
+  func testApiClientUsesFixedStableErrorTextAndLegacyFallback() {
+    let stable: [String: Any] = ["ok": false, "error": [
+      "schema_version": 1, "code": "unauthorized", "retryable": true,
+      "message_key": "private/token", "detail_class": "private",
+    ]]
+    let normalized = ApiClient.normalizedStableErrorResponse(stable)
+    XCTAssertEqual(normalized["error"] as? String, Loc.t("error.unauthorized"))
+
+    let future: [String: Any] = ["ok": false, "error": [
+      "schema_version": 1, "code": "future_code", "retryable": true,
+      "message_key": "private/path", "detail_class": "future",
+    ]]
+    XCTAssertEqual(
+      ApiClient.normalizedStableErrorResponse(future)["error"] as? String,
+      Loc.t("error.internal")
+    )
+    XCTAssertEqual(
+      ApiClient.normalizedStableErrorResponse(["ok": false, "error": ["message_key": "private/path"]])["error"] as? String,
+      Loc.t("error.internal")
+    )
+    XCTAssertEqual(
+      ApiClient.normalizedStableErrorResponse(["ok": false, "error": "legacy failure"])["error"] as? String,
+      "legacy failure"
+    )
+  }
+
+  func testStableErrorCodesUseFixedEnglishAndChineseText() {
+    let loc = Loc.shared
+    let previousLanguage = loc.lang
+    defer { loc.lang = previousLanguage }
+    let codes = [
+      "invalid_argument", "not_found", "temporarily_busy", "storage_unavailable",
+      "unauthorized", "protocol_incompatible", "internal_error"
+    ]
+    for language in ["en", "zh-CN"] {
+      loc.lang = language
+      for code in codes {
+        let response: [String: Any] = ["ok": false, "error": [
+          "schema_version": 1, "code": code, "retryable": true,
+          "message_key": "private/path", "detail_class": "private"
+        ]]
+        let normalized = ApiClient.normalizedStableErrorResponse(response)
+        let key = code == "internal_error" ? "error.internal" : "error.\(code)"
+        XCTAssertEqual(normalized["error"] as? String, Loc.t(key), "\(language): \(code)")
+        XCTAssertNotEqual(normalized["error"] as? String, "private/path")
+      }
+    }
+  }
+
 }

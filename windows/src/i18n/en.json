@@ -309,5 +309,12 @@
   "tray.settings": "Settings",
   "tray.quit": "Quit",
   "tray.tooltip": "TailSync",
-  "settings.colorThemeMissing": "The selected custom theme is missing from the themes folder. The default theme is applied instead."
+  "settings.colorThemeMissing": "The selected custom theme is missing from the themes folder. The default theme is applied instead.",
+  "error.invalid_argument": "The request is invalid.",
+  "error.not_found": "The requested item was not found.",
+  "error.temporarily_busy": "TailSync is busy. Try again.",
+  "error.storage_unavailable": "Storage is unavailable. Try again.",
+  "error.unauthorized": "This action is not authorized.",
+  "error.protocol_incompatible": "The connected device uses an incompatible protocol.",
+  "error.internal": "TailSync could not complete this action."
 }

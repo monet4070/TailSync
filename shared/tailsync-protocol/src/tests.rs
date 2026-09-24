@@ -14,6 +14,29 @@ fn test_encode_decode_roundtrip() {
 }
 
 #[test]
+fn v4_and_v5_frames_require_the_selected_session_version() {
+    let frame = Frame::try_new(Command::TextPayload, 0, 42, b"versioned".to_vec()).unwrap();
+    let old = frame.encode_with_version(LEGACY_VERSION);
+    let current = frame.encode();
+    assert_eq!(
+        Frame::decode_with_version(&old, LEGACY_VERSION)
+            .unwrap()
+            .0
+            .payload,
+        frame.payload
+    );
+    assert_eq!(Frame::decode(&current).unwrap().0.payload, frame.payload);
+    assert!(matches!(
+        Frame::decode(&old),
+        Err(ProtocolError::UnsupportedVersion(4))
+    ));
+    assert!(matches!(
+        Frame::decode_with_version(&current, LEGACY_VERSION),
+        Err(ProtocolError::UnsupportedVersion(5))
+    ));
+}
+
+#[test]
 fn test_invalid_magic() {
     let result = Frame::decode(b"XXXX");
     assert!(matches!(result, Err(ProtocolError::IncompleteFrame { .. })));

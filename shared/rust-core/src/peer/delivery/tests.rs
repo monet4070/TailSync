@@ -316,6 +316,26 @@ fn candidate_delay_prefers_lan_without_serializing_fallbacks() {
     );
 }
 
+#[test]
+fn measured_candidate_delay_follows_route_quality_and_keeps_fallbacks_bounded() {
+    let mut fast = resolved_candidate(ConnectionInterface::Iroh, "192.168.1.3");
+    fast.candidate.latency = Some(20);
+    let mut slow = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    slow.candidate.latency = Some(80);
+    let cold = resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2");
+    let candidates = vec![fast.clone(), slow.clone(), cold.clone()];
+
+    assert_eq!(measured_candidate_delay(&fast, &candidates), Duration::ZERO);
+    assert_eq!(
+        measured_candidate_delay(&slow, &candidates),
+        Duration::from_millis(60)
+    );
+    assert_eq!(
+        measured_candidate_delay(&cold, &candidates),
+        Duration::from_millis(50)
+    );
+}
+
 #[tokio::test]
 async fn race_wins_with_first_successful_attempt() {
     let candidates = vec![
@@ -804,6 +824,354 @@ impl DeliveryConnection for MemoryConnection {
     }
 }
 
+struct WindowConnection(MemoryConnection);
+
+impl DeliveryConnection for WindowConnection {
+    async fn write_frame(&mut self, frame: &Frame) -> Result<(), String> {
+        self.0.write_frame(frame).await
+    }
+
+    async fn read_frame(&mut self) -> Result<Frame, String> {
+        self.0.read_frame().await
+    }
+
+    fn negotiated_capabilities(&self) -> CapabilitySet {
+        CapabilitySet {
+            file_sliding_window: true,
+            image_compressed_chunks: false,
+        }
+    }
+}
+
+struct ImageConnection(MemoryConnection);
+
+impl DeliveryConnection for ImageConnection {
+    async fn write_frame(&mut self, frame: &Frame) -> Result<(), String> {
+        self.0.write_frame(frame).await
+    }
+
+    async fn read_frame(&mut self) -> Result<Frame, String> {
+        self.0.read_frame().await
+    }
+
+    fn negotiated_capabilities(&self) -> CapabilitySet {
+        CapabilitySet {
+            file_sliding_window: false,
+            image_compressed_chunks: true,
+        }
+    }
+}
+
+#[tokio::test]
+async fn negotiated_image_chunks_reassemble_before_final_ack() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let content = crate::protocol::pack_rgba_image(512, 512, &vec![4; 512 * 512 * 4]).unwrap();
+    let expected = content.clone();
+    let event = SharedEvent::encode(Command::ImagePayload, content).unwrap();
+    let mut server = MemoryConnection { io: server_io };
+    let server_task = tokio::spawn(async move {
+        let mut assembler = crate::image_chunks::ImageAssembler::default();
+        loop {
+            let frame = server.read_frame().await.unwrap();
+            assert_eq!(frame.command, Command::ImageChunk);
+            let (id, complete) = assembler.accept(&frame.payload).unwrap();
+            server
+                .write_frame(
+                    &Frame::try_new(Command::EventAck, 0, frame.sequence, id.ack_payload())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if let Some(envelope) = complete {
+                assert_eq!(envelope.content, expected);
+                break;
+            }
+        }
+    });
+    let pending = PendingFrame::new(event.queued(), 9);
+    let mut client = ImageConnection(MemoryConnection { io: client_io });
+    timeout(
+        Duration::from_secs(2),
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn file_window_sends_all_chunks_before_waiting_for_cumulative_acks() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let transfer_id = TransferId([0x46; 16]);
+    let mut server = MemoryConnection { io: server_io };
+    let server_task = tokio::spawn(async move {
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            received.push(server.read_frame().await.unwrap());
+        }
+        for (index, frame) in received.iter().enumerate() {
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::FileAck,
+                        0,
+                        frame.sequence,
+                        FileOffset {
+                            transfer_id,
+                            next_offset: ((index + 1) * 8) as u64,
+                        }
+                        .encode(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let chunks = (0..3)
+        .map(|index| {
+            crate::protocol::FileChunkPayload {
+                transfer_id,
+                offset: index * 8,
+                data: vec![index as u8; 8],
+            }
+            .encode()
+            .unwrap()
+        })
+        .collect();
+    let (completion, _) = oneshot::channel();
+    let queued = QueuedFrame::confirmed_file_window(chunks, transfer_id, completion).unwrap();
+    assert_eq!(queued.sequence_span(), 3);
+    let pending = PendingFrame::new(queued, 9);
+    let mut client = WindowConnection(MemoryConnection { io: client_io });
+    let receipt = timeout(
+        Duration::from_secs(1),
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(receipt.next_offset, Some(24));
+    assert!(!receipt.resume_required);
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn file_window_returns_confirmed_prefix_when_later_ack_times_out() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let transfer_id = TransferId([0x47; 16]);
+    let mut server = MemoryConnection { io: server_io };
+    let server_task = tokio::spawn(async move {
+        let first = server.read_frame().await.unwrap();
+        server.read_frame().await.unwrap();
+        server
+            .write_frame(
+                &Frame::try_new(
+                    Command::FileAck,
+                    0,
+                    first.sequence,
+                    FileOffset {
+                        transfer_id,
+                        next_offset: 8,
+                    }
+                    .encode(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+    let chunks = (0..2)
+        .map(|index| {
+            crate::protocol::FileChunkPayload {
+                transfer_id,
+                offset: index * 8,
+                data: vec![1; 8],
+            }
+            .encode()
+            .unwrap()
+        })
+        .collect();
+    let (completion, _) = oneshot::channel();
+    let pending = PendingFrame::new(
+        QueuedFrame::confirmed_file_window(chunks, transfer_id, completion).unwrap(),
+        1,
+    );
+    let config = DeliveryConfig::try_new(
+        Duration::from_millis(10),
+        Duration::from_millis(20),
+        Duration::from_millis(1),
+        1,
+    )
+    .unwrap();
+    let mut client = WindowConnection(MemoryConnection { io: client_io });
+    let receipt = deliver_pending_frame(&mut client, &pending, &config)
+        .await
+        .unwrap();
+    assert_eq!(receipt.next_offset, Some(8));
+    assert!(receipt.resume_required);
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn file_window_falls_back_to_stop_and_wait_without_negotiation() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let transfer_id = TransferId([0x48; 16]);
+    let mut server = MemoryConnection { io: server_io };
+    let server_task = tokio::spawn(async move {
+        for index in 0..2 {
+            let frame = server.read_frame().await.unwrap();
+            assert_eq!(frame.sequence, index + 5);
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::FileAck,
+                        0,
+                        frame.sequence,
+                        FileOffset {
+                            transfer_id,
+                            next_offset: (index + 1) as u64 * 8,
+                        }
+                        .encode(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let chunks = (0..2)
+        .map(|index| {
+            crate::protocol::FileChunkPayload {
+                transfer_id,
+                offset: index * 8,
+                data: vec![1; 8],
+            }
+            .encode()
+            .unwrap()
+        })
+        .collect();
+    let (completion, _) = oneshot::channel();
+    let pending = PendingFrame::new(
+        QueuedFrame::confirmed_file_window(chunks, transfer_id, completion).unwrap(),
+        5,
+    );
+    let mut client = MemoryConnection { io: client_io };
+    let receipt = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+        .await
+        .unwrap();
+    assert_eq!(receipt.next_offset, Some(16));
+    server_task.await.unwrap();
+}
+
+async fn delayed_four_megabyte_delivery(delay: Duration, window_enabled: bool) -> Duration {
+    let (client_io, server_io) = tokio::io::duplex(8 * 1024 * 1024);
+    let transfer_id = TransferId([0x49; 16]);
+    let chunks = (0..4)
+        .map(|index| {
+            crate::protocol::FileChunkPayload {
+                transfer_id,
+                offset: index * crate::protocol::FILE_CHUNK_SIZE as u64,
+                data: vec![index as u8; crate::protocol::FILE_CHUNK_SIZE],
+            }
+            .encode()
+            .unwrap()
+        })
+        .collect();
+    let (completion, _) = oneshot::channel();
+    let pending = PendingFrame::new(
+        QueuedFrame::confirmed_file_window(chunks, transfer_id, completion).unwrap(),
+        1,
+    );
+    let server_task = tokio::spawn(async move {
+        let mut server = MemoryConnection { io: server_io };
+        if window_enabled {
+            let mut frames = Vec::new();
+            for _ in 0..4 {
+                frames.push(server.read_frame().await.unwrap());
+            }
+            tokio::time::sleep(delay).await;
+            for (index, frame) in frames.iter().enumerate() {
+                server
+                    .write_frame(
+                        &Frame::try_new(
+                            Command::FileAck,
+                            0,
+                            frame.sequence,
+                            FileOffset {
+                                transfer_id,
+                                next_offset: (index + 1) as u64
+                                    * crate::protocol::FILE_CHUNK_SIZE as u64,
+                            }
+                            .encode(),
+                        )
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        } else {
+            for index in 0..4 {
+                let frame = server.read_frame().await.unwrap();
+                tokio::time::sleep(delay).await;
+                server
+                    .write_frame(
+                        &Frame::try_new(
+                            Command::FileAck,
+                            0,
+                            frame.sequence,
+                            FileOffset {
+                                transfer_id,
+                                next_offset: (index + 1) as u64
+                                    * crate::protocol::FILE_CHUNK_SIZE as u64,
+                            }
+                            .encode(),
+                        )
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    let started = std::time::Instant::now();
+    let receipt = if window_enabled {
+        let mut client = WindowConnection(MemoryConnection { io: client_io });
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap()
+    } else {
+        let mut client = MemoryConnection { io: client_io };
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+            .await
+            .unwrap()
+    };
+    let elapsed = started.elapsed();
+    assert_eq!(
+        receipt.next_offset,
+        Some(4 * crate::protocol::FILE_CHUNK_SIZE as u64)
+    );
+    server_task.await.unwrap();
+    elapsed
+}
+
+#[tokio::test]
+async fn four_megabyte_window_reduces_80_and_150_ms_ack_latency() {
+    for delay in [Duration::from_millis(80), Duration::from_millis(150)] {
+        let legacy = delayed_four_megabyte_delivery(delay, false).await;
+        let window = delayed_four_megabyte_delivery(delay, true).await;
+        eprintln!(
+            "simulated_ack_delay_ms={} stop_wait_ms={} window_ms={}",
+            delay.as_millis(),
+            legacy.as_millis(),
+            window.as_millis()
+        );
+        assert!(window + delay < legacy);
+    }
+}
+
 struct FakeAdapter {
     connects: tokio::sync::Mutex<
         std::collections::VecDeque<Result<(MemoryConnection, ResolvedCandidate), String>>,
@@ -891,6 +1259,7 @@ fn fast_worker_config() -> WorkerConfig {
         refresh_timeout: Duration::from_secs(5),
         pending_frame_ttl: Duration::from_secs(5 * 60),
         delivery: DeliveryConfig::DEFAULT,
+        retry_wakeup: std::sync::Arc::new(tokio::sync::Notify::new()),
     }
 }
 
@@ -1002,6 +1371,109 @@ async fn worker_delivers_frames_and_registers_session() {
         0,
         "the session lease must be released when the worker exits"
     );
+}
+
+#[tokio::test]
+async fn worker_wakes_reconnect_backoff_when_new_work_arrives() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    let transfer_id = TransferId([0x29; 16]);
+    let adapter = std::sync::Arc::new(scripted_adapter(vec![
+        Err("network offline".to_string()),
+        Ok((MemoryConnection { io: client_io }, candidate.clone())),
+    ]));
+
+    let server = tokio::spawn(async move {
+        let mut server = MemoryConnection { io: server_io };
+        let frame = server.read_frame().await.unwrap();
+        assert_eq!(frame.command, Command::FileChunk);
+        server
+            .write_frame(
+                &Frame::try_new(
+                    Command::FileAck,
+                    0,
+                    frame.sequence,
+                    FileOffset {
+                        transfer_id,
+                        next_offset: 8,
+                    }
+                    .encode(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let (priority_tx, priority_rx) = mpsc::channel(4);
+    let (bulk_tx, bulk_rx) = mpsc::channel(4);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut config = fast_worker_config();
+    config.reconnect_delay = Duration::from_secs(5);
+    let wakeup = config.retry_wakeup.clone();
+    let config_for_worker = config.clone();
+    let adapter_for_worker = adapter.clone();
+    let worker = tokio::spawn(async move {
+        run_connection_worker(
+            adapter_for_worker.as_ref(),
+            &config_for_worker,
+            vec![candidate],
+            "peer".into(),
+            priority_rx,
+            bulk_rx,
+            shutdown_rx,
+        )
+        .await
+    });
+
+    timeout(Duration::from_secs(1), async {
+        while adapter
+            .connect_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("initial failed connection attempt");
+
+    let (completion_tx, mut completion_rx) = oneshot::channel();
+    priority_tx
+        .send(
+            QueuedFrame::confirmed_file(
+                Command::FileChunk,
+                vec![0u8; 8],
+                transfer_id,
+                completion_tx,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    wakeup.notify_one();
+
+    let receipt = timeout(Duration::from_millis(250), &mut completion_rx)
+        .await
+        .expect("new work should interrupt reconnect backoff")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.next_offset, Some(8));
+    assert_eq!(
+        adapter
+            .connect_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the worker should reconnect immediately after the wakeup"
+    );
+
+    server.await.unwrap();
+    drop(priority_tx);
+    drop(bulk_tx);
+    timeout(Duration::from_secs(2), worker)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

@@ -4,6 +4,7 @@ use tailsync_runtime::contracts::*;
 #[derive(Serialize, schemars::JsonSchema)]
 struct LocalContractExports {
     capabilities: LocalCapabilities,
+    stable_error: StableErrorEnvelope,
     history: tailsync_core::db::HistoryQueryPage,
     favorite: tailsync_core::db::FavoriteMutation,
     mac_runtime: MacRuntimeSnapshot,
@@ -14,6 +15,20 @@ struct LocalContractExports {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--stable-error-policies") {
+        let codes = [
+            StableErrorCode::InvalidArgument,
+            StableErrorCode::NotFound,
+            StableErrorCode::TemporarilyBusy,
+            StableErrorCode::StorageUnavailable,
+            StableErrorCode::Unauthorized,
+            StableErrorCode::ProtocolIncompatible,
+            StableErrorCode::InternalError,
+        ];
+        let policies = codes.map(StableErrorEnvelope::new);
+        println!("{}", serde_json::to_string(&policies).unwrap());
+        return;
+    }
     if std::env::args().any(|arg| arg == "--fixtures") {
         println!("{}", serde_json::to_string_pretty(&fixtures()).unwrap());
         return;
@@ -56,7 +71,8 @@ fn fixtures() -> LocalContractExports {
         can_stop: true,
     };
     LocalContractExports {
-        capabilities: LocalCapabilities::current("macos", 4, true, true),
+        capabilities: LocalCapabilities::current("macos", 5, true, true),
+        stable_error: StableErrorEnvelope::new(StableErrorCode::TemporarilyBusy),
         history: HistoryQueryPage {
             entries: vec![HistoryEntry {
                 id: 7,

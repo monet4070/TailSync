@@ -2,22 +2,42 @@ use super::*;
 
 /// Get current clipboard version (for polling-based refresh)
 #[command]
-pub async fn get_version() -> Result<serde_json::Value, String> {
+pub async fn get_version() -> Result<serde_json::Value, CommandError> {
     Ok(serde_json::json!({
         "version": crate::api::get_clipboard_version()
     }))
 }
 
 /// Report the versioned local UI contract before an optional optimized path is
-/// selected.  The capability is transport-local and does not change wire v4.
+/// selected. The stable-error capability is local to the UI transport.
 #[command]
 pub fn get_local_capabilities() -> tailsync_runtime::contracts::LocalCapabilities {
-    tailsync_runtime::contracts::LocalCapabilities::current(
+    windows_local_capabilities(true, true)
+}
+
+pub(crate) fn windows_local_capabilities(
+    supports_binary_preview: bool,
+    supports_runtime_snapshot: bool,
+) -> tailsync_runtime::contracts::LocalCapabilities {
+    let mut capabilities = tailsync_runtime::contracts::LocalCapabilities::current(
         "windows",
         crate::protocol::VERSION,
-        true,
-        true,
-    )
+        supports_binary_preview,
+        supports_runtime_snapshot,
+    );
+    capabilities.supports_stable_errors = true;
+    capabilities
+}
+
+#[cfg(test)]
+mod stable_capability_tests {
+    #[test]
+    fn windows_tauri_advertises_stable_errors() {
+        assert!(super::get_local_capabilities().supports_stable_errors);
+        let socket = super::windows_local_capabilities(false, false);
+        assert!(socket.supports_stable_errors);
+        assert!(!socket.supports_binary_preview);
+    }
 }
 
 pub use tailsync_runtime::contracts::WindowsRuntimeSnapshot as RuntimeSnapshot;
@@ -30,7 +50,7 @@ pub async fn wait_runtime_snapshot(
     since_revision: u64,
     wait_ms: Option<u64>,
     since_notification_id: Option<u64>,
-) -> Result<RuntimeSnapshot, String> {
+) -> Result<RuntimeSnapshot, CommandError> {
     let wait_ms = wait_ms.unwrap_or(2_500).clamp(50, 15_000);
     let _ = crate::api::wait_for_runtime_revision(
         since_revision,
@@ -50,8 +70,8 @@ pub async fn wait_runtime_snapshot(
 }
 
 #[command]
-pub async fn get_sync_warning() -> Result<Option<tailsync_core::sync_warning::SyncWarning>, String>
-{
+pub async fn get_sync_warning(
+) -> Result<Option<tailsync_core::sync_warning::SyncWarning>, CommandError> {
     Ok(tailsync_core::sync_warning::take())
 }
 
@@ -64,7 +84,7 @@ pub struct UpdateStatus {
 /// Report updater availability separately from checking the network so a build
 /// with a missing trust anchor can explain why updates are unavailable in the UI.
 #[command]
-pub async fn get_update_status() -> Result<UpdateStatus, String> {
+pub async fn get_update_status() -> Result<UpdateStatus, CommandError> {
     Ok(UpdateStatus {
         current_version: env!("CARGO_PKG_VERSION"),
         updates_enabled: crate::updates::public_key_configured(),
@@ -74,11 +94,15 @@ pub async fn get_update_status() -> Result<UpdateStatus, String> {
 #[command]
 pub async fn check_for_update(
     app: AppHandle,
-) -> Result<Option<crate::updates::UpdateInfo>, String> {
-    crate::updates::check_for_update(&app).await
+) -> Result<Option<crate::updates::UpdateInfo>, CommandError> {
+    crate::updates::check_for_update(&app)
+        .await
+        .map_err(Into::into)
 }
 
 #[command]
-pub async fn install_update(app: AppHandle) -> Result<bool, String> {
-    crate::updates::install_available_update(&app).await
+pub async fn install_update(app: AppHandle) -> Result<bool, CommandError> {
+    crate::updates::install_available_update(&app)
+        .await
+        .map_err(Into::into)
 }
