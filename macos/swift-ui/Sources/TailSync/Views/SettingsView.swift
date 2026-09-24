@@ -39,7 +39,7 @@ struct SettingsView: View {
         }
 
         var recordKey: String {
-            self == .sync ? "settings.shortcutRecord" : "settings.historyShortcutRecord"
+            "settings.shortcutRecord"
         }
 
         func value(in settings: AppSettings) -> String {

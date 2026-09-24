@@ -141,44 +141,77 @@ extension SettingsView {
 
     func shortcutRow(_ kind: ShortcutKind) -> some View {
         settingRow {
-            settingTitle(kind.titleKey, descriptionKey: kind.descriptionKey)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Loc.t(kind.titleKey))
+                Text(Loc.t(kind.descriptionKey))
+                    .font(.caption2)
+                    .foregroundColor(palette.tertiaryColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !shortcutError.isEmpty, shortcutErrorKind == kind {
+                    Text(shortcutError)
+                        .font(.caption2)
+                        .foregroundColor(.red)
+                        .lineLimit(2)
+                }
+            }
             Spacer()
             if recordingShortcut == kind {
-                HStack(spacing: 4) {
+                HStack(spacing: 8) {
                     if shortcutDraft.isEmpty {
-                        Text(Loc.t("settings.shortcutRecording"))
-                            .font(.caption2.monospaced())
-                            .foregroundColor(palette.accentColor)
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(palette.accentColor)
+                                .frame(width: 6, height: 6)
+                            Text(Loc.t("settings.shortcutRecording"))
+                                .font(.caption2.monospaced())
+                                .foregroundColor(palette.accentColor)
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(palette.accentSoftColor.opacity(0.45))
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     } else {
                         ShortcutKeycapRow(palette: palette, shortcut: shortcutDraft)
                     }
+
+                    Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording(kind) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(shortcutBusy)
+
+                    Button(Loc.t("settings.shortcutSave")) { confirmShortcut(kind) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(shortcutDraft.isEmpty || shortcutBusy)
                 }
-                Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording(kind) }
-                    .buttonStyle(.borderless)
-                    .disabled(shortcutBusy)
-                Button(Loc.t("settings.shortcutSave")) { confirmShortcut(kind) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(shortcutDraft.isEmpty || shortcutBusy)
             } else {
-                Group {
+                HStack(spacing: 10) {
                     if kind.value(in: settings).isEmpty {
                         Text(Loc.t("settings.shortcutNone"))
                             .font(.caption2.monospaced())
                             .foregroundColor(palette.tertiaryColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(palette.surfaceColor)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .stroke(palette.borderColor.opacity(0.7), lineWidth: 0.8)
+                            }
                     } else {
                         ShortcutKeycapRow(palette: palette, shortcut: kind.value(in: settings))
                     }
-                }
-                Button(Loc.t(kind.recordKey)) { startShortcutRecording(kind) }
-                    .buttonStyle(.borderless)
+
+                    Button(kind.value(in: settings).isEmpty ? Loc.t("settings.shortcutRecord") : Loc.t("settings.shortcutChange")) {
+                        startShortcutRecording(kind)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(minWidth: 54)
                     .disabled(shortcutBusy || recordingShortcut != nil)
-            }
-            if !shortcutError.isEmpty, shortcutErrorKind == kind {
-                Text(shortcutError)
-                    .font(.caption2)
-                    .foregroundColor(.red)
-                    .lineLimit(2)
+                }
             }
         }
     }
