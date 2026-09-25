@@ -168,7 +168,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    VStack(spacing: 14) {
+                    VStack(spacing: 16) {
                         generalSection
                         updatesSection
                         historySection
@@ -176,7 +176,7 @@ struct SettingsView: View {
                         networkSection
                         appearanceSection
                     }
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 14)
                 }
                 .overlay(alignment: .bottom) {
                     actionToast

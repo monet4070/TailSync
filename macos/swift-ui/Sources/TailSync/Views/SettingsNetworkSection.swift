@@ -187,7 +187,9 @@ extension SettingsView {
                     .foregroundColor(peerError == nil ? palette.secondaryColor : palette.warningColor)
                 Spacer()
                 Button { refreshPeers() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(minWidth: 54)
                     .help(Loc.t("settings.refresh"))
             }
         } else {
@@ -197,7 +199,9 @@ extension SettingsView {
                     .foregroundColor(palette.tertiaryColor)
                 Spacer()
                 Button { refreshPeers() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(minWidth: 54)
                     .help(Loc.t("settings.refresh"))
             }
             .padding(.horizontal, 16)
@@ -396,7 +400,9 @@ extension SettingsView {
                     Image(systemName: "bolt.horizontal")
                         .frame(width: 22, height: 22)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(minWidth: 54)
                 .disabled(testRoutes.isEmpty)
                 .help(needsIrohRediscovery
                     ? Loc.t("settings.testRouteRediscover")
@@ -413,6 +419,7 @@ extension SettingsView {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .frame(minWidth: 54)
                 .tint(.red)
                 .help(Loc.t("settings.unpair"))
             } else if !peer.trusted {
@@ -424,7 +431,9 @@ extension SettingsView {
                     Image(systemName: "link.badge.plus")
                         .frame(width: 22, height: 22)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(minWidth: 54)
                 .disabled(pairingRoute == nil || pairingInProgress)
                 .help(Loc.t("settings.pair"))
             }

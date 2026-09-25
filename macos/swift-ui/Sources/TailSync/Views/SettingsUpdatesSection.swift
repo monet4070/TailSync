@@ -28,6 +28,7 @@ extension SettingsView {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .frame(minWidth: 54)
                 .disabled(appUpdatePhase == .checking || appUpdatePhase == .installing)
             }
         }

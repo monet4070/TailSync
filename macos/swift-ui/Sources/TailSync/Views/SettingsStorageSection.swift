@@ -5,7 +5,7 @@ extension SettingsView {
     var historySection: some View {
         settingsCard(title: Loc.t("settings.history")) {
             settingRow {
-                Text(Loc.t("settings.limit"))
+                settingTitle("settings.limit", descriptionKey: "settings.limitDescription")
                 Spacer()
                 historyLimitControl
             }
@@ -38,11 +38,14 @@ extension SettingsView {
                         systemImage: "folder"
                     )
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(minWidth: 54)
                 .disabled(storageBusy)
             }
             themedDivider.padding(.leading, 16)
             settingRow {
-                Text(Loc.t("settings.storageQuota"))
+                settingTitle("settings.storageQuota", descriptionKey: "settings.storageQuotaDescription")
                 Spacer()
                 Stepper(value: Binding(
                     get: { Int(settings.storage_quota_bytes / (1024 * 1024 * 1024)) },
@@ -64,7 +67,13 @@ extension SettingsView {
                     Button(Loc.t("settings.storageDeleteOld"), role: .destructive) {
                         deleteOldStorage(oldStorage)
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(minWidth: 54)
                     Button(Loc.t("settings.storageKeepOld")) { self.oldStorage = nil }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .frame(minWidth: 54)
                 }
             }
         }
@@ -115,24 +124,24 @@ extension SettingsView {
     var appearanceSection: some View {
         settingsCard(title: Loc.t("settings.appearance")) {
             settingRow {
-                Text(Loc.t("settings.theme"))
+                settingTitle("settings.theme", descriptionKey: "settings.themeDescription")
                 Spacer()
                 Picker("", selection: Binding(
                     get: { loc.localThemeSettings.appearance },
                     set: { appearance in Task { @MainActor in await loc.selectLocalTheme(id: loc.localThemeSettings.activeThemeId, appearance: appearance) } }
                 )) {
-                    Text(Loc.t("settings.themeSystem")).tag("system")
-                    Text(Loc.t("settings.themeLight")).tag("light")
-                    Text(Loc.t("settings.themeDark")).tag("dark")
+                    Label(Loc.t("settings.themeSystem"), systemImage: "desktopcomputer").tag("system")
+                    Label(Loc.t("settings.themeLight"), systemImage: "sun.max").tag("light")
+                    Label(Loc.t("settings.themeDark"), systemImage: "moon").tag("dark")
                 }
-                .pickerStyle(.menu)
-                .frame(width: 130)
+                .pickerStyle(.segmented)
+                .frame(width: 190)
             }
             themedDivider.padding(.leading, 16)
             colorThemePicker
             themedDivider.padding(.leading, 16)
             settingRow {
-                Text(Loc.t("settings.language"))
+                settingTitle("settings.language", descriptionKey: "settings.languageDescription")
                 Spacer()
                 Picker("", selection: $settings.language) {
                     Text("English").tag("en")
