@@ -191,9 +191,7 @@ pub(super) async fn handle_iroh_connection(
     if claimed_endpoint_id != remote_endpoint_id {
         return Err("Peer Iroh endpoint does not match its Noise identity".into());
     }
-    if accepted.purpose == secure::HandshakePurpose::Pairing {
-        super::iroh::remember_rtt_capability(&remote_endpoint_id);
-    }
+    super::iroh::remember_rtt_capability(&remote_endpoint_id);
     handle_accepted_connection(
         accepted,
         InboundSource::Iroh(remote_endpoint_id),

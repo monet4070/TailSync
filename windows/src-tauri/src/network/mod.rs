@@ -124,6 +124,11 @@ pub fn merge_paired_peers(
     mode: &str,
     discovered: Vec<tailscale::PeerInfo>,
 ) -> Vec<tailscale::PeerInfo> {
+    for addrs in settings.trusted_peer_addresses.values() {
+        if let Some(endpoint) = addrs.get("iroh") {
+            iroh::remember_rtt_capability(endpoint);
+        }
+    }
     tailsync_core::peer::directory::merge_paired_peers(settings, mode, discovered, |endpoint_id| {
         iroh::supports_rtt(endpoint_id)
     })

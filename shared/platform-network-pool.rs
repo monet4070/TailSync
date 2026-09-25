@@ -383,7 +383,12 @@ impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
         hostname: &str,
         candidates: &[ResolvedCandidate],
     ) -> Result<(secure::SecureConnection, ResolvedCandidate), String> {
-        race_connect_and_handshake(candidates, hostname, &self.identity, &self.settings).await
+        let (conn, candidate) =
+            race_connect_and_handshake(candidates, hostname, &self.identity, &self.settings).await?;
+        if candidate.candidate.interface == ConnectionInterface::Iroh {
+            super::iroh::remember_rtt_capability(&candidate.candidate.address);
+        }
+        Ok((conn, candidate))
     }
 
     fn register_session(
@@ -393,6 +398,9 @@ impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
         address: &str,
         latency_ms: u64,
     ) -> Self::SessionLease {
+        if interface == ConnectionInterface::Iroh {
+            super::iroh::remember_rtt_capability(address);
+        }
         register_active_session(hostname, interface, address, latency_ms)
     }
 
