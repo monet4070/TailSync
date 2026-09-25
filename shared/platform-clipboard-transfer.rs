@@ -596,14 +596,6 @@ async fn resume_outgoing_file_batches_once(
         let Some(_batch_claim) = sync::try_claim_outgoing_batch(batch_id) else {
             continue;
         };
-        if journal.attempt_count >= sync::MAX_OUTGOING_RETRY_ATTEMPTS {
-            warn!(
-                "Retiring outgoing file batch {batch_id_hex} after reaching maximum retry limit ({})",
-                journal.attempt_count
-            );
-            let _ = sync::remove_outgoing_batch(batch_id);
-            continue;
-        }
         let prepared = match journal.prepared_file_batch() {
             Ok(prepared) => Arc::new(prepared),
             Err(error) => {

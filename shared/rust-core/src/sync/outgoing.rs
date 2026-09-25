@@ -14,7 +14,6 @@ const OUTGOING_BATCH_SUFFIX: &str = ".outgoing.json";
 const OUTGOING_SELECTION_SUFFIX: &str = ".outgoing-pending.json";
 const OUTGOING_RETRY_DELAYS_SECONDS: [i64; 5] = [2, 10, 30, 120, 600];
 const OUTGOING_ERROR_MAX_BYTES: usize = 500;
-pub const MAX_OUTGOING_RETRY_ATTEMPTS: u32 = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum OutgoingTransferKey {

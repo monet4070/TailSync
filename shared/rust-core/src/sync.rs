@@ -38,7 +38,7 @@ pub use outgoing::{
     remove_outgoing_batch, remove_outgoing_selection, retire_outgoing_batches_for_peer,
     schedule_outgoing_batch_retry, schedule_outgoing_selection_retry, try_claim_outgoing_batch,
     try_claim_outgoing_selection, OutgoingTransferClaim, PersistedOutgoingBatch,
-    PersistedOutgoingFile, PersistedOutgoingSelection, MAX_OUTGOING_RETRY_ATTEMPTS,
+    PersistedOutgoingFile, PersistedOutgoingSelection,
 };
 
 const SEEN_MESSAGE_RETENTION_SECONDS: i64 = 10 * 60;
