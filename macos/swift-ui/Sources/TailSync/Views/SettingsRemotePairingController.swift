@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-extension SettingsView {
+extension ConnectionsView {
     func handleRemotePairingLink(_ link: String) {
         remoteInviteLink = link.trimmingCharacters(in: .whitespacesAndNewlines)
         remoteInvitePreview = nil

@@ -72,4 +72,40 @@ final class SettingsUIPreviewTests: XCTestCase {
             SettingsView().networkSection
         }
     }
+
+    @MainActor
+    func testPreviewConnectionsView() throws {
+        try render(name: "connections-zh-light.png", lang: "zh-CN", scheme: .light) {
+            let view = ConnectionsView()
+            view.isLoading = false
+            return view.connectionsCard
+        }
+        try render(name: "connections-en-light.png", lang: "en", scheme: .light) {
+            let view = ConnectionsView()
+            view.isLoading = false
+            return view.connectionsCard
+        }
+        try render(name: "connections-zh-dark.png", lang: "zh-CN", scheme: .dark) {
+            let view = ConnectionsView()
+            view.isLoading = false
+            return view.connectionsCard
+        }
+        try render(name: "connections-expanded-zh-light.png", lang: "zh-CN", scheme: .light) {
+            let view = ConnectionsView()
+            view.isLoading = false
+            view.remotePairingExpanded = true
+            return view.connectionsCard
+        }
+        try render(name: "connections-with-invite-zh-light.png", lang: "zh-CN", scheme: .light) {
+            let view = ConnectionsView()
+            view.isLoading = false
+            view.remotePairingExpanded = true
+            view.remoteInvite = ApiClient.RemotePairingInvite(
+                link: "tailsync://pair/v1/mock-invitation-token-12345",
+                expires_at: 1800000000,
+                remaining_seconds: 240
+            )
+            return view.connectionsCard
+        }
+    }
 }
