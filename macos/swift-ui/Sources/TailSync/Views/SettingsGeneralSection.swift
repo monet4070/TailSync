@@ -42,17 +42,36 @@ struct ShortcutKeycapRow: View {
 extension SettingsView {
     func settingTitle(
         _ titleKey: String,
-        descriptionKey: String? = nil
+        descriptionKey: String? = nil,
+        placeholder: String? = nil,
+        placeholderValue: String? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(Loc.t(titleKey))
             if let descriptionKey {
-                Text(Loc.t(descriptionKey))
+                let desc = resolvedDescription(
+                    key: descriptionKey,
+                    placeholder: placeholder,
+                    placeholderValue: placeholderValue
+                )
+                Text(desc)
                     .font(.caption2)
                     .foregroundColor(palette.tertiaryColor)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func resolvedDescription(
+        key: String,
+        placeholder: String?,
+        placeholderValue: String?
+    ) -> String {
+        var desc = Loc.t(key)
+        if let placeholder, let placeholderValue {
+            desc = desc.replacingOccurrences(of: placeholder, with: placeholderValue)
+        }
+        return desc
     }
 
     var generalSection: some View {

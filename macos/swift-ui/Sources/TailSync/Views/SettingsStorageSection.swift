@@ -5,7 +5,12 @@ extension SettingsView {
     var historySection: some View {
         settingsCard(title: Loc.t("settings.history")) {
             settingRow {
-                settingTitle("settings.limit", descriptionKey: "settings.limitDescription")
+                settingTitle(
+                    "settings.limit",
+                    descriptionKey: "settings.limitDescription",
+                    placeholder: "{value}",
+                    placeholderValue: "\(settings.history_limit)"
+                )
                 Spacer()
                 historyLimitControl
             }
