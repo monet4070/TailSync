@@ -14,6 +14,7 @@ const OUTGOING_BATCH_SUFFIX: &str = ".outgoing.json";
 const OUTGOING_SELECTION_SUFFIX: &str = ".outgoing-pending.json";
 const OUTGOING_RETRY_DELAYS_SECONDS: [i64; 5] = [2, 10, 30, 120, 600];
 const OUTGOING_ERROR_MAX_BYTES: usize = 500;
+pub const MAX_OUTGOING_RETRY_ATTEMPTS: u32 = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum OutgoingTransferKey {
@@ -380,6 +381,102 @@ fn enroll_outgoing_batch_peers_at(
         write_outgoing_batch_at(directory, &mut batch)?;
     }
     Ok(())
+}
+
+pub fn rebind_outgoing_batch_peers(
+    batch_id: TransferId,
+    trusted_peers: &[(String, String)],
+) -> Result<bool, String> {
+    let directory = outgoing_dir();
+    rebind_outgoing_batch_peers_at(&directory, batch_id, trusted_peers)
+}
+
+fn rebind_outgoing_batch_peers_at(
+    directory: &Path,
+    batch_id: TransferId,
+    trusted_peers: &[(String, String)],
+) -> Result<bool, String> {
+    let mut batch = read_outgoing_batch_at(directory, batch_id)?;
+    if batch.peers.is_empty() {
+        return Ok(true);
+    }
+    let trusted_map: std::collections::HashMap<&str, &str> = trusted_peers
+        .iter()
+        .map(|(h, f)| (h.as_str(), f.as_str()))
+        .collect();
+
+    let mut changed = false;
+    let mut has_trusted_uncompleted_peer = false;
+
+    for index in 0..batch.peers.len() {
+        if batch.is_peer_completed_at(index) {
+            continue;
+        }
+        let hostname = &batch.peers[index];
+        if let Some(&current_fingerprint) = trusted_map.get(hostname.as_str()) {
+            has_trusted_uncompleted_peer = true;
+            let current_enrolled = batch
+                .peer_fingerprints
+                .get(index)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            if current_enrolled != current_fingerprint {
+                if index < batch.peer_fingerprints.len() {
+                    batch.peer_fingerprints[index] = current_fingerprint.to_string();
+                } else {
+                    batch.peer_fingerprints.push(current_fingerprint.to_string());
+                }
+                changed = true;
+            }
+        }
+    }
+
+    if !has_trusted_uncompleted_peer {
+        return Ok(false);
+    }
+
+    if changed {
+        write_outgoing_batch_at(directory, &mut batch)?;
+    }
+    Ok(true)
+}
+
+pub fn retire_outgoing_batches_for_peer(hostname: &str) {
+    let directory = outgoing_dir();
+    retire_outgoing_batches_for_peer_at(&directory, hostname);
+}
+
+fn retire_outgoing_batches_for_peer_at(directory: &Path, hostname: &str) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(OUTGOING_BATCH_SUFFIX))
+        {
+            continue;
+        }
+        let Ok(data) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(mut batch) = serde_json::from_slice::<PersistedOutgoingBatch>(&data) else {
+            continue;
+        };
+        if let Some(pos) = batch.peers.iter().position(|p| p == hostname) {
+            if batch.peers.len() <= 1 {
+                let _ = fs::remove_file(&path);
+            } else {
+                batch.peers.remove(pos);
+                if pos < batch.peer_fingerprints.len() {
+                    batch.peer_fingerprints.remove(pos);
+                }
+                let _ = write_outgoing_batch_at(directory, &mut batch);
+            }
+        }
+    }
 }
 
 pub fn persist_outgoing_selection(
@@ -992,5 +1089,68 @@ mod tests {
             &mut last_notified_at,
             "storage unavailable"
         ));
+    }
+
+    #[test]
+    fn rebind_outgoing_batch_peers_updates_repaired_fingerprint() {
+        let source = test_directory("rebind-source");
+        let journal_dir = test_directory("rebind-journal");
+        let batch = prepared(&source);
+        persist_outgoing_batch_at_with_identities(
+            &journal_dir,
+            &batch,
+            &[("peer-a".into(), "old-fingerprint".into())],
+            None,
+        )
+        .unwrap();
+
+        // When peer-a is re-paired with a new fingerprint, rebind updates the journal
+        let can_complete = rebind_outgoing_batch_peers_at(
+            &journal_dir,
+            batch.manifest.batch_id,
+            &[("peer-a".into(), "new-fingerprint".into())],
+        )
+        .unwrap();
+        assert!(can_complete);
+
+        let restored = load_outgoing_batches_at(&journal_dir).pop().unwrap();
+        assert_eq!(restored.peer_fingerprints, ["new-fingerprint"]);
+        assert_eq!(
+            restored.pending_peers(&[("peer-a".into(), "new-fingerprint".into())]),
+            vec![&"peer-a".to_string()]
+        );
+
+        // When peer-a is removed from trusted peers completely, rebind signals retirement
+        let can_complete_untrusted = rebind_outgoing_batch_peers_at(
+            &journal_dir,
+            batch.manifest.batch_id,
+            &[("peer-other".into(), "key-other".into())],
+        )
+        .unwrap();
+        assert!(!can_complete_untrusted);
+
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
+    }
+
+    #[test]
+    fn retire_outgoing_batches_for_peer_removes_matching_journals() {
+        let source = test_directory("retire-source");
+        let journal_dir = test_directory("retire-journal");
+        let batch = prepared(&source);
+        persist_outgoing_batch_at_with_identities(
+            &journal_dir,
+            &batch,
+            &[("target-peer".into(), "key-target".into())],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(load_outgoing_batches_at(&journal_dir).len(), 1);
+        retire_outgoing_batches_for_peer_at(&journal_dir, "target-peer");
+        assert!(load_outgoing_batches_at(&journal_dir).is_empty());
+
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
     }
 }

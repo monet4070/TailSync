@@ -392,6 +392,7 @@ impl Settings {
         updated.enabled_peers.remove(hostname);
         updated.save()?;
         *self = updated;
+        crate::sync::retire_outgoing_batches_for_peer(hostname);
         Ok(())
     }
 }

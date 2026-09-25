@@ -596,6 +596,14 @@ async fn resume_outgoing_file_batches_once(
         let Some(_batch_claim) = sync::try_claim_outgoing_batch(batch_id) else {
             continue;
         };
+        if journal.attempt_count >= sync::MAX_OUTGOING_RETRY_ATTEMPTS {
+            warn!(
+                "Retiring outgoing file batch {batch_id_hex} after reaching maximum retry limit ({})",
+                journal.attempt_count
+            );
+            let _ = sync::remove_outgoing_batch(batch_id);
+            continue;
+        }
         let prepared = match journal.prepared_file_batch() {
             Ok(prepared) => Arc::new(prepared),
             Err(error) => {
@@ -607,6 +615,33 @@ async fn resume_outgoing_file_batches_once(
             if let Err(error) = sync::enroll_outgoing_batch_peers(batch_id, &peer_targets) {
                 warn!("Could not enroll recovered peers for outgoing file batch {batch_id_hex}: {error}");
                 continue;
+            }
+        }
+        let trusted_targets = settings
+            .lock()
+            .await
+            .trusted_peer_keys
+            .iter()
+            .filter_map(|(host, key_b64)| {
+                crate::identity::decode_public_key(key_b64)
+                    .ok()
+                    .map(|raw| (host.clone(), crate::identity::fingerprint(&raw)))
+            })
+            .collect::<Vec<_>>();
+
+        if !journal.peers.is_empty() {
+            match sync::rebind_outgoing_batch_peers(batch_id, &trusted_targets) {
+                Ok(false) => {
+                    info!(
+                        "Retiring outgoing file batch {batch_id_hex}: all pending peers are no longer trusted"
+                    );
+                    let _ = sync::remove_outgoing_batch(batch_id);
+                    continue;
+                }
+                Err(error) => {
+                    warn!("Could not rebind outgoing file batch {batch_id_hex}: {error}");
+                }
+                Ok(true) => {}
             }
         }
         let journal = sync::load_outgoing_batches()
@@ -697,26 +732,27 @@ async fn resume_outgoing_file_batches_once(
             }
         }
         if let Some(message) = retry_message {
+            let is_peer_unavailable = message == "No eligible peers are currently available";
             let should_notify = if failure_disposition == OutgoingBatchFailureDisposition::Retire {
                 match sync::remove_outgoing_batch(batch_id) {
-                    Ok(()) => true,
+                    Ok(()) => false,
                     Err(error) => {
                         warn!("Could not retire resumed file batch {batch_id_hex}: {error}");
                         match sync::schedule_outgoing_batch_retry(batch_id, &message) {
-                            Ok(should_notify) => should_notify,
+                            Ok(should_notify) => should_notify && !is_peer_unavailable,
                             Err(error) => {
                                 warn!("Could not persist resumed file batch retry state: {error}");
-                                true
+                                !is_peer_unavailable
                             }
                         }
                     }
                 }
             } else {
                 match sync::schedule_outgoing_batch_retry(batch_id, &message) {
-                    Ok(should_notify) => should_notify,
+                    Ok(should_notify) => should_notify && !is_peer_unavailable,
                     Err(error) => {
                         warn!("Could not persist resumed file batch retry state: {error}");
-                        true
+                        !is_peer_unavailable
                     }
                 }
             };
