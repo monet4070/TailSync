@@ -148,7 +148,7 @@ async fn glare_arbitration_keeps_one_deterministic_session_without_banning() {
     let manager = PairingManager::with_policy(
         Arc::new(Mutex::new(Settings::default())),
         local_identity.clone(),
-        Duration::from_secs(5),
+        Duration::from_secs(120),
         3,
         false,
     );
