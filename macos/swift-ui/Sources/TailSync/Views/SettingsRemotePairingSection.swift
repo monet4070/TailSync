@@ -11,7 +11,7 @@ extension ConnectionsView {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    remotePairingExpanded.toggle()
+                    remotePairing.expanded.toggle()
                 }
             } label: {
                 HStack(spacing: 10) {
@@ -31,7 +31,7 @@ extension ConnectionsView {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(palette.tertiaryColor)
-                        .rotationEffect(.degrees(remotePairingExpanded ? 90 : 0))
+                        .rotationEffect(.degrees(remotePairing.expanded ? 90 : 0))
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
@@ -40,7 +40,7 @@ extension ConnectionsView {
             }
             .buttonStyle(.plain)
 
-            if remotePairingExpanded {
+            if remotePairing.expanded {
                 remotePairingBody
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -135,24 +135,27 @@ extension ConnectionsView {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                TextField(Loc.t("settings.remoteInvitePlaceholder"), text: $remoteInviteLink)
+                TextField(Loc.t("settings.remoteInvitePlaceholder"), text: $remotePairing.link)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption2, design: .monospaced))
                     .disabled(remotePairingInProgress)
 
                 HStack(alignment: .center, spacing: 8) {
-                    if let preview = remoteInvitePreview {
+                    switch remotePairing.feedback {
+                    case .valid(let seconds):
                         Text(
                             Loc.t("settings.remoteInviteValid")
-                                .replacingOccurrences(of: "{seconds}", with: String(preview.remaining_seconds))
+                                .replacingOccurrences(of: "{seconds}", with: String(seconds))
                         )
                         .font(.caption2)
                         .foregroundColor(palette.positiveColor)
-                    } else if let remotePairingMessage {
-                        Text(remotePairingMessage)
+                    case .error(let message):
+                        Text(message)
                             .font(.caption2)
                             .foregroundColor(palette.warningColor)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case nil:
+                        EmptyView()
                     }
                     Spacer(minLength: 8)
                     Button(Loc.t("settings.checkInvite")) {
@@ -160,14 +163,14 @@ extension ConnectionsView {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(remotePairingInProgress || remoteInviteLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(remotePairingInProgress || remotePairing.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     Button(Loc.t("settings.startRemotePairing")) {
                         startRemotePairing()
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(remotePairingInProgress || remoteInviteLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(remotePairingInProgress || remotePairing.link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

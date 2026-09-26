@@ -53,11 +53,8 @@ struct ConnectionsView: View {
     @State var showPairingSheet = false
     @State var previousPairingPhase: String?
 
-    @State var remotePairingExpanded = false
+    @State var remotePairing = RemotePairingInputState()
     @State var remoteInvite: ApiClient.RemotePairingInvite?
-    @State var remoteInviteLink = ""
-    @State var remoteInvitePreview: ApiClient.RemotePairingInvitePreview?
-    @State var remotePairingMessage: String?
     @State var remotePairingInProgress = false
     @State var remoteInviteCopied = false
 
@@ -205,10 +202,18 @@ struct ConnectionsView: View {
             handleRemotePairingLink(link)
         }
         .onReceive(
+            NotificationCenter.default.publisher(for: GlobalShortcutController.syncStateChanged)
+        ) { notification in
+            if let enabled = notification.userInfo?["enabled"] as? Bool {
+                settings.sync_enabled = enabled
+                persistedSettings.sync_enabled = enabled
+            }
+        }
+        .onReceive(
             NotificationCenter.default.publisher(for: .tailSyncSettingsChanged)
         ) { notification in
             if let updated = notification.object as? AppSettings {
-                settings = updated
+                applyPersistedSettings(updated)
                 persistedSettings = updated
             }
         }
@@ -233,7 +238,13 @@ struct ConnectionsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 12)
-                Picker("", selection: $settings.connection_mode) {
+                Picker("", selection: Binding(
+                    get: { settings.connection_mode },
+                    set: { mode in
+                        settings.connection_mode = mode
+                        changeConnectionMode()
+                    }
+                )) {
                     Text(Loc.t("settings.modeAuto")).tag("auto")
                     Text(Loc.t("settings.modeLan")).tag("lan_only")
                     Text(Loc.t("settings.modeIroh")).tag("iroh_only")
@@ -241,9 +252,6 @@ struct ConnectionsView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 280)
-                .onChange(of: settings.connection_mode) { _ in
-                    changeConnectionMode()
-                }
             }
 
             themedDivider.padding(.leading, 16)
@@ -777,10 +785,11 @@ struct ConnectionsView: View {
     }
 
     func changeConnectionMode() {
+        saveGeneration += 1
+        let generation = saveGeneration
         peerLoadGeneration += 1
-        let generation = peerLoadGeneration
+        peerRequestInFlight = false
         let requestedMode = settings.connection_mode
-        let value = settings
         peers = []
         testResults = [:]
         peerError = nil
@@ -788,23 +797,26 @@ struct ConnectionsView: View {
 
         Task { @MainActor in
             do {
-                let outcome = await saveCoordinator.save(value, fallback: persistedSettings)
+                let outcome = await saveCoordinator.saveConnectionMode(requestedMode, fallback: persistedSettings)
                 if let message = outcome.error {
-                    guard generation == peerLoadGeneration else { return }
-                    persistedSettings = outcome.persisted
-                    applyPersistedSettings(outcome.persisted)
+                    guard generation == saveGeneration else { return }
+                    settings.connection_mode = outcome.persisted.connection_mode
+                    persistedSettings.connection_mode = outcome.persisted.connection_mode
                     throw ApiError.serverError(message)
                 }
-                persistedSettings = outcome.persisted
-                NotificationCenter.default.post(name: .tailSyncSettingsChanged, object: outcome.persisted)
-                guard generation == peerLoadGeneration,
+                guard generation == saveGeneration,
                       requestedMode == settings.connection_mode else { return }
+                persistedSettings.connection_mode = outcome.persisted.connection_mode
+                NotificationCenter.default.post(
+                    name: .tailSyncConnectionModeChanged,
+                    object: outcome.persisted.connection_mode
+                )
                 saved = true
                 loadPeers()
                 try? await Task.sleep(nanoseconds: 1_200_000_000)
-                saved = false
+                if generation == saveGeneration { saved = false }
             } catch {
-                guard generation == peerLoadGeneration else { return }
+                guard generation == saveGeneration else { return }
                 peerRequestInFlight = false
                 peersLoading = false
                 actionErrorMessage = error.localizedDescription

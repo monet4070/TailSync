@@ -537,6 +537,57 @@ fn obsolete_theme_fields_are_rejected() {
     assert!(error.to_string().contains("unknown field"));
 }
 
+#[tokio::test]
+async fn connection_mode_update_preserves_concurrent_fields_and_skips_noop_save() {
+    let original = Settings {
+        sync_enabled: false,
+        history_limit: 250,
+        ..Settings::default()
+    };
+    let state = tokio::sync::Mutex::new(original.clone());
+    let calls = AtomicUsize::new(0);
+    let persist = |settings: &Settings| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        assert!(!settings.sync_enabled);
+        assert_eq!(settings.history_limit, 250);
+        Ok(())
+    };
+    let (updated, changed) = super::apply_connection_mode_update(&state, "lan_only", &persist)
+        .await
+        .unwrap();
+    let mut expected = original;
+    expected.connection_mode = "lan_only".into();
+    assert!(changed);
+    assert_eq!(updated, expected);
+    assert_eq!(*state.lock().await, expected);
+    let (_, changed) = super::apply_connection_mode_update(&state, "lan_only", &persist)
+        .await
+        .unwrap();
+    assert!(!changed);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn connection_mode_update_does_not_commit_failed_or_invalid_values() {
+    let original = Settings {
+        sync_enabled: false,
+        ..Settings::default()
+    };
+    let state = tokio::sync::Mutex::new(original.clone());
+    let failure = |_: &Settings| Err("disk full".into());
+    assert!(matches!(
+        super::apply_connection_mode_update(&state, "lan_only", &failure).await,
+        Err(super::SettingsUpdateError::Persist(_))
+    ));
+    assert_eq!(*state.lock().await, original);
+    assert!(matches!(
+        super::apply_connection_mode_update(&state, "invalid", &|_| panic!("must not persist"))
+            .await,
+        Err(super::SettingsUpdateError::Validation(_))
+    ));
+    assert_eq!(*state.lock().await, original);
+}
+
 // ─── Legacy theme migration (config-v2.json theme/color_theme → V2) ───
 
 fn temp_data_dir(label: &str) -> std::path::PathBuf {

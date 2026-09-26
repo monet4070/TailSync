@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::path::Path;
@@ -23,6 +23,7 @@ pub const ALPN: &[u8] = b"tailsync/4";
 pub const RTT_ALPN: &[u8] = b"tailsync/4/rtt";
 pub const INVITE_ALPN: &[u8] = b"tailsync/4/invite";
 const SECRET_KEY_SIZE: usize = 32;
+const MAX_RTT_CAPABLE_ENDPOINTS: usize = 1024;
 static IDENTITY_RECOVERY_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
 
 type ShutdownFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
@@ -67,7 +68,7 @@ struct EndpointState {
 pub struct IrohEndpointRegistry {
     state: Mutex<EndpointState>,
     local_endpoint_id: StdMutex<Option<String>>,
-    rtt_capable_endpoints: StdMutex<HashSet<String>>,
+    rtt_capable_endpoints: StdMutex<VecDeque<String>>,
     mode_changed: Notify,
 }
 
@@ -76,7 +77,7 @@ impl Default for IrohEndpointRegistry {
         Self {
             state: Mutex::new(EndpointState::default()),
             local_endpoint_id: StdMutex::new(None),
-            rtt_capable_endpoints: StdMutex::new(HashSet::new()),
+            rtt_capable_endpoints: StdMutex::new(VecDeque::new()),
             mode_changed: Notify::new(),
         }
     }
@@ -88,17 +89,29 @@ impl IrohEndpointRegistry {
     }
 
     pub fn remember_rtt_capability(&self, endpoint_id: &str) {
-        self.rtt_capable_endpoints
+        let Ok(endpoint_id) = canonical_endpoint_id(endpoint_id) else {
+            return;
+        };
+        let mut endpoints = self
+            .rtt_capable_endpoints
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(endpoint_id.to_string());
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(index) = endpoints.iter().position(|known| known == &endpoint_id) {
+            endpoints.remove(index);
+        } else if endpoints.len() == MAX_RTT_CAPABLE_ENDPOINTS {
+            endpoints.pop_front();
+        }
+        endpoints.push_back(endpoint_id);
     }
 
     pub fn supports_rtt(&self, endpoint_id: &str) -> bool {
+        let Ok(endpoint_id) = canonical_endpoint_id(endpoint_id) else {
+            return false;
+        };
         self.rtt_capable_endpoints
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(endpoint_id)
+            .contains(&endpoint_id)
     }
 
     pub fn local_endpoint_id(&self) -> Option<String> {
@@ -627,11 +640,41 @@ mod tests {
         let first = IrohEndpointRegistry::default();
         let second = IrohEndpointRegistry::default();
 
-        first.remember_rtt_capability("peer-a");
+        let endpoint_id = SecretKey::from_bytes(&[1; 32]).public().to_string();
+        first.remember_rtt_capability(&endpoint_id);
 
-        assert!(first.supports_rtt("peer-a"));
+        assert!(first.supports_rtt(&endpoint_id));
         assert!(!first.supports_rtt("peer-b"));
-        assert!(!second.supports_rtt("peer-a"));
+        assert!(!second.supports_rtt(&endpoint_id));
+    }
+
+    #[test]
+    fn rtt_capability_cache_rejects_invalid_endpoint_ids() {
+        let registry = IrohEndpointRegistry::default();
+        registry.remember_rtt_capability("not-an-endpoint");
+        assert!(!registry.supports_rtt("not-an-endpoint"));
+        assert!(registry.rtt_capable_endpoints.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rtt_capability_cache_is_bounded_and_refreshes_existing_entries() {
+        let registry = IrohEndpointRegistry::default();
+        let endpoints = (0..=1024_u64)
+            .map(|index| {
+                let mut seed = [0_u8; 32];
+                seed[..8].copy_from_slice(&index.to_le_bytes());
+                SecretKey::from_bytes(&seed).public().to_string()
+            })
+            .collect::<Vec<_>>();
+        for endpoint in &endpoints[..1024] {
+            registry.remember_rtt_capability(endpoint);
+        }
+        registry.remember_rtt_capability(&endpoints[0]);
+        registry.remember_rtt_capability(&endpoints[1024]);
+        assert!(registry.supports_rtt(&endpoints[0]));
+        assert!(!registry.supports_rtt(&endpoints[1]));
+        assert!(registry.supports_rtt(&endpoints[1024]));
+        assert_eq!(registry.rtt_capable_endpoints.lock().unwrap().len(), 1024);
     }
 
     // Each accepted probe is drained before the next connection attempt. The

@@ -582,6 +582,20 @@ async fn resume_outgoing_file_batches_once(
         .into_iter()
         .filter(peer_is_transfer_eligible)
         .collect::<Vec<_>>();
+    resume_outgoing_batches(
+        batches, peers, runtime, database, pool, settings,
+    ).await;
+    outgoing_file_work_is_pending()
+}
+
+pub(super) async fn resume_outgoing_batches(
+    batches: Vec<sync::PersistedOutgoingBatch>,
+    peers: Vec<network::tailscale::PeerInfo>,
+    runtime: ClipboardRuntime,
+    database: Arc<Mutex<db::HistoryDB>>,
+    pool: Arc<Mutex<network::ConnectionPool>>,
+    settings: Arc<Mutex<crypto::Settings>>,
+) {
     let peer_targets = peers
         .iter()
         .map(|peer| (peer.hostname.clone(), peer.fingerprint.clone()))
@@ -753,7 +767,6 @@ async fn resume_outgoing_file_batches_once(
             }
         }
     }
-    outgoing_file_work_is_pending()
 }
 
 fn outgoing_file_work_is_pending() -> bool {

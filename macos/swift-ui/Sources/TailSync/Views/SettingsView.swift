@@ -42,6 +42,10 @@ struct SettingsView: View {
             "settings.shortcutRecord"
         }
 
+        var defaultValue: String {
+            value(in: AppSettings())
+        }
+
         func value(in settings: AppSettings) -> String {
             self == .sync ? settings.sync_shortcut : settings.history_shortcut
         }
@@ -152,13 +156,22 @@ struct SettingsView: View {
         ) { notification in
             if let enabled = notification.userInfo?["enabled"] as? Bool {
                 settings.sync_enabled = enabled
+                persistedSettings.sync_enabled = enabled
+            }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .tailSyncConnectionModeChanged)
+        ) { notification in
+            if let mode = notification.object as? String {
+                settings.connection_mode = mode
+                persistedSettings.connection_mode = mode
             }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .tailSyncSettingsChanged)
         ) { notification in
             if let updated = notification.object as? AppSettings {
-                settings = updated
+                applyPersistedSettings(updated)
                 persistedSettings = updated
             }
         }

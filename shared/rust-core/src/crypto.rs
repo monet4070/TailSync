@@ -467,6 +467,27 @@ fn write_atomic(path: &std::path::Path, json: &str) -> Result<(), Box<dyn std::e
 /// surfaces pass `Settings::save`; tests inject fakes.
 pub type SettingsPersist<'a> = &'a (dyn Fn(&Settings) -> Result<(), String> + Send + Sync);
 
+pub async fn apply_connection_mode_update(
+    settings: &tokio::sync::Mutex<Settings>,
+    mode: &str,
+    persist: SettingsPersist<'_>,
+) -> Result<(Settings, bool), SettingsUpdateError> {
+    if !matches!(mode, "auto" | "lan_only" | "iroh_only" | "tailscale_only") {
+        return Err(SettingsUpdateError::Validation(
+            SettingsValidationError::ConnectionMode,
+        ));
+    }
+    let mut current = settings.lock().await;
+    if current.connection_mode == mode {
+        return Ok((current.clone(), false));
+    }
+    let mut updated = current.clone();
+    updated.connection_mode = mode.to_string();
+    persist(&updated).map_err(SettingsUpdateError::Persist)?;
+    *current = updated.clone();
+    Ok((updated, true))
+}
+
 /// Optional shortcut transaction used by surfaces that register global
 /// shortcuts (Windows commands). Surfaces without a shortcut plugin pass
 /// `None` and a plain save is used instead.

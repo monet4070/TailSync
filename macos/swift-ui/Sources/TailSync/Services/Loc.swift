@@ -6,6 +6,7 @@ import SwiftUI
 extension Notification.Name {
     static let tailSyncLocaleChanged = Notification.Name("TailSyncLocaleChanged")
     static let tailSyncSettingsChanged = Notification.Name("TailSyncSettingsChanged")
+    static let tailSyncConnectionModeChanged = Notification.Name("TailSyncConnectionModeChanged")
     static let tailSyncThemeAssetsChanged = Notification.Name("TailSyncThemeAssetsChanged")
     static let tailSyncRemotePairingInviteReceived = Notification.Name(
         "TailSyncRemotePairingInviteReceived"
