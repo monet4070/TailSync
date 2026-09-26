@@ -176,16 +176,50 @@ impl HistoryDB {
                 .into());
             };
             let ids = self.expand_batch_groups(vec![id])?;
-            let used_before_cleanup = used;
             self.delete_entries(&ids)?;
-            let used_after_cleanup = bulk_storage_size(&get_storage_dir())?;
-            if used_after_cleanup >= used_before_cleanup {
-                return Err(
-                    "Storage cleanup removed history but reclaimed no storage; file transfer is paused"
-                        .into(),
-                );
+            let used_after = bulk_storage_size(&get_storage_dir())?;
+            if used_after < used {
+                // The WAL checkpoint inside `delete_entries` truncated freed
+                // pages; keep evicting until the quota is satisfied.
+                continue;
+            }
+            // SQLite `DELETE` does not shrink the database file, so an inline
+            // eviction can remove history without reducing on-disk usage.
+            // Continue only while an evictable row still owns an external
+            // payload; once only inline rows remain, further deletion cannot
+            // free physical space, so report the real shortage instead of
+            // deleting the rest of the history for no gain.
+            if !self.has_evictable_external_payload()? {
+                return Err(format!(
+                    "Storage quota is full: {} bytes are used against a {} byte quota and the remaining evictable history is inline only, so cleanup cannot reduce disk usage; file transfer is paused",
+                    used_after, self.storage_quota_bytes
+                )
+                .into());
             }
         }
+    }
+
+    /// Whether any unpinned history row still references an external encrypted
+    /// payload file, and so can free physical disk space when evicted.
+    fn has_evictable_external_payload(&self) -> Result<bool, Box<dyn std::error::Error>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT type, data FROM history WHERE pinned = 0")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (entry_type, stored) = row?;
+            let external = match entry_type.as_str() {
+                "file" => decode_file_reference(&stored).is_some(),
+                "image" => decode_image_reference(&stored).is_some(),
+                _ => false,
+            };
+            if external {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn set_pinned(&mut self, id: i64, pinned: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -742,6 +776,37 @@ mod tests {
     fn migration_global_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    #[tokio::test]
+    async fn batch_preflight_stops_when_only_inline_history_can_be_evicted() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("preflight-inline");
+        configure_storage_dir(Some(&base)).unwrap();
+        let database = test_database(&base);
+        for index in 0..3 {
+            database
+                .lock()
+                .await
+                .add_text(&format!("inline {index}"), "self")
+                .unwrap();
+        }
+        database.lock().await.set_storage_quota(1);
+
+        // SQLite does not shrink its file for inline deletes, so the preflight
+        // must report a physical shortage rather than delete the whole history.
+        let error = database
+            .lock()
+            .await
+            .reserve_for_file_batch(1024)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("inline only"), "unexpected error: {error}");
+
+        drop(database);
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[tokio::test]

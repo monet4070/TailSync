@@ -604,12 +604,21 @@ async fn handle_accepted_connection_inner(
                                 Err(error) => Err(error),
                                 Ok(durable_complete) => {
                                     let preflight = if !already_active && !durable_complete {
+                                        // Reserve only the bytes still to be
+                                        // written: the `.part` prefixes on
+                                        // disk are already counted in storage
+                                        // usage, and `pending_bytes` covers the
+                                        // remaining bytes of other admitted
+                                        // batches.
+                                        let remaining = sync::SyncEngine::file_batch_remaining_bytes(
+                                            &manifest,
+                                            &db::get_incoming_dir(),
+                                        )
+                                        .saturating_add(pending_bytes);
                                         database
                                             .lock()
                                             .await
-                                            .reserve_for_file_batch(
-                                                manifest.total_bytes.saturating_add(pending_bytes),
-                                            )
+                                            .reserve_for_file_batch(remaining)
                                             .map_err(|error| error.to_string())
                                     } else {
                                         Ok(())
@@ -768,7 +777,7 @@ async fn handle_accepted_connection_inner(
                     peer_addr, meta.name, meta.size
                 );
                 let incoming_dir = db::get_incoming_dir();
-                std::fs::create_dir_all(&incoming_dir)?;
+                tailsync_core::private_fs::create_private_dir_all(&incoming_dir)?;
                 let file_path =
                     incoming_dir.join(format!("{:016x}-{}", rand::random::<u64>(), meta.name));
                 let meta_batch_id = meta.batch.map(|batch| batch.batch_id);

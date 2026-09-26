@@ -489,6 +489,22 @@ impl SyncEngine {
         })
     }
 
+    /// Remaining plaintext a manifest still has to write, derived from the
+    /// `.part` prefixes already on disk. The on-disk length is the resume
+    /// fact; the manifest carries no per-file offset, so without this the
+    /// preflight would reserve the full batch again on a resumed transfer and
+    /// double-count the bytes already written.
+    pub fn file_batch_remaining_bytes(manifest: &FileBatchManifest, incoming_dir: &Path) -> u64 {
+        manifest.files.iter().fold(0_u64, |remaining, entry| {
+            let received =
+                fs::metadata(incoming_dir.join(format!("{}.part", entry.transfer_id.as_hex())))
+                    .ok()
+                    .map(|metadata| metadata.len().min(entry.size))
+                    .unwrap_or(0);
+            remaining.saturating_add(entry.size.saturating_sub(received))
+        })
+    }
+
     pub fn batch_for_transfer(&self, source: &str, transfer_id: TransferId) -> Option<TransferId> {
         self.active_receives
             .get(&(source.to_string(), ReceiveKey::Resumable(transfer_id)))
