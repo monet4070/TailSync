@@ -269,8 +269,13 @@ async fn serve_connection<S>(
     let response_timeout = response_timeout_for_command(&req.cmd);
     // Opt-in read cancellation preserves legacy clients that half-close their
     // write side after a request. Mutations always finish their commit/hooks.
-    let cancel_on_disconnect =
-        req.request_id.is_some() && matches!(req.cmd.as_str(), "get_history" | "get_preview_data");
+    // `wait_runtime_snapshot` holds a long poll, so cancelling it on disconnect
+    // returns the connection permit promptly instead of waiting out the poll.
+    let cancel_on_disconnect = req.request_id.is_some()
+        && matches!(
+            req.cmd.as_str(),
+            "get_history" | "get_preview_data" | "wait_runtime_snapshot"
+        );
     let response = if cancel_on_disconnect {
         let Some(response) = until_disconnect(&mut reader, handle_cmd(req, &state)).await else {
             return;
