@@ -142,6 +142,212 @@ async fn non_ban_pairing_failure_keeps_window_and_counter() {
 }
 
 #[tokio::test]
+async fn anonymous_protocol_anomalies_do_not_consume_the_lockout_budget() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    // max_failures = 1: a single charged failure would lock the window, so a
+    // surviving window proves every anomaly below was charged as non-ban.
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_secs(120),
+        1,
+        false,
+    );
+    manager.enable().await;
+
+    for command in [Command::HandshakeReady, Command::PairingPersisted] {
+        for _ in 0..5 {
+            let (mut client, server) =
+                establish_in_memory_pair(&server_identity, &client_identity).await;
+            manager
+                .install_session(PendingPairing {
+                    connection: server,
+                    hostname: "client".into(),
+                    remote_public_key: client_identity.public_key().to_vec(),
+                    handshake_hash: vec![9; 32],
+                    address: "192.168.1.5".into(),
+                    interface: "lan".into(),
+                    remote_invite: None,
+                    direction: PairingDirection::Inbound,
+                })
+                .await
+                .unwrap();
+            client
+                .write_frame(&Frame::try_new(command, 0, 0, Vec::new()).unwrap())
+                .await
+                .unwrap();
+
+            for _ in 0..100 {
+                if manager.status().await.phase == PairingPhase::Waiting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let status = manager.status().await;
+            assert!(
+                status.pairing_enabled,
+                "anonymous {command:?} locked the pairing window"
+            );
+            assert_eq!(
+                status.failed_attempts, 0,
+                "anonymous {command:?} charged budget"
+            );
+            assert_eq!(status.phase, PairingPhase::Waiting);
+        }
+    }
+
+    // A legitimate client can still pair after the anonymous attempts.
+    let (mut client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    manager
+        .install_session(PendingPairing {
+            connection: server,
+            hostname: "client".into(),
+            remote_public_key: client_identity.public_key().to_vec(),
+            handshake_hash: vec![3; 32],
+            address: "192.168.1.5".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: PairingDirection::Inbound,
+        })
+        .await
+        .unwrap();
+    manager.confirm().await.unwrap();
+    assert_eq!(
+        client.read_frame().await.unwrap().command,
+        Command::PairingConfirm
+    );
+    client
+        .write_frame(&Frame::try_new(Command::PairingConfirm, 0, 0, Vec::new()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        client.read_frame().await.unwrap().command,
+        Command::PairingPersisted
+    );
+    client
+        .write_frame(&Frame::try_new(Command::PairingPersisted, 0, 0, Vec::new()).unwrap())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while manager.status().await.phase != PairingPhase::Paired {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("genuine pairing must still complete after anonymous anomalies");
+
+    // Once the local user has confirmed, an unexpected command does count.
+    let manager_locked = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        Arc::new(DeviceIdentity::generate_for_test()),
+        Duration::from_secs(120),
+        1,
+        false,
+    );
+    manager_locked.enable().await;
+    let server_identity = manager_locked.identity.clone();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let (mut client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    manager_locked
+        .install_session(PendingPairing {
+            connection: server,
+            hostname: "client".into(),
+            remote_public_key: client_identity.public_key().to_vec(),
+            handshake_hash: vec![4; 32],
+            address: "192.168.1.5".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: PairingDirection::Inbound,
+        })
+        .await
+        .unwrap();
+    manager_locked.confirm().await.unwrap();
+    assert_eq!(
+        client.read_frame().await.unwrap().command,
+        Command::PairingConfirm
+    );
+    client
+        .write_frame(&Frame::try_new(Command::HandshakeReady, 0, 0, Vec::new()).unwrap())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while manager_locked.status().await.pairing_enabled {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a confirmed session's protocol error must charge the budget");
+    assert_eq!(manager_locked.status().await.phase, PairingPhase::Locked);
+}
+
+#[tokio::test]
+async fn newer_session_preempts_an_unconfirmed_slot_but_not_a_confirmed_one() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_secs(120),
+        5,
+        false,
+    );
+    manager.enable().await;
+
+    let pending = |connection| PendingPairing {
+        connection,
+        hostname: "client".into(),
+        remote_public_key: client_identity.public_key().to_vec(),
+        handshake_hash: vec![5; 32],
+        address: "192.168.1.5".into(),
+        interface: "lan".into(),
+        remote_invite: None,
+        direction: PairingDirection::Inbound,
+    };
+
+    let (mut first_client, first_server) =
+        establish_in_memory_pair(&server_identity, &client_identity).await;
+    manager
+        .install_session(pending(first_server))
+        .await
+        .unwrap();
+
+    // A second, still-unconfirmed session replaces the first slot.
+    let (mut second_client, second_server) =
+        establish_in_memory_pair(&server_identity, &client_identity).await;
+    manager
+        .install_session(pending(second_server))
+        .await
+        .unwrap();
+
+    let cancel = tokio::time::timeout(Duration::from_secs(1), first_client.read_frame())
+        .await
+        .expect("preempted session should be cancelled")
+        .expect("preempted session should receive a cancellation frame");
+    assert_eq!(cancel.command, Command::PairingCancel);
+
+    // After the user confirms the live slot, a new anonymous session is refused.
+    manager.confirm().await.unwrap();
+    assert_eq!(
+        second_client.read_frame().await.unwrap().command,
+        Command::PairingConfirm
+    );
+    let (_third_client, third_server) =
+        establish_in_memory_pair(&server_identity, &client_identity).await;
+    let error = manager
+        .install_session(pending(third_server))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PairingError::AlreadyInProgress));
+
+    let status = manager.status().await;
+    assert!(status.pairing_enabled);
+    assert_eq!(status.phase, PairingPhase::WaitingForPeer);
+    assert_eq!(status.failed_attempts, 0);
+    manager.cancel().await;
+}
+
+#[tokio::test]
 async fn glare_arbitration_keeps_one_deterministic_session_without_banning() {
     let local_identity = Arc::new(DeviceIdentity::generate_for_test());
     let remote_identity = DeviceIdentity::generate_for_test();

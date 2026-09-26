@@ -162,7 +162,18 @@ impl PairingManager {
                     state.session_direction = None;
                     None
                 } else if existing_direction == pending.direction {
-                    return Err(PairingError::AlreadyInProgress);
+                    // An unauthenticated handshake must not hold the single
+                    // verification slot for its full 30s deadline: a newer
+                    // session may supersede a slot the local user has not yet
+                    // confirmed. A slot that has already been confirmed is
+                    // protected, so an anonymous request cannot evict the
+                    // pairing the user is actively verifying.
+                    let locally_confirmed =
+                        state.peer.as_ref().is_some_and(|peer| peer.local_confirmed);
+                    if locally_confirmed {
+                        return Err(PairingError::AlreadyInProgress);
+                    }
+                    state.control.take()
                 } else if pending.direction == self.preferred_direction(&pending.remote_public_key)
                 {
                     // Both peers may open an outbound and inbound session at
@@ -431,8 +442,9 @@ impl PairingManager {
                     }
                     Ok(frame) if frame.command == Command::PairingPersisted => {
                         if !remote_confirmed {
-                            self.fail_session(
+                            self.fail_session_on_protocol_error(
                                 session_id,
+                                local_confirmed,
                                 "Received pairing completion before confirmation".to_string(),
                             )
                             .await;
@@ -452,7 +464,12 @@ impl PairingManager {
                         return;
                     }
                     Ok(_) => {
-                        self.fail_session(session_id, "Unexpected message during pairing".to_string()).await;
+                        self.fail_session_on_protocol_error(
+                            session_id,
+                            local_confirmed,
+                            "Unexpected message during pairing".to_string(),
+                        )
+                        .await;
                         return;
                     }
                     Err(error) => {
@@ -625,6 +642,24 @@ impl PairingManager {
             }
         }
         self.record_non_ban_failure(error).await;
+    }
+
+    /// Record a protocol anomaly from the peer. Before the local user confirms
+    /// the verification code the peer is still anonymous, so an unexpected
+    /// command only releases the slot. After local confirmation the session is
+    /// attributed to a deliberate user action and the anomaly counts against
+    /// the lockout budget.
+    async fn fail_session_on_protocol_error(
+        &self,
+        session_id: u64,
+        local_confirmed: bool,
+        error: String,
+    ) {
+        if local_confirmed {
+            self.fail_session(session_id, error).await;
+        } else {
+            self.fail_session_non_ban(session_id, error).await;
+        }
     }
 
     async fn expire_current_session(self: &Arc<Self>, session_id: u64) {
