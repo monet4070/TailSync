@@ -538,8 +538,11 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 };
             };
             let result =
-                tailsync_runtime::history::HistoryOperations::data_async(state.db.clone(), id)
-                    .await;
+                tailsync_runtime::history::HistoryOperations::image_payload_async(
+                    state.db.clone(),
+                    id,
+                )
+                .await;
             match result {
                 Ok(data) => {
                     let image = match crate::protocol::PackedImage::try_from(data.as_slice()) {

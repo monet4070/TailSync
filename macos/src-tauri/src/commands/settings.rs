@@ -43,7 +43,8 @@ pub async fn get_image_data(
     id: i64,
 ) -> Result<serde_json::Value, CommandError> {
     let data =
-        tailsync_runtime::history::HistoryOperations::data_async(state.db.clone(), id).await?;
+        tailsync_runtime::history::HistoryOperations::image_payload_async(state.db.clone(), id)
+            .await?;
     let image = crate::protocol::PackedImage::try_from(data.as_slice())
         .map_err(|error| error.to_string())?;
     let (tw, th, thumb) = crate::api::thumbnail_rgba(image, crate::api::THUMBNAIL_MAX_SIDE);

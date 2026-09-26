@@ -2,8 +2,8 @@ use super::{
     normalize_transferred_file_name, persisted_file_resume_offset, prepare_file_batch,
     validate_incoming_file_meta, verify_and_commit_received_file, FileBatchEntry,
     FileBatchManifest, FileBatchProgress, FileBatchRef, FileMeta, FileReceiveCommit,
-    FileReceiveError, PendingReceivedFile, ReceiveSuspendGuard, ReceivedFile, SyncEngine,
-    SyncPlatform, CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS,
+    FileReceiveError, PendingReceivedFile, ReceiveKey, ReceiveSuspendGuard, ReceivedFile,
+    SyncEngine, SyncPlatform, CANCELLED_BATCH_MAX_ENTRIES, CANCELLED_BATCH_RETENTION_SECONDS,
     MAX_ACTIVE_BATCHES_GLOBAL, MAX_ACTIVE_BATCHES_PER_PEER, MAX_FILE_BATCH_BYTES,
     MAX_FILE_BATCH_COUNT, MAX_FILE_SIZE, SEEN_MESSAGE_MAX_ENTRIES,
 };
@@ -894,6 +894,54 @@ fn reliable_message_dedup_is_bounded_by_insertion_order() {
     let mut latest_id = [0_u8; 16];
     latest_id[..8].copy_from_slice(&(SEEN_MESSAGE_MAX_ENTRIES as u64).to_le_bytes());
     assert!(sync.has_seen_message("peer", MessageId(latest_id)));
+}
+
+#[tokio::test]
+async fn pending_and_inflight_receives_count_toward_the_peer_limit() {
+    let directory = std::env::temp_dir().join(format!(
+        "tailsync-receive-pending-limit-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut sync = SyncEngine::new();
+    let third = || FileMeta {
+        transfer_id: Some(TransferId([3; 16])),
+        name: "third.bin".into(),
+        size: 1,
+        hash: "unused".into(),
+        chunk_size: FILE_CHUNK_SIZE as u32,
+        batch: None,
+    };
+
+    // Two transfers are mid-open (off-lock disk I/O) but not yet active.
+    sync.pending_receives.insert(
+        ("peer".into(), ReceiveKey::Resumable(TransferId([1; 16]))),
+        0,
+    );
+    sync.inflight_receives
+        .insert(("peer".into(), ReceiveKey::Resumable(TransferId([2; 16]))));
+
+    let error = sync
+        .begin_file_receive(third(), &directory.join("third.bin"), "peer".into())
+        .await
+        .unwrap_err();
+    assert!(error.contains("active file receives"), "{error}");
+
+    // The limit is per peer: another peer is still admitted.
+    sync.begin_file_receive(third(), &directory.join("other.bin"), "other".into())
+        .await
+        .unwrap();
+
+    // Releasing the reserved slots admits the transfer.
+    sync.pending_receives.clear();
+    sync.inflight_receives.clear();
+    sync.begin_file_receive(third(), &directory.join("third.bin"), "peer".into())
+        .await
+        .unwrap();
+
+    sync.cancel_receive("peer").await;
+    sync.cancel_receive("other").await;
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test]
