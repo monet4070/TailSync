@@ -1,3 +1,4 @@
+import AppKit
 import Carbon
 import XCTest
 @testable import TailSync
@@ -9,6 +10,36 @@ final class GlobalShortcutTests: XCTestCase {
             throw result.failure ?? ShortcutParser.Error.empty
         }
         return value
+    }
+
+    func testResetUsesTheModelShortcutDefaults() {
+        let defaults = AppSettings()
+        XCTAssertEqual(SettingsView.ShortcutKind.sync.defaultValue, defaults.sync_shortcut)
+        XCTAssertEqual(SettingsView.ShortcutKind.history.defaultValue, defaults.history_shortcut)
+    }
+
+    @MainActor
+    func testFailedShortcutRegistrationCanBeCancelledWithEscape() async throws {
+        let previous = "CommandOrControl+Shift+H"
+        var registered: [String] = []
+        let error = await GlobalShortcutController.apply(
+            previous: previous,
+            next: "CommandOrControl+Shift+S",
+            register: { candidate in
+                registered.append(candidate)
+                return candidate == previous ? .success(()) : .failure(ShortcutError(message: "conflict"))
+            },
+            persist: { _ in XCTFail("conflicting shortcut must not be saved"); return false }
+        )
+        XCTAssertNotNil(error)
+        XCTAssertEqual(registered.last, previous)
+        let escape = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false, keyCode: UInt16(kVK_Escape)
+        ))
+        XCTAssertEqual(SettingsView.shortcutRecordingAction(for: escape, busy: false), .cancel)
+        XCTAssertEqual(SettingsView.shortcutRecordingAction(for: escape, busy: true), .ignore)
     }
 
     func testParsesTheDefaultCombination() throws {

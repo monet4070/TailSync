@@ -382,6 +382,110 @@ fn enroll_outgoing_batch_peers_at(
     Ok(())
 }
 
+pub fn rebind_outgoing_batch_peers(
+    batch_id: TransferId,
+    trusted_peers: &[(String, String)],
+) -> Result<bool, String> {
+    let directory = outgoing_dir();
+    rebind_outgoing_batch_peers_at(&directory, batch_id, trusted_peers)
+}
+
+fn rebind_outgoing_batch_peers_at(
+    directory: &Path,
+    batch_id: TransferId,
+    trusted_peers: &[(String, String)],
+) -> Result<bool, String> {
+    let mut batch = read_outgoing_batch_at(directory, batch_id)?;
+    if batch.peers.is_empty() || batch.all_peers_completed() {
+        return Ok(true);
+    }
+    let trusted_map: std::collections::HashMap<&str, &str> = trusted_peers
+        .iter()
+        .map(|(hostname, fingerprint)| (hostname.as_str(), fingerprint.as_str()))
+        .collect();
+    let mut changed = batch.peer_fingerprints.len() != batch.peers.len();
+    batch
+        .peer_fingerprints
+        .resize(batch.peers.len(), String::new());
+    let mut has_trusted_uncompleted_peer = false;
+
+    for index in 0..batch.peers.len() {
+        if batch.is_peer_completed_at(index) {
+            continue;
+        }
+        let hostname = &batch.peers[index];
+        let enrolled_fingerprint = &batch.peer_fingerprints[index];
+        let target = trusted_peers
+            .iter()
+            .find(|(_, fingerprint)| {
+                !enrolled_fingerprint.is_empty() && fingerprint == enrolled_fingerprint
+            })
+            .map(|(hostname, fingerprint)| (hostname.as_str(), fingerprint.as_str()))
+            .or_else(|| {
+                trusted_map
+                    .get(hostname.as_str())
+                    .map(|fingerprint| (hostname.as_str(), *fingerprint))
+            });
+        if let Some((hostname, fingerprint)) = target {
+            has_trusted_uncompleted_peer = true;
+            if batch.peers[index] != hostname || batch.peer_fingerprints[index] != fingerprint {
+                let hostname = hostname.to_string();
+                let fingerprint = fingerprint.to_string();
+                batch.peers[index] = hostname;
+                batch.peer_fingerprints[index] = fingerprint;
+                changed = true;
+            }
+        }
+    }
+
+    if !has_trusted_uncompleted_peer {
+        return Ok(false);
+    }
+
+    if changed {
+        write_outgoing_batch_at(directory, &mut batch)?;
+    }
+    Ok(true)
+}
+
+pub fn retire_outgoing_batches_for_peer(hostname: &str) {
+    let directory = outgoing_dir();
+    retire_outgoing_batches_for_peer_at(&directory, hostname);
+}
+
+fn retire_outgoing_batches_for_peer_at(directory: &Path, hostname: &str) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(OUTGOING_BATCH_SUFFIX))
+        {
+            continue;
+        }
+        let Ok(data) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(mut batch) = serde_json::from_slice::<PersistedOutgoingBatch>(&data) else {
+            continue;
+        };
+        if let Some(pos) = batch.peers.iter().position(|p| p == hostname) {
+            if batch.peers.len() <= 1 {
+                let _ = fs::remove_file(&path);
+            } else {
+                batch.peers.remove(pos);
+                if pos < batch.peer_fingerprints.len() {
+                    batch.peer_fingerprints.remove(pos);
+                }
+                let _ = write_outgoing_batch_at(directory, &mut batch);
+            }
+        }
+    }
+}
+
 pub fn persist_outgoing_selection(
     paths: &[PathBuf],
     generation: u64,
@@ -816,7 +920,15 @@ mod tests {
         let targets = vec![("old-name".into(), "peer-key".into())];
         persist_outgoing_batch_at_with_identities(&journal_dir, &batch, &targets, None).unwrap();
 
+        assert!(rebind_outgoing_batch_peers_at(
+            &journal_dir,
+            batch.manifest.batch_id,
+            &[("new-name".into(), "peer-key".into())],
+        )
+        .unwrap());
         let mut restored = load_outgoing_batches_at(&journal_dir).pop().unwrap();
+        assert_eq!(restored.peers, ["new-name"]);
+        assert_eq!(restored.peer_fingerprints, ["peer-key"]);
         assert_eq!(
             restored.pending_peers(&[("new-name".into(), "peer-key".into())]),
             vec![&"new-name".to_string()]
@@ -829,6 +941,98 @@ mod tests {
         restored.completed_peer_fingerprints.push("peer-key".into());
         assert!(restored.all_peers_completed());
 
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
+    }
+
+    #[test]
+    fn rebind_preserves_completed_batch_until_local_history_is_saved() {
+        let source = test_directory("completed-source");
+        let journal_dir = test_directory("completed-journal");
+        let batch = prepared(&source);
+        persist_outgoing_batch_at_with_identities(
+            &journal_dir,
+            &batch,
+            &[("peer".into(), "key".into())],
+            None,
+        )
+        .unwrap();
+        let mut saved = read_outgoing_batch_at(&journal_dir, batch.manifest.batch_id).unwrap();
+        saved.completed_peers.push("peer".into());
+        saved.completed_peer_fingerprints.push("key".into());
+        write_outgoing_batch_at(&journal_dir, &mut saved).unwrap();
+
+        assert!(
+            rebind_outgoing_batch_peers_at(&journal_dir, batch.manifest.batch_id, &[]).unwrap()
+        );
+        let restored = read_outgoing_batch_at(&journal_dir, batch.manifest.batch_id).unwrap();
+        assert!(restored.all_peers_completed());
+        assert!(!restored.local_history_saved);
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
+    }
+
+    #[test]
+    fn rebind_legacy_batch_keeps_fingerprints_aligned_with_completed_peers() {
+        let source = test_directory("legacy-rebind-source");
+        let journal_dir = test_directory("legacy-rebind-journal");
+        let batch = prepared(&source);
+        persist_outgoing_batch_at(
+            &journal_dir,
+            &batch,
+            &["peer-a".into(), "peer-b".into()],
+            None,
+        )
+        .unwrap();
+        let mut saved = read_outgoing_batch_at(&journal_dir, batch.manifest.batch_id).unwrap();
+        saved.peer_fingerprints.clear();
+        saved.completed_peers.push("peer-a".into());
+        write_outgoing_batch_at(&journal_dir, &mut saved).unwrap();
+        let targets = [
+            ("peer-a".into(), "key-a".into()),
+            ("peer-b".into(), "key-b".into()),
+        ];
+
+        for _ in 0..2 {
+            assert!(rebind_outgoing_batch_peers_at(
+                &journal_dir,
+                batch.manifest.batch_id,
+                &targets
+            )
+            .unwrap());
+            let restored = read_outgoing_batch_at(&journal_dir, batch.manifest.batch_id).unwrap();
+            assert_eq!(restored.peer_fingerprints, ["", "key-b"]);
+            assert_eq!(restored.pending_peers(&targets), vec![&targets[1].0]);
+            assert!(restored.is_peer_completed("peer-a"));
+        }
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
+    }
+
+    #[test]
+    fn rebind_prefers_persisted_identity_when_old_hostname_is_reused() {
+        let source = test_directory("reused-host-source");
+        let journal_dir = test_directory("reused-host-journal");
+        let batch = prepared(&source);
+        persist_outgoing_batch_at_with_identities(
+            &journal_dir,
+            &batch,
+            &[("old-name".into(), "original-key".into())],
+            None,
+        )
+        .unwrap();
+        let trusted = [
+            ("old-name".into(), "replacement-key".into()),
+            ("new-name".into(), "original-key".into()),
+        ];
+        assert!(
+            rebind_outgoing_batch_peers_at(&journal_dir, batch.manifest.batch_id, &trusted)
+                .unwrap()
+        );
+        let restored = read_outgoing_batch_at(&journal_dir, batch.manifest.batch_id).unwrap();
+        assert_eq!(restored.peers, ["new-name"]);
+        assert_eq!(restored.peer_fingerprints, ["original-key"]);
+        assert_eq!(restored.pending_peers(&trusted), vec![&trusted[1].0]);
         let _ = fs::remove_dir_all(source);
         let _ = fs::remove_dir_all(journal_dir);
     }
@@ -992,5 +1196,68 @@ mod tests {
             &mut last_notified_at,
             "storage unavailable"
         ));
+    }
+
+    #[test]
+    fn rebind_outgoing_batch_peers_updates_repaired_fingerprint() {
+        let source = test_directory("rebind-source");
+        let journal_dir = test_directory("rebind-journal");
+        let batch = prepared(&source);
+        persist_outgoing_batch_at_with_identities(
+            &journal_dir,
+            &batch,
+            &[("peer-a".into(), "old-fingerprint".into())],
+            None,
+        )
+        .unwrap();
+
+        // When peer-a is re-paired with a new fingerprint, rebind updates the journal
+        let can_complete = rebind_outgoing_batch_peers_at(
+            &journal_dir,
+            batch.manifest.batch_id,
+            &[("peer-a".into(), "new-fingerprint".into())],
+        )
+        .unwrap();
+        assert!(can_complete);
+
+        let restored = load_outgoing_batches_at(&journal_dir).pop().unwrap();
+        assert_eq!(restored.peer_fingerprints, ["new-fingerprint"]);
+        assert_eq!(
+            restored.pending_peers(&[("peer-a".into(), "new-fingerprint".into())]),
+            vec![&"peer-a".to_string()]
+        );
+
+        // When peer-a is removed from trusted peers completely, rebind signals retirement
+        let can_complete_untrusted = rebind_outgoing_batch_peers_at(
+            &journal_dir,
+            batch.manifest.batch_id,
+            &[("peer-other".into(), "key-other".into())],
+        )
+        .unwrap();
+        assert!(!can_complete_untrusted);
+
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
+    }
+
+    #[test]
+    fn retire_outgoing_batches_for_peer_removes_matching_journals() {
+        let source = test_directory("retire-source");
+        let journal_dir = test_directory("retire-journal");
+        let batch = prepared(&source);
+        persist_outgoing_batch_at_with_identities(
+            &journal_dir,
+            &batch,
+            &[("target-peer".into(), "key-target".into())],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(load_outgoing_batches_at(&journal_dir).len(), 1);
+        retire_outgoing_batches_for_peer_at(&journal_dir, "target-peer");
+        assert!(load_outgoing_batches_at(&journal_dir).is_empty());
+
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(journal_dir);
     }
 }

@@ -153,8 +153,8 @@ async fn handle_connection(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn handle_iroh_connection(
-    stream: tailsync_core::iroh_transport::IrohBiStream,
+pub(super) async fn handle_iroh_connection<S>(
+    stream: S,
     remote_endpoint_id: String,
     sync_engine: Arc<Mutex<sync::SyncEngine>>,
     database: Arc<Mutex<db::HistoryDB>>,
@@ -162,7 +162,10 @@ pub(super) async fn handle_iroh_connection(
     identity: Arc<DeviceIdentity>,
     pairing: Arc<PairingManager>,
     remote_invite: Option<tailsync_core::pairing::InviteClaim>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    S: secure::SessionIo + 'static,
+{
     let mode = settings.lock().await.connection_mode.clone();
     if !tailsync_core::peer::types::ConnectionMode::parse(&mode).is_some_and(|mode| {
         mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
@@ -191,7 +194,9 @@ pub(super) async fn handle_iroh_connection(
     if claimed_endpoint_id != remote_endpoint_id {
         return Err("Peer Iroh endpoint does not match its Noise identity".into());
     }
-    super::iroh::remember_rtt_capability(&remote_endpoint_id);
+    if accepted.purpose == secure::HandshakePurpose::Pairing {
+        super::iroh::remember_rtt_capability(&remote_endpoint_id);
+    }
     handle_accepted_connection(
         accepted,
         InboundSource::Iroh(remote_endpoint_id),
@@ -340,6 +345,9 @@ async fn handle_accepted_connection_inner(
     if !source_allowed {
         secure::write_error(&mut stream, "Peer is not paired or is disabled").await?;
         return Ok(());
+    }
+    if source_interface == ConnectionInterface::Iroh {
+        super::iroh::remember_rtt_capability(&source_address);
     }
 
     info!(
@@ -1071,6 +1079,92 @@ mod acceptance_tests {
         .await
         .map_err(|error| error.to_string());
         (client, server)
+    }
+
+    async fn open_iroh_admission_session(
+        trusted: bool,
+        enabled: bool,
+    ) -> (Result<secure::SecureConnection, String>, tokio::task::JoinHandle<()>, String) {
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let endpoint_key = ring::signature::Ed25519KeyPair::from_seed_unchecked(
+            &rand::random::<[u8; 32]>(),
+        )
+        .unwrap();
+        let endpoint_id = hex::encode(ring::signature::KeyPair::public_key(&endpoint_key).as_ref());
+        let expected_hostname = lan::local_hostname();
+        let expected_server_key = server_identity.public_key().to_vec();
+        let mut current = crypto::Settings {
+            connection_mode: "iroh_only".into(),
+            ..crypto::Settings::default()
+        };
+        if trusted {
+            current.trusted_peer_keys.insert(
+                "iroh-admission-client".into(),
+                STANDARD.encode(client_identity.public_key()),
+            );
+        }
+        current.enabled_peers.insert("iroh-admission-client".into(), enabled);
+        let settings = Arc::new(Mutex::new(current));
+        let pairing = PairingManager::new(settings.clone(), server_identity.clone());
+        let sync_engine = Arc::new(Mutex::new(sync::SyncEngine::new()));
+        let database = Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap()));
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let remote_endpoint_id = endpoint_id.clone();
+        let server = tokio::spawn(async move {
+            handle_iroh_connection(
+                server_io,
+                remote_endpoint_id,
+                sync_engine,
+                database,
+                settings,
+                server_identity,
+                pairing,
+                None,
+            )
+            .await
+            .expect("fixture Iroh admission");
+        });
+        let client = secure::connect_with_capabilities(
+            client_io,
+            &client_identity,
+            secure::PeerIdentity {
+                hostname: "iroh-admission-client".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: Some(endpoint_id.clone()),
+            },
+            &expected_hostname,
+            &expected_server_key,
+            secure::CapabilitySwitches::default(),
+        )
+        .await
+        .map_err(|error| error.to_string());
+        (client, server, endpoint_id)
+    }
+
+    #[tokio::test]
+    async fn untrusted_iroh_session_does_not_register_rtt_capability() {
+        let (client, server, endpoint_id) = open_iroh_admission_session(false, true).await;
+        assert!(client.is_err());
+        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        assert!(!iroh::supports_rtt(&endpoint_id));
+    }
+
+    #[tokio::test]
+    async fn disabled_iroh_session_does_not_register_rtt_capability() {
+        let (client, server, endpoint_id) = open_iroh_admission_session(true, false).await;
+        assert!(client.is_err());
+        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        assert!(!iroh::supports_rtt(&endpoint_id));
+    }
+
+    #[tokio::test]
+    async fn trusted_iroh_session_registers_rtt_capability() {
+        let (client, server, endpoint_id) = open_iroh_admission_session(true, true).await;
+        let client = client.expect("trusted Iroh session");
+        assert!(iroh::supports_rtt(&endpoint_id));
+        drop(client);
+        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
     }
 
     fn image_fixture() -> Vec<Vec<u8>> {

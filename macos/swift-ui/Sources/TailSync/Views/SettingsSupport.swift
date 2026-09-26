@@ -43,10 +43,34 @@ actor SettingsSaveCoordinator {
     }
 
     private var tail: Task<SaveResult, Never>?
+    private let client: ApiClient
+
+    init(client: ApiClient = .shared) {
+        self.client = client
+    }
+
+    func saveConnectionMode(
+        _ mode: String,
+        fallback: AppSettings
+    ) async -> (error: String?, persisted: AppSettings) {
+        await enqueue(fallback: fallback) {
+            try await self.client.setConnectionMode(mode)
+        }
+    }
 
     func save(
         _ settings: AppSettings,
         fallback: AppSettings
+    ) async -> (error: String?, persisted: AppSettings) {
+        await enqueue(fallback: fallback) {
+            try await self.client.updateSettings(settings)
+            return settings
+        }
+    }
+
+    private func enqueue(
+        fallback: AppSettings,
+        operation: @escaping @Sendable () async throws -> AppSettings
     ) async -> (error: String?, persisted: AppSettings) {
         let predecessor = tail
         let job = Task<SaveResult, Never> {
@@ -60,8 +84,7 @@ actor SettingsSaveCoordinator {
                 lastPersisted = fallback
             }
             do {
-                try await ApiClient.shared.updateSettings(settings)
-                return .success(settings)
+                return .success(try await operation())
             } catch {
                 return .failure(error.localizedDescription, lastPersisted)
             }

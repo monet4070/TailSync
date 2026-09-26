@@ -180,6 +180,8 @@ impl StableErrorEnvelope {
                 | "missing invite_link"
                 | "missing fields"
                 | "missing settings"
+                | "missing connection_mode"
+                | "invalid connection_mode"
                 | "missing parent"
                 | "missing path"
                 | "missing hostname"

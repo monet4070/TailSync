@@ -28,6 +28,7 @@ pub(super) enum SettingsCommand {
     ToggleSync,
     SetSyncShortcut,
     SetHistoryShortcut,
+    SetConnectionMode,
     UpdateSettings,
     ChangeStorageLocation,
     DeleteOldStorage,
@@ -113,6 +114,7 @@ impl LocalCommand {
             "toggle_sync" => Self::Settings(SettingsCommand::ToggleSync),
             "set_sync_shortcut" => Self::Settings(SettingsCommand::SetSyncShortcut),
             "set_history_shortcut" => Self::Settings(SettingsCommand::SetHistoryShortcut),
+            "set_connection_mode" => Self::Settings(SettingsCommand::SetConnectionMode),
             "update_settings" => Self::Settings(SettingsCommand::UpdateSettings),
             "change_storage_location" => Self::Settings(SettingsCommand::ChangeStorageLocation),
             "delete_old_storage" => Self::Settings(SettingsCommand::DeleteOldStorage),
@@ -197,6 +199,7 @@ mod tests {
         assert!(LocalCommand::parse("toggle_sync").is_some());
         assert!(LocalCommand::parse("set_sync_shortcut").is_some());
         assert!(LocalCommand::parse("set_history_shortcut").is_some());
+        assert!(LocalCommand::parse("set_connection_mode").is_some());
         assert!(LocalCommand::parse("update_settings").is_some());
         assert!(LocalCommand::parse("change_storage_location").is_some());
         assert!(LocalCommand::parse("delete_old_storage").is_some());

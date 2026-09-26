@@ -126,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static var historyWC: NSWindowController?
     private static var favoritesWC: NSWindowController?
     private static var settingsWC: NSWindowController?
+    static var connectionsWC: NSWindowController?
     private static var remotePairingDeepLinkInbox = RemotePairingDeepLinkInbox()
     private static var daemonProcess: Process?
     private static let daemonStopLock = NSLock()
@@ -186,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static func receiveRemotePairingURL(_ url: URL) {
         guard let link = remotePairingDeepLinkInbox.receive(url) else { return }
-        showSettings()
+        showConnections()
         NotificationCenter.default.post(
             name: .tailSyncRemotePairingInviteReceived,
             object: link
@@ -240,6 +241,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--open-settings") {
             DispatchQueue.main.async {
                 Self.showSettings()
+            }
+        }
+        if CommandLine.arguments.contains("--open-connections") {
+            DispatchQueue.main.async {
+                Self.showConnections()
             }
         }
     }
@@ -511,6 +517,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hItem = NSMenuItem(title: isZh ? "历史记录" : "History",
                                 action: #selector(openHistory), keyEquivalent: "")
         hItem.target = self; menu.addItem(hItem)
+        let cItem = NSMenuItem(title: isZh ? "连接与设备" : "Devices & Connections",
+                                action: #selector(openConnections), keyEquivalent: "")
+        cItem.target = self; menu.addItem(cItem)
         let sItem = NSMenuItem(title: isZh ? "设置" : "Settings",
                                 action: #selector(openSettings), keyEquivalent: "")
         sItem.target = self; menu.addItem(sItem)
@@ -551,6 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openHistory() { Self.showHistory() }
+    @objc func openConnections() { Self.showConnections() }
     @objc func openSettings() { Self.showSettings() }
 
     func configureApplicationMenu() {
@@ -619,6 +629,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let visibleWindow = [
             NSApp.keyWindow,
             Self.settingsWC?.window,
+            Self.connectionsWC?.window,
             Self.historyWC?.window,
             Self.favoritesWC?.window,
         ]
@@ -1040,6 +1051,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static var settingsWindow: NSWindow? {
         settingsWC?.window
+    }
+
+    static var connectionsWindow: NSWindow? {
+        connectionsWC?.window
+    }
+
+    static func showConnections() {
+        if let wc = connectionsWC, let window = wc.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            let wc = makeWindow(
+                title: Loc.t("connections.title"),
+                content: ConnectionsView(),
+                size: NSSize(width: 520, height: 640),
+                minSize: NSSize(width: 440, height: 500)
+            ) {
+                connectionsWC = nil
+            }
+            connectionsWC = wc
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        Self.forceAccessory()
     }
 
     static func showSettings() {

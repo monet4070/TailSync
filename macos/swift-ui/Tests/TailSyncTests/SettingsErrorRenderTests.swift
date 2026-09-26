@@ -64,10 +64,8 @@ final class SettingsErrorRenderTests: XCTestCase {
 
         for language in ["en", "zh-CN"] {
             Loc.shared.lang = language
-            let settings = SettingsView(
-                launchAtLogin: LaunchAtLoginController(service: AcceptanceLaunchAtLoginService())
-            )
-            let view = settings.peerRow(peer)
+            let connections = ConnectionsView()
+            let view = connections.peerRow(peer)
                 .environment(\.colorScheme, .light)
                 .environment(\.tailSyncSelection, selection)
                 .environment(\.tailSyncPalette, selection.palette(for: .light))

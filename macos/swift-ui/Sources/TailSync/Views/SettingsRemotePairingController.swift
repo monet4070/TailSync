@@ -1,59 +1,57 @@
 import AppKit
 import SwiftUI
 
-extension SettingsView {
+extension ConnectionsView {
     func handleRemotePairingLink(_ link: String) {
-        remoteInviteLink = link.trimmingCharacters(in: .whitespacesAndNewlines)
-        remoteInvitePreview = nil
-        remotePairingMessage = nil
+        remotePairing.receive(link)
         inspectRemotePairingLink()
     }
 
     func createRemotePairingInvite() {
         remotePairingInProgress = true
-        remotePairingMessage = nil
+        remotePairing.beginOperation()
         Task { @MainActor in
             do {
                 remoteInvite = try await ApiClient.shared.createRemotePairingInvite()
                 remoteInviteCopied = false
                 pairingStatus = try? await ApiClient.shared.getPairingStatus()
             } catch {
-                remotePairingMessage = error.localizedDescription
+                remotePairing.fail(error.localizedDescription)
             }
             remotePairingInProgress = false
         }
     }
 
     func inspectRemotePairingLink() {
-        let link = remoteInviteLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        let link = remotePairing.link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.isEmpty else {
-            remoteInvitePreview = nil
+            remotePairing.preview = nil
             return
         }
         remotePairingInProgress = true
-        remotePairingMessage = nil
+        remotePairing.beginOperation()
         Task { @MainActor in
             do {
-                remoteInvitePreview = try await ApiClient.shared.inspectRemotePairingLink(link)
+                remotePairing.preview = try await ApiClient.shared.inspectRemotePairingLink(link)
             } catch {
-                remoteInvitePreview = nil
-                remotePairingMessage = error.localizedDescription
+                remotePairing.preview = nil
+                remotePairing.fail(error.localizedDescription)
             }
             remotePairingInProgress = false
         }
     }
 
     func startRemotePairing() {
-        let link = remoteInviteLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        let link = remotePairing.link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.isEmpty else { return }
         remotePairingInProgress = true
-        remotePairingMessage = nil
+        remotePairing.beginOperation()
         Task { @MainActor in
             do {
                 pairingStatus = try await ApiClient.shared.startRemotePairing(inviteLink: link)
                 showPairingSheet = true
             } catch {
-                remotePairingMessage = pairingErrorDescription(error)
+                remotePairing.fail(pairingErrorDescription(error))
                 pairingStatus = try? await ApiClient.shared.getPairingStatus()
             }
             remotePairingInProgress = false
@@ -62,13 +60,13 @@ extension SettingsView {
 
     func cancelRemotePairingInvite() {
         remotePairingInProgress = true
-        remotePairingMessage = nil
+        remotePairing.beginOperation()
         Task { @MainActor in
             do {
                 _ = try await ApiClient.shared.cancelRemotePairingInvite()
                 remoteInvite = nil
             } catch {
-                remotePairingMessage = error.localizedDescription
+                remotePairing.fail(error.localizedDescription)
             }
             remotePairingInProgress = false
         }
@@ -79,7 +77,7 @@ extension SettingsView {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         guard pasteboard.setString(invite.link, forType: .string) else {
-            remotePairingMessage = Loc.t("settings.remotePairingCopyFailed")
+            remotePairing.fail(Loc.t("settings.remotePairingCopyFailed"))
             return
         }
         remoteInviteCopied = true

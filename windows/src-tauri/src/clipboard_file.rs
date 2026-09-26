@@ -55,7 +55,7 @@ use std::process::Command;
 pub fn read_clipboard_files() -> Result<Option<Vec<PathBuf>>, ClipboardFileReadError> {
     #[cfg(target_os = "macos")]
     {
-        read_files_macos()
+        Ok(read_files_macos())
     }
 
     #[cfg(target_os = "windows")]

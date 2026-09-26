@@ -9,6 +9,71 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
+#[tokio::test]
+async fn outgoing_recovery_commits_history_before_removing_completed_journal() {
+    use tokio::sync::Mutex;
+    let root = std::env::temp_dir().join(format!("tailsync-recovery-history-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("payload.bin");
+    std::fs::write(&source, b"history recovery payload").unwrap();
+    let prepared = crate::sync::prepare_file_batch(vec![source], 1).unwrap();
+    let batch_id = prepared.manifest.batch_id;
+    crate::sync::persist_outgoing_batch_with_identities(&prepared, &[("peer".into(), "peer-key".into())]).unwrap();
+    crate::sync::mark_outgoing_peer_completed_with_identity(batch_id, "peer", "peer-key").unwrap();
+    let settings = Arc::new(Mutex::new(crate::crypto::Settings {
+        notifications_enabled: false,
+        ..crate::crypto::Settings::default()
+    }));
+    let pool = Arc::new(Mutex::new(crate::network::ConnectionPool::new(
+        Arc::new(crate::identity::DeviceIdentity::generate_for_test()), settings.clone(),
+    )));
+    let database = Arc::new(Mutex::new(crate::db::HistoryDB::open_isolated_for_test(&root.join("history")).unwrap()));
+    let journal = crate::sync::load_outgoing_batches().into_iter().find(|batch| batch.batch_id() == batch_id).unwrap();
+    assert!(!journal.local_history_saved);
+    super::resume_outgoing_batches(
+        vec![journal], Vec::new(), super::ClipboardRuntime::Headless,
+        database.clone(), pool, settings,
+    ).await;
+    assert!(database.lock().await.has_complete_file_batch(&batch_id.as_hex()).unwrap());
+    assert!(!crate::sync::load_outgoing_batches().iter().any(|batch| batch.batch_id() == batch_id));
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn outgoing_recovery_keeps_journal_when_local_history_fails() {
+    use tokio::sync::Mutex;
+    let root = std::env::temp_dir().join(format!("tailsync-recovery-missing-source-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("payload.bin");
+    std::fs::write(&source, b"history recovery payload").unwrap();
+    let prepared = crate::sync::prepare_file_batch(vec![source.clone()], 1).unwrap();
+    let batch_id = prepared.manifest.batch_id;
+    crate::sync::persist_outgoing_batch_with_identities(&prepared, &[("peer".into(), "peer-key".into())]).unwrap();
+    crate::sync::mark_outgoing_peer_completed_with_identity(batch_id, "peer", "peer-key").unwrap();
+    std::fs::remove_file(source).unwrap();
+    let settings = Arc::new(Mutex::new(crate::crypto::Settings {
+        notifications_enabled: false,
+        ..crate::crypto::Settings::default()
+    }));
+    let pool = Arc::new(Mutex::new(crate::network::ConnectionPool::new(
+        Arc::new(crate::identity::DeviceIdentity::generate_for_test()), settings.clone(),
+    )));
+    let database = Arc::new(Mutex::new(crate::db::HistoryDB::open_isolated_for_test(&root.join("history")).unwrap()));
+    let journal = crate::sync::load_outgoing_batches().into_iter().find(|batch| batch.batch_id() == batch_id).unwrap();
+    super::resume_outgoing_batches(
+        vec![journal], Vec::new(), super::ClipboardRuntime::Headless,
+        database.clone(), pool, settings,
+    ).await;
+    let restored = crate::sync::load_outgoing_batches().into_iter().find(|batch| batch.batch_id() == batch_id).unwrap();
+    assert!(!restored.local_history_saved);
+    assert_eq!(restored.attempt_count, 1);
+    assert!(!database.lock().await.has_complete_file_batch(&batch_id.as_hex()).unwrap());
+    crate::sync::remove_outgoing_batch(batch_id).unwrap();
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn transfer_peer(
     enabled: bool,
     trusted: bool,
