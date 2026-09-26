@@ -294,6 +294,19 @@ impl Settings {
         mode: &str,
         address: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // A hostname is a mutable, unauthenticated label. Reusing it with a
+        // different pinned key would silently replace the trust anchor of the
+        // device already known under that name, so reject the conflict and
+        // require the user to revoke or re-pair explicitly. The same key
+        // repeated stays idempotent.
+        if let Some(existing) = self.trusted_peer_keys.get(hostname) {
+            if existing != public_key {
+                return Err(format!(
+                    "Device {hostname} is already paired with a different key; revoke that pairing before pairing again"
+                )
+                .into());
+            }
+        }
         self.trusted_peer_keys
             .insert(hostname.to_string(), public_key.to_string());
         if let Some(address) = address {

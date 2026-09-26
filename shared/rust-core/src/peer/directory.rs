@@ -36,6 +36,24 @@ pub fn mode_interface(mode: &str) -> Option<ConnectionInterface> {
     }
 }
 
+/// Whether an address belongs to a Tailscale tailnet: the CGNAT range
+/// `100.64.0.0/10` or the Tailscale IPv6 ULA prefix `fd7a:115c:a1e0::/48`.
+///
+/// This must be checked before any generic private/ULA rule, because the
+/// Tailscale ULA prefix also matches `fc00::/7`.
+pub fn is_tailscale_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 100 && (64..=127).contains(&octets[1])
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
+        }
+    }
+}
+
 /// Whether an address may be used for the given mode. Tailscale addresses
 /// are the CGNAT range `100.64.0.0/10` and the ULA prefix `fd7a:115c:a1e0::/48`;
 /// LAN addresses are private, link-local, or loopback.
@@ -43,15 +61,13 @@ pub fn source_matches_mode(ip: IpAddr, mode: &str) -> bool {
     if mode == "auto" {
         return source_matches_mode(ip, "lan_only") || source_matches_mode(ip, "tailscale_only");
     }
+    // Tailscale is classified first and exclusively. Its IPv6 prefix is a ULA
+    // that would otherwise satisfy the generic `fc00::/7` LAN rule, letting
+    // `lan_only` accept external tailnet addresses and break the mode boundary.
+    if is_tailscale_address(ip) {
+        return matches!(mode, "tailscale" | "tailscale_only");
+    }
     match (ip, mode) {
-        (IpAddr::V4(ip), "tailscale" | "tailscale_only") => {
-            let octets = ip.octets();
-            octets[0] == 100 && (64..=127).contains(&octets[1])
-        }
-        (IpAddr::V6(ip), "tailscale" | "tailscale_only") => {
-            let segments = ip.segments();
-            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
-        }
         (IpAddr::V4(ip), "lan" | "lan_only") => {
             ip.is_private() || ip.is_link_local() || ip.is_loopback()
         }
@@ -589,6 +605,33 @@ mod tests {
         assert!(source_matches_mode(tailscale, "auto"));
         assert!(source_matches_mode(lan, "auto"));
         assert!(!source_matches_mode(public, "auto"));
+    }
+
+    #[test]
+    fn lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local() {
+        let tailscale_v4: IpAddr = "100.64.0.7".parse().unwrap();
+        let tailscale_v6: IpAddr = "fd7a:115c:a1e0::1".parse().unwrap();
+        let other_ula: IpAddr = "fd12:3456:789a::1".parse().unwrap();
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+
+        // Tailscale is exclusively a tailnet address, even though its IPv6
+        // prefix also lies inside the generic fc00::/7 ULA range.
+        assert!(is_tailscale_address(tailscale_v4));
+        assert!(is_tailscale_address(tailscale_v6));
+        assert!(!source_matches_mode(tailscale_v4, "lan_only"));
+        assert!(!source_matches_mode(tailscale_v6, "lan_only"));
+        assert!(!source_matches_mode(tailscale_v6, "lan"));
+        assert!(source_matches_mode(tailscale_v6, "tailscale_only"));
+        assert!(source_matches_mode(tailscale_v6, "tailscale"));
+        assert!(source_matches_mode(tailscale_v6, "auto"));
+
+        // Other ULA, IPv6 link-local, and loopback keep their LAN semantics.
+        assert!(!is_tailscale_address(other_ula));
+        assert!(source_matches_mode(other_ula, "lan_only"));
+        assert!(!source_matches_mode(other_ula, "tailscale_only"));
+        assert!(source_matches_mode(link_local_v6, "lan_only"));
+        assert!(source_matches_mode(loopback, "lan_only"));
     }
 
     #[test]

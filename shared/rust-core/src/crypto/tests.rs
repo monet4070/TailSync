@@ -494,6 +494,64 @@ fn pairing_endpoint_is_not_changed_by_later_route_discovery() {
 }
 
 #[test]
+fn re_pairing_same_hostname_with_a_different_key_is_rejected() {
+    let mut settings = Settings::default();
+    settings
+        .trust_peer_without_save("windows", "key-a", "lan", Some("192.168.1.20"))
+        .unwrap();
+
+    // Re-pairing the same key is idempotent and may refresh the route.
+    settings
+        .trust_peer_without_save("windows", "key-a", "lan", Some("192.168.1.21"))
+        .unwrap();
+    assert_eq!(
+        settings
+            .trusted_peer_keys
+            .get("windows")
+            .map(String::as_str),
+        Some("key-a")
+    );
+
+    // A different key under the same hostname must not silently replace the
+    // existing trust anchor or its remembered route.
+    let error = settings
+        .trust_peer_without_save("windows", "key-b", "lan", Some("10.0.0.9"))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("already paired with a different key"));
+    assert_eq!(
+        settings
+            .trusted_peer_keys
+            .get("windows")
+            .map(String::as_str),
+        Some("key-a")
+    );
+    assert_eq!(
+        settings
+            .trusted_peer_addresses
+            .get("windows")
+            .and_then(|addresses| addresses.get("lan"))
+            .map(String::as_str),
+        Some("192.168.1.21")
+    );
+
+    // After an explicit revoke the new device can be paired.
+    settings.trusted_peer_keys.remove("windows");
+    settings.trusted_peer_addresses.remove("windows");
+    settings
+        .trust_peer_without_save("windows", "key-b", "lan", Some("10.0.0.9"))
+        .unwrap();
+    assert_eq!(
+        settings
+            .trusted_peer_keys
+            .get("windows")
+            .map(String::as_str),
+        Some("key-b")
+    );
+}
+
+#[test]
 fn legacy_manual_connection_mode_maps_to_lan() {
     assert_eq!(
         super::normalize_connection_mode("manual".into()),
