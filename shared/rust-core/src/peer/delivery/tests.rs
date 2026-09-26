@@ -373,6 +373,37 @@ async fn race_joins_all_failures() {
 }
 
 #[tokio::test]
+async fn race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast() {
+    let candidates = vec![
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.2"),
+        resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2"),
+    ];
+    let started = std::time::Instant::now();
+    let (stream, winner) = race_connections(
+        &candidates,
+        Duration::from_secs(2),
+        |target, _candidate| async move {
+            if target.to_string().contains("192.168") {
+                Err("lan refused".to_string())
+            } else {
+                Ok("tailscale-stream")
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stream, "tailscale-stream");
+    assert_eq!(winner.candidate.interface, ConnectionInterface::Tailscale);
+    // The cold-start Tailscale bias is 300 ms; releasing on the fast LAN
+    // failure must beat it comfortably.
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "fallback waited out the full bias: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn race_without_candidates_fails() {
     let err = race_connections::<(), _, _>(
         &[],

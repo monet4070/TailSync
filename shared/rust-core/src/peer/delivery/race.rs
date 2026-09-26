@@ -75,14 +75,22 @@ where
     // connect attempt, so no handshake outlives the race.
     let mut tasks = tokio::task::JoinSet::new();
     let connect = std::sync::Arc::new(connect);
+    // Delayed candidates wait out their head start, but a preferred route that
+    // fails quickly releases the fallbacks immediately instead of making them
+    // pay the full delay against a dead route.
+    let (fast_fail, fast_fail_rx) = tokio::sync::watch::channel(false);
 
     for candidate in candidates.iter().cloned() {
         let tx = tx.clone();
         let connect = connect.clone();
+        let mut fast_fail_rx = fast_fail_rx.clone();
         let delay = measured_candidate_delay(&candidate, candidates);
         tasks.spawn(async move {
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
+            if !delay.is_zero() && !*fast_fail_rx.borrow() {
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = fast_fail_rx.changed() => {}
+                }
             }
             let started = tokio::time::Instant::now();
             let result = timeout(
@@ -106,11 +114,16 @@ where
                 tasks.abort_all();
                 return Ok((stream, candidate));
             }
-            Err(error) => errors.push(format!(
-                "{} {}: {error}",
-                candidate.candidate.interface.as_str(),
-                candidate.target
-            )),
+            Err(error) => {
+                if measured_candidate_delay(&candidate, candidates).is_zero() {
+                    let _ = fast_fail.send(true);
+                }
+                errors.push(format!(
+                    "{} {}: {error}",
+                    candidate.candidate.interface.as_str(),
+                    candidate.target
+                ))
+            }
         }
     }
     Err(errors.join("; "))
