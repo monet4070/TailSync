@@ -319,50 +319,43 @@ async fn deliver_event_frame<T: DeliveryConnection>(
     message_id: MessageId,
     config: &DeliveryConfig,
 ) -> Result<(), DeliveryError> {
-    for attempt in 0..config.max_attempts {
-        tracing::debug!(
-            command = ?pending.queued.command,
-            sequence = pending.sequence,
-            session_id = ?stream.session_id(),
-            message_id = %message_id.as_hex(),
-            attempt = attempt + 1,
-            "event delivery attempt"
-        );
-        stream
-            .write_frame(frame)
-            .await
-            .map_err(|error| DeliveryError::transport(error.to_string()))?;
-        match timeout(config.event_ack_timeout, stream.read_frame()).await {
-            Ok(Ok(ack)) if ack.command == Command::EventAck => {
-                validate_event_ack(&ack, pending, message_id)?;
-                return Ok(());
-            }
-            Ok(Ok(frame)) if frame.command == Command::PeerError => {
-                let message = String::from_utf8_lossy(&frame.payload).to_string();
-                if message.contains("event timestamp is outside the accepted window") {
-                    return Err(DeliveryError::expired(message));
-                }
-                return Err(DeliveryError::rejected(format!("event: {message}")));
-            }
-            Ok(Ok(frame)) => {
-                return Err(DeliveryError::protocol(format!(
-                    "expected EventAck, received {:?}",
-                    frame.command
-                )));
-            }
-            Ok(Err(error)) => return Err(DeliveryError::transport(error.to_string())),
-            Err(_) if attempt + 1 < config.max_attempts => {
-                tokio::time::sleep(config.retry_delay(attempt)).await;
-            }
-            Err(_) => {
-                return Err(DeliveryError::Timeout(format!(
-                    "event acknowledgement timed out after {} attempts",
-                    config.max_attempts
-                )));
-            }
+    tracing::debug!(
+        command = ?pending.queued.command,
+        sequence = pending.sequence,
+        session_id = ?stream.session_id(),
+        message_id = %message_id.as_hex(),
+        "event delivery attempt"
+    );
+    stream
+        .write_frame(frame)
+        .await
+        .map_err(|error| DeliveryError::transport(error.to_string()))?;
+    match timeout(config.event_ack_timeout, stream.read_frame()).await {
+        Ok(Ok(ack)) if ack.command == Command::EventAck => {
+            validate_event_ack(&ack, pending, message_id)?;
+            Ok(())
         }
+        Ok(Ok(frame)) if frame.command == Command::PeerError => {
+            let message = String::from_utf8_lossy(&frame.payload).to_string();
+            if message.contains("event timestamp is outside the accepted window") {
+                return Err(DeliveryError::expired(message));
+            }
+            Err(DeliveryError::rejected(format!("event: {message}")))
+        }
+        Ok(Ok(frame)) => Err(DeliveryError::protocol(format!(
+            "expected EventAck, received {:?}",
+            frame.command
+        ))),
+        Ok(Err(error)) => Err(DeliveryError::transport(error.to_string())),
+        // Never replay on this stream: a duplicate ACK left by the first
+        // attempt would be read as the retry's ACK and mismatched into a
+        // protocol error. End the attempt so the worker reconnects and replays
+        // on a fresh authenticated session, where the receiver's dedup window
+        // decides whether the event is applied again.
+        Err(_) => Err(DeliveryError::Timeout(
+            "event acknowledgement timed out; reconnecting on a fresh session".into(),
+        )),
     }
-    unreachable!("event retry loop always returns")
 }
 
 async fn deliver_file_frame<T: DeliveryConnection>(

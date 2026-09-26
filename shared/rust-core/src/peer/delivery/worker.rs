@@ -98,6 +98,23 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
     }
 }
 
+/// Back off before reconnecting after a delivery failure that followed a
+/// successful handshake. The connect path already delays; this path must too,
+/// or a peer that accepts connections but rejects delivery turns the worker
+/// into a hot reconnect loop that burns CPU and starves the settings lock.
+/// Returns `false` when shutdown interrupted the wait.
+async fn backoff_after_delivery_failure(
+    config: &WorkerConfig,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => false,
+        _ = config.retry_wakeup.notified() => true,
+        _ = tokio::time::sleep(config.reconnect_delay) => true,
+    }
+}
+
 pub(super) async fn receive_scheduled_frame(
     priority_rx: &mut mpsc::Receiver<QueuedFrame>,
     bulk_rx: &mut mpsc::Receiver<QueuedFrame>,
@@ -401,6 +418,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                         target
                     );
                     pending = Some(frame);
+                    if !backoff_after_delivery_failure(config, &mut shutdown).await {
+                        crate::sync_warning::record_delivery_shutdown(&hostname);
+                        return;
+                    }
                     continue;
                 }
             }
@@ -426,7 +447,8 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                         }
                         matches!(
                             timeout(config.heartbeat_ack_timeout, stream.read_frame()).await,
-                            Ok(Ok(Frame { command: Command::HeartbeatAck, .. }))
+                            Ok(Ok(Frame { command: Command::HeartbeatAck, sequence, .. }))
+                                if sequence == hb.sequence
                         )
                     } => result,
                 };
@@ -519,6 +541,10 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                                 "Pool delivery to {} failed: {error} — reselecting path",
                                 target
                             );
+                            if !backoff_after_delivery_failure(config, &mut shutdown).await {
+                                crate::sync_warning::record_delivery_shutdown(&hostname);
+                                return;
+                            }
                             break;
                         }
                     }

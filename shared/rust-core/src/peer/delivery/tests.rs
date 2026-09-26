@@ -645,44 +645,33 @@ async fn event_ack_for_another_message_is_a_protocol_error() {
 }
 
 #[tokio::test]
-async fn event_is_retried_with_the_same_sequence_until_acknowledged() {
+async fn silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream() {
     let server_identity = server_identity();
     let client_identity = DeviceIdentity::generate_for_test();
     let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
 
-    // The server reads the first attempt but stays silent; the client's
-    // ACK window expires and it retries the identical frame. Only the
-    // second attempt is acknowledged.
-    let server_task = tokio::spawn(async move {
-        let first = server.read_frame().await.unwrap();
-        let retry = server.read_frame().await.unwrap();
-        assert_eq!(retry.sequence, first.sequence);
-        assert_eq!(retry.payload, first.payload);
-        let message_id = EventEnvelope::decode(&retry.payload).unwrap().message_id;
-        server
-            .write_frame(
-                &Frame::try_new(
-                    Command::EventAck,
-                    0,
-                    retry.sequence,
-                    message_id.ack_payload(),
-                )
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-    });
-
+    // The server stays silent. The client must not replay on the same stream,
+    // where a duplicate ACK from the first attempt could be misread as this
+    // attempt's ACK; it ends the attempt so the worker reconnects instead.
     let pending = PendingFrame::new(
         QueuedFrame::new(Command::TextPayload, b"reliable".to_vec()).unwrap(),
         42,
     );
-    // Event ACK window is 750 ms; one silent round + ack must fit in the
-    // 4 default attempts.
-    deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+    let error = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
         .await
-        .unwrap();
-    server_task.await.unwrap();
+        .unwrap_err();
+    assert!(matches!(error, DeliveryError::Timeout(_)), "{error:?}");
+    assert!(error.is_retryable());
+
+    // Exactly one attempt reached the wire, and no replay followed it.
+    let first = server.read_frame().await.unwrap();
+    assert_eq!(first.sequence, 42);
+    assert!(
+        timeout(Duration::from_millis(200), server.read_frame())
+            .await
+            .is_err(),
+        "the client must not replay on the same stream"
+    );
 }
 
 #[tokio::test]
