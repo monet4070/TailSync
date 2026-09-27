@@ -480,6 +480,63 @@ fn pending_file_batch_bytes_exclude_partial_data_already_on_disk() {
 }
 
 #[test]
+fn batch_preflight_only_credits_partials_bound_to_the_same_manifest() {
+    let directory = TestDirectory::new("batch-preflight-identity");
+    let manifest = manifest_with_sizes(&[10]);
+    let transfer = manifest.files[0].transfer_id;
+    let mut sync = SyncEngine::new();
+    sync.begin_file_batch(manifest.clone(), "peer-a".into(), directory.path())
+        .unwrap();
+    std::fs::write(
+        directory.path().join(format!("{}.part", transfer.as_hex())),
+        [0_u8; 4],
+    )
+    .unwrap();
+
+    assert_eq!(
+        SyncEngine::file_batch_remaining_bytes(&manifest, "peer-a", "peer-a", directory.path()),
+        6
+    );
+    assert_eq!(
+        SyncEngine::file_batch_remaining_bytes(&manifest, "peer-b", "peer-b", directory.path()),
+        10
+    );
+    let mut different = manifest.clone();
+    different.batch_id = TransferId([99; 16]);
+    assert_eq!(
+        SyncEngine::file_batch_remaining_bytes(&different, "peer-a", "peer-a", directory.path()),
+        10
+    );
+
+    // A conflicting transfer sidecar means the part belongs to another
+    // transfer incarnation, even if its filename happens to match.
+    let sidecar = super::resume::PersistedTransfer {
+        meta: FileMeta {
+            transfer_id: Some(transfer),
+            name: manifest.files[0].name.clone(),
+            size: 10,
+            hash: manifest.files[0].hash.clone(),
+            chunk_size: manifest.files[0].chunk_size,
+            batch: None,
+        },
+        source: "peer-a".into(),
+        final_path: directory.path().join("final.bin"),
+        updated_at: 0,
+    };
+    std::fs::write(
+        directory
+            .path()
+            .join(format!("{}.resume.json", transfer.as_hex())),
+        serde_json::to_vec(&sidecar).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        SyncEngine::file_batch_remaining_bytes(&manifest, "peer-a", "peer-a", directory.path()),
+        10
+    );
+}
+
+#[test]
 fn global_active_file_batch_limit_is_enforced() {
     let directory = TestDirectory::new("batch-global-limit");
     let mut sync = SyncEngine::new();

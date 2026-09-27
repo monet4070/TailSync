@@ -573,7 +573,7 @@ async fn handle_accepted_connection_inner(
                             let manifest_hash =
                                 sync::SyncEngine::file_batch_manifest_hash(&manifest)
                                     .map_err(|error| error.to_string())?;
-                            let (already_active, pending_bytes) = {
+                            let (already_active, pending_bytes, pending_commit_bytes) = {
                                 let engine = sync_engine.lock().await;
                                 (
                                     engine.has_file_batch(&peer_info.hostname, manifest.batch_id)
@@ -582,6 +582,7 @@ async fn handle_accepted_connection_inner(
                                             manifest.batch_id,
                                         ),
                                     engine.pending_file_batch_bytes(),
+                                    engine.pending_file_batch_commit_bytes(),
                                 )
                             };
                             let receipt = {
@@ -612,13 +613,18 @@ async fn handle_accepted_connection_inner(
                                         // batches.
                                         let remaining = sync::SyncEngine::file_batch_remaining_bytes(
                                             &manifest,
+                                            &peer_info.hostname,
+                                            &source_device_id,
                                             &db::get_incoming_dir(),
                                         )
                                         .saturating_add(pending_bytes);
+                                        let commit_bytes = manifest
+                                            .total_bytes
+                                            .saturating_add(pending_commit_bytes);
                                         database
                                             .lock()
                                             .await
-                                            .reserve_for_file_batch(remaining)
+                                            .reserve_for_file_batch(remaining, commit_bytes)
                                             .map_err(|error| error.to_string())
                                     } else {
                                         Ok(())

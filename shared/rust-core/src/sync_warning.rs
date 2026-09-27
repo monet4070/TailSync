@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
@@ -8,6 +9,27 @@ pub struct SyncWarning {
 }
 
 static LATEST_WARNING: OnceLock<Mutex<Option<SyncWarning>>> = OnceLock::new();
+
+/// Set once the process begins shutting down. Delivery workers tear their
+/// connection down both on shutdown and on an explicit reconnect (a route
+/// change or a retried transfer to an offline peer), so only a real shutdown
+/// may surface the user-facing "delivery stopped" warning.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Mark the process as shutting down. Called once by the daemon/application
+/// shutdown coordinator before connections are closed.
+pub fn begin_shutdown() {
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+}
+
+pub fn is_shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_shutdown_for_test() {
+    SHUTTING_DOWN.store(false, Ordering::SeqCst);
+}
 
 #[cfg(test)]
 static TEST_WARNING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -38,12 +60,22 @@ pub fn record_delivery_stalled(peer: &str) {
     record(peer, "delivery_stalled");
 }
 
-pub fn record_delivery_shutdown(peer: &str) {
-    record(peer, "delivery_shutdown");
-}
-
 pub fn record_delivery_expired(peer: &str) {
     record(peer, "delivery_expired");
+}
+
+/// Record that an in-flight delivery was abandoned because the process is
+/// shutting down. Returns whether a warning was recorded.
+///
+/// A forced reconnect (route reselection, or a retried transfer to a peer that
+/// dropped off the network) also abandons the in-flight frame, but the durable
+/// retry resends it, so that path must not raise a shutdown warning.
+pub fn record_delivery_shutdown(peer: &str) -> bool {
+    if !is_shutting_down() {
+        return false;
+    }
+    record(peer, "delivery_shutdown");
+    true
 }
 
 fn record(peer: &str, kind: &'static str) {
@@ -74,10 +106,9 @@ mod tests {
         let _guard = test_lock();
         let _ = take();
         let peer = "x".repeat(300);
-        let variants: [(&str, WarningRecorder); 4] = [
+        let variants: [(&str, WarningRecorder); 3] = [
             ("expired_event", record_expired_event),
             ("delivery_stalled", record_delivery_stalled),
-            ("delivery_shutdown", record_delivery_shutdown),
             ("delivery_expired", record_delivery_expired),
         ];
 
@@ -89,5 +120,34 @@ mod tests {
             assert!(warning.occurred_at_ms > 0);
             assert_eq!(take(), None);
         }
+
+        // The shutdown variant is gated on the process actually shutting down.
+        begin_shutdown();
+        assert!(record_delivery_shutdown(&peer));
+        let warning = take().expect("recorded shutdown warning");
+        assert_eq!(warning.kind, "delivery_shutdown");
+        assert_eq!(warning.peer.len(), 255);
+        assert_eq!(take(), None);
+        reset_shutdown_for_test();
+    }
+
+    #[test]
+    fn delivery_shutdown_warning_requires_a_real_shutdown() {
+        let _guard = test_lock();
+        let _ = take();
+        reset_shutdown_for_test();
+
+        // A forced reconnect abandons the in-flight frame but the durable
+        // retry resends it, so it must not raise a shutdown warning.
+        assert!(!record_delivery_shutdown("peer"));
+        assert_eq!(take(), None, "a reconnect must not look like a shutdown");
+
+        begin_shutdown();
+        assert!(record_delivery_shutdown("peer"));
+        let warning = take().expect("a real shutdown records the warning");
+        assert_eq!(warning.kind, "delivery_shutdown");
+        assert_eq!(warning.peer, "peer");
+        assert_eq!(take(), None);
+        reset_shutdown_for_test();
     }
 }

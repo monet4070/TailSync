@@ -31,6 +31,9 @@ pub struct WorkerConfig {
     /// lets a disconnected worker interrupt reconnect backoff without
     /// consuming the frame or adding a polling loop.
     pub retry_wakeup: Arc<Notify>,
+    /// Most recent discovery routes from the pool. Read only when starting a
+    /// new connection so a route update cannot interrupt an active transfer.
+    pub candidate_updates: Option<watch::Receiver<Vec<ResolvedCandidate>>>,
 }
 
 impl Default for WorkerConfig {
@@ -43,6 +46,7 @@ impl Default for WorkerConfig {
             pending_frame_ttl: Duration::from_secs(5 * 60),
             delivery: DeliveryConfig::DEFAULT,
             retry_wakeup: Arc::new(Notify::new()),
+            candidate_updates: None,
         }
     }
 }
@@ -234,6 +238,12 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
     let mut connection_attempt = 0usize;
     'connection: loop {
         connection_attempt = connection_attempt.saturating_add(1);
+        if let Some(updates) = &config.candidate_updates {
+            let latest = updates.borrow().clone();
+            if !latest.is_empty() {
+                candidates = latest;
+            }
+        }
         maintain_offline_queue(
             &mut priority_rx,
             &mut bulk_rx,
@@ -267,7 +277,6 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
             let result = tokio::select! {
                 biased;
                 _ = wait_for_shutdown(&mut shutdown) => {
-                    crate::sync_warning::record_delivery_shutdown(&hostname);
                     return;
                 },
                 result = &mut connection => result,
@@ -294,7 +303,6 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 tokio::select! {
                     biased;
                     _ = wait_for_shutdown(&mut shutdown) => {
-                        crate::sync_warning::record_delivery_shutdown(&hostname);
                         return;
                     },
                     _ = config.retry_wakeup.notified() => {
@@ -363,7 +371,6 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
             let delivery = tokio::select! {
                 biased;
                 _ = wait_for_shutdown(&mut shutdown) => {
-                    crate::sync_warning::record_delivery_shutdown(&hostname);
                     return;
                 },
                 result = deliver_pending_frame(&mut stream, &frame, &config.delivery).instrument(
@@ -419,7 +426,6 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     );
                     pending = Some(frame);
                     if !backoff_after_delivery_failure(config, &mut shutdown).await {
-                        crate::sync_warning::record_delivery_shutdown(&hostname);
                         return;
                     }
                     continue;
@@ -438,7 +444,6 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 let heartbeat_ok = tokio::select! {
                     biased;
                     _ = wait_for_shutdown(&mut shutdown) => {
-                        crate::sync_warning::record_delivery_shutdown(&hostname);
                         return;
                     },
                     result = async {
@@ -468,7 +473,6 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
             let next = tokio::select! {
                 biased;
                     _ = wait_for_shutdown(&mut shutdown) => {
-                        crate::sync_warning::record_delivery_shutdown(&hostname);
                         return;
                     },
                 result = tokio::time::timeout(deadline, next_frame) => result,
@@ -486,7 +490,6 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     let delivery = tokio::select! {
                         biased;
                         _ = wait_for_shutdown(&mut shutdown) => {
-                            crate::sync_warning::record_delivery_shutdown(&hostname);
                             return;
                         },
                         result = deliver_pending_frame(&mut stream, &frame, &config.delivery).instrument(
@@ -542,7 +545,6 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                                 target
                             );
                             if !backoff_after_delivery_failure(config, &mut shutdown).await {
-                                crate::sync_warning::record_delivery_shutdown(&hostname);
                                 return;
                             }
                             break;
@@ -550,8 +552,9 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     }
                 }
                 Ok(None) => {
-                    // All senders dropped — exit this connection for good
-                    log::debug!("Pool channel for {} closed — shutting down", target);
+                    // All senders dropped — the pool closed this peer's worker
+                    // (unpair, or a forced reconnect). Exit for good.
+                    log::debug!("Pool channel for {} closed — worker exiting", target);
                     return;
                 }
                 Err(_) => {

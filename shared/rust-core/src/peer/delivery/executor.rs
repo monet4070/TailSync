@@ -365,52 +365,42 @@ async fn deliver_file_frame<T: DeliveryConnection>(
     transfer_id: TransferId,
     config: &DeliveryConfig,
 ) -> Result<DeliveryReceipt, DeliveryError> {
-    for attempt in 0..config.max_attempts {
-        tracing::debug!(
-            command = ?pending.queued.command,
-            sequence = pending.sequence,
-            session_id = ?stream.session_id(),
-            transfer_id = %transfer_id.as_hex(),
-            attempt = attempt + 1,
-            "file delivery attempt"
-        );
-        stream
-            .write_frame(frame)
-            .await
-            .map_err(|error| DeliveryError::transport(error.to_string()))?;
-        match timeout(config.file_ack_timeout, stream.read_frame()).await {
-            Ok(Ok(ack)) if matches!(ack.command, Command::FileAck | Command::FileResume) => {
-                return if frame.sequence == pending.sequence {
-                    validate_file_ack(&ack, pending, transfer_id)
-                } else {
-                    validate_file_ack_sequence(&ack, frame.sequence, transfer_id)
-                };
-            }
-            Ok(Ok(frame)) => {
-                if frame.command == Command::PeerError {
-                    return Err(DeliveryError::rejected(format!(
-                        "file: {}",
-                        String::from_utf8_lossy(&frame.payload)
-                    )));
-                }
-                return Err(DeliveryError::protocol(format!(
-                    "expected file acknowledgement, received {:?}",
-                    frame.command
-                )));
-            }
-            Ok(Err(error)) => return Err(DeliveryError::transport(error.to_string())),
-            Err(_) if attempt + 1 < config.max_attempts => {
-                tokio::time::sleep(config.retry_delay(attempt)).await;
-            }
-            Err(_) => {
-                return Err(DeliveryError::Timeout(format!(
-                    "file acknowledgement timed out after {} attempts",
-                    config.max_attempts
-                )));
+    tracing::debug!(
+        command = ?pending.queued.command,
+        sequence = pending.sequence,
+        session_id = ?stream.session_id(),
+        transfer_id = %transfer_id.as_hex(),
+        "file delivery attempt"
+    );
+    stream
+        .write_frame(frame)
+        .await
+        .map_err(|error| DeliveryError::transport(error.to_string()))?;
+    match timeout(config.file_ack_timeout, stream.read_frame()).await {
+        Ok(Ok(ack)) if matches!(ack.command, Command::FileAck | Command::FileResume) => {
+            if frame.sequence == pending.sequence {
+                validate_file_ack(&ack, pending, transfer_id)
+            } else {
+                validate_file_ack_sequence(&ack, frame.sequence, transfer_id)
             }
         }
+        Ok(Ok(frame)) => {
+            if frame.command == Command::PeerError {
+                return Err(DeliveryError::rejected(format!(
+                    "file: {}",
+                    String::from_utf8_lossy(&frame.payload)
+                )));
+            }
+            Err(DeliveryError::protocol(format!(
+                "expected file acknowledgement, received {:?}",
+                frame.command
+            )))
+        }
+        Ok(Err(error)) => Err(DeliveryError::transport(error.to_string())),
+        Err(_) => Err(DeliveryError::Timeout(
+            "file acknowledgement timed out; reconnecting on a fresh session".into(),
+        )),
     }
-    unreachable!("file retry loop always returns")
 }
 
 async fn deliver_batch_frame<T: DeliveryConnection>(
@@ -420,56 +410,42 @@ async fn deliver_batch_frame<T: DeliveryConnection>(
     batch_id: TransferId,
     config: &DeliveryConfig,
 ) -> Result<DeliveryReceipt, DeliveryError> {
-    for attempt in 0..config.max_attempts {
-        tracing::debug!(
-            command = ?pending.queued.command,
-            sequence = pending.sequence,
-            session_id = ?stream.session_id(),
-            batch_id = %batch_id.as_hex(),
-            attempt = attempt + 1,
-            "batch delivery attempt"
-        );
-        stream
-            .write_frame(frame)
-            .await
-            .map_err(|error| DeliveryError::transport(error.to_string()))?;
-        match timeout(config.file_ack_timeout, stream.read_frame()).await {
-            Ok(Ok(ack)) if ack.command == Command::FileBatchAccept => {
-                if ack.sequence != pending.sequence || ack.payload.as_slice() != batch_id.0 {
-                    return Err(DeliveryError::protocol(
-                        "received an acknowledgement for another file batch",
-                    ));
-                }
-                return Ok(DeliveryReceipt::default());
+    tracing::debug!(
+        command = ?pending.queued.command,
+        sequence = pending.sequence,
+        session_id = ?stream.session_id(),
+        batch_id = %batch_id.as_hex(),
+        "batch delivery attempt"
+    );
+    stream
+        .write_frame(frame)
+        .await
+        .map_err(|error| DeliveryError::transport(error.to_string()))?;
+    match timeout(config.file_ack_timeout, stream.read_frame()).await {
+        Ok(Ok(ack)) if ack.command == Command::FileBatchAccept => {
+            if ack.sequence != pending.sequence || ack.payload.as_slice() != batch_id.0 {
+                return Err(DeliveryError::protocol(
+                    "received an acknowledgement for another file batch",
+                ));
             }
-            Ok(Ok(reject)) if reject.command == Command::FileBatchReject => {
-                return Err(DeliveryError::rejected(format!(
-                    "batch: {}",
-                    String::from_utf8_lossy(&reject.payload)
-                )));
-            }
-            Ok(Ok(error)) if error.command == Command::PeerError => {
-                return Err(DeliveryError::rejected(format!(
-                    "batch: {}",
-                    String::from_utf8_lossy(&error.payload)
-                )));
-            }
-            Ok(Ok(other)) => {
-                return Err(DeliveryError::protocol(format!(
-                    "expected batch acknowledgement, received {:?}",
-                    other.command
-                )));
-            }
-            Ok(Err(error)) => return Err(DeliveryError::transport(error.to_string())),
-            Err(_) if attempt + 1 < config.max_attempts => {
-                tokio::time::sleep(config.retry_delay(attempt)).await;
-            }
-            Err(_) => {
-                return Err(DeliveryError::Timeout(
-                    "file batch acknowledgement timed out".to_string(),
-                ))
-            }
+            Ok(DeliveryReceipt::default())
         }
+        Ok(Ok(reject)) if reject.command == Command::FileBatchReject => {
+            Err(DeliveryError::rejected(format!(
+                "batch: {}",
+                String::from_utf8_lossy(&reject.payload)
+            )))
+        }
+        Ok(Ok(error)) if error.command == Command::PeerError => Err(DeliveryError::rejected(
+            format!("batch: {}", String::from_utf8_lossy(&error.payload)),
+        )),
+        Ok(Ok(other)) => Err(DeliveryError::protocol(format!(
+            "expected batch acknowledgement, received {:?}",
+            other.command
+        ))),
+        Ok(Err(error)) => Err(DeliveryError::transport(error.to_string())),
+        Err(_) => Err(DeliveryError::Timeout(
+            "file batch acknowledgement timed out; reconnecting on a fresh session".to_string(),
+        )),
     }
-    unreachable!("batch retry loop always returns")
 }

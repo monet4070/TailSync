@@ -161,18 +161,11 @@ impl PairingManager {
                 if state.control.is_none() {
                     state.session_direction = None;
                     None
+                } else if state.peer.as_ref().is_some_and(|peer| peer.local_confirmed) {
+                    // Once the user confirmed this code, neither a same-
+                    // direction request nor glare arbitration may replace it.
+                    return Err(PairingError::AlreadyInProgress);
                 } else if existing_direction == pending.direction {
-                    // An unauthenticated handshake must not hold the single
-                    // verification slot for its full 30s deadline: a newer
-                    // session may supersede a slot the local user has not yet
-                    // confirmed. A slot that has already been confirmed is
-                    // protected, so an anonymous request cannot evict the
-                    // pairing the user is actively verifying.
-                    let locally_confirmed =
-                        state.peer.as_ref().is_some_and(|peer| peer.local_confirmed);
-                    if locally_confirmed {
-                        return Err(PairingError::AlreadyInProgress);
-                    }
                     state.control.take()
                 } else if pending.direction == self.preferred_direction(&pending.remote_public_key)
                 {
@@ -282,17 +275,21 @@ impl PairingManager {
     }
 
     pub async fn record_failure(&self, error: impl Into<String>) {
+        self.record_failure_for_session(None, error.into()).await;
+    }
+
+    async fn record_failure_for_session(&self, session_id: Option<u64>, error: String) {
         let mut close_window = false;
         {
             let mut state = self.state.lock().await;
-            if !state.enabled {
+            if !state.enabled || session_id.is_some_and(|id| state.session_id != id) {
                 return;
             }
             state.failed_attempts = state.failed_attempts.saturating_add(1);
             state.peer = None;
             state.control = None;
             state.session_direction = None;
-            let message = error.into();
+            let message = error;
             state.error = Some(message.clone());
             if crate::diagnostics::is_collected() {
                 crate::diagnostics::record(crate::diagnostics::Record {
@@ -322,9 +319,13 @@ impl PairingManager {
     /// budget. Network unavailability, local cancellation, and a competing
     /// connection are not evidence of an invalid credential.
     pub async fn record_non_ban_failure(&self, error: impl Into<String>) {
-        let message = error.into();
+        self.record_non_ban_failure_for_session(None, error.into())
+            .await;
+    }
+
+    async fn record_non_ban_failure_for_session(&self, session_id: Option<u64>, message: String) {
         let mut state = self.state.lock().await;
-        if !state.enabled {
+        if !state.enabled || session_id.is_some_and(|id| state.session_id != id) {
             return;
         }
         state.peer = None;
@@ -625,23 +626,13 @@ impl PairingManager {
     }
 
     async fn fail_session(&self, session_id: u64, error: String) {
-        {
-            let state = self.state.lock().await;
-            if state.session_id != session_id {
-                return;
-            }
-        }
-        self.record_failure(error).await;
+        self.record_failure_for_session(Some(session_id), error)
+            .await;
     }
 
     async fn fail_session_non_ban(&self, session_id: u64, error: String) {
-        {
-            let state = self.state.lock().await;
-            if state.session_id != session_id {
-                return;
-            }
-        }
-        self.record_non_ban_failure(error).await;
+        self.record_non_ban_failure_for_session(Some(session_id), error)
+            .await;
     }
 
     /// Record a protocol anomaly from the peer. Before the local user confirms

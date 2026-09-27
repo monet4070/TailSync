@@ -433,6 +433,67 @@ async fn glare_arbitration_keeps_one_deterministic_session_without_banning() {
     manager.cancel().await;
 }
 
+#[tokio::test]
+async fn preferred_glare_direction_cannot_evict_a_locally_confirmed_session() {
+    let local = Arc::new(DeviceIdentity::generate_for_test());
+    let remote = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        local.clone(),
+        Duration::from_secs(120),
+        5,
+        false,
+    );
+    manager.enable().await;
+    let preferred = if local.public_key() < remote.public_key() {
+        PairingDirection::Outbound
+    } else {
+        PairingDirection::Inbound
+    };
+    let first_direction = if preferred == PairingDirection::Inbound {
+        PairingDirection::Outbound
+    } else {
+        PairingDirection::Inbound
+    };
+    let (mut first_client, first_server) = establish_in_memory_pair(&local, &remote).await;
+    manager
+        .install_session(PendingPairing {
+            connection: first_server,
+            hostname: "remote".into(),
+            remote_public_key: remote.public_key().to_vec(),
+            handshake_hash: vec![1; 32],
+            address: "127.0.0.1".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: first_direction,
+        })
+        .await
+        .unwrap();
+    manager.confirm().await.unwrap();
+    assert_eq!(
+        first_client.read_frame().await.unwrap().command,
+        Command::PairingConfirm
+    );
+
+    let (_second_client, second_server) = establish_in_memory_pair(&local, &remote).await;
+    let error = manager
+        .install_session(PendingPairing {
+            connection: second_server,
+            hostname: "remote".into(),
+            remote_public_key: remote.public_key().to_vec(),
+            handshake_hash: vec![2; 32],
+            address: "127.0.0.1".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: preferred,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PairingError::AlreadyInProgress));
+    assert!(manager.status().await.peer.unwrap().local_confirmed);
+    manager.cancel().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_stalled_pairing_session_releases_the_window_before_window_expiry() {
     let server_identity = Arc::new(DeviceIdentity::generate_for_test());

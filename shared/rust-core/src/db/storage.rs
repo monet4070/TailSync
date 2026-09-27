@@ -1,6 +1,5 @@
 use super::*;
 use crate::crypto::Settings;
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufReader, Read, Write};
@@ -137,15 +136,17 @@ impl HistoryDB {
     }
 
     /// Ensure a complete incoming batch can be retained without exceeding the
-    /// configured quota. Oldest unpinned history is evicted first.
+    /// configured quota. The oldest unpinned external payload is evicted first;
+    /// inline rows cannot make physical room without a database compaction.
     pub fn reserve_for_file_batch(
         &mut self,
         incoming_bytes: u64,
+        encrypted_copy_bytes: u64,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if !self.storage_available {
             return Err("Configured storage is unavailable; file transfer is paused".into());
         }
-        let required_free = required_free_space_for_batch(incoming_bytes);
+        let required_free = required_free_space_for_batch(incoming_bytes, encrypted_copy_bytes);
         let available = fs2::available_space(get_storage_dir())?;
         if available < required_free {
             return Err(format!(
@@ -159,67 +160,44 @@ impl HistoryDB {
             if used.saturating_add(incoming_bytes) <= self.storage_quota_bytes {
                 return Ok(());
             }
-            let oldest = self
-                .conn
-                .query_row(
-                    "SELECT id FROM history WHERE pinned = 0
-                     ORDER BY timestamp ASC, id ASC LIMIT 1",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?;
-            let Some(id) = oldest else {
+            let Some(id) = self.oldest_evictable_external_payload_id()? else {
                 return Err(format!(
-                    "Storage quota is full; pinned history leaves no room for this {} byte batch",
-                    incoming_bytes
-                )
-                .into());
+                    "Storage quota is full: {} bytes are used against a {} byte quota and the remaining evictable history is inline only, so cleanup cannot reduce disk usage; file transfer is paused",
+                    used, self.storage_quota_bytes
+                ).into());
             };
             let ids = self.expand_batch_groups(vec![id])?;
             self.delete_entries(&ids)?;
-            let used_after = bulk_storage_size(&get_storage_dir())?;
-            if used_after < used {
-                // The WAL checkpoint inside `delete_entries` truncated freed
-                // pages; keep evicting until the quota is satisfied.
-                continue;
-            }
-            // SQLite `DELETE` does not shrink the database file, so an inline
-            // eviction can remove history without reducing on-disk usage.
-            // Continue only while an evictable row still owns an external
-            // payload; once only inline rows remain, further deletion cannot
-            // free physical space, so report the real shortage instead of
-            // deleting the rest of the history for no gain.
-            if !self.has_evictable_external_payload()? {
-                return Err(format!(
-                    "Storage quota is full: {} bytes are used against a {} byte quota and the remaining evictable history is inline only, so cleanup cannot reduce disk usage; file transfer is paused",
-                    used_after, self.storage_quota_bytes
-                )
-                .into());
-            }
         }
     }
 
-    /// Whether any unpinned history row still references an external encrypted
-    /// payload file, and so can free physical disk space when evicted.
-    fn has_evictable_external_payload(&self) -> Result<bool, Box<dyn std::error::Error>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT type, data FROM history WHERE pinned = 0")?;
+    /// Find the oldest unpinned row that owns an external encrypted payload.
+    /// Inline text and images remain intact when the physical quota is full.
+    fn oldest_evictable_external_payload_id(
+        &self,
+    ) -> Result<Option<i64>, Box<dyn std::error::Error>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, type, data FROM history WHERE pinned = 0 ORDER BY timestamp ASC, id ASC",
+        )?;
         let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
         })?;
         for row in rows {
-            let (entry_type, stored) = row?;
+            let (id, entry_type, stored) = row?;
             let external = match entry_type.as_str() {
                 "file" => decode_file_reference(&stored).is_some(),
                 "image" => decode_image_reference(&stored).is_some(),
                 _ => false,
             };
             if external {
-                return Ok(true);
+                return Ok(Some(id));
             }
         }
-        Ok(false)
+        Ok(None)
     }
 
     pub fn set_pinned(&mut self, id: i64, pinned: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -409,9 +387,9 @@ fn storage_status_for(snapshot: StorageStatusSnapshot) -> StorageStatus {
     }
 }
 
-fn required_free_space_for_batch(incoming_bytes: u64) -> u64 {
+fn required_free_space_for_batch(incoming_bytes: u64, encrypted_copy_bytes: u64) -> u64 {
     incoming_bytes
-        .saturating_mul(2)
+        .saturating_add(encrypted_copy_bytes)
         .saturating_add(STORAGE_FREE_SPACE_MARGIN_BYTES)
 }
 
@@ -671,10 +649,16 @@ mod tests {
     #[test]
     fn batch_preflight_accounts_for_encrypted_history_copy_and_margin() {
         assert_eq!(
-            required_free_space_for_batch(1024),
+            required_free_space_for_batch(1024, 1024),
             2 * 1024 + STORAGE_FREE_SPACE_MARGIN_BYTES
         );
-        assert_eq!(required_free_space_for_batch(u64::MAX), u64::MAX);
+        assert_eq!(required_free_space_for_batch(u64::MAX, 1024), u64::MAX);
+        // A resumed 1 GiB batch with 512 MiB already on disk still needs
+        // room for the remaining plaintext and the complete encrypted copy.
+        assert_eq!(
+            required_free_space_for_batch(512 * 1024 * 1024, 1024 * 1024 * 1024),
+            1536 * 1024 * 1024 + STORAGE_FREE_SPACE_MARGIN_BYTES
+        );
     }
 
     #[test]
@@ -799,10 +783,17 @@ mod tests {
         let error = database
             .lock()
             .await
-            .reserve_for_file_batch(1024)
+            .reserve_for_file_batch(1024, 1024)
             .unwrap_err()
             .to_string();
         assert!(error.contains("inline only"), "unexpected error: {error}");
+        let count: i64 = database
+            .lock()
+            .await
+            .conn
+            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 3, "quota preflight must preserve inline history");
 
         drop(database);
         configure_storage_dir(Some(&original)).unwrap();

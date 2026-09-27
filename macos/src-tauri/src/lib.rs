@@ -113,6 +113,9 @@ async fn coordinate_shutdown(
 ) {
     wait_for_shutdown(&mut shutdown).await;
     info!("Application shutdown coordinator started");
+    // The process is closing: mark it so an abandoned in-flight delivery is
+    // reported as interrupted by shutdown rather than by a reconnect.
+    tailsync_core::sync_warning::begin_shutdown();
     let close_connections = async {
         if tokio::time::timeout(PEER_DISCONNECT_TIMEOUT, async {
             pool.lock().await.disconnect_all();
@@ -530,6 +533,10 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
     info!("TailSync v2 headless daemon initialized successfully");
     let mut shutdown_wait = shutdown_rx;
     wait_for_shutdown(&mut shutdown_wait).await;
+    // From here the daemon is closing. Only now may an abandoned in-flight
+    // delivery be reported to the user as interrupted by shutdown; a forced
+    // reconnect must not raise that warning.
+    tailsync_core::sync_warning::begin_shutdown();
     if tokio::time::timeout(PEER_DISCONNECT_TIMEOUT, async {
         pool.lock().await.disconnect_all();
     })

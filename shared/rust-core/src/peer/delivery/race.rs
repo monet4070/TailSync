@@ -108,6 +108,10 @@ where
     drop(tx);
 
     let mut errors = Vec::new();
+    let mut immediate_remaining = candidates
+        .iter()
+        .filter(|candidate| measured_candidate_delay(candidate, candidates).is_zero())
+        .count();
     while let Some((candidate, result)) = rx.recv().await {
         match result {
             Ok(stream) => {
@@ -116,7 +120,10 @@ where
             }
             Err(error) => {
                 if measured_candidate_delay(&candidate, candidates).is_zero() {
-                    let _ = fast_fail.send(true);
+                    immediate_remaining = immediate_remaining.saturating_sub(1);
+                    if immediate_remaining == 0 {
+                        let _ = fast_fail.send(true);
+                    }
                 }
                 errors.push(format!(
                     "{} {}: {error}",

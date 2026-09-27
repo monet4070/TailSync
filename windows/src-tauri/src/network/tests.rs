@@ -318,6 +318,7 @@ async fn connection_worker_stops_when_the_pool_disconnects_it() {
         settings.clone(),
         shutdown_rx,
         Arc::new(tokio::sync::Notify::new()),
+        watch::channel(Vec::new()).1,
     ));
     let mut pool = ConnectionPool::new(client_identity, settings);
     pool.insert_sender(ResolvedTarget::Tcp(address), "server".into(), sender);
@@ -424,6 +425,7 @@ async fn fifteen_minute_old_event_is_not_revived_after_reconnect() {
         settings,
         shutdown_rx,
         Arc::new(tokio::sync::Notify::new()),
+        watch::channel(Vec::new()).1,
     ));
 
     let mut stale = EventEnvelope::new(b"before-sleep".to_vec());
@@ -435,7 +437,10 @@ async fn fifteen_minute_old_event_is_not_revived_after_reconnect() {
         .await
         .unwrap();
 
-    let (first, retried, delivered) = timeout(Duration::from_secs(10), server)
+    // The dropped first connection forces a reconnect, which now applies the
+    // configured delivery-failure backoff (`WorkerConfig::reconnect_delay`,
+    // 5 s by default) instead of hot-looping, so allow for it.
+    let (first, retried, delivered) = timeout(Duration::from_secs(15), server)
         .await
         .expect("new event remained blocked behind the rejected pending event")
         .unwrap();
@@ -567,7 +572,7 @@ async fn file_chunks_use_a_separate_queue_from_priority_messages() {
 }
 
 #[tokio::test]
-async fn reliable_delivery_retries_the_same_event_until_acknowledged() {
+async fn silent_event_ack_ends_the_attempt_without_replaying_on_the_stream() {
     let server_identity = Arc::new(DeviceIdentity::generate_for_test());
     let client_identity = DeviceIdentity::generate_for_test();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -588,23 +593,19 @@ async fn reliable_delivery_retries_the_same_event_until_acknowledged() {
         .unwrap();
         let mut connection = accepted.connection;
         secure::write_ready(&mut connection).await.unwrap();
+        // The client must send the event exactly once, then end the attempt
+        // instead of replaying it here, where a duplicate ACK left by the
+        // first attempt could be misread as the retry's ACK. Hold the
+        // connection open past the client's ACK window: a replay would arrive
+        // (Ok), while ending the attempt only times out.
         let first = connection.read_frame().await.unwrap();
-        let retry = connection.read_frame().await.unwrap();
-        assert_eq!(retry.sequence, first.sequence);
-        assert_eq!(retry.payload, first.payload);
-        let message_id = EventEnvelope::decode(&retry.payload).unwrap().message_id;
-        connection
-            .write_frame(
-                &Frame::try_new(
-                    Command::EventAck,
-                    0,
-                    retry.sequence,
-                    message_id.ack_payload(),
-                )
-                .expect("valid event acknowledgement fixture"),
-            )
-            .await
-            .unwrap();
+        assert_eq!(first.sequence, 42);
+        assert!(
+            timeout(Duration::from_secs(1), connection.read_frame())
+                .await
+                .is_err(),
+            "the client must not replay on the same stream"
+        );
     });
     let mut client = secure::connect(
         tokio::net::TcpStream::connect(address).await.unwrap(),
@@ -624,13 +625,21 @@ async fn reliable_delivery_retries_the_same_event_until_acknowledged() {
         42,
     );
 
-    deliver_pending_frame(
+    let error = deliver_pending_frame(
         &mut client,
         &pending,
         &tailsync_core::peer::delivery::DeliveryConfig::DEFAULT,
     )
     .await
-    .unwrap();
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            tailsync_core::peer::delivery::DeliveryError::Timeout(_)
+        ),
+        "expected a retryable timeout, got {error:?}"
+    );
+    assert!(error.is_retryable());
     server.await.unwrap();
 }
 

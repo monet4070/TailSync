@@ -69,6 +69,9 @@ fn local_ip() -> String {
         .map(|interfaces| {
             interfaces
                 .into_iter()
+                .filter(|interface| {
+                    interface.is_oper_up() && !interface.is_loopback() && !interface.is_p2p
+                })
                 .map(|interface| interface.ip())
                 .collect::<Vec<_>>()
         })

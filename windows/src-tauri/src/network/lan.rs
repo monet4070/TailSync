@@ -104,6 +104,9 @@ fn broadcast_targets() -> HashSet<SocketAddr> {
     let mut targets = HashSet::from([SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT))]);
     if let Ok(interfaces) = if_addrs::get_if_addrs() {
         for interface in interfaces {
+            if !interface.is_oper_up() || interface.is_loopback() || interface.is_p2p {
+                continue;
+            }
             let if_addrs::IfAddr::V4(address) = interface.addr else {
                 continue;
             };
@@ -152,6 +155,9 @@ fn local_ip() -> String {
         .map(|interfaces| {
             interfaces
                 .into_iter()
+                .filter(|interface| {
+                    interface.is_oper_up() && !interface.is_loopback() && !interface.is_p2p
+                })
                 .map(|interface| interface.ip())
                 .collect::<Vec<_>>()
         })

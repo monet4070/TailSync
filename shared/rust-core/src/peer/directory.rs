@@ -79,10 +79,11 @@ pub fn source_matches_mode(ip: IpAddr, mode: &str) -> bool {
     }
 }
 
-/// Pick this device's LAN address from its interface list. A physical private
+/// Pick this device's LAN address from its eligible interface list. A private
 /// IPv4 is preferred, then a ULA, then link-local. Loopback, unspecified, and
 /// multicast addresses are never chosen, so callers show "unavailable" rather
-/// than advertising `0.0.0.0` or a tunnelled address as a connected route.
+/// than advertising `0.0.0.0` as a connected route. Callers must exclude down
+/// and point-to-point interfaces before passing their addresses here.
 pub fn select_local_lan_ip(addresses: impl IntoIterator<Item = IpAddr>) -> Option<IpAddr> {
     fn rank(ip: &IpAddr) -> Option<u8> {
         match ip {
@@ -108,7 +109,7 @@ fn ip_to_u128(ip: IpAddr) -> u128 {
     }
 }
 
-/// Rank an address for stable display ordering: physical private IPv4 first,
+/// Rank an address for stable display ordering: private IPv4 first,
 /// then ULA, then link-local, then loopback, then anything else. A pure string
 /// comparison would place `10.x`/`169.254.x` ahead of `192.168.x`.
 fn address_class_rank(address: &str) -> u8 {
@@ -123,10 +124,11 @@ fn address_class_rank(address: &str) -> u8 {
     }
 }
 
-fn candidate_sort_key(candidate: &PeerCandidate) -> (u8, bool, u8, u128) {
+fn candidate_sort_key(candidate: &PeerCandidate) -> (bool, u64, u8, u8, u128) {
     (
-        candidate.priority,
         !candidate.online,
+        candidate.latency.unwrap_or(u64::MAX),
+        candidate.priority,
         address_class_rank(&candidate.address),
         candidate
             .address
@@ -287,13 +289,13 @@ pub fn merge_lan_discovery_results(
         sort_and_dedup_candidates(&mut peer.candidates);
         if let Some(candidate) = peer.candidates.first() {
             peer.address.clone_from(&candidate.address);
-            // Only a Tailscale route may populate `tailscale_ip`; copying the
-            // preferred LAN candidate here would mislabel a LAN address as
-            // the tailnet address.
-            if candidate.interface == ConnectionInterface::Tailscale {
-                peer.tailscale_ip.clone_from(&candidate.address);
-            }
         }
+        peer.tailscale_ip = peer
+            .candidates
+            .iter()
+            .find(|candidate| candidate.interface == ConnectionInterface::Tailscale)
+            .map(|candidate| candidate.address.clone())
+            .unwrap_or_default();
     }
     Ok((local, peers))
 }
@@ -372,6 +374,12 @@ pub fn merge_discovery_results(
         if let Some(preferred) = peer.candidates.first() {
             peer.address.clone_from(&preferred.address);
         }
+        peer.tailscale_ip = peer
+            .candidates
+            .iter()
+            .find(|candidate| candidate.interface == ConnectionInterface::Tailscale)
+            .map(|candidate| candidate.address.clone())
+            .unwrap_or_default();
     }
     Ok((local, peers))
 }
@@ -1326,8 +1334,9 @@ mod tests {
             tailscale_ip: "192.168.1.10".into(),
             candidates: Vec::new(),
         };
-        let mut peer = discovered_peer("windows", "192.168.1.20", ConnectionInterface::Lan);
-        peer.tailscale_ip = String::new();
+        // Real UDP and mDNS producers populate this legacy field with the LAN
+        // source address before the two discovery views are merged.
+        let peer = discovered_peer("windows", "192.168.1.20", ConnectionInterface::Lan);
 
         let (_, peers) =
             merge_lan_discovery_results(Ok((local, vec![peer])), Err("no mdns".into())).unwrap();
@@ -1337,6 +1346,54 @@ mod tests {
             peers[0].tailscale_ip, "",
             "a LAN candidate must not be recorded as the tailnet address"
         );
+    }
+
+    #[test]
+    fn auto_merge_keeps_the_tailnet_address_when_lan_is_preferred() {
+        let local = LocalInfo {
+            hostname: "macbook".into(),
+            tailscale_ip: "192.168.1.10".into(),
+            candidates: vec![PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.10")],
+        };
+        let tailnet_local = LocalInfo {
+            hostname: "macbook".into(),
+            tailscale_ip: "100.64.0.1".into(),
+            candidates: vec![PeerCandidate::new(
+                ConnectionInterface::Tailscale,
+                "100.64.0.1",
+            )],
+        };
+        let (_, peers) = merge_discovery_results(
+            Ok((
+                local,
+                vec![discovered_peer(
+                    "windows",
+                    "192.168.1.20",
+                    ConnectionInterface::Lan,
+                )],
+            )),
+            Ok((
+                tailnet_local,
+                vec![discovered_peer(
+                    "windows",
+                    "100.64.0.20",
+                    ConnectionInterface::Tailscale,
+                )],
+            )),
+        )
+        .unwrap();
+        assert_eq!(peers[0].address, "192.168.1.20");
+        assert_eq!(peers[0].tailscale_ip, "100.64.0.20");
+    }
+
+    #[test]
+    fn candidate_sort_keeps_online_routes_ahead_of_offline_lan() {
+        let mut offline_lan = PeerCandidate::remembered(ConnectionInterface::Lan, "192.168.1.20");
+        offline_lan.online = false;
+        let online_tailnet = PeerCandidate::new(ConnectionInterface::Tailscale, "100.64.0.20");
+        let mut candidates = vec![offline_lan, online_tailnet];
+        sort_and_dedup_candidates(&mut candidates);
+        assert_eq!(candidates[0].interface, ConnectionInterface::Tailscale);
     }
 
     #[test]
