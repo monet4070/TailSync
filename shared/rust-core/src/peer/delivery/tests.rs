@@ -1184,7 +1184,14 @@ async fn file_window_falls_back_to_stop_and_wait_without_negotiation() {
     server_task.await.unwrap();
 }
 
-async fn delayed_four_megabyte_delivery(delay: Duration, window_enabled: bool) -> Duration {
+/// Deliver four chunks with a simulated per-acknowledgement delay. Returns the
+/// elapsed time and how many chunks the receiver had read before it wrote its
+/// first acknowledgement: 4 proves the windowed path pipelines, 1 proves
+/// stop-and-wait serializes.
+async fn delayed_four_megabyte_delivery(
+    delay: Duration,
+    window_enabled: bool,
+) -> (Duration, usize) {
     let (client_io, server_io) = tokio::io::duplex(8 * 1024 * 1024);
     let transfer_id = TransferId([0x49; 16]);
     let chunks = (0..4)
@@ -1203,6 +1210,8 @@ async fn delayed_four_megabyte_delivery(delay: Duration, window_enabled: bool) -
         QueuedFrame::confirmed_file_window(chunks, transfer_id, completion).unwrap(),
         1,
     );
+    let pipelined = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = pipelined.clone();
     let server_task = tokio::spawn(async move {
         let mut server = MemoryConnection { io: server_io };
         if window_enabled {
@@ -1210,6 +1219,7 @@ async fn delayed_four_megabyte_delivery(delay: Duration, window_enabled: bool) -
             for _ in 0..4 {
                 frames.push(server.read_frame().await.unwrap());
             }
+            observed.store(frames.len(), std::sync::atomic::Ordering::SeqCst);
             tokio::time::sleep(delay).await;
             for (index, frame) in frames.iter().enumerate() {
                 server
@@ -1233,6 +1243,9 @@ async fn delayed_four_megabyte_delivery(delay: Duration, window_enabled: bool) -
         } else {
             for index in 0..4 {
                 let frame = server.read_frame().await.unwrap();
+                if index == 0 {
+                    observed.store(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 tokio::time::sleep(delay).await;
                 server
                     .write_frame(
@@ -1272,21 +1285,40 @@ async fn delayed_four_megabyte_delivery(delay: Duration, window_enabled: bool) -
         Some(4 * crate::protocol::FILE_CHUNK_SIZE as u64)
     );
     server_task.await.unwrap();
-    elapsed
+    (elapsed, pipelined.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 #[tokio::test]
-async fn four_megabyte_window_reduces_80_and_150_ms_ack_latency() {
+async fn four_megabyte_window_removes_per_chunk_ack_serialization() {
     for delay in [Duration::from_millis(80), Duration::from_millis(150)] {
-        let legacy = delayed_four_megabyte_delivery(delay, false).await;
-        let window = delayed_four_megabyte_delivery(delay, true).await;
+        let (legacy, legacy_pipelined) = delayed_four_megabyte_delivery(delay, false).await;
+        let (window, window_pipelined) = delayed_four_megabyte_delivery(delay, true).await;
         eprintln!(
             "simulated_ack_delay_ms={} stop_wait_ms={} window_ms={}",
             delay.as_millis(),
             legacy.as_millis(),
             window.as_millis()
         );
-        assert!(window + delay < legacy);
+        // Assert the protocol structure rather than wall-clock latency: a
+        // loaded CI runner can inflate either measurement by hundreds of
+        // milliseconds, which made the previous `window + delay < legacy`
+        // comparison fail spuriously. The windowed path must keep every chunk
+        // in flight before it waits for the first acknowledgement, and
+        // stop-and-wait must send one chunk per acknowledgement.
+        assert_eq!(
+            window_pipelined, 4,
+            "the windowed path must pipeline every chunk before the first ACK"
+        );
+        assert_eq!(
+            legacy_pipelined, 1,
+            "stop-and-wait must wait for an acknowledgement after each chunk"
+        );
+        // A tokio timer never fires early, so four serialized waits make this
+        // bound deterministic even under load.
+        assert!(
+            legacy >= 3 * delay,
+            "stop-and-wait must serialize a wait per chunk: {legacy:?} for {delay:?}"
+        );
     }
 }
 
