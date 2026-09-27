@@ -127,18 +127,25 @@ fn completion_reports_the_result_to_the_enqueuer() {
 }
 
 #[test]
-fn dropping_an_in_flight_frame_reports_worker_shutdown() {
+fn dropping_an_in_flight_frame_reports_shutdown_only_while_shutting_down() {
     let _warning_guard = crate::sync_warning::test_lock();
     let _ = crate::sync_warning::take();
+    crate::sync_warning::reset_shutdown_for_test();
+
+    // A forced reconnect also drops the in-flight frame; the durable retry
+    // resends it, so this must not surface as a shutdown warning.
     drop(PendingFrame::new_for_peer(
         QueuedFrame::new(Command::TextPayload, b"in flight".to_vec()).unwrap(),
         9,
         "Laptop",
     ));
-    let warning = crate::sync_warning::take().unwrap();
-    assert_eq!(warning.kind, "delivery_shutdown");
-    assert_eq!(warning.peer, "Laptop");
+    assert_eq!(
+        crate::sync_warning::take(),
+        None,
+        "a reconnect must not raise a shutdown warning"
+    );
 
+    // The abandoned frame still reports the transport failure to its enqueuer.
     let (tx, mut rx) = oneshot::channel();
     drop(PendingFrame::new_for_peer(
         QueuedFrame::confirmed_file(Command::FileChunk, vec![1], transfer_id(4), tx).unwrap(),
@@ -149,6 +156,32 @@ fn dropping_an_in_flight_frame_reports_worker_shutdown() {
         rx.try_recv(),
         Ok(Err(DeliveryError::Transport(message))) if message == "Connection task closed"
     ));
+
+    // During a real shutdown a clipboard frame reports the warning.
+    crate::sync_warning::begin_shutdown();
+    // A file/batch frame belongs to the file-transfer failure surface, not
+    // the clipboard warning, even while shutting down.
+    let (tx, _rx) = oneshot::channel();
+    drop(PendingFrame::new_for_peer(
+        QueuedFrame::confirmed_file(Command::FileChunk, vec![1], transfer_id(5), tx).unwrap(),
+        11,
+        "Laptop",
+    ));
+    assert_eq!(
+        crate::sync_warning::take(),
+        None,
+        "a file frame must not raise the clipboard warning"
+    );
+
+    drop(PendingFrame::new_for_peer(
+        QueuedFrame::new(Command::TextPayload, b"in flight".to_vec()).unwrap(),
+        12,
+        "Laptop",
+    ));
+    let warning = crate::sync_warning::take().unwrap();
+    assert_eq!(warning.kind, "delivery_shutdown");
+    assert_eq!(warning.peer, "Laptop");
+    crate::sync_warning::reset_shutdown_for_test();
 }
 
 #[test]
@@ -278,8 +311,6 @@ fn delivery_config_defaults_match_shared_constants() {
     let config = DeliveryConfig::default();
     assert_eq!(config.event_ack_timeout, Duration::from_millis(750));
     assert_eq!(config.file_ack_timeout, Duration::from_secs(10));
-    assert_eq!(config.event_retry_base_delay, Duration::from_millis(250));
-    assert_eq!(config.max_attempts, 4);
 }
 
 fn resolved_candidate(interface: ConnectionInterface, address: &str) -> ResolvedCandidate {
@@ -370,6 +401,65 @@ async fn race_joins_all_failures() {
     .await
     .unwrap_err();
     assert!(err.contains("lan") && err.contains("boom"));
+}
+
+#[tokio::test]
+async fn race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast() {
+    let candidates = vec![
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.2"),
+        resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2"),
+    ];
+    let started = std::time::Instant::now();
+    let (stream, winner) = race_connections(
+        &candidates,
+        Duration::from_secs(2),
+        |target, _candidate| async move {
+            if target.to_string().contains("192.168") {
+                Err("lan refused".to_string())
+            } else {
+                Ok("tailscale-stream")
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stream, "tailscale-stream");
+    assert_eq!(winner.candidate.interface, ConnectionInterface::Tailscale);
+    // The cold-start Tailscale bias is 300 ms; releasing on the fast LAN
+    // failure must beat it comfortably.
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "fallback waited out the full bias: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn race_preserves_lan_head_start_while_another_immediate_lan_is_connecting() {
+    let candidates = vec![
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.2"),
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.3"),
+        resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2"),
+    ];
+    let (stream, winner) = race_connections(
+        &candidates,
+        Duration::from_secs(2),
+        |target, _candidate| async move {
+            let target = target.to_string();
+            if target.contains("192.168.1.2") {
+                Err("first LAN refused".to_string())
+            } else if target.contains("192.168.1.3") {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok("second-lan-stream")
+            } else {
+                Ok("tailnet-stream")
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stream, "second-lan-stream");
+    assert_eq!(winner.candidate.interface, ConnectionInterface::Lan);
 }
 
 #[tokio::test]
@@ -645,44 +735,33 @@ async fn event_ack_for_another_message_is_a_protocol_error() {
 }
 
 #[tokio::test]
-async fn event_is_retried_with_the_same_sequence_until_acknowledged() {
+async fn silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream() {
     let server_identity = server_identity();
     let client_identity = DeviceIdentity::generate_for_test();
     let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
 
-    // The server reads the first attempt but stays silent; the client's
-    // ACK window expires and it retries the identical frame. Only the
-    // second attempt is acknowledged.
-    let server_task = tokio::spawn(async move {
-        let first = server.read_frame().await.unwrap();
-        let retry = server.read_frame().await.unwrap();
-        assert_eq!(retry.sequence, first.sequence);
-        assert_eq!(retry.payload, first.payload);
-        let message_id = EventEnvelope::decode(&retry.payload).unwrap().message_id;
-        server
-            .write_frame(
-                &Frame::try_new(
-                    Command::EventAck,
-                    0,
-                    retry.sequence,
-                    message_id.ack_payload(),
-                )
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-    });
-
+    // The server stays silent. The client must not replay on the same stream,
+    // where a duplicate ACK from the first attempt could be misread as this
+    // attempt's ACK; it ends the attempt so the worker reconnects instead.
     let pending = PendingFrame::new(
         QueuedFrame::new(Command::TextPayload, b"reliable".to_vec()).unwrap(),
         42,
     );
-    // Event ACK window is 750 ms; one silent round + ack must fit in the
-    // 4 default attempts.
-    deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
+    let error = deliver_pending_frame(&mut client, &pending, &DeliveryConfig::DEFAULT)
         .await
-        .unwrap();
-    server_task.await.unwrap();
+        .unwrap_err();
+    assert!(matches!(error, DeliveryError::Timeout(_)), "{error:?}");
+    assert!(error.is_retryable());
+
+    // Exactly one attempt reached the wire, and no replay followed it.
+    let first = server.read_frame().await.unwrap();
+    assert_eq!(first.sequence, 42);
+    assert!(
+        timeout(Duration::from_millis(200), server.read_frame())
+            .await
+            .is_err(),
+        "the client must not replay on the same stream"
+    );
 }
 
 #[tokio::test]
@@ -785,6 +864,50 @@ async fn delivers_batch_with_accept_ack() {
         .unwrap();
     assert_eq!(receipt.next_offset, None);
     server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn silent_file_ack_ends_the_connection_attempt_without_replay() {
+    let server_identity = server_identity();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+    let transfer = TransferId([0xDE; 16]);
+    let (tx, _rx) = oneshot::channel();
+    let pending = PendingFrame::new(
+        QueuedFrame::confirmed_file(Command::FileChunk, vec![0u8; 8], transfer, tx).unwrap(),
+        7,
+    );
+    let error = deliver_pending_frame(&mut client, &pending, &fast_file_config())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, DeliveryError::Timeout(_)));
+    assert!(error.is_retryable());
+    assert_eq!(server.read_frame().await.unwrap().sequence, 7);
+    assert!(timeout(Duration::from_millis(100), server.read_frame())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn silent_batch_ack_ends_the_connection_attempt_without_replay() {
+    let server_identity = server_identity();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+    let batch = TransferId([0xDF; 16]);
+    let (tx, _rx) = oneshot::channel();
+    let pending = PendingFrame::new(
+        QueuedFrame::confirmed_batch(Command::FileBatchStart, Vec::new(), batch, tx).unwrap(),
+        8,
+    );
+    let error = deliver_pending_frame(&mut client, &pending, &fast_file_config())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, DeliveryError::Timeout(_)));
+    assert!(error.is_retryable());
+    assert_eq!(server.read_frame().await.unwrap().sequence, 8);
+    assert!(timeout(Duration::from_millis(100), server.read_frame())
+        .await
+        .is_err());
 }
 
 // ------------------------------------------------------------------
@@ -999,13 +1122,8 @@ async fn file_window_returns_confirmed_prefix_when_later_ack_times_out() {
         QueuedFrame::confirmed_file_window(chunks, transfer_id, completion).unwrap(),
         1,
     );
-    let config = DeliveryConfig::try_new(
-        Duration::from_millis(10),
-        Duration::from_millis(20),
-        Duration::from_millis(1),
-        1,
-    )
-    .unwrap();
+    let config =
+        DeliveryConfig::try_new(Duration::from_millis(10), Duration::from_millis(20)).unwrap();
     let mut client = WindowConnection(MemoryConnection { io: client_io });
     let receipt = deliver_pending_frame(&mut client, &pending, &config)
         .await
@@ -1260,17 +1378,12 @@ fn fast_worker_config() -> WorkerConfig {
         pending_frame_ttl: Duration::from_secs(5 * 60),
         delivery: DeliveryConfig::DEFAULT,
         retry_wakeup: std::sync::Arc::new(tokio::sync::Notify::new()),
+        candidate_updates: None,
     }
 }
 
 fn fast_file_config() -> DeliveryConfig {
-    DeliveryConfig::try_new(
-        Duration::from_millis(50),
-        Duration::from_millis(50),
-        Duration::from_millis(10),
-        1,
-    )
-    .unwrap()
+    DeliveryConfig::try_new(Duration::from_millis(50), Duration::from_millis(50)).unwrap()
 }
 
 fn scripted_adapter(

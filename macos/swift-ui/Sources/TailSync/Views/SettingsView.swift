@@ -42,37 +42,13 @@ struct SettingsView: View {
             "settings.shortcutRecord"
         }
 
+        var defaultValue: String {
+            value(in: AppSettings())
+        }
+
         func value(in settings: AppSettings) -> String {
             self == .sync ? settings.sync_shortcut : settings.history_shortcut
         }
-    }
-
-    struct PeerRoute: Identifiable {
-        let peer: ApiClient.PeerSnapshot
-        let address: String
-        let interface: String?
-        let online: Bool
-        let connected: Bool
-        let status: String
-        let latencyMs: Int?
-        let rttCapable: Bool
-
-        var id: String { "\(peer.hostname)-\(interface ?? "unknown")-\(address)" }
-
-        var latencyTestTarget: PeerLatencyTestTarget {
-            PeerLatencyTestTarget(
-                id: id,
-                address: address,
-                interface: interface,
-                rttCapable: rttCapable
-            )
-        }
-    }
-
-    struct PeerConnectionTestResult {
-        let latencyMs: Int
-        let path: String
-        let error: String
     }
 
     @ObservedObject var loc = Loc.shared
@@ -81,32 +57,10 @@ struct SettingsView: View {
     @State var settings = AppSettings()
     @State var persistedSettings = AppSettings()
     @State var applyingPersistedSettings = false
-    @State var remotePairingExpanded = false
-    @State var localDevice: ApiClient.DeviceSnapshot?
-    @State var peers: [ApiClient.PeerSnapshot] = []
     @State var isLoading = true
-    @State var peersLoading = false
     @State var saved = false
     @State var loadErrorMessage: String?
     @State var actionErrorMessage: String?
-    @State var peerError: String?
-    @State var pairingStatus: ApiClient.PairingStatus?
-    @State var pairingMessage: String?
-    @State var pairingInProgress = false
-    @State var showPairingSheet = false
-    @State var previousPairingPhase: String?
-    @State var remoteInvite: ApiClient.RemotePairingInvite?
-    @State var remoteInviteLink = ""
-    @State var remoteInvitePreview: ApiClient.RemotePairingInvitePreview?
-    @State var remotePairingMessage: String?
-    @State var remotePairingInProgress = false
-    @State var remoteInviteCopied = false
-    @State var testingPeers: Set<String> = []
-    @State var removingPeers: Set<String> = []
-    @State var testResults: [String: [String: PeerConnectionTestResult]] = [:]
-    @State var peerTestGenerations: [String: Int] = [:]
-    @State var peerLoadGeneration = 0
-    @State var peerRequestInFlight = false
     @State var saveGeneration = 0
     @State var saveCoordinator = SettingsSaveCoordinator()
     @State var storageStatus: ApiClient.StorageStatus?
@@ -185,23 +139,6 @@ struct SettingsView: View {
         }
         .task {
             load()
-            var peerRefreshTicks = 0
-            while !Task.isCancelled {
-                let pollingPlan = SettingsPollingPolicy.next(
-                    applicationIsActive: NSApp.isActive,
-                    peerRefreshTicks: &peerRefreshTicks
-                )
-                if pollingPlan.refreshPairingStatus {
-                    await refreshPairingStatus()
-                }
-                if pollingPlan.refreshPeers && !isLoading && !peerRequestInFlight {
-                    loadPeers(showLoading: false)
-                }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
-        .sheet(isPresented: $showPairingSheet) {
-            pairingSheet
         }
         .sheet(item: $pendingThemeImport) { preview in
             themeImportPreview(preview)
@@ -219,13 +156,24 @@ struct SettingsView: View {
         ) { notification in
             if let enabled = notification.userInfo?["enabled"] as? Bool {
                 settings.sync_enabled = enabled
+                persistedSettings.sync_enabled = enabled
             }
         }
         .onReceive(
-            NotificationCenter.default.publisher(for: .tailSyncRemotePairingInviteReceived)
+            NotificationCenter.default.publisher(for: .tailSyncConnectionModeChanged)
         ) { notification in
-            guard let link = notification.object as? String else { return }
-            handleRemotePairingLink(link)
+            if let mode = notification.object as? String {
+                settings.connection_mode = mode
+                persistedSettings.connection_mode = mode
+            }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .tailSyncSettingsChanged)
+        ) { notification in
+            if let updated = notification.object as? AppSettings {
+                applyPersistedSettings(updated)
+                persistedSettings = updated
+            }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
@@ -234,9 +182,6 @@ struct SettingsView: View {
         }
         .onAppear {
             launchAtLogin.refresh()
-            if let link = AppDelegate.takePendingRemotePairingLink() {
-                handleRemotePairingLink(link)
-            }
         }
         .onDisappear {
             if let recordingShortcut {

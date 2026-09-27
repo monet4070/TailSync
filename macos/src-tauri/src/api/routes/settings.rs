@@ -102,6 +102,45 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
             }
         }
 
+        SettingsCommand::SetConnectionMode => {
+            let Some(mode) = req.connection_mode else {
+                return Response {
+                    ok: false,
+                    data: None,
+                    error: Some("missing connection_mode".into()),
+                };
+            };
+            match crypto::apply_connection_mode_update(&state.settings, &mode, &|settings| {
+                settings.save().map_err(|error| error.to_string())
+            })
+            .await
+            {
+                Ok((settings, changed)) => {
+                    if changed {
+                        state.pool.lock().await.disconnect_all();
+                        network::clear_peer_cache().await;
+                        network::refresh_iroh_for_mode(&settings.connection_mode).await;
+                        bump_runtime_revision();
+                    }
+                    Response {
+                        ok: true,
+                        data: Some(serde_json::to_value(settings).unwrap_or_default()),
+                        error: None,
+                    }
+                }
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(match error {
+                        crypto::SettingsUpdateError::Validation(_) => {
+                            "invalid connection_mode".into()
+                        }
+                        other => other.to_string(),
+                    }),
+                },
+            }
+        }
+
         SettingsCommand::UpdateSettings => {
             let Some(settings_json) = req.settings else {
                 return Response {
@@ -264,6 +303,86 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                 data: None,
                 error: result.err(),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(settings: crypto::Settings) -> ApiState {
+        let settings = Arc::new(Mutex::new(settings));
+        let identity = Arc::new(DeviceIdentity::generate_for_test());
+        ApiState {
+            db: Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap())),
+            sync_engine: Arc::new(Mutex::new(sync::SyncEngine::new())),
+            pool: Arc::new(Mutex::new(network::ConnectionPool::new(
+                identity.clone(),
+                settings.clone(),
+            ))),
+            pairing: crate::pairing::PairingManager::new(settings.clone(), identity.clone()),
+            remote_invites: Arc::new(crate::pairing::RemotePairingInviteManager::default()),
+            identity,
+            settings,
+            token: ApiToken::parse(&"a".repeat(64)).unwrap(),
+            shutdown: watch::channel(false).0,
+            pending_storage_cleanup: Arc::new(Mutex::new(None)),
+            imports: Mutex::new(ImportRegistry::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_mode_route_preserves_paused_sync_and_returns_live_settings() {
+        let mut original = crypto::Settings {
+            sync_enabled: false,
+            connection_mode: "lan_only".into(),
+            history_limit: 250,
+            language: "zh-CN".into(),
+            ..crypto::Settings::default()
+        };
+        original
+            .trusted_peer_keys
+            .insert("paired-device".into(), "pinned-key".into());
+        original.enabled_peers.insert("paired-device".into(), false);
+        let state = state(original.clone());
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "set_connection_mode", "connection_mode": "tailscale_only"
+        }))
+        .unwrap();
+        let response = super::super::handle_cmd(request, &state).await;
+        assert!(response.ok, "{:?}", response.error);
+        original.connection_mode = "tailscale_only".into();
+        assert_eq!(*state.settings.lock().await, original);
+        assert_eq!(
+            response.data.unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_mode_route_rejects_missing_and_invalid_modes_without_mutation() {
+        let original = crypto::Settings {
+            connection_mode: "lan_only".into(),
+            ..crypto::Settings::default()
+        };
+        let state = state(original.clone());
+        for request in [
+            serde_json::json!({"cmd": "set_connection_mode"}),
+            serde_json::json!({"cmd": "set_connection_mode", "connection_mode": "unexpected"}),
+        ] {
+            let response =
+                super::super::handle_cmd(serde_json::from_value(request).unwrap(), &state).await;
+            assert!(!response.ok);
+            let error = tailsync_runtime::contracts::StableErrorEnvelope::from_legacy_message(
+                "set_connection_mode",
+                response.error.as_deref().unwrap(),
+            );
+            assert_eq!(
+                error.code,
+                tailsync_runtime::contracts::StableErrorCode::InvalidArgument
+            );
+            assert_eq!(*state.settings.lock().await, original);
         }
     }
 }

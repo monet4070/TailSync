@@ -609,6 +609,8 @@ struct Request {
     id: Option<i64>,
     #[serde(default)]
     settings: Option<Value>,
+    #[serde(default)]
+    connection_mode: Option<String>,
     // migrate_entry fields
     #[serde(default)]
     time: Option<String>,

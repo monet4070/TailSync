@@ -4,6 +4,59 @@ import XCTest
 @testable import TailSync
 
 final class ApiClientCancellationTests: XCTestCase {
+  func testConnectionModeSaveDoesNotSendStaleSettingsAndUsesServerSnapshot() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let coordinator = SettingsSaveCoordinator(client: client)
+    var stale = AppSettings()
+    stale.sync_enabled = true
+    var actual = stale
+    actual.sync_enabled = false
+    actual.connection_mode = "lan_only"
+    actual.history_limit = 250
+    let response = try JSONSerialization.data(withJSONObject: [
+      "ok": true, "data": client.jsonDictionary(actual),
+    ]) + Data([0x0A])
+    let responseSent = expectation(description: "connection mode saved")
+    let connectionClosed = expectation(description: "connection mode socket closed")
+    DispatchQueue.global().async {
+      server.respond(with: response, closeDelay: 0, responseSent: responseSent, connectionClosed: connectionClosed) { request in
+        XCTAssertEqual(request["cmd"] as? String, "set_connection_mode")
+        XCTAssertEqual(request["connection_mode"] as? String, "lan_only")
+        XCTAssertNil(request["settings"])
+        XCTAssertNil(request["sync_enabled"])
+      }
+    }
+    let outcome = await coordinator.saveConnectionMode("lan_only", fallback: stale)
+    XCTAssertNil(outcome.error)
+    XCTAssertFalse(outcome.persisted.sync_enabled)
+    XCTAssertEqual(outcome.persisted.history_limit, 250)
+    XCTAssertEqual(outcome.persisted.connection_mode, "lan_only")
+    await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
+  }
+
+  func testConnectionModeFailedSavePreservesLastServerSnapshot() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let coordinator = SettingsSaveCoordinator(client: client)
+    var actual = AppSettings()
+    actual.sync_enabled = false
+    actual.connection_mode = "lan_only"
+    let success = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(actual)]) + Data([0x0A])
+    let done = expectation(description: "two save responses")
+    done.expectedFulfillmentCount = 4
+    DispatchQueue.global().async {
+      server.respond(with: success, closeDelay: 0, responseSent: done, connectionClosed: done)
+      server.respond(with: Data("{\"ok\":false,\"error\":\"save failed\"}\n".utf8), closeDelay: 0, responseSent: done, connectionClosed: done)
+    }
+    _ = await coordinator.saveConnectionMode("lan_only", fallback: AppSettings())
+    let failed = await coordinator.saveConnectionMode("iroh_only", fallback: AppSettings())
+    XCTAssertNotNil(failed.error)
+    XCTAssertFalse(failed.persisted.sync_enabled)
+    XCTAssertEqual(failed.persisted.connection_mode, "lan_only")
+    await fulfillment(of: [done], timeout: 4)
+  }
+
   func testAuthenticatedSocketStableErrorsReachTheLocalizedClientBoundary() async throws {
     let loc = Loc.shared
     let previousLanguage = loc.lang
@@ -215,7 +268,8 @@ private final class LocalTestSocket: @unchecked Sendable {
     with response: Data,
     closeDelay: TimeInterval,
     responseSent: XCTestExpectation,
-    connectionClosed: XCTestExpectation
+    connectionClosed: XCTestExpectation,
+    inspectRequest: (([String: Any]) -> Void)? = nil
   ) {
     let connection = accept(descriptor, nil, nil)
     guard connection >= 0 else { return }
@@ -231,6 +285,9 @@ private final class LocalTestSocket: @unchecked Sendable {
       let count = recv(connection, &bytes, bytes.count, 0)
       guard count > 0 else { return }
       request.append(contentsOf: bytes.prefix(count))
+    }
+    if let object = try? JSONSerialization.jsonObject(with: request) as? [String: Any] {
+      inspectRequest?(object)
     }
     var sent = 0
     while sent < response.count {

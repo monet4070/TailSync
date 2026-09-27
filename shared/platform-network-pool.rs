@@ -53,7 +53,7 @@ impl ConnectionPool {
         self.core.sender_for_candidates(
             hostname,
             candidates,
-            move |candidates, hostname, priority_rx, bulk_rx, shutdown_rx, retry_wakeup| {
+            move |candidates, hostname, priority_rx, bulk_rx, shutdown_rx, retry_wakeup, candidate_rx| {
                 tokio::spawn(connection_task(
                     candidates,
                     hostname,
@@ -63,6 +63,7 @@ impl ConnectionPool {
                     settings,
                     shutdown_rx,
                     retry_wakeup,
+                    candidate_rx,
                 ));
             },
         )
@@ -434,10 +435,12 @@ pub(super) async fn connection_task(
     settings: Arc<Mutex<crypto::Settings>>,
     shutdown: watch::Receiver<bool>,
     retry_wakeup: Arc<tokio::sync::Notify>,
+    candidate_rx: tokio::sync::watch::Receiver<Vec<ResolvedCandidate>>,
 ) {
     let adapter = PoolAdapter { identity, settings };
     let config = tailsync_core::peer::delivery::WorkerConfig {
         retry_wakeup,
+        candidate_updates: Some(candidate_rx),
         ..Default::default()
     };
     tailsync_core::peer::delivery::run_connection_worker(

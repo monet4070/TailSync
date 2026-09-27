@@ -498,4 +498,24 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertTrue(settingsItem.target === delegate)
         XCTAssertEqual(settingsItem.action, #selector(delegate.openSettings))
     }
+
+    func testConnectionsMenuActionAndLocalizationStrings() {
+        let delegate = AppDelegate()
+        XCTAssertTrue(delegate.responds(to: #selector(delegate.openConnections)))
+
+        let prevLang = Loc.shared.lang
+        defer { Loc.shared.lang = prevLang }
+
+        Loc.shared.lang = "zh-CN"
+        XCTAssertEqual(Loc.t("connections.title"), "连接与设备")
+        XCTAssertEqual(Loc.t("settings.manageConnections"), "连接与设备")
+        XCTAssertEqual(Loc.t("settings.manageConnectionsDescription"), "查看在线设备、管理网络发现与安全配对")
+        XCTAssertEqual(Loc.t("settings.openConnections"), "打开")
+
+        Loc.shared.lang = "en"
+        XCTAssertEqual(Loc.t("connections.title"), "Devices & Connections")
+        XCTAssertEqual(Loc.t("settings.manageConnections"), "Devices & Connections")
+        XCTAssertEqual(Loc.t("settings.manageConnectionsDescription"), "View online devices, manage discovery and secure pairing")
+        XCTAssertEqual(Loc.t("settings.openConnections"), "Open")
+    }
 }

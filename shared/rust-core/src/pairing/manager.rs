@@ -161,8 +161,12 @@ impl PairingManager {
                 if state.control.is_none() {
                     state.session_direction = None;
                     None
-                } else if existing_direction == pending.direction {
+                } else if state.peer.as_ref().is_some_and(|peer| peer.local_confirmed) {
+                    // Once the user confirmed this code, neither a same-
+                    // direction request nor glare arbitration may replace it.
                     return Err(PairingError::AlreadyInProgress);
+                } else if existing_direction == pending.direction {
+                    state.control.take()
                 } else if pending.direction == self.preferred_direction(&pending.remote_public_key)
                 {
                     // Both peers may open an outbound and inbound session at
@@ -271,17 +275,21 @@ impl PairingManager {
     }
 
     pub async fn record_failure(&self, error: impl Into<String>) {
+        self.record_failure_for_session(None, error.into()).await;
+    }
+
+    async fn record_failure_for_session(&self, session_id: Option<u64>, error: String) {
         let mut close_window = false;
         {
             let mut state = self.state.lock().await;
-            if !state.enabled {
+            if !state.enabled || session_id.is_some_and(|id| state.session_id != id) {
                 return;
             }
             state.failed_attempts = state.failed_attempts.saturating_add(1);
             state.peer = None;
             state.control = None;
             state.session_direction = None;
-            let message = error.into();
+            let message = error;
             state.error = Some(message.clone());
             if crate::diagnostics::is_collected() {
                 crate::diagnostics::record(crate::diagnostics::Record {
@@ -311,9 +319,13 @@ impl PairingManager {
     /// budget. Network unavailability, local cancellation, and a competing
     /// connection are not evidence of an invalid credential.
     pub async fn record_non_ban_failure(&self, error: impl Into<String>) {
-        let message = error.into();
+        self.record_non_ban_failure_for_session(None, error.into())
+            .await;
+    }
+
+    async fn record_non_ban_failure_for_session(&self, session_id: Option<u64>, message: String) {
         let mut state = self.state.lock().await;
-        if !state.enabled {
+        if !state.enabled || session_id.is_some_and(|id| state.session_id != id) {
             return;
         }
         state.peer = None;
@@ -431,8 +443,9 @@ impl PairingManager {
                     }
                     Ok(frame) if frame.command == Command::PairingPersisted => {
                         if !remote_confirmed {
-                            self.fail_session(
+                            self.fail_session_on_protocol_error(
                                 session_id,
+                                local_confirmed,
                                 "Received pairing completion before confirmation".to_string(),
                             )
                             .await;
@@ -452,7 +465,12 @@ impl PairingManager {
                         return;
                     }
                     Ok(_) => {
-                        self.fail_session(session_id, "Unexpected message during pairing".to_string()).await;
+                        self.fail_session_on_protocol_error(
+                            session_id,
+                            local_confirmed,
+                            "Unexpected message during pairing".to_string(),
+                        )
+                        .await;
                         return;
                     }
                     Err(error) => {
@@ -608,23 +626,31 @@ impl PairingManager {
     }
 
     async fn fail_session(&self, session_id: u64, error: String) {
-        {
-            let state = self.state.lock().await;
-            if state.session_id != session_id {
-                return;
-            }
-        }
-        self.record_failure(error).await;
+        self.record_failure_for_session(Some(session_id), error)
+            .await;
     }
 
     async fn fail_session_non_ban(&self, session_id: u64, error: String) {
-        {
-            let state = self.state.lock().await;
-            if state.session_id != session_id {
-                return;
-            }
+        self.record_non_ban_failure_for_session(Some(session_id), error)
+            .await;
+    }
+
+    /// Record a protocol anomaly from the peer. Before the local user confirms
+    /// the verification code the peer is still anonymous, so an unexpected
+    /// command only releases the slot. After local confirmation the session is
+    /// attributed to a deliberate user action and the anomaly counts against
+    /// the lockout budget.
+    async fn fail_session_on_protocol_error(
+        &self,
+        session_id: u64,
+        local_confirmed: bool,
+        error: String,
+    ) {
+        if local_confirmed {
+            self.fail_session(session_id, error).await;
+        } else {
+            self.fail_session_non_ban(session_id, error).await;
         }
-        self.record_non_ban_failure(error).await;
     }
 
     async fn expire_current_session(self: &Arc<Self>, session_id: u64) {

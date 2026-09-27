@@ -122,6 +122,9 @@ async fn coordinate_shutdown(
 ) {
     wait_for_shutdown(&mut shutdown).await;
     info!("Application shutdown coordinator started");
+    // The process is closing: mark it so an abandoned in-flight delivery is
+    // reported as interrupted by shutdown rather than by a reconnect.
+    tailsync_core::sync_warning::begin_shutdown();
     let close_connections = async {
         if tokio::time::timeout(std::time::Duration::from_millis(250), async {
             pool.lock().await.disconnect_all();

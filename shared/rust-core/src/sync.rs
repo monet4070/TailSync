@@ -34,10 +34,12 @@ pub use outgoing::{
     mark_outgoing_history_saved, mark_outgoing_peer_completed,
     mark_outgoing_peer_completed_with_identity, outgoing_retry_due, persist_outgoing_batch,
     persist_outgoing_batch_for_selection, persist_outgoing_batch_for_selection_with_identities,
-    persist_outgoing_batch_with_identities, persist_outgoing_selection, remove_outgoing_batch,
-    remove_outgoing_selection, schedule_outgoing_batch_retry, schedule_outgoing_selection_retry,
-    try_claim_outgoing_batch, try_claim_outgoing_selection, OutgoingTransferClaim,
-    PersistedOutgoingBatch, PersistedOutgoingFile, PersistedOutgoingSelection,
+    persist_outgoing_batch_with_identities, persist_outgoing_selection,
+    rebind_outgoing_batch_peers, remove_outgoing_batch, remove_outgoing_selection,
+    retire_outgoing_batches_for_peer, schedule_outgoing_batch_retry,
+    schedule_outgoing_selection_retry, try_claim_outgoing_batch, try_claim_outgoing_selection,
+    OutgoingTransferClaim, PersistedOutgoingBatch, PersistedOutgoingFile,
+    PersistedOutgoingSelection,
 };
 
 const SEEN_MESSAGE_RETENTION_SECONDS: i64 = 10 * 60;

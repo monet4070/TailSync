@@ -365,12 +365,44 @@ impl<'a> HistoryOperations<'a> {
         .map_err(|error: DbExecutionError<String>| error.to_string())
     }
 
-    pub async fn data_async(database: Arc<Mutex<HistoryDB>>, id: i64) -> Result<Vec<u8>, String> {
-        run_db_named("history.data", database, move |database| {
-            database.get_data(id).map_err(|error| error.to_string())
+    /// Decrypt one image entry for in-memory thumbnail rendering.
+    ///
+    /// The entry type and declared size are validated from database metadata
+    /// before the payload is opened or decrypted, so a mis-typed id can never
+    /// pull a multi-gigabyte file into memory. The actual read reuses the
+    /// shared bounded preview path and runs outside the database lock.
+    pub async fn image_payload_async(
+        database: Arc<Mutex<HistoryDB>>,
+        id: i64,
+    ) -> Result<Vec<u8>, String> {
+        use tailsync_core::db::{PreviewErrorInfo, PreviewKind};
+        let result = run_read("history.image_payload", database, move |context| {
+            let prepared = context.with_database(|database| {
+                Ok(database
+                    .get_preview_metadata(id)
+                    .and_then(|metadata| match metadata.kind {
+                        PreviewKind::Image => database.prepare_preview(id, None),
+                        kind => Err(PreviewError::UnsupportedType {
+                            kind: kind.as_str().to_string(),
+                        }),
+                    }))
+            })?;
+            let read = prepared
+                .and_then(|prepared| prepared.read(&context.cancellation))
+                .map(|(_, payload)| payload.data);
+            context.cancellation.check()?;
+            Ok(read)
         })
-        .await
-        .map_err(|error: DbExecutionError<String>| error.to_string())
+        .await;
+        let encode = |error: PreviewError| {
+            let fallback = error.to_string();
+            serde_json::to_string(&PreviewErrorInfo::from(error)).unwrap_or(fallback)
+        };
+        match result {
+            Ok(Ok(data)) => Ok(data),
+            Ok(Err(error)) => Err(encode(error)),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     pub async fn migration_diagnostics_async(
@@ -438,6 +470,25 @@ impl<'a> HistoryOperations<'a> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn image_payload_rejects_non_image_entries_before_decrypting() {
+        let mut database = HistoryDB::new_unavailable().unwrap();
+        database.add_text("not an image", "fixture").unwrap();
+        let id = database.get_all(None, None, 1, 0).unwrap()[0].id;
+        let database = Arc::new(Mutex::new(database));
+
+        // The kind gate runs on metadata, before the payload is opened or
+        // decrypted, so a non-image id never loads clipboard data.
+        let error = HistoryOperations::image_payload_async(database, id)
+            .await
+            .unwrap_err();
+        assert!(error.contains("unsupported_type"), "missing code: {error}");
+        assert!(
+            error.contains("Preview type is unsupported"),
+            "unexpected error: {error}"
+        );
+    }
 
     #[tokio::test]
     async fn chunked_search_preserves_legacy_offset_filter_and_has_more() {

@@ -2,6 +2,42 @@ use super::batches::transition_received_batch_commit;
 use super::*;
 
 impl SyncEngine {
+    /// Distinct receive slots held by one peer, counting every phase of a
+    /// receive: reserved before off-lock file I/O (`pending`), holding its
+    /// state during a chunk write (`inflight`), and fully open (`active`).
+    ///
+    /// Counting only `active` would let a burst of `FileMeta` frames all
+    /// observe an empty limiter, because the disk open between reserving the
+    /// key and inserting the active state runs outside the engine lock.
+    fn receive_slots_for_peer(&self, peer: &str) -> usize {
+        let mut slots = HashSet::new();
+        slots.extend(
+            self.active_receives
+                .keys()
+                .filter(|(owner, _)| owner.as_str() == peer),
+        );
+        slots.extend(
+            self.pending_receives
+                .keys()
+                .filter(|(owner, _)| owner.as_str() == peer),
+        );
+        slots.extend(
+            self.inflight_receives
+                .iter()
+                .filter(|(owner, _)| owner.as_str() == peer),
+        );
+        slots.len()
+    }
+
+    /// Distinct receive slots across all peers; see [`Self::receive_slots_for_peer`].
+    fn receive_slots_global(&self) -> usize {
+        let mut slots = HashSet::new();
+        slots.extend(self.active_receives.keys());
+        slots.extend(self.pending_receives.keys());
+        slots.extend(self.inflight_receives.iter());
+        slots.len()
+    }
+
     /// Open a new transfer or restore its durable `.part` + sidecar state.
     pub async fn begin_file_receive(
         &mut self,
@@ -115,17 +151,12 @@ impl SyncEngine {
             return Err("transfer ID was reused with different metadata".to_string());
         }
 
-        let active_for_peer = self
-            .active_receives
-            .keys()
-            .filter(|(peer, _)| peer == &source)
-            .count();
-        if active_for_peer >= MAX_ACTIVE_RECEIVES_PER_PEER {
+        if self.receive_slots_for_peer(&source) >= MAX_ACTIVE_RECEIVES_PER_PEER {
             return Err(format!(
                 "peer {source} already has {MAX_ACTIVE_RECEIVES_PER_PEER} active file receives"
             ));
         }
-        if self.active_receives.len() >= MAX_ACTIVE_RECEIVES_GLOBAL {
+        if self.receive_slots_global() >= MAX_ACTIVE_RECEIVES_GLOBAL {
             return Err(format!(
                 "global active file receive limit ({MAX_ACTIVE_RECEIVES_GLOBAL}) reached"
             ));
@@ -279,17 +310,13 @@ impl SyncEngine {
             if engine.pending_receives.contains_key(&key) {
                 return Err("file receive is already being initialized".to_string());
             }
-            let active_for_peer = engine
-                .active_receives
-                .keys()
-                .filter(|(peer, _)| peer == &source)
-                .count();
+            let active_for_peer = engine.receive_slots_for_peer(&source);
             if active_for_peer >= MAX_ACTIVE_RECEIVES_PER_PEER {
                 return Err(format!(
                     "peer {source} already has {MAX_ACTIVE_RECEIVES_PER_PEER} active file receives"
                 ));
             }
-            if engine.active_receives.len() >= MAX_ACTIVE_RECEIVES_GLOBAL {
+            if engine.receive_slots_global() >= MAX_ACTIVE_RECEIVES_GLOBAL {
                 return Err(format!(
                     "global active file receive limit ({MAX_ACTIVE_RECEIVES_GLOBAL}) reached"
                 ));

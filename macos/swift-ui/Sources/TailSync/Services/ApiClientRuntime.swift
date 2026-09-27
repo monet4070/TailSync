@@ -23,7 +23,10 @@ extension ApiClient {
       (capabilities.wireVersion == 4 || capabilities.wireVersion == 5),
       !capabilities.platform.isEmpty,
       capabilities.maxPreviewBytes == UInt64(HistoryPreviewData.maxBytes),
-      capabilities.platform == "macos" || capabilities.platform == "windows"
+      // This client only ever talks to its own macOS daemon over the private
+      // socket. A Windows daemon reports no `status` field, so a permissive
+      // whitelist would decode-fail and send the watchdog into a restart loop.
+      capabilities.platform == "macos"
     else {
       throw ApiError.serverError("Invalid local capabilities response")
     }

@@ -494,13 +494,23 @@ where
     if !*pairing_enabled.borrow() {
         return Err("Pairing window is closed".into());
     }
-    tokio::select! {
-        result = read_plain_frame(stream, max_payload) => Ok(result?),
-        changed = pairing_enabled.changed() => {
-            match changed {
-                Ok(()) if !*pairing_enabled.borrow() => Err("Pairing window was closed".into()),
-                Ok(()) => Ok(read_plain_frame(stream, max_payload).await?),
-                Err(_) => Err("Pairing window was closed".into()),
+    // `read_plain_frame` drives `read_exact`, which is not cancel-safe: a
+    // future dropped mid-frame loses the bytes already consumed and desyncs
+    // the stream. Pin one read future and keep polling it while the window
+    // stays open, so a window signal never abandons a partially read frame.
+    let read = read_plain_frame(stream, max_payload);
+    tokio::pin!(read);
+    loop {
+        tokio::select! {
+            result = &mut read => return Ok(result?),
+            changed = pairing_enabled.changed() => {
+                match changed {
+                    Ok(()) if !*pairing_enabled.borrow() => {
+                        return Err("Pairing window was closed".into());
+                    }
+                    Ok(()) => continue,
+                    Err(_) => return Err("Pairing window was closed".into()),
+                }
             }
         }
     }
@@ -694,4 +704,55 @@ where
     stream.read_exact(&mut checksum).await?;
     encoded.extend_from_slice(&checksum);
     Frame::decode_with_version(&encoded, protocol::LEGACY_VERSION).map(|(frame, _)| frame)
+}
+
+#[cfg(test)]
+mod pairing_read_tests {
+    use super::*;
+    use tokio::io::{duplex, AsyncWriteExt};
+
+    fn frame_bytes(command: Command, payload: &[u8]) -> Vec<u8> {
+        Frame::try_new(command, 0, 0, payload.to_vec())
+            .unwrap()
+            .encode_with_version(protocol::LEGACY_VERSION)
+    }
+
+    /// A pairing-window change while a frame is only partially received must
+    /// not abandon the in-flight read: `read_exact` is not cancel-safe, so a
+    /// dropped future would lose the bytes already consumed and desync the
+    /// stream. Splits at `3` (inside the header) and `HEADER_SIZE + 2` (inside
+    /// the payload) cover both halves called out in the review.
+    #[tokio::test]
+    async fn window_signal_preserves_a_partially_read_frame() {
+        const PAYLOAD: &[u8] = b"pairing-window-payload";
+        let bytes = frame_bytes(Command::HandshakeReady, PAYLOAD);
+        for split in [3usize, protocol::HEADER_SIZE + 2] {
+            let (mut peer, mut local) = duplex(4096);
+            let (window_tx, mut window) = watch::channel(true);
+            let first = bytes[..split].to_vec();
+            let second = bytes[split..].to_vec();
+            let writer = tokio::spawn(async move {
+                peer.write_all(&first).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                peer.write_all(&second).await.unwrap();
+                peer.flush().await.unwrap();
+            });
+            let flipper = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                window_tx.send_replace(true);
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            });
+            let frame = read_pairing_frame(
+                &mut local,
+                protocol::MAX_HANDSHAKE_PAYLOAD_SIZE,
+                Some(&mut window),
+            )
+            .await
+            .expect("a partially read frame must survive a window signal");
+            assert_eq!(frame.command, Command::HandshakeReady);
+            assert_eq!(frame.payload, PAYLOAD);
+            writer.await.unwrap();
+            flipper.await.unwrap();
+        }
+    }
 }

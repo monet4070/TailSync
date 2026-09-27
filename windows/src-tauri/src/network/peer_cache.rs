@@ -47,22 +47,15 @@ impl PeerRefreshAdapter for Adapter {
     }
     fn remember(
         &self,
-        settings: &mut crypto::Settings,
+        _settings: &mut crypto::Settings,
         _mode: &str,
-        peers: &[tailscale::PeerInfo],
+        _peers: &[tailscale::PeerInfo],
     ) {
-        let routes = peers.iter().flat_map(|peer| {
-            peer.candidates.iter().map(|candidate| {
-                (
-                    peer.hostname.as_str(),
-                    candidate.interface.as_str(),
-                    candidate.address.as_str(),
-                )
-            })
-        });
-        if let Err(error) = settings.remember_peer_addresses(routes) {
-            debug!("Could not remember peer routes: {error}");
-        }
+        // Discovery (UDP/mDNS) is unauthenticated, so its routes are kept only
+        // in this round's in-memory candidates. Persisting them would let a
+        // spoofed broadcast rewrite the saved route of a trusted device.
+        // Persisted addresses are written after a handshake proves possession
+        // of the pinned key (see the platform network server).
     }
     async fn prewarm(&self, peers: Vec<tailscale::PeerInfo>) {
         prewarm_connections(self.pool.clone(), peers).await;

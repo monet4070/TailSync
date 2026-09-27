@@ -36,6 +36,24 @@ pub fn mode_interface(mode: &str) -> Option<ConnectionInterface> {
     }
 }
 
+/// Whether an address belongs to a Tailscale tailnet: the CGNAT range
+/// `100.64.0.0/10` or the Tailscale IPv6 ULA prefix `fd7a:115c:a1e0::/48`.
+///
+/// This must be checked before any generic private/ULA rule, because the
+/// Tailscale ULA prefix also matches `fc00::/7`.
+pub fn is_tailscale_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 100 && (64..=127).contains(&octets[1])
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
+        }
+    }
+}
+
 /// Whether an address may be used for the given mode. Tailscale addresses
 /// are the CGNAT range `100.64.0.0/10` and the ULA prefix `fd7a:115c:a1e0::/48`;
 /// LAN addresses are private, link-local, or loopback.
@@ -43,15 +61,13 @@ pub fn source_matches_mode(ip: IpAddr, mode: &str) -> bool {
     if mode == "auto" {
         return source_matches_mode(ip, "lan_only") || source_matches_mode(ip, "tailscale_only");
     }
+    // Tailscale is classified first and exclusively. Its IPv6 prefix is a ULA
+    // that would otherwise satisfy the generic `fc00::/7` LAN rule, letting
+    // `lan_only` accept external tailnet addresses and break the mode boundary.
+    if is_tailscale_address(ip) {
+        return matches!(mode, "tailscale" | "tailscale_only");
+    }
     match (ip, mode) {
-        (IpAddr::V4(ip), "tailscale" | "tailscale_only") => {
-            let octets = ip.octets();
-            octets[0] == 100 && (64..=127).contains(&octets[1])
-        }
-        (IpAddr::V6(ip), "tailscale" | "tailscale_only") => {
-            let segments = ip.segments();
-            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
-        }
         (IpAddr::V4(ip), "lan" | "lan_only") => {
             ip.is_private() || ip.is_link_local() || ip.is_loopback()
         }
@@ -61,6 +77,65 @@ pub fn source_matches_mode(ip: IpAddr, mode: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Pick this device's LAN address from its eligible interface list. A private
+/// IPv4 is preferred, then a ULA, then link-local. Loopback, unspecified, and
+/// multicast addresses are never chosen, so callers show "unavailable" rather
+/// than advertising `0.0.0.0` as a connected route. Callers must exclude down
+/// and point-to-point interfaces before passing their addresses here.
+pub fn select_local_lan_ip(addresses: impl IntoIterator<Item = IpAddr>) -> Option<IpAddr> {
+    fn rank(ip: &IpAddr) -> Option<u8> {
+        match ip {
+            IpAddr::V4(ip) if ip.is_private() => Some(0),
+            IpAddr::V6(ip) if (ip.segments()[0] & 0xfe00) == 0xfc00 => Some(1),
+            IpAddr::V4(ip) if ip.is_link_local() => Some(2),
+            IpAddr::V6(ip) if ip.is_unicast_link_local() => Some(2),
+            _ => None,
+        }
+    }
+    addresses
+        .into_iter()
+        .filter(|ip| !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast())
+        .filter_map(|ip| rank(&ip).map(|rank| (rank, ip)))
+        .min_by_key(|(rank, ip)| (*rank, ip_to_u128(*ip)))
+        .map(|(_, ip)| ip)
+}
+
+fn ip_to_u128(ip: IpAddr) -> u128 {
+    match ip {
+        IpAddr::V4(ip) => u128::from(u32::from(ip)),
+        IpAddr::V6(ip) => u128::from(ip),
+    }
+}
+
+/// Rank an address for stable display ordering: private IPv4 first,
+/// then ULA, then link-local, then loopback, then anything else. A pure string
+/// comparison would place `10.x`/`169.254.x` ahead of `192.168.x`.
+fn address_class_rank(address: &str) -> u8 {
+    match address.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) if ip.is_private() => 0,
+        Ok(IpAddr::V6(ip)) if (ip.segments()[0] & 0xfe00) == 0xfc00 => 1,
+        Ok(IpAddr::V4(ip)) if ip.is_link_local() => 2,
+        Ok(IpAddr::V6(ip)) if ip.is_unicast_link_local() => 2,
+        Ok(ip) if ip.is_loopback() => 3,
+        Ok(_) => 4,
+        Err(_) => 5,
+    }
+}
+
+fn candidate_sort_key(candidate: &PeerCandidate) -> (bool, u64, u8, u8, u128) {
+    (
+        !candidate.online,
+        candidate.latency.unwrap_or(u64::MAX),
+        candidate.priority,
+        address_class_rank(&candidate.address),
+        candidate
+            .address
+            .parse::<IpAddr>()
+            .map(ip_to_u128)
+            .unwrap_or(u128::MAX),
+    )
 }
 
 /// Whether an mDNS service is a remote TailSync instance rather than this
@@ -112,9 +187,24 @@ pub enum PairingTarget {
 
 /// Parse a user-supplied pairing address: an IP parses as a TCP target,
 /// anything else is treated as an Iroh endpoint ID and canonicalized.
+///
+/// Link-local IPv6 is rejected explicitly. The model carries no interface
+/// index, so a `fe80::` address (with or without a `%scope`) can never be
+/// dialled and would otherwise fall through to the Iroh parser and surface as
+/// a confusing "Invalid Iroh endpoint ID" error.
 pub fn parse_pairing_target(address: &str) -> Result<PairingTarget, String> {
     let address = address.trim();
+    if address.contains('%') {
+        return Err(
+            "IPv6 addresses with a scope (%interface) are not supported; use the device's LAN IPv4 address"
+                .to_string(),
+        );
+    }
     match address.parse::<IpAddr>() {
+        Ok(IpAddr::V6(ip)) if ip.is_unicast_link_local() => Err(
+            "IPv6 link-local addresses are not supported; use the device's LAN IPv4 address"
+                .to_string(),
+        ),
         Ok(ip) => Ok(PairingTarget::Tcp(ip)),
         Err(_) => Ok(PairingTarget::Iroh(
             crate::iroh_transport::canonical_endpoint_id(address)?,
@@ -142,8 +232,8 @@ pub fn validate_pairing_target(target: &PairingTarget, mode: &str) -> Result<(),
 
 fn sort_and_dedup_candidates(candidates: &mut Vec<PeerCandidate>) {
     candidates.sort_by(|left, right| {
-        left.priority
-            .cmp(&right.priority)
+        candidate_sort_key(left)
+            .cmp(&candidate_sort_key(right))
             .then_with(|| left.address.cmp(&right.address))
     });
     candidates
@@ -199,8 +289,13 @@ pub fn merge_lan_discovery_results(
         sort_and_dedup_candidates(&mut peer.candidates);
         if let Some(candidate) = peer.candidates.first() {
             peer.address.clone_from(&candidate.address);
-            peer.tailscale_ip.clone_from(&candidate.address);
         }
+        peer.tailscale_ip = peer
+            .candidates
+            .iter()
+            .find(|candidate| candidate.interface == ConnectionInterface::Tailscale)
+            .map(|candidate| candidate.address.clone())
+            .unwrap_or_default();
     }
     Ok((local, peers))
 }
@@ -279,6 +374,12 @@ pub fn merge_discovery_results(
         if let Some(preferred) = peer.candidates.first() {
             peer.address.clone_from(&preferred.address);
         }
+        peer.tailscale_ip = peer
+            .candidates
+            .iter()
+            .find(|candidate| candidate.interface == ConnectionInterface::Tailscale)
+            .map(|candidate| candidate.address.clone())
+            .unwrap_or_default();
     }
     Ok((local, peers))
 }
@@ -589,6 +690,33 @@ mod tests {
         assert!(source_matches_mode(tailscale, "auto"));
         assert!(source_matches_mode(lan, "auto"));
         assert!(!source_matches_mode(public, "auto"));
+    }
+
+    #[test]
+    fn lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local() {
+        let tailscale_v4: IpAddr = "100.64.0.7".parse().unwrap();
+        let tailscale_v6: IpAddr = "fd7a:115c:a1e0::1".parse().unwrap();
+        let other_ula: IpAddr = "fd12:3456:789a::1".parse().unwrap();
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+
+        // Tailscale is exclusively a tailnet address, even though its IPv6
+        // prefix also lies inside the generic fc00::/7 ULA range.
+        assert!(is_tailscale_address(tailscale_v4));
+        assert!(is_tailscale_address(tailscale_v6));
+        assert!(!source_matches_mode(tailscale_v4, "lan_only"));
+        assert!(!source_matches_mode(tailscale_v6, "lan_only"));
+        assert!(!source_matches_mode(tailscale_v6, "lan"));
+        assert!(source_matches_mode(tailscale_v6, "tailscale_only"));
+        assert!(source_matches_mode(tailscale_v6, "tailscale"));
+        assert!(source_matches_mode(tailscale_v6, "auto"));
+
+        // Other ULA, IPv6 link-local, and loopback keep their LAN semantics.
+        assert!(!is_tailscale_address(other_ula));
+        assert!(source_matches_mode(other_ula, "lan_only"));
+        assert!(!source_matches_mode(other_ula, "tailscale_only"));
+        assert!(source_matches_mode(link_local_v6, "lan_only"));
+        assert!(source_matches_mode(loopback, "lan_only"));
     }
 
     #[test]
@@ -1158,5 +1286,123 @@ mod tests {
             )],
         );
         assert!(resolve_candidates(&peer, 19890).is_err());
+    }
+
+    #[test]
+    fn local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified() {
+        assert_eq!(select_local_lan_ip([] as [IpAddr; 0]), None);
+        assert_eq!(select_local_lan_ip(["0.0.0.0".parse().unwrap()]), None);
+        assert_eq!(
+            select_local_lan_ip([
+                "127.0.0.1".parse().unwrap(),
+                "169.254.3.4".parse().unwrap(),
+                // A proxy/VPN default-route address is neither private nor
+                // link-local and must not be selected.
+                "198.18.0.1".parse().unwrap(),
+                "192.168.1.30".parse().unwrap(),
+            ]),
+            Some("192.168.1.30".parse().unwrap())
+        );
+        assert_eq!(
+            select_local_lan_ip(["fd12::1".parse().unwrap()]),
+            Some("fd12::1".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn candidate_sort_prefers_private_addresses_over_apipa_and_loopback() {
+        let mut candidates = vec![
+            PeerCandidate::new(ConnectionInterface::Lan, "169.254.10.10"),
+            PeerCandidate::new(ConnectionInterface::Lan, "10.0.0.5"),
+            PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.7"),
+            PeerCandidate::new(ConnectionInterface::Lan, "127.0.0.1"),
+        ];
+        sort_and_dedup_candidates(&mut candidates);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.address.as_str())
+                .collect::<Vec<_>>(),
+            vec!["10.0.0.5", "192.168.1.7", "169.254.10.10", "127.0.0.1"]
+        );
+    }
+
+    #[test]
+    fn lan_merge_does_not_label_a_lan_candidate_as_the_tailscale_ip() {
+        let local = LocalInfo {
+            hostname: "macbook".into(),
+            tailscale_ip: "192.168.1.10".into(),
+            candidates: Vec::new(),
+        };
+        // Real UDP and mDNS producers populate this legacy field with the LAN
+        // source address before the two discovery views are merged.
+        let peer = discovered_peer("windows", "192.168.1.20", ConnectionInterface::Lan);
+
+        let (_, peers) =
+            merge_lan_discovery_results(Ok((local, vec![peer])), Err("no mdns".into())).unwrap();
+
+        assert_eq!(peers[0].address, "192.168.1.20");
+        assert_eq!(
+            peers[0].tailscale_ip, "",
+            "a LAN candidate must not be recorded as the tailnet address"
+        );
+    }
+
+    #[test]
+    fn auto_merge_keeps_the_tailnet_address_when_lan_is_preferred() {
+        let local = LocalInfo {
+            hostname: "macbook".into(),
+            tailscale_ip: "192.168.1.10".into(),
+            candidates: vec![PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.10")],
+        };
+        let tailnet_local = LocalInfo {
+            hostname: "macbook".into(),
+            tailscale_ip: "100.64.0.1".into(),
+            candidates: vec![PeerCandidate::new(
+                ConnectionInterface::Tailscale,
+                "100.64.0.1",
+            )],
+        };
+        let (_, peers) = merge_discovery_results(
+            Ok((
+                local,
+                vec![discovered_peer(
+                    "windows",
+                    "192.168.1.20",
+                    ConnectionInterface::Lan,
+                )],
+            )),
+            Ok((
+                tailnet_local,
+                vec![discovered_peer(
+                    "windows",
+                    "100.64.0.20",
+                    ConnectionInterface::Tailscale,
+                )],
+            )),
+        )
+        .unwrap();
+        assert_eq!(peers[0].address, "192.168.1.20");
+        assert_eq!(peers[0].tailscale_ip, "100.64.0.20");
+    }
+
+    #[test]
+    fn candidate_sort_keeps_online_routes_ahead_of_offline_lan() {
+        let mut offline_lan = PeerCandidate::remembered(ConnectionInterface::Lan, "192.168.1.20");
+        offline_lan.online = false;
+        let online_tailnet = PeerCandidate::new(ConnectionInterface::Tailscale, "100.64.0.20");
+        let mut candidates = vec![offline_lan, online_tailnet];
+        sort_and_dedup_candidates(&mut candidates);
+        assert_eq!(candidates[0].interface, ConnectionInterface::Tailscale);
+    }
+
+    #[test]
+    fn pairing_target_rejects_link_local_ipv6_with_a_clear_message() {
+        assert!(parse_pairing_target("fe80::1")
+            .unwrap_err()
+            .contains("link-local"));
+        assert!(parse_pairing_target("fe80::1%en0")
+            .unwrap_err()
+            .contains("scope"));
     }
 }

@@ -97,7 +97,10 @@ final class ApiClient: @unchecked Sendable {
   ) async throws -> Data {
     var authenticated = json
     authenticated["token"] = capabilityToken
-    if ["get_history", "get_preview_data"].contains(json["cmd"] as? String ?? "") {
+    // Opt-in cancellation for long-running reads: the daemon cancels the
+    // request when this connection drops, returning its permit immediately.
+    if ["get_history", "get_preview_data", "wait_runtime_snapshot"].contains(json["cmd"] as? String ?? "")
+    {
       authenticated["request_id"] = UUID().uuidString
     }
     var data = try JSONSerialization.data(withJSONObject: authenticated)

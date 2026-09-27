@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Carbon
 
 /// A single keycap badge, matching the macOS native keycap design from the prototype.
 struct KeycapBadge: View {
@@ -149,7 +150,7 @@ extension SettingsView {
 
     func shortcutRow(_ kind: ShortcutKind) -> some View {
         let currentValue = kind.value(in: settings)
-        let defaultValue = kind == .sync ? "Shift+CommandOrControl+S" : "CommandOrControl+Shift+V"
+        let defaultValue = kind.defaultValue
         let isRecording = recordingShortcut == kind
 
         return settingRow {
@@ -215,6 +216,15 @@ extension SettingsView {
                 .buttonStyle(.plain)
                 .disabled(shortcutBusy)
 
+                if isRecording {
+                    Button(Loc.t("settings.shortcutCancel")) {
+                        cancelShortcutRecording(kind)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(shortcutBusy)
+                }
+
                 // Reset to default button
                 Button {
                     applyShortcut(kind, value: defaultValue)
@@ -260,10 +270,15 @@ extension SettingsView {
         recordingShortcut = kind
         shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard recordingShortcut == kind else { return event }
-            if let shortcut = Self.capturedShortcut(from: event) {
+            switch Self.shortcutRecordingAction(for: event, busy: shortcutBusy) {
+            case .cancel:
+                cancelShortcutRecording(kind)
+            case .capture(let shortcut):
                 shortcutDraft = shortcut
                 shortcutError = ""
                 confirmShortcut(kind)
+            case .ignore:
+                break
             }
             return nil
         }
@@ -334,6 +349,22 @@ extension SettingsView {
                 persistedSettings.history_shortcut = value
             }
         }
+    }
+
+    enum ShortcutRecordingAction: Equatable {
+        case capture(String)
+        case cancel
+        case ignore
+    }
+
+    static func shortcutRecordingAction(for event: NSEvent, busy: Bool) -> ShortcutRecordingAction {
+        guard !busy else { return .ignore }
+        if event.keyCode == UInt16(kVK_Escape),
+           event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+            return .cancel
+        }
+        if let shortcut = capturedShortcut(from: event) { return .capture(shortcut) }
+        return .ignore
     }
 
     static func capturedShortcut(from event: NSEvent) -> String? {

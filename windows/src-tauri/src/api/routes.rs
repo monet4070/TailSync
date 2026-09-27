@@ -436,9 +436,11 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     error: Some("missing id".into()),
                 };
             };
-            let result =
-                tailsync_runtime::history::HistoryOperations::data_async(state.db.clone(), id)
-                    .await;
+            let result = tailsync_runtime::history::HistoryOperations::image_payload_async(
+                state.db.clone(),
+                id,
+            )
+            .await;
             match result {
                 Ok(data) => {
                     let image = match crate::protocol::PackedImage::try_from(data.as_slice()) {

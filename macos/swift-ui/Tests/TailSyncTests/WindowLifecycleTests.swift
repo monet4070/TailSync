@@ -238,4 +238,18 @@ final class WindowLifecycleTests: XCTestCase {
         XCTAssertFalse(controller.hasAllocatedWindow)
         controller.shutdown()
     }
+
+    func testShowConnectionsPresentsWindowWithCorrectTitleAndDimensions() {
+        _ = NSApplication.shared
+        AppDelegate.showConnections()
+        guard let window = AppDelegate.connectionsWindow else {
+            XCTFail("connections window was not created")
+            return
+        }
+        XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(window.title, Loc.t("connections.title"))
+        XCTAssertEqual(window.minSize.width, 440)
+        XCTAssertEqual(window.minSize.height, 500)
+        window.close()
+    }
 }

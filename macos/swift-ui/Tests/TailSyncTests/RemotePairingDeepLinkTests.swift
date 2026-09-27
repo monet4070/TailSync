@@ -3,6 +3,29 @@ import XCTest
 @testable import TailSync
 
 final class RemotePairingDeepLinkTests: XCTestCase {
+    func testReceivedInviteExpandsThePairingInput() {
+        var state = RemotePairingInputState()
+        state.receive("  tailsync://pair/v1/invite  ")
+        XCTAssertTrue(state.expanded)
+        XCTAssertEqual(state.link, "tailsync://pair/v1/invite")
+        XCTAssertNil(state.feedback)
+    }
+
+    func testPairingFailureReplacesSuccessfulPreview() {
+        var state = RemotePairingInputState()
+        state.preview = ApiClient.RemotePairingInvitePreview(endpoint_id: "peer", expires_at: 123, remaining_seconds: 60)
+        state.fail("Invite has expired")
+        XCTAssertEqual(state.feedback, .error("Invite has expired"))
+    }
+
+    func testNewOperationInvalidatesOldPreview() {
+        var state = RemotePairingInputState()
+        state.preview = ApiClient.RemotePairingInvitePreview(endpoint_id: "peer", expires_at: 123, remaining_seconds: 60)
+        state.beginOperation()
+        XCTAssertNil(state.preview)
+        XCTAssertNil(state.feedback)
+    }
+
     func testValidInviteIsStoredAndTakenExactlyOnce() throws {
         var inbox = RemotePairingDeepLinkInbox()
         let url = try XCTUnwrap(URL(string: "tailsync://pair/v1/abc_DEF-123"))

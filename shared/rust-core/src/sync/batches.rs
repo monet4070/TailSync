@@ -468,24 +468,93 @@ impl SyncEngine {
     /// usage, so only their remaining bytes count toward the next preflight.
     pub fn pending_file_batch_bytes(&self) -> u64 {
         self.incoming_batches.values().fold(0_u64, |total, batch| {
-            let incoming_dir = batch.manifest_path.parent();
-            let remaining = batch
+            let remaining =
+                batch
+                    .manifest_path
+                    .parent()
+                    .map_or(batch.manifest.total_bytes, |dir| {
+                        Self::file_batch_remaining_bytes(
+                            &batch.manifest,
+                            &batch.source,
+                            &batch.source_device_id,
+                            dir,
+                        )
+                    });
+            let completed = batch
                 .manifest
                 .files
                 .iter()
                 .zip(&batch.files)
-                .filter_map(|(entry, completed)| completed.is_none().then_some(entry))
-                .fold(0_u64, |remaining, entry| {
-                    let received = incoming_dir
-                        .map(|directory| {
-                            directory.join(format!("{}.part", entry.transfer_id.as_hex()))
-                        })
-                        .and_then(|path| fs::metadata(path).ok())
-                        .map(|metadata| metadata.len().min(entry.size))
-                        .unwrap_or(0);
-                    remaining.saturating_add(entry.size.saturating_sub(received))
-                });
-            total.saturating_add(remaining)
+                .filter_map(|(entry, file)| file.as_ref().map(|_| entry.size))
+                .fold(0_u64, u64::saturating_add);
+            total.saturating_add(remaining.saturating_sub(completed))
+        })
+    }
+
+    /// Future encrypted history copies for admitted batches. The plaintext
+    /// prefixes already on disk do not reduce this second peak-disk cost.
+    pub fn pending_file_batch_commit_bytes(&self) -> u64 {
+        self.incoming_batches.values().fold(0_u64, |total, batch| {
+            total.saturating_add(batch.manifest.total_bytes)
+        })
+    }
+
+    /// Remaining plaintext for an authenticated batch. A same-named `.part`
+    /// belongs to this batch only when its persisted manifest matches. If a
+    /// transfer sidecar exists, it must also agree with the entry identity;
+    /// otherwise its length cannot safely reduce the admission reservation.
+    pub fn file_batch_remaining_bytes(
+        manifest: &FileBatchManifest,
+        source: &str,
+        source_device_id: &str,
+        incoming_dir: &Path,
+    ) -> u64 {
+        let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
+        let saved = fs::read(manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<PersistedIncomingBatch>(&bytes).ok());
+        let Some(_) = saved.filter(|saved| {
+            saved.source == source
+                && saved.manifest == *manifest
+                && (saved.source_device_id.is_empty() || saved.source_device_id == source_device_id)
+        }) else {
+            return manifest.total_bytes;
+        };
+        manifest.files.iter().fold(0_u64, |remaining, entry| {
+            let id = entry.transfer_id.as_hex();
+            let received = fs::symlink_metadata(incoming_dir.join(format!("{id}.part")))
+                .ok()
+                .filter(|metadata| metadata.is_file() && metadata.len() <= entry.size)
+                .and_then(|metadata| {
+                    let state_path = incoming_dir.join(format!("{id}.resume.json"));
+                    let sidecar = fs::read(state_path)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<PersistedTransfer>(&bytes).ok());
+                    match sidecar {
+                        Some(sidecar)
+                            if sidecar.source == source
+                                && sidecar.meta.transfer_id == Some(entry.transfer_id)
+                                && sidecar.meta.name == entry.name
+                                && sidecar.meta.size == entry.size
+                                && sidecar.meta.hash == entry.hash
+                                && sidecar.meta.batch
+                                    == Some(FileBatchRef {
+                                        batch_id: manifest.batch_id,
+                                        index: entry.index,
+                                    }) =>
+                        {
+                            Some(metadata.len())
+                        }
+                        // Resume sidecars are advisory and may be absent after
+                        // a crash. The batch manifest still binds this ID to
+                        // the authenticated source; an existing contradictory
+                        // sidecar is never accepted.
+                        None => Some(metadata.len()),
+                        _ => None,
+                    }
+                })
+                .unwrap_or(0);
+            remaining.saturating_add(entry.size.saturating_sub(received))
         })
     }
 

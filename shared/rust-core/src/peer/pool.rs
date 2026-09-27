@@ -26,6 +26,7 @@ pub struct PoolSender {
     bulk: mpsc::Sender<QueuedFrame>,
     shutdown: watch::Sender<bool>,
     retry_wakeup: Arc<Notify>,
+    candidates: watch::Sender<Vec<ResolvedCandidate>>,
 }
 
 impl PoolSender {
@@ -37,7 +38,14 @@ impl PoolSender {
         bulk: mpsc::Sender<QueuedFrame>,
         shutdown: watch::Sender<bool>,
     ) -> Self {
-        Self::with_retry_wakeup(priority, bulk, shutdown, Arc::new(Notify::new()))
+        let (candidates, _) = watch::channel(Vec::new());
+        Self::with_retry_wakeup(
+            priority,
+            bulk,
+            shutdown,
+            Arc::new(Notify::new()),
+            candidates,
+        )
     }
 
     fn with_retry_wakeup(
@@ -45,12 +53,14 @@ impl PoolSender {
         bulk: mpsc::Sender<QueuedFrame>,
         shutdown: watch::Sender<bool>,
         retry_wakeup: Arc<Notify>,
+        candidates: watch::Sender<Vec<ResolvedCandidate>>,
     ) -> Self {
         Self {
             priority,
             bulk,
             shutdown,
             retry_wakeup,
+            candidates,
         }
     }
 
@@ -117,6 +127,7 @@ impl ConnectionPoolState {
                 mpsc::Receiver<QueuedFrame>,
                 watch::Receiver<bool>,
                 Arc<Notify>,
+                watch::Receiver<Vec<ResolvedCandidate>>,
             ) + Send
             + 'static,
     {
@@ -125,14 +136,28 @@ impl ConnectionPoolState {
             .ok_or_else(|| format!("Peer {hostname} has no usable connection candidates"))?
             .target
             .clone();
-        let key = (target, hostname.clone());
-        if let Some(sender) = self.senders.get(&key) {
+        // Reuse the live worker for this hostname regardless of a route
+        // change. The preferred target is dynamic — background network
+        // introspection can re-rank candidates mid-transfer — and keying on
+        // the target alone would shut the worker down and abort an in-flight
+        // transfer. The candidate watch supplies the latest routes on its
+        // next reconnect; an explicit disconnect or unpair
+        // still closes it through `disconnect_hostname`.
+        if let Some((_, sender)) = self
+            .senders
+            .iter()
+            .find(|((_, known_hostname), _)| known_hostname == &hostname)
+        {
             if !sender.priority_is_closed() && !sender.bulk_is_closed() {
+                // Keep the active connection, but give its next reconnect the
+                // latest LAN/Tailscale routes as well as the Iroh refresh.
+                sender.candidates.send_replace(candidates);
                 return Ok(sender.clone());
             }
-            log::debug!("Cached sender for {hostname} is dead; rebuilding connection worker");
         }
 
+        // Only a dead worker for this hostname reaches here; drop it before
+        // spawning its replacement.
         self.senders.retain(|(_, peer_hostname), sender| {
             let keep = peer_hostname != &hostname;
             if !keep {
@@ -145,8 +170,16 @@ impl ConnectionPoolState {
         let (bulk, bulk_rx) = mpsc::channel::<QueuedFrame>(CHANNEL_SIZE);
         let (shutdown, shutdown_rx) = watch::channel(false);
         let retry_wakeup = Arc::new(Notify::new());
-        let sender = PoolSender::with_retry_wakeup(priority, bulk, shutdown, retry_wakeup.clone());
-        self.senders.insert(key, sender.clone());
+        let (candidate_updates, candidate_rx) = watch::channel(candidates.clone());
+        let sender = PoolSender::with_retry_wakeup(
+            priority,
+            bulk,
+            shutdown,
+            retry_wakeup.clone(),
+            candidate_updates,
+        );
+        self.senders
+            .insert((target, hostname.clone()), sender.clone());
         spawn_worker(
             candidates,
             hostname,
@@ -154,6 +187,7 @@ impl ConnectionPoolState {
             bulk_rx,
             shutdown_rx,
             retry_wakeup,
+            candidate_rx,
         );
         Ok(sender)
     }
@@ -277,7 +311,7 @@ mod tests {
             .sender_for_candidates(
                 "peer".to_string(),
                 vec![candidate()],
-                |_, _, priority_rx, bulk_rx, shutdown_rx, _retry_wakeup| {
+                |_, _, priority_rx, bulk_rx, shutdown_rx, _retry_wakeup, _candidate_rx| {
                     tokio::spawn(async move {
                         let _receivers = (priority_rx, bulk_rx, shutdown_rx);
                         std::future::pending::<()>().await;
@@ -287,5 +321,42 @@ mod tests {
             .unwrap();
         assert_eq!(state.sender_count(), 1);
         assert!(!rebuilt.priority_is_closed());
+    }
+
+    #[tokio::test]
+    async fn sender_for_candidates_keeps_a_live_worker_across_route_changes() {
+        let mut state = ConnectionPoolState::new();
+        let (priority, priority_rx) = mpsc::channel(CHANNEL_SIZE);
+        let (bulk, bulk_rx) = mpsc::channel(CHANNEL_SIZE);
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        // Keep the receivers alive so the cached worker is not "dead".
+        let _keep_alive = (priority_rx, bulk_rx);
+        state.insert_sender(
+            ResolvedTarget::Tcp("10.0.0.1:19890".parse().unwrap()),
+            "peer".to_string(),
+            PoolSender::new(priority, bulk, shutdown),
+        );
+
+        let mut rerouted = candidate();
+        rerouted.target = ResolvedTarget::Tcp("10.0.0.2:19890".parse().unwrap());
+        let reused = state
+            .sender_for_candidates(
+                "peer".to_string(),
+                vec![rerouted.clone()],
+                |_, _, _, _, _, _, _| panic!("a live worker must survive a preferred-route change"),
+            )
+            .unwrap();
+
+        assert_eq!(state.sender_count(), 1);
+        assert!(!reused.priority_is_closed());
+        assert_eq!(
+            reused.candidates.subscribe().borrow()[0].target,
+            rerouted.target,
+            "the next reconnect must use the new candidate"
+        );
+        assert!(
+            !*shutdown_rx.borrow(),
+            "a re-ranked route must not shut the worker down"
+        );
     }
 }

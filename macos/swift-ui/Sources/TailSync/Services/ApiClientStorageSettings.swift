@@ -70,6 +70,17 @@ extension ApiClient {
       AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
   }
 
+  func setConnectionMode(_ mode: String) async throws -> AppSettings {
+    let response = try await request(["cmd": "set_connection_mode", "connection_mode": mode])
+    guard response["ok"] as? Bool == true,
+      let data = response["data"] as? [String: Any]
+    else {
+      throw ApiError.serverError(response["error"] as? String ?? "unknown")
+    }
+    return try JSONDecoder().decode(
+      AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
+  }
+
   func updateSettings(_ settings: AppSettings) async throws {
     let object = try jsonDictionary(settings)
     let response = try await request(["cmd": "update_settings", "settings": object])

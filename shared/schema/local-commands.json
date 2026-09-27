@@ -27,6 +27,7 @@
         "toggle_sync",
         "set_sync_shortcut",
         "set_history_shortcut",
+        "set_connection_mode",
         "update_settings",
         "change_storage_location",
         "delete_old_storage",

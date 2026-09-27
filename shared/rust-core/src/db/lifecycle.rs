@@ -378,29 +378,44 @@ impl HistoryDB {
         tx.commit()?;
 
         for (stored, directory, reference) in references {
-            let remaining: i64 = self.conn.query_row(
+            let remaining: i64 = match self.conn.query_row(
                 "SELECT COUNT(*) FROM history WHERE data = ?1",
                 params![stored],
                 |row| row.get(0),
-            )?;
-            if remaining == 0 {
-                let path = resolve_file_reference_at(&directory, &reference)?;
-                if preserve_path == Some(path.as_path()) {
+            ) {
+                Ok(remaining) => remaining,
+                Err(error) => {
+                    warn!("Could not check remaining references for a deleted payload: {error}");
                     continue;
                 }
-                if let Err(error) = std::fs::remove_file(&path) {
-                    if error.kind() != std::io::ErrorKind::NotFound {
-                        warn!("Could not remove history file {}: {error}", path.display());
-                    }
+            };
+            if remaining != 0 {
+                continue;
+            }
+            let path = match resolve_file_reference_at(&directory, &reference) {
+                Ok(path) => path,
+                Err(error) => {
+                    warn!("Could not resolve the path of a deleted payload: {error}");
+                    continue;
+                }
+            };
+            if preserve_path == Some(path.as_path()) {
+                continue;
+            }
+            if let Err(error) = std::fs::remove_file(&path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    warn!("Could not remove history file {}: {error}", path.display());
                 }
             }
         }
         // Every deletion path, including quota trimming and duplicate
         // replacement, must remove deleted rows from the WAL as well. Perform
         // this after the external encrypted payloads have been handled so a
-        // transient checkpoint failure cannot skip their deletion.
-        self.conn
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        // transient checkpoint failure cannot skip their deletion. A busy
+        // checkpoint after a committed delete is not a delete failure.
+        if let Err(error) = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            warn!("Could not checkpoint the history WAL after delete: {error}");
+        }
         Ok(())
     }
 }

@@ -104,6 +104,9 @@ fn broadcast_targets() -> HashSet<SocketAddr> {
     let mut targets = HashSet::from([SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT))]);
     if let Ok(interfaces) = if_addrs::get_if_addrs() {
         for interface in interfaces {
+            if !interface.is_oper_up() || interface.is_loopback() || interface.is_p2p {
+                continue;
+            }
             let if_addrs::IfAddr::V4(address) = interface.addr else {
                 continue;
             };
@@ -145,13 +148,23 @@ pub fn local_hostname() -> String {
 }
 
 fn local_ip() -> String {
-    std::net::UdpSocket::bind("0.0.0.0:0")
-        .and_then(|socket| {
-            socket.connect("8.8.8.8:80")?;
-            socket.local_addr()
+    // Derive the advertised LAN address from the machine's own interfaces.
+    // A default-route probe reports a VPN/tunnel address under a full tunnel
+    // and `0.0.0.0` with no default route; neither is a usable LAN address.
+    let addresses = if_addrs::get_if_addrs()
+        .map(|interfaces| {
+            interfaces
+                .into_iter()
+                .filter(|interface| {
+                    interface.is_oper_up() && !interface.is_loopback() && !interface.is_p2p
+                })
+                .map(|interface| interface.ip())
+                .collect::<Vec<_>>()
         })
-        .map(|address| address.ip().to_string())
-        .unwrap_or_else(|_| "0.0.0.0".to_string())
+        .unwrap_or_default();
+    tailsync_core::peer::directory::select_local_lan_ip(addresses)
+        .map(|ip| ip.to_string())
+        .unwrap_or_default()
 }
 
 pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {

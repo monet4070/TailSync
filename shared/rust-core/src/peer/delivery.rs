@@ -25,16 +25,13 @@ use crate::secure::{CapabilitySet, SecureConnection};
 const PRIORITY_BURST_LIMIT: usize = 8;
 
 /// Timing for one reliable delivery attempt. Defaults match the shared
-/// platform constants (750 ms event ACK window, 10 s file ACK window,
-/// 250 ms base retry delay, 4 attempts). Fields are private: construct via
-/// [`DeliveryConfig::try_new`] so invariants (at least one attempt, bounded
-/// backoff) cannot be violated.
+/// platform constants (750 ms event ACK window, 10 s file ACK window).
+/// Fields are private: construct via
+/// [`DeliveryConfig::try_new`] so neither acknowledgement timeout can be zero.
 #[derive(Debug, Clone, Copy)]
 pub struct DeliveryConfig {
     event_ack_timeout: Duration,
     file_ack_timeout: Duration,
-    event_retry_base_delay: Duration,
-    max_attempts: usize,
 }
 
 impl DeliveryConfig {
@@ -42,36 +39,21 @@ impl DeliveryConfig {
     pub const DEFAULT: Self = Self {
         event_ack_timeout: Duration::from_millis(750),
         file_ack_timeout: Duration::from_secs(10),
-        event_retry_base_delay: Duration::from_millis(250),
-        max_attempts: 4,
     };
 
-    /// Build a config with validated timing. `max_attempts` applies to every
-    /// acknowledged delivery (event, file, and batch frames) and must be
-    /// between 1 and 8: the exponential backoff shifts `1 << attempt`, so
-    /// keeping attempts bounded also keeps the delay arithmetic in range.
+    /// Build a config with validated acknowledgement timeouts. A timeout ends
+    /// the connection; the worker retries queued frames on a fresh session.
     pub fn try_new(
         event_ack_timeout: Duration,
         file_ack_timeout: Duration,
-        event_retry_base_delay: Duration,
-        max_attempts: usize,
     ) -> Result<Self, String> {
-        if !(1..=8).contains(&max_attempts) {
-            return Err(format!(
-                "max_attempts must be between 1 and 8, got {max_attempts}"
-            ));
+        if event_ack_timeout.is_zero() || file_ack_timeout.is_zero() {
+            return Err("acknowledgement timeouts must be positive".into());
         }
         Ok(Self {
             event_ack_timeout,
             file_ack_timeout,
-            event_retry_base_delay,
-            max_attempts,
         })
-    }
-
-    /// Retry delay before attempt `attempt` (0-based) of a delivery.
-    fn retry_delay(&self, attempt: usize) -> Duration {
-        self.event_retry_base_delay * (1u32 << attempt)
     }
 }
 
@@ -460,6 +442,16 @@ impl PendingFrame {
     }
 }
 
+/// Whether a queued frame carries clipboard content. Only these map to the
+/// user-facing "clipboard delivery was stopped" warning; file transfers report
+/// through their own progress/failure surface.
+fn carries_clipboard_content(command: Command) -> bool {
+    matches!(
+        command,
+        Command::TextPayload | Command::ImagePayload | Command::ImageChunk
+    )
+}
+
 impl Drop for PendingFrame {
     fn drop(&mut self) {
         let Some(hostname) = self.undelivered_peer.take() else {
@@ -470,8 +462,22 @@ impl Drop for PendingFrame {
                 "Connection task closed".to_string(),
             )));
         }
-        crate::sync_warning::record_delivery_shutdown(&hostname);
-        log::warn!("Delivery to {hostname} ended before the in-flight frame completed");
+        // The warning is user-facing and names clipboard content, so it is
+        // raised only when a clipboard frame is abandoned during a real
+        // shutdown. A forced reconnect also abandons the frame, but the
+        // durable retry resends it; an abandoned file/batch frame belongs to
+        // the file-transfer failure surface instead.
+        if carries_clipboard_content(self.queued.command())
+            && crate::sync_warning::record_delivery_shutdown(&hostname)
+        {
+            log::warn!(
+                "Clipboard delivery to {hostname} was abandoned while TailSync was shutting down"
+            );
+        } else {
+            log::debug!(
+                "Delivery to {hostname} was abandoned before completion; the durable retry or the file-transfer surface handles it"
+            );
+        }
     }
 }
 
