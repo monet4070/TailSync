@@ -57,7 +57,6 @@ pub struct Settings {
 pub struct SettingsPatch {
     pub notifications_enabled: Option<bool>,
     pub progress_bar_enabled: Option<bool>,
-    pub sync_enabled: Option<bool>,
     pub history_limit: Option<u32>,
     pub storage_quota_bytes: Option<u64>,
     pub language: Option<String>,
@@ -69,7 +68,7 @@ impl SettingsPatch {
     /// Validate one key at a time to identify the rejected field without
     /// reflecting potentially sensitive field values into the API response.
     pub fn from_json_value(value: serde_json::Value) -> Result<Self, String> {
-        const PREFIX: &str = "update_settings expects a patch of editable fields; use dedicated commands for sync shortcuts, peers, and storage location";
+        const PREFIX: &str = "update_settings expects a patch of editable fields; use dedicated commands for sync state, shortcuts, peers, and storage location";
         let fields = value
             .as_object()
             .ok_or_else(|| format!("{PREFIX}: settings must be a JSON object"))?;
@@ -88,7 +87,6 @@ impl SettingsPatch {
                 field.as_str(),
                 "notifications_enabled"
                     | "progress_bar_enabled"
-                    | "sync_enabled"
                     | "history_limit"
                     | "storage_quota_bytes"
                     | "language"
@@ -112,9 +110,6 @@ impl SettingsPatch {
         }
         if let Some(value) = self.progress_bar_enabled {
             next.progress_bar_enabled = value;
-        }
-        if let Some(value) = self.sync_enabled {
-            next.sync_enabled = value;
         }
         if let Some(value) = self.history_limit {
             next.history_limit = value;

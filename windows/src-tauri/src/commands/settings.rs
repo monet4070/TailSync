@@ -1,16 +1,9 @@
 use super::*;
 
 fn parse_settings_json(settings_json: &str) -> Result<crate::crypto::SettingsPatch, CommandError> {
-    let patch: crate::crypto::SettingsPatch =
-        serde_json::from_str(settings_json).map_err(|_| {
-            CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
-        })?;
-    if patch.sync_enabled.is_some() {
-        return Err(CommandError::code(
-            tailsync_runtime::contracts::StableErrorCode::InvalidArgument,
-        ));
-    }
-    Ok(patch)
+    serde_json::from_str(settings_json).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })
 }
 
 /// Get whether this device broadcasts clipboard changes and its configured shortcut.

@@ -98,7 +98,7 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                 };
             };
             match crate::crypto::SettingsPatch::from_json_value(settings_json) {
-                Ok(patch) if patch.sync_enabled.is_none() => {
+                Ok(patch) => {
                     match crate::crypto::apply_settings_patch(
                         &state.settings,
                         &state.db,
@@ -128,11 +128,6 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                         },
                     }
                 }
-                Ok(_) => Response {
-                    ok: false,
-                    data: None,
-                    error: Some("sync_enabled must use set_sync_enabled".into()),
-                },
                 Err(error) => Response {
                     ok: false,
                     data: None,

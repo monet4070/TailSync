@@ -36,6 +36,33 @@ final class ApiClientCancellationTests: XCTestCase {
     await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
   }
 
+  func testSyncSaveUsesDedicatedCommandAndServerSnapshot() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let coordinator = SettingsSaveCoordinator(client: client)
+    let stale = AppSettings()
+    var persisted = stale
+    persisted.sync_enabled = false
+    persisted.language = "zh-CN"
+    let response = try JSONSerialization.data(withJSONObject: [
+      "ok": true, "data": client.jsonDictionary(persisted),
+    ]) + Data([0x0A])
+    let responseSent = expectation(description: "sync setting saved")
+    let connectionClosed = expectation(description: "sync socket closed")
+    DispatchQueue.global().async {
+      server.respond(with: response, closeDelay: 0, responseSent: responseSent, connectionClosed: connectionClosed) { request in
+        XCTAssertEqual(request["cmd"] as? String, "set_sync_enabled")
+        XCTAssertEqual(request["enabled"] as? Bool, false)
+        XCTAssertNil(request["settings"])
+      }
+    }
+    let outcome = await coordinator.saveSyncEnabled(false, fallback: stale)
+    XCTAssertNil(outcome.error)
+    XCTAssertFalse(outcome.persisted.sync_enabled)
+    XCTAssertEqual(outcome.persisted.language, "zh-CN")
+    await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
+  }
+
   func testConnectionModeSaveDoesNotSendStaleSettingsAndUsesServerSnapshot() async throws {
     let server = try LocalTestSocket()
     let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))

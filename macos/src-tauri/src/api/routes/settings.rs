@@ -29,19 +29,23 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
 
         SettingsCommand::SetSyncEnabled => {
             let enabled = req.enabled.unwrap_or(true);
-            let result = state
-                .settings
-                .lock()
-                .await
-                .set_sync_enabled(enabled)
-                .map_err(|error| error.to_string());
-            if result.is_ok() {
-                bump_runtime_revision();
-            }
-            Response {
-                ok: result.is_ok(),
-                data: None,
-                error: result.err(),
+            let mut settings = state.settings.lock().await;
+            match settings.set_sync_enabled(enabled) {
+                Ok(()) => {
+                    let persisted = settings.clone();
+                    drop(settings);
+                    bump_runtime_revision();
+                    Response {
+                        ok: true,
+                        data: serde_json::to_value(persisted).ok(),
+                        error: None,
+                    }
+                }
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(error.to_string()),
+                },
             }
         }
 
@@ -396,6 +400,31 @@ mod tests {
         let error = response.error.unwrap();
         assert!(error.contains("expects a patch of editable fields"));
         assert!(error.contains("enabled_peers"));
+        assert_eq!(
+            tailsync_runtime::contracts::StableErrorEnvelope::from_legacy_message(
+                "update_settings",
+                &error
+            )
+            .code,
+            tailsync_runtime::contracts::StableErrorCode::InvalidArgument
+        );
+        assert_eq!(*state.settings.lock().await, original);
+    }
+
+    #[tokio::test]
+    async fn update_settings_rejects_sync_enabled_without_changing_the_setting() {
+        let original = crypto::Settings::default();
+        let state = state(original.clone());
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "update_settings",
+            "settings": { "sync_enabled": false }
+        }))
+        .unwrap();
+
+        let response = super::super::handle_cmd(request, &state).await;
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("unsupported field sync_enabled"));
         assert_eq!(
             tailsync_runtime::contracts::StableErrorEnvelope::from_legacy_message(
                 "update_settings",

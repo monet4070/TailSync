@@ -93,11 +93,15 @@ extension ApiClient {
       AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
   }
 
-  func setSyncEnabled(_ enabled: Bool) async -> Bool {
-    guard let response = try? await request(["cmd": "set_sync_enabled", "enabled": enabled]) else {
-      return false
+  func setSyncEnabled(_ enabled: Bool) async throws -> AppSettings {
+    let response = try await request(["cmd": "set_sync_enabled", "enabled": enabled])
+    guard response["ok"] as? Bool == true,
+      let data = response["data"] as? [String: Any]
+    else {
+      throw ApiError.serverError(response["error"] as? String ?? "unknown")
     }
-    return response["ok"] as? Bool == true
+    return try JSONDecoder().decode(
+      AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
   }
 
   func setSyncShortcut(_ shortcut: String) async -> Bool {

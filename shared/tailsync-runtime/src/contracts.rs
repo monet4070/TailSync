@@ -426,7 +426,7 @@ mod tests {
             ),
             (
                 "update_settings",
-                "update_settings expects a patch of editable fields; use dedicated commands for sync shortcuts, peers, and storage location: unsupported field enabled_peers",
+                "update_settings expects a patch of editable fields; use dedicated commands for sync state, shortcuts, peers, and storage location: unsupported field enabled_peers",
                 StableErrorCode::InvalidArgument,
             ),
             (

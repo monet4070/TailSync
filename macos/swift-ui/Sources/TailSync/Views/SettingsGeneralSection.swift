@@ -84,7 +84,7 @@ extension SettingsView {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                    .onChange(of: settings.sync_enabled) { value in save(.syncEnabled(value)) }
+                    .onChange(of: settings.sync_enabled) { value in saveSyncEnabled(value) }
             }
             themedDivider.padding(.leading, 16)
             settingRow {

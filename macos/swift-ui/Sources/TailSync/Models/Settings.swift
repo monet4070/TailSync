@@ -56,7 +56,6 @@ struct AppSettings: Codable, Equatable, Sendable {
 enum SettingsFieldChange: Sendable {
     case notificationsEnabled(Bool)
     case progressBarEnabled(Bool)
-    case syncEnabled(Bool)
     case historyLimit(Int)
     case storageQuotaBytes(UInt64)
     case language(String)
@@ -65,7 +64,6 @@ enum SettingsFieldChange: Sendable {
 struct AppSettingsPatch: Encodable, Sendable {
     var notifications_enabled: Bool? = nil
     var progress_bar_enabled: Bool? = nil
-    var sync_enabled: Bool? = nil
     var history_limit: Int? = nil
     var storage_quota_bytes: UInt64? = nil
     var language: String? = nil
@@ -74,7 +72,6 @@ struct AppSettingsPatch: Encodable, Sendable {
         switch change {
         case .notificationsEnabled(let value): notifications_enabled = value
         case .progressBarEnabled(let value): progress_bar_enabled = value
-        case .syncEnabled(let value): sync_enabled = value
         case .historyLimit(let value): history_limit = value
         case .storageQuotaBytes(let value): storage_quota_bytes = value
         case .language(let value): language = value

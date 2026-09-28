@@ -87,6 +87,15 @@ actor SettingsSaveCoordinator {
         }
     }
 
+    func saveSyncEnabled(
+        _ enabled: Bool,
+        fallback: AppSettings
+    ) async -> (error: String?, persisted: AppSettings) {
+        await enqueue(fallback: fallback) {
+            try await self.client.setSyncEnabled(enabled)
+        }
+    }
+
     func save(
         _ change: SettingsFieldChange,
         fallback: AppSettings

@@ -1088,10 +1088,8 @@ async fn settings_patches_from_two_windows_preserve_unrelated_changes() {
     assert_eq!(outcome.persisted.connection_mode, "lan_only");
     assert_eq!(outcome.persisted.language, "zh-CN");
 
-    let sync_patch: SettingsPatch = serde_json::from_str(r#"{"sync_enabled":false}"#).unwrap();
-    apply_settings_patch(&settings, &database, sync_patch, &persist)
-        .await
-        .unwrap();
+    // The dedicated sync command changed this setting between window saves.
+    settings.lock().await.sync_enabled = false;
 
     let reverse_patch: SettingsPatch = serde_json::from_str(r#"{"history_limit":250}"#).unwrap();
     apply_settings_patch(&settings, &database, reverse_patch, &persist)
@@ -1130,6 +1128,16 @@ fn settings_patch_diagnostic_names_bad_fields_without_echoing_values() {
     .unwrap_err();
     assert!(error.contains("invalid value for field history_limit"));
     assert!(!error.contains("private-value"));
+}
+
+#[test]
+fn settings_patch_rejects_sync_enabled_for_its_dedicated_command() {
+    let error = SettingsPatch::from_json_value(serde_json::json!({
+        "sync_enabled": true
+    }))
+    .unwrap_err();
+    assert!(error.contains("unsupported field sync_enabled"));
+    assert!(serde_json::from_str::<SettingsPatch>(r#"{"sync_enabled":true}"#).is_err());
 }
 
 #[test]
