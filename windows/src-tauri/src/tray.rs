@@ -133,7 +133,8 @@ fn build_tray_menu<R: Runtime>(
 ) -> tauri::Result<BuiltTrayMenu<R>> {
     let labels = tray_labels(&state.language);
     let show = MenuItem::with_id(app, "show", labels.history, true, None::<&str>)?;
-    let connections = MenuItem::with_id(app, "connections", labels.connections, true, None::<&str>)?;
+    let connections =
+        MenuItem::with_id(app, "connections", labels.connections, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", labels.settings, true, None::<&str>)?;
     let sync = MenuItem::with_id(
         app,
@@ -248,7 +249,10 @@ fn build_tray_menu<R: Runtime>(
             )
         } else {
             (
-                Menu::with_items(app, &[&sync, &show, &connections, &settings, &separator, &quit])?,
+                Menu::with_items(
+                    app,
+                    &[&sync, &show, &connections, &settings, &separator, &quit],
+                )?,
                 None,
                 None,
                 None,
