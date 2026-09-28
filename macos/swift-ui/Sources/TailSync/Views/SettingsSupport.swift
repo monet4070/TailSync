@@ -11,6 +11,35 @@ func routeInterfaceLabel(_ interface: String) -> String {
     }
 }
 
+enum ConnectionsText {
+    static func irohEndpoint(_ endpoint: String) -> String {
+        Loc.t("settings.irohEndpoint")
+            .replacingOccurrences(of: "{endpoint}", with: endpoint)
+    }
+
+    static func routeInterface(_ interface: String) -> String {
+        Loc.t("settings.routeInterface")
+            .replacingOccurrences(of: "{interface}", with: routeInterfaceLabel(interface))
+    }
+
+    static func latency(_ milliseconds: Int) -> String {
+        Loc.t("settings.latencyMilliseconds")
+            .replacingOccurrences(of: "{value}", with: String(milliseconds))
+    }
+
+    static func deviceCount(_ count: Int) -> String {
+        Loc.t(count == 1 ? "settings.deviceCountOne" : "settings.deviceCountMany")
+            .replacingOccurrences(of: "{count}", with: String(count))
+    }
+
+    static func pairingWindow(remaining: UInt64, failed: Int, maximum: Int) -> String {
+        Loc.t("settings.pairingWindowStatus")
+            .replacingOccurrences(of: "{remaining}", with: String(remaining))
+            .replacingOccurrences(of: "{failed}", with: String(failed))
+            .replacingOccurrences(of: "{maximum}", with: String(maximum))
+    }
+}
+
 struct SettingsPollingPlan {
     let refreshPairingStatus: Bool
     let refreshPeers: Bool

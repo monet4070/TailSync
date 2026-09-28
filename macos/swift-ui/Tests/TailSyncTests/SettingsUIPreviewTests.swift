@@ -7,12 +7,13 @@ import XCTest
 /// collapsed remote pairing drawer) for visual review in both languages.
 final class SettingsUIPreviewTests: XCTestCase {
     @MainActor
+    @discardableResult
     private func render(
         name: String,
         lang: String,
         scheme: ColorScheme,
         makeView: @MainActor () -> some View
-    ) throws {
+    ) throws -> CGFloat {
         _ = NSApplication.shared
         let previousLanguage = Loc.shared.lang
         Loc.shared.lang = lang
@@ -30,7 +31,8 @@ final class SettingsUIPreviewTests: XCTestCase {
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(x: 0, y: 0, width: 504, height: 900)
         hosting.layoutSubtreeIfNeeded()
-        let height = max(240, hosting.fittingSize.height)
+        let contentHeight = hosting.fittingSize.height
+        let height = max(240, contentHeight)
         hosting.frame = NSRect(x: 0, y: 0, width: 504, height: height)
         hosting.layoutSubtreeIfNeeded()
         let rep = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
@@ -40,6 +42,7 @@ final class SettingsUIPreviewTests: XCTestCase {
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         try png.write(to: output.appendingPathComponent(name))
         XCTAssertGreaterThan(png.count, 1_000)
+        return contentHeight
     }
 
     @MainActor
@@ -75,37 +78,28 @@ final class SettingsUIPreviewTests: XCTestCase {
 
     @MainActor
     func testPreviewConnectionsView() throws {
-        try render(name: "connections-zh-light.png", lang: "zh-CN", scheme: .light) {
-            let view = ConnectionsView()
-            view.isLoading = false
-            return view.connectionsCard
+        let collapsedHeight = try render(name: "connections-zh-light.png", lang: "zh-CN", scheme: .light) {
+            ConnectionsView().connectionsCard
         }
         try render(name: "connections-en-light.png", lang: "en", scheme: .light) {
-            let view = ConnectionsView()
-            view.isLoading = false
-            return view.connectionsCard
+            ConnectionsView().connectionsCard
         }
         try render(name: "connections-zh-dark.png", lang: "zh-CN", scheme: .dark) {
-            let view = ConnectionsView()
-            view.isLoading = false
-            return view.connectionsCard
+            ConnectionsView().connectionsCard
         }
-        try render(name: "connections-expanded-zh-light.png", lang: "zh-CN", scheme: .light) {
-            let view = ConnectionsView()
-            view.isLoading = false
-            view.remotePairing.expanded = true
-            return view.connectionsCard
+        let expandedHeight = try render(name: "connections-expanded-zh-light.png", lang: "zh-CN", scheme: .light) {
+            ConnectionsView(preview: .init(remotePairingExpanded: true)).connectionsCard
         }
+        XCTAssertGreaterThan(expandedHeight, collapsedHeight)
         try render(name: "connections-with-invite-zh-light.png", lang: "zh-CN", scheme: .light) {
-            let view = ConnectionsView()
-            view.isLoading = false
-            view.remotePairing.expanded = true
-            view.remoteInvite = ApiClient.RemotePairingInvite(
-                link: "tailsync://pair/v1/mock-invitation-token-12345",
-                expires_at: 1800000000,
-                remaining_seconds: 240
-            )
-            return view.connectionsCard
+            ConnectionsView(preview: .init(
+                remotePairingExpanded: true,
+                remoteInvite: ApiClient.RemotePairingInvite(
+                    link: "tailsync://pair/v1/mock-invitation-token-12345",
+                    expires_at: 1800000000,
+                    remaining_seconds: 240
+                )
+            )).connectionsCard
         }
     }
 }

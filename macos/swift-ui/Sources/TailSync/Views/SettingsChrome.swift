@@ -3,14 +3,21 @@ import SwiftUI
 /// Shared card and row styling for both settings windows.
 protocol SettingsChrome: View {
     var activeTheme: TailSyncThemeSelection { get }
-    var palette: TailSyncThemePalette { get }
-    func component(_ name: String, state: String) -> TailSyncThemeComponentTokens?
+    var colorScheme: ColorScheme { get }
 }
 
 extension SettingsView: SettingsChrome {}
 extension ConnectionsView: SettingsChrome {}
 
 extension SettingsChrome {
+    var palette: TailSyncThemePalette {
+        activeTheme.palette(for: colorScheme)
+    }
+
+    func component(_ name: String, state: String = "default") -> TailSyncThemeComponentTokens? {
+        activeTheme.component(name, state: state, scheme: colorScheme)
+    }
+
     func settingsCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         let section = component("section", state: "default")
         let panel = component("panel", state: "default")
@@ -53,5 +60,4 @@ extension SettingsChrome {
             .fill(palette.dividerColor)
             .frame(height: activeTheme.builtin == .highContrast ? 2 : 1)
     }
-
 }

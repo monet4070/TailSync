@@ -1,17 +1,26 @@
 import SwiftUI
 
-extension ConnectionsView {
-    /// Collapsed-by-default drawer for the remote Iroh pairing module.
-    /// In collapsed state, it presents a single clean row with an earth icon,
-    /// title, subtitle, and rotating chevron.
-    /// When expanded, it unrolls into a single-column, spacious vertical flow
-    /// eliminating any horizontal crowding or clipping.
-    @ViewBuilder
-    var remotePairingDrawer: some View {
+/// Owns the expand/collapse interaction and accessibility state for remote pairing.
+struct RemotePairingDisclosure<Content: View>: View {
+    @Binding var isExpanded: Bool
+    let palette: TailSyncThemePalette
+    let content: Content
+
+    init(
+        isExpanded: Binding<Bool>,
+        palette: TailSyncThemePalette,
+        @ViewBuilder content: () -> Content
+    ) {
+        _isExpanded = isExpanded
+        self.palette = palette
+        self.content = content()
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    remotePairing.expanded.toggle()
+                    isExpanded.toggle()
                 }
             } label: {
                 HStack(spacing: 10) {
@@ -31,7 +40,7 @@ extension ConnectionsView {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(palette.tertiaryColor)
-                        .rotationEffect(.degrees(remotePairing.expanded ? 90 : 0))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
@@ -40,12 +49,19 @@ extension ConnectionsView {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Loc.t("settings.remotePairing"))
-            .accessibilityValue(Loc.t(remotePairing.expanded ? "settings.expanded" : "settings.collapsed"))
+            .accessibilityValue(Loc.t(isExpanded ? "settings.expanded" : "settings.collapsed"))
 
-            if remotePairing.expanded {
-                remotePairingBody
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+            if isExpanded {
+                content.transition(.opacity.combined(with: .move(edge: .top)))
             }
+        }
+    }
+}
+
+extension ConnectionsView {
+    var remotePairingDrawer: some View {
+        RemotePairingDisclosure(isExpanded: $remotePairing.expanded, palette: palette) {
+            remotePairingBody
         }
     }
 
