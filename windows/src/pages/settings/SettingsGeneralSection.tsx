@@ -119,7 +119,7 @@ export function SettingsGeneralSection({
       >
         <div className="setting-row-info">
           <span>{t("settings.progressBar")}</span>
-          <small>{t("settings.progressDescription")}</small>
+          <small>{t("settings.progressBarDescription") || t("settings.progressDescription")}</small>
         </div>
         <label className="toggle" onClick={(event) => event.stopPropagation()}>
           <input

@@ -24,6 +24,7 @@ export default defineConfig({
         history: 'history.html',
         favorites: 'favorites.html',
         settings: 'settings.html',
+        connections: 'connections.html',
         preview: 'preview.html',
       },
     },

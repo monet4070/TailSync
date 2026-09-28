@@ -39,6 +39,7 @@ export function SettingsStorageSection({
       <div className="setting-row storage-quota-row">
         <div className="setting-row-info">
           <span>{t("settings.storageQuota")}</span>
+          <small>{t("settings.storageQuotaDescription")}</small>
         </div>
         <input
           className="storage-quota-input"

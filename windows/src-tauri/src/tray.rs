@@ -24,6 +24,7 @@ fn request_shutdown<R: Runtime>(app: &AppHandle<R>) {
 #[derive(Debug, PartialEq, Eq)]
 struct TrayLabels {
     history: &'static str,
+    connections: &'static str,
     settings: &'static str,
     quit: &'static str,
 }
@@ -33,12 +34,14 @@ fn tray_labels(language: &str) -> TrayLabels {
     if language == "zh-CN" {
         TrayLabels {
             history: "历史记录",
+            connections: "连接与设备",
             settings: "设置",
             quit: "退出 TailSync",
         }
     } else {
         TrayLabels {
             history: "History",
+            connections: "Devices & Connections",
             settings: "Settings",
             quit: "Quit TailSync",
         }
@@ -130,6 +133,7 @@ fn build_tray_menu<R: Runtime>(
 ) -> tauri::Result<BuiltTrayMenu<R>> {
     let labels = tray_labels(&state.language);
     let show = MenuItem::with_id(app, "show", labels.history, true, None::<&str>)?;
+    let connections = MenuItem::with_id(app, "connections", labels.connections, true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", labels.settings, true, None::<&str>)?;
     let sync = MenuItem::with_id(
         app,
@@ -199,6 +203,7 @@ fn build_tray_menu<R: Runtime>(
                         &progress_separator,
                         &sync,
                         &show,
+                        &connections,
                         &settings,
                         &separator,
                         &quit,
@@ -214,6 +219,7 @@ fn build_tray_menu<R: Runtime>(
                         &progress_separator,
                         &sync,
                         &show,
+                        &connections,
                         &settings,
                         &separator,
                         &quit,
@@ -230,6 +236,7 @@ fn build_tray_menu<R: Runtime>(
                         &warning_separator,
                         &sync,
                         &show,
+                        &connections,
                         &settings,
                         &separator,
                         &quit,
@@ -241,7 +248,7 @@ fn build_tray_menu<R: Runtime>(
             )
         } else {
             (
-                Menu::with_items(app, &[&sync, &show, &settings, &separator, &quit])?,
+                Menu::with_items(app, &[&sync, &show, &connections, &settings, &separator, &quit])?,
                 None,
                 None,
                 None,
@@ -443,6 +450,12 @@ fn create_tauri_tray(app: &AppHandle) -> Result<BuiltTrayMenu<tauri::Wry>, Strin
                     let _ = crate::commands::open_history_window(h).await;
                 });
             }
+            "connections" => {
+                let h = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::commands::open_connections_window(h).await;
+                });
+            }
             "settings" => {
                 let h = app.clone();
                 tauri::async_runtime::spawn(async move {
@@ -526,6 +539,7 @@ mod tests {
             tray_labels("zh-CN"),
             TrayLabels {
                 history: "历史记录",
+                connections: "连接与设备",
                 settings: "设置",
                 quit: "退出 TailSync",
             }
@@ -534,6 +548,7 @@ mod tests {
             tray_labels("en"),
             TrayLabels {
                 history: "History",
+                connections: "Devices & Connections",
                 settings: "Settings",
                 quit: "Quit TailSync",
             }

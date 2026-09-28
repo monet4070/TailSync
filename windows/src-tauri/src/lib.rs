@@ -743,6 +743,14 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
+            if std::env::var_os("TAILSYNC_OPEN_CONNECTIONS_ON_START").is_some() {
+                let connections_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::open_connections_window(connections_handle).await {
+                        log::warn!("Could not open connections test window: {error}");
+                    }
+                });
+            }
             if std::env::var_os("TAILSYNC_OPEN_HISTORY_ON_START").is_some() {
                 let history_handle = handle.clone();
                 tauri::async_runtime::spawn(async move {

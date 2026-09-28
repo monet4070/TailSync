@@ -17,8 +17,9 @@ export function SettingsHistorySection({
         <div className="setting-row-info">
           <span>{t("settings.historyLimit")}</span>
           <small>
-            {t("settings.historyLimitDescriptionPrefix")} {historyLimitDraft}{" "}
-            {t("settings.historyLimitDescriptionSuffix")}
+            {t("settings.limitDescription")
+              ? t("settings.limitDescription").replace("{value}", String(historyLimitDraft))
+              : `${t("settings.historyLimitDescriptionPrefix")} ${historyLimitDraft} ${t("settings.historyLimitDescriptionSuffix")}`}
           </small>
         </div>
         <input

@@ -204,8 +204,20 @@ export function closeFavoritesWindow(): Promise<void> {
   return invoke<void>("close_favorites_window");
 }
 
+export function openSettingsWindow(): Promise<void> {
+  return invoke<void>("open_settings_window");
+}
+
 export function closeSettingsWindow(): Promise<void> {
   return invoke<void>("close_settings_window");
+}
+
+export function openConnectionsWindow(): Promise<void> {
+  return invoke<void>("open_connections_window");
+}
+
+export function closeConnectionsWindow(): Promise<void> {
+  return invoke<void>("close_connections_window");
 }
 
 export function syncPreviewWindowMinimized(

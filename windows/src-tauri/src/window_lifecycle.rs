@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager, Runtime};
 pub const HISTORY_WINDOW_LABEL: &str = "history";
 pub const FAVORITES_WINDOW_LABEL: &str = "favorites";
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
+pub const CONNECTIONS_WINDOW_LABEL: &str = "connections";
 pub const TRANSIENT_WINDOW_IDLE_RELEASE: Duration = Duration::from_secs(5);
 
 pub(crate) fn configure_transparent_window<'a, R, M>(

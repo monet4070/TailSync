@@ -27,6 +27,7 @@ export function SettingsConnectionsSection({
   handleForget,
   openPairing,
   remotePairing,
+  defaultExpandedRemotePairing = false,
 }: SettingsConnectionsSectionProps) {
   return (
     <section className="setting-group connection-group">
@@ -45,6 +46,13 @@ export function SettingsConnectionsSection({
         >
           <RefreshCw className={devicesLoading ? "spin" : ""} size={16} strokeWidth={1.7} aria-hidden="true" />
         </button>
+      </div>
+
+      <div className="setting-row connection-mode-row">
+        <div className="setting-row-info">
+          <span>{t("settings.connectionMode")}</span>
+          <small>{t("settings.connectionModeDescription")}</small>
+        </div>
       </div>
 
       <div className="connection-mode" role="radiogroup" aria-label={t("settings.connectionMode")}>
@@ -108,22 +116,6 @@ export function SettingsConnectionsSection({
             : "settings.allowPairing")}
         </button>
       </div>
-
-      <RemotePairingPanel
-        t={t}
-        invite={remotePairing.invite}
-        linkDraft={remotePairing.linkDraft}
-        linkPreview={remotePairing.linkPreview}
-        busy={remotePairing.remotePairingBusy}
-        error={remotePairing.remotePairingError}
-        copied={remotePairing.copied}
-        onCreateInvite={remotePairing.handleCreateInvite}
-        onLinkChange={remotePairing.handleLinkChange}
-        onInspectLink={remotePairing.handleInspectLink}
-        onStartPairing={remotePairing.handleStartRemotePairing}
-        onCancelInvite={remotePairing.handleCancelInvite}
-        onCopyInvite={remotePairing.handleCopyInvite}
-      />
 
       <div className="device-list" aria-live="polite">
         {devices && (
@@ -327,6 +319,25 @@ export function SettingsConnectionsSection({
           </div>
         )}
       </div>
+
+      {["auto", "iroh_only"].includes(settings.connection_mode) && (
+        <RemotePairingPanel
+          t={t}
+          invite={remotePairing.invite}
+          linkDraft={remotePairing.linkDraft}
+          linkPreview={remotePairing.linkPreview}
+          busy={remotePairing.remotePairingBusy}
+          error={remotePairing.remotePairingError}
+          copied={remotePairing.copied}
+          defaultExpanded={defaultExpandedRemotePairing}
+          onCreateInvite={remotePairing.handleCreateInvite}
+          onLinkChange={remotePairing.handleLinkChange}
+          onInspectLink={remotePairing.handleInspectLink}
+          onStartPairing={remotePairing.handleStartRemotePairing}
+          onCancelInvite={remotePairing.handleCancelInvite}
+          onCopyInvite={remotePairing.handleCopyInvite}
+        />
+      )}
     </section>
   );
 }
