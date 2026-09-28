@@ -39,6 +39,7 @@ export interface SettingsConnectionsSectionProps {
   handlePeerToggle: (peer: PeerDevice, enabled: boolean) => Promise<void>;
   handleForget: (peer: PeerDevice) => Promise<void>;
   openPairing: (peer: PeerDevice) => Promise<void>;
+  defaultExpandedRemotePairing?: boolean;
   remotePairing: {
     invite: import("../../tailsyncClient").RemotePairingInvite | null;
     linkDraft: string;

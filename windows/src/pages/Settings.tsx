@@ -11,7 +11,6 @@ import {
   deleteOldStorage,
   deleteThemeV2,
   formatThemeError,
-  forgetPeer,
   getSettings,
   getStorageStatus,
   setHistoryShortcut,
@@ -19,11 +18,11 @@ import {
   listThemesV2,
   getLocalThemeSettingsV2,
   setLocalThemeSettingsV2,
+  openConnectionsWindow,
   rollbackThemeV2,
   setSyncEnabled,
   setSyncShortcut,
   updateSettings,
-  type PeerDevice,
   type StorageMigrationResult,
   type StorageStatus,
   type ThemeV2Descriptor,
@@ -34,10 +33,6 @@ import {
   type PendingThemePackage,
   type ThemePackageOperation,
 } from "../utils/themePackageWorkflow";
-import { useConnectionTests } from "../hooks/useConnectionTests";
-import { useDevices } from "../hooks/useDevices";
-import { usePairing } from "../hooks/usePairing";
-import { useRemotePairing } from "../hooks/useRemotePairing";
 import {
   DEFAULT_HISTORY_SHORTCUT,
   DEFAULT_SYNC_SHORTCUT,
@@ -49,13 +44,12 @@ import { X } from "lucide-react";
 import { ThemeLogo } from "../ThemeLogo";
 import { GIB } from "./settings/SettingsFormatters";
 import { ShortcutRecorderDialog } from "./settings/SettingsShortcutControls";
-import { SettingsConnectionsSection } from "./settings/SettingsConnectionsSection";
 import { SettingsGeneralSection } from "./settings/SettingsGeneralSection";
 import { SettingsHistorySection } from "./settings/SettingsHistorySection";
 import { SettingsStorageSection } from "./settings/SettingsStorageSection";
 import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection";
 import { SettingsUpdateSection } from "./settings/SettingsUpdateSection";
-import { PairingDialog, ThemeImportDialog } from "./settings/SettingsDialogs";
+import { ThemeImportDialog } from "./settings/SettingsDialogs";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 
@@ -136,25 +130,6 @@ export function Settings() {
   });
   const setSyncShortcutDraft = syncShortcutRecorder.setShortcutDraft;
   const setHistoryShortcutDraft = historyShortcutRecorder.setShortcutDraft;
-  const applyPeerEnabled = useCallback((hostname: string, enabled: boolean) => {
-    setSettings((current) => current ? {
-      ...current,
-      enabled_peers: { ...current.enabled_peers, [hostname]: enabled },
-    } : current);
-  }, []);
-  const {
-    devices,
-    devicesLoading,
-    devicesError,
-    refreshDevices,
-    onDevicesRefreshed,
-    resetDevices,
-    handlePeerToggle,
-  } = useDevices({
-    connectionMode: settings?.connection_mode,
-    applyPeerEnabled,
-  });
-  const { connectionTests, handleTestConnection } = useConnectionTests(onDevicesRefreshed);
   const {
     updateStatus,
     availableUpdate,
@@ -306,37 +281,6 @@ export function Settings() {
     }
   };
 
-  const {
-    pairingTarget,
-    pairingStatus,
-    pairingOpen,
-    pairingError,
-    pairingBusy,
-    pairDialogRef,
-    handleEnablePairing,
-    openPairing,
-    closePairing,
-    handlePair,
-  } = usePairing({ refreshDevices });
-  const remotePairing = useRemotePairing();
-
-  const handleConnectionMode = async (mode: SettingsData["connection_mode"]) => {
-    if (mode === settings?.connection_mode) return;
-    resetDevices();
-    if (await update({ connection_mode: mode })) {
-      await refreshDevices();
-    }
-  };
-
-  const handleForget = async (peer: PeerDevice) => {
-    try {
-      await forgetPeer(peer.hostname);
-      await refreshDevices();
-    } catch (error) {
-      console.error("Forget peer failed:", error);
-    }
-  };
-
   const handleThemeChange = async (value: ThemePreference) => {
     if (value === themePreference) return;
     setTheme(value);
@@ -483,25 +427,6 @@ export function Settings() {
 
       {/* ── Settings content ── */}
       <div className="settings-content">
-        <SettingsConnectionsSection
-          settings={settings}
-          t={t}
-          devices={devices}
-          devicesLoading={devicesLoading}
-          devicesError={devicesError}
-          pairingStatus={pairingStatus}
-          pairingBusy={pairingBusy}
-          connectionTests={connectionTests}
-          refreshDevices={refreshDevices}
-          handleConnectionMode={handleConnectionMode}
-          closePairing={closePairing}
-          handleEnablePairing={handleEnablePairing}
-          handleTestConnection={handleTestConnection}
-          handlePeerToggle={handlePeerToggle}
-          handleForget={handleForget}
-          openPairing={openPairing}
-          remotePairing={remotePairing}
-        />
         <SettingsGeneralSection
           settings={settings}
           t={t}
@@ -510,6 +435,16 @@ export function Settings() {
           historyShortcutRecorder={historyShortcutRecorder}
           setGlobalSync={setGlobalSync}
           update={update}
+        />
+        <SettingsUpdateSection
+          t={t}
+          updateStatus={updateStatus}
+          updatePhase={updatePhase}
+          availableUpdate={availableUpdate}
+          updateMessage={updateMessage}
+          updateBusy={updateBusy}
+          handleCheckForUpdate={handleCheckForUpdate}
+          handleInstallUpdate={handleInstallUpdate}
         />
         <SettingsHistorySection
           t={t}
@@ -530,6 +465,27 @@ export function Settings() {
           commitStorageQuota={commitStorageQuota}
           handleDeleteOldStorage={handleDeleteOldStorage}
         />
+        <section className="setting-group">
+          <div className="setting-group-header">
+            <div>
+              <h3>{t("settings.connectionsTitle")}</h3>
+              <p>{t("settings.connectionsDescription")}</p>
+            </div>
+          </div>
+          <div className="setting-row">
+            <div className="setting-row-info">
+              <span>{t("settings.manageConnections")}</span>
+              <small>{t("settings.manageConnectionsDescription")}</small>
+            </div>
+            <button
+              type="button"
+              className="pair-device-action"
+              onClick={() => void openConnectionsWindow()}
+            >
+              {t("settings.openConnections")}
+            </button>
+          </div>
+        </section>
         <SettingsAppearanceSection
           settings={settings}
           t={t}
@@ -546,16 +502,6 @@ export function Settings() {
           deleteV2Theme={deleteV2Theme}
           changeLanguage={changeLanguage}
         />
-        <SettingsUpdateSection
-          t={t}
-          updateStatus={updateStatus}
-          updatePhase={updatePhase}
-          availableUpdate={availableUpdate}
-          updateMessage={updateMessage}
-          updateBusy={updateBusy}
-          handleCheckForUpdate={handleCheckForUpdate}
-          handleInstallUpdate={handleInstallUpdate}
-        />
       </div>
 
       <ShortcutRecorderDialog
@@ -569,18 +515,6 @@ export function Settings() {
         title={t("settings.historyShortcutDialogTitle")}
         prompt={t("settings.historyShortcutDialogPrompt")}
         t={t}
-      />
-
-      <PairingDialog
-        t={t}
-        pairingOpen={pairingOpen}
-        pairingStatus={pairingStatus}
-        pairingTarget={pairingTarget}
-        pairingError={pairingError}
-        pairingBusy={pairingBusy}
-        pairDialogRef={pairDialogRef}
-        closePairing={closePairing}
-        handlePair={handlePair}
       />
 
       <ThemeImportDialog

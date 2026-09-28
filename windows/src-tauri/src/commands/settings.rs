@@ -264,6 +264,44 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), CommandEr
     Ok(())
 }
 
+/// Open the connections and devices window
+#[command]
+pub async fn open_connections_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    use tauri::Manager;
+
+    crate::window_lifecycle::mark_window_open(
+        &app,
+        crate::window_lifecycle::CONNECTIONS_WINDOW_LABEL,
+    );
+
+    if let Some(window) = app.get_webview_window(crate::window_lifecycle::CONNECTIONS_WINDOW_LABEL)
+    {
+        crate::window_lifecycle::restore_and_focus_window(&window)?;
+        return Ok(());
+    }
+
+    let window =
+        crate::window_lifecycle::configure_transparent_window(tauri::WebviewWindowBuilder::new(
+            &app,
+            crate::window_lifecycle::CONNECTIONS_WINDOW_LABEL,
+            tauri::WebviewUrl::App("connections.html".into()),
+        ))
+        .title("TailSync - Devices & Connections")
+        .inner_size(540.0, 720.0)
+        .decorations(false)
+        .shadow(false)
+        .min_inner_size(460.0, 580.0)
+        .resizable(true)
+        .center()
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    crate::window_lifecycle::restore_and_focus_window(&window)?;
+
+    Ok(())
+}
+
 #[command]
 pub fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
     crate::window_lifecycle::hide_then_release_window(
@@ -287,6 +325,15 @@ pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), CommandError> 
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
+    )
+    .map_err(Into::into)
+}
+
+#[command]
+pub fn close_connections_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    crate::window_lifecycle::hide_then_release_window(
+        app,
+        crate::window_lifecycle::CONNECTIONS_WINDOW_LABEL,
     )
     .map_err(Into::into)
 }

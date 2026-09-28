@@ -41,34 +41,38 @@ export function SettingsAppearanceSection({
 
       <div className="setting-row">
         <div className="setting-row-info">
-          <span>{t("settings.colorMode")}</span>
+          <span>{t("settings.theme")}</span>
+          <small>{t("settings.themeDescription")}</small>
         </div>
-        <div className="theme-cards" role="group" aria-label={t("settings.colorMode")}>
+        <div className="segmented-control theme-mode-segmented" role="radiogroup" aria-label={t("settings.theme")}>
           <button
             type="button"
-            className={`theme-card${themePreference === "system" ? " active" : ""}`}
+            className={`segmented-button${themePreference === "system" ? " active" : ""}`}
             onClick={() => void changeThemePreference("system")}
-            aria-pressed={themePreference === "system"}
+            role="radio"
+            aria-checked={themePreference === "system"}
           >
-            <Monitor className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
+            <Monitor className="theme-mode-icon" size={14} strokeWidth={1.7} aria-hidden="true" />
             <span>{t("settings.themeSystem")}</span>
           </button>
           <button
             type="button"
-            className={`theme-card${themePreference === "light" ? " active" : ""}`}
+            className={`segmented-button${themePreference === "light" ? " active" : ""}`}
             onClick={() => void changeThemePreference("light")}
-            aria-pressed={themePreference === "light"}
+            role="radio"
+            aria-checked={themePreference === "light"}
           >
-            <Sun className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
+            <Sun className="theme-mode-icon" size={14} strokeWidth={1.7} aria-hidden="true" />
             <span>{t("settings.themeLight")}</span>
           </button>
           <button
             type="button"
-            className={`theme-card${themePreference === "dark" ? " active" : ""}`}
+            className={`segmented-button${themePreference === "dark" ? " active" : ""}`}
             onClick={() => void changeThemePreference("dark")}
-            aria-pressed={themePreference === "dark"}
+            role="radio"
+            aria-checked={themePreference === "dark"}
           >
-            <Moon className="theme-mode-icon" size={16} strokeWidth={1.6} aria-hidden="true" />
+            <Moon className="theme-mode-icon" size={14} strokeWidth={1.7} aria-hidden="true" />
             <span>{t("settings.themeDark")}</span>
           </button>
         </div>
@@ -186,6 +190,7 @@ export function SettingsAppearanceSection({
       <div className="setting-row">
         <div className="setting-row-info">
           <span>{t("settings.language")}</span>
+          <small>{t("settings.languageDescription")}</small>
         </div>
         <div className="select-shell">
           <select
