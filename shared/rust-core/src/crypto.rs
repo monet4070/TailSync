@@ -65,6 +65,46 @@ pub struct SettingsPatch {
 }
 
 impl SettingsPatch {
+    /// The local JSON API accepts field intents, not a `get_settings` snapshot.
+    /// Validate one key at a time to identify the rejected field without
+    /// reflecting potentially sensitive field values into the API response.
+    pub fn from_json_value(value: serde_json::Value) -> Result<Self, String> {
+        const PREFIX: &str = "update_settings expects a patch of editable fields; use dedicated commands for sync shortcuts, peers, and storage location";
+        let fields = value
+            .as_object()
+            .ok_or_else(|| format!("{PREFIX}: settings must be a JSON object"))?;
+        for (field, field_value) in fields {
+            let safe_field = field
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                .take(64)
+                .collect::<String>();
+            let safe_field = if safe_field.is_empty() {
+                "<unprintable>"
+            } else {
+                &safe_field
+            };
+            if !matches!(
+                field.as_str(),
+                "notifications_enabled"
+                    | "progress_bar_enabled"
+                    | "sync_enabled"
+                    | "history_limit"
+                    | "storage_quota_bytes"
+                    | "language"
+                    | "connection_mode"
+            ) {
+                return Err(format!("{PREFIX}: unsupported field {safe_field}"));
+            }
+            let mut single = serde_json::Map::new();
+            single.insert(field.clone(), field_value.clone());
+            if serde_json::from_value::<Self>(serde_json::Value::Object(single)).is_err() {
+                return Err(format!("{PREFIX}: invalid value for field {safe_field}"));
+            }
+        }
+        serde_json::from_value(value).map_err(|_| format!("{PREFIX}: invalid settings patch"))
+    }
+
     fn apply_to(self, current: &Settings) -> Settings {
         let mut next = current.clone();
         if let Some(value) = self.notifications_enabled {

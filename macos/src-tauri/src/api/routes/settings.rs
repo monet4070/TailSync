@@ -149,7 +149,7 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                     error: Some("missing settings".into()),
                 };
             };
-            match serde_json::from_value::<crate::crypto::SettingsPatch>(settings_json) {
+            match crate::crypto::SettingsPatch::from_json_value(settings_json) {
                 Ok(patch) => {
                     match crate::crypto::apply_settings_patch(
                         &state.settings,
@@ -181,10 +181,10 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                         },
                     }
                 }
-                Err(e) => Response {
+                Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e.to_string()),
+                    error: Some(error),
                 },
             }
         }
@@ -376,5 +376,34 @@ mod tests {
             );
             assert_eq!(*state.settings.lock().await, original);
         }
+    }
+
+    #[tokio::test]
+    async fn update_settings_rejects_a_legacy_snapshot_with_an_actionable_error() {
+        let original = crypto::Settings {
+            language: "en".into(),
+            ..crypto::Settings::default()
+        };
+        let state = state(original.clone());
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "update_settings",
+            "settings": serde_json::to_value(&original).unwrap()
+        }))
+        .unwrap();
+
+        let response = super::super::handle_cmd(request, &state).await;
+        assert!(!response.ok);
+        let error = response.error.unwrap();
+        assert!(error.contains("expects a patch of editable fields"));
+        assert!(error.contains("enabled_peers"));
+        assert_eq!(
+            tailsync_runtime::contracts::StableErrorEnvelope::from_legacy_message(
+                "update_settings",
+                &error
+            )
+            .code,
+            tailsync_runtime::contracts::StableErrorCode::InvalidArgument
+        );
+        assert_eq!(*state.settings.lock().await, original);
     }
 }

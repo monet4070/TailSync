@@ -97,7 +97,7 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                     error: Some("missing settings".into()),
                 };
             };
-            match serde_json::from_value::<crate::crypto::SettingsPatch>(settings_json) {
+            match crate::crypto::SettingsPatch::from_json_value(settings_json) {
                 Ok(patch) if patch.sync_enabled.is_none() => {
                     match crate::crypto::apply_settings_patch(
                         &state.settings,
@@ -133,10 +133,10 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                     data: None,
                     error: Some("sync_enabled must use set_sync_enabled".into()),
                 },
-                Err(e) => Response {
+                Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e.to_string()),
+                    error: Some(error),
                 },
             }
         }

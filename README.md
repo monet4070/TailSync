@@ -152,7 +152,9 @@ TailSync imports legacy v1 history databases on first launch. Migration is idemp
 | `19890` | TCP | Pairing, authentication, and clipboard data transfer |
 | `tailsyncd.sock` under macOS Application Support | Unix socket, local only | Communication between the SwiftUI shell and Rust daemon, with peer PID and capability-token checks |
 
-LAN discovery advertises the mDNS service `_tailsync._tcp.local.`. On macOS, the local API uses a Unix socket in a user-specific directory and does not listen on local TCP. The Windows local API still uses `127.0.0.1:19889`; do not expose it to other devices through port forwarding.
+LAN discovery advertises the mDNS service `_tailsync._tcp.local.`. On macOS, the local API uses a Unix socket in a user-specific directory and does not listen on local TCP. Windows uses Tauri invoke/event IPC for its UI; the legacy JSON TCP listener on `127.0.0.1:19889` is not started by the Windows app.
+
+The macOS local API's `update_settings` command accepts a **field patch**, for example `{"cmd":"update_settings","settings":{"language":"zh-CN"}}`. Do not send the full object returned by `get_settings`: that request is rejected so an older snapshot cannot overwrite another window's changes. Use `set_sync_enabled`, the shortcut commands, peer commands, `set_connection_mode`, and the storage migration command for fields they own. The response includes the persisted settings snapshot. Callers migrating from a full-object request should send only the fields they intend to change. Legacy string error responses identify rejected fields; clients that request stable errors receive the fixed `invalid_argument` category without field details.
 
 ## Run from source
 
@@ -290,7 +292,7 @@ The macOS and Windows interfaces may evolve independently to match their respect
 ## Current limitations
 
 - Incomplete file batches can resume after the sender or receiver exits, crashes, or restarts. Sender journals and receiver `.part` files / manifests are retained for at most 24 hours. Resume starts at the receiver's last verified offset, then verifies every file again when the batch completes. See [resumable file transfers](docs/features/resumable-file-transfer.md).
-- The macOS local JSON Lines API uses a Unix socket in a user-specific directory and requires peer-PID validation plus a 256-bit capability token on every request. Requests are limited to 1 MiB with five-second read and write timeouts. Only the Windows local API uses `127.0.0.1:19889`, and it should not be exposed through port forwarding.
+- The macOS local JSON Lines API uses a Unix socket in a user-specific directory and requires peer-PID validation plus a 256-bit capability token on every request. Requests are limited to 1 MiB with five-second read and write timeouts. Windows does not start the legacy JSON TCP API.
 - History bodies and image / file payloads are encrypted with the application data key. Database metadata such as type and timestamp is not encrypted; full-disk encryption can provide additional protection.
 - Tagged builds are Community Releases by default. macOS uses ad-hoc signing without notarization, and Windows has no commercial Authenticode signature, so Gatekeeper or SmartScreen warns on first launch. Do not bypass these warnings by disabling operating-system security features.
 - Updater signing, the stable-channel manifest, and downgrade protection are implemented, but the first online update and complete real-device regression matrix have not yet been completed with this repository's credentials. Pre-release tags do not enter the stable update channel.

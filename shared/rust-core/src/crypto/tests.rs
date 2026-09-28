@@ -1110,6 +1110,37 @@ async fn settings_patches_from_two_windows_preserve_unrelated_changes() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn settings_patch_diagnostic_explains_legacy_full_snapshot_rejection() {
+    let full = serde_json::to_value(Settings::default()).unwrap();
+    let error = SettingsPatch::from_json_value(full).unwrap_err();
+    assert!(error.contains("expects a patch of editable fields"));
+    assert!(error.contains("unsupported field"));
+    assert!(error.contains("enabled_peers"));
+
+    let patch = SettingsPatch::from_json_value(serde_json::json!({"language":"zh-CN"}));
+    assert_eq!(patch.unwrap().language.as_deref(), Some("zh-CN"));
+}
+
+#[test]
+fn settings_patch_diagnostic_names_bad_fields_without_echoing_values() {
+    let error = SettingsPatch::from_json_value(serde_json::json!({
+        "history_limit": "private-value"
+    }))
+    .unwrap_err();
+    assert!(error.contains("invalid value for field history_limit"));
+    assert!(!error.contains("private-value"));
+}
+
+#[test]
+fn stored_settings_already_reject_unknown_fields() {
+    let mut full = serde_json::to_value(Settings::default()).unwrap();
+    full.as_object_mut()
+        .unwrap()
+        .insert("future_field".into(), serde_json::json!(true));
+    assert!(serde_json::from_value::<Settings>(full).is_err());
+}
+
 #[tokio::test]
 async fn settings_update_uses_plain_save_without_a_shortcut_hook() {
     let root = std::env::temp_dir().join(format!(
