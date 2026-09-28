@@ -14,17 +14,16 @@ pub async fn get_settings(
 pub async fn update_settings(
     state: State<'_, AppState>,
     settings_json: String,
-) -> Result<(), CommandError> {
-    let requested_settings: crate::crypto::Settings = serde_json::from_str(&settings_json)
-        .map_err(|_| {
+) -> Result<crate::crypto::Settings, CommandError> {
+    let patch: crate::crypto::SettingsPatch =
+        serde_json::from_str(&settings_json).map_err(|_| {
             CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
         })?;
-    let outcome = crate::crypto::apply_settings_update(
+    let outcome = crate::crypto::apply_settings_patch(
         &state.settings,
         &state.db,
-        requested_settings,
+        patch,
         &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
-        None,
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -33,7 +32,7 @@ pub async fn update_settings(
         network::clear_peer_cache().await;
         network::refresh_iroh_for_mode(&outcome.connection_mode).await;
     }
-    Ok(())
+    Ok(outcome.persisted)
 }
 
 /// Get image data as base64 thumbnail for frontend display

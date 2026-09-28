@@ -81,12 +81,16 @@ extension ApiClient {
       AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
   }
 
-  func updateSettings(_ settings: AppSettings) async throws {
-    let object = try jsonDictionary(settings)
+  func updateSettings(_ patch: AppSettingsPatch) async throws -> AppSettings {
+    let object = try jsonDictionary(patch)
     let response = try await request(["cmd": "update_settings", "settings": object])
-    guard response["ok"] as? Bool == true else {
+    guard response["ok"] as? Bool == true,
+      let data = response["data"] as? [String: Any]
+    else {
       throw ApiError.serverError(response["error"] as? String ?? "unknown")
     }
+    return try JSONDecoder().decode(
+      AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
   }
 
   func setSyncEnabled(_ enabled: Bool) async -> Bool {

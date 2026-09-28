@@ -22,14 +22,13 @@ extension SettingsView {
         }
     }
 
-    func save() {
+    func save(_ change: SettingsFieldChange) {
         guard !isLoading, !applyingPersistedSettings else { return }
-        let value = settings
         actionErrorMessage = nil
         saveGeneration += 1
         let generation = saveGeneration
         Task { @MainActor in
-            let outcome = await saveCoordinator.save(value, fallback: persistedSettings)
+            let outcome = await saveCoordinator.save(change, fallback: persistedSettings)
             guard generation == saveGeneration else { return }
             if let error = outcome.error {
                 persistedSettings = outcome.persisted

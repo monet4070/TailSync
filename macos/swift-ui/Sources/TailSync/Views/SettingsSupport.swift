@@ -59,12 +59,11 @@ actor SettingsSaveCoordinator {
     }
 
     func save(
-        _ settings: AppSettings,
+        _ change: SettingsFieldChange,
         fallback: AppSettings
     ) async -> (error: String?, persisted: AppSettings) {
         await enqueue(fallback: fallback) {
-            try await self.client.updateSettings(settings)
-            return settings
+            try await self.client.updateSettings(AppSettingsPatch(change))
         }
     }
 

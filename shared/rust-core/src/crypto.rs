@@ -57,6 +57,7 @@ pub struct Settings {
 pub struct SettingsPatch {
     pub notifications_enabled: Option<bool>,
     pub progress_bar_enabled: Option<bool>,
+    pub sync_enabled: Option<bool>,
     pub history_limit: Option<u32>,
     pub storage_quota_bytes: Option<u64>,
     pub language: Option<String>,
@@ -71,6 +72,9 @@ impl SettingsPatch {
         }
         if let Some(value) = self.progress_bar_enabled {
             next.progress_bar_enabled = value;
+        }
+        if let Some(value) = self.sync_enabled {
+            next.sync_enabled = value;
         }
         if let Some(value) = self.history_limit {
             next.history_limit = value;

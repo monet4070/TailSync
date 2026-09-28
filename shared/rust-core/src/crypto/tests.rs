@@ -1088,6 +1088,11 @@ async fn settings_patches_from_two_windows_preserve_unrelated_changes() {
     assert_eq!(outcome.persisted.connection_mode, "lan_only");
     assert_eq!(outcome.persisted.language, "zh-CN");
 
+    let sync_patch: SettingsPatch = serde_json::from_str(r#"{"sync_enabled":false}"#).unwrap();
+    apply_settings_patch(&settings, &database, sync_patch, &persist)
+        .await
+        .unwrap();
+
     let reverse_patch: SettingsPatch = serde_json::from_str(r#"{"history_limit":250}"#).unwrap();
     apply_settings_patch(&settings, &database, reverse_patch, &persist)
         .await
@@ -1099,6 +1104,7 @@ async fn settings_patches_from_two_windows_preserve_unrelated_changes() {
         .unwrap();
     assert_eq!(outcome.persisted.history_limit, 250);
     assert_eq!(outcome.persisted.language, "zh-CN");
+    assert!(!outcome.persisted.sync_enabled);
 
     drop(database);
     std::fs::remove_dir_all(root).unwrap();

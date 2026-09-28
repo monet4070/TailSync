@@ -84,7 +84,7 @@ extension SettingsView {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                    .onChange(of: settings.sync_enabled) { _ in save() }
+                    .onChange(of: settings.sync_enabled) { value in save(.syncEnabled(value)) }
             }
             themedDivider.padding(.leading, 16)
             settingRow {
@@ -132,7 +132,7 @@ extension SettingsView {
                     .controlSize(.small)
                     .onChange(of: settings.notifications_enabled) { value in
                         loc.notificationsEnabled = value
-                        save()
+                        save(.notificationsEnabled(value))
                     }
             }
             themedDivider.padding(.leading, 16)
@@ -143,7 +143,7 @@ extension SettingsView {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                    .onChange(of: settings.progress_bar_enabled) { _ in save() }
+                    .onChange(of: settings.progress_bar_enabled) { value in save(.progressBarEnabled(value)) }
             }
         }
     }

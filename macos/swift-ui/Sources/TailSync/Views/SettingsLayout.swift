@@ -37,7 +37,7 @@ extension SettingsView {
                             let step = Int((position / travelWidth * 49).rounded())
                             settings.history_limit = 10 + step * 10
                         }
-                        .onEnded { _ in save() }
+                        .onEnded { _ in save(.historyLimit(settings.history_limit)) }
                 )
                 .accessibilityElement()
                 .accessibilityLabel(Loc.t("settings.limit"))
@@ -63,6 +63,6 @@ extension SettingsView {
 
     func adjustHistoryLimit(by delta: Int) {
         settings.history_limit = min(500, max(10, settings.history_limit + delta))
-        save()
+        save(.historyLimit(settings.history_limit))
     }
 }
