@@ -5,12 +5,18 @@ pub const STORAGE_DIRECTORY_NAME: &str = "TailSync Data";
 
 /// Return the platform application-data directory, creating it when needed.
 /// Configuration, identity material, and key state always stay here.
+///
+/// A Cargo test binary never resolves to the user's real data directory; see
+/// [`test_harness_data_dir`]. `cargo test` does not set `TAILSYNC_DATA_DIR`, so
+/// without that redirect a unit test that persists settings would overwrite the
+/// developer's live configuration and pairing state.
 pub fn get_data_dir() -> PathBuf {
     static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
     DATA_DIR
         .get_or_init(|| {
             let directory = std::env::var_os("TAILSYNC_DATA_DIR")
                 .map(PathBuf::from)
+                .or_else(test_harness_data_dir)
                 .or_else(|| {
                     directories::ProjectDirs::from("com", "tailsync", "TailSync")
                         .map(|dirs| dirs.data_dir().to_path_buf())
@@ -29,6 +35,71 @@ pub fn get_data_dir() -> PathBuf {
         })
         .clone()
 }
+
+/// Per-process scratch directory for Cargo test binaries.
+///
+/// Redirecting inside the resolver (rather than in each test) isolates every
+/// consumer at once: settings, identity material, and the history database all
+/// derive their paths from here. The directory is created with plain
+/// `create_dir_all` first so the private-directory walk never has to traverse a
+/// system symlink such as `/tmp`.
+fn test_harness_data_dir() -> Option<PathBuf> {
+    if !is_cargo_test_harness() {
+        return None;
+    }
+    let directory = std::env::temp_dir().join(format!("tailsync-test-data-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).ok()?;
+    Some(directory)
+}
+
+/// Whether the current executable is a Cargo test binary.
+///
+/// Cargo runs each crate's tests from an executable named `<crate>-<hex hash>`
+/// inside a `deps` directory. Requiring the `tailsync` crate prefix, a `deps`
+/// parent, and a hex hash keeps shipped and `cargo run` binaries — never named
+/// that way — on the real data directory.
+fn is_cargo_test_harness() -> bool {
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(parent) = executable
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+    else {
+        return false;
+    };
+    let Some(name) = executable.file_stem().and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    let Some((crate_name, hash)) = name.rsplit_once('-') else {
+        return false;
+    };
+    parent == "deps"
+        && crate_name.starts_with("tailsync")
+        && hash.len() >= 16
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The application-data directory the shipped app uses, ignoring the test
+/// redirect above.
+fn default_data_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("com", "tailsync", "TailSync")
+        .map(|dirs| dirs.data_dir().to_path_buf())
+}
+
+/// Whether `path` points inside the user's real application-data directory.
+fn is_real_data_dir(path: &Path) -> bool {
+    default_data_dir().is_some_and(|real| path.starts_with(real))
+}
+
+/// True when a Cargo test binary is about to persist into the real data
+/// directory — i.e. the isolation above did not take effect. Callers refuse
+/// rather than clobber the developer's live state.
+pub fn is_unisolated_test_write(path: &Path) -> bool {
+    is_cargo_test_harness() && is_real_data_dir(path)
+}
+
 
 fn storage_state() -> &'static RwLock<PathBuf> {
     static STORAGE_DIR: OnceLock<RwLock<PathBuf>> = OnceLock::new();
@@ -184,5 +255,37 @@ mod tests {
     #[test]
     fn unc_storage_is_rejected() {
         assert!(validate_storage_dir(Path::new(r"\\server\share")).is_err());
+    }
+
+    #[test]
+    fn cargo_test_binaries_never_use_the_real_data_directory() {
+        // Detection must actually recognise this process, or the assertions
+        // below are vacuous.
+        assert!(is_cargo_test_harness(), "test binary not detected");
+
+        let resolved = get_data_dir();
+        assert!(
+            !is_real_data_dir(&resolved),
+            "test data directory resolved to the live tree: {}",
+            resolved.display()
+        );
+        assert!(!is_unisolated_test_write(&resolved));
+
+        // Without an explicit override the resolver picks its own scratch dir.
+        if std::env::var_os("TAILSYNC_DATA_DIR").is_none() {
+            assert!(
+                resolved.starts_with(std::env::temp_dir()),
+                "expected a scratch directory under {:?}, got {}",
+                std::env::temp_dir(),
+                resolved.display()
+            );
+            assert!(resolved.is_dir(), "scratch directory missing");
+        }
+
+        // The guard still recognises a genuine write into the live tree.
+        if let Some(real) = default_data_dir() {
+            assert!(is_unisolated_test_write(&real.join("config-v2.json")));
+            assert!(is_real_data_dir(&real));
+        }
     }
 }

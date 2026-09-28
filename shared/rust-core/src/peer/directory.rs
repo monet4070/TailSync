@@ -109,6 +109,15 @@ fn ip_to_u128(ip: IpAddr) -> u128 {
     }
 }
 
+/// Whether an address can only ever reach this machine. Loopback
+/// (`127.0.0.0/8`, `::1`) is never a remote peer endpoint: dialing it makes the
+/// daemon connect to its own listener, which then fails the secure handshake
+/// as an identity mismatch and retries forever. Such addresses are refused when
+/// a peer is pinned and dropped before they become connection targets.
+pub fn is_self_referential_address(ip: IpAddr) -> bool {
+    ip.is_loopback()
+}
+
 /// Rank an address for stable display ordering: private IPv4 first,
 /// then ULA, then link-local, then loopback, then anything else. A pure string
 /// comparison would place `10.x`/`169.254.x` ahead of `192.168.x`.
@@ -203,6 +212,10 @@ pub fn parse_pairing_target(address: &str) -> Result<PairingTarget, String> {
     match address.parse::<IpAddr>() {
         Ok(IpAddr::V6(ip)) if ip.is_unicast_link_local() => Err(
             "IPv6 link-local addresses are not supported; use the device's LAN IPv4 address"
+                .to_string(),
+        ),
+        Ok(ip) if is_self_referential_address(ip) => Err(
+            "Loopback addresses (127.0.0.1, ::1) refer to this device; enter the peer's LAN address"
                 .to_string(),
         ),
         Ok(ip) => Ok(PairingTarget::Tcp(ip)),
@@ -594,6 +607,8 @@ pub fn merge_paired_peers(
 /// (T111 migration). `tcp_port` is the platform peer port (19890). When a
 /// peer has no candidates, one is synthesized from its remembered
 /// address/tailscale IP under the mode-derived or inferred interface.
+/// Self-referential (loopback) candidates are dropped so a mis-pinned peer
+/// cannot make the daemon dial its own listener.
 pub fn resolve_candidates(
     peer: &PeerInfo,
     tcp_port: u16,
@@ -628,23 +643,26 @@ pub fn resolve_candidates(
             .then_with(|| left.priority.cmp(&right.priority))
             .then_with(|| left.address.cmp(&right.address))
     });
-    let resolved = candidates
-        .into_iter()
-        .map(|candidate| {
-            let target = match candidate.interface {
-                ConnectionInterface::Iroh => ResolvedTarget::Iroh(
-                    crate::iroh_transport::canonical_endpoint_id(&candidate.address)?,
-                ),
-                ConnectionInterface::Lan | ConnectionInterface::Tailscale => {
-                    let ip: IpAddr = candidate.address.parse().map_err(|error| {
-                        format!("Invalid peer address {}: {error}", candidate.address)
-                    })?;
-                    ResolvedTarget::Tcp(SocketAddr::new(ip, tcp_port))
+    let mut resolved = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let target = match candidate.interface {
+            ConnectionInterface::Iroh => ResolvedTarget::Iroh(
+                crate::iroh_transport::canonical_endpoint_id(&candidate.address)?,
+            ),
+            ConnectionInterface::Lan | ConnectionInterface::Tailscale => {
+                let ip: IpAddr = candidate.address.parse().map_err(|error| {
+                    format!("Invalid peer address {}: {error}", candidate.address)
+                })?;
+                // A loopback route would dial our own listener; drop it rather
+                // than retry against ourselves forever.
+                if is_self_referential_address(ip) {
+                    continue;
                 }
-            };
-            Ok(ResolvedCandidate { candidate, target })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+                ResolvedTarget::Tcp(SocketAddr::new(ip, tcp_port))
+            }
+        };
+        resolved.push(ResolvedCandidate { candidate, target });
+    }
     tracing::debug!(
         peer = %peer.hostname,
         candidate_count = resolved.len(),
@@ -1289,6 +1307,32 @@ mod tests {
     }
 
     #[test]
+    fn resolve_candidates_drops_self_referential_routes() {
+        let peer = peer_with_candidates(
+            "mac",
+            vec![
+                PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.24"),
+                PeerCandidate::new(ConnectionInterface::Lan, "127.0.0.1"),
+            ],
+        );
+        let resolved = resolve_candidates(&peer, 19890).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].target,
+            ResolvedTarget::Tcp("192.168.1.24:19890".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn resolve_candidates_yields_nothing_when_only_loopback_is_known() {
+        let peer = peer_with_candidates(
+            "client",
+            vec![PeerCandidate::new(ConnectionInterface::Lan, "127.0.0.1")],
+        );
+        assert!(resolve_candidates(&peer, 19890).unwrap().is_empty());
+    }
+
+    #[test]
     fn local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified() {
         assert_eq!(select_local_lan_ip([] as [IpAddr; 0]), None);
         assert_eq!(select_local_lan_ip(["0.0.0.0".parse().unwrap()]), None);
@@ -1404,5 +1448,20 @@ mod tests {
         assert!(parse_pairing_target("fe80::1%en0")
             .unwrap_err()
             .contains("scope"));
+    }
+
+    #[test]
+    fn pairing_target_rejects_loopback_addresses() {
+        for address in ["127.0.0.1", "127.4.5.6", "::1"] {
+            let error = parse_pairing_target(address).unwrap_err();
+            assert!(
+                error.contains("Loopback"),
+                "expected a loopback rejection for {address}, got: {error}"
+            );
+        }
+        assert_eq!(
+            parse_pairing_target("192.168.1.20").unwrap(),
+            PairingTarget::Tcp("192.168.1.20".parse().unwrap())
+        );
     }
 }

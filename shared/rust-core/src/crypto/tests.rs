@@ -552,6 +552,50 @@ fn re_pairing_same_hostname_with_a_different_key_is_rejected() {
 }
 
 #[test]
+fn trust_peer_rejects_a_loopback_endpoint_without_mutating_settings() {
+    let mut settings = Settings::default();
+    let error = settings
+        .trust_peer_without_save("client", "key", "lan", Some("127.0.0.1"))
+        .unwrap_err();
+    assert!(error.to_string().contains("loopback"));
+    // A rejected pin must not leave a partial pairing behind.
+    assert!(!settings.trusted_peer_keys.contains_key("client"));
+    assert!(settings.trusted_peer_addresses.is_empty());
+    assert!(settings.paired_peer_endpoints.is_empty());
+    assert!(!settings.enabled_peers.contains_key("client"));
+}
+
+#[test]
+fn remember_peer_address_rejects_a_loopback_route() {
+    let mut settings = Settings::default();
+    settings
+        .trusted_peer_keys
+        .insert("client".into(), "key".into());
+
+    assert!(settings
+        .remember_peer_address_without_save("client", "lan", "127.0.0.1")
+        .is_err());
+    assert!(settings.trusted_peer_addresses.is_empty());
+}
+
+#[test]
+fn settings_save_stays_inside_the_isolated_test_data_directory() {
+    let settings = Settings::default();
+    settings.save().expect("settings should save");
+    let path = super::settings_path();
+    assert!(
+        path.starts_with(db::get_data_dir()),
+        "settings written outside the isolated data directory: {}",
+        path.display()
+    );
+    assert!(path.is_file(), "settings file was not written");
+    assert!(
+        !crate::db::is_unisolated_test_write(&path),
+        "settings must never be written into the live data directory from a test"
+    );
+}
+
+#[test]
 fn legacy_manual_connection_mode_maps_to_lan() {
     assert_eq!(
         super::normalize_connection_mode("manual".into()),

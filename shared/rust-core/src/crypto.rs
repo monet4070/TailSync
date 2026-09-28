@@ -186,6 +186,15 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let path = settings_path();
+        // Defence in depth: the data-dir resolver already redirects Cargo test
+        // binaries to a scratch directory, so this only fires if that isolation
+        // regresses. Writing here would overwrite the developer's live pairing.
+        if crate::db::is_unisolated_test_write(&path) {
+            return Err(
+                "refusing to write settings from a test process into the real data directory"
+                    .into(),
+            );
+        }
         let json = serde_json::to_string_pretty(self)?;
         write_atomic(&path, &json)?;
         Ok(())
@@ -294,6 +303,9 @@ impl Settings {
         mode: &str,
         address: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(address) = address {
+            reject_self_referential_endpoint(hostname, mode, address)?;
+        }
         // A hostname is a mutable, unauthenticated label. Reusing it with a
         // different pinned key would silently replace the trust anchor of the
         // device already known under that name, so reject the conflict and
@@ -360,7 +372,13 @@ impl Settings {
         let address = address.trim();
         match mode {
             "lan" | "tailscale" => {
-                address.parse::<std::net::IpAddr>()?;
+                let ip = address.parse::<std::net::IpAddr>()?;
+                if crate::peer::directory::is_self_referential_address(ip) {
+                    return Err(format!(
+                        "Refusing to remember {hostname} at the loopback address {address}; use the device's LAN address"
+                    )
+                    .into());
+                }
             }
             "iroh" => {
                 let _ = crate::iroh_transport::canonical_endpoint_id(address)?;
@@ -565,6 +583,28 @@ pub async fn apply_settings_update(
 }
 
 mod keystore;
+
+/// Reject a peer endpoint that can only refer back to this device. A trusted
+/// peer is a remote endpoint, so pinning it to loopback would make the daemon
+/// dial its own listener and retry forever. Only IP-based modes carry an
+/// address; Iroh endpoints are opaque identifiers with their own validation.
+fn reject_self_referential_endpoint(
+    hostname: &str,
+    mode: &str,
+    address: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(mode, "lan" | "tailscale") {
+        if let Ok(ip) = address.parse::<std::net::IpAddr>() {
+            if crate::peer::directory::is_self_referential_address(ip) {
+                return Err(format!(
+                    "Refusing to pin {hostname} to the loopback address {address}; use the device's LAN address"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
 
 pub use keystore::{decrypt, encrypt, initialize};
 pub(crate) use keystore::{get_dek, is_key_store_error};
