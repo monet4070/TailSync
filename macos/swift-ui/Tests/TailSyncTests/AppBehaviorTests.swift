@@ -29,6 +29,35 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertFalse(window.isMovableByWindowBackground)
     }
 
+    func testSettingsRedirectKeepsTheStatusItemWindowOpen() throws {
+        _ = NSApplication.shared
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        defer { NSStatusBar.system.removeStatusItem(statusItem) }
+        let statusWindow = try XCTUnwrap(statusItem.button?.window)
+        XCTAssertLessThanOrEqual(statusWindow.frame.width, 100)
+        XCTAssertFalse(SettingsRedirectWindowPolicy.shouldClose(
+            statusWindow, customSettingsWindow: nil
+        ))
+
+        let nativeSettingsWindow = NSWindow()
+        nativeSettingsWindow.title = "Settings"
+        XCTAssertTrue(SettingsRedirectWindowPolicy.shouldClose(
+            nativeSettingsWindow, customSettingsWindow: nil
+        ))
+        XCTAssertFalse(SettingsRedirectWindowPolicy.shouldClose(
+            nativeSettingsWindow, customSettingsWindow: nativeSettingsWindow
+        ))
+    }
+
+    func testStatusMenuOpensHistoryForAppKitDefinedLeftClick() {
+        XCTAssertTrue(StatusMenuClickPolicy.opensHistory(for: .leftMouseDown))
+        XCTAssertTrue(StatusMenuClickPolicy.opensHistory(for: .mouseMoved))
+        XCTAssertTrue(StatusMenuClickPolicy.opensHistory(for: .appKitDefined))
+        XCTAssertFalse(StatusMenuClickPolicy.opensHistory(for: .rightMouseDown))
+        XCTAssertFalse(StatusMenuClickPolicy.opensHistory(for: .rightMouseUp))
+        XCTAssertFalse(StatusMenuClickPolicy.opensHistory(for: nil))
+    }
+
     func testChangingLanguagePublishesTheLocaleChangeNotification() {
         _ = NSApplication.shared
         let loc = Loc.shared

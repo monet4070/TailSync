@@ -18,6 +18,26 @@ enum TailSyncWindowPolicy {
     }
 }
 
+enum SettingsRedirectWindowPolicy {
+    static func shouldClose(_ window: NSWindow, customSettingsWindow: NSWindow?) -> Bool {
+        guard window !== customSettingsWindow else { return false }
+        let title = window.title
+        let identifier = window.identifier?.rawValue ?? ""
+        // A status item's NSStatusBarWindow is narrow but must stay open.
+        let isTinySettingsPlaceholder = window.styleMask.contains(.titled)
+            && window.frame.size.width <= 100
+        return identifier.contains("Settings") || title == "Settings" || title == "设置"
+            || isTinySettingsPlaceholder
+    }
+}
+
+enum StatusMenuClickPolicy {
+    static func opensHistory(for eventType: NSEvent.EventType?) -> Bool {
+        guard let eventType else { return false }
+        return eventType != .rightMouseDown && eventType != .rightMouseUp
+    }
+}
+
 enum DaemonShutdownPolicy {
     static let requestWait: TimeInterval = 0.25
     static let gracefulExitWait: TimeInterval = 1.0
@@ -67,13 +87,11 @@ private struct SettingsRedirectView: View {
         Color.clear
             .frame(width: 0, height: 0)
             .task { @MainActor in
-                for window in NSApp.windows where window !== AppDelegate.settingsWindow {
-                    let title = window.title
-                    let identifier = window.identifier?.rawValue ?? ""
-                    if identifier.contains("Settings") || title == "Settings" || title == "设置" || window.frame.size.width <= 100 {
-                        window.orderOut(nil)
-                        window.close()
-                    }
+                for window in NSApp.windows where SettingsRedirectWindowPolicy.shouldClose(
+                    window, customSettingsWindow: AppDelegate.settingsWindow
+                ) {
+                    window.orderOut(nil)
+                    window.close()
                 }
                 AppDelegate.showSettings()
             }
@@ -99,7 +117,7 @@ struct TailSyncApp: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let singleInstanceLock = SingleInstanceLock()
     private var ownsSingleInstanceLock = false
     private var statusItem: NSStatusItem!
@@ -440,9 +458,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 systemSymbolName: "doc.on.clipboard",
                 accessibilityDescription: "TailSync"
             )
-            button.target = self
-            button.action = #selector(handleClick)
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
         rebuildMenu()
@@ -472,6 +487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildMenu() {
         let isZh = Loc.shared.lang.hasPrefix("zh")
         menu = NSMenu()
+        menu.delegate = self
         if storageUnavailable {
             let warning = NSMenuItem(
                 title: isZh ? "存储不可用，文件传输已暂停" : "Storage unavailable - file transfer paused",
@@ -544,19 +560,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let qItem = NSMenuItem(title: isZh ? "退出 TailSync" : "Quit TailSync",
                                 action: #selector(quitApp), keyEquivalent: "q")
         qItem.target = self; menu.addItem(qItem)
+        // Let AppKit own menu tracking for both mouse buttons. The status bar
+        // button's NSControl action mask only handles left-button events.
+        statusItem?.menu = menu
     }
 
-    @objc private func handleClick() {
-        guard let event = NSApp.currentEvent else { return }
-        if event.type == .rightMouseUp {
-            // Right-click → show menu dynamically
-            statusItem.menu = menu
-            statusItem.button?.performClick(nil)
-            statusItem.menu = nil
-        } else {
-            // Left-click → open History
-            Self.showHistory()
-        }
+    func menuWillOpen(_ menu: NSMenu) {
+        // AppKit may report mouseMoved or appKitDefined for a left click here,
+        // especially after closing Settings. Right clicks arrive as rightMouseDown.
+        guard StatusMenuClickPolicy.opensHistory(for: NSApp.currentEvent?.type) else { return }
+        menu.cancelTrackingWithoutAnimation()
+        Self.showHistory()
     }
 
     @objc private func openHistory() { Self.showHistory() }
