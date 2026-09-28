@@ -1,6 +1,7 @@
 use super::{
-    apply_settings_update, decode_hex_key, validate_key_bytes, CreateOutcome, DataKey, DekCache,
-    KeyStore, KeyStoreError, Settings, SettingsUpdateError, SettingsValidationError, DEK_SIZE,
+    apply_settings_patch, apply_settings_update, decode_hex_key, validate_key_bytes, CreateOutcome,
+    DataKey, DekCache, KeyStore, KeyStoreError, Settings, SettingsPatch, SettingsUpdateError,
+    SettingsValidationError, DEK_SIZE,
 };
 use crate::db;
 use std::sync::{
@@ -1057,6 +1058,48 @@ async fn settings_update_routes_changed_shortcuts_through_the_hook() {
         0,
         "the shortcut hook performs its own persistence"
     );
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_patches_from_two_windows_preserve_unrelated_changes() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-settings-cross-window-{:016x}",
+        rand::random::<u64>()
+    ));
+    let database = tokio::sync::Mutex::new(db::HistoryDB::open_at(&root).unwrap());
+    let settings = tokio::sync::Mutex::new(Settings::default());
+    let initial = settings.lock().await.clone();
+    let persist = |_settings: &Settings| Ok(());
+
+    let connection_patch: SettingsPatch =
+        serde_json::from_str(r#"{"connection_mode":"lan_only"}"#).unwrap();
+    let language_patch: SettingsPatch = serde_json::from_str(r#"{"language":"zh-CN"}"#).unwrap();
+    apply_settings_patch(&settings, &database, connection_patch, &persist)
+        .await
+        .unwrap();
+    // The Settings window still holds its original full snapshot. Its intent
+    // is a language change, so the stale connection mode must not be sent.
+    assert_eq!(initial.connection_mode, "auto");
+    let outcome = apply_settings_patch(&settings, &database, language_patch, &persist)
+        .await
+        .unwrap();
+    assert_eq!(outcome.persisted.connection_mode, "lan_only");
+    assert_eq!(outcome.persisted.language, "zh-CN");
+
+    let reverse_patch: SettingsPatch = serde_json::from_str(r#"{"history_limit":250}"#).unwrap();
+    apply_settings_patch(&settings, &database, reverse_patch, &persist)
+        .await
+        .unwrap();
+    let connection_patch: SettingsPatch =
+        serde_json::from_str(r#"{"connection_mode":"iroh_only"}"#).unwrap();
+    let outcome = apply_settings_patch(&settings, &database, connection_patch, &persist)
+        .await
+        .unwrap();
+    assert_eq!(outcome.persisted.history_limit, 250);
+    assert_eq!(outcome.persisted.language, "zh-CN");
+
     drop(database);
     std::fs::remove_dir_all(root).unwrap();
 }

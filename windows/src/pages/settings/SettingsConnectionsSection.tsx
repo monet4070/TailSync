@@ -27,7 +27,6 @@ export function SettingsConnectionsSection({
   handleForget,
   openPairing,
   remotePairing,
-  defaultExpandedRemotePairing = false,
 }: SettingsConnectionsSectionProps) {
   return (
     <section className="setting-group connection-group">
@@ -329,7 +328,7 @@ export function SettingsConnectionsSection({
           busy={remotePairing.remotePairingBusy}
           error={remotePairing.remotePairingError}
           copied={remotePairing.copied}
-          defaultExpanded={defaultExpandedRemotePairing}
+          defaultExpanded={false}
           onCreateInvite={remotePairing.handleCreateInvite}
           onLinkChange={remotePairing.handleLinkChange}
           onInspectLink={remotePairing.handleInspectLink}

@@ -85,49 +85,6 @@ struct ConnectionsView: View {
         activeTheme.component(name, state: state, scheme: colorScheme)
     }
 
-    func settingsCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        let section = component("section")
-        let panel = component("panel")
-        return VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(activeTheme.displayFont(
-                    size: activeTheme.typography.sectionTitleSize,
-                    weight: activeTheme.builtin == .tailsync ? .regular : .semibold
-                ))
-                .textCase(activeTheme.typography.uppercasesSectionTitles ? .uppercase : nil)
-                .foregroundColor(section?.foregroundColor ?? palette.secondaryColor)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 6)
-            VStack(spacing: 0) { content() }
-                .background(panel?.backgroundColor ?? palette.surfaceColor)
-                .clipShape(RoundedRectangle(cornerRadius: panel?.radius ?? activeTheme.metrics.cardRadius, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: panel?.radius ?? activeTheme.metrics.cardRadius, style: .continuous)
-                        .stroke(panel?.borderColor ?? palette.borderColor, lineWidth: activeTheme.builtin == .highContrast ? 2 : 1)
-                }
-                .shadow(
-                    color: palette.primaryColor.opacity(panel?.shadowOpacity ?? (activeTheme.metrics.shadowRadius == 0 ? 0 : 0.08)),
-                    radius: panel?.shadowRadius ?? activeTheme.metrics.shadowRadius,
-                    y: panel?.shadowY ?? (activeTheme.metrics.shadowRadius > 0 ? 3 : 0)
-                )
-                .padding(.horizontal, 12)
-        }
-    }
-
-    func settingRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 8) { content() }
-            .font(activeTheme.readingFont(size: 13))
-            .padding(.horizontal, 16)
-            .padding(.vertical, activeTheme.metrics.rowPadding)
-            .frame(minHeight: 36)
-    }
-
-    var themedDivider: some View {
-        Rectangle()
-            .fill(palette.dividerColor)
-            .frame(height: activeTheme.builtin == .highContrast ? 2 : 1)
-    }
-
     @ViewBuilder
     var actionToast: some View {
         if saved || actionErrorMessage != nil {
@@ -238,7 +195,7 @@ struct ConnectionsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 12)
-                Picker("", selection: Binding(
+                Picker(Loc.t("settings.connectionMode"), selection: Binding(
                     get: { settings.connection_mode },
                     set: { mode in
                         settings.connection_mode = mode
@@ -251,6 +208,8 @@ struct ConnectionsView: View {
                     Text(Loc.t("settings.modeTailscale")).tag("tailscale_only")
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel(Loc.t("settings.connectionMode"))
                 .frame(width: 280)
             }
 
@@ -437,10 +396,11 @@ struct ConnectionsView: View {
                     .controlSize(.small)
                     .frame(minWidth: 54)
                     .help(Loc.t("settings.refresh"))
+                    .accessibilityLabel(Loc.t("settings.refresh"))
             }
         } else {
             HStack {
-                Text("\(peers.count) \(Loc.t("settings.devices"))")
+                Text("\(peers.count) \(Loc.t(peers.count == 1 ? "settings.device" : "settings.devices"))")
                     .font(.caption2)
                     .foregroundColor(palette.tertiaryColor)
                 Spacer()
@@ -449,6 +409,7 @@ struct ConnectionsView: View {
                     .controlSize(.small)
                     .frame(minWidth: 54)
                     .help(Loc.t("settings.refresh"))
+                    .accessibilityLabel(Loc.t("settings.refresh"))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
@@ -653,6 +614,7 @@ struct ConnectionsView: View {
                 .help(needsIrohRediscovery
                     ? Loc.t("settings.testRouteRediscover")
                     : Loc.t("settings.testAllConnections"))
+                .accessibilityLabel("\(Loc.t("settings.testAllConnections")) · \(peer.hostname)")
             }
 
             if peer.trusted, removingPeers.contains(peer.hostname) {
@@ -682,6 +644,7 @@ struct ConnectionsView: View {
                 .frame(minWidth: 54)
                 .disabled(pairingRoute == nil || pairingInProgress)
                 .help(Loc.t("settings.pair"))
+                .accessibilityLabel("\(Loc.t("settings.pair")) · \(peer.hostname)")
             }
 
             if peer.trusted {
@@ -690,6 +653,10 @@ struct ConnectionsView: View {
                     set: { togglePeer(peer.hostname, enabled: $0) }
                 ))
                 .labelsHidden()
+                .accessibilityLabel(
+                    Loc.t("settings.deviceSync")
+                        .replacingOccurrences(of: "{device}", with: peer.hostname)
+                )
                 .toggleStyle(.switch)
                 .controlSize(.small)
             }

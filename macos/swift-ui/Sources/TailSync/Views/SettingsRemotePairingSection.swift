@@ -39,6 +39,8 @@ extension ConnectionsView {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Loc.t("settings.remotePairing"))
+            .accessibilityValue(Loc.t(remotePairing.expanded ? "settings.expanded" : "settings.collapsed"))
 
             if remotePairing.expanded {
                 remotePairingBody
@@ -76,6 +78,7 @@ extension ConnectionsView {
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.caption2, design: .monospaced))
                             .frame(maxWidth: .infinity)
+                            .accessibilityLabel(Loc.t("settings.createRemoteInvite"))
 
                         Button {
                             copyRemotePairingInvite()
@@ -139,6 +142,7 @@ extension ConnectionsView {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption2, design: .monospaced))
                     .disabled(remotePairingInProgress)
+                    .accessibilityLabel(Loc.t("settings.useRemoteInvite"))
 
                 HStack(alignment: .center, spacing: 8) {
                     switch remotePairing.feedback {
