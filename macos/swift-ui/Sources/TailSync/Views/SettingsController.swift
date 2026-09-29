@@ -22,14 +22,28 @@ extension SettingsView {
         }
     }
 
-    func save() {
+    func save(_ change: SettingsFieldChange) {
+        persist { fallback in
+            await saveCoordinator.save(change, fallback: fallback)
+        }
+    }
+
+    func saveSyncEnabled(_ enabled: Bool) {
+        persist { fallback in
+            await saveCoordinator.saveSyncEnabled(enabled, fallback: fallback)
+        }
+    }
+
+    private func persist(
+        _ operation: @escaping @MainActor (AppSettings) async -> (error: String?, persisted: AppSettings)
+    ) {
         guard !isLoading, !applyingPersistedSettings else { return }
-        let value = settings
         actionErrorMessage = nil
         saveGeneration += 1
         let generation = saveGeneration
+        let fallback = persistedSettings
         Task { @MainActor in
-            let outcome = await saveCoordinator.save(value, fallback: persistedSettings)
+            let outcome = await operation(fallback)
             guard generation == saveGeneration else { return }
             if let error = outcome.error {
                 persistedSettings = outcome.persisted

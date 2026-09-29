@@ -118,4 +118,18 @@ describe("Connections Window", () => {
     });
     expect(screen.getByText("本机")).toBeInTheDocument();
   });
+
+  it("saves only the selected mode so an older window cannot replay other fields", async () => {
+    vi.mocked(client.updateSettings).mockResolvedValue({
+      ...mockSettings,
+      connection_mode: "lan_only",
+    });
+    render(<Connections />);
+    fireEvent.click(await screen.findByRole("radio", { name: "局域网" }));
+
+    await waitFor(() => {
+      expect(client.updateSettings).toHaveBeenCalledWith({ connection_mode: "lan_only" });
+      expect(screen.getByRole("radio", { name: "局域网" })).toHaveAttribute("aria-checked", "true");
+    });
+  });
 });

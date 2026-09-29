@@ -1,6 +1,6 @@
 use super::*;
 
-fn parse_settings_json(settings_json: &str) -> Result<crate::crypto::Settings, CommandError> {
+fn parse_settings_json(settings_json: &str) -> Result<crate::crypto::SettingsPatch, CommandError> {
     serde_json::from_str(settings_json).map_err(|_| {
         CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
     })
@@ -104,27 +104,13 @@ pub async fn update_settings(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     settings_json: String,
-) -> Result<(), CommandError> {
-    let requested_settings = parse_settings_json(&settings_json)?;
-    let apply_shortcut_transaction =
-        |previous: &crate::crypto::Settings, new_settings: &crate::crypto::Settings| {
-            let register = |candidate: &crate::crypto::Settings| {
-                install_global_shortcuts(
-                    &app,
-                    &candidate.sync_shortcut,
-                    &candidate.history_shortcut,
-                )
-            };
-            apply_shortcut_change(previous, new_settings, register, || {
-                new_settings.save().map_err(|error| error.to_string())
-            })
-        };
-    let outcome = crate::crypto::apply_settings_update(
+) -> Result<crate::crypto::Settings, CommandError> {
+    let patch = parse_settings_json(&settings_json)?;
+    let outcome = crate::crypto::apply_settings_patch(
         &state.settings,
         &state.db,
-        requested_settings,
+        patch,
         &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
-        Some(&apply_shortcut_transaction),
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -133,7 +119,10 @@ pub async fn update_settings(
         network::clear_peer_cache().await;
         network::refresh_iroh_for_mode(&outcome.connection_mode).await;
     }
-    Ok(())
+    if let Err(error) = app.emit("settings-changed", ()) {
+        log::warn!("Could not notify settings windows: {error}");
+    }
+    Ok(outcome.persisted)
 }
 
 /// Open the history window
@@ -347,5 +336,20 @@ mod stable_input_error_tests {
             error.envelope().code,
             tailsync_runtime::contracts::StableErrorCode::InvalidArgument
         );
+    }
+
+    #[test]
+    fn window_patch_rejects_fields_owned_by_other_commands() {
+        for input in [
+            r#"{"enabled_peers":{"peer":false}}"#,
+            r#"{"sync_enabled":true}"#,
+            r#"{"storage_root":"/tmp"}"#,
+        ] {
+            let error = super::parse_settings_json(input).unwrap_err();
+            assert_eq!(
+                error.envelope().code,
+                tailsync_runtime::contracts::StableErrorCode::InvalidArgument
+            );
+        }
     }
 }

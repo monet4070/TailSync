@@ -350,15 +350,6 @@
   }
 }
 
-.remote-pairing-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--brand);
-}
-
-.remote-pairing-heading > div,
 .remote-pairing-card {
   min-width: 0;
   display: flex;
@@ -366,22 +357,19 @@
   gap: 4px;
 }
 
-.remote-pairing-heading strong,
 .remote-pairing-card strong {
   color: var(--text-primary);
   font-size: 12px;
   font-weight: 600;
 }
 
-.remote-pairing-heading span,
 .remote-pairing-card > span {
   color: var(--text-tertiary);
   font-size: 10px;
   line-height: 1.4;
 }
 
-.remote-pairing-flow,
-.remote-pairing-columns {
+.remote-pairing-flow {
   display: flex;
   flex-direction: column;
   gap: 12px;

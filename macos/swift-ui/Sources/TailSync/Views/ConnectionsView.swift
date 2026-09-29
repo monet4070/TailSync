@@ -2,33 +2,13 @@ import AppKit
 import SwiftUI
 
 struct ConnectionsView: View {
-    struct PeerRoute: Identifiable {
-        let peer: ApiClient.PeerSnapshot
-        let address: String
-        let interface: String?
-        let online: Bool
-        let connected: Bool
-        let status: String
-        let latencyMs: Int?
-        let rttCapable: Bool
-
-        var id: String { "\(peer.hostname)-\(interface ?? "unknown")-\(address)" }
-
-        var latencyTestTarget: PeerLatencyTestTarget {
-            PeerLatencyTestTarget(
-                id: id,
-                address: address,
-                interface: interface,
-                rttCapable: rttCapable
-            )
-        }
+    struct PreviewData {
+        var remotePairingExpanded = false
+        var remoteInvite: ApiClient.RemotePairingInvite?
     }
 
-    struct PeerConnectionTestResult {
-        let latencyMs: Int
-        let path: String
-        let error: String
-    }
+    typealias PeerRoute = ConnectionsPeerSection.PeerRoute
+    typealias PeerConnectionTestResult = ConnectionsPeerSection.PeerConnectionTestResult
 
     @ObservedObject var loc = Loc.shared
     @Environment(\.colorScheme) var colorScheme
@@ -68,6 +48,14 @@ struct ConnectionsView: View {
     @State var saveGeneration = 0
     @State var saveCoordinator = SettingsSaveCoordinator()
 
+    init(preview: PreviewData? = nil) {
+        guard let preview else { return }
+        var pairing = RemotePairingInputState()
+        pairing.expanded = preview.remotePairingExpanded
+        _remotePairing = State(initialValue: pairing)
+        _remoteInvite = State(initialValue: preview.remoteInvite)
+    }
+
     var activeTheme: TailSyncThemeSelection {
         TailSyncThemeSelection(
             storedValue: loc.colorTheme,
@@ -75,57 +63,6 @@ struct ConnectionsView: View {
             reduceTransparency: loc.reduceTransparency,
             interfaceScale: TailSyncThemeAccessibilityPolicy.interfaceScale(for: dynamicTypeSize)
         )
-    }
-
-    var palette: TailSyncThemePalette {
-        activeTheme.palette(for: colorScheme)
-    }
-
-    func component(_ name: String, state: String = "default") -> TailSyncThemeComponentTokens? {
-        activeTheme.component(name, state: state, scheme: colorScheme)
-    }
-
-    func settingsCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        let section = component("section")
-        let panel = component("panel")
-        return VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(activeTheme.displayFont(
-                    size: activeTheme.typography.sectionTitleSize,
-                    weight: activeTheme.builtin == .tailsync ? .regular : .semibold
-                ))
-                .textCase(activeTheme.typography.uppercasesSectionTitles ? .uppercase : nil)
-                .foregroundColor(section?.foregroundColor ?? palette.secondaryColor)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 6)
-            VStack(spacing: 0) { content() }
-                .background(panel?.backgroundColor ?? palette.surfaceColor)
-                .clipShape(RoundedRectangle(cornerRadius: panel?.radius ?? activeTheme.metrics.cardRadius, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: panel?.radius ?? activeTheme.metrics.cardRadius, style: .continuous)
-                        .stroke(panel?.borderColor ?? palette.borderColor, lineWidth: activeTheme.builtin == .highContrast ? 2 : 1)
-                }
-                .shadow(
-                    color: palette.primaryColor.opacity(panel?.shadowOpacity ?? (activeTheme.metrics.shadowRadius == 0 ? 0 : 0.08)),
-                    radius: panel?.shadowRadius ?? activeTheme.metrics.shadowRadius,
-                    y: panel?.shadowY ?? (activeTheme.metrics.shadowRadius > 0 ? 3 : 0)
-                )
-                .padding(.horizontal, 12)
-        }
-    }
-
-    func settingRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 8) { content() }
-            .font(activeTheme.readingFont(size: 13))
-            .padding(.horizontal, 16)
-            .padding(.vertical, activeTheme.metrics.rowPadding)
-            .frame(minHeight: 36)
-    }
-
-    var themedDivider: some View {
-        Rectangle()
-            .fill(palette.dividerColor)
-            .frame(height: activeTheme.builtin == .highContrast ? 2 : 1)
     }
 
     @ViewBuilder
@@ -193,7 +130,7 @@ struct ConnectionsView: View {
             }
         }
         .sheet(isPresented: $showPairingSheet) {
-            pairingSheet
+            pairingSection.pairingSheet
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .tailSyncRemotePairingInviteReceived)
@@ -238,7 +175,7 @@ struct ConnectionsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 12)
-                Picker("", selection: Binding(
+                Picker(Loc.t("settings.connectionMode"), selection: Binding(
                     get: { settings.connection_mode },
                     set: { mode in
                         settings.connection_mode = mode
@@ -251,6 +188,8 @@ struct ConnectionsView: View {
                     Text(Loc.t("settings.modeTailscale")).tag("tailscale_only")
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel(Loc.t("settings.connectionMode"))
                 .frame(width: 280)
             }
 
@@ -258,10 +197,10 @@ struct ConnectionsView: View {
             localIdentityRow
 
             themedDivider.padding(.leading, 16)
-            peerList
+            peerSection
 
             themedDivider.padding(.leading, 16)
-            pairingPanel
+            pairingSection
 
             if ["auto", "iroh_only"].contains(settings.connection_mode) {
                 themedDivider.padding(.leading, 16)
@@ -293,7 +232,7 @@ struct ConnectionsView: View {
                     .foregroundColor(palette.tertiaryColor)
                     .textSelection(.enabled)
                 if let endpoint = localDevice?.iroh_endpoint_id {
-                    Text("iroh: \(endpoint)")
+                    Text(ConnectionsText.irohEndpoint(endpoint))
                         .font(.caption2.monospaced())
                         .foregroundColor(palette.tertiaryColor)
                         .textSelection(.enabled)
@@ -303,397 +242,35 @@ struct ConnectionsView: View {
         }
     }
 
-    var pairingPanel: some View {
-        settingRow {
-            Image(systemName: "link.badge.plus")
-                .foregroundColor(palette.accentColor)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(Loc.t("settings.pairDevice"))
-                    .font(.body.weight(.medium))
-                    .foregroundColor(palette.primaryColor)
-                Text(pairingWindowSummary)
-                    .font(.caption2)
-                    .foregroundColor(palette.tertiaryColor)
-            }
-            Spacer()
-            Button(pairingStatus?.pairing_enabled == true
-                   ? Loc.t("settings.closePairing")
-                   : Loc.t("settings.allowPairing")) {
-                togglePairingWindow()
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(pairingInProgress)
-            if let pairingMessage {
-                Text(pairingMessage)
-                    .font(.caption2)
-                    .foregroundColor(.red)
-                    .textSelection(.enabled)
-            }
-        }
-    }
-
-    var pairingWindowSummary: String {
-        guard let status = pairingStatus, status.pairing_enabled else {
-            return Loc.t("settings.pairingClosed")
-        }
-        return "\(Loc.t("settings.waitingPairing")) · \(status.remaining_seconds)s · \(status.failed_attempts)/\(status.max_failures)"
-    }
-
-    var pairingSheet: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "lock.shield")
-                .font(.system(size: 28))
-                .foregroundColor(palette.accentColor)
-            Text(pairingStatus?.peer?.hostname ?? Loc.t("settings.pairDevice"))
-                .font(activeTheme.displayFont(size: 17, weight: .semibold))
-
-            if let peer = pairingStatus?.peer {
-                Text(peer.verification_code)
-                    .font(.system(size: 34, weight: .bold, design: .monospaced))
-                    .textSelection(.enabled)
-                Text(Loc.t("settings.compareCode"))
-                    .font(.caption)
-                    .foregroundColor(palette.secondaryColor)
-                    .multilineTextAlignment(.center)
-                Text(peer.fingerprint)
-                    .font(.caption2.monospaced())
-                    .foregroundColor(palette.tertiaryColor)
-                    .textSelection(.enabled)
-                if pairingStatus?.phase == "finalizing" {
-                    ProgressView(Loc.t("settings.pairingFinalizing"))
-                        .controlSize(.small)
-                } else if peer.local_confirmed {
-                    Text(Loc.t("settings.waitingPeerConfirm"))
-                        .font(.caption)
-                        .foregroundColor(palette.accentColor)
-                }
-            } else if pairingInProgress || pairingStatus?.phase == "handshaking" {
-                ProgressView(Loc.t("settings.secureHandshake"))
-                    .controlSize(.small)
-            } else {
-                VStack(spacing: 7) {
-                    Text(Loc.t("settings.waitingPairing"))
-                        .font(.caption.weight(.medium))
-                    Text(Loc.t("settings.pairingInstruction"))
-                        .font(.caption2)
-                        .foregroundColor(palette.secondaryColor)
-                        .multilineTextAlignment(.center)
-                }
-            }
-
-            if let message = pairingMessage
-                ?? pairingStatus?.error.map(ApiError.pairingErrorDescription)
-            {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundColor(.red)
-                    .multilineTextAlignment(.center)
-            }
-
-            HStack(spacing: 10) {
-                Button(Loc.t("settings.cancel")) { cancelPairing() }
-                    .keyboardShortcut(.cancelAction)
-                Button(
-                    pairingStatus?.peer?.local_confirmed == true
-                    ? Loc.t("settings.confirmed")
-                    : Loc.t("settings.codesMatch")
-                ) { confirmPairing() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        pairingInProgress
-                        || pairingStatus?.phase == "finalizing"
-                        || pairingStatus?.peer == nil
-                        || pairingStatus?.peer?.local_confirmed == true
-                    )
-            }
-        }
-        .padding(24)
-        .frame(width: 340)
-        .frame(minHeight: 300)
-        .background(palette.windowColor)
-        .interactiveDismissDisabled(pairingStatus?.pairing_enabled == true)
-    }
-
-    @ViewBuilder
-    var peerList: some View {
-        if peersLoading {
-            settingRow {
-                ProgressView().controlSize(.small)
-                Text(Loc.t("settings.loadingDevices"))
-                    .font(.caption)
-                    .foregroundColor(palette.secondaryColor)
-                Spacer()
-            }
-        } else if peers.isEmpty {
-            settingRow {
-                Text(peerError ?? Loc.t("settings.noDevices"))
-                    .font(.caption)
-                    .foregroundColor(peerError == nil ? palette.secondaryColor : palette.warningColor)
-                Spacer()
-                Button { refreshPeers() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .frame(minWidth: 54)
-                    .help(Loc.t("settings.refresh"))
-            }
-        } else {
-            HStack {
-                Text("\(peers.count) \(Loc.t("settings.devices"))")
-                    .font(.caption2)
-                    .foregroundColor(palette.tertiaryColor)
-                Spacer()
-                Button { refreshPeers() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .frame(minWidth: 54)
-                    .help(Loc.t("settings.refresh"))
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-
-            ForEach(Array(peers.enumerated()), id: \.element.id) { index, peer in
-                if index > 0 { themedDivider.padding(.leading, 48) }
-                peerRow(peer)
-            }
-        }
-    }
-
-    func peerRoutes(for peer: ApiClient.PeerSnapshot) -> [PeerRoute] {
-        if !peer.routes.isEmpty {
-            return peer.routes.map {
-                PeerRoute(
-                    peer: peer,
-                    address: $0.address,
-                    interface: $0.interface,
-                    online: $0.online,
-                    connected: $0.connected,
-                    status: $0.connected ? "connected" : $0.status,
-                    latencyMs: $0.latencyMs,
-                    rttCapable: $0.rttCapable
-                )
-            }
-        }
-        if ["auto", "iroh_only"].contains(settings.connection_mode),
-           !peer.candidates.isEmpty {
-            return peer.candidates.map {
-                PeerRoute(
-                    peer: peer,
-                    address: $0.address,
-                    interface: $0.interface,
-                    online: $0.online,
-                    connected: peer.current_address == $0.address,
-                    status: peer.current_address == $0.address ? "connected" : $0.status,
-                    latencyMs: $0.latency,
-                    rttCapable: $0.rttCapable
-                )
-            }
-        }
-        return [PeerRoute(
-            peer: peer,
-            address: peer.address,
-            interface: routeInterface(for: settings.connection_mode),
-            online: peer.candidates.first?.online ?? peer.online,
-            connected: peer.current_address == peer.address,
-            status: peer.current_address == peer.address
-                ? "connected"
-                : peer.candidates.first?.status ?? peer.status,
-            latencyMs: peer.candidates.first?.latency,
-            rttCapable: true
-        )]
-    }
-
-    func routeInterface(for mode: String) -> String? {
-        switch mode {
-        case "lan_only": return "lan"
-        case "iroh_only": return "iroh"
-        case "tailscale_only": return "tailscale"
-        default: return nil
-        }
-    }
-
-    func routeIsAllowed(_ route: PeerRoute) -> Bool {
-        switch settings.connection_mode {
-        case "lan_only": return route.interface == "lan"
-        case "iroh_only": return route.interface == "iroh"
-        case "tailscale_only": return route.interface == "tailscale"
-        default: return true
-        }
-    }
-
-    func latencyTestRoutes(in routes: [PeerRoute]) -> [PeerRoute] {
-        let routesByID = Dictionary(
-            routes.map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
+    var pairingSection: ConnectionsPairingSection {
+        ConnectionsPairingSection(
+            activeTheme: activeTheme,
+            pairingStatus: pairingStatus,
+            pairingMessage: pairingMessage,
+            pairingInProgress: pairingInProgress,
+            onToggle: { togglePairingWindow() },
+            onCancel: { cancelPairing() },
+            onConfirm: { confirmPairing() }
         )
-        return PeerLatencyTestPlan
-            .orderedTargets(routes.map(\.latencyTestTarget))
-            .compactMap { routesByID[$0.id] }
     }
 
-    func pairingRoute(in routes: [PeerRoute], for peer: ApiClient.PeerSnapshot) -> PeerRoute? {
-        let availableRoutes = routes.filter { routeIsAllowed($0) && !$0.address.isEmpty }
-        let tcpRoutes = availableRoutes.filter { $0.interface != "iroh" }
-        if let route = tcpRoutes.first(where: \.connected) { return route }
-        if let route = tcpRoutes.first(where: \.online) { return route }
-        if let route = tcpRoutes.first(where: { $0.status == "confirming" }) { return route }
-        if let route = availableRoutes.first(where: { $0.interface == "iroh" }) { return route }
-        if let route = tcpRoutes.first(where: { $0.address == peer.current_address }) { return route }
-        if let route = tcpRoutes.first(where: { $0.address == peer.address }) { return route }
-        return tcpRoutes.first ?? availableRoutes.first
-    }
-
-    func peerStatus(_ peer: ApiClient.PeerSnapshot, routes: [PeerRoute]) -> String {
-        let allowedRoutes = routes.filter(routeIsAllowed)
-        if peer.current_address != nil || allowedRoutes.contains(where: \.connected) {
-            return "connected"
-        }
-        for status in ["online", "confirming", "discovered"]
-            where allowedRoutes.contains(where: { $0.status == status }) {
-            return status
-        }
-        return peer.status
-    }
-
-    func peerRouteLine(_ route: PeerRoute) -> some View {
-        let testResult = testResults[route.peer.hostname]?[route.id]
-        return HStack(spacing: 7) {
-            Text(route.address.isEmpty ? Loc.t("settings.pairedOffline") : route.address)
-                .font(.caption.monospaced())
-                .foregroundColor(palette.secondaryColor)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(route.address)
-            if let interface = route.interface {
-                Text("· \(routeInterfaceLabel(interface))")
-                    .font(.caption2.weight(.medium))
-                    .foregroundColor(palette.accentColor)
-            }
-            Text(statusText(route.status))
-                .font(.caption2.weight(route.connected ? .semibold : .regular))
-                .foregroundColor(statusColor(route.status))
-            if let result = testResult {
-                let label = result.error.isEmpty
-                    ? "\(result.latencyMs) ms"
-                        + (result.path == "relay" ? " · \(Loc.t("settings.relayPath"))" : "")
-                    : result.error
-                Text(label)
-                    .font(.caption2.monospaced())
-                    .foregroundColor(result.error.isEmpty ? palette.positiveColor : .red)
-                    .lineLimit(1)
-            } else if let latencyMs = route.latencyMs,
-               ["online", "connected", "confirming"].contains(route.status) {
-                Text("\(latencyMs) ms")
-                    .font(.caption2.monospaced())
-                    .foregroundColor(palette.tertiaryColor)
-            }
-        }
-    }
-
-    func peerRow(_ peer: ApiClient.PeerSnapshot) -> some View {
-        let routes = peerRoutes(for: peer)
-        let status = peerStatus(peer, routes: routes)
-        let testRoutes = latencyTestRoutes(in: routes)
-        let pairingRoute = pairingRoute(in: routes, for: peer)
-        let needsIrohRediscovery = testRoutes.isEmpty
-            && routes.contains { route in
-                route.interface == "iroh" && !route.rttCapable
-            }
-        return settingRow {
-            Circle()
-                .fill(statusColor(status))
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(peer.hostname).font(.body.weight(.medium))
-                    Image(systemName: peer.trusted ? "checkmark.shield.fill" : "exclamationmark.shield")
-                        .font(.caption2)
-                        .foregroundColor(peer.trusted ? palette.positiveColor : palette.warningColor)
-                    Text(peer.trusted ? Loc.t("settings.paired") : Loc.t("settings.notPaired"))
-                        .font(.caption2)
-                        .foregroundColor(peer.trusted ? palette.positiveColor : palette.warningColor)
-                }
-                if let version = peer.requiredProtocolVersion {
-                    Text(
-                        Loc.t("settings.protocolUpgradeRequired")
-                            .replacingOccurrences(of: "{version}", with: String(version))
-                    )
-                    .font(.caption2)
-                    .foregroundColor(palette.warningColor)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(routes) { route in
-                    peerRouteLine(route)
-                }
-                if peer.trusted, !peer.fingerprint.isEmpty {
-                    Text(peer.fingerprint)
-                        .font(.caption2.monospaced())
-                        .foregroundColor(palette.tertiaryColor)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer()
-
-            if testingPeers.contains(peer.hostname) {
-                ProgressView().controlSize(.small)
-            } else {
-                Button {
-                    testPeer(peer.hostname, routes: testRoutes)
-                } label: {
-                    Image(systemName: "bolt.horizontal")
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .frame(minWidth: 54)
-                .disabled(testRoutes.isEmpty)
-                .help(needsIrohRediscovery
-                    ? Loc.t("settings.testRouteRediscover")
-                    : Loc.t("settings.testAllConnections"))
-            }
-
-            if peer.trusted, removingPeers.contains(peer.hostname) {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 48)
-            } else if peer.trusted {
-                Button { forgetPeer(peer.hostname) } label: {
-                    Text(Loc.t("settings.removeDevice"))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .frame(minWidth: 54)
-                .tint(.red)
-                .help(Loc.t("settings.unpair"))
-            } else if !peer.trusted {
-                Button {
-                    if let pairingRoute {
-                        startPairing(pairingRoute)
-                    }
-                } label: {
-                    Image(systemName: "link.badge.plus")
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .frame(minWidth: 54)
-                .disabled(pairingRoute == nil || pairingInProgress)
-                .help(Loc.t("settings.pair"))
-            }
-
-            if peer.trusted {
-                Toggle("", isOn: Binding(
-                    get: { peer.enabled },
-                    set: { togglePeer(peer.hostname, enabled: $0) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-            }
-        }
+    var peerSection: ConnectionsPeerSection {
+        ConnectionsPeerSection(
+            activeTheme: activeTheme,
+            peers: peers,
+            peersLoading: peersLoading,
+            peerError: peerError,
+            connectionMode: settings.connection_mode,
+            pairingInProgress: pairingInProgress,
+            testingPeers: testingPeers,
+            removingPeers: removingPeers,
+            testResults: testResults,
+            onRefresh: { refreshPeers() },
+            onTest: { hostname, routes in testPeer(hostname, routes: routes) },
+            onForget: { forgetPeer($0) },
+            onPair: { startPairing($0) },
+            onToggle: { hostname, enabled in togglePeer(hostname, enabled: enabled) }
+        )
     }
 
     func load() {
@@ -763,24 +340,6 @@ struct ConnectionsView: View {
             guard generation == peerLoadGeneration,
                   requestedMode == settings.connection_mode else { return }
             applyPeerResult(result, showLoading: true)
-        }
-    }
-
-    func statusText(_ status: String) -> String {
-        switch status {
-        case "connected": return Loc.t("settings.connected")
-        case "online": return Loc.t("settings.online")
-        case "confirming": return Loc.t("settings.confirming")
-        case "discovered": return Loc.t("settings.discovered")
-        default: return Loc.t("settings.offline")
-        }
-    }
-
-    func statusColor(_ status: String) -> Color {
-        switch status {
-        case "connected", "online": return palette.positiveColor
-        case "confirming", "discovered": return palette.warningColor
-        default: return palette.tertiaryColor
         }
     }
 

@@ -204,10 +204,6 @@ export function closeFavoritesWindow(): Promise<void> {
   return invoke<void>("close_favorites_window");
 }
 
-export function openSettingsWindow(): Promise<void> {
-  return invoke<void>("open_settings_window");
-}
-
 export function closeSettingsWindow(): Promise<void> {
   return invoke<void>("close_settings_window");
 }
@@ -442,8 +438,17 @@ export function takePendingRemotePairingLink(): Promise<string | null> {
 // Settings — write side (T246)
 // ---------------------------------------------------------------------------
 
-export function updateSettings(next: Partial<SettingsData>): Promise<void> {
-  return invoke<void>("update_settings", { settingsJson: JSON.stringify(next) });
+export type SettingsPatch = Partial<Pick<SettingsData,
+  | "notifications_enabled"
+  | "progress_bar_enabled"
+  | "history_limit"
+  | "storage_quota_bytes"
+  | "language"
+  | "connection_mode"
+>>;
+
+export function updateSettings(patch: SettingsPatch): Promise<SettingsData> {
+  return invoke<SettingsData>("update_settings", { settingsJson: JSON.stringify(patch) });
 }
 
 export function setSyncEnabled(enabled: boolean): Promise<void> {

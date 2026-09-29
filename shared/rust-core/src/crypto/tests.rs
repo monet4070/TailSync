@@ -1,6 +1,7 @@
 use super::{
-    apply_settings_update, decode_hex_key, validate_key_bytes, CreateOutcome, DataKey, DekCache,
-    KeyStore, KeyStoreError, Settings, SettingsUpdateError, SettingsValidationError, DEK_SIZE,
+    apply_settings_patch, apply_settings_update, decode_hex_key, validate_key_bytes, CreateOutcome,
+    DataKey, DekCache, KeyStore, KeyStoreError, Settings, SettingsPatch, SettingsUpdateError,
+    SettingsValidationError, DEK_SIZE,
 };
 use crate::db;
 use std::sync::{
@@ -1059,6 +1060,93 @@ async fn settings_update_routes_changed_shortcuts_through_the_hook() {
     );
     drop(database);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_patches_from_two_windows_preserve_unrelated_changes() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-settings-cross-window-{:016x}",
+        rand::random::<u64>()
+    ));
+    let database = tokio::sync::Mutex::new(db::HistoryDB::open_at(&root).unwrap());
+    let settings = tokio::sync::Mutex::new(Settings::default());
+    let initial = settings.lock().await.clone();
+    let persist = |_settings: &Settings| Ok(());
+
+    let connection_patch: SettingsPatch =
+        serde_json::from_str(r#"{"connection_mode":"lan_only"}"#).unwrap();
+    let language_patch: SettingsPatch = serde_json::from_str(r#"{"language":"zh-CN"}"#).unwrap();
+    apply_settings_patch(&settings, &database, connection_patch, &persist)
+        .await
+        .unwrap();
+    // The Settings window still holds its original full snapshot. Its intent
+    // is a language change, so the stale connection mode must not be sent.
+    assert_eq!(initial.connection_mode, "auto");
+    let outcome = apply_settings_patch(&settings, &database, language_patch, &persist)
+        .await
+        .unwrap();
+    assert_eq!(outcome.persisted.connection_mode, "lan_only");
+    assert_eq!(outcome.persisted.language, "zh-CN");
+
+    // The dedicated sync command changed this setting between window saves.
+    settings.lock().await.sync_enabled = false;
+
+    let reverse_patch: SettingsPatch = serde_json::from_str(r#"{"history_limit":250}"#).unwrap();
+    apply_settings_patch(&settings, &database, reverse_patch, &persist)
+        .await
+        .unwrap();
+    let connection_patch: SettingsPatch =
+        serde_json::from_str(r#"{"connection_mode":"iroh_only"}"#).unwrap();
+    let outcome = apply_settings_patch(&settings, &database, connection_patch, &persist)
+        .await
+        .unwrap();
+    assert_eq!(outcome.persisted.history_limit, 250);
+    assert_eq!(outcome.persisted.language, "zh-CN");
+    assert!(!outcome.persisted.sync_enabled);
+
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_patch_diagnostic_explains_legacy_full_snapshot_rejection() {
+    let full = serde_json::to_value(Settings::default()).unwrap();
+    let error = SettingsPatch::from_json_value(full).unwrap_err();
+    assert!(error.contains("expects a patch of editable fields"));
+    assert!(error.contains("unsupported field"));
+    assert!(error.contains("enabled_peers"));
+
+    let patch = SettingsPatch::from_json_value(serde_json::json!({"language":"zh-CN"}));
+    assert_eq!(patch.unwrap().language.as_deref(), Some("zh-CN"));
+}
+
+#[test]
+fn settings_patch_diagnostic_names_bad_fields_without_echoing_values() {
+    let error = SettingsPatch::from_json_value(serde_json::json!({
+        "history_limit": "private-value"
+    }))
+    .unwrap_err();
+    assert!(error.contains("invalid value for field history_limit"));
+    assert!(!error.contains("private-value"));
+}
+
+#[test]
+fn settings_patch_rejects_sync_enabled_for_its_dedicated_command() {
+    let error = SettingsPatch::from_json_value(serde_json::json!({
+        "sync_enabled": true
+    }))
+    .unwrap_err();
+    assert!(error.contains("unsupported field sync_enabled"));
+    assert!(serde_json::from_str::<SettingsPatch>(r#"{"sync_enabled":true}"#).is_err());
+}
+
+#[test]
+fn stored_settings_already_reject_unknown_fields() {
+    let mut full = serde_json::to_value(Settings::default()).unwrap();
+    full.as_object_mut()
+        .unwrap()
+        .insert("future_field".into(), serde_json::json!(true));
+    assert!(serde_json::from_value::<Settings>(full).is_err());
 }
 
 #[tokio::test]

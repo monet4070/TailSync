@@ -205,6 +205,8 @@ impl StableErrorEnvelope {
                 | "unknown type"
         ) || message.starts_with("invalid request json:")
             || message.starts_with("unsupported history collection:")
+            || (command == "update_settings"
+                && message.starts_with("update_settings expects a patch of editable fields;"))
         {
             StableErrorCode::InvalidArgument
         } else if command == "change_storage_location" {
@@ -420,6 +422,11 @@ mod tests {
             (
                 "get_history",
                 "unsupported history collection: bogus",
+                StableErrorCode::InvalidArgument,
+            ),
+            (
+                "update_settings",
+                "update_settings expects a patch of editable fields; use dedicated commands for sync state, shortcuts, peers, and storage location: unsupported field enabled_peers",
                 StableErrorCode::InvalidArgument,
             ),
             (

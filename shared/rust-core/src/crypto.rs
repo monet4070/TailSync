@@ -50,6 +50,83 @@ pub struct Settings {
     pub paired_peer_endpoints: std::collections::HashMap<String, String>,
 }
 
+/// User-editable fields accepted from a window. A patch is merged while the
+/// settings lock is held, so another window cannot overwrite unrelated edits.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsPatch {
+    pub notifications_enabled: Option<bool>,
+    pub progress_bar_enabled: Option<bool>,
+    pub history_limit: Option<u32>,
+    pub storage_quota_bytes: Option<u64>,
+    pub language: Option<String>,
+    pub connection_mode: Option<String>,
+}
+
+impl SettingsPatch {
+    /// The local JSON API accepts field intents, not a `get_settings` snapshot.
+    /// Validate one key at a time to identify the rejected field without
+    /// reflecting potentially sensitive field values into the API response.
+    pub fn from_json_value(value: serde_json::Value) -> Result<Self, String> {
+        const PREFIX: &str = "update_settings expects a patch of editable fields; use dedicated commands for sync state, shortcuts, peers, and storage location";
+        let fields = value
+            .as_object()
+            .ok_or_else(|| format!("{PREFIX}: settings must be a JSON object"))?;
+        for (field, field_value) in fields {
+            let safe_field = field
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                .take(64)
+                .collect::<String>();
+            let safe_field = if safe_field.is_empty() {
+                "<unprintable>"
+            } else {
+                &safe_field
+            };
+            if !matches!(
+                field.as_str(),
+                "notifications_enabled"
+                    | "progress_bar_enabled"
+                    | "history_limit"
+                    | "storage_quota_bytes"
+                    | "language"
+                    | "connection_mode"
+            ) {
+                return Err(format!("{PREFIX}: unsupported field {safe_field}"));
+            }
+            let mut single = serde_json::Map::new();
+            single.insert(field.clone(), field_value.clone());
+            if serde_json::from_value::<Self>(serde_json::Value::Object(single)).is_err() {
+                return Err(format!("{PREFIX}: invalid value for field {safe_field}"));
+            }
+        }
+        serde_json::from_value(value).map_err(|_| format!("{PREFIX}: invalid settings patch"))
+    }
+
+    fn apply_to(self, current: &Settings) -> Settings {
+        let mut next = current.clone();
+        if let Some(value) = self.notifications_enabled {
+            next.notifications_enabled = value;
+        }
+        if let Some(value) = self.progress_bar_enabled {
+            next.progress_bar_enabled = value;
+        }
+        if let Some(value) = self.history_limit {
+            next.history_limit = value;
+        }
+        if let Some(value) = self.storage_quota_bytes {
+            next.storage_quota_bytes = value;
+        }
+        if let Some(value) = self.language {
+            next.language = value;
+        }
+        if let Some(value) = self.connection_mode {
+            next.connection_mode = value;
+        }
+        next
+    }
+}
+
 /// Settings validation failures (T353 migration). Display strings reach the
 /// UI and wire surfaces verbatim.
 #[derive(Debug, Error)]
@@ -512,6 +589,7 @@ pub type ShortcutChangeHook<'a> =
 pub struct SettingsUpdateOutcome {
     pub mode_changed: bool,
     pub connection_mode: String,
+    pub persisted: Settings,
 }
 
 /// Merge, validate, persist, and commit a user settings update, then apply
@@ -530,9 +608,42 @@ pub async fn apply_settings_update(
     persist: SettingsPersist<'_>,
     apply_shortcut_change: Option<ShortcutChangeHook<'_>>,
 ) -> Result<SettingsUpdateOutcome, SettingsUpdateError> {
+    apply_settings_update_with(
+        settings,
+        database,
+        move |_| requested,
+        persist,
+        apply_shortcut_change,
+    )
+    .await
+}
+
+pub async fn apply_settings_patch(
+    settings: &tokio::sync::Mutex<Settings>,
+    database: &tokio::sync::Mutex<db::HistoryDB>,
+    patch: SettingsPatch,
+    persist: SettingsPersist<'_>,
+) -> Result<SettingsUpdateOutcome, SettingsUpdateError> {
+    apply_settings_update_with(
+        settings,
+        database,
+        move |current| patch.apply_to(current),
+        persist,
+        None,
+    )
+    .await
+}
+
+async fn apply_settings_update_with(
+    settings: &tokio::sync::Mutex<Settings>,
+    database: &tokio::sync::Mutex<db::HistoryDB>,
+    update: impl FnOnce(&Settings) -> Settings,
+    persist: SettingsPersist<'_>,
+    apply_shortcut_change: Option<ShortcutChangeHook<'_>>,
+) -> Result<SettingsUpdateOutcome, SettingsUpdateError> {
     let mut settings_guard = settings.lock().await;
     let new_settings = settings_guard
-        .prepare_user_update(requested)
+        .prepare_user_update(update(&settings_guard))
         .map_err(SettingsUpdateError::Validation)?;
     let history_limit = new_settings.history_limit as i64;
     let storage_quota_bytes = new_settings.storage_quota_bytes;
@@ -550,7 +661,7 @@ pub async fn apply_settings_update(
     } else {
         persist(&new_settings).map_err(SettingsUpdateError::Persist)?;
     }
-    *settings_guard = new_settings;
+    *settings_guard = new_settings.clone();
     drop(settings_guard);
     let mut database_guard = database.lock().await;
     database_guard.set_max_history(history_limit);
@@ -561,6 +672,7 @@ pub async fn apply_settings_update(
     Ok(SettingsUpdateOutcome {
         mode_changed,
         connection_mode,
+        persisted: new_settings,
     })
 }
 

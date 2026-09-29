@@ -50,3 +50,31 @@ struct AppSettings: Codable, Equatable, Sendable {
         paired_peer_endpoints = try values.decodeIfPresent([String: String].self, forKey: .paired_peer_endpoints) ?? [:]
     }
 }
+
+/// Only the fields changed by the settings editor are sent to the daemon.
+/// Peer trust, shortcuts, and storage moves have dedicated commands.
+enum SettingsFieldChange: Sendable {
+    case notificationsEnabled(Bool)
+    case progressBarEnabled(Bool)
+    case historyLimit(Int)
+    case storageQuotaBytes(UInt64)
+    case language(String)
+}
+
+struct AppSettingsPatch: Encodable, Sendable {
+    var notifications_enabled: Bool? = nil
+    var progress_bar_enabled: Bool? = nil
+    var history_limit: Int? = nil
+    var storage_quota_bytes: UInt64? = nil
+    var language: String? = nil
+
+    init(_ change: SettingsFieldChange) {
+        switch change {
+        case .notificationsEnabled(let value): notifications_enabled = value
+        case .progressBarEnabled(let value): progress_bar_enabled = value
+        case .historyLimit(let value): history_limit = value
+        case .storageQuotaBytes(let value): storage_quota_bytes = value
+        case .language(let value): language = value
+        }
+    }
+}

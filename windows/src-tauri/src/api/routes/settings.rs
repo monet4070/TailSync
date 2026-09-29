@@ -97,23 +97,15 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                     error: Some("missing settings".into()),
                 };
             };
-            match serde_json::from_value::<crate::crypto::Settings>(settings_json) {
-                Ok(mut requested_settings) => {
-                    // The shortcut is registered through the dedicated
-                    // set_sync_shortcut command; ignore any value arriving via
-                    // generic settings so runtime and persisted state stay aligned.
-                    requested_settings.sync_shortcut =
-                        state.settings.lock().await.sync_shortcut.clone();
-                    requested_settings.history_shortcut =
-                        state.settings.lock().await.history_shortcut.clone();
-                    match crate::crypto::apply_settings_update(
+            match crate::crypto::SettingsPatch::from_json_value(settings_json) {
+                Ok(patch) => {
+                    match crate::crypto::apply_settings_patch(
                         &state.settings,
                         &state.db,
-                        requested_settings,
+                        patch,
                         &|settings: &crate::crypto::Settings| {
                             settings.save().map_err(|error| error.to_string())
                         },
-                        None,
                     )
                     .await
                     {
@@ -125,7 +117,7 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                             }
                             Response {
                                 ok: true,
-                                data: None,
+                                data: serde_json::to_value(outcome.persisted).ok(),
                                 error: None,
                             }
                         }
@@ -136,10 +128,10 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                         },
                     }
                 }
-                Err(e) => Response {
+                Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e.to_string()),
+                    error: Some(error),
                 },
             }
         }

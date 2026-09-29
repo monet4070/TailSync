@@ -96,14 +96,6 @@ struct SettingsView: View {
         )
     }
 
-    var palette: TailSyncThemePalette {
-        activeTheme.palette(for: colorScheme)
-    }
-
-    func component(_ name: String, state: String = "default") -> TailSyncThemeComponentTokens? {
-        activeTheme.component(name, state: state, scheme: colorScheme)
-    }
-
     var body: some View {
         Group {
             if let loadErrorMessage {

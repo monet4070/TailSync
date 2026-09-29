@@ -56,7 +56,7 @@ extension SettingsView {
                     get: { Int(settings.storage_quota_bytes / (1024 * 1024 * 1024)) },
                     set: { value in
                         settings.storage_quota_bytes = UInt64(max(1, min(16_384, value))) * 1024 * 1024 * 1024
-                        save()
+                        save(.storageQuotaBytes(settings.storage_quota_bytes))
                     }
                 ), in: 1...16_384) {
                     Text("\(settings.storage_quota_bytes / (1024 * 1024 * 1024)) GiB")
@@ -156,7 +156,7 @@ extension SettingsView {
                 .frame(width: 130)
                 .onChange(of: settings.language) { language in
                     loc.lang = language
-                    save()
+                    save(.language(language))
                 }
             }
         }
