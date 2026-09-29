@@ -219,6 +219,9 @@ final class HistoryPreviewLayoutTests: XCTestCase {
     func testEveryCustomPreviewToolbarRendersAtMinimumWidth() throws {
         _ = NSApplication.shared
         let pdfData = try makePDFData()
+        let pdfController = HistoryPDFPreviewController(
+            document: try XCTUnwrap(PDFDocument(data: pdfData))
+        )
         let image = makeImage()
         let previews: [(String, AnyView, NSSize)] = [
             (
@@ -236,11 +239,15 @@ final class HistoryPreviewLayoutTests: XCTestCase {
             ),
             (
                 "pdf",
-                AnyView(HistoryPDFPreviewView(material: HistoryPreviewPDFMaterial(
-                    data: pdfData,
-                    document: try XCTUnwrap(PDFDocument(data: pdfData))
-                ))),
-                HistoryPreviewWindowKind.pdf.minimumContentSize
+                AnyView(HistoryPDFPreviewToolbar(
+                    controller: pdfController,
+                    query: .constant(""),
+                    showsThumbnails: .constant(false)
+                )),
+                NSSize(
+                    width: HistoryPreviewWindowKind.pdf.minimumContentSize.width,
+                    height: HistoryPreviewLayoutMetrics.toolbarHeight
+                )
             )
         ]
 
