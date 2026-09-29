@@ -58,7 +58,9 @@ jobs:
             git cat-file -e "$BASE_SHA^{commit}"
             git cat-file -e "$HEAD_SHA^{commit}"
             git diff --check "$BASE_SHA...$HEAD_SHA"
-            git diff --name-only -z "$BASE_SHA...$HEAD_SHA" > "$changed_files"
+            # Disable rename folding so a cross-area move contributes both
+            # its deleted source path and added destination path to the plan.
+            git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$changed_files"
           else
             # Main pushes, manual runs, and release workflow calls retain the
             # complete gate. Only pull requests use path-targeted validation.

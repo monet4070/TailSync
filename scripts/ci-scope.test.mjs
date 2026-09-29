@@ -118,6 +118,18 @@ test("mixed changes union the required jobs", () => {
   ]);
 });
 
+test("cross-area moves union the deleted and added path scopes", () => {
+  const plan = planCiScope([
+    "windows/src/removed-from-frontend.ts",
+    "docs/moved-to-documentation.md",
+  ]);
+  assert.deepEqual(enabled(plan), [
+    "frontend_windows",
+    "scripts",
+    "shared_resolution",
+  ]);
+});
+
 test("workflow and planner changes force full verification", () => {
   for (const file of [
     ".github/workflows/ci.yml",
