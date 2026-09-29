@@ -220,12 +220,14 @@ final class HistoryPreviewLayoutTests: XCTestCase {
         _ = NSApplication.shared
         let pdfData = try makePDFData()
         let image = makeImage()
-        let previews: [(AnyView, NSSize)] = [
+        let previews: [(String, AnyView, NSSize)] = [
             (
+                "markdown",
                 AnyView(HistoryMarkdownPreviewView(source: "# Article\nBody")),
                 HistoryPreviewWindowKind.document.minimumContentSize
             ),
             (
+                "image",
                 AnyView(HistoryImagePreviewView(material: HistoryPreviewImageMaterial(
                     data: try XCTUnwrap(image.tiffRepresentation),
                     image: image
@@ -233,6 +235,7 @@ final class HistoryPreviewLayoutTests: XCTestCase {
                 HistoryPreviewWindowKind.image.minimumContentSize
             ),
             (
+                "pdf",
                 AnyView(HistoryPDFPreviewView(material: HistoryPreviewPDFMaterial(
                     data: pdfData,
                     document: try XCTUnwrap(PDFDocument(data: pdfData))
@@ -241,7 +244,7 @@ final class HistoryPreviewLayoutTests: XCTestCase {
             )
         ]
 
-        for (preview, size) in previews {
+        for (name, preview, size) in previews {
             let host = NSHostingView(
                 rootView: preview.frame(width: size.width, height: size.height)
             )
@@ -254,12 +257,11 @@ final class HistoryPreviewLayoutTests: XCTestCase {
             )
             window.contentView = host
             host.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
-            let image = try snapshot(host)
+            let image = try toolbarSnapshot(host)
             XCTAssertGreaterThan(
                 toolbarInkPixelCount(in: image),
                 100,
-                "the format toolbar must remain visibly rendered at minimum width"
+                "the \(name) toolbar must remain visibly rendered at minimum width"
             )
         }
     }
@@ -422,6 +424,20 @@ final class HistoryPreviewLayoutTests: XCTestCase {
     private func snapshot(_ view: NSView) throws -> NSBitmapImageRep {
         let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: rep)
+        return rep
+    }
+
+    @MainActor
+    private func toolbarSnapshot(_ view: NSView) throws -> NSBitmapImageRep {
+        let height = min(view.bounds.height, 100)
+        let rect = NSRect(
+            x: view.bounds.minX,
+            y: view.isFlipped ? view.bounds.minY : view.bounds.maxY - height,
+            width: view.bounds.width,
+            height: height
+        )
+        let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: rect))
+        view.cacheDisplay(in: rect, to: rep)
         return rep
     }
 
