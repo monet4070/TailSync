@@ -19,37 +19,119 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  frontend:
-    name: Frontend (${{ matrix.project }})
+  changes:
+    name: Plan CI scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      frontend_windows: ${{ steps.plan.outputs.frontend_windows }}
+      frontend_site: ${{ steps.plan.outputs.frontend_site }}
+      rust_windows: ${{ steps.plan.outputs.rust_windows }}
+      rust_macos: ${{ steps.plan.outputs.rust_macos }}
+      scripts: ${{ steps.plan.outputs.scripts }}
+      shared_resolution: ${{ steps.plan.outputs.shared_resolution }}
+      rustsec: ${{ steps.plan.outputs.rustsec }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Test CI scope policy
+        run: node --test scripts/ci-scope.test.mjs
+      - name: Classify changed paths
+        id: plan
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed_files="$RUNNER_TEMP/tailsync-changed-files.zlist"
+          force_full=false
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            test -n "$BASE_SHA"
+            test -n "$HEAD_SHA"
+            git cat-file -e "$BASE_SHA^{commit}"
+            git cat-file -e "$HEAD_SHA^{commit}"
+            git diff --check "$BASE_SHA...$HEAD_SHA"
+            git diff --name-only -z "$BASE_SHA...$HEAD_SHA" > "$changed_files"
+          else
+            # Main pushes, manual runs, and release workflow calls retain the
+            # complete gate. Only pull requests use path-targeted validation.
+            force_full=true
+            : > "$changed_files"
+          fi
+
+          plan_log="$RUNNER_TEMP/tailsync-ci-plan.txt"
+          node scripts/ci-scope.mjs \
+            --files "$changed_files" \
+            --force-full "$force_full" \
+            --github-output "$GITHUB_OUTPUT" | tee "$plan_log"
+
+          {
+            echo '### CI scope'
+            echo '```text'
+            cat "$plan_log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  frontend-windows:
+    name: Frontend (windows)
+    needs: changes
+    if: needs.changes.outputs.frontend_windows == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        project: [windows, site]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+          cache-dependency-path: windows/package-lock.json
       - name: Install dependencies
-        working-directory: ${{ matrix.project }}
+        working-directory: windows
         run: npm ci
       - name: Lint
-        working-directory: ${{ matrix.project }}
+        working-directory: windows
         run: npm run lint
       - name: Test
-        if: matrix.project == 'windows'
         working-directory: windows
         run: npm test
       - name: Build
-        working-directory: ${{ matrix.project }}
+        working-directory: windows
+        run: npm run build
+
+  frontend-site:
+    name: Frontend (site)
+    needs: changes
+    if: needs.changes.outputs.frontend_site == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Install dependencies
+        working-directory: site
+        run: npm ci
+      - name: Lint
+        working-directory: site
+        run: npm run lint
+      - name: Build
+        working-directory: site
         run: npm run build
 
   rust-windows:
     name: Packaged application (Windows)
+    needs: changes
+    if: needs.changes.outputs.rust_windows == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -138,6 +220,8 @@ jobs:
 
   rust-macos:
     name: Packaged application (macOS)
+    needs: changes
+    if: needs.changes.outputs.rust_macos == 'true'
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
@@ -207,6 +291,8 @@ jobs:
 
   scripts:
     name: Release and recovery scripts
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -244,6 +330,8 @@ jobs:
 
   shared-resolution:
     name: Shared production dependency resolution
+    needs: changes
+    if: needs.changes.outputs.shared_resolution == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -258,6 +346,8 @@ jobs:
 
   rustsec:
     name: RustSec advisories (${{ matrix.manifest }})
+    needs: changes
+    if: needs.changes.outputs.rustsec == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -278,29 +368,58 @@ jobs:
   required-verification:
     name: Required verification
     if: ${{ always() }}
-    needs: [frontend, rust-windows, rust-macos, scripts, shared-resolution, rustsec]
+    needs:
+      - changes
+      - frontend-windows
+      - frontend-site
+      - rust-windows
+      - rust-macos
+      - scripts
+      - shared-resolution
+      - rustsec
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      FRONTEND_RESULT: ${{ needs.frontend.result }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      FRONTEND_WINDOWS_EXPECTED: ${{ needs.changes.outputs.frontend_windows }}
+      FRONTEND_WINDOWS_RESULT: ${{ needs.frontend-windows.result }}
+      FRONTEND_SITE_EXPECTED: ${{ needs.changes.outputs.frontend_site }}
+      FRONTEND_SITE_RESULT: ${{ needs.frontend-site.result }}
+      RUST_WINDOWS_EXPECTED: ${{ needs.changes.outputs.rust_windows }}
       RUST_WINDOWS_RESULT: ${{ needs.rust-windows.result }}
+      RUST_MACOS_EXPECTED: ${{ needs.changes.outputs.rust_macos }}
       RUST_MACOS_RESULT: ${{ needs.rust-macos.result }}
+      SCRIPTS_EXPECTED: ${{ needs.changes.outputs.scripts }}
       SCRIPTS_RESULT: ${{ needs.scripts.result }}
+      SHARED_RESOLUTION_EXPECTED: ${{ needs.changes.outputs.shared_resolution }}
       SHARED_RESOLUTION_RESULT: ${{ needs.shared-resolution.result }}
+      RUSTSEC_EXPECTED: ${{ needs.changes.outputs.rustsec }}
       RUSTSEC_RESULT: ${{ needs.rustsec.result }}
     steps:
-      - name: Require every CI job to succeed
+      - name: Require every selected CI job to succeed
         shell: bash
         run: |
-          results=(
-            "$FRONTEND_RESULT"
-            "$RUST_WINDOWS_RESULT"
-            "$RUST_MACOS_RESULT"
-            "$SCRIPTS_RESULT"
-            "$SHARED_RESOLUTION_RESULT"
-            "$RUSTSEC_RESULT"
-          )
-          printf 'Dependency results: %s\n' "${results[*]}"
-          for result in "${results[@]}"; do
-            test "$result" = success
-          done
+          set -euo pipefail
+
+          test "$CHANGES_RESULT" = success
+
+          require_result() {
+            local label="$1"
+            local expected="$2"
+            local actual="$3"
+            printf '%-30s expected=%-5s actual=%s\n' "$label" "$expected" "$actual"
+            if [[ "$expected" == "true" ]]; then
+              test "$actual" = success
+            else
+              test "$expected" = false
+              test "$actual" = skipped
+            fi
+          }
+
+          require_result 'Frontend (windows)' "$FRONTEND_WINDOWS_EXPECTED" "$FRONTEND_WINDOWS_RESULT"
+          require_result 'Frontend (site)' "$FRONTEND_SITE_EXPECTED" "$FRONTEND_SITE_RESULT"
+          require_result 'Packaged application (Windows)' "$RUST_WINDOWS_EXPECTED" "$RUST_WINDOWS_RESULT"
+          require_result 'Packaged application (macOS)' "$RUST_MACOS_EXPECTED" "$RUST_MACOS_RESULT"
+          require_result 'Release and recovery scripts' "$SCRIPTS_EXPECTED" "$SCRIPTS_RESULT"
+          require_result 'Shared production resolution' "$SHARED_RESOLUTION_EXPECTED" "$SHARED_RESOLUTION_RESULT"
+          require_result 'RustSec advisories' "$RUSTSEC_EXPECTED" "$RUSTSEC_RESULT"
