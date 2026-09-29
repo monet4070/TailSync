@@ -216,7 +216,7 @@ final class HistoryPreviewLayoutTests: XCTestCase {
     }
 
     @MainActor
-    func testEveryCustomPreviewToolbarKeepsControlsUsableAtMinimumWidth() throws {
+    func testEveryCustomPreviewToolbarRendersAtMinimumWidth() throws {
         _ = NSApplication.shared
         let pdfData = try makePDFData()
         let image = makeImage()
@@ -429,6 +429,9 @@ final class HistoryPreviewLayoutTests: XCTestCase {
 
     @MainActor
     private func toolbarSnapshot(_ view: NSView) throws -> NSBitmapImageRep {
+        // This test asserts only on the toolbar. Caching the whole preview also
+        // rasterizes PDFKit content and made this check take about one minute
+        // on hosted macOS runners without adding coverage for the assertion.
         let height = min(view.bounds.height, 100)
         let rect = NSRect(
             x: view.bounds.minX,
