@@ -24,6 +24,9 @@
 | 配对：未确认槽位可抢占 | `newer_session_preempts_an_unconfirmed_slot_but_not_a_confirmed_one` | `shared/rust-core/src/pairing/tests.rs` |
 | 信任锚：同名异钥被拒 | `re_pairing_same_hostname_with_a_different_key_is_rejected` | `shared/rust-core/src/crypto/tests.rs` |
 | 发现：lan_only 拒绝 Tailscale | `lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local` | `shared/rust-core/src/peer/directory.rs` |
+| 发现：零设备是成功、仅全传输失败才报错 | `lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail` | `shared/rust-core/src/peer/directory.rs` |
+| 候选解析：拒绝无作用域链路本地 IPv6 | `resolve_candidates_rejects_link_local_ipv6_without_a_scope` | `shared/rust-core/src/peer/directory.rs` |
+| Windows 广播目标语义 | `broadcast_targets_always_include_the_global_broadcast` | `windows/src-tauri/src/network/lan.rs` |
 | 发现：本机 LAN IP 选择 | `local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified` | `shared/rust-core/src/peer/directory.rs` |
 | 候选排序：私网优先 | `candidate_sort_prefers_private_addresses_over_apipa_and_loopback` | `shared/rust-core/src/peer/directory.rs` |
 | 投递：静默 ACK 不重放 | `silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream` | `shared/rust-core/src/peer/delivery/tests.rs` |
@@ -54,8 +57,6 @@
 | Windows 后台警告不被吞（`S6-P2-4`） | 无测试 |
 | 文件/即时队列隔离（`S2-F5`） | 未实现，无测试 |
 | WAL 忙时降级（`S5-P2-2`） | 仅覆盖正常截断 |
-| 无作用域链路本地候选（`S1-P1-4`） | 仅覆盖手动输入，未覆盖候选解析 |
-| Windows 广播接口语义（`S1-P1-5`） | 无测试 |
 | 孤儿文件对账 GC（`S5-P2-1`） | 仅覆盖删除容错 |
 
 > 覆盖率的定期采集与趋势见计划的第 1 阶段要求；本清单不设全仓库百分比门槛。

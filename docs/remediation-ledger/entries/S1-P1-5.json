@@ -3,7 +3,13 @@
   "platform": [
     "windows"
   ],
-  "gate": null,
+  "gate": {
+    "kind": "unit",
+    "file": "windows/src-tauri/src/network/lan.rs",
+    "test": "broadcast_targets_always_include_the_global_broadcast",
+    "command": "cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib",
+    "asserts": "广播目标集恒含全局广播地址、绝不含 loopback，端口恒为 DISCOVERY_PORT；目标集不可为空。该测试只在 rust-windows 编译运行。"
+  },
   "ci_job": [
     "rust-windows"
   ],
@@ -16,8 +22,8 @@
     "windows/src-tauri/src/network/lan.rs:discover"
   ],
   "trigger": "广播目标枚举缺网卡状态位检查；discover() 把结果压成一个布尔，调用方无法区分发送成功与发现设备。",
-  "fix_evidence": "部分：broadcast_targets 已 continue 掉 !is_oper_up/!is_loopback/!is_p2p；但 discover() 仍返回单个布尔 sent，且无测试。",
-  "status": "partial",
+  "fix_evidence": "broadcast_targets 已过滤 down/loopback/点对点接口；契约决策已记录：零设备是成功而非失败（merge_lan_discovery_results 仅在全部传输失败时返回 Err，已加测试 lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail），\"无合格 LAN 接口\"由空 local_ip 表达，因此不新增结果字段。",
+  "status": "fixed_gated",
   "pass_condition": "契约决策已记录；零设备、全部发送失败及无合格接口的可观察行为分别有测试。",
   "reopen_condition": "UI 或健康状态把“无可用 LAN”误报为已发现/连接成功。"
 }

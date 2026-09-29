@@ -308,3 +308,36 @@ pub async fn start_responder() {
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // S1-P1-5: the target set always contains the global broadcast address, so
+    // "no broadcast targets" is not a reachable state. A caller therefore sees
+    // only two outcomes: at least one send succeeded, or every send failed.
+    #[test]
+    fn broadcast_targets_always_include_the_global_broadcast() {
+        let targets = broadcast_targets();
+        assert!(
+            targets.contains(&SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT))),
+            "the global broadcast address must always be a target: {targets:?}"
+        );
+        assert!(
+            !targets.iter().any(|target| target.ip().is_loopback()),
+            "loopback must never be a discovery target: {targets:?}"
+        );
+        for target in &targets {
+            assert_eq!(
+                target.port(),
+                DISCOVERY_PORT,
+                "unexpected port in {target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn broadcast_targets_is_never_empty() {
+        assert!(!broadcast_targets().is_empty());
+    }
+}

@@ -639,6 +639,18 @@ pub fn resolve_candidates(
                     let ip: IpAddr = candidate.address.parse().map_err(|error| {
                         format!("Invalid peer address {}: {error}", candidate.address)
                     })?;
+                    // A link-local IPv6 address is only routable with an
+                    // interface scope id, which a discovery candidate cannot
+                    // carry. Reject it here so this path matches
+                    // `parse_pairing_target` instead of building an unroutable
+                    // scope-0 socket that only fails once the OS refuses the route.
+                    if let IpAddr::V6(v6) = ip {
+                        if v6.is_unicast_link_local() {
+                            return Err(format!(
+                                "Unsupported peer address {ip}: link-local IPv6 requires an interface scope"
+                            ));
+                        }
+                    }
                     ResolvedTarget::Tcp(SocketAddr::new(ip, tcp_port))
                 }
             };
@@ -1043,6 +1055,30 @@ mod tests {
     }
 
     #[test]
+    fn lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail() {
+        // S1-P1-5: "no devices nearby" is a successful discovery, not a send
+        // failure, and only a total transport failure is an error. The UI can
+        // already tell "no usable LAN interface" from the empty local address
+        // (`local_ip()` returns ""), so no extra result field is added.
+        let local = LocalInfo {
+            hostname: "macbook".into(),
+            tailscale_ip: String::new(),
+            candidates: Vec::new(),
+        };
+        let (reported, peers) = merge_lan_discovery_results(
+            Ok((local, Vec::new())),
+            Err("udp: no eligible interface".into()),
+        )
+        .expect("one working transport is enough for a successful discovery");
+        assert!(peers.is_empty(), "zero devices must not be reported as a failure");
+        assert!(reported.candidates.is_empty());
+
+        let error = merge_lan_discovery_results(Err("udp down".into()), Err("mdns down".into()))
+            .unwrap_err();
+        assert!(error.contains("udp down"), "unexpected error: {error}");
+    }
+
+    #[test]
     fn trusted_peer_candidates_are_completed_from_all_remembered_interfaces() {
         let identity = DeviceIdentity::generate_for_test();
         let mut settings = Settings {
@@ -1286,6 +1322,29 @@ mod tests {
             )],
         );
         assert!(resolve_candidates(&peer, 19890).is_err());
+    }
+
+    #[test]
+    fn resolve_candidates_rejects_link_local_ipv6_without_a_scope() {
+        // S1-P1-4: the discovery candidate path must reject a scopeless
+        // link-local IPv6 exactly like the manual pairing input, instead of
+        // building a scope-0 socket that only fails when the OS refuses the route.
+        let peer = peer_with_candidates(
+            "mac",
+            vec![PeerCandidate::new(ConnectionInterface::Lan, "fe80::1")],
+        );
+        let error = resolve_candidates(&peer, 19890).unwrap_err();
+        assert!(error.contains("link-local"), "unexpected error: {error}");
+
+        // Routable candidates still resolve.
+        let peer = peer_with_candidates(
+            "mac",
+            vec![
+                PeerCandidate::new(ConnectionInterface::Lan, "fd12::1"),
+                PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.5"),
+            ],
+        );
+        assert_eq!(resolve_candidates(&peer, 19890).unwrap().len(), 2);
     }
 
     #[test]

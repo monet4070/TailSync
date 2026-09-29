@@ -6,9 +6,9 @@
   "gate": {
     "kind": "unit",
     "file": "shared/rust-core/src/peer/directory.rs",
-    "test": "pairing_target_rejects_link_local_ipv6_with_a_clear_message",
+    "test": "resolve_candidates_rejects_link_local_ipv6_without_a_scope",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "parse_pairing_target 拒绝 'fe80::1'（link-local）与 'fe80::1%en0'（scope）——仅覆盖手动输入，未覆盖候选解析路径。"
+    "asserts": "候选解析对无作用域的链路本地 IPv6 返回错误（与手动配对输入一致），ULA 与私网 IPv4 仍解析成功。"
   },
   "ci_job": [
     "rust-macos",
@@ -23,8 +23,8 @@
     "shared/rust-core/src/peer/directory.rs:resolve_candidates"
   ],
   "trigger": "构造套接字恒置 scope=0，直连必然不可达；输入 %en0 曾被误报为 Iroh 错误。",
-  "fix_evidence": "部分：手动配对输入已拒绝无作用域链路本地（含 %scope）；候选解析仍以 SocketAddr::new(ip, tcp_port) 构造无 scope 地址，未一致处理。",
-  "status": "partial",
-  "pass_condition": "手动与发现候选都拒绝无作用域链路本地 IPv6，或端到端正确携带 scope ID。",
+  "fix_evidence": "手动配对输入已拒绝无作用域链路本地；resolve_candidates 现在同样拒绝，不再构造 scope 0 的不可路由 socket。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台 CI job 中以通过状态出现。",
   "reopen_condition": "任一路径仍生成不可拨号的 scope 0 地址。"
 }
