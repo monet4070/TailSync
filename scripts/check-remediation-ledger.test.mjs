@@ -156,6 +156,22 @@ test('manifestCovers follows include! from another crate', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('declared status counts that drift from the entries are rejected', () => {
+  const { root } = fixture({ manifest: { status_counts: { fixed_gated: 99 } } });
+  assert.ok(validateLedger(root).some((e) => /status_counts\.fixed_gated is 99 but entries contain 1/.test(e)));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a malformed entry does not cascade into a bogus missing-entry error', () => {
+  const { root, data } = fixture();
+  data.status = 'nonsense';
+  writeFileSync(join(root, 'docs/remediation-ledger/entries/S1-P0-1.json'), JSON.stringify(data));
+  const errors = validateLedger(root);
+  assert.ok(errors.some((e) => /is not one of/.test(e)));
+  assert.ok(!errors.some((e) => /no entry file exists/.test(e)), errors.join('; '));
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('renderIndex lists every entry', () => {
   const md = renderIndex(
     { initial_audit_sha: 'a'.repeat(40), baseline_date: '2026-09-29' },

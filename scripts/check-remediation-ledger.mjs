@@ -193,15 +193,21 @@ export function validateLedger(root) {
   const jobs = parseCiJobs(readFileSync(workflowPath, 'utf8'));
 
   const seen = new Set();
+  const idCounts = new Map();
   for (const { file, data } of entries) {
+    if (typeof data.id === 'string') {
+      // register before shape checks so a malformed entry does not cascade into
+      // a bogus "no entry file exists" error
+      seen.add(data.id);
+      idCounts.set(data.id, (idCounts.get(data.id) || 0) + 1);
+    }
     const before = errors.length;
     validateSchema(schema, data, file, errors);
     if (errors.length !== before) continue; // field-shape errors make rule checks unreliable
 
     const expectedFile = `${data.id}.json`;
     if (!file.endsWith(expectedFile)) errors.push(`${file}: filename does not match id (${expectedFile})`);
-    if (seen.has(data.id)) errors.push(`${file}: duplicate id ${data.id}`);
-    seen.add(data.id);
+    if ((idCounts.get(data.id) || 0) > 1) errors.push(`${file}: duplicate id ${data.id}`);
     if (!expected.has(data.id)) errors.push(`${file}: id ${data.id} is not in manifest.expected_ids`);
     if (data.status === 'fixed_gated' && !data.gate) errors.push(`${file}: status fixed_gated requires a gate`);
 
@@ -244,6 +250,25 @@ export function validateLedger(root) {
 
   for (const id of expected) if (!seen.has(id)) errors.push(`manifest lists ${id} but no entry file exists`);
   for (const id of seen) if (!expected.has(id)) errors.push(`entry ${id} is not listed in manifest.expected_ids`);
+
+  // declared counts must match the entries, otherwise they drift silently
+  const statusCounts = {};
+  const levelCounts = {};
+  for (const { data } of entries) {
+    if (typeof data.status === 'string') statusCounts[data.status] = (statusCounts[data.status] || 0) + 1;
+    if (typeof data.level === 'string') levelCounts[data.level] = (levelCounts[data.level] || 0) + 1;
+  }
+  for (const [key, declared] of Object.entries(manifest.status_counts || {})) {
+    const actual = statusCounts[key] || 0;
+    if (declared !== actual) errors.push(`manifest.status_counts.${key} is ${declared} but entries contain ${actual}`);
+  }
+  for (const [key, declared] of Object.entries(manifest.level_counts || {})) {
+    const actual = levelCounts[key] || 0;
+    if (declared !== actual) errors.push(`manifest.level_counts.${key} is ${declared} but entries contain ${actual}`);
+  }
+  if (manifest.expected_ids && entries.length !== manifest.expected_ids.length) {
+    errors.push(`entries count ${entries.length} != manifest.expected_ids length ${manifest.expected_ids.length}`);
+  }
 
   return errors;
 }
