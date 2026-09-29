@@ -1,0 +1,23 @@
+{
+  "level": "P1",
+  "platform": [
+    "shared"
+  ],
+  "gate": null,
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S2-F2",
+  "title": "投递失败路径补齐退避，阻断 0 延迟重连风暴",
+  "code_symbols": [
+    "shared/rust-core/src/peer/delivery/worker.rs:backoff_after_delivery_failure"
+  ],
+  "trigger": "投递失败立即重连，网络闪断时形成热重连循环。",
+  "fix_evidence": "worker.rs 在两条投递失败分支均调用可被 shutdown/wakeup 取消的退避睡眠。",
+  "status": "fixed_ungated",
+  "pass_condition": "在 peer/delivery/tests.rs 用 Tokio 虚拟时钟断言：连续失败且无新工作时重连间隔按退避增长，新工作能唤醒退避。",
+  "reopen_condition": "退避被移除或退化为 0 延迟重连，且无测试能捕获。"
+}

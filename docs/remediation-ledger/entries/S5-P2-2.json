@@ -1,0 +1,28 @@
+{
+  "level": "P2",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/rust-core/src/db/tests.rs",
+    "test": "explicit_delete_truncates_the_write_ahead_log",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "正常删除后 WAL 为空/不存在（未覆盖 busy 降级路径）。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S5-P2-2",
+  "title": "WAL 截断忙时应留下诊断且保持删除成功",
+  "code_symbols": [
+    "shared/rust-core/src/db/lifecycle.rs:execute_batch(\"PRAGMA wal_checkpoint(TRUNCATE);\")"
+  ],
+  "trigger": "execute_batch 丢弃 (busy, log, checkpointed) 结果行，busy=1 不进入 Err 警告分支。",
+  "fix_evidence": "部分：删除已提交这一点成立，但“忙时留下警告”未落实，未读取 checkpoint 返回列。",
+  "status": "partial",
+  "pass_condition": "busy 返回列被识别并记录诊断，删除保持成功；非 busy 可完成截断。",
+  "reopen_condition": "busy 静默通过、删除被误报失败或 WAL 结果未核对。"
+}

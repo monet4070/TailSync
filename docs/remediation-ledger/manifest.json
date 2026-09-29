@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "initial_audit_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "baseline_date": "2026-09-29",
+  "audit_source": "docs/CODE-REVIEW-2026-09-27.md",
+  "plan_source": "docs/CODE-REVIEW-REMEDIATION-PLAN-2026-09-29.md",
+  "level_counts": {
+    "P0": 4,
+    "P1": 19,
+    "P2": 8
+  },
+  "status_counts": {
+    "fixed_gated": 16,
+    "fixed_ungated": 3,
+    "partial": 5,
+    "unfixed": 6,
+    "needs_adjudication": 1
+  },
+  "expected_ids": [
+    "S1-P0-1",
+    "S1-P0-2",
+    "S1-P1-3",
+    "S1-P1-4",
+    "S1-P1-5",
+    "S2-F1",
+    "S2-F2",
+    "S2-F3",
+    "S2-F4",
+    "S2-F5",
+    "S3-P0-1",
+    "S3-P1-1",
+    "S3-P1-2",
+    "S3-P1-3",
+    "S3-P1-4",
+    "S4-P1-1",
+    "S4-P1-2",
+    "S4-P1-3",
+    "S4-P1-4",
+    "S4-P1-5",
+    "S4-P2-1",
+    "S4-P2-2",
+    "S5-P1-1",
+    "S5-P1-2",
+    "S5-P2-1",
+    "S5-P2-2",
+    "S6-P0-1",
+    "S6-P2-1",
+    "S6-P2-3",
+    "S6-P2-4",
+    "S6-P2-6"
+  ]
+}

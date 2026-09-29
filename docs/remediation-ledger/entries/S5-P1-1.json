@@ -1,0 +1,28 @@
+{
+  "level": "P1",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/rust-core/src/db/storage.rs",
+    "test": "batch_preflight_stops_when_only_inline_history_can_be_evicted",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "只有内联行且配额为 1 时返回 inline only 错误并保留全部 3 条历史。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S5-P1-1",
+  "title": "配额预检不再以文件系统尺寸作判据",
+  "code_symbols": [
+    "shared/rust-core/src/db/storage.rs:reserve_for_file_batch"
+  ],
+  "trigger": "SQLite DELETE 不缩容文件，预检按文件尺寸误判未释放空间而拒绝传输。",
+  "fix_evidence": "只淘汰持有外部 payload 的行，剩余仅内联时给出准确的“inline only”错误。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台的 CI job 中以通过状态出现；台账记录该测试名与 job。",
+  "reopen_condition": "门禁测试被删除/改名，或其断言的不变量在代码中不再成立。"
+}

@@ -1,0 +1,20 @@
+{
+  "level": "P2",
+  "platform": [
+    "shared"
+  ],
+  "gate": null,
+  "ci_job": [],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S6-P2-4",
+  "title": "Windows 后台长轮询不再偷吃唯一 sync_warning",
+  "code_symbols": [
+    "windows/src-tauri/src/commands/platform.rs"
+  ],
+  "trigger": "隐藏窗口时后台长轮询 take() 掉唯一的 sync_warning，打开窗口已无提示。",
+  "fix_evidence": "未修：wait_runtime_snapshot 与 get_sync_warning 仍用破坏性 take()，无 peek/带 ID 读取。",
+  "status": "unfixed",
+  "pass_condition": "隐藏期及进行中的轮询均不吞警告，前台恰好展示一次。",
+  "reopen_condition": "警告丢失或重复展示。"
+}

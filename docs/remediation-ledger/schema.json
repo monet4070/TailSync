@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TailSync remediation ledger entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "level",
+    "title",
+    "status",
+    "platform",
+    "code_symbols",
+    "trigger",
+    "fix_evidence",
+    "gate",
+    "ci_job",
+    "native_acceptance",
+    "pass_condition",
+    "reopen_condition",
+    "last_verified_main_sha"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^S[0-9]-[A-Z0-9]+(-[0-9]+)?$"
+    },
+    "level": { "enum": ["P0", "P1", "P2"] },
+    "title": { "type": "string", "minLength": 8 },
+    "status": {
+      "enum": [
+        "fixed_gated",
+        "fixed_ungated",
+        "partial",
+        "unfixed",
+        "needs_adjudication"
+      ]
+    },
+    "platform": {
+      "type": "array",
+      "items": { "enum": ["shared", "macos", "windows", "cli"] },
+      "minItems": 1
+    },
+    "code_symbols": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "trigger": { "type": "string", "minLength": 8 },
+    "fix_evidence": { "type": "string", "minLength": 8 },
+    "gate": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file", "test", "command", "asserts"],
+          "properties": {
+            "file": { "type": "string" },
+            "test": { "type": "string", "minLength": 4 },
+            "command": { "type": "string", "minLength": 4 },
+            "asserts": { "type": "string", "minLength": 8 }
+          }
+        }
+      ]
+    },
+    "ci_job": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "native_acceptance": { "type": ["string", "null"] },
+    "pass_condition": { "type": "string", "minLength": 8 },
+    "reopen_condition": { "type": "string", "minLength": 8 },
+    "last_verified_main_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+  }
+}

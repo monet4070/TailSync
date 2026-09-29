@@ -1,0 +1,20 @@
+{
+  "level": "P1",
+  "platform": [
+    "shared"
+  ],
+  "gate": null,
+  "ci_job": [],
+  "native_acceptance": "故障注入覆盖每个持久化/发送边界；两端 UI 不把 pending 表示为已配对。",
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S3-P1-2",
+  "title": "配对单边持久化孤儿需要可恢复的 pending/active 状态",
+  "code_symbols": [
+    "shared/rust-core/src/pairing/manager.rs"
+  ],
+  "trigger": "信任在双方确认前持久化；超时后仅把窗口退回 Waiting，不回收已落盘的单边信任。",
+  "fix_evidence": "未实现：无 pending/active 持久状态与对账；forget_peer 只在手动 UI 命令调用。",
+  "status": "unfixed",
+  "pass_condition": "双方故障点、重启、重复确认及旧→新/新→旧夹具通过；单边 pending 不显示成功。",
+  "reopen_condition": "单边记录被视为 active，或兼容性路径静默成功/失信。"
+}

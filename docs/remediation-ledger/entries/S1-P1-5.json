@@ -1,0 +1,23 @@
+{
+  "level": "P1",
+  "platform": [
+    "windows"
+  ],
+  "gate": null,
+  "ci_job": [
+    "rust-windows"
+  ],
+  "native_acceptance": "Windows 原生断网、虚拟网卡与 VPN 混合场景记录；单元测试无法替代。",
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S1-P1-5",
+  "title": "接口状态过滤需区分“已发送探测”与“发现设备”",
+  "code_symbols": [
+    "windows/src-tauri/src/network/lan.rs:broadcast_targets",
+    "windows/src-tauri/src/network/lan.rs:discover"
+  ],
+  "trigger": "广播目标枚举缺网卡状态位检查；discover() 把结果压成一个布尔，调用方无法区分发送成功与发现设备。",
+  "fix_evidence": "部分：broadcast_targets 已 continue 掉 !is_oper_up/!is_loopback/!is_p2p；但 discover() 仍返回单个布尔 sent，且无测试。",
+  "status": "partial",
+  "pass_condition": "契约决策已记录；零设备、全部发送失败及无合格接口的可观察行为分别有测试。",
+  "reopen_condition": "UI 或健康状态把“无可用 LAN”误报为已发现/连接成功。"
+}

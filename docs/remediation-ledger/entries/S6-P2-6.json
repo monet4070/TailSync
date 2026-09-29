@@ -1,0 +1,27 @@
+{
+  "level": "P2",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "macos/src-tauri/src/api/transport.rs",
+    "test": "disconnected_client_drops_pending_response",
+    "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib",
+    "asserts": "客户端半端被丢弃时 until_disconnect 返回 None 并取消待决 future。"
+  },
+  "ci_job": [
+    "rust-macos"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S6-P2-6",
+  "title": "长轮询纳入断开取消，释放连接许可",
+  "code_symbols": [
+    "macos/src-tauri/src/api/transport.rs:until_disconnect"
+  ],
+  "trigger": "客户端断开后 wait_runtime_snapshot 仍死等 15s 占用连接信号量。",
+  "fix_evidence": "cancel_on_disconnect 白名单加入 wait_runtime_snapshot，经 until_disconnect 路由。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台的 CI job 中以通过状态出现；台账记录该测试名与 job。",
+  "reopen_condition": "门禁测试被删除/改名，或其断言的不变量在代码中不再成立。"
+}

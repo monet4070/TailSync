@@ -1,0 +1,28 @@
+{
+  "level": "P0",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/rust-core/src/peer/directory.rs",
+    "test": "local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "空/0.0.0.0 返回 None，绝不选 loopback/APIPA/198.18 隧道，优先私网 IPv4 并接受 ULA。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S1-P0-1",
+  "title": "local_ip 探测改用接口枚举，排除 VPN 隧道与 0.0.0.0",
+  "code_symbols": [
+    "shared/rust-core/src/peer/directory.rs:select_local_lan_ip"
+  ],
+  "trigger": "开启代理/VPN 时 UdpSocket::connect(\"8.8.8.8\") 返回隧道出口；隔离 LAN 返回 0.0.0.0。",
+  "fix_evidence": "lan.rs 不再用 8.8.8.8 探针，改为按 is_oper_up/!is_loopback/!is_p2p 枚举接口并调用 select_local_lan_ip 排序。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台的 CI job 中以通过状态出现；台账记录该测试名与 job。",
+  "reopen_condition": "门禁测试被删除/改名，或其断言的不变量在代码中不再成立。"
+}

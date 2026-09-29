@@ -1,0 +1,21 @@
+{
+  "level": "P1",
+  "platform": [
+    "shared"
+  ],
+  "gate": null,
+  "ci_job": [],
+  "native_acceptance": "需匿名发起者实验：枚举 LAN mDNS/UDP、Noise Message 2 与各模式下可获得的字段。",
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S3-P1-1",
+  "title": "握手 Message 2 的匿名可见字段边界（待裁定）",
+  "code_symbols": [
+    "shared/rust-core/src/secure/handshake.rs",
+    "shared/rust-core/src/secure.rs"
+  ],
+  "trigger": "Noise XX Message 2 在发起方未认证时携带 hostname/tailscale_ip/iroh_endpoint_id/app_version/protocol_version。",
+  "fix_evidence": "未改：载荷经 Noise write_frame 加密，被动监听者不可读，仅主动匿名 XX 发起者可解。",
+  "status": "needs_adjudication",
+  "pass_condition": "匿名可见字段矩阵与隐私策略一致，主动探测及各发现模式夹具通过。",
+  "reopen_condition": "匿名方拿到策略标为认证后可见的字段。"
+}

@@ -1,0 +1,28 @@
+{
+  "level": "P1",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/rust-core/src/peer/directory.rs",
+    "test": "candidate_sort_prefers_private_addresses_over_apipa_and_loopback",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "10.0.0.5/192.168.1.7 排在 169.254.x 与 127.0.0.1 之前（另有 candidate_sort_keeps_online_routes_ahead_of_offline_lan）。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S1-P1-3",
+  "title": "候选排序按在线/延迟/地址等级加权，私网地址优先",
+  "code_symbols": [
+    "shared/rust-core/src/peer/directory.rs:candidate_sort_key"
+  ],
+  "trigger": "候选按纯 ASCII 字典序排序，APIPA/脏地址排在前面并被持久化为首选。",
+  "fix_evidence": "candidate_sort_key = (!online, latency, priority, address_class_rank, numeric_ip)；peer.address 取排序后首个候选。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台的 CI job 中以通过状态出现；台账记录该测试名与 job。",
+  "reopen_condition": "门禁测试被删除/改名，或其断言的不变量在代码中不再成立。"
+}

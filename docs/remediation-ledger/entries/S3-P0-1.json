@@ -1,0 +1,28 @@
+{
+  "level": "P0",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/rust-core/src/pairing/tests.rs",
+    "test": "anonymous_protocol_anomalies_do_not_consume_the_lockout_budget",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "max_failures=1 下连续匿名异常后配对仍开启、failed_attempts==0，随后合法配对成功（另有 newer_session_preempts_an_unconfirmed_slot_but_not_a_confirmed_one、session_timeouts_do_not_consume_pairing_lockout_budget）。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S3-P0-1",
+  "title": "匿名协议异常不再消耗配对失败预算",
+  "code_symbols": [
+    "shared/rust-core/src/pairing/manager.rs:fail_session_on_protocol_error"
+  ],
+  "trigger": "匿名攻击者 5 次非法握手即可让配对窗口进入 Locked，阻断正版客户端。",
+  "fix_evidence": "仅 local_confirmed 时计入锁定；未确认会话异常走 record_non_ban_failure_for_session，不增 failed_attempts；新会话可抢占未确认槽位。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台的 CI job 中以通过状态出现；台账记录该测试名与 job。",
+  "reopen_condition": "门禁测试被删除/改名，或其断言的不变量在代码中不再成立。"
+}

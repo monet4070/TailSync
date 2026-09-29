@@ -1,0 +1,23 @@
+{
+  "level": "P0",
+  "platform": [
+    "shared"
+  ],
+  "gate": null,
+  "ci_job": [
+    "rust-windows"
+  ],
+  "native_acceptance": "打包 job 启动成品 exe，确认端口未被无关进程占用后断言 TailSync 未监听 TCP 127.0.0.1:19889（Get-NetTCPConnection + 进程所有权）。",
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S6-P0-1",
+  "title": "Windows 生产不启动旧 JSON TCP API",
+  "code_symbols": [
+    "windows/src-tauri/src/lib.rs",
+    "windows/src-tauri/src/api.rs"
+  ],
+  "trigger": "Windows 曾无条件启动 127.0.0.1:19889 的 legacy JSON TCP API，超出本地认证 IPC 边界。",
+  "fix_evidence": "b1de577 起 lib.rs 以 #[cfg(not(target_os = \"windows\"))] 包住 api::start；api.rs:22 亦门禁 transport::start。",
+  "status": "fixed_ungated",
+  "pass_condition": "Windows 打包 job 的成品运行断言通过；故意移除该 cfg 时检查报红。",
+  "reopen_condition": "Windows 成品再次监听 19889，或门禁被移除而无替代断言。"
+}

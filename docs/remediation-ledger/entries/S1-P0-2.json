@@ -1,0 +1,28 @@
+{
+  "level": "P0",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/rust-core/src/peer/directory.rs",
+    "test": "lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "100.64.0.7 与 fd7a:115c:a1e0::1 在 lan_only 下被拒，同时保留普通 ULA、fe80:: 与 loopback。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S1-P0-2",
+  "title": "lan_only 模式不再放行 Tailscale 地址",
+  "code_symbols": [
+    "shared/rust-core/src/peer/directory.rs:source_matches_mode"
+  ],
+  "trigger": "source_matches_mode 的 ULA 规则与 Tailscale 地址重叠，lan_only 放行外网 Tailscale。",
+  "fix_evidence": "is_tailscale_address 先于通用 fc00::/7 规则判定，Tailscale 仅在 tailscale/tailscale_only 模式放行。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台的 CI job 中以通过状态出现；台账记录该测试名与 job。",
+  "reopen_condition": "门禁测试被删除/改名，或其断言的不变量在代码中不再成立。"
+}

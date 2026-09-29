@@ -1,0 +1,28 @@
+{
+  "level": "P1",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/platform-clipboard-tests.rs",
+    "test": "source_validation_is_shared_for_one_two_and_eight_peers",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "一个已验证 Arc 被 1/2/8 个对端视图共享，源校验每个文件恰好执行一次，与对端数无关。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S4-P1-5",
+  "title": "源文件校验跨对端共享，消除逐对端重哈希",
+  "code_symbols": [
+    "shared/platform-clipboard-transfer.rs:validate_prepared_batch_sources"
+  ],
+  "trigger": "restart_batch 触发整批次重复全盘重哈希（审计描述为 32 倍读盘放大）。",
+  "fix_evidence": "早于白皮书的 69489aa 已把源校验移出逐对端重试循环，restart_batch 循环复用预计算 entry.hash。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台的 CI job 中以通过状态出现；台账记录该测试名与 job。",
+  "reopen_condition": "门禁测试被删除/改名，或其断言的不变量在代码中不再成立。"
+}

@@ -1,0 +1,28 @@
+{
+  "level": "P2",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/rust-core/src/private_fs.rs",
+    "test": "create_private_dir_all_locks_created_directories",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "创建的目录及其父目录为 0o700 且幂等。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S4-P2-1",
+  "title": "incoming 目录以 0o700 创建",
+  "code_symbols": [
+    "shared/rust-core/src/private_fs.rs:create_private_dir_all"
+  ],
+  "trigger": "裸 create_dir_all 使用系统 umask，首次创建为 0755。",
+  "fix_evidence": "incoming 目录改经 create_private_dir_all，强制 0o700 并加锁。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台的 CI job 中以通过状态出现；台账记录该测试名与 job。",
+  "reopen_condition": "门禁测试被删除/改名，或其断言的不变量在代码中不再成立。"
+}

@@ -1,0 +1,29 @@
+{
+  "level": "P1",
+  "platform": [
+    "shared"
+  ],
+  "gate": {
+    "file": "shared/rust-core/src/peer/directory.rs",
+    "test": "pairing_target_rejects_link_local_ipv6_with_a_clear_message",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "parse_pairing_target 拒绝 'fe80::1'（link-local）与 'fe80::1%en0'（scope）——仅覆盖手动输入，未覆盖候选解析路径。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": null,
+  "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
+  "id": "S1-P1-4",
+  "title": "无作用域链路本地 IPv6 需在所有入口一致拒绝",
+  "code_symbols": [
+    "shared/rust-core/src/peer/directory.rs:parse_pairing_target",
+    "shared/rust-core/src/peer/directory.rs:resolve_candidates"
+  ],
+  "trigger": "构造套接字恒置 scope=0，直连必然不可达；输入 %en0 曾被误报为 Iroh 错误。",
+  "fix_evidence": "部分：手动配对输入已拒绝无作用域链路本地（含 %scope）；候选解析仍以 SocketAddr::new(ip, tcp_port) 构造无 scope 地址，未一致处理。",
+  "status": "partial",
+  "pass_condition": "手动与发现候选都拒绝无作用域链路本地 IPv6，或端到端正确携带 scope ID。",
+  "reopen_condition": "任一路径仍生成不可拨号的 scope 0 地址。"
+}
