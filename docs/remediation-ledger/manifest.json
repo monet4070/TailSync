@@ -2,8 +2,8 @@
   "schema_version": 1,
   "initial_audit_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "baseline_date": "2026-09-29",
-  "audit_source": "docs/CODE-REVIEW-2026-09-27.md",
-  "plan_source": "docs/CODE-REVIEW-REMEDIATION-PLAN-2026-09-29.md",
+  "audit_source": "docs/audit/CODE-REVIEW-2026-09-27.md",
+  "plan_source": "docs/audit/CODE-REVIEW-REMEDIATION-PLAN-2026-09-29.md",
   "level_counts": {
     "P0": 4,
     "P1": 19,

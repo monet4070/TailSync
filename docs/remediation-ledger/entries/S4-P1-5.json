@@ -6,8 +6,8 @@
   "gate": {
     "file": "shared/platform-clipboard-tests.rs",
     "test": "source_validation_is_shared_for_one_two_and_eight_peers",
-    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "一个已验证 Arc 被 1/2/8 个对端视图共享，源校验每个文件恰好执行一次，与对端数无关。"
+    "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets",
+    "asserts": "一个已验证 Arc 被 1/2/8 个对端视图共享，源校验每个文件恰好执行一次，与对端数无关。该文件由 macos/windows 的 clipboard/tests.rs include!，不属于 shared/rust-core crate。"
   },
   "ci_job": [
     "rust-macos",

@@ -10,7 +10,7 @@
 |---|---|---|
 | shared core | `cargo test --locked --manifest-path shared/rust-core/Cargo.toml` | rust-macos, rust-windows |
 | shared runtime | `cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml` | rust-macos, rust-windows |
-| macOS 应用 | `cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib` | rust-macos |
+| macOS 应用 | `cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets` | rust-macos |
 | Windows 应用 | `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib` | rust-windows |
 | Swift UI | `swift test --package-path macos/swift-ui` | rust-macos |
 | 仓库脚本 | `node --test scripts/*.test.mjs` | scripts |

@@ -1,37 +1,147 @@
 #!/usr/bin/env node
-// Validates docs/remediation-ledger: schema conformance, ID set, status/gate
-// consistency, that each named gate test actually exists in the repo, and that
-// every ci_job names a real job in .github/workflows/ci.yml.
+// Validates docs/remediation-ledger against its own schema.json and against the
+// repository: ID set, status/gate consistency, that each named gate test exists
+// in the named file, that the gate's command actually compiles that file, and
+// that every declared ci_job runs a command covering the gate.
 //
 // Usage:
 //   node scripts/check-remediation-ledger.mjs [--root .] [--write]
-//   --write regenerates docs/remediation-ledger/INDEX.md
-import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, readdirSync, existsSync, writeFileSync, realpathSync, statSync } from 'node:fs';
+import { join, dirname, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REQUIRED = [
-  'id', 'level', 'title', 'status', 'platform', 'code_symbols', 'trigger',
-  'fix_evidence', 'gate', 'ci_job', 'native_acceptance', 'pass_condition',
-  'reopen_condition', 'last_verified_main_sha',
-];
 const STATUSES = ['fixed_gated', 'fixed_ungated', 'partial', 'unfixed', 'needs_adjudication'];
-const LEVELS = ['P0', 'P1', 'P2'];
-const PLATFORMS = ['shared', 'macos', 'windows', 'cli'];
-const SHA_RE = /^[0-9a-f]{40}$/;
-const ID_RE = /^S[0-9]-[A-Z0-9]+(-[0-9]+)?$/;
+
+const norm = (p) => p.replaceAll('\\', '/');
+
+// ---------- workflow parsing ----------
 
 export function parseCiJobs(workflowText) {
   const lines = workflowText.split('\n');
   const start = lines.findIndex((l) => /^jobs:\s*$/.test(l));
-  if (start === -1) return [];
-  const jobs = [];
+  if (start === -1) return {};
+  const jobs = {};
+  let current = null;
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i];
-    if (/^\S/.test(line)) break; // left the jobs block
-    const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
-    if (m) jobs.push(m[1]);
+    if (/^\S/.test(line)) break;
+    const jobMatch = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (jobMatch) {
+      current = jobMatch[1];
+      jobs[current] = [];
+      continue;
+    }
+    if (!current) continue;
+    const runMatch = /^\s*(?:-\s*)?run:\s*(.*)$/.exec(line);
+    if (runMatch) {
+      jobs[current].push(runMatch[1]);
+      const indent = line.search(/\S/);
+      // block scalar: absorb following more-indented lines
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j];
+        if (next.trim() === '') continue;
+        const nextIndent = next.search(/\S/);
+        if (nextIndent <= indent) break;
+        jobs[current][jobs[current].length - 1] += '\n' + next.trim();
+      }
+    }
   }
   return jobs;
+}
+
+function rustFilesUnder(root, dir) {
+  const abs = join(root, dir);
+  if (!existsSync(abs)) return [];
+  const out = [];
+  const walk = (d) => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (entry.name.endsWith('.rs')) out.push(p);
+    }
+  };
+  walk(abs);
+  return out;
+}
+
+// A crate rooted at `manifestDir` covers `gateFile` if the file is inside the
+// crate, or if some file in the crate `include!`s it by basename.
+export function manifestCovers(root, manifestPath, gateFile) {
+  const manifestDir = norm(dirname(manifestPath));
+  const g = norm(gateFile);
+  if (g === manifestDir || g.startsWith(manifestDir + '/')) return true;
+  const target = basename(g);
+  for (const file of rustFilesUnder(root, manifestDir)) {
+    const text = readFileSync(file, 'utf8');
+    const re = /include!\(\s*"([^"]+)"\s*\)/g;
+    let m;
+    while ((m = re.exec(text))) {
+      if (basename(norm(m[1])) === target) return true;
+    }
+  }
+  return false;
+}
+
+// ---------- minimal JSON-schema subset ----------
+
+function validateSchema(schema, value, path, errors) {
+  if (schema.oneOf) {
+    const branches = schema.oneOf;
+    const nullBranch = branches.some((b) => b.type === 'null');
+    if (value === null) {
+      if (!nullBranch) errors.push(`${path}: null is not allowed`);
+      return;
+    }
+    const objectBranch = branches.find((b) => b.type === 'object');
+    if (objectBranch) return validateSchema(objectBranch, value, path, errors);
+    return;
+  }
+  if (schema.type) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    const actual = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    if (!types.includes(actual)) {
+      errors.push(`${path}: expected ${types.join('|')}, got ${actual}`);
+      return;
+    }
+  }
+  if (schema.enum && !schema.enum.includes(value)) {
+    errors.push(`${path}: "${value}" is not one of ${schema.enum.join(', ')}`);
+  }
+  if (typeof value === 'string') {
+    if (schema.minLength && value.length < schema.minLength) errors.push(`${path}: shorter than minLength ${schema.minLength}`);
+    if (schema.pattern && !new RegExp(schema.pattern).test(value)) errors.push(`${path}: does not match ${schema.pattern}`);
+  }
+  if (Array.isArray(value)) {
+    if (schema.minItems && value.length < schema.minItems) errors.push(`${path}: needs at least ${schema.minItems} item(s)`);
+    if (schema.items) value.forEach((v, i) => validateSchema(schema.items, v, `${path}[${i}]`, errors));
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && schema.properties) {
+    for (const key of schema.required || []) {
+      if (!(key in value)) errors.push(`${path}: missing required field "${key}"`);
+    }
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(value)) {
+        if (!(key in schema.properties)) errors.push(`${path}: unknown field "${key}"`);
+      }
+    }
+    for (const [key, sub] of Object.entries(schema.properties)) {
+      if (key in value) validateSchema(sub, value[key], `${path}.${key}`, errors);
+    }
+  }
+}
+
+// ---------- ledger ----------
+
+export function loadLedger(root) {
+  const dir = join(root, 'docs/remediation-ledger');
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  const entriesDir = join(dir, 'entries');
+  const files = existsSync(entriesDir) ? readdirSync(entriesDir).filter((f) => f.endsWith('.json')).sort() : [];
+  const entries = files.map((f) => ({
+    file: `docs/remediation-ledger/entries/${f}`,
+    data: JSON.parse(readFileSync(join(entriesDir, f), 'utf8')),
+  }));
+  return { dir, manifest, entries };
 }
 
 export function renderIndex(manifest, entries) {
@@ -40,17 +150,13 @@ export function renderIndex(manifest, entries) {
   const rows = entries
     .slice()
     .sort((a, b) => a.id.localeCompare(b.id))
-    .map((e) => {
-      const gate = e.gate ? `\`${e.gate.test}\`` : '—';
-      const jobs = e.ci_job.length ? e.ci_job.join(', ') : '—';
-      return `| ${e.id} | ${e.level} | ${e.status} | ${gate} | ${jobs} |`;
-    })
+    .map((e) => `| ${e.id} | ${e.level} | ${e.status} | ${e.gate ? '`' + e.gate.test + '`' : '—'} | ${e.ci_job.length ? e.ci_job.join(', ') : '—'} |`)
     .join('\n');
   const counts = STATUSES.map((s) => `${s}=${(byStatus[s] || []).length}`).join(', ');
   return [
     '# Remediation ledger index',
     '',
-    `> Generated by \`scripts/check-remediation-ledger.mjs --write\`. Do not edit by hand.`,
+    '> Generated by `scripts/check-remediation-ledger.mjs --write`. Do not edit by hand.',
     `> Initial audit baseline: \`${manifest.initial_audit_sha}\` (${manifest.baseline_date}).`,
     `> Entries: ${entries.length}. Status counts: ${counts}.`,
     '',
@@ -61,22 +167,16 @@ export function renderIndex(manifest, entries) {
   ].join('\n');
 }
 
-export function loadLedger(root) {
-  const dir = join(root, 'docs/remediation-ledger');
-  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
-  const entriesDir = join(dir, 'entries');
-  const files = existsSync(entriesDir)
-    ? readdirSync(entriesDir).filter((f) => f.endsWith('.json')).sort()
-    : [];
-  const entries = files.map((f) => ({
-    file: join('docs/remediation-ledger/entries', f),
-    data: JSON.parse(readFileSync(join(entriesDir, f), 'utf8')),
-  }));
-  return { dir, manifest, entries };
-}
-
 export function validateLedger(root) {
   const errors = [];
+  const schemaPath = join(root, 'docs/remediation-ledger/schema.json');
+  if (!existsSync(schemaPath)) return ['docs/remediation-ledger/schema.json is missing'];
+  let schema;
+  try {
+    schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+  } catch (err) {
+    return [`schema.json is not valid JSON: ${err.message}`];
+  }
   let ledger;
   try {
     ledger = loadLedger(root);
@@ -85,65 +185,63 @@ export function validateLedger(root) {
   }
   const { manifest, entries } = ledger;
 
-  if (!SHA_RE.test(manifest.initial_audit_sha || '')) errors.push('manifest.initial_audit_sha must be a 40-char hex sha');
-  if (!Array.isArray(manifest.expected_ids) || manifest.expected_ids.length === 0) {
-    errors.push('manifest.expected_ids must be a non-empty array');
-  }
   const expected = new Set(manifest.expected_ids || []);
   if (expected.size !== (manifest.expected_ids || []).length) errors.push('manifest.expected_ids contains duplicates');
 
-  // job names for ci_job validation
   const workflowPath = join(root, '.github/workflows/ci.yml');
-  const jobs = existsSync(workflowPath) ? new Set(parseCiJobs(readFileSync(workflowPath, 'utf8'))) : null;
+  if (!existsSync(workflowPath)) return ['registry: .github/workflows/ci.yml is missing'];
+  const jobs = parseCiJobs(readFileSync(workflowPath, 'utf8'));
 
   const seen = new Set();
   for (const { file, data } of entries) {
-    const where = file;
-    for (const key of REQUIRED) {
-      if (!(key in data)) errors.push(`${where}: missing required field "${key}"`);
-    }
-    if (!ID_RE.test(data.id || '')) errors.push(`${where}: bad id "${data.id}"`);
-    const expectedFile = `${data.id}.json`;
-    if (!file.endsWith(expectedFile)) errors.push(`${where}: filename does not match id (${expectedFile})`);
-    if (seen.has(data.id)) errors.push(`${where}: duplicate id ${data.id}`);
-    seen.add(data.id);
-    if (!expected.has(data.id)) errors.push(`${where}: id ${data.id} is not in manifest.expected_ids`);
-    if (!LEVELS.includes(data.level)) errors.push(`${where}: bad level "${data.level}"`);
-    if (!STATUSES.includes(data.status)) errors.push(`${where}: bad status "${data.status}"`);
-    if (!Array.isArray(data.platform) || data.platform.length === 0) errors.push(`${where}: platform must be non-empty`);
-    else for (const p of data.platform) if (!PLATFORMS.includes(p)) errors.push(`${where}: bad platform "${p}"`);
-    if (!SHA_RE.test(data.last_verified_main_sha || '')) errors.push(`${where}: last_verified_main_sha must be 40-char hex`);
-    if (!Array.isArray(data.ci_job)) errors.push(`${where}: ci_job must be an array`);
+    const before = errors.length;
+    validateSchema(schema, data, file, errors);
+    if (errors.length !== before) continue; // field-shape errors make rule checks unreliable
 
-    // status/gate consistency
-    if (data.status === 'fixed_gated') {
-      if (!data.gate) errors.push(`${where}: status fixed_gated requires a gate`);
-    }
+    const expectedFile = `${data.id}.json`;
+    if (!file.endsWith(expectedFile)) errors.push(`${file}: filename does not match id (${expectedFile})`);
+    if (seen.has(data.id)) errors.push(`${file}: duplicate id ${data.id}`);
+    seen.add(data.id);
+    if (!expected.has(data.id)) errors.push(`${file}: id ${data.id} is not in manifest.expected_ids`);
+    if (data.status === 'fixed_gated' && !data.gate) errors.push(`${file}: status fixed_gated requires a gate`);
+
     if (data.gate) {
       const g = data.gate;
-      for (const key of ['file', 'test', 'command', 'asserts']) {
-        if (!g[key] || typeof g[key] !== 'string') errors.push(`${where}: gate.${key} is required`);
+      const src = join(root, g.file);
+      if (!existsSync(src)) {
+        errors.push(`${file}: gate.file does not exist: ${g.file}`);
+      } else {
+        const text = readFileSync(src, 'utf8');
+        const re = new RegExp(`\\b(?:async\\s+)?(?:fn|func)\\s+${g.test.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[<(]`);
+        if (!re.test(text)) errors.push(`${file}: gate test "${g.test}" not found in ${g.file}`);
       }
-      if (g.file && g.test) {
-        const src = join(root, g.file);
-        if (!existsSync(src)) {
-          errors.push(`${where}: gate.file does not exist: ${g.file}`);
-        } else {
-          const text = readFileSync(src, 'utf8');
-          const re = new RegExp(`\\b(?:async\\s+)?(?:fn|func)\\s+${g.test.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[<(]`);
-          if (!re.test(text)) errors.push(`${where}: gate test "${g.test}" not found in ${g.file}`);
-        }
+      // the gate command must compile the file the test lives in
+      const manifestPaths = [...g.command.matchAll(/--manifest-path\s+(\S+)/g)].map((m) => m[1]);
+      if (manifestPaths.length === 0) {
+        errors.push(`${file}: gate.command must name a --manifest-path`);
+      } else {
+        const covered = manifestPaths.some((mp) => manifestCovers(root, mp, g.file));
+        if (!covered) errors.push(`${file}: gate.command manifest (${manifestPaths.join(', ')}) does not compile ${g.file}`);
       }
     }
-    // ci_job validation
-    if (jobs) {
-      for (const job of data.ci_job) {
-        if (!jobs.has(job)) errors.push(`${where}: ci_job "${job}" is not a job in .github/workflows/ci.yml`);
+
+    for (const job of data.ci_job) {
+      if (!(job in jobs)) {
+        errors.push(`${file}: ci_job "${job}" is not a job in .github/workflows/ci.yml`);
+        continue;
+      }
+      if (!data.gate) continue;
+      const manifestPaths = [...data.gate.command.matchAll(/--manifest-path\s+(\S+)/g)].map((m) => m[1]);
+      const runs = jobs[job].join('\n');
+      const jobCovers = [...runs.matchAll(/--manifest-path\s+(\S+)/g)]
+        .map((m) => m[1])
+        .some((mp) => manifestCovers(root, mp, data.gate.file));
+      if (!jobCovers) {
+        errors.push(`${file}: ci_job "${job}" runs no command that compiles gate.file (${data.gate.file}); declared gate.command uses ${manifestPaths.join(', ')}`);
       }
     }
   }
 
-  // ID set equality
   for (const id of expected) if (!seen.has(id)) errors.push(`manifest lists ${id} but no entry file exists`);
   for (const id of seen) if (!expected.has(id)) errors.push(`entry ${id} is not listed in manifest.expected_ids`);
 
@@ -168,4 +266,12 @@ function main() {
   console.log(`remediation ledger OK: ${entries.length} entries, baseline ${manifest.initial_audit_sha.slice(0, 12)}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+function isMain() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+if (isMain()) main();
