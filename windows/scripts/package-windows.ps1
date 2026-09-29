@@ -505,9 +505,16 @@ try {
             # listener observed later can be attributed to TailSync and not to an
             # unrelated process on the runner.
             $legacyApiPort = 19889
-            if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
-                $preExistingListeners = @(Get-NetTCPConnection -State Listen -LocalPort $legacyApiPort -ErrorAction SilentlyContinue)
-            } else {
+            # Never let an unavailable or erroring cmdlet silently disable this
+            # gate: fall back to netstat in that case rather than returning an
+            # empty listener set.
+            try {
+                if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+                    $preExistingListeners = @(Get-NetTCPConnection -State Listen -LocalPort $legacyApiPort -ErrorAction Stop)
+                } else {
+                    $preExistingListeners = @(netstat -ano -p tcp | Select-String 'LISTENING' | Select-String ":$legacyApiPort\s")
+                }
+            } catch {
                 $preExistingListeners = @(netstat -ano -p tcp | Select-String 'LISTENING' | Select-String ":$legacyApiPort\s")
             }
             if ($preExistingListeners.Count -gt 0) {
@@ -522,10 +529,15 @@ try {
 
             # S6-P0-1: the packaged Windows app must not start the legacy JSON TCP
             # API; Windows UI traffic goes over Tauri invoke/event IPC.
-            if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
-                $tailSyncListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-                    Where-Object { $_.LocalPort -eq $legacyApiPort -and $_.OwningProcess -eq $process.Id })
-            } else {
+            try {
+                if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+                    $tailSyncListeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop |
+                        Where-Object { $_.LocalPort -eq $legacyApiPort -and $_.OwningProcess -eq $process.Id })
+                } else {
+                    $tailSyncListeners = @(netstat -ano -p tcp | Select-String 'LISTENING' |
+                        Select-String ":$legacyApiPort\s" | Select-String "\s$($process.Id)$")
+                }
+            } catch {
                 $tailSyncListeners = @(netstat -ano -p tcp | Select-String 'LISTENING' |
                     Select-String ":$legacyApiPort\s" | Select-String "\s$($process.Id)$")
             }

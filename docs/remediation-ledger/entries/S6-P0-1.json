@@ -8,7 +8,7 @@
     "file": "windows/scripts/package-windows.ps1",
     "marker": "Packaged TailSync is listening on the legacy local API port",
     "command": "./windows/scripts/package-windows.ps1 -SkipChecks",
-    "asserts": "打包 job 启动成品 exe，先确认 19889 未被无关进程占用，再以进程所有权断言 TailSync 未监听 127.0.0.1:19889。"
+    "asserts": "打包 job 启动成品 exe，先确认 19889 未被无关进程占用，再以进程所有权断言 TailSync 未监听 127.0.0.1:19889。（含 Get-NetTCPConnection 出错时回退 netstat 的失败关闭处理。）"
   },
   "ci_job": [
     "rust-windows"
@@ -22,7 +22,7 @@
     "windows/src-tauri/src/api.rs"
   ],
   "trigger": "Windows 曾无条件启动 127.0.0.1:19889 的 legacy JSON TCP API，超出本地认证 IPC 边界。",
-  "fix_evidence": "b1de577 起 lib.rs 以 #[cfg(not(target_os = \"windows\"))] 包住 api::start；api.rs:22 亦门禁 transport::start。",
+  "fix_evidence": "b1de577 起 lib.rs 以 #[cfg(not(target_os = \"windows\"))] 包住 api::start；api.rs:22 亦门禁 transport::start。 故障注入证据：docs/acceptance/s6-p0-1-mutation-proof.md（临时分支移除三处 cfg 后，Windows 打包 job 的成品断言报红，run 36603236594）。",
   "status": "fixed_gated",
   "pass_condition": "Windows 打包 job 的成品运行断言通过。",
   "reopen_condition": "Windows 成品再次监听 19889，或门禁步骤被移除而无替代断言。"
