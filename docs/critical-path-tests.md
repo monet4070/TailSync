@@ -25,7 +25,7 @@
 | 信任锚：同名异钥被拒 | `re_pairing_same_hostname_with_a_different_key_is_rejected` | `shared/rust-core/src/crypto/tests.rs` |
 | 发现：lan_only 拒绝 Tailscale | `lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local` | `shared/rust-core/src/peer/directory.rs` |
 | 发现：零设备是成功、仅全传输失败才报错 | `lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail` | `shared/rust-core/src/peer/directory.rs` |
-| 候选解析：拒绝无作用域链路本地 IPv6 | `resolve_candidates_rejects_link_local_ipv6_without_a_scope` | `shared/rust-core/src/peer/directory.rs` |
+| 候选解析：跳过无作用域链路本地 IPv6 | `resolve_candidates_skips_link_local_ipv6_without_a_scope` | `shared/rust-core/src/peer/directory.rs` |
 | Windows 广播目标语义 | `broadcast_targets_always_include_the_global_broadcast` | `windows/src-tauri/src/network/lan.rs` |
 | 发现：本机 LAN IP 选择 | `local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified` | `shared/rust-core/src/peer/directory.rs` |
 | 候选排序：私网优先 | `candidate_sort_prefers_private_addresses_over_apipa_and_loopback` | `shared/rust-core/src/peer/directory.rs` |
