@@ -511,6 +511,14 @@ pub use tailsync_core::peer::types::RouteLatency;
 pub async fn test_connection(address: &str) -> Result<RouteLatency, String> {
     let started = tokio::time::Instant::now();
     if let Ok(ip) = address.parse::<IpAddr>() {
+        // A link-local IPv6 route cannot be dialed without an interface scope
+        // id, so report that instead of attempting a scope-0 socket.
+        if matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local()) {
+            return Err(
+                "link-local IPv6 requires an interface scope, which this client cannot supply"
+                    .to_string(),
+            );
+        }
         let addr = SocketAddr::new(ip, TCP_PORT);
         return match timeout(Duration::from_secs(3), TcpStream::connect(addr)).await {
             Ok(Ok(_)) => Ok(RouteLatency {

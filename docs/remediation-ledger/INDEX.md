@@ -9,8 +9,8 @@
 | S1-P0-1 | P0 | fixed_gated | `local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified` | rust-macos, rust-windows |
 | S1-P0-2 | P0 | fixed_gated | `lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local` | rust-macos, rust-windows |
 | S1-P1-3 | P1 | fixed_gated | `candidate_sort_prefers_private_addresses_over_apipa_and_loopback` | rust-macos, rust-windows |
-| S1-P1-4 | P1 | fixed_gated | `resolve_candidates_rejects_link_local_ipv6_without_a_scope` | rust-macos, rust-windows |
-| S1-P1-5 | P1 | fixed_gated | `broadcast_targets_always_include_the_global_broadcast` | rust-windows |
+| S1-P1-4 | P1 | fixed_gated | `resolve_candidates_skips_link_local_ipv6_without_a_scope` | rust-macos, rust-windows |
+| S1-P1-5 | P1 | fixed_gated | `lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail` | rust-macos, rust-windows |
 | S2-F1 | P1 | fixed_gated | `silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream` | rust-macos, rust-windows |
 | S2-F2 | P1 | fixed_gated | `delivery_failure_backoff_delays_the_next_reconnect` | rust-macos, rust-windows |
 | S2-F3 | P1 | fixed_gated | `sender_for_candidates_keeps_a_live_worker_across_route_changes` | rust-macos, rust-windows |

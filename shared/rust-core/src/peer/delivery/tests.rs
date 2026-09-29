@@ -1633,7 +1633,12 @@ async fn delivery_failure_backoff_delays_the_next_reconnect() {
     let (second_client_io, _second_server_io) = tokio::io::duplex(64 * 1024);
     let adapter = Arc::new(scripted_adapter(vec![
         Ok((MemoryConnection { io: client_io }, candidate.clone())),
-        Ok((MemoryConnection { io: second_client_io }, candidate.clone())),
+        Ok((
+            MemoryConnection {
+                io: second_client_io,
+            },
+            candidate.clone(),
+        )),
     ]));
 
     // Accept the handshake, read one frame, then drop the connection without an
@@ -1674,7 +1679,11 @@ async fn delivery_failure_backoff_delays_the_next_reconnect() {
         .unwrap();
     server.await.unwrap();
 
-    let calls = || adapter.connect_calls.load(std::sync::atomic::Ordering::SeqCst);
+    let calls = || {
+        adapter
+            .connect_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+    };
     for _ in 0..500 {
         tokio::task::yield_now().await;
     }

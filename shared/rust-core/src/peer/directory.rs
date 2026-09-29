@@ -174,6 +174,13 @@ pub fn peer_socket_addr(peer: &PeerInfo, port: u16) -> Result<SocketAddr, String
     let ip: IpAddr = address
         .parse()
         .map_err(|e| format!("Invalid peer address {address}: {e}"))?;
+    // Same rule as `resolve_candidates`: a link-local IPv6 address cannot be
+    // dialed without an interface scope id, which a bare address cannot carry.
+    if matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local()) {
+        return Err(format!(
+            "Unsupported peer address {ip}: link-local IPv6 requires an interface scope"
+        ));
+    }
     Ok(SocketAddr::new(ip, port))
 }
 
@@ -628,35 +635,40 @@ pub fn resolve_candidates(
             .then_with(|| left.priority.cmp(&right.priority))
             .then_with(|| left.address.cmp(&right.address))
     });
-    let resolved = candidates
-        .into_iter()
-        .map(|candidate| {
-            let target = match candidate.interface {
-                ConnectionInterface::Iroh => ResolvedTarget::Iroh(
-                    crate::iroh_transport::canonical_endpoint_id(&candidate.address)?,
-                ),
-                ConnectionInterface::Lan | ConnectionInterface::Tailscale => {
-                    let ip: IpAddr = candidate.address.parse().map_err(|error| {
-                        format!("Invalid peer address {}: {error}", candidate.address)
-                    })?;
-                    // A link-local IPv6 address is only routable with an
-                    // interface scope id, which a discovery candidate cannot
-                    // carry. Reject it here so this path matches
-                    // `parse_pairing_target` instead of building an unroutable
-                    // scope-0 socket that only fails once the OS refuses the route.
-                    if let IpAddr::V6(v6) = ip {
-                        if v6.is_unicast_link_local() {
-                            return Err(format!(
-                                "Unsupported peer address {ip}: link-local IPv6 requires an interface scope"
-                            ));
-                        }
-                    }
-                    ResolvedTarget::Tcp(SocketAddr::new(ip, tcp_port))
+    let mut resolved = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let target = match candidate.interface {
+            ConnectionInterface::Iroh => ResolvedTarget::Iroh(
+                crate::iroh_transport::canonical_endpoint_id(&candidate.address)?,
+            ),
+            ConnectionInterface::Lan | ConnectionInterface::Tailscale => {
+                let ip: IpAddr = candidate.address.parse().map_err(|error| {
+                    format!("Invalid peer address {}: {error}", candidate.address)
+                })?;
+                // A link-local IPv6 address is only routable with an interface
+                // scope id, which a discovery candidate cannot carry. Skip that
+                // candidate instead of building an unroutable scope-0 socket.
+                // Only the candidate is skipped: a peer that also advertises a
+                // routable route keeps working.
+                if matches!(ip, IpAddr::V6(v6) if v6.is_unicast_link_local()) {
+                    tracing::debug!(
+                        peer = %peer.hostname,
+                        address = %candidate.address,
+                        "skipping a link-local IPv6 candidate without an interface scope"
+                    );
+                    continue;
                 }
-            };
-            Ok(ResolvedCandidate { candidate, target })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+                ResolvedTarget::Tcp(SocketAddr::new(ip, tcp_port))
+            }
+        };
+        resolved.push(ResolvedCandidate { candidate, target });
+    }
+    if resolved.is_empty() {
+        return Err(format!(
+            "Peer {} has no routable connection candidates (link-local IPv6 requires an interface scope)",
+            peer.hostname
+        ));
+    }
     tracing::debug!(
         peer = %peer.hostname,
         candidate_count = resolved.len(),
@@ -1057,22 +1069,49 @@ mod tests {
     #[test]
     fn lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail() {
         // S1-P1-5: "no devices nearby" is a successful discovery, not a send
-        // failure, and only a total transport failure is an error. The UI can
-        // already tell "no usable LAN interface" from the empty local address
-        // (`local_ip()` returns ""), so no extra result field is added.
-        let local = LocalInfo {
-            hostname: "macbook".into(),
-            tailscale_ip: String::new(),
-            candidates: Vec::new(),
-        };
+        // failure, and only a total transport failure is an error.
+        fn local(hostname: &str, tailscale_ip: &str, candidates: Vec<PeerCandidate>) -> LocalInfo {
+            LocalInfo {
+                hostname: hostname.into(),
+                tailscale_ip: tailscale_ip.into(),
+                candidates,
+            }
+        }
+
         let (reported, peers) = merge_lan_discovery_results(
-            Ok((local, Vec::new())),
+            Ok((local("macbook", "", Vec::new()), Vec::new())),
             Err("udp: no eligible interface".into()),
         )
         .expect("one working transport is enough for a successful discovery");
-        assert!(peers.is_empty(), "zero devices must not be reported as a failure");
+        assert!(
+            peers.is_empty(),
+            "zero devices must not be reported as a failure"
+        );
         assert!(reported.candidates.is_empty());
 
+        // In `auto` mode a successful Tailscale transport still fills
+        // `tailscale_ip`, so "no usable LAN interface" is not readable from that
+        // field alone; callers label the route by interface instead. Pin the
+        // behavior so a future change to it is deliberate.
+        let (auto_local, auto_peers) = merge_lan_discovery_results(
+            Ok((local("macbook", "", Vec::new()), Vec::new())),
+            Ok((
+                local(
+                    "macbook",
+                    "100.64.0.7",
+                    vec![PeerCandidate::new(
+                        ConnectionInterface::Tailscale,
+                        "100.64.0.7",
+                    )],
+                ),
+                Vec::new(),
+            )),
+        )
+        .expect("tailscale-only discovery is a success");
+        assert_eq!(auto_local.tailscale_ip, "100.64.0.7");
+        assert!(auto_peers.is_empty());
+
+        // Both transports failing is the only error case.
         let error = merge_lan_discovery_results(Err("udp down".into()), Err("mdns down".into()))
             .unwrap_err();
         assert!(error.contains("udp down"), "unexpected error: {error}");
@@ -1325,10 +1364,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_candidates_rejects_link_local_ipv6_without_a_scope() {
-        // S1-P1-4: the discovery candidate path must reject a scopeless
-        // link-local IPv6 exactly like the manual pairing input, instead of
-        // building a scope-0 socket that only fails when the OS refuses the route.
+    fn resolve_candidates_skips_link_local_ipv6_without_a_scope() {
+        // S1-P1-4: the discovery candidate path must not build a scope-0 socket
+        // for a link-local IPv6 address (matching `parse_pairing_target`). Only
+        // the unusable candidate is skipped, so a peer that also advertises a
+        // routable route keeps working.
         let peer = peer_with_candidates(
             "mac",
             vec![PeerCandidate::new(ConnectionInterface::Lan, "fe80::1")],
@@ -1336,15 +1376,23 @@ mod tests {
         let error = resolve_candidates(&peer, 19890).unwrap_err();
         assert!(error.contains("link-local"), "unexpected error: {error}");
 
-        // Routable candidates still resolve.
         let peer = peer_with_candidates(
             "mac",
             vec![
-                PeerCandidate::new(ConnectionInterface::Lan, "fd12::1"),
+                PeerCandidate::new(ConnectionInterface::Lan, "fe80::1"),
                 PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.5"),
             ],
         );
-        assert_eq!(resolve_candidates(&peer, 19890).unwrap().len(), 2);
+        let resolved = resolve_candidates(&peer, 19890).unwrap();
+        assert_eq!(resolved.len(), 1, "the routable candidate must survive");
+        assert_eq!(resolved[0].candidate.address, "192.168.1.5");
+
+        // Routable IPv6 candidates still resolve.
+        let peer = peer_with_candidates(
+            "mac",
+            vec![PeerCandidate::new(ConnectionInterface::Lan, "fd12::1")],
+        );
+        assert_eq!(resolve_candidates(&peer, 19890).unwrap().len(), 1);
     }
 
     #[test]
