@@ -210,7 +210,11 @@ struct HistoryPDFPreviewView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            pdfToolbar
+            HistoryPDFPreviewToolbar(
+                controller: controller,
+                query: $query,
+                showsThumbnails: $showsThumbnails
+            )
             HistoryPDFContainer(controller: controller, showsThumbnails: showsThumbnails)
                 .background(HistoryPreviewModifierScrollMonitor { delta in
                     controller.adjustZoom(wheelDelta: delta)
@@ -218,8 +222,16 @@ struct HistoryPDFPreviewView: View {
         }
         .background(palette.surfaceColor)
     }
+}
 
-    private var pdfToolbar: some View {
+@MainActor
+struct HistoryPDFPreviewToolbar: View {
+    @ObservedObject var controller: HistoryPDFPreviewController
+    @Binding var query: String
+    @Binding var showsThumbnails: Bool
+    @Environment(\.tailSyncPalette) private var palette
+
+    var body: some View {
         HStack(spacing: 8) {
             HistoryPreviewToolbarIconButton(
                 systemName: "sidebar.left",
