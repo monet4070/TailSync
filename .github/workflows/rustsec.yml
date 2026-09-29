@@ -1,10 +1,9 @@
 name: RustSec audit
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
+  # PRs and main pushes already run these audits and the exception registry
+  # through CI's required verification. Keep this workflow for fresh advisories
+  # between commits and explicit rescans, without scanning every commit twice.
   schedule:
     # Daily at 06:00 UTC / 14:00 Asia/Shanghai: catches newly published
     # RustSec advisories even when nothing is pushed. Without this, a new
