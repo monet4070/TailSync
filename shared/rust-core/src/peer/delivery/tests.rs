@@ -1621,6 +1621,92 @@ async fn worker_wakes_reconnect_backoff_when_new_work_arrives() {
         .unwrap();
 }
 
+/// S2-F2: a delivery failure after a successful handshake must back off before
+/// reconnecting. Without the backoff the worker reconnects immediately, which is
+/// exactly what the virtual clock exposes here: nothing may happen before
+/// `reconnect_delay` elapses.
+#[tokio::test(start_paused = true)]
+async fn delivery_failure_backoff_delays_the_next_reconnect() {
+    let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    let tid = transfer_id(0x2c);
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (second_client_io, _second_server_io) = tokio::io::duplex(64 * 1024);
+    let adapter = Arc::new(scripted_adapter(vec![
+        Ok((MemoryConnection { io: client_io }, candidate.clone())),
+        Ok((MemoryConnection { io: second_client_io }, candidate.clone())),
+    ]));
+
+    // Accept the handshake, read one frame, then drop the connection without an
+    // ACK so the delivery attempt fails.
+    let server = tokio::spawn(async move {
+        let mut server = MemoryConnection { io: server_io };
+        let frame = server.read_frame().await.unwrap();
+        assert_eq!(frame.command, Command::FileChunk);
+    });
+
+    let (priority_tx, priority_rx) = mpsc::channel(4);
+    let (bulk_tx, bulk_rx) = mpsc::channel(4);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut config = fast_worker_config();
+    config.reconnect_delay = Duration::from_secs(5);
+    let config_for_worker = config.clone();
+    let adapter_for_worker = adapter.clone();
+    let worker = tokio::spawn(async move {
+        run_connection_worker(
+            adapter_for_worker.as_ref(),
+            &config_for_worker,
+            vec![candidate],
+            "peer".into(),
+            priority_rx,
+            bulk_rx,
+            shutdown_rx,
+        )
+        .await
+    });
+
+    let (completion_tx, _completion_rx) = oneshot::channel();
+    priority_tx
+        .send(
+            QueuedFrame::confirmed_file(Command::FileChunk, vec![0u8; 8], tid, completion_tx)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    server.await.unwrap();
+
+    let calls = || adapter.connect_calls.load(std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..500 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls(), 1, "the first attempt should connect exactly once");
+
+    tokio::time::advance(Duration::from_secs(4)).await;
+    for _ in 0..200 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        calls(),
+        1,
+        "the worker reconnected before reconnect_delay elapsed, so the delivery-failure backoff is missing"
+    );
+
+    tokio::time::advance(Duration::from_secs(2)).await;
+    for _ in 0..200 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        calls(),
+        2,
+        "the worker did not reconnect after reconnect_delay elapsed"
+    );
+
+    let _ = shutdown_tx.send(true);
+    drop(priority_tx);
+    drop(bulk_tx);
+    worker.abort();
+    let _ = worker.await;
+}
+
 #[tokio::test]
 async fn worker_reselects_the_preferred_route_after_receiver_requests_batch_replay() {
     let (fallback_client, fallback_server) = tokio::io::duplex(64 * 1024);

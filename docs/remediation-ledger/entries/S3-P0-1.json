@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/pairing/tests.rs",
     "test": "anonymous_protocol_anomalies_do_not_consume_the_lockout_budget",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

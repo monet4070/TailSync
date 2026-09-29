@@ -288,8 +288,8 @@ const winPeerPort = constant(read(winRoot, 'src-tauri/src/network/mod.rs'),
   /pub const TCP_PORT: u16 = (\d+);/, 'Windows peer TCP port');
 const macPeerPort = constant(read(macRoot, 'src-tauri/src/network/mod.rs'),
   /pub const TCP_PORT: u16 = (\d+);/, 'macOS peer TCP port');
-const winApiPort = constant(read(winRoot, 'src-tauri/src/api.rs'),
-  /pub const API_PORT: u16 = (\d+);/, 'Windows daemon API port');
+const winApiSource = read(winRoot, 'src-tauri/src/api.rs');
+const winLibSource = read(winRoot, 'src-tauri/src/lib.rs');
 const macApiSource = read(macRoot, 'src-tauri/src/api.rs');
 const macApiTransportSource = read(macRoot, 'src-tauri/src/api/transport.rs');
 const macApiRoutesSource = [
@@ -319,8 +319,15 @@ if (/environment\["TAILSYNC_API_TOKEN"\]\s*=/.test(swiftAppSource) ||
 if (winPeerPort !== 19890 || macPeerPort !== 19890) {
   fail(`Peer TCP port must be 19890 (Windows=${winPeerPort}, macOS=${macPeerPort}).`);
 }
-if (winApiPort !== 19889) {
-  fail(`Windows local API port must be 19889 (Windows=${winApiPort}).`);
+// Windows production must not start the legacy JSON TCP API on 127.0.0.1:19889;
+// its UI traffic goes over Tauri invoke/event IPC. The runtime proof is the
+// packaged-executable listener assertion in the Windows packaging job; these
+// source-level guards are what make that path unreachable, so assert them here.
+if (!/#\[cfg\(not\(target_os = "windows"\)\)\][\s\S]{0,40}?\{/.test(winLibSource)) {
+  fail('Windows lib.rs must gate the local JSON API start block behind #[cfg(not(target_os = "windows"))].');
+}
+if (!/#\[cfg\(not\(target_os = "windows"\)\)\]\s*pub use transport::start;/.test(winApiSource)) {
+  fail('Windows api.rs must gate `pub use transport::start;` behind #[cfg(not(target_os = "windows"))].');
 }
 for (const [description, source, markers] of [
   ['macOS API transport', macApiTransportSource, ['UnixListener', 'LOCAL_PEERPID', 'TAILSYNC_API_SOCKET']],
@@ -621,4 +628,4 @@ for (const pattern of [
   /get_version/,
 ]) if (!pattern.test(macVerifier)) fail(`macOS release verifier is missing required check: ${pattern}`);
 
-console.log(`Cross-platform contract passed: shared Rust core, ${swiftCommands.size} Swift API commands, Swift JSON models, tailsync deep links, TCP 19890, Windows API 19889, macOS Unix-socket API, and macOS release requirements.`);
+console.log(`Cross-platform contract passed: shared Rust core, ${swiftCommands.size} Swift API commands, Swift JSON models, tailsync deep links, TCP 19890, Windows no legacy TCP API (Tauri IPC), macOS Unix-socket API, and macOS release requirements.`);

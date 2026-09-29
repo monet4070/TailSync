@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/peer/directory.rs",
     "test": "lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

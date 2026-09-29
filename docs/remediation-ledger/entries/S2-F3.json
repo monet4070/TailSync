@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/peer/pool.rs",
     "test": "sender_for_candidates_keeps_a_live_worker_across_route_changes",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

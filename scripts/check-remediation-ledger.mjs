@@ -64,14 +64,14 @@ function rustFilesUnder(root, dir) {
   return out;
 }
 
-// A crate rooted at `manifestDir` covers `gateFile` if the file is inside the
-// crate, or if some file in the crate `include!`s it by basename.
-export function manifestCovers(root, manifestPath, gateFile) {
-  const manifestDir = norm(dirname(manifestPath));
+// A source directory covers `gateFile` if the file is inside it, or if some file
+// in it `include!`s the file by basename.
+export function dirCovers(root, dir, gateFile) {
+  const d = norm(dir);
   const g = norm(gateFile);
-  if (g === manifestDir || g.startsWith(manifestDir + '/')) return true;
+  if (g === d || g.startsWith(d + '/')) return true;
   const target = basename(g);
-  for (const file of rustFilesUnder(root, manifestDir)) {
+  for (const file of rustFilesUnder(root, d)) {
     const text = readFileSync(file, 'utf8');
     const re = /include!\(\s*"([^"]+)"\s*\)/g;
     let m;
@@ -80,6 +80,19 @@ export function manifestCovers(root, manifestPath, gateFile) {
     }
   }
   return false;
+}
+
+// A crate rooted at `manifestDir` covers `gateFile`.
+export function manifestCovers(root, manifestPath, gateFile) {
+  return dirCovers(root, dirname(manifestPath), gateFile);
+}
+
+// Does a shell command (cargo --manifest-path / swift --package-path) compile or
+// build the directory that contains `gateFile`?
+export function commandCovers(root, command, gateFile) {
+  const manifests = [...command.matchAll(/--manifest-path\s+(\S+)/g)].map((m) => dirname(m[1]));
+  const packages = [...command.matchAll(/--package-path\s+(\S+)/g)].map((m) => m[1]);
+  return [...manifests, ...packages].some((dir) => dirCovers(root, dir, gateFile));
 }
 
 // ---------- minimal JSON-schema subset ----------
@@ -214,20 +227,30 @@ export function validateLedger(root) {
     if (data.gate) {
       const g = data.gate;
       const src = join(root, g.file);
-      if (!existsSync(src)) {
-        errors.push(`${file}: gate.file does not exist: ${g.file}`);
+      const fileExists = existsSync(src);
+      if (!fileExists) errors.push(`${file}: gate.file does not exist: ${g.file}`);
+      if (g.kind === 'integration') {
+        // An integration gate is a named step in a real build/smoke script: the
+        // assertion is a literal marker in that script, not a unit test symbol.
+        if (!g.marker) {
+          errors.push(`${file}: integration gate requires a marker`);
+        } else if (fileExists && !readFileSync(src, 'utf8').includes(g.marker)) {
+          errors.push(`${file}: integration gate marker not found in ${g.file}`);
+        }
       } else {
-        const text = readFileSync(src, 'utf8');
-        const re = new RegExp(`\\b(?:async\\s+)?(?:fn|func)\\s+${g.test.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[<(]`);
-        if (!re.test(text)) errors.push(`${file}: gate test "${g.test}" not found in ${g.file}`);
-      }
-      // the gate command must compile the file the test lives in
-      const manifestPaths = [...g.command.matchAll(/--manifest-path\s+(\S+)/g)].map((m) => m[1]);
-      if (manifestPaths.length === 0) {
-        errors.push(`${file}: gate.command must name a --manifest-path`);
-      } else {
-        const covered = manifestPaths.some((mp) => manifestCovers(root, mp, g.file));
-        if (!covered) errors.push(`${file}: gate.command manifest (${manifestPaths.join(', ')}) does not compile ${g.file}`);
+        if (!g.test) {
+          errors.push(`${file}: unit gate requires a test`);
+        } else if (fileExists) {
+          const text = readFileSync(src, 'utf8');
+          const re = new RegExp(`\\b(?:async\\s+)?(?:fn|func)\\s+${g.test.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[<(]`);
+          if (!re.test(text)) errors.push(`${file}: gate test "${g.test}" not found in ${g.file}`);
+        }
+        // the gate command must compile/build the file the test lives in
+        if (!/--(?:manifest|package)-path\s+\S+/.test(g.command)) {
+          errors.push(`${file}: gate.command must name a --manifest-path or --package-path`);
+        } else if (!commandCovers(root, g.command, g.file)) {
+          errors.push(`${file}: gate.command does not compile/build ${g.file}`);
+        }
       }
     }
 
@@ -237,13 +260,13 @@ export function validateLedger(root) {
         continue;
       }
       if (!data.gate) continue;
-      const manifestPaths = [...data.gate.command.matchAll(/--manifest-path\s+(\S+)/g)].map((m) => m[1]);
-      const runs = jobs[job].join('\n');
-      const jobCovers = [...runs.matchAll(/--manifest-path\s+(\S+)/g)]
-        .map((m) => m[1])
-        .some((mp) => manifestCovers(root, mp, data.gate.file));
+      const jobText = jobs[job].join('\n');
+      const jobCovers =
+        data.gate.kind === 'integration'
+          ? jobText.includes(data.gate.file) || jobText.includes(basename(data.gate.file))
+          : commandCovers(root, jobText, data.gate.file);
       if (!jobCovers) {
-        errors.push(`${file}: ci_job "${job}" runs no command that compiles gate.file (${data.gate.file}); declared gate.command uses ${manifestPaths.join(', ')}`);
+        errors.push(`${file}: ci_job "${job}" runs no command covering gate.file (${data.gate.file})`);
       }
     }
   }

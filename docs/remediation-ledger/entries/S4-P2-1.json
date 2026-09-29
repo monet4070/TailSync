@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/private_fs.rs",
     "test": "create_private_dir_all_locks_created_directories",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/peer/delivery/tests.rs",
     "test": "race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

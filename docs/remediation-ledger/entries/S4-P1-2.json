@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/sync/tests.rs",
     "test": "pending_file_batch_bytes_exclude_partial_data_already_on_disk",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

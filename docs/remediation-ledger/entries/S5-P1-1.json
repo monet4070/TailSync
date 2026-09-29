@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/db/storage.rs",
     "test": "batch_preflight_stops_when_only_inline_history_can_be_evicted",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

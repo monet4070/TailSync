@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/tailsync-runtime/src/history.rs",
     "test": "image_payload_rejects_non_image_entries_before_decrypting",
     "command": "cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml",

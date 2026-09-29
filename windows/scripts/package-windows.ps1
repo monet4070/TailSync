@@ -501,11 +501,36 @@ try {
         $secondaryProcess = $null
         try {
             $env:TAILSYNC_DATA_DIR = $smokeRoot
+            # S6-P0-1: assert the legacy local API port is free before launch, so a
+            # listener observed later can be attributed to TailSync and not to an
+            # unrelated process on the runner.
+            $legacyApiPort = 19889
+            if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+                $preExistingListeners = @(Get-NetTCPConnection -State Listen -LocalPort $legacyApiPort -ErrorAction SilentlyContinue)
+            } else {
+                $preExistingListeners = @(netstat -ano -p tcp | Select-String 'LISTENING' | Select-String ":$legacyApiPort\s")
+            }
+            if ($preExistingListeners.Count -gt 0) {
+                throw "TCP port $legacyApiPort is already in use before the packaged smoke test; cannot attribute a listener to TailSync."
+            }
             $process = Start-Process -FilePath $portablePath -WindowStyle Hidden -PassThru
             Start-Sleep -Seconds 4
             $process.Refresh()
             if ($process.HasExited) {
                 throw "Packaged executable exited during smoke test with code $($process.ExitCode)."
+            }
+
+            # S6-P0-1: the packaged Windows app must not start the legacy JSON TCP
+            # API; Windows UI traffic goes over Tauri invoke/event IPC.
+            if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+                $tailSyncListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LocalPort -eq $legacyApiPort -and $_.OwningProcess -eq $process.Id })
+            } else {
+                $tailSyncListeners = @(netstat -ano -p tcp | Select-String 'LISTENING' |
+                    Select-String ":$legacyApiPort\s" | Select-String "\s$($process.Id)$")
+            }
+            if ($tailSyncListeners.Count -gt 0) {
+                throw "Packaged TailSync is listening on the legacy local API port 127.0.0.1:$legacyApiPort; the Windows app must use Tauri invoke/event IPC instead."
             }
 
             Write-Host 'Exercising packaged single-instance remote-pairing deep link...'

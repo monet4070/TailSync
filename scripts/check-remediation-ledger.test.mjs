@@ -12,7 +12,7 @@ const REAL_SCHEMA = readFileSync(
 );
 
 function makeEntry(overrides = {}) {
-  return {
+  const merged = {
     id: 'S1-P0-1',
     level: 'P0',
     title: 'a title long enough',
@@ -22,6 +22,7 @@ function makeEntry(overrides = {}) {
     trigger: 'the trigger text',
     fix_evidence: 'the fix evidence text',
     gate: {
+      kind: 'unit',
       file: 'crates/app/src/lib.rs',
       test: 'real_gate',
       command: 'cargo test --locked --manifest-path crates/app/Cargo.toml',
@@ -34,6 +35,11 @@ function makeEntry(overrides = {}) {
     last_verified_main_sha: 'b61a0a04b88f5828707f7ef64781389944471be8',
     ...overrides,
   };
+  // unit is the default gate kind; tests may override it explicitly
+  if (merged.gate && typeof merged.gate === 'object' && !merged.gate.kind) {
+    merged.gate = { kind: 'unit', ...merged.gate };
+  }
+  return merged;
 }
 
 function fixture({ entry = {}, manifest = {}, ci = 'jobs:\n  rust-macos:\n    runs-on: macos-latest\n    steps:\n      - run: cargo test --locked --manifest-path crates/app/Cargo.toml\n  scripts:\n    runs-on: ubuntu-latest\n' } = {}) {
@@ -134,13 +140,13 @@ test('a gate command that does not compile the gate file is rejected', () => {
 test('a ci_job that runs no covering command is rejected', () => {
   const ci = 'jobs:\n  rust-macos:\n    steps:\n      - run: cargo test --locked --manifest-path crates/other/Cargo.toml\n';
   const { root } = fixture({ ci });
-  assert.ok(validateLedger(root).some((e) => /runs no command that compiles gate.file/.test(e)));
+  assert.ok(validateLedger(root).some((e) => /runs no command covering gate.file/.test(e)));
   rmSync(root, { recursive: true, force: true });
 });
 
 test('a gate command with no --manifest-path is rejected', () => {
   const { root } = fixture({ entry: { gate: { file: 'crates/app/src/lib.rs', test: 'real_gate', command: 'cargo test', asserts: 'asserts something real' } } });
-  assert.ok(validateLedger(root).some((e) => /must name a --manifest-path/.test(e)));
+  assert.ok(validateLedger(root).some((e) => /must name a --manifest-path or --package-path/.test(e)));
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -169,6 +175,46 @@ test('a malformed entry does not cascade into a bogus missing-entry error', () =
   const errors = validateLedger(root);
   assert.ok(errors.some((e) => /is not one of/.test(e)));
   assert.ok(!errors.some((e) => /no entry file exists/.test(e)), errors.join('; '));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('an integration gate requires its marker to be present in the gate file', () => {
+  const { root } = fixture();
+  const data = JSON.parse(readFileSync(join(root, 'docs/remediation-ledger/entries/S1-P0-1.json'), 'utf8'));
+  mkdirSync(join(root, 'scripts'), { recursive: true });
+  writeFileSync(join(root, 'scripts/package.ps1'), "throw 'boom'\n");
+  writeFileSync(join(root, '.github/workflows/ci.yml'), 'jobs:\n  rust-windows:\n    steps:\n      - run: ./scripts/package.ps1\n');
+  data.gate = { kind: 'integration', file: 'scripts/package.ps1', marker: 'Packaged app is listening', command: './scripts/package.ps1', asserts: 'asserts something real' };
+  data.ci_job = ['rust-windows'];
+  writeFileSync(join(root, 'docs/remediation-ledger/entries/S1-P0-1.json'), JSON.stringify(data));
+  assert.ok(validateLedger(root).some((e) => /marker not found/.test(e)));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('an integration gate with a present marker and a covering job is accepted', () => {
+  const { root } = fixture();
+  const data = JSON.parse(readFileSync(join(root, 'docs/remediation-ledger/entries/S1-P0-1.json'), 'utf8'));
+  mkdirSync(join(root, 'scripts'), { recursive: true });
+  writeFileSync(join(root, 'scripts/package.ps1'), "throw 'Packaged app is listening on the legacy port'\n");
+  writeFileSync(join(root, '.github/workflows/ci.yml'), 'jobs:\n  rust-windows:\n    steps:\n      - run: ./scripts/package.ps1\n');
+  data.gate = { kind: 'integration', file: 'scripts/package.ps1', marker: 'Packaged app is listening', command: './scripts/package.ps1', asserts: 'asserts something real' };
+  data.ci_job = ['rust-windows'];
+  writeFileSync(join(root, 'docs/remediation-ledger/entries/S1-P0-1.json'), JSON.stringify(data));
+  assert.deepEqual(validateLedger(root), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a unit gate can be covered by a --package-path (swift) command', () => {
+  const { root } = fixture();
+  const data = JSON.parse(readFileSync(join(root, 'docs/remediation-ledger/entries/S1-P0-1.json'), 'utf8'));
+  mkdirSync(join(root, 'pkg/Sources/App'), { recursive: true });
+  mkdirSync(join(root, 'pkg/Tests/AppTests'), { recursive: true });
+  writeFileSync(join(root, 'pkg/Tests/AppTests/GateTests.swift'), 'func testSwiftGate() {}\n');
+  writeFileSync(join(root, '.github/workflows/ci.yml'), 'jobs:\n  rust-macos:\n    steps:\n      - run: swift test --package-path pkg\n');
+  data.gate = { kind: 'unit', file: 'pkg/Tests/AppTests/GateTests.swift', test: 'testSwiftGate', command: 'swift test --package-path pkg', asserts: 'asserts something real' };
+  data.ci_job = ['rust-macos'];
+  writeFileSync(join(root, 'docs/remediation-ledger/entries/S1-P0-1.json'), JSON.stringify(data));
+  assert.deepEqual(validateLedger(root), []);
   rmSync(root, { recursive: true, force: true });
 });
 

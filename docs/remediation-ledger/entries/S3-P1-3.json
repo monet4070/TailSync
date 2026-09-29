@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/crypto/tests.rs",
     "test": "re_pairing_same_hostname_with_a_different_key_is_rejected",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

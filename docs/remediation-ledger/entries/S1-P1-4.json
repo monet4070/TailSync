@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/peer/directory.rs",
     "test": "pairing_target_rejects_link_local_ipv6_with_a_clear_message",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

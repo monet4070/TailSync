@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/peer/directory.rs",
     "test": "candidate_sort_prefers_private_addresses_over_apipa_and_loopback",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

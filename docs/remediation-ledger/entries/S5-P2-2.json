@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/db/tests.rs",
     "test": "explicit_delete_truncates_the_write_ahead_log",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

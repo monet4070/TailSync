@@ -3,7 +3,13 @@
   "platform": [
     "shared"
   ],
-  "gate": null,
+  "gate": {
+    "kind": "unit",
+    "file": "shared/rust-core/src/peer/delivery/tests.rs",
+    "test": "delivery_failure_backoff_delays_the_next_reconnect",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "虚拟时钟下投递失败后 4 秒内不得重连、超过 reconnect_delay(5s) 后才重连；移除退避即失败。"
+  },
   "ci_job": [
     "rust-macos",
     "rust-windows"
@@ -16,8 +22,8 @@
     "shared/rust-core/src/peer/delivery/worker.rs:backoff_after_delivery_failure"
   ],
   "trigger": "投递失败立即重连，网络闪断时形成热重连循环。",
-  "fix_evidence": "worker.rs 在两条投递失败分支均调用可被 shutdown/wakeup 取消的退避睡眠。",
-  "status": "fixed_ungated",
-  "pass_condition": "在 peer/delivery/tests.rs 用 Tokio 虚拟时钟断言：连续失败且无新工作时重连间隔按退避增长，新工作能唤醒退避。",
-  "reopen_condition": "退避被移除或退化为 0 延迟重连，且无测试能捕获。"
+  "fix_evidence": "worker.rs 在两条投递失败分支均调用可被 shutdown/wakeup 取消的退避睡眠。 门禁：delivery_failure_backoff_delays_the_next_reconnect（新增，已做移除退避的变异验证）。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台 CI job 中以通过状态出现。",
+  "reopen_condition": "退避被移除或退化为 0 延迟重连，且该测试不再失败。"
 }

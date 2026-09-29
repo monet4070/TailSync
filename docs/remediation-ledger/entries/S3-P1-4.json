@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/secure/handshake.rs",
     "test": "window_signal_preserves_a_partially_read_frame",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

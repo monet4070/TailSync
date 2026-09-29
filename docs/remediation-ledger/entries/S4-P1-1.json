@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/sync/tests.rs",
     "test": "pending_and_inflight_receives_count_toward_the_peer_limit",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

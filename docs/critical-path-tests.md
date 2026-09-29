@@ -37,16 +37,16 @@
 | 数据库事务：删除截断 WAL（正常路径） | `explicit_delete_truncates_the_write_ahead_log` | `shared/rust-core/src/db/tests.rs` |
 | 预览安全：非图片先拒后解密 | `image_payload_rejects_non_image_entries_before_decrypting` | `shared/tailsync-runtime/src/history.rs` |
 | 设置合并：跨窗口补丁（PR #68） | 见 PR #68 的设置回归测试 | `shared/rust-core/src/crypto/tests.rs` 等 |
+| 投递退避：失败后按 reconnect_delay 退避 | `delivery_failure_backoff_delays_the_next_reconnect` | `shared/rust-core/src/peer/delivery/tests.rs` |
 | IPC：断开取消长轮询 | `disconnected_client_drops_pending_response` | `macos/src-tauri/src/api/transport.rs` |
+| 跨平台能力：拒绝非 macOS 平台 | `testLocalCapabilitiesRejectsNonMacOSPlatform` | `macos/swift-ui/Tests/TailSyncTests/ApiClientCancellationTests.swift` |
+| Windows 成品不监听旧 TCP API | 打包 smoke 内的 `PackageWindows` 端口断言（integration 门禁） | `windows/scripts/package-windows.ps1` |
 | 台账自身：校验器 | `node --test scripts/check-remediation-ledger.test.mjs` | `scripts` |
 
 ## 已知空白（第 1 阶段的结论，待后续阶段填补）
 
 | 路径 | 现状 |
 |---|---|
-| 投递退避（`S2-F2`） | 无定时断言，退避被移除也能通过 |
-| Windows 不监听旧 TCP API（`S6-P0-1`） | 无运行时断言 |
-| Swift 拒绝非 macOS 能力（`S6-P2-3`） | 无测试 |
 | 配对单边信任（`S3-P1-2`） | 无 pending/active 与互通夹具 |
 | 配额淘汰扫描与锁等待（`S4-P1-3`） | 无扫描次数/锁等待测试 |
 | 进度回调锁范围（`S4-P1-4`） | 无每分块进度顺序测试 |
@@ -54,5 +54,8 @@
 | Windows 后台警告不被吞（`S6-P2-4`） | 无测试 |
 | 文件/即时队列隔离（`S2-F5`） | 未实现，无测试 |
 | WAL 忙时降级（`S5-P2-2`） | 仅覆盖正常截断 |
+| 无作用域链路本地候选（`S1-P1-4`） | 仅覆盖手动输入，未覆盖候选解析 |
+| Windows 广播接口语义（`S1-P1-5`） | 无测试 |
+| 孤儿文件对账 GC（`S5-P2-1`） | 仅覆盖删除容错 |
 
 > 覆盖率的定期采集与趋势见计划的第 1 阶段要求；本清单不设全仓库百分比门槛。

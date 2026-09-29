@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/peer/delivery/tests.rs",
     "test": "silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

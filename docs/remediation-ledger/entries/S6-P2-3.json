@@ -3,7 +3,13 @@
   "platform": [
     "shared"
   ],
-  "gate": null,
+  "gate": {
+    "kind": "unit",
+    "file": "macos/swift-ui/Tests/TailSyncTests/ApiClientCancellationTests.swift",
+    "test": "testLocalCapabilitiesRejectsNonMacOSPlatform",
+    "command": "swift test --package-path macos/swift-ui",
+    "asserts": "注入 platform:\"windows\" 的能力响应时 getLocalCapabilities() 抛出 Invalid local capabilities response；macOS 响应仍被接受。"
+  },
   "ci_job": [
     "rust-macos"
   ],
@@ -15,8 +21,8 @@
     "macos/swift-ui/Sources/TailSync/Services/ApiClientRuntime.swift"
   ],
   "trigger": "白名单曾放行 windows，但强制按 macOS 快照解码，看门狗反复杀守护进程。",
-  "fix_evidence": "getLocalCapabilities 现要求 capabilities.platform == \"macos\"，旧的 windows 放行已移除。",
-  "status": "fixed_ungated",
-  "pass_condition": "在 ApiClientCancellationTests.swift 内用 LocalTestSocket 注入 platform:\"windows\" 响应，断言 getLocalCapabilities() 拒绝。",
+  "fix_evidence": "getLocalCapabilities 现要求 capabilities.platform == \"macos\"，旧的 windows 放行已移除。 门禁：testLocalCapabilitiesRejectsNonMacOSPlatform（新增，已做放行 windows 的变异验证）。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在 rust-macos 的 swift test 中以通过状态出现。",
   "reopen_condition": "非 macOS 平台响应被接受，或看门狗再次因平台不匹配杀进程。"
 }

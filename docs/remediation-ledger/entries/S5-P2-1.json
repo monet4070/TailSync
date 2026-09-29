@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/db/lifecycle.rs",
     "test": "clear_all_reports_removal_failure_and_continues_other_directories",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

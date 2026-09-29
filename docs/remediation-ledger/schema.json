@@ -53,10 +53,12 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["file", "test", "command", "asserts"],
+          "required": ["kind", "file", "command", "asserts"],
           "properties": {
-            "file": { "type": "string" },
+            "kind": { "enum": ["unit", "integration"] },
+            "file": { "type": "string", "minLength": 3 },
             "test": { "type": "string", "minLength": 4 },
+            "marker": { "type": "string", "minLength": 8 },
             "command": { "type": "string", "minLength": 4 },
             "asserts": { "type": "string", "minLength": 8 }
           }

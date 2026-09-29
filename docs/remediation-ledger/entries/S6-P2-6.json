@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "macos/src-tauri/src/api/transport.rs",
     "test": "disconnected_client_drops_pending_response",
     "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib",

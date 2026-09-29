@@ -4,6 +4,7 @@
     "shared"
   ],
   "gate": {
+    "kind": "unit",
     "file": "shared/rust-core/src/peer/directory.rs",
     "test": "local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",

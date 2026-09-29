@@ -221,6 +221,59 @@ final class ApiClientCancellationTests: XCTestCase {
     XCTAssertEqual(recv(pair[0], &byte, 1, 0), 1)
     XCTAssertEqual(byte, 42)
   }
+
+  // S6-P2-3: a permissive platform whitelist used to accept a Windows
+  // capabilities response and then decode-mismatch, sending the watchdog into a
+  // restart loop. The client must reject any non-macOS daemon.
+  func testLocalCapabilitiesAcceptsMacOSPlatform() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let response = try Self.capabilitiesResponse(platform: "macos")
+    let responseSent = expectation(description: "capabilities sent")
+    let connectionClosed = expectation(description: "capabilities socket closed")
+    DispatchQueue.global().async {
+      server.respond(with: response, closeDelay: 0, responseSent: responseSent, connectionClosed: connectionClosed) { request in
+        XCTAssertEqual(request["cmd"] as? String, "get_local_capabilities")
+      }
+    }
+    let capabilities = try await client.getLocalCapabilities()
+    XCTAssertEqual(capabilities?.platform, "macos")
+    await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
+  }
+
+  func testLocalCapabilitiesRejectsNonMacOSPlatform() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let response = try Self.capabilitiesResponse(platform: "windows")
+    let responseSent = expectation(description: "capabilities sent")
+    let connectionClosed = expectation(description: "capabilities socket closed")
+    DispatchQueue.global().async {
+      server.respond(with: response, closeDelay: 0, responseSent: responseSent, connectionClosed: connectionClosed)
+    }
+    do {
+      let capabilities = try await client.getLocalCapabilities()
+      XCTFail("a non-macOS capabilities response must be rejected, got \(String(describing: capabilities))")
+    } catch let error as ApiError {
+      guard case .serverError(let message) = error else {
+        return XCTFail("unexpected error \(error)")
+      }
+      XCTAssertEqual(message, "Invalid local capabilities response")
+    }
+    await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
+  }
+
+  private static func capabilitiesResponse(platform: String) throws -> Data {
+    let payload: [String: Any] = [
+      "max_preview_bytes": 67108864,
+      "platform": platform,
+      "schema_version": 1,
+      "supports_binary_preview": true,
+      "supports_runtime_snapshot": true,
+      "supports_stable_errors": true,
+      "wire_version": 5,
+    ]
+    return try JSONSerialization.data(withJSONObject: ["ok": true, "data": payload]) + Data([0x0A])
+  }
 }
 
 private final class LocalTestSocket: @unchecked Sendable {
