@@ -18,6 +18,19 @@ test("site changes run only the site frontend job", () => {
   assert.deepEqual(enabled(plan), ["frontend_site"]);
 });
 
+test("ledger gates and their executor require execution on both native jobs", () => {
+  for (const file of [
+    'docs/remediation-ledger/entries/S1-P1-5.json',
+    'scripts/check-remediation-ledger.mjs',
+    'scripts/remediation-test-results.mjs',
+    'scripts/run-remediation-tests.mjs',
+  ]) {
+    assert.deepEqual(enabled(planCiScope([file])), [
+      'rust_windows', 'rust_macos', 'scripts', 'shared_resolution',
+    ], file);
+  }
+});
+
 test("Windows frontend changes run frontend and contract checks", () => {
   const plan = planCiScope([
     "windows/src/pages/Settings.tsx",

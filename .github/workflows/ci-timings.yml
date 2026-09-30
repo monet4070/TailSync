@@ -25,7 +25,7 @@ jobs:
       - name: Record timings
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/record-ci-timings.mjs --repo "$GITHUB_REPOSITORY" --runs 5 --out ci-timings.jsonl
+        run: node scripts/record-ci-timings.mjs --repo "$GITHUB_REPOSITORY" --workflow ci.yml --runs 5 --out ci-timings.jsonl
       - name: Summarize slowest jobs
         run: |
           node -e '

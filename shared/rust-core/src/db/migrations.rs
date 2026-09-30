@@ -11,29 +11,37 @@ use super::*;
 pub(crate) fn truncate_wal_for_v9_cleanup(
     conn: &Connection,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // A reader usually releases quickly, so retry briefly before failing: a
-    // transient block must not abort the whole open, but the step must still fail
-    // rather than continue (see the doc above).
+    // Bound each SQLite busy wait as well as the delay between attempts. The
+    // normal connection timeout is 5s; inheriting it here made five attempts
+    // block startup for roughly 25s. Always restore that timeout afterwards.
     const ATTEMPTS: usize = 5;
-    let mut last = (0_i64, 0_i64, 0_i64);
-    for attempt in 0..ATTEMPTS {
-        let (busy, log, checkpointed): (i64, i64, i64) =
-            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?;
-        if busy == 0 {
-            return Ok(());
+    let previous_timeout: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+    conn.busy_timeout(std::time::Duration::from_millis(50))?;
+    let result = (|| {
+        let mut last = (0_i64, 0_i64, 0_i64);
+        for attempt in 0..ATTEMPTS {
+            let (busy, log, checkpointed): (i64, i64, i64) =
+                conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?;
+            if busy == 0 {
+                return Ok(());
+            }
+            last = (busy, log, checkpointed);
+            if attempt + 1 < ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
-        last = (busy, log, checkpointed);
-        if attempt + 1 < ATTEMPTS {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-    Err(format!(
+        Err(format!(
         "v9 residual-plaintext cleanup could not truncate the WAL after {ATTEMPTS} attempts (busy={}, log={}, checkpointed={}); v9 stays incomplete and the next open retries",
         last.0, last.1, last.2
     )
-    .into())
+      .into())
+    })();
+    conn.busy_timeout(std::time::Duration::from_millis(
+        previous_timeout.try_into()?,
+    ))?;
+    result
 }
 
 impl HistoryDB {

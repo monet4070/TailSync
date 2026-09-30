@@ -1,0 +1,45 @@
+name: Shared Rust coverage
+
+# Costly instrumentation stays outside the PR verification path.
+on:
+  schedule:
+    - cron: "43 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-rust-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  shared-rust:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.91.0
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: shared-coverage-v1
+      - name: Install pinned coverage tool
+        run: cargo install cargo-llvm-cov --version 0.6.21 --locked
+      - name: Measure shared core and runtime
+        run: |
+          mkdir -p target/coverage
+          # Instrumentation magnifies CPU contention; preserve the real Iroh
+          # tests while avoiding expiry of their short pairing fixtures.
+          cargo llvm-cov --locked --manifest-path Cargo.toml --package tailsync-core --package tailsync-runtime --lcov --output-path target/coverage/shared.lcov -- --test-threads=1
+          cargo llvm-cov report --locked --manifest-path Cargo.toml --package tailsync-core --package tailsync-runtime --json --summary-only --output-path target/coverage/summary.json
+          git rev-parse HEAD > target/coverage/source-sha.txt
+      - name: Upload coverage evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shared-rust-coverage
+          path: target/coverage
+          if-no-files-found: error
+          retention-days: 30

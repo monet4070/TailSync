@@ -2,7 +2,7 @@
 
 > 基线：`origin/main` = `b61a0a04b88f5828707f7ef64781389944471be8`（2026-09-29 核对）。
 > 执行分支：`codex/remediation-2026-09-29`（worktree `TailSync-remediation`）。
-> 本报告只记录**已完成并经验证**的部分，以及**明确未做**的部分；未取得设备证据的条目一律保持“待验”。
+> 以下阶段裁决为原执行记录，并不代表整个执行分支已通过 CI。2026-09-30 复核发现的门禁和代码缺陷已另行修复，当前结果见 `REVIEW-FIXES-2026-09-30.md`；未取得设备证据的条目保持“待验”。
 
 ## 1. 环境与范围约束
 
@@ -18,14 +18,14 @@
 |---|---|
 | PR #68 更新 | 从 `b8910b3` rebase 到 `b61a0a0`，新 head `7822e01`，0 behind / 6 ahead；`gh pr view 68` = OPEN / MERGEABLE / CLEAN |
 | 内容无损 | rebase 前后 PR 自身 diff 逐字节一致，38 个文件 blob 哈希全等，main 的并发改动全部保留 |
-| CI | 该 PR 的 11 个 job 全绿（Windows 打包 16m1s、macOS 打包 18m14s、Required verification 通过） |
+| CI | PR #68 的当前检查为 7 成功、2 跳过；不能写成“11 个 job 全绿”。此证据属于 #68，不属于本执行分支 |
 | 成品端口的事实验证 | `README.md` 现为“Windows 不启动 legacy JSON TCP API”，与 `windows/src-tauri/src/lib.rs` 的 cfg 门禁一致 |
 | VoiceOver 清单 | `docs/acceptance/voiceover-connections-checklist.md`：9 处 `accessibilityLabel` + 1 处 `accessibilityValue`，中英对照的朗读名、值/状态与焦点顺序；**执行为待验** |
 
 ### 阶段 1：可机器校验的审计台账 —— 裁决 PASS
 
 - `docs/remediation-ledger/`：`manifest.json`（固定初始基线 `b61a0a0`）、`schema.json`、`entries/<ID>.json` ×31（按 ID 分文件，便于并行 PR）、脚本生成的 `INDEX.md`。
-- `scripts/check-remediation-ledger.mjs`：读 `schema.json` 做结构校验（必填/未知字段/枚举/长度）；校验 ID 唯一性与集合一致；**校验门禁测试符号真实存在于所引文件**；**校验 `gate.command` 的 `--manifest-path`/`--package-path` 确实编译/构建该文件**（会跟随 `include!`）；**校验每个 `ci_job` 真的运行覆盖该门禁的命令**；校验 `status_counts`/`level_counts` 与实际条目一致。
+- `scripts/check-remediation-ledger.mjs`：读 `schema.json` 做结构校验（必填/未知字段/枚举/长度）；校验 ID 唯一性与集合一致；**校验门禁测试符号及测试属性真实存在，拒绝忽略测试和空 ci_job**；**校验 `gate.command` 的 `--manifest-path`/`--package-path` 确实编译/构建该文件**（会跟随 `include!`）；**校验每个 `ci_job` 配置了执行测试而非仅编译的命令，并在该 job 中核验绑定提交/源码摘要的实际通过记录**；校验 `status_counts`/`level_counts` 与实际条目一致。
 - 门禁支持两类：`kind: unit`（具名测试）与 `kind: integration`（构建/冒烟脚本中的断言标记）。
 - 接入 CI：`.github/workflows/ci.yml` 的 `scripts` job 新增 `Validate remediation ledger` 步骤；`docs/**` 的改动由 scope planner 路由到该 job。
 - 测试可观测性：`scripts/record-ci-timings.mjs` + `.github/workflows/ci-timings.yml`（每日/手动，只读 Actions API，产出 job/step 耗时与结论，上传 30 天产物）；`docs/critical-path-tests.md` 列出关键路径的具名测试与当前空白。
@@ -44,7 +44,7 @@
 ### 阶段 3：网络边界 —— 裁决 PASS
 
 - `S1-P1-4`：`resolve_candidates` 改为**逐候选跳过**无作用域的链路本地 IPv6（不再因单个坏候选丢弃整个对端的可路由路由），并在仅剩不可路由候选时报错；`peer_socket_addr` 与两端 `network::test_connection` 也加了同守卫，全仓不再构造 scope-0 的链路本地 socket。门禁 `resolve_candidates_skips_link_local_ipv6_without_a_scope`（已做移除守卫的变异验证）。
-- `S1-P1-5`：契约决策落定——**零设备是成功而非失败**（`merge_lan_discovery_results` 仅在全部传输失败时返回 Err），`lan_only` 下“无合格 LAN 接口”由空 `local_ip` 表达，`auto` 下该字段可能被 tailnet 地址填充（已用测试钉住该行为），UI 以带标签的接口判断；因此**不新增结果字段**。门禁为共享契约测试；Windows 侧结构性测试 `broadcast_targets_always_include_the_global_broadcast` 在 `rust-windows` 编译运行（本地以 CI 同款方式补 `windows/dist` 桩后已验证通过）；接口过滤逻辑本身无单元门禁，由 Windows 原生验收覆盖（待验）。
+- `S1-P1-5`：保持“成功发送且零设备返回 Ok，全部发送失败返回 Err”的现有契约。新增门禁 `lan_discovery_filters_interfaces_and_distinguishes_send_failure_from_zero_peers`，覆盖真实生产发送路径与 down/loopback/点对点接口过滤；全局广播地址仍恒定存在。macOS 主机测试通过，本次原生 Windows CI 与断网/VPN 验收尚未执行，状态回退为 **partial**。
 
 ### 阶段 5：文件配额与 SQLite 生命周期 —— 裁决 PASS（两项如实保留 partial）
 
@@ -52,16 +52,16 @@
 |---|---|---|
 | `S5-P2-2` | 读取 `PRAGMA wal_checkpoint(TRUNCATE)` 的结果行（`execute_batch` 会丢弃 `busy=1`），忙时留警告且删除仍成功；抽出 `checkpoint_history_wal()` 返回 `Completed/Blocked/Failed` | **fixed_gated**，门禁 + 变异验证（忽略结果行即失败） |
 | 逐站语义 | `docs/remediation/wal-checkpoint-semantics.md`：对全部 5 处调用点给出继续/重试/中止的结论与依据（以函数名标识，避免行号漂移） | — |
-| `migrations.rs` v9 | v9 明文清除后的截断改为**失败即重试**（忙时有界重试 5×50ms 后报错），使 v9 不进入完成态、下次打开重做；避免"WAL 未截断却标记 v9 完成"绕过 `vacuum_pending` | **fixed_gated**，门禁 + 变异验证 |
+| `migrations.rs` v9 | v9 明文清除后的截断改为**失败即重试**（每次 SQLite 忙等待最多 50ms，5 次尝试加 4 次 50ms 间隔，随后恢复原 busy_timeout 并报错），使 v9 不进入完成态、下次打开重做；避免"WAL 未截断却标记 v9 完成"绕过 `vacuum_pending` | **fixed_gated**，门禁 + 变异验证 |
 | `S4-P1-3` | 配额淘汰不再每次递归扫盘：删除路径回报"可证明释放的载荷字节"，循环测一次基线后按"载荷 + db/wal/shm 净变化"扣减，非正时回退重测 | **partial**（方案要求的并发双批次准入测试未写） |
-| `S5-P2-1` | 新增 `sweep_orphan_payloads(grace)`：按存活行的引用对账 `file-history`/`image-history`，零宽限被拒绝、临时文件永不清扫、引用无法解析时告警 | **partial**（周期性调用尚未接线） |
+| `S5-P2-1` | 新增 `sweep_orphan_payloads(grace)`：按存活引用的文件身份（卷与文件 ID）对账 `file-history`/`image-history`，保护大小写别名；零宽限被拒绝、临时文件永不清扫，存活引用无法可靠解析时先中止整次清扫 | **partial**（周期性调用尚未接线） |
 
 审查在 `S4-P1-3` 上抓到一处**真实缺陷并暴露了我的一句虚假保证**：我最初只抵扣载荷字节（基线却含 DB/WAL），导致多驱逐；而我"加倍抵扣会失败"的说法是**把变异串跑、未还原**造成的假结论。改为抵扣 db/wal/shm 净变化后，三次变异分别执行均使门禁失败。
 
 ### 台账现状
 
-`fixed_gated 22 / fixed_ungated 0 / partial 3 / unfixed 5 / needs_adjudication 1`（合计 31）。
-自初始基线起，已把 `S2-F2`、`S6-P0-1`、`S6-P2-3`、`S1-P1-4`、`S1-P1-5` 五项从“缺门禁/部分处理”推进为“已修且受保护”。
+`fixed_gated 21 / fixed_ungated 0 / partial 4 / unfixed 5 / needs_adjudication 1`（合计 31）。
+本次将 `S1-P1-5` 回退为 partial，等待新门禁的原生 Windows 执行证据。其余状态见台账；fixed_gated 不替代 native_acceptance 的真机验收。
 
 ## 3. 本轮采用的验证协议及其结果
 
@@ -78,16 +78,16 @@
 
 ## 4. 明确未完成的部分
 
-以下 9 个 ID 尚未推进（阶段 4–8），台账中已分别标注为 `partial` / `unfixed` / `needs_adjudication` 并带有通过条件与重新打开条件：
+以下未完成项继续保留（涵盖阶段 3–8），台账中已分别标注为 `partial` / `unfixed` / `needs_adjudication` 并带有通过条件与重新打开条件：
 
 | 阶段 | 条目 | 现状 | 备注 |
 |---|---|---|---|
 | 4 | `S3-P1-2` 配对单边信任 | 未修 | 需可持久化 `pending`/`active` 状态机 + 迁移 + 旧↔新双向互通夹具；本轮未开始 |
 | 4 | `S3-P1-1` 匿名可见字段 | 待裁定 | 需先产出匿名可见字段矩阵与最小匿名发起者实验 |
 | 4 | `S3-P1-3` 未认证改写持久地址 | 部分 | 审计所述调用链未复现；先给复现条件，不预加状态 |
-| 5 | `S4-P1-3` 配额扫描与锁占用 | 未修 | 淘汰循环仍每次递归扫盘并持 DB 锁 |
-| 5 | `S5-P2-1` 孤儿文件对账 GC | 部分 | 删除容错已修；缺按 DB 引用对账 + 宽限期的 GC |
-| 5 | `S5-P2-2` WAL 忙时降级 | 部分 | `execute_batch` 丢弃 `(busy, log, checkpointed)` 结果行，需改 `prepare` + 取行；**修复方案已确定，未实施** |
+| 5 | `S4-P1-3` 配额扫描与锁占用 | 部分 | 已有单次基线与物理字节记账门禁；缺并发双批次准入测试 |
+| 5 | `S5-P2-1` 孤儿文件对账 GC | 部分 | 对账、宽限期和文件身份保护已实现；生产周期调用尚未接线 |
+| 3 | `S1-P1-5` Windows 发现门禁 | 部分 | 过滤与真实 UDP 路径测试已写；本次原生 rust-windows CI 和实机验收待验 |
 | 6 | `S6-P2-1` 通知 gap/实例标识 | 未修 | 需在版本化响应中新增服务实例标识与最早可用游标 |
 | 6 | `S6-P2-4` Windows 后台偷吃警告 | 未修 | 需带 ID 的可确认读取 |
 | 7 | `S2-F5`、`S4-P1-4` | 未修 | 硬门槛：`docs/performance-budgets.md` 未经维护者签署前不得以“显著/达标”作结论 |
@@ -95,10 +95,7 @@
 
 ## 5. 阻塞项与继续方式
 
-1. **分支无法推送（需你处理）**：当前 OAuth 令牌缺少 `workflow` scope，而本分支修改了 `.github/workflows/ci.yml` 并新增 `ci-timings.yml`，push 被 GitHub 拒绝（`refusing to allow an OAuth App to create or update workflow … without workflow scope`）。解决方式二选一：
-   - `gh auth refresh -s workflow` 后由我推送；或
-   - 你本地 `git -C /Users/monet/TailSync/TailSync-remediation push -u origin codex/remediation-2026-09-29`。
-   工作已全部提交在该 worktree 的分支上，不会丢失。
+1. **提交与 CI**：2026-09-30 复核时 Git remote 使用 SSH，GitHub 令牌已有 workflow scope；旧“无法推送”不是当前阻塞。本次修复仍在工作树，尚未提交或推送，托管 CI 未验证此版本。
 2. **设备验收（当前环境不可达）**：执行环境仅 macOS 单机，**无法进行任何跨设备实机验收**，也没有 Windows 设备/虚拟机。验收因此分为三类并记录在 `docs/acceptance/acceptance-environment.md`：单机可自动化（应做成门禁）、单机手动（VoiceOver 等）、硬件所限（跨设备场景，环境改变前不关闭）。`docs/performance-budgets.md` 仍需你作为维护者兼发布负责人签署。
 3. **阶段 7 硬门槛**：未签署的性能预算意味着 `S2-F5` 与 `S4-P1-4` 不能关闭。
 
@@ -107,7 +104,7 @@
 ```bash
 cd /Users/monet/TailSync/TailSync-remediation
 node scripts/check-remediation-ledger.mjs --root .          # 台账校验
-node --test scripts/check-remediation-ledger.test.mjs        # 校验器测试（20）
+node --test scripts/check-remediation-ledger.test.mjs scripts/remediation-test-results.test.mjs
 cargo test --locked --manifest-path shared/rust-core/Cargo.toml
 swift test --package-path macos/swift-ui
 node --test scripts/*.test.mjs
@@ -115,4 +112,4 @@ cargo fmt --all -- --check
 node windows/scripts/check_cross_platform_sync.mjs --win-root ./windows --mac-root ./macos --core-root ./shared/rust-core
 ```
 
-上一次全量执行结果：Rust 445 通过 / Swift 208 通过（3 跳过）/ 脚本 91 通过 / 台账校验通过 / 格式检查通过。
+原汇报的测试计数不能替代当前版本的验证。当前修复的回归范围、先红后绿证据和 CI 复现命令见 `REVIEW-FIXES-2026-09-30.md`；具名门禁结果由 CI 上传 remediation-tests-* 产物。

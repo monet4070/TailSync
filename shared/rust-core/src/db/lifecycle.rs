@@ -500,7 +500,9 @@ impl HistoryDB {
             // delete a transfer that is still in flight.
             return Err("orphan sweep requires a non-zero grace period".into());
         }
-        let live = self.referenced_payload_paths()?;
+        // Path spelling is not file identity on APFS/NTFS: a reused payload
+        // may have a reference with different case (or Unicode normalization).
+        let live = self.referenced_payload_identities()?;
         let mut removed = 0_u64;
         for directory in [
             self.file_history_dir.clone(),
@@ -519,8 +521,19 @@ impl HistoryDB {
                 let is_atomic_temp = name.ends_with(".tmp")
                     || name.contains(".tmp.")
                     || (name.starts_with('.') && name.contains(".tmp"));
-                if !entry.file_type()?.is_file() || is_atomic_temp || live.contains(&path) {
+                if !entry.file_type()?.is_file() || is_atomic_temp {
                     continue;
+                }
+                match payload_file_identity(&path) {
+                    Ok(identity) if live.contains(&identity) => continue,
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(
+                            "Could not identify payload {}: {error}; leaving it in place",
+                            path.display()
+                        );
+                        continue;
+                    }
                 }
                 let age = match entry.metadata().and_then(|meta| meta.modified()).ok() {
                     Some(modified) => match std::time::SystemTime::now().duration_since(modified) {
@@ -554,10 +567,11 @@ impl HistoryDB {
         Ok(removed)
     }
 
-    /// Paths of every external payload a surviving history row still references.
-    fn referenced_payload_paths(
+    /// File identities of every surviving external reference. Resolve the
+    /// complete live set before deleting anything; uncertainty aborts the sweep.
+    fn referenced_payload_identities(
         &self,
-    ) -> Result<std::collections::HashSet<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    ) -> Result<std::collections::HashSet<PayloadFileIdentity>, Box<dyn std::error::Error>> {
         let mut statement = self.conn.prepare("SELECT type, data FROM history")?;
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
@@ -576,20 +590,70 @@ impl HistoryDB {
                 ),
                 _ => continue,
             };
-            let Some(reference) = reference else { continue };
-            match resolve_file_reference_at(&directory, &reference) {
-                Ok(path) => {
-                    live.insert(path);
+            let Some(reference) = reference else {
+                if entry_type == "file"
+                    || stored.starts_with(super::file_storage::IMAGE_REFERENCE_MAGIC)
+                {
+                    return Err(
+                        "Cannot safely sweep payloads: a live external reference is invalid".into(),
+                    );
                 }
-                // A row that references an unresolvable payload must be visible:
-                // the sweep would otherwise treat that payload as an orphan.
-                Err(error) => warn!(
-                    "History row references an unresolvable payload ({error}); keeping its directory entries is not possible"
-                ),
+                continue; // Inline text/image data is not an external reference.
+            };
+            let path = resolve_file_reference_at(&directory, &reference)?;
+            match payload_file_identity(&path) {
+                Ok(identity) => {
+                    live.insert(identity);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(live)
     }
+}
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+struct PayloadFileIdentity {
+    volume: u64,
+    file_id: [u8; 16],
+}
+
+#[cfg(unix)]
+fn payload_file_identity(path: &std::path::Path) -> std::io::Result<PayloadFileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)?;
+    Ok(PayloadFileIdentity {
+        volume: metadata.dev(),
+        file_id: u128::from(metadata.ino()).to_le_bytes(),
+    })
+}
+
+#[cfg(windows)]
+fn payload_file_identity(path: &std::path::Path) -> std::io::Result<PayloadFileIdentity> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
+    let file = std::fs::File::open(path)?;
+    let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    // Read the volume and full 128-bit file ID while the handle remains open.
+    // Keep only the ID so sweeping many rows does not exhaust file handles.
+    let success = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if success == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PayloadFileIdentity {
+        volume: info.VolumeSerialNumber,
+        file_id: info.FileId.Identifier,
+    })
 }
 
 #[cfg(test)]

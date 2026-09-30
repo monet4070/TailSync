@@ -5,13 +5,12 @@
   ],
   "gate": {
     "kind": "unit",
-    "file": "shared/rust-core/src/peer/directory.rs",
-    "test": "lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail",
-    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "零设备仍返回 Ok（不是发送失败），只有全部传输失败才返回 Err；并钉住 auto 模式下 tailscale_ip 会被 tailnet 地址填充的行为。"
+    "file": "windows/src-tauri/src/network/lan.rs",
+    "test": "lan_discovery_filters_interfaces_and_distinguishes_send_failure_from_zero_peers",
+    "command": "cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib",
+    "asserts": "用显式网卡夹具拒绝 down/loopback/点对点接口；真实本地 UDP 发送成功但无应答返回 Ok 和零设备，全部发送失败返回 Err；无合格接口保留空本地地址。"
   },
   "ci_job": [
-    "rust-macos",
     "rust-windows"
   ],
   "native_acceptance": "Windows 原生断网、虚拟网卡与 VPN 混合场景记录；单元测试无法替代。",
@@ -23,8 +22,8 @@
     "windows/src-tauri/src/network/lan.rs:discover"
   ],
   "trigger": "广播目标枚举缺网卡状态位检查；discover() 把结果压成一个布尔，调用方无法区分发送成功与发现设备。",
-  "fix_evidence": "broadcast_targets 已过滤 down/loopback/点对点接口（windows/src-tauri/src/network/lan.rs）+ 结构性测试 broadcast_targets_always_include_the_global_broadcast（只在 rust-windows 编译）。契约决策：零设备是成功而非失败；\"无合格 LAN 接口\"在 lan_only 下由空 local_ip 表达，在 auto 下该字段可能被 tailnet 地址填充，故 UI 以带标签的接口而非该字段判断（已核对 peers 路由与两端 UI 消费者，无假\"已连接\"）。不新增结果字段。接口过滤逻辑本身没有单元门禁，由 Windows 原生断网/虚拟网卡验收覆盖。",
-  "status": "fixed_gated",
-  "pass_condition": "契约决策已记录；零设备与全部发送失败的可观察行为有测试；无合格接口的真机场景记录待 Windows 环境。",
+  "fix_evidence": "broadcast_targets_for 与 local_ip 共用 eligible_lan_interface；discover_with_targets 是生产 discover 调用的实际发送/接收路径。具名 Windows 测试覆盖接口过滤、零设备和发送失败，原生断网/VPN 验收仍待设备。 macOS 主机已编译运行 Windows crate 的门禁；本次改动尚未在原生 rust-windows CI 上执行，取得该证据后才能转为 fixed_gated。",
+  "status": "partial",
+  "pass_condition": "接口与发送路径的具名门禁在 rust-windows 实际执行且通过；原生断网/VPN 场景单独待验，不由单测替代。",
   "reopen_condition": "UI 或健康状态把“无可用 LAN”误报为已发现/连接成功。"
 }

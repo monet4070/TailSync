@@ -4,7 +4,7 @@
 //
 // Usage: GITHUB_TOKEN=... node scripts/record-ci-timings.mjs [--repo owner/name] [--runs 5] [--out docs/ci-timings.jsonl]
 // With no --out it prints JSONL to stdout.
-import { writeFileSync, appendFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 const flag = (name, dflt) => {
@@ -15,6 +15,7 @@ const repo = flag('--repo', process.env.GITHUB_REPOSITORY || 'monet4070/TailSync
 const runs = Number(flag('--runs', '5'));
 const out = flag('--out', null);
 const branch = flag('--branch', null);
+const workflow = flag('--workflow', 'ci.yml');
 const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 
 if (!token) {
@@ -32,7 +33,12 @@ const api = async (path) => {
 
 const ms = (a, b) => (a && b ? new Date(b) - new Date(a) : null);
 
-const runList = await api(`/repos/${repo}/actions/runs?per_page=${runs}${branch ? `&branch=${branch}` : ''}`);
+if (!Number.isInteger(runs) || runs < 1 || runs > 100) throw new Error('--runs must be between 1 and 100');
+// Sample completed verification runs; including this collector (or a release)
+// would distort the native-test/package timings we want to compare.
+const query = new URLSearchParams({ per_page: String(runs), status: 'completed' });
+if (branch) query.set('branch', branch);
+const runList = await api(`/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?${query}`);
 const lines = [];
 for (const run of runList.workflow_runs) {
   const jobs = await api(`/repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`);

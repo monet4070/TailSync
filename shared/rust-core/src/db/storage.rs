@@ -880,7 +880,7 @@ mod tests {
                 .add_file_from_path(
                     &format!("payload-{index}.bin"),
                     &source,
-                    &blake3::hash(&payload).to_hex().to_string(),
+                    blake3::hash(&payload).to_hex().as_ref(),
                     payload_size,
                     "peer",
                 )
@@ -975,7 +975,7 @@ mod tests {
                 .add_file_from_path(
                     &format!("payload-{index}.bin"),
                     &source,
-                    &blake3::hash(&payload).to_hex().to_string(),
+                    blake3::hash(&payload).to_hex().as_ref(),
                     payload_size,
                     "peer",
                 )

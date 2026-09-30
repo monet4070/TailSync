@@ -27,6 +27,7 @@
 | 发现：零设备是成功、仅全传输失败才报错 | `lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail` | `shared/rust-core/src/peer/directory.rs` |
 | 候选解析：跳过无作用域链路本地 IPv6 | `resolve_candidates_skips_link_local_ipv6_without_a_scope` | `shared/rust-core/src/peer/directory.rs` |
 | Windows 广播目标语义 | `broadcast_targets_always_include_the_global_broadcast` | `windows/src-tauri/src/network/lan.rs` |
+| Windows 发现：接口过滤、零设备与发送失败 | `lan_discovery_filters_interfaces_and_distinguishes_send_failure_from_zero_peers` | `windows/src-tauri/src/network/lan.rs` |
 | 发现：本机 LAN IP 选择 | `local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified` | `shared/rust-core/src/peer/directory.rs` |
 | 候选排序：私网优先 | `candidate_sort_prefers_private_addresses_over_apipa_and_loopback` | `shared/rust-core/src/peer/directory.rs` |
 | 投递：静默 ACK 不重放 | `silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream` | `shared/rust-core/src/peer/delivery/tests.rs` |
@@ -38,25 +39,31 @@
 | 接收：并发限流计入 pending/inflight | `pending_and_inflight_receives_count_toward_the_peer_limit` | `shared/rust-core/src/sync/tests.rs` |
 | 数据库事务：配额预检只淘汰外部载荷 | `batch_preflight_stops_when_only_inline_history_can_be_evicted` | `shared/rust-core/src/db/storage.rs` |
 | 数据库事务：删除截断 WAL（正常路径） | `explicit_delete_truncates_the_write_ahead_log` | `shared/rust-core/src/db/tests.rs` |
+| v9：忙时保留迁移状态、释放读者后重开恢复 | `v9_busy_migration_keeps_pending_state_and_completes_on_reopen` | `shared/rust-core/src/db/tests.rs` |
+| GC：保留被大小写别名引用的载荷 | `orphan_sweep_preserves_reused_payloads_with_case_aliases` | `shared/rust-core/src/db/tests.rs` |
+| GC：无法解析存活引用时先中止清扫 | `orphan_sweep_aborts_before_deletion_when_a_live_reference_is_invalid` | `shared/rust-core/src/db/tests.rs` |
+| 配额：每次准入只扫描一次、按实际回收记账 | `quota_eviction_measures_the_storage_tree_once_per_reserve`、`quota_eviction_credits_the_wal_the_delete_reclaims` | `shared/rust-core/src/db/storage.rs` |
 | 预览安全：非图片先拒后解密 | `image_payload_rejects_non_image_entries_before_decrypting` | `shared/tailsync-runtime/src/history.rs` |
 | 设置合并：跨窗口补丁（PR #68） | 见 PR #68 的设置回归测试 | `shared/rust-core/src/crypto/tests.rs` 等 |
 | 投递退避：失败后按 reconnect_delay 退避 | `delivery_failure_backoff_delays_the_next_reconnect` | `shared/rust-core/src/peer/delivery/tests.rs` |
 | IPC：断开取消长轮询 | `disconnected_client_drops_pending_response` | `macos/src-tauri/src/api/transport.rs` |
 | 跨平台能力：拒绝非 macOS 平台 | `testLocalCapabilitiesRejectsNonMacOSPlatform` | `macos/swift-ui/Tests/TailSyncTests/ApiClientCancellationTests.swift` |
 | Windows 成品不监听旧 TCP API | 打包 smoke 内的 `PackageWindows` 端口断言（integration 门禁） | `windows/scripts/package-windows.ps1` |
-| 台账自身：校验器 | `node --test scripts/check-remediation-ledger.test.mjs` | `scripts` |
+| 台账自身：测试属性、执行命令与当前源码的实际结果 | `node --test scripts/check-remediation-ledger.test.mjs scripts/remediation-test-results.test.mjs` | `scripts` |
 
 ## 已知空白（第 1 阶段的结论，待后续阶段填补）
 
 | 路径 | 现状 |
 |---|---|
 | 配对单边信任（`S3-P1-2`） | 无 pending/active 与互通夹具 |
-| 配额淘汰扫描与锁等待（`S4-P1-3`） | 无扫描次数/锁等待测试 |
+| 配额淘汰扫描与锁等待（`S4-P1-3`） | 已有扫描次数和物理账目测试；缺并发双批次准入与锁等待测试 |
 | 进度回调锁范围（`S4-P1-4`） | 无每分块进度顺序测试 |
 | 通知 gap/实例标识（`S6-P2-1`） | 仅覆盖环形缓冲有界与游标，未覆盖溢出提示 |
 | Windows 后台警告不被吞（`S6-P2-4`） | 无测试 |
 | 文件/即时队列隔离（`S2-F5`） | 未实现，无测试 |
-| WAL 忙时降级（`S5-P2-2`） | 仅覆盖正常截断 |
-| 孤儿文件对账 GC（`S5-P2-1`） | 仅覆盖删除容错 |
+| Windows 发现（`S1-P1-5`） | 新门禁在 macOS 主机通过；原生 Windows CI 与断网/VPN 场景尚待验 |
+| 孤儿文件对账 GC（`S5-P2-1`） | 已有对账/宽限期/别名/失败保护测试；尚未周期接线 |
 
-> 覆盖率的定期采集与趋势见计划的第 1 阶段要求；本清单不设全仓库百分比门槛。
+`.github/workflows/coverage.yml` 每日/手动采集 shared core 与 runtime 的 LCOV、JSON 汇总和源码 SHA，保存 30 天，不进入 PR 必需门禁；平台 UI、Windows 分支和真机路径尚不包含在这份覆盖率内。工具固定为 [cargo-llvm-cov 0.6.21](https://docs.rs/crate/cargo-llvm-cov/0.6.21)，插桩测试串行执行，`report` 只转换同一轮结果，不再执行测试。工作流上线后的首份托管产物仍待验证，本清单不设全仓库百分比门槛。
+
+耗时采样仅统计 `ci.yml` 的已完成运行，避免把采样工作流自身或发布流水线混入均值。台账执行记录绑定提交和源码摘要，不能复用另一版本的通过结果；忽略、缺失、仅编译或失败均不能通过台账门禁。

@@ -28,6 +28,12 @@ const ROOT_RUST_INPUTS = new Set([
   "rust-toolchain.toml",
 ]);
 
+const REMEDIATION_EXECUTION_INPUTS = new Set([
+  'scripts/check-remediation-ledger.mjs',
+  'scripts/remediation-test-results.mjs',
+  'scripts/run-remediation-tests.mjs',
+]);
+
 const VERSION_POLICY_PATHS = new Set([
   "README.md",
   "README.zh-CN.md",
@@ -88,6 +94,12 @@ function classify(file, jobs, categories) {
   if (VERSION_POLICY_PATHS.has(file)) {
     enable(jobs, "scripts");
     categories.add("version-policy");
+  }
+
+  if (REMEDIATION_EXECUTION_INPUTS.has(file) || file.startsWith('docs/remediation-ledger/')) {
+    enable(jobs, 'rust_windows', 'rust_macos', 'scripts', 'shared_resolution');
+    categories.add('remediation-execution');
+    return true;
   }
 
   if (file.startsWith("site/") || file.startsWith("deploy/")) {

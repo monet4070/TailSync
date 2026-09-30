@@ -61,3 +61,4 @@ ci-downloads/
 **/logs/
 **/*.log
 **/*tailsync-process-audit*.log
+/.remediation-test-results/

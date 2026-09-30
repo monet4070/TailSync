@@ -1348,7 +1348,7 @@ fn orphan_payload_sweep_respects_references_and_the_grace_period() {
     db.add_file_from_path(
         "managed.bin",
         &source,
-        &blake3::hash(body).to_hex().to_string(),
+        blake3::hash(body).to_hex().as_ref(),
         body.len() as u64,
         "peer",
     )
@@ -3061,5 +3061,151 @@ fn backfill_repairs_legacy_text_references_and_marks_corrupt_rows() {
     assert!(!deletable_path.exists());
 
     db.clear_all().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn orphan_sweep_preserves_reused_payloads_with_case_aliases() {
+    let root = std::env::temp_dir().join(format!("tailsync-gc-case-{}", rand::random::<u64>()));
+    let mut db = HistoryDB::open_at(&root).unwrap();
+    let body = b"payload retained after failed unlink";
+    let original = db.add_file("report.txt", body, "self").unwrap();
+    // Model a committed row deletion whose subsequent unlink failed.
+    db.conn
+        .execute("DELETE FROM history WHERE type='file'", [])
+        .unwrap();
+    let current = db.add_file("REPORT.TXT", body, "self").unwrap();
+    let id = db.conn.last_insert_rowid();
+    assert!(db.get_file_path(id).unwrap().is_some());
+    let entries_before = std::fs::read_dir(&db.file_history_dir).unwrap().count();
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+    for path in [&original, &current] {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    }
+    // Case-insensitive filesystems reuse one physical file; case-sensitive
+    // filesystems retain the new payload and remove the old unreferenced one.
+    assert_eq!(
+        db.sweep_orphan_payloads(std::time::Duration::from_secs(60))
+            .unwrap(),
+        (entries_before - 1) as u64
+    );
+    assert!(current.exists());
+    assert!(db.get_file_path(id).unwrap().is_some());
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn v9_busy_migration_keeps_pending_state_and_completes_on_reopen() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-v9-busy-migration-{}",
+        rand::random::<u64>()
+    ));
+    let mut db = HistoryDB::open_at(&root).unwrap();
+    db.add_text("legacy preview", "self").unwrap();
+    db.conn.execute_batch("DELETE FROM schema_version WHERE version >= 9; UPDATE history SET description='legacy plaintext';").unwrap();
+    let reader = Connection::open(root.join("history-v2.db")).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT COUNT(*) FROM history;")
+        .unwrap();
+    let started = std::time::Instant::now();
+    let error = HistoryDB::migrate(&db.conn, &db.file_history_dir, &db.image_history_dir)
+        .expect_err("blocked cleanup cannot complete v9");
+    let elapsed = started.elapsed();
+    assert!(error.to_string().contains("could not truncate the WAL"));
+    let phase: String = db
+        .conn
+        .query_row(
+            "SELECT phase FROM migration_state WHERE version=9",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(phase, "vacuum_pending");
+    let version: i64 = db
+        .conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 8);
+    let timeout: i64 = db
+        .conn
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        timeout, 5000,
+        "cleanup must restore the normal connection timeout"
+    );
+    reader.execute_batch("ROLLBACK;").unwrap();
+    drop(reader);
+    drop(db);
+    let reopened = HistoryDB::open_at(&root).unwrap();
+    let pending: i64 = reopened
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM migration_state WHERE version=9",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+    let version: i64 = reopened
+        .conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 11);
+    let description: String = reopened
+        .conn
+        .query_row(
+            "SELECT description FROM history WHERE type='text'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(description, TEXT_DESCRIPTION_PLACEHOLDER);
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "five production 5s busy waits must not hide inside the retry loop: {elapsed:?}"
+    );
+}
+
+#[test]
+fn orphan_sweep_aborts_before_deletion_when_a_live_reference_is_invalid() {
+    let root = std::env::temp_dir().join(format!("tailsync-gc-invalid-{}", rand::random::<u64>()));
+    let mut db = HistoryDB::open_at(&root).unwrap();
+    let payload = db
+        .add_file("keep.bin", b"recoverable payload", "self")
+        .unwrap();
+    let invalid = file_storage::encode_file_reference("../keep.bin").unwrap();
+    db.conn
+        .execute(
+            "UPDATE history SET data=?1 WHERE type='file'",
+            params![invalid],
+        )
+        .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&payload)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600))
+        .unwrap();
+    assert!(db
+        .sweep_orphan_payloads(std::time::Duration::from_secs(60))
+        .is_err());
+    assert!(
+        payload.exists(),
+        "uncertainty must not destroy a recoverable payload"
+    );
+    drop(db);
     std::fs::remove_dir_all(root).unwrap();
 }

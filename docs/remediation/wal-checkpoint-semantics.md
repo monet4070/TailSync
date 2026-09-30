@@ -21,9 +21,11 @@
 - WAL **不会被截断**,第 9 版之前遗留在 WAL 页镜像里的明文**可能留存**;
 - 而代码仍会把 v9 标记为完成 —— 但现有设计本来提供了补偿机制:注释写明"Mark v9 complete only after the residual-data cleanup succeeds. If the process exits first, startup repeats the idempotent preparation and vacuum phases."(migration_state 里已有 `vacuum_pending` 阶段)。
 
-**因此这里的正确语义是"重试":** 忙时不得静默继续,应让该步失败,使 v9 不进入完成态,由启动时的幂等流程重做。当前 `execute_batch` 丢弃结果行,恰好绕过了这个重试机制。
+**因此这里的正确语义是"重试":** 忙时不得静默继续,应让该步失败,使 v9 不进入完成态,由启动时的幂等流程重做。旧 `execute_batch` 丢弃结果行,绕过了这个重试机制；当前实现已读取并判断结果行。
 
 **处置(已修):** 抽出 `truncate_wal_for_v9_cleanup()`,读取结果行;`busy != 0` 时**返回错误**,使 v9 不进入完成态,由下次启动的幂等流程重做。门禁 `v9_cleanup_wal_truncation_fails_when_a_reader_blocks_it`(读者阻挡 → 报错;释放后 → 成功),已做"忽略 busy"的变异验证。
+
+2026-09-30 补充：只给重试间隔设 50ms 并不能约束 SQLite 自身的忙等待。新实现临时设置每次 busy_timeout 为 50ms，5 次尝试和 4 次 50ms 间隔约束锁等待约 450ms，成功/失败后均恢复连接原超时；这不是整个迁移的硬实时上限。完整迁移门禁 `v9_busy_migration_keeps_pending_state_and_completes_on_reopen` 验证失败时保留 v9 未完成与 vacuum_pending，释放读者后重新打开能完成迁移，同时断言被阻挡时耗时小于 2s。旧代码同一用例实测约 26.2s。
 
 ## `storage.rs:234`:结果行本身安全,另有既存风险
 

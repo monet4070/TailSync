@@ -22,7 +22,7 @@
     "shared/rust-core/src/db/lifecycle.rs"
   ],
   "trigger": "DB 提交后删文件遇读写冲突静默留存，且全库缺少对账孤儿扫掠。",
-  "fix_evidence": "已实现 sweep_orphan_payloads(grace)：枚举 file-history / image-history，凡\"没有任何 history 行引用\"且\"mtime 超过宽限期\"的普通文件才删除；引用集合由 surviving 行解码 reference 后解析路径得到（对应删除路径里的 SELECT COUNT(*) WHERE data=?1 反向）。**未完成**：周期性调用尚未接线（run_expired_transfer_maintenance 的闭包没有 DB 句柄，需要把 Arc<Mutex<HistoryDB>> 传进该函数及两端 clipboard.rs 调用点），因此该 GC 目前只能手动触发。 加固（审查后）：零宽限期被直接拒绝（原子写入的临时文件就在这两个目录里，零宽限会删掉在写的传输）；`*.tmp`/`.tmp.` 形状的文件永不清扫；行的引用无法解析时留下 warn 而不是静默跳过。门禁改为用真实的 mtime 回拨（而非 ZERO 哨兵）验证宽限比较，且断言临时文件不被清扫；变异验证：按参数而非文件年龄比较、去掉临时文件跳过、去掉零宽限拒绝，三者均使门禁失败。",
+  "fix_evidence": "sweep_orphan_payloads 按存活 DB 引用对账，以 Unix dev/inode 或 Windows 卷标识/128 位文件 ID 识别同一个文件，避免大小写别名误删；非零宽限、临时文件排除和无效引用中止均有测试。周期接线仍未完成。",
   "status": "partial",
   "pass_condition": "对账 GC 的门禁通过；**且**已接入周期性维护（或在文档中明确由谁在何时调用），否则保持 partial。",
   "reopen_condition": "孤儿过期仍占空间，或误删仍受引用文件。"

@@ -545,6 +545,8 @@ try {
                 throw "Packaged TailSync is listening on the legacy local API port 127.0.0.1:$legacyApiPort; the Windows app must use Tauri invoke/event IPC instead."
             }
 
+            Write-Host 'REMEDIATION_GATE_PASS S6-P0-1'
+
             Write-Host 'Exercising packaged single-instance remote-pairing deep link...'
             $smokeLink = New-SmokeRemotePairingLink
             $secondaryProcess = Start-Process `

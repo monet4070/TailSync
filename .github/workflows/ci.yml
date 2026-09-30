@@ -185,7 +185,7 @@ jobs:
       - name: Run application runtime Clippy
         run: cargo clippy --locked --manifest-path shared/tailsync-runtime/Cargo.toml --all-targets -- -D warnings
       - name: Run application runtime unit tests
-        run: cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml
+        run: node scripts/run-remediation-tests.mjs --job rust-windows -- cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml
       - name: Check Windows application formatting
         run: cargo fmt --manifest-path windows/src-tauri/Cargo.toml --all -- --check
       - name: Check macOS application formatting
@@ -195,9 +195,9 @@ jobs:
       - name: Run Windows application Clippy
         run: cargo clippy --locked --manifest-path windows/src-tauri/Cargo.toml --all-targets -- -D warnings
       - name: Run shared core unit tests, including v1 migration fixtures
-        run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
+        run: node scripts/run-remediation-tests.mjs --job rust-windows -- cargo test --locked --manifest-path shared/rust-core/Cargo.toml
       - name: Run Windows application unit tests
-        run: cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib
+        run: node scripts/run-remediation-tests.mjs --job rust-windows -- cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib
       - name: Check generated Windows Tauri capability schemas
         shell: pwsh
         run: |
@@ -211,7 +211,17 @@ jobs:
         run: ./windows/scripts/test_cross_project_interop.ps1 -WinRoot ./windows -MacRoot ./macos
       - name: Build NSIS and run packaged executable/deep-link smoke tests
         shell: pwsh
-        run: ./windows/scripts/package-windows.ps1 -SkipChecks
+        run: node scripts/run-remediation-tests.mjs --job rust-windows -- pwsh -NoProfile -File ./windows/scripts/package-windows.ps1 -SkipChecks
+      - name: Verify remediation gate execution
+        run: node scripts/check-remediation-ledger.mjs --job rust-windows --results-dir .remediation-test-results
+      - name: Upload test execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: remediation-tests-windows
+          path: .remediation-test-results/rust-windows
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload packaged Windows smoke artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -261,17 +271,17 @@ jobs:
       - name: Run application runtime Clippy
         run: cargo clippy --locked --manifest-path shared/tailsync-runtime/Cargo.toml --all-targets -- -D warnings
       - name: Run application runtime unit tests
-        run: cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml
+        run: node scripts/run-remediation-tests.mjs --job rust-macos -- cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml
       - name: Run shared core Clippy
         run: cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings
       - name: Run shared core unit tests
-        run: cargo test --locked --manifest-path shared/rust-core/Cargo.toml
+        run: node scripts/run-remediation-tests.mjs --job rust-macos -- cargo test --locked --manifest-path shared/rust-core/Cargo.toml
       - name: Check macOS application formatting
         run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
       - name: Run macOS application Clippy
         run: cargo clippy --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets -- -D warnings
       - name: Run macOS application unit tests
-        run: cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets
+        run: node scripts/run-remediation-tests.mjs --job rust-macos -- cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets
       - name: Check generated macOS Tauri capability schemas
         run: |
           schema_status="$(git status --porcelain --untracked-files=all -- macos/src-tauri/gen/schemas)"
@@ -283,13 +293,24 @@ jobs:
       - name: Run Swift UI unit tests
         env:
           TAILSYNC_WEB_SVG_RENDER_TESTS: "1"
-        run: swift test --package-path macos/swift-ui
+        run: node scripts/run-remediation-tests.mjs --job rust-macos -- swift test --package-path macos/swift-ui
       - name: Build release Swift UI
         run: swift build -c release --package-path macos/swift-ui
       - name: Build the macOS application bundle
         run: bash macos/build-mac.sh --skip-swift-build
       - name: Verify packaged macOS bundle and daemon
         run: bash macos/scripts/verify_macos_bundle.sh
+
+      - name: Verify remediation gate execution
+        run: node scripts/check-remediation-ledger.mjs --job rust-macos --results-dir .remediation-test-results
+      - name: Upload test execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: remediation-tests-macos
+          path: .remediation-test-results/rust-macos
+          if-no-files-found: warn
+          retention-days: 30
 
   scripts:
     name: Release and recovery scripts

@@ -6,7 +6,7 @@ use crate::crypto;
 use super::{file_encryption, get_clipboard_files_dir};
 
 const FILE_REFERENCE_MAGIC: &[u8] = b"TSFILE1\0";
-const IMAGE_REFERENCE_MAGIC: &[u8] = b"TSIMAGE1";
+pub(super) const IMAGE_REFERENCE_MAGIC: &[u8] = b"TSIMAGE1";
 const MAX_STORED_ORIGINAL_NAME_BYTES: usize = 120;
 pub(super) const FILE_HISTORY_BYTE_LIMIT: i64 = 5 * 1024 * 1024 * 1024;
 

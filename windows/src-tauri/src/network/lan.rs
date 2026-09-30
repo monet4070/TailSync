@@ -100,25 +100,30 @@ pub(super) fn probe_hostnames(addresses: &[IpAddr]) -> HashMap<IpAddr, ProbeResp
     resolved
 }
 
-fn broadcast_targets() -> HashSet<SocketAddr> {
+fn eligible_lan_interface(interface: &if_addrs::Interface) -> bool {
+    interface.is_oper_up() && !interface.is_loopback() && !interface.is_p2p
+}
+
+fn broadcast_targets_for(
+    interfaces: impl IntoIterator<Item = if_addrs::Interface>,
+) -> HashSet<SocketAddr> {
     let mut targets = HashSet::from([SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT))]);
-    if let Ok(interfaces) = if_addrs::get_if_addrs() {
-        for interface in interfaces {
-            if !interface.is_oper_up() || interface.is_loopback() || interface.is_p2p {
-                continue;
-            }
-            let if_addrs::IfAddr::V4(address) = interface.addr else {
-                continue;
-            };
-            if address.ip.is_loopback() {
-                continue;
-            }
-            if let Some(broadcast) = address.broadcast {
-                targets.insert(SocketAddr::new(IpAddr::V4(broadcast), DISCOVERY_PORT));
-            }
+    for interface in interfaces {
+        if !eligible_lan_interface(&interface) {
+            continue;
+        }
+        let if_addrs::IfAddr::V4(address) = interface.addr else {
+            continue;
+        };
+        if let Some(broadcast) = address.broadcast {
+            targets.insert(SocketAddr::new(IpAddr::V4(broadcast), DISCOVERY_PORT));
         }
     }
     targets
+}
+
+fn broadcast_targets() -> HashSet<SocketAddr> {
+    broadcast_targets_for(if_addrs::get_if_addrs().unwrap_or_default())
 }
 
 pub fn local_hostname() -> String {
@@ -155,9 +160,7 @@ fn local_ip() -> String {
         .map(|interfaces| {
             interfaces
                 .into_iter()
-                .filter(|interface| {
-                    interface.is_oper_up() && !interface.is_loopback() && !interface.is_p2p
-                })
+                .filter(eligible_lan_interface)
                 .map(|interface| interface.ip())
                 .collect::<Vec<_>>()
         })
@@ -174,9 +177,20 @@ pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
     socket
         .set_broadcast(true)
         .map_err(|e| format!("Failed to enable LAN broadcast: {e}"))?;
+    discover_with_targets(&socket, broadcast_targets(), DISCOVERY_WINDOW, local_ip()).await
+}
+
+// Keep the production send/receive path testable with explicit targets and the
+// interface snapshot. Tests use local UDP sockets and never probe the LAN.
+async fn discover_with_targets(
+    socket: &UdpSocket,
+    targets: HashSet<SocketAddr>,
+    window: Duration,
+    local_address: String,
+) -> Result<(LocalInfo, Vec<PeerInfo>), String> {
     let started = Instant::now();
     let mut sent = false;
-    for target in broadcast_targets() {
+    for target in targets {
         if socket.send_to(DISCOVERY_REQUEST, target).await.is_ok() {
             sent = true;
         }
@@ -186,7 +200,7 @@ pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
     }
 
     let hostname = local_hostname();
-    let deadline = Instant::now() + DISCOVERY_WINDOW;
+    let deadline = Instant::now() + window;
     let mut buffer = [0u8; 1024];
     let mut seen = HashSet::<(String, IpAddr)>::new();
     let mut peers = Vec::new();
@@ -235,7 +249,6 @@ pub async fn discover() -> Result<(LocalInfo, Vec<PeerInfo>), String> {
     }
 
     peers.sort_by(|a, b| a.hostname.cmp(&b.hostname));
-    let local_address = local_ip();
     let candidates = local_address
         .parse::<IpAddr>()
         .ok()
@@ -336,8 +349,69 @@ mod tests {
         }
     }
 
-    #[test]
-    fn broadcast_targets_is_never_empty() {
-        assert!(!broadcast_targets().is_empty());
+    fn interface(ip: [u8; 4], broadcast: [u8; 4], up: bool, p2p: bool) -> if_addrs::Interface {
+        if_addrs::Interface {
+            name: "fixture".into(),
+            index: None,
+            addr: if_addrs::IfAddr::V4(if_addrs::Ifv4Addr {
+                ip: ip.into(),
+                netmask: [255, 255, 255, 0].into(),
+                prefixlen: 24,
+                broadcast: Some(broadcast.into()),
+            }),
+            oper_status: if up {
+                if_addrs::IfOperStatus::Up
+            } else {
+                if_addrs::IfOperStatus::Down
+            },
+            is_p2p: p2p,
+            #[cfg(windows)]
+            adapter_name: "fixture".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn lan_discovery_filters_interfaces_and_distinguishes_send_failure_from_zero_peers() {
+        let global = SocketAddr::from(([255, 255, 255, 255], DISCOVERY_PORT));
+        let rejected = vec![
+            interface([10, 0, 0, 2], [10, 0, 0, 255], false, false),
+            interface([172, 16, 0, 2], [172, 16, 0, 255], true, true),
+            interface([127, 0, 0, 1], [127, 255, 255, 255], true, false),
+        ];
+        assert!(rejected.iter().all(|i| !eligible_lan_interface(i)));
+        assert_eq!(broadcast_targets_for(rejected), HashSet::from([global]));
+        let valid = interface([192, 168, 1, 2], [192, 168, 1, 255], true, false);
+        assert!(eligible_lan_interface(&valid));
+        assert_eq!(
+            broadcast_targets_for([valid]),
+            HashSet::from([
+                global,
+                SocketAddr::from(([192, 168, 1, 255], DISCOVERY_PORT)),
+            ])
+        );
+        // A successful UDP send with no responder is Ok with zero devices.
+        // No eligible interface is represented by an empty local address.
+        let sink = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (local, peers) = discover_with_targets(
+            &socket,
+            HashSet::from([sink.local_addr().unwrap()]),
+            Duration::from_millis(10),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        assert!(local.tailscale_ip.is_empty() && local.candidates.is_empty());
+        assert!(peers.is_empty());
+        // An IPv4 socket cannot send to this IPv6 target; every send fails.
+        let error = discover_with_targets(
+            &socket,
+            HashSet::from(["[::1]:19889".parse().unwrap()]),
+            Duration::from_millis(10),
+            String::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("Failed to broadcast LAN discovery"));
     }
 }
