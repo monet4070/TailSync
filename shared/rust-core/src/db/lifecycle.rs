@@ -106,6 +106,9 @@ impl HistoryDB {
         }
 
         // Reclaim pages after an explicit user-initiated clear operation.
+        // Busy semantics: continue. A blocked TRUNCATE returns busy=1 (not an
+        // error), so it only skips space reclamation; the logical clear has
+        // already been committed. See docs/remediation/wal-checkpoint-semantics.md.
         if let Err(error) = self
             .conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")

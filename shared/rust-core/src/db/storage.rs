@@ -230,6 +230,11 @@ impl HistoryDB {
         fs::create_dir_all(parent)?;
         let owner_id = load_or_create_owner_id()?;
         validate_existing_target(&target, &owner_id)?;
+        // Busy semantics: continue. A blocked TRUNCATE returns busy=1 (not an
+        // error). The copy below includes -wal and -shm and replays the WAL, so a
+        // skipped truncation does not lose committed frames. See
+        // docs/remediation/wal-checkpoint-semantics.md for the separate,
+        // pre-existing non-atomic copy hazard.
         self.conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         let old_size_bytes = bulk_storage_size(&old_root)?;

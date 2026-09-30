@@ -138,6 +138,9 @@ impl HistoryDB {
                 )?;
                 Ok(())
             })?;
+            // Busy semantics: continue. A blocked TRUNCATE returns busy=1 (not
+            // an error), so it only skips this pass's reclamation; a later
+            // startup reclaims the pages. See docs/remediation/wal-checkpoint-semantics.md.
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
             let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
             let free_pages: i64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
@@ -290,6 +293,12 @@ impl HistoryDB {
                 )?;
                 Ok(())
             })?;
+            // Busy semantics: MUST retry, not continue. A blocked TRUNCATE
+            // returns busy=1 (not an error), which would leave pre-v9 plaintext
+            // page images in the WAL while v9 is still marked complete, bypassing
+            // the `vacuum_pending` retry path. Fixing this is tracked as a
+            // follow-up (docs/remediation/wal-checkpoint-semantics.md) rather than
+            // folded into S5-P2-2.
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
             Self::run_migration_transaction(conn, 9, |conn| {
                 // Mark v9 complete only after the residual-data cleanup

@@ -1267,6 +1267,12 @@ fn a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds()
         )
         .unwrap();
 
+    // Keep the deliberate busy waits short: the gate only needs to observe the
+    // blocked outcome, not to wait out the production busy timeout.
+    db.conn
+        .busy_timeout(std::time::Duration::from_millis(50))
+        .unwrap();
+
     // A second connection holding a read snapshot blocks the post-delete
     // TRUNCATE checkpoint. SQLite reports that by RETURNING busy = 1, which is
     // exactly the row the delete path now reads.

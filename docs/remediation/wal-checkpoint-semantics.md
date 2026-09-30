@@ -1,0 +1,35 @@
+# WAL checkpoint 结果行的影响核对与忙时语义
+
+> 由 `S5-P2-2` 的修复 PR 附带产出(方案阶段 5 要求)。
+> 背景:`PRAGMA wal_checkpoint(TRUNCATE)` 在**被读者阻挡**时**返回一行** `busy = 1`,而不是抛错。任何用 `execute_batch` 执行它的地方都会**静默丢弃**该行,于是"没截断"这件事无人知晓。
+
+## 结论表
+
+| 位置 | 场景 | busy 时的语义 | 依据 / 处置 |
+|---|---|---|---|
+| `db/lifecycle.rs:416`(已修) | 删除/清理后的 WAL 截断 | **继续**,但记录警告 | 删除已提交,截断只是回收;`WalCheckpointOutcome::Blocked` 会 `warn!` |
+| `db/lifecycle.rs:111` | 用户主动 clear 后的 `TRUNCATE; VACUUM;` | **继续**;VACUUM 是空间回收的优化 | `clear_all` 语义是"清空逻辑数据",截断/VACUUM 失败不改变结果。真实 SQL 错误已被 `first_error` 收集;busy 不报错,故仅影响空间回收 |
+| `db/migrations.rs:141` | v4 图片迁移后的页回收 | **继续** | 紧接着有 `freelist_count` 判断与按需 `VACUUM`;busy 只意味着这次截断没做,后续启动仍可回收 |
+| `db/migrations.rs:293` | v9 明文预览清除后的 `TRUNCATE; VACUUM;` | **重试(不得静默继续)**⚠️ | 见下 |
+| `db/storage.rs:234` | 存储迁移复制 db/WAL 之前 | **继续**;另有独立风险待跟踪 | 见下 |
+
+## `migrations.rs:293`:真实风险,按方案另开小 PR
+
+该位置在 v9"清除明文预览残留"之后执行 `TRUNCATE; VACUUM;`,随后才把 v9 标记为完成。若此处 busy:
+
+- WAL **不会被截断**,第 9 版之前遗留在 WAL 页镜像里的明文**可能留存**;
+- 而代码仍会把 v9 标记为完成 —— 但现有设计本来提供了补偿机制:注释写明"Mark v9 complete only after the residual-data cleanup succeeds. If the process exits first, startup repeats the idempotent preparation and vacuum phases."(migration_state 里已有 `vacuum_pending` 阶段)。
+
+**因此这里的正确语义是"重试":** 忙时不得静默继续,应让该步失败,使 v9 不进入完成态,由启动时的幂等流程重做。当前 `execute_batch` 丢弃结果行,恰好绕过了这个重试机制。
+
+**处置:** 按方案"若发现独立数据一致性问题,另开小 PR 和故障测试,不借 S5-P2-2 扩大成未经验证的重构",本项**不在 S5-P2-2 的提交内修改**,登记为后续项,要求:读取结果行;busy != 0 时返回错误;并配一个"读者阻挡下 v9 不进入完成态、重启后重做"的故障测试。
+
+## `storage.rs:234`:结果行本身安全,另有既存风险
+
+该处截断后调用 `copy_bulk_storage_verified`,复制 `history-v2.db`、`-wal`、`-shm`(`bulk_storage_names()`),随后 `verify_sqlite` 重新打开副本(会重放 WAL)。所以**单凭 busy 不会丢失已提交的帧**,丢弃结果行在此不构成数据丢失向量。
+
+但审查同时指出一个**既存**(非本项引入)的风险:在并发写入下对 db/wal/shm 的复制并非原子(`CODE-REVIEW-2026-08-30` 已记录)。该问题与本条目无关,登记为独立跟踪项,不在本 PR 扩大处理。
+
+## 单测成本
+
+`S5-P2-2` 的门禁用双连接制造忙状态。默认 `busy_timeout` 为 5 s,两次被阻挡的截断(直接调用 + `delete`)使该测试耗时约 **10.5 s**,占该 crate 单测总时长的大头。测试内已把 `busy_timeout` 降到 50 ms——门禁只需要观察到"忙"这一结果,不需要等满生产超时。
