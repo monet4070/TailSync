@@ -560,6 +560,33 @@ describe("History item actions", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("close_history_window");
   });
 
+  it("acknowledges a sync warning by its id so a hidden window cannot swallow it", async () => {
+    // S6-P2-4: the daemon keeps the warning readable until a window acknowledges the
+    // exact id it displayed. A snapshot delivered while no window could show it must
+    // therefore not consume it.
+    let delivered = false;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "wait_runtime_snapshot") {
+        if (delivered) return new Promise(() => undefined);
+        delivered = true;
+        return Promise.resolve({
+          revision: 1,
+          history_version: 1,
+          progress: null,
+          notifications: [],
+          sync_warning: { id: 7, kind: "expired_event", peer: "peer-a", occurred_at_ms: 1 },
+        });
+      }
+      if (command === "ack_sync_warning") return Promise.resolve(true);
+      return defaultInvoke(command);
+    });
+
+    render(<History />);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", { id: 7 });
+    });
+  });
+
   it("uses one blocking runtime snapshot instead of legacy high-frequency polls", async () => {
     render(<History />);
     await screen.findByText(entry.description);

@@ -140,6 +140,7 @@ fn fixtures() -> LocalContractExports {
             history_version: 1,
             progress: Some(progress),
             sync_warning: Some(tailsync_core::sync_warning::SyncWarning {
+                id: 1,
                 kind: "expired_event",
                 peer: "fixture-peer".into(),
                 occurred_at_ms: 0,

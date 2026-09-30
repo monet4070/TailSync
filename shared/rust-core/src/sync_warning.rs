@@ -3,10 +3,16 @@ use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct SyncWarning {
+    /// Stable identity of this warning, so a consumer can read it without consuming it
+    /// and then acknowledge exactly the one it showed.
+    pub id: u64,
     pub kind: &'static str,
     pub peer: String,
     pub occurred_at_ms: i64,
 }
+
+/// Monotonic source of `SyncWarning::id`.
+static NEXT_WARNING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 static LATEST_WARNING: OnceLock<Mutex<Option<SyncWarning>>> = OnceLock::new();
 
@@ -79,13 +85,44 @@ pub fn record_delivery_shutdown(peer: &str) -> bool {
 }
 
 fn record(peer: &str, kind: &'static str) {
+    let id = NEXT_WARNING_ID
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1)
+        .max(1);
     *latest_warning()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(SyncWarning {
+        id,
         kind,
         peer: peer.chars().take(255).collect(),
         occurred_at_ms: crate::protocol::unix_timestamp_ms(),
     });
+}
+
+/// Read the current warning WITHOUT consuming it.
+///
+/// A background poll (for example a window that is hidden in the tray) must be able
+/// to observe the warning without taking it away from the window that can actually
+/// show it. The consumer acknowledges with [`ack`] once it has been displayed.
+pub fn peek() -> Option<SyncWarning> {
+    latest_warning()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Consume the warning only if `id` still identifies it. Returns whether a warning
+/// was consumed, so the caller can tell "shown and acknowledged" from "a newer
+/// warning replaced it before I acknowledged".
+pub fn ack(id: u64) -> bool {
+    let mut slot = latest_warning()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if slot.as_ref().is_some_and(|warning| warning.id == id) {
+        slot.take();
+        return true;
+    }
+    false
 }
 
 pub fn take() -> Option<SyncWarning> {
@@ -149,5 +186,58 @@ mod tests {
         assert_eq!(warning.peer, "peer");
         assert_eq!(take(), None);
         reset_shutdown_for_test();
+    }
+}
+
+#[cfg(test)]
+mod p2_4_tests {
+    use super::*;
+
+    /// S6-P2-4: reading must not consume, and acknowledging must consume exactly the
+    /// warning that was displayed. This is what lets a window that cannot show the
+    /// warning (hidden in the tray) observe it without taking it from the one that can.
+    #[test]
+    fn peek_does_not_consume_and_ack_consumes_exactly_that_warning() {
+        let _guard = test_lock();
+        let _ = take(); // clear anything another test left behind
+
+        record_expired_event("peer-a");
+        let shown = peek().expect("a warning is readable");
+        assert_eq!(
+            peek().map(|warning| warning.id),
+            Some(shown.id),
+            "peek must not consume the warning"
+        );
+
+        // A newer warning replaces the slot; acknowledging the older id must not
+        // clear the newer warning instead.
+        record_delivery_stalled("peer-b");
+        let newer = peek().expect("the newer warning is readable");
+        assert_ne!(newer.id, shown.id, "a new warning gets a new id");
+        assert!(
+            !ack(shown.id),
+            "acking a replaced warning must report failure"
+        );
+        assert_eq!(
+            peek().map(|warning| warning.id),
+            Some(newer.id),
+            "the newer warning must survive a stale acknowledgement"
+        );
+
+        assert!(ack(newer.id), "acking the current warning must succeed");
+        assert!(peek().is_none(), "the acknowledged warning is consumed");
+        assert!(!ack(newer.id), "acking twice must not succeed");
+    }
+
+    #[test]
+    fn warning_ids_are_monotonic_and_nonzero() {
+        let _guard = test_lock();
+        let _ = take();
+        record_expired_event("peer-a");
+        let first = peek().expect("warning").id;
+        record_expired_event("peer-a");
+        let second = peek().expect("warning").id;
+        assert!(first > 0 && second > first, "{first} then {second}");
+        let _ = take();
     }
 }

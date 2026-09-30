@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
+  ackSyncWarning,
   cancelFileBatch,
   clearHistory,
   deleteEntry,
@@ -359,18 +360,25 @@ export function History({ collection = "all" }: HistoryProps) {
       await loadHistory();
     }
     if (snapshot.sync_warning) {
+      const warning = snapshot.sync_warning;
       const key = {
         expired_event: "history.syncExpired",
         delivery_stalled: "history.syncStalled",
         delivery_shutdown: "history.syncShutdown",
         delivery_expired: "history.syncDeliveryExpired",
-      }[snapshot.sync_warning.kind];
+      }[warning.kind];
       if (key) {
+        // Keyed by the warning's own id, so the same warning shown once is not
+        // repeated by every poll, while a later warning of the same kind and peer
+        // still appears. Acknowledging consumes exactly the warning that was shown:
+        // the daemon keeps it readable until then, so a hidden window cannot swallow
+        // it.
         showHistoryNotice({
-          key: `sync-warning:${snapshot.sync_warning.kind}:${snapshot.sync_warning.peer}`,
+          key: `sync-warning:${warning.id}`,
           level: "warning",
-          message: t(key).replace("{peer}", snapshot.sync_warning.peer),
+          message: t(key).replace("{peer}", warning.peer),
         });
+        void ackSyncWarning(warning.id);
       }
     }
     for (const notification of snapshot.notifications ?? []) {

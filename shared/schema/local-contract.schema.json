@@ -1020,6 +1020,12 @@
     "SyncWarning": {
       "type": "object",
       "properties": {
+        "id": {
+          "description": "Stable identity of this warning, so a consumer can read it without consuming it\nand then acknowledge exactly the one it showed.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "kind": {
           "type": "string"
         },
@@ -1032,6 +1038,7 @@
         }
       },
       "required": [
+        "id",
         "kind",
         "peer",
         "occurred_at_ms"

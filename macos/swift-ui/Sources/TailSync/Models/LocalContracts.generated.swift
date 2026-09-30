@@ -523,12 +523,14 @@ struct ContractStorageStatus: Codable, Sendable {
 }
 
 struct ContractSyncWarning: Codable, Sendable {
+  let `id`: UInt64
   let `kind`: String
   let `occurred_at_ms`: Int64
   let `peer`: String
-  private enum CodingKeys: String, CodingKey { case `kind`, `occurred_at_ms`, `peer` }
+  private enum CodingKeys: String, CodingKey { case `id`, `kind`, `occurred_at_ms`, `peer` }
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
+    self.`id` = try c.decode(UInt64.self, forKey: .`id`)
     self.`kind` = try c.decode(String.self, forKey: .`kind`)
     self.`occurred_at_ms` = try c.decode(Int64.self, forKey: .`occurred_at_ms`)
     self.`peer` = try c.decode(String.self, forKey: .`peer`)

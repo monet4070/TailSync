@@ -62,7 +62,10 @@ pub async fn wait_runtime_snapshot(
         revision,
         history_version: crate::api::get_clipboard_version(),
         progress: crate::api::get_file_progress(),
-        sync_warning: tailsync_core::sync_warning::take(),
+        // Non-destructive: a window hidden in the tray must be able to observe the
+        // warning without consuming it from the window that can show it. The consumer
+        // acknowledges with `ack_sync_warning` once it has been displayed.
+        sync_warning: tailsync_core::sync_warning::peek(),
         notifications: crate::api::get_runtime_notifications_since(
             since_notification_id.unwrap_or_default(),
         ),
@@ -72,7 +75,15 @@ pub async fn wait_runtime_snapshot(
 #[command]
 pub async fn get_sync_warning(
 ) -> Result<Option<tailsync_core::sync_warning::SyncWarning>, CommandError> {
-    Ok(tailsync_core::sync_warning::take())
+    Ok(tailsync_core::sync_warning::peek())
+}
+
+/// Acknowledge that the warning `id` has been shown, consuming exactly that warning.
+/// Returns whether one was consumed: a newer warning having replaced it returns
+/// false, so the caller knows the acknowledgement did not apply.
+#[command]
+pub async fn ack_sync_warning(id: u64) -> Result<bool, CommandError> {
+    Ok(tailsync_core::sync_warning::ack(id))
 }
 
 #[derive(serde::Serialize)]

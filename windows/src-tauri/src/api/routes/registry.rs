@@ -44,6 +44,7 @@ pub(super) enum BuiltinCommand {
     GetStorageStatus,
     GetVersion,
     GetSyncWarning,
+    AckSyncWarning,
     GetHistoryCapabilities,
     GetMigrationDiagnostics,
     GetStatus,
@@ -108,6 +109,7 @@ impl LocalCommand {
             "get_storage_status" => Self::Builtin(BuiltinCommand::GetStorageStatus),
             "get_version" => Self::Builtin(BuiltinCommand::GetVersion),
             "get_sync_warning" => Self::Builtin(BuiltinCommand::GetSyncWarning),
+            "ack_sync_warning" => Self::Builtin(BuiltinCommand::AckSyncWarning),
             "get_history_capabilities" => Self::Builtin(BuiltinCommand::GetHistoryCapabilities),
             "get_migration_diagnostics" => Self::Builtin(BuiltinCommand::GetMigrationDiagnostics),
             "get_status" => Self::Builtin(BuiltinCommand::GetStatus),
@@ -178,6 +180,7 @@ mod tests {
         assert!(LocalCommand::parse("get_storage_status").is_some());
         assert!(LocalCommand::parse("get_version").is_some());
         assert!(LocalCommand::parse("get_sync_warning").is_some());
+        assert!(LocalCommand::parse("ack_sync_warning").is_some());
         assert!(LocalCommand::parse("get_history_capabilities").is_some());
         assert!(LocalCommand::parse("get_migration_diagnostics").is_some());
         assert!(LocalCommand::parse("get_status").is_some());

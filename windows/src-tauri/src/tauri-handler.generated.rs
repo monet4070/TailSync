@@ -73,6 +73,7 @@ tauri::generate_handler![
     commands::get_local_capabilities,
     commands::wait_runtime_snapshot,
     commands::get_sync_warning,
+    commands::ack_sync_warning,
     commands::get_update_status,
     commands::check_for_update,
     commands::install_update,

@@ -570,6 +570,8 @@ pub struct ApiState {
 struct Request {
     cmd: String,
     #[serde(default)]
+    ack_warning_id: Option<u64>,
+    #[serde(default)]
     error_schema_version: Option<u32>,
     #[serde(default)]
     token: Option<String>,

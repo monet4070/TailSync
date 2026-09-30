@@ -262,6 +262,14 @@ export function getSyncWarning(): Promise<SyncWarning | null> {
   return invoke<SyncWarning | null>("get_sync_warning");
 }
 
+/// Confirm that the warning with this id has been shown. The daemon consumes exactly
+/// that warning, so a warning stays readable until a window can actually display it —
+/// a hidden tray window can observe it without taking it away — and a newer warning
+/// having replaced it returns false rather than silently clearing the new one.
+export function ackSyncWarning(id: number): Promise<boolean> {
+  return invoke<boolean>("ack_sync_warning", { id });
+}
+
 export function getFileProgress(): Promise<FileProgress> {
   return invoke<FileProgress>("get_file_progress");
 }

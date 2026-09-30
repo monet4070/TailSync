@@ -6599,6 +6599,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6628,6 +6629,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6657,6 +6659,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6686,6 +6689,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6714,6 +6718,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6743,6 +6748,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6758,6 +6764,7 @@
       "revision": 1,
       "history_version": 1,
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6774,6 +6781,7 @@
       "history_version": 1,
       "progress": [],
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6852,6 +6860,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6880,6 +6889,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0
@@ -6892,6 +6902,7 @@
     "contract": "SyncWarning",
     "valid": true,
     "value": {
+      "id": 1,
       "kind": "expired_event",
       "peer": "fixture-peer",
       "occurred_at_ms": 0
@@ -6902,6 +6913,7 @@
     "contract": "SyncWarning",
     "valid": true,
     "value": {
+      "id": 1,
       "kind": "expired_event",
       "peer": "fixture-peer",
       "occurred_at_ms": 0,
@@ -6909,10 +6921,32 @@
     }
   },
   {
+    "name": "SyncWarning: missing id",
+    "contract": "SyncWarning",
+    "valid": false,
+    "value": {
+      "kind": "expired_event",
+      "peer": "fixture-peer",
+      "occurred_at_ms": 0
+    }
+  },
+  {
+    "name": "SyncWarning: wrong type id",
+    "contract": "SyncWarning",
+    "valid": false,
+    "value": {
+      "id": [],
+      "kind": "expired_event",
+      "peer": "fixture-peer",
+      "occurred_at_ms": 0
+    }
+  },
+  {
     "name": "SyncWarning: missing kind",
     "contract": "SyncWarning",
     "valid": false,
     "value": {
+      "id": 1,
       "peer": "fixture-peer",
       "occurred_at_ms": 0
     }
@@ -6922,6 +6956,7 @@
     "contract": "SyncWarning",
     "valid": false,
     "value": {
+      "id": 1,
       "kind": [],
       "peer": "fixture-peer",
       "occurred_at_ms": 0
@@ -6932,6 +6967,7 @@
     "contract": "SyncWarning",
     "valid": false,
     "value": {
+      "id": 1,
       "kind": "expired_event",
       "occurred_at_ms": 0
     }
@@ -6941,6 +6977,7 @@
     "contract": "SyncWarning",
     "valid": false,
     "value": {
+      "id": 1,
       "kind": "expired_event",
       "peer": [],
       "occurred_at_ms": 0
@@ -6951,6 +6988,7 @@
     "contract": "SyncWarning",
     "valid": false,
     "value": {
+      "id": 1,
       "kind": "expired_event",
       "peer": "fixture-peer"
     }
@@ -6960,6 +6998,7 @@
     "contract": "SyncWarning",
     "valid": false,
     "value": {
+      "id": 1,
       "kind": "expired_event",
       "peer": "fixture-peer",
       "occurred_at_ms": []
@@ -7012,6 +7051,7 @@
         "can_stop": true
       },
       "sync_warning": {
+        "id": 1,
         "kind": "expired_event",
         "peer": "fixture-peer",
         "occurred_at_ms": 0

@@ -3,8 +3,17 @@
   "platform": [
     "shared"
   ],
-  "gate": null,
-  "ci_job": [],
+  "gate": {
+    "kind": "unit",
+    "file": "shared/rust-core/src/sync_warning.rs",
+    "test": "peek_does_not_consume_and_ack_consumes_exactly_that_warning",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "读取不消费：peek() 反复返回同一条警告（变异：改成 take() 即失败）。确认只消费被显示的那一条：新警告替换后 ack(旧 id) 返回 false 且新警告仍在，ack(当前 id) 才清空（变异：忽略 id 直接清空即失败）。另有 id 单调非零的断言。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
   "native_acceptance": null,
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S6-P2-4",
@@ -13,8 +22,8 @@
     "windows/src-tauri/src/commands/platform.rs"
   ],
   "trigger": "隐藏窗口时后台长轮询 take() 掉唯一的 sync_warning，打开窗口已无提示。",
-  "fix_evidence": "未修：wait_runtime_snapshot 与 get_sync_warning 仍用破坏性 take()，无 peek/带 ID 读取。",
-  "status": "unfixed",
-  "pass_condition": "隐藏期及进行中的轮询均不吞警告，前台恰好展示一次。",
+  "fix_evidence": "按方案改为\"带 ID 的可确认读取\"，而不是单独把 take() 换成 peek()：SyncWarning 增加 id（单调、非零）；sync_warning 增加 peek()（非破坏性）与 ack(id)（仅当 id 匹配才消费，返回是否消费成功）；Windows 的 wait_runtime_snapshot 与 get_sync_warning 改用 peek，新增 Tauri 命令 ack_sync_warning(id)（已按 manifest → generate-local-commands.mjs → 生成 dispatch/handler 的路径登记，命令数 76→77），Windows JSON 路由同步补 AckSyncWarning 分支（ack_warning_id 请求字段）。UI 侧通知的 key 由 kind:peer 改为警告自身 id（同一条不重复、新的同类型仍会显示），显示后立即 ackSyncWarning(id)。契约按路径重新生成（SyncWarning 增 id），check-local-contracts 与 check-shared-resolution 通过。测试：Rust 的 peek/ack 语义与 id 单调性，前端断言警告到达后以该 id 调用 ack_sync_warning。",
+  "status": "fixed_gated",
+  "pass_condition": "读取非破坏性与按 id 确认有测试；前端在显示后确认该 id；契约生成物已提交且检查通过。",
   "reopen_condition": "警告丢失或重复展示。"
 }

@@ -254,11 +254,12 @@ function validStorageStatus(value: unknown): value is StorageStatus { return (is
 export function decodeStorageStatus(value: unknown): StorageStatus { if (!validStorageStatus(value)) throw new Error("Invalid StorageStatus response"); return value; }
 
 export type SyncWarning = {
+  "id": number;
   "kind": string;
   "occurred_at_ms": number;
   "peer": string;
 };
-function validSyncWarning(value: unknown): value is SyncWarning { return (isRecord(value) && (Object.hasOwn(value, "kind") && (typeof value["kind"] === "string")) && (Object.hasOwn(value, "occurred_at_ms") && (typeof value["occurred_at_ms"] === "number" && Number.isSafeInteger(value["occurred_at_ms"]))) && (Object.hasOwn(value, "peer") && (typeof value["peer"] === "string"))); }
+function validSyncWarning(value: unknown): value is SyncWarning { return (isRecord(value) && (Object.hasOwn(value, "id") && (typeof value["id"] === "number" && Number.isSafeInteger(value["id"]) && value["id"] >= 0)) && (Object.hasOwn(value, "kind") && (typeof value["kind"] === "string")) && (Object.hasOwn(value, "occurred_at_ms") && (typeof value["occurred_at_ms"] === "number" && Number.isSafeInteger(value["occurred_at_ms"]))) && (Object.hasOwn(value, "peer") && (typeof value["peer"] === "string"))); }
 export function decodeSyncWarning(value: unknown): SyncWarning { if (!validSyncWarning(value)) throw new Error("Invalid SyncWarning response"); return value; }
 
 export type WindowsRuntimeSnapshot = {

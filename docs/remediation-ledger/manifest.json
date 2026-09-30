@@ -10,10 +10,10 @@
     "P2": 8
   },
   "status_counts": {
-    "fixed_gated": 24,
+    "fixed_gated": 25,
     "fixed_ungated": 0,
     "partial": 2,
-    "unfixed": 4,
+    "unfixed": 3,
     "needs_adjudication": 0,
     "accepted": 1
   },

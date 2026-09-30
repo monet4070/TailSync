@@ -216,8 +216,21 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         BuiltinCommand::GetSyncWarning => Response {
             ok: true,
-            data: serde_json::to_value(tailsync_core::sync_warning::take()).ok(),
+            data: serde_json::to_value(tailsync_core::sync_warning::peek()).ok(),
             error: None,
+        },
+
+        BuiltinCommand::AckSyncWarning => match req.ack_warning_id {
+            Some(id) => Response {
+                ok: true,
+                data: serde_json::to_value(tailsync_core::sync_warning::ack(id)).ok(),
+                error: None,
+            },
+            None => Response {
+                ok: false,
+                data: None,
+                error: Some("ack_sync_warning requires ack_warning_id".to_string()),
+            },
         },
 
         BuiltinCommand::GetHistoryCapabilities => Response {
