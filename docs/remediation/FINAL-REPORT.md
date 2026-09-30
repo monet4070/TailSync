@@ -1,7 +1,7 @@
 # TailSync 审计整改最终报告
 
 > 基线：`origin/main` = `b61a0a04b88f5828707f7ef64781389944471be8`（PR #72 合并点）。
-> 工作分支：`codex/remediation-2026-09-29`（52 个提交；本报告随 `b632b7c` 之后的文档提交一起入库）。
+> 工作分支：`codex/remediation-2026-09-29`（相对 `origin/main` 共 54 个提交，含本报告所在的文档提交）。
 > 日期：2026-09-30。环境：**单机 macOS（Apple Silicon）**；Windows 与 Linux 仅通过 GitHub 托管 runner 验证。
 > 审计输入：`docs/audit/CODE-REVIEW-2026-09-27.md`；执行方案：`docs/audit/CODE-REVIEW-REMEDIATION-PLAN-2026-09-29.md`。
 
