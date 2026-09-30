@@ -25,7 +25,9 @@ final class AppBehaviorTests: XCTestCase {
                 cursor: 10, earliestAvailable: 6,
                 previousServiceInstance: 7, serviceInstance: 8),
             .daemonRestarted)
-        // Fields a pre-upgrade daemon does not send keep the old behaviour.
+        // A zero earliest id is the policy's defensive default (no readable window
+        // reported); the snapshot contract makes the field required, so this is not an
+        // older-daemon compatibility path.
         XCTAssertEqual(
             RuntimeNotificationPolicy.notificationCursorRecovery(
                 cursor: 2, earliestAvailable: 0,
