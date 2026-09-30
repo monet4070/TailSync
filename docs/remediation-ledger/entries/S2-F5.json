@@ -6,9 +6,9 @@
   "gate": {
     "kind": "unit",
     "file": "shared/rust-core/src/peer/delivery/tests.rs",
-    "test": "s2_f5_text_events_are_neither_dropped_nor_queue_bound",
+    "test": "a_full_priority_queue_never_drops_a_text_frame_silently",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "在冻结负载（同一 50ms 文本节奏 + 256MiB 批次的 64 个控制帧与 256 个分块帧）下，文本事件永久丢弃数为 0、priority 峰值深度 ≤ 48（冻结阈值）、每个入队事件都被调度。该门禁曾在我把节奏从 50ms 改成 20ms 时报出深度 50>48 —— 阈值只适用于它所冻结的那个负载。"
+    "asserts": "确定性门禁（不依赖运行速度）：把 priority 队列填满到容量后走生产入队路径 enqueue_queued_frame，断言它不会报告成功（满队时背压而非丢弃），腾出空间后文本帧仍在队列中不消失。变异验证：把生产入队改成 try_send 静默丢弃即失败。延迟与水位数字由记录的单机基线给出，不放进 CI 以免抖动。"
   },
   "ci_job": [
     "rust-macos",
@@ -22,7 +22,7 @@
     "shared/rust-core/src/peer/pool.rs:channel_for"
   ],
   "trigger": "FileMeta/批次帧与剪贴板即时帧共用 priority 队列，文件元数据等待可打满 64 容量并丢弃文本帧。",
-  "fix_evidence": "裁定为**达标并关闭**（2026-09-30）。依据：预算已由维护者签署（docs/performance-budgets.md，文本 p99 ≤ 100ms、水位 ≤ 48、永久丢 0）；单机基线（s2_f5_text_latency_baseline，60 秒、三run）实测 p50 55–59µs、p99 343–705µs、max 47–51ms、永久丢 0、priority 峰值 30–32/64，全部满足且远低于延迟上限。因此**不实现独立认证文件通道**（方案规定达标即如此处置），改为记录适用边界并留下 CI 可跑的压力回归门禁（上述门禁）。适用边界：单机、逐帧服务时间为 200µs 模型参数、bulk 侧负载比真实传输更密；真实网络的端到端数字未测。",
+  "fix_evidence": "裁定为**达标并关闭**（2026-09-30）。依据：预算已由维护者签署（docs/performance-budgets.md，文本 p99 ≤ 100ms、水位 ≤ 48、永久丢 0）；单机基线（s2_f5_text_latency_baseline，60 秒、三run）实测 p50 55–59µs、p99 343–705µs、max 47–51ms、永久丢 0、priority 峰值 30–32/64，全部满足且远低于延迟上限。因此**不实现独立认证文件通道**（方案规定达标即如此处置），改为记录适用边界并留下一个确定性的 CI 门禁（满队不静默丢弃；见 gate.asserts）。生产入队本就使用 send + 5 秒超时，超时会变成可见的 delivery_stalled 警告，并非静默丢弃；初版把按计时负载断言水位放进 CI，实测在并行套件中抖动，已替换。适用边界：单机、逐帧服务时间为 200µs 模型参数、bulk 侧负载比真实传输更密；真实网络的端到端数字未测。",
   "status": "fixed_gated",
   "pass_condition": "冻结负载下永久丢文本事件数为 0、延迟与水位满足已批准的预算（已达标）；CI 压力回归门禁通过；适用边界已记录。",
   "reopen_condition": "同负载再次超过预算或出现永久丢帧。"

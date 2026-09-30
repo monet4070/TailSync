@@ -15,7 +15,7 @@
 | S2-F2 | P1 | fixed_gated | `delivery_failure_backoff_delays_the_next_reconnect` | rust-macos, rust-windows |
 | S2-F3 | P1 | fixed_gated | `sender_for_candidates_keeps_a_live_worker_across_route_changes` | rust-macos, rust-windows |
 | S2-F4 | P1 | fixed_gated | `race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast` | rust-macos, rust-windows |
-| S2-F5 | P1 | fixed_gated | `s2_f5_text_events_are_neither_dropped_nor_queue_bound` | rust-macos, rust-windows |
+| S2-F5 | P1 | fixed_gated | `a_full_priority_queue_never_drops_a_text_frame_silently` | rust-macos, rust-windows |
 | S3-P0-1 | P0 | fixed_gated | `anonymous_protocol_anomalies_do_not_consume_the_lockout_budget` | rust-macos, rust-windows |
 | S3-P1-1 | P1 | accepted | `anonymous_handshake_identity_fields_are_pinned` | rust-macos, rust-windows |
 | S3-P1-2 | P1 | unfixed | — | — |

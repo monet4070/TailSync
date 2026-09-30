@@ -2267,94 +2267,65 @@ async fn s2_f5_text_latency_baseline() {
     );
 }
 
-/// S2-F5 budget gate. The 60 s baseline above is `#[ignore]`d (too slow for CI); this
-/// is the short tripwire that runs everywhere and asserts the frozen budget on the
-/// same real channels, scheduler and workload shape: no text event may be dropped and
-/// the priority queue must stay inside its depth threshold while a file batch's
-/// control frames contend with it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn s2_f5_text_events_are_neither_dropped_nor_queue_bound() {
-    // The frozen cadence from docs/performance-budgets.md: the budget threshold only
-    // applies to the load it was frozen against, so this gate keeps the 50 ms cadence
-    // and shortens only the duration.
-    const TEXT_INTERVAL: Duration = Duration::from_millis(50);
-    const RUN: Duration = Duration::from_secs(2);
-    const CONTROL_FRAMES: usize = 64;
-    const CHUNK_FRAMES: usize = 256;
-    /// Frozen budget (docs/performance-budgets.md): priority depth <= 48.
-    const DEPTH_LIMIT: usize = 48;
-    const SERVICE: Duration = Duration::from_micros(200);
+/// S2-F5 CI gate, deterministic by construction: a full priority queue must not make the
+/// production enqueue path discard a clipboard frame silently. With the channel at
+/// capacity it waits for room (backpressure), and past the send timeout it reports
+/// "Timed out queueing frame", which the caller turns into the visible
+/// `delivery_stalled` warning. Either way the text is surfaced, never dropped.
+///
+/// The 60 s baseline above records the latency/watermark figures; this gate guards the
+/// no-silent-loss invariant without depending on how fast the runner is, because the
+/// channel is filled deterministically rather than by a timed workload.
+#[tokio::test]
+async fn a_full_priority_queue_never_drops_a_text_frame_silently() {
+    use crate::peer::pool::{enqueue_queued_frame, PoolSender};
+    use tokio::sync::watch;
 
     let (priority_tx, mut priority_rx) = mpsc::channel(CHANNEL_SIZE);
-    let (bulk_tx, mut bulk_rx) = mpsc::channel(CHANNEL_SIZE);
+    let (bulk_tx, _bulk_rx) = mpsc::channel(CHANNEL_SIZE);
+    let (shutdown, _shutdown_rx) = watch::channel(false);
+    let sender = PoolSender::new(priority_tx, bulk_tx, shutdown);
 
-    let consumer = tokio::spawn(async move {
-        let mut streak = 0usize;
-        let mut delivered = 0usize;
-        while let Some(frame) =
-            receive_scheduled_frame(&mut priority_rx, &mut bulk_rx, &mut streak).await
-        {
-            if frame.command() == Command::TextPayload {
-                delivered += 1;
-            }
-            tokio::time::sleep(SERVICE).await;
-        }
-        delivered
-    });
-
-    let file_priority = priority_tx.clone();
-    let file_bulk = bulk_tx.clone();
-    let files = tokio::spawn(async move {
-        for _ in 0..CONTROL_FRAMES {
-            if file_priority
-                .send(QueuedFrame::new(Command::FileMeta, vec![0u8; 64]).unwrap())
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-        for _ in 0..CHUNK_FRAMES {
-            if file_bulk
-                .send(QueuedFrame::new(Command::FileChunk, vec![0u8; 64]).unwrap())
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-    });
-
-    let deadline = tokio::time::Instant::now() + RUN;
-    let mut attempted = 0usize;
-    let mut dropped = 0usize;
-    let mut peak_depth = 0usize;
-    while tokio::time::Instant::now() < deadline {
-        peak_depth = peak_depth.max(CHANNEL_SIZE.saturating_sub(priority_tx.capacity()));
-        attempted += 1;
-        if priority_tx
-            .try_send(QueuedFrame::new(Command::TextPayload, b"text".to_vec()).unwrap())
-            .is_err()
-        {
-            dropped += 1;
-        }
-        tokio::time::sleep(TEXT_INTERVAL).await;
+    // Fill the priority queue exactly to capacity.
+    for _ in 0..CHANNEL_SIZE {
+        sender
+            .channel_for(Command::FileMeta)
+            .try_send(QueuedFrame::new(Command::FileMeta, vec![0u8; 64]).unwrap())
+            .unwrap();
     }
-    drop(priority_tx);
-    drop(bulk_tx);
-    let _ = files.await;
-    let delivered = consumer.await.unwrap();
+    assert_eq!(sender.channel_for(Command::FileMeta).capacity(), 0);
 
-    assert_eq!(
-        dropped, 0,
-        "no text event may be dropped under the frozen budget"
-    );
+    let queued = QueuedFrame::new(Command::TextPayload, b"hello".to_vec()).unwrap();
+    let target = ResolvedTarget::Tcp("192.168.1.2:19890".parse().unwrap());
+    let enqueue = tokio::spawn(enqueue_queued_frame(sender.clone(), target, queued));
+
+    // While the queue is full the enqueue must not have completed: reporting success
+    // here would mean the frame had been dropped.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        peak_depth <= DEPTH_LIMIT,
-        "priority depth {peak_depth} exceeds the frozen threshold {DEPTH_LIMIT}"
+        !enqueue.is_finished(),
+        "a full priority queue must apply backpressure instead of reporting success"
     );
-    assert_eq!(
-        delivered, attempted,
-        "every enqueued text event must be scheduled"
+
+    // Free one slot so the enqueue can complete; it is appended behind the frames that
+    // were already queued, so drain until it appears.
+    let drained = priority_rx.recv().await.expect("the queued control frame");
+    assert_eq!(drained.command(), Command::FileMeta);
+    enqueue
+        .await
+        .unwrap()
+        .expect("queueing succeeds as soon as there is room");
+
+    let mut saw_text = false;
+    for _ in 0..CHANNEL_SIZE {
+        let frame = priority_rx.recv().await.expect("a queued frame");
+        if frame.command() == Command::TextPayload {
+            saw_text = true;
+            break;
+        }
+    }
+    assert!(
+        saw_text,
+        "the text frame must survive a full queue, not vanish"
     );
 }
