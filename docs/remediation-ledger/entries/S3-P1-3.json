@@ -6,9 +6,9 @@
   "gate": {
     "kind": "unit",
     "file": "shared/rust-core/src/crypto/tests.rs",
-    "test": "re_pairing_same_hostname_with_a_different_key_is_rejected",
+    "test": "remembering_an_address_for_an_untrusted_hostname_persists_nothing",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "同名异钥重配对被拒；同钥保持幂等。"
+    "asserts": "信任边界在持久化层成立：对不在 trusted_peer_keys 中的 hostname，remember_peer_address* 返回 false 且不写任何路由；信任被撤销后同样不能写新路由。变异验证：去掉信任守卫即失败。同名的另一半（同名异钥拒绝覆盖信任锚）由 re_pairing_same_hostname_with_a_different_key_is_rejected 保护。"
   },
   "ci_job": [
     "rust-macos",
@@ -22,8 +22,8 @@
     "shared/rust-core/src/crypto.rs:trust_peer_without_save"
   ],
   "trigger": "换机同名无警告覆盖公钥；未认证广播可能篡改可信设备地址。",
-  "fix_evidence": "同名异钥返回错误；remember_peer_address 仅在 peer_is_allowed 与 expected-key 校验之后调用。未复现“未认证发现直接改写持久地址”的调用链。",
-  "status": "partial",
-  "pass_condition": "固定身份测试通过；持久路由写入的未认证复现不存在或已修复。",
+  "fix_evidence": "结论：审计所述\"未认证发现直接改写持久地址\"的调用链**未复现**，按方案以\"已排除子问题\"关闭，不预加地址来源状态。证据：①持久化层本身要求信任——crypto.rs 的 remember_peer_address_without_save 对不在 trusted_peer_keys 中的 hostname 直接返回 false、不写任何内容（本项门禁）；②调用侧只在认证通过后写入（platform-network-server.rs 在 \"Authenticated peer\" 之后调用，未配对/禁用会提前返回）。另一半（同名异钥静默覆盖信任锚）早已修复并有测试。",
+  "status": "fixed_gated",
+  "pass_condition": "信任边界有测试（未信任 hostname 不能写路由、撤销后不能写新路由）；同名异钥拒绝覆盖有测试；重新打开条件为\"发现输入能改变持久信任地址而未经认证\"。",
   "reopen_condition": "发现输入能改变持久信任地址而未经认证。"
 }

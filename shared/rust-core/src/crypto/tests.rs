@@ -449,6 +449,42 @@ fn paired_peer_address_is_persisted_and_removed_with_pairing() {
         .is_err());
 }
 
+/// S3-P1-3: the audit claimed an unauthenticated discovery broadcast could rewrite a
+/// trusted device's persisted address. `remember_peer_address*` refuses to record
+/// anything for a hostname that is not trusted, so discovery has no path into the
+/// persisted route table at all — the claim does not reproduce, and this test is the
+/// evidence for excluding it rather than adding address-provenance state.
+#[test]
+fn remembering_an_address_for_an_untrusted_hostname_persists_nothing() {
+    let mut settings = Settings::default();
+
+    assert!(
+        !settings
+            .remember_peer_address_without_save("stranger", "lan", "192.168.1.99")
+            .unwrap(),
+        "an untrusted hostname must not gain a remembered route"
+    );
+    assert!(
+        settings.trusted_peer_addresses.is_empty(),
+        "nothing may be persisted for an untrusted hostname"
+    );
+
+    // The same holds once trust is gone: a revoked hostname cannot update its route.
+    settings
+        .trusted_peer_keys
+        .insert("trusted".into(), "key".into());
+    assert!(settings
+        .remember_peer_address_without_save("trusted", "lan", "192.168.1.20")
+        .unwrap());
+    settings.trusted_peer_keys.remove("trusted");
+    assert!(
+        !settings
+            .remember_peer_address_without_save("trusted", "lan", "10.0.0.9")
+            .unwrap(),
+        "a revoked hostname must not be able to write a new route"
+    );
+}
+
 #[test]
 fn paired_peer_iroh_endpoint_is_validated_and_remembered() {
     const ENDPOINT_ID: &str = "5866666666666666666666666666666666666666666666666666666666666666";
