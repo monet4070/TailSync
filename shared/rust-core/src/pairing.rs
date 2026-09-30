@@ -173,6 +173,17 @@ pub struct PairingManager {
     /// Held across restarts in production, in memory only when `persist_trust`
     /// is off so a test never writes to the real data directory.
     pending: Mutex<PendingTrustStore>,
+    /// Test-only seam. Promotion parks here between its session check and its
+    /// settings write, so a test can prove that nothing else — in particular a
+    /// cancellation — can complete inside that window.
+    #[cfg(test)]
+    promotion_gate: Mutex<Option<Arc<PromotionGate>>>,
+}
+
+#[cfg(test)]
+pub(crate) struct PromotionGate {
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
 }
 
 pub mod invite;

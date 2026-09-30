@@ -65,6 +65,9 @@ pub async fn forget_peer(state: State<'_, AppState>, hostname: String) -> Result
         .map_err(|error| error.to_string())?;
     state.pool.lock().await.disconnect_hostname(hostname);
     crate::network::clear_protocol_compatibility_error(hostname);
+    // A half-confirmed pairing for this device would otherwise outlive the
+    // device itself, with nothing in the UI to explain it.
+    state.pairing.forget_pending(hostname).await;
     Ok(())
 }
 

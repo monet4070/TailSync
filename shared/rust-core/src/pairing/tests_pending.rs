@@ -306,16 +306,142 @@ async fn a_restart_keeps_the_note_and_still_reports_the_device_unpaired() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// The store is a sidecar, not a `Settings` field, precisely so an older build
-/// can still read the configuration. Freeze that: the note must not appear in
-/// `config-v2.json`, and an older build's settings file must keep parsing.
+/// The check in `promote_pairing` and the settings write that follows it must be
+/// indivisible. If they are not, a cancellation that lands in between is
+/// silently ignored: the session reports itself cancelled while the device stays
+/// durably trusted.
+///
+/// The window is forced open with a test-only gate that parks the promotion
+/// between the two steps, so this is deterministic rather than a race that only
+/// sometimes reproduces.
 #[tokio::test]
-async fn the_note_never_leaks_into_the_settings_file_an_older_build_reads() {
+async fn a_cancellation_cannot_slip_between_the_check_and_the_trust_write() {
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = manager_for(&settings, &server_identity);
+    manager.enable().await;
+
+    let gate = Arc::new(PromotionGate {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    manager.install_promotion_gate(gate.clone()).await;
+
+    let (mut client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    install_inbound(&manager, server, &client_identity).await;
+    reach_local_persistence(&manager, &mut client).await;
+
+    // The peer's acknowledgement drives the session into promotion, which parks
+    // inside the window.
+    client
+        .write_frame(&Frame::try_new(Command::PairingPersisted, 0, 0, Vec::new()).unwrap())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
+        .await
+        .expect("promotion must reach its critical section");
+
+    // Nothing may complete in there: a cancellation that did would leave the
+    // session reported as cancelled and the device trusted at the same time.
+    let cancelled = tokio::time::timeout(Duration::from_millis(250), manager.cancel()).await;
+    assert!(
+        cancelled.is_err(),
+        "a cancellation completed inside the promotion window"
+    );
+
+    gate.release.notify_one();
+    wait_for_phase(&manager, PairingPhase::Paired).await;
+    assert_eq!(
+        settings.lock().await.trusted_peer_keys.get("client"),
+        Some(&client_identity.public_key_base64())
+    );
+}
+
+/// A session the user cancels before the peer acknowledges must not become
+/// trusted, and must not be reported as paired.
+#[tokio::test]
+async fn a_cancelled_session_never_writes_trust() {
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = manager_for(&settings, &server_identity);
+    manager.enable().await;
+
+    let (mut client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    install_inbound(&manager, server, &client_identity).await;
+    reach_local_persistence(&manager, &mut client).await;
+
+    manager.cancel().await;
+    assert_eq!(manager.status().await.phase, PairingPhase::Cancelled);
+
+    // The peer acknowledges into a session the user has already ended.
+    let _ = client
+        .write_frame(&Frame::try_new(Command::PairingPersisted, 0, 0, Vec::new()).unwrap())
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(
+        settings.lock().await.trusted_peer_keys.get("client"),
+        None,
+        "a cancelled session must never leave the device trusted"
+    );
+    assert_ne!(manager.status().await.phase, PairingPhase::Paired);
+}
+
+/// A note for a device the user removes must not linger on disk.
+#[tokio::test]
+async fn forgetting_a_device_also_drops_its_half_confirmed_note() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-pending-forget-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("pairing-pending.json");
+
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_pending_store_at(
+        settings.clone(),
+        server_identity.clone(),
+        path.clone(),
+    );
+    manager.enable().await;
+
+    let (mut client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    install_inbound(&manager, server, &client_identity).await;
+    reach_local_persistence(&manager, &mut client).await;
+    assert_eq!(manager.pending_trust().await.len(), 1);
+
+    manager.forget_pending("client").await;
+    assert!(manager.pending_trust().await.is_empty());
+
+    // And the removal is durable, not just in memory.
+    let reloaded = PendingTrustStore::load_from_path(&path);
+    assert!(
+        reloaded.is_empty(),
+        "the note must not come back on the next start"
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// The store is a sidecar, not a `Settings` field, precisely so an older build
+/// can still read the configuration. The first half is a **shape** guard on the
+/// settings struct: `Settings` denies unknown fields, so any new key (not just a
+/// `pending*` one) would make an older build fail to load the whole file — it
+/// cannot fail unless someone edits `Settings`, and it is here to make that
+/// consequence explicit at the point where a change would be tempting. The
+/// second half parses a frozen older settings file for real.
+#[tokio::test]
+async fn the_settings_shape_stays_readable_by_an_older_build() {
     let serialized = serde_json::to_value(Settings::default()).unwrap();
     let object = serialized.as_object().unwrap();
     assert!(
         !object.keys().any(|key| key.contains("pending")),
-        "a new Settings key would make deny_unknown_fields reject the whole file on an older build"
+        "a new Settings key would make deny_unknown_fields reject the whole file on an older build; \
+         the pending pairing lives in a sidecar for exactly this reason"
     );
     // The frozen shape an older build writes and expects to read back.
     let legacy = serde_json::json!({

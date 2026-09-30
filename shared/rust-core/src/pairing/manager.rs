@@ -84,6 +84,8 @@ impl PairingManager {
                 None if persist_trust => PendingTrustStore::load(),
                 None => PendingTrustStore::in_memory(),
             }),
+            #[cfg(test)]
+            promotion_gate: Mutex::new(None),
         })
     }
 
@@ -673,6 +675,14 @@ impl PairingManager {
     /// `PairingPersisted` over the authenticated session, so both devices have
     /// now observed each other's persistence; the local record and the note that
     /// tracked its uncertainty change together.
+    ///
+    /// The session state is held across the write on purpose. Releasing it
+    /// between the check and the write leaves a window in which `cancel()` or
+    /// `expire()` can finish — both take only the state lock — and the trust
+    /// record would still be written for a session the user had just ended or
+    /// that had timed out. Holding the guard makes the check and the write
+    /// indivisible; the cost is that a status query waits for one settings
+    /// write, which is the same wait the settings lock already imposed.
     async fn promote_pairing(
         &self,
         session_id: u64,
@@ -681,11 +691,14 @@ impl PairingManager {
         interface: &str,
         address: &str,
     ) -> Result<(), PairingError> {
-        {
-            let state = self.state.lock().await;
-            if !state.enabled || state.session_id != session_id {
-                return Err(PairingError::SessionClosed);
-            }
+        let state = self.state.lock().await;
+        if !state.enabled || state.session_id != session_id {
+            return Err(PairingError::SessionClosed);
+        }
+        #[cfg(test)]
+        if let Some(gate) = self.promotion_gate.lock().await.clone() {
+            gate.entered.notify_one();
+            gate.release.notified().await;
         }
         let public_key = encode_public_key(remote_public_key);
         let mut settings = self.settings.lock().await;
@@ -698,6 +711,7 @@ impl PairingManager {
             PairingError::Transport(format!("Could not save paired device: {error}"))
         })?;
         drop(settings);
+        drop(state);
         // The trust record is durable now; the note has served its purpose.
         // A failure to remove it is not fatal (the record is idempotent and
         // would be cleared by the next successful pairing), but it is worth
@@ -714,6 +728,21 @@ impl PairingManager {
     /// note rather than trust.
     pub async fn pending_trust(&self) -> Vec<PendingTrustRecord> {
         self.pending.lock().await.records().to_vec()
+    }
+
+    /// Drop the note for a device the user has forgotten. Otherwise the half
+    /// pairing of a device that was explicitly removed would linger on disk
+    /// forever with nothing in the UI to explain it.
+    pub async fn forget_pending(&self, hostname: &str) {
+        let mut store = self.pending.lock().await;
+        if let Err(error) = store.remove(hostname) {
+            log::warn!("Could not clear the pending pairing record for {hostname}: {error}");
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn install_promotion_gate(&self, gate: Arc<PromotionGate>) {
+        *self.promotion_gate.lock().await = Some(gate);
     }
 
     async fn finish_success(&self, session_id: u64, hostname: &str) -> Result<(), PairingError> {
