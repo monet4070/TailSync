@@ -75,6 +75,37 @@ test('parseCiJobs collects run commands per job and stops at the block end', () 
   assert.deepEqual(jobs.scripts, ['node x.mjs']);
 });
 
+test('parseCiJobs reads single-line and block commands identically with LF and CRLF', () => {
+  const workflow = `name: CI
+jobs:
+  rust-windows:
+    steps:
+      - run: node scripts/run-remediation-tests.mjs --job rust-windows -- cargo test --manifest-path crates/app/Cargo.toml
+      - name: Reconcile execution
+        run: |
+          node scripts/check-remediation-ledger.mjs --job rust-windows --results-dir results
+          echo done
+  rust-macos:
+    steps:
+      - run: swift test --package-path macos/swift-ui
+`;
+  const expected = parseCiJobs(workflow);
+  assert.equal(expected['rust-windows'].length, 2);
+  assert.ok(expected['rust-windows'][1].includes('echo done'));
+  assert.deepEqual(parseCiJobs(workflow.replaceAll('\n', '\r\n')), expected);
+});
+
+test('a CRLF workflow still certifies the configured ledger execution steps', () => {
+  const { root } = fixture();
+  try {
+    const path = join(root, '.github/workflows/ci.yml');
+    writeFileSync(path, readFileSync(path, 'utf8').replaceAll('\n', '\r\n'));
+    assert.deepEqual(validateLedger(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a well-formed ledger validates clean', () => {
   const { root } = fixture();
   assert.deepEqual(validateLedger(root), []);

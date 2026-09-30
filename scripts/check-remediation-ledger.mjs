@@ -20,7 +20,9 @@ const norm = (p) => p.replaceAll('\\', '/').replace(/^\.\//, '');
 // ---------- workflow parsing ----------
 
 export function parseCiJobs(workflowText) {
-  const lines = workflowText.split('\n');
+  // Windows Git checkouts use CRLF. A trailing CR prevents the run-command
+  // regex below from matching and makes every executed gate look unconfigured.
+  const lines = workflowText.split(/\r?\n/);
   const start = lines.findIndex((l) => /^jobs:\s*$/.test(l));
   if (start === -1) return {};
   const jobs = {};
