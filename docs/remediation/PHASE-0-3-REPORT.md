@@ -1,4 +1,4 @@
-# 修复与可维护性执行报告（阶段 0–3 已完成）
+# 修复与可维护性执行报告（阶段 0–5 已完成的部分）
 
 > 基线：`origin/main` = `b61a0a04b88f5828707f7ef64781389944471be8`（2026-09-29 核对）。
 > 执行分支：`codex/remediation-2026-09-29`（worktree `TailSync-remediation`）。
@@ -46,9 +46,21 @@
 - `S1-P1-4`：`resolve_candidates` 改为**逐候选跳过**无作用域的链路本地 IPv6（不再因单个坏候选丢弃整个对端的可路由路由），并在仅剩不可路由候选时报错；`peer_socket_addr` 与两端 `network::test_connection` 也加了同守卫，全仓不再构造 scope-0 的链路本地 socket。门禁 `resolve_candidates_skips_link_local_ipv6_without_a_scope`（已做移除守卫的变异验证）。
 - `S1-P1-5`：契约决策落定——**零设备是成功而非失败**（`merge_lan_discovery_results` 仅在全部传输失败时返回 Err），`lan_only` 下“无合格 LAN 接口”由空 `local_ip` 表达，`auto` 下该字段可能被 tailnet 地址填充（已用测试钉住该行为），UI 以带标签的接口判断；因此**不新增结果字段**。门禁为共享契约测试；Windows 侧结构性测试 `broadcast_targets_always_include_the_global_broadcast` 在 `rust-windows` 编译运行（本地以 CI 同款方式补 `windows/dist` 桩后已验证通过）；接口过滤逻辑本身无单元门禁，由 Windows 原生验收覆盖（待验）。
 
+### 阶段 5：文件配额与 SQLite 生命周期 —— 裁决 PASS（两项如实保留 partial）
+
+| 条目 | 交付 | 状态 |
+|---|---|---|
+| `S5-P2-2` | 读取 `PRAGMA wal_checkpoint(TRUNCATE)` 的结果行（`execute_batch` 会丢弃 `busy=1`），忙时留警告且删除仍成功；抽出 `checkpoint_history_wal()` 返回 `Completed/Blocked/Failed` | **fixed_gated**，门禁 + 变异验证（忽略结果行即失败） |
+| 逐站语义 | `docs/remediation/wal-checkpoint-semantics.md`：对全部 5 处调用点给出继续/重试/中止的结论与依据（以函数名标识，避免行号漂移） | — |
+| `migrations.rs` v9 | v9 明文清除后的截断改为**失败即重试**（忙时有界重试 5×50ms 后报错），使 v9 不进入完成态、下次打开重做；避免"WAL 未截断却标记 v9 完成"绕过 `vacuum_pending` | **fixed_gated**，门禁 + 变异验证 |
+| `S4-P1-3` | 配额淘汰不再每次递归扫盘：删除路径回报"可证明释放的载荷字节"，循环测一次基线后按"载荷 + db/wal/shm 净变化"扣减，非正时回退重测 | **partial**（方案要求的并发双批次准入测试未写） |
+| `S5-P2-1` | 新增 `sweep_orphan_payloads(grace)`：按存活行的引用对账 `file-history`/`image-history`，零宽限被拒绝、临时文件永不清扫、引用无法解析时告警 | **partial**（周期性调用尚未接线） |
+
+审查在 `S4-P1-3` 上抓到一处**真实缺陷并暴露了我的一句虚假保证**：我最初只抵扣载荷字节（基线却含 DB/WAL），导致多驱逐；而我"加倍抵扣会失败"的说法是**把变异串跑、未还原**造成的假结论。改为抵扣 db/wal/shm 净变化后，三次变异分别执行均使门禁失败。
+
 ### 台账现状
 
-`fixed_gated 21 / fixed_ungated 0 / partial 3 / unfixed 6 / needs_adjudication 1`（合计 31）。
+`fixed_gated 22 / fixed_ungated 0 / partial 3 / unfixed 5 / needs_adjudication 1`（合计 31）。
 自初始基线起，已把 `S2-F2`、`S6-P0-1`、`S6-P2-3`、`S1-P1-4`、`S1-P1-5` 五项从“缺门禁/部分处理”推进为“已修且受保护”。
 
 ## 3. 本轮采用的验证协议及其结果
