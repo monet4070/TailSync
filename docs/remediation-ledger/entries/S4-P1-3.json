@@ -8,7 +8,7 @@
     "file": "shared/rust-core/src/db/storage.rs",
     "test": "quota_eviction_measures_the_storage_tree_once_per_reserve",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "配额淘汰需要多次驱逐时，整棵树只被测量一次（计数器为 1），而不是每次驱逐都递归扫盘；另一个门禁 quota_eviction_credits_the_wal_the_delete_reclaims 断言删除回收的 WAL 被计入，使\"一次驱逐即可满足\"的配额不会多驱逐。两者均已做变异验证（把基线移回循环 / 去掉 WAL 抵扣 / 加倍抵扣 都会失败）。"
+    "asserts": "多次驱逐时整树只被测量一次（计数器为 1）；配额在退出时必须成立（used + incoming <= quota）。另一个门禁 quota_eviction_credits_the_wal_the_delete_reclaims 同样断言配额合规。三次变异（仅载荷抵扣 / 加倍 / 巨额过度抵扣）均失败。"
   },
   "ci_job": [
     "rust-macos",
@@ -22,8 +22,8 @@
     "shared/rust-core/src/db/storage.rs:reserve_for_file_batch"
   ],
   "trigger": "淘汰循环每次删除都在 DB 互斥锁内递归扫描整个存储目录。",
-  "fix_evidence": "删除路径（delete_entries_with_batch_policy 及其包装）现在回报\"可证明释放的外部载荷字节数\"（成功 remove_file 前的 metadata 长度累加）；reserve_for_file_batch 先测一次物理基线，之后每次淘汰扣减该增量；当某次淘汰释放为 0（无法证明）时回退重测，避免在过期基线上空转。已做三次变异验证：把基线移回循环、去掉 WAL 抵扣、把抵扣加倍，均使门禁失败。",
-  "status": "fixed_gated",
-  "pass_condition": "同一淘汰周期不再反复全树扫描；扫描次数与\"WAL 可回收量被计入\"两个门禁通过；**并发双批次的准入测试尚未编写**（准入由共享层 file_batch_admission_lock 串行化，需在平台层补测）。",
+  "fix_evidence": "删除路径（delete_entries_with_batch_policy 及其包装）回报\"可证明释放的外部载荷字节数\"；reserve_for_file_batch 先测一次物理基线，之后每次淘汰扣减\"载荷字节 + db/wal/shm 三件文件的净变化\"（删除会截断 WAL 但也会让 DB 增长，只抵扣载荷或只抵扣 WAL 都会让 used 低估、循环在超配额处退出）；净变化为负或抵扣<=0 时回退重测。门禁：quota_eviction_measures_the_storage_tree_once_per_reserve（多次驱逐下整树只测一次 + 配额合规）与 quota_eviction_credits_the_wal_the_delete_reclaims（含合规断言）。已**分别**执行三次变异（只抵扣载荷 / 抵扣加倍 / 巨额过度抵扣），三者均使门禁失败。**未完成**：方案要求的\"并发双批次证明不会重复认领空间\"测试尚未编写（准入由共享层 file_batch_admission_lock 串行化，需在平台层补测），因此本项保持 partial 而非 fixed。",
+  "status": "partial",
+  "pass_condition": "同一淘汰周期不再反复全树扫描；扫描次数与配额合规两个门禁通过；**并发双批次准入测试仍缺**（需在平台层补测），补齐后方可改为 fixed_gated。",
   "reopen_condition": "双批重复认领空间、空间账错误或恢复重复扫描。"
 }

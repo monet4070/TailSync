@@ -176,14 +176,18 @@ impl HistoryDB {
             // credit both the payload bytes that provably left the disk and the
             // WAL bytes the checkpoint reclaimed. Without the latter the loop
             // over-estimates usage and evicts more history than the quota needs.
-            let wal_before = wal_bytes(&get_storage_dir());
+            let files_before = bulk_storage_file_bytes(&get_storage_dir());
             let freed = self.delete_entries(&ids)?;
-            let wal_after = wal_bytes(&get_storage_dir());
-            let credited = freed.saturating_add(wal_before.saturating_sub(wal_after));
-            if credited == 0 {
+            let files_after = bulk_storage_file_bytes(&get_storage_dir());
+            // Credit the payload bytes that left the disk plus the NET change of
+            // the db/wal/shm trio: the delete truncates the WAL but also grows the
+            // database. Crediting only the payload bytes (or only the WAL) leaves
+            // `used` under-stated and lets the loop exit above the quota.
+            let credited = i128::from(freed) + i128::from(files_before) - i128::from(files_after);
+            if credited <= 0 {
                 used = bulk_storage_size(&get_storage_dir())?;
             } else {
-                used = used.saturating_sub(credited);
+                used = used.saturating_sub(u64::try_from(credited).unwrap_or(u64::MAX));
             }
         }
     }
@@ -585,9 +589,19 @@ fn copy_bulk_storage_verified(
 pub(crate) static BULK_STORAGE_SIZE_SCANS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// Size of the WAL file, or 0 when it is absent. Cheap (one stat), so the quota
-/// loop can credit the bytes a delete's `wal_checkpoint(TRUNCATE)` reclaims
-/// without rescanning the storage tree.
+/// Combined size of the three single-file bulk entries (db, wal, shm). Three
+/// stats, so the quota loop can credit their net change per eviction — the delete
+/// truncates the WAL but also grows the database — without rescanning the storage
+/// tree.
+fn bulk_storage_file_bytes(root: &Path) -> u64 {
+    ["history-v2.db", "history-v2.db-wal", "history-v2.db-shm"]
+        .into_iter()
+        .filter_map(|name| fs::metadata(root.join(name)).ok())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+/// Size of the WAL file, or 0 when it is absent.
 fn wal_bytes(root: &Path) -> u64 {
     fs::metadata(root.join("history-v2.db-wal"))
         .map(|meta| meta.len())
@@ -887,10 +901,15 @@ mod tests {
 
         // One eviction plus the reclaimed WAL satisfies this quota; payload bytes
         // alone do not.
-        database
-            .lock()
-            .await
-            .set_storage_quota(live.saturating_sub(wal).saturating_sub(payload_size) + 1024);
+        // The shortfall is one payload plus 1.5 WALs, so the true credit
+        // (payload + the reclaimed WAL) needs TWO evictions, while an
+        // over-credited WAL (counted twice) would stop after one and breach the
+        // quota.
+        let quota = live
+            .saturating_sub(payload_size)
+            .saturating_sub(wal.saturating_mul(3) / 2)
+            + 1024;
+        database.lock().await.set_storage_quota(quota);
         let before: i64 = database
             .lock()
             .await
@@ -910,10 +929,18 @@ mod tests {
             .conn
             .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(
-            after,
-            before - 1,
-            "the reclaimed WAL must be credited, so a single eviction suffices"
+        // Quota compliance is the robust check: an over-credited WAL lets the loop
+        // exit an eviction early, leaving real usage above the quota, while an
+        // under-credited WAL makes it evict until the payloads run out and the
+        // reserve above fails instead.
+        let used_after = bulk_storage_size(&dir).unwrap();
+        assert!(
+            used_after + 1024 <= quota,
+            "the quota must hold after eviction: used={used_after} quota={quota}"
+        );
+        assert!(
+            after < before,
+            "the reserve was expected to evict something: before={before} after={after}"
         );
 
         drop(database);
@@ -921,8 +948,9 @@ mod tests {
         fs::remove_dir_all(base).unwrap();
     }
 
-    /// S4-P1-3: evicting several items must not rescan the whole storage tree on
-    /// every iteration while the database lock is held.
+    /// S4-P1-3: several evictions must not rescan the whole storage tree on every
+    /// iteration while the database lock is held — and the accounting must not
+    /// over-credit, which would evict too little and breach the quota.
     #[tokio::test]
     async fn quota_eviction_measures_the_storage_tree_once_per_reserve() {
         let _guard = migration_global_lock().lock().await;
@@ -931,12 +959,12 @@ mod tests {
         configure_storage_dir(Some(&base)).unwrap();
         let database = test_database(&base);
 
+        let payload_size = 1_u64 << 20;
         let source_dir = base.join("payload-sources");
         fs::create_dir_all(&source_dir).unwrap();
-        for index in 0..4 {
-            // Distinct contents, otherwise the payload store deduplicates them
-            // into a single file and no eviction can free enough space.
-            let payload = vec![u8::try_from(index + 1).unwrap(); 4096];
+        for index in 0..4_u8 {
+            // Distinct contents, otherwise the payload store deduplicates them.
+            let payload = vec![index + 1; usize::try_from(payload_size).unwrap()];
             let source = source_dir.join(format!("payload-{index}.bin"));
             fs::write(&source, &payload).unwrap();
             database
@@ -946,18 +974,37 @@ mod tests {
                     &format!("payload-{index}.bin"),
                     &source,
                     &blake3::hash(&payload).to_hex().to_string(),
-                    payload.len() as u64,
+                    payload_size,
                     "peer",
                 )
                 .unwrap();
         }
 
-        let live = bulk_storage_size(&get_storage_dir()).unwrap();
-        // A quota that forces several evictions (three 4 KiB payloads must go).
+        // Zero the WAL first: the baseline then has no WAL slack to hide an
+        // over-credit, so the quota must be met by payload eviction alone.
+        let dir = get_storage_dir();
         database
             .lock()
             .await
-            .set_storage_quota(live.saturating_sub(10_000));
+            .conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+        let live = bulk_storage_size(&dir).unwrap();
+        assert!(
+            wal_bytes(&dir) < 4096,
+            "the WAL should be near zero before the reserve"
+        );
+        // 2.5 payloads of shortfall: exactly three evictions are required.
+        let quota = live
+            .saturating_sub(payload_size.saturating_mul(2))
+            .saturating_sub(payload_size / 2);
+        database.lock().await.set_storage_quota(quota);
+        let before: i64 = database
+            .lock()
+            .await
+            .conn
+            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            .unwrap();
 
         BULK_STORAGE_SIZE_SCANS.store(0, std::sync::atomic::Ordering::SeqCst);
         database
@@ -971,12 +1018,21 @@ mod tests {
             "the quota loop must measure the baseline once, not rescan the tree per eviction"
         );
 
-        // Quota compliance: the real tree must fit after eviction.
-        let quota = live.saturating_sub(10_000);
-        let after = bulk_storage_size(&get_storage_dir()).unwrap();
+        let after: i64 = database
+            .lock()
+            .await
+            .conn
+            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            after,
+            before - 3,
+            "the loop must evict exactly what the quota requires and no more"
+        );
+        let used = bulk_storage_size(&dir).unwrap();
         assert!(
-            after + 1024 <= quota,
-            "quota must hold after eviction: used={after} quota={quota}"
+            used + 1024 <= quota,
+            "the quota must hold after eviction: used={used} quota={quota}"
         );
 
         drop(database);
