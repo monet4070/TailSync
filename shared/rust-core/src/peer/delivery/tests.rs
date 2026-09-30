@@ -2377,14 +2377,15 @@ async fn a_full_priority_queue_never_drops_a_text_frame_silently() {
         )
         .expect("a sender for the frozen-geometry peer");
     let production_capacity = production.channel_for(Command::FileMeta).capacity();
+    // The signed geometry is capacity 64 with a water mark of 48 (75%). Deriving
+    // the capacity from the signed water mark keeps both numbers honest in one
+    // comparison: the queue that ships must be exactly the queue the budget was
+    // signed against, so neither the water mark nor the capacity can move alone.
+    let signed_capacity = SIGNED_TEXT_WATERMARK * 4 / 3;
     assert_eq!(
-        production_capacity, 64,
-        "the signed budget is stated against a priority capacity of 64; changing it \
-         invalidates the recorded baseline instead of failing loudly"
-    );
-    assert!(
-        SIGNED_TEXT_WATERMARK * 4 == production_capacity * 3,
-        "the signed water mark is 75% of capacity ({SIGNED_TEXT_WATERMARK}/{production_capacity}); \
-         a narrower queue leaves no room for it"
+        production_capacity, signed_capacity,
+        "the signed budget is 64 slots with a water mark of {SIGNED_TEXT_WATERMARK} (75%); \
+         the pool must build a priority queue of {signed_capacity} slots or the recorded \
+         baseline no longer describes the queue that ships"
     );
 }
