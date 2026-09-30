@@ -30,7 +30,12 @@ export function testPassed(results, test) {
 
 export function sourceIdentity(root) {
   const sha = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  const files = execFileSync('git', ['-C', root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], { encoding: 'utf8' });
+  // Tracked files only. Build tooling (Vite, Tauri codegen, bundlers) creates and
+  // removes untracked files during a job; including them made every record written
+  // before such a step look stale, so the gate could never be satisfied in a job
+  // that builds before it verifies. Reading the working-tree content still detects
+  // a tracked source file being modified during a run.
+  const files = execFileSync('git', ['-C', root, 'ls-files', '--cached', '-z'], { encoding: 'utf8' });
   const hash = createHash('sha256');
   for (const file of [...new Set(files.split('\0').filter(Boolean))].sort()) {
     const path = join(root, file);

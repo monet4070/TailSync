@@ -3173,9 +3173,18 @@ fn v9_busy_migration_keeps_pending_state_and_completes_on_reopen() {
     assert_eq!(description, TEXT_DESCRIPTION_PLACEHOLDER);
     drop(reopened);
     std::fs::remove_dir_all(root).unwrap();
+    // Deterministic bound on the mechanism: each attempt must be bounded well
+    // below the 5s production busy timeout, so five attempts cannot block startup
+    // for ~25s. (A wall-clock bound alone is a flaky assertion on loaded runners.)
     assert!(
-        elapsed < std::time::Duration::from_secs(2),
-        "five production 5s busy waits must not hide inside the retry loop: {elapsed:?}"
+        crate::db::migrations::V9_CLEANUP_BUSY_TIMEOUT <= std::time::Duration::from_millis(100)
+    );
+    assert!(crate::db::migrations::V9_CLEANUP_ATTEMPTS <= 8);
+    // The end-to-end bound still guards the original failure mode (5 x 5s = 25s)
+    // with generous headroom for a slow runner.
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "the retry loop must not inherit the production 5s busy timeout: {elapsed:?}"
     );
 }
 

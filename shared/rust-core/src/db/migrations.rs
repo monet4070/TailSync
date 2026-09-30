@@ -1,5 +1,12 @@
 use super::*;
 
+/// Per-attempt bound and attempt count for the v9 cleanup retry. Each attempt must
+/// not inherit the production 5s busy timeout, or five attempts block startup for
+/// roughly 25s. Exposed so a test can assert the bounds without timing.
+pub(crate) const V9_CLEANUP_ATTEMPTS: usize = 5;
+pub(crate) const V9_CLEANUP_BUSY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(50);
+
 /// Truncate the WAL as the last step of the v9 residual-plaintext cleanup.
 ///
 /// `PRAGMA wal_checkpoint(TRUNCATE)` reports a reader-blocked checkpoint by
@@ -14,12 +21,11 @@ pub(crate) fn truncate_wal_for_v9_cleanup(
     // Bound each SQLite busy wait as well as the delay between attempts. The
     // normal connection timeout is 5s; inheriting it here made five attempts
     // block startup for roughly 25s. Always restore that timeout afterwards.
-    const ATTEMPTS: usize = 5;
     let previous_timeout: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
-    conn.busy_timeout(std::time::Duration::from_millis(50))?;
+    conn.busy_timeout(V9_CLEANUP_BUSY_TIMEOUT)?;
     let result = (|| {
         let mut last = (0_i64, 0_i64, 0_i64);
-        for attempt in 0..ATTEMPTS {
+        for attempt in 0..V9_CLEANUP_ATTEMPTS {
             let (busy, log, checkpointed): (i64, i64, i64) =
                 conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -28,12 +34,12 @@ pub(crate) fn truncate_wal_for_v9_cleanup(
                 return Ok(());
             }
             last = (busy, log, checkpointed);
-            if attempt + 1 < ATTEMPTS {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+            if attempt + 1 < V9_CLEANUP_ATTEMPTS {
+                std::thread::sleep(V9_CLEANUP_BUSY_TIMEOUT);
             }
         }
         Err(format!(
-        "v9 residual-plaintext cleanup could not truncate the WAL after {ATTEMPTS} attempts (busy={}, log={}, checkpointed={}); v9 stays incomplete and the next open retries",
+        "v9 residual-plaintext cleanup could not truncate the WAL after {V9_CLEANUP_ATTEMPTS} attempts (busy={}, log={}, checkpointed={}); v9 stays incomplete and the next open retries",
         last.0, last.1, last.2
     )
       .into())

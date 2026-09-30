@@ -56,6 +56,15 @@ CI 上传 `remediation-tests-macos` / `remediation-tests-windows`（原始日志
 - `S1-P1-5` 回退为 **partial**，取得本次原生 rust-windows 通过证据后才更新状态；断网/VPN 真机验收仍单独待验。
 - `S5-P2-1` 仍为 **partial**：本次修的是 GC 安全性，生产周期调用未接线。
 - 配额并发双批次准入、配对状态机、通知、性能预算与 UI/runtime 后续阶段未在本次扩大实施。
-- 本次未提交、推送或运行托管 CI；Windows NSIS/成品 smoke、VoiceOver 和双机互通证据仍待取得。PR #68 仍是独立 PR，其成功检查不能认证本分支。
+- Windows NSIS/成品 smoke、VoiceOver 和双机互通证据仍待取得。PR #68 仍是独立 PR，其成功检查不能认证本分支。
+
+## 首次推送后的 CI 结果（run 36661666391，SHA 629b4ec）
+
+推送后完整 CI 暴露了本文件未覆盖的两处缺陷，均已修复：
+
+1. **执行对账在真实 CI 中永远无法通过。** 源码指纹取 `git ls-files --cached --others --exclude-standard`，**包含未跟踪且未忽略的文件**；Windows 打包步骤会创建这类文件，于是打包之前写下的记录全部被判过期。产物证据：核心记录指纹 `52967a8def`，打包后变为 `d0622ea9e3`，三个 rust-windows 记录全部报 `failed, stale or malformed`。修复：指纹只取**已跟踪**文件（仍能发现运行期修改受版本控制源文件）；`macos/build` 未进 `.gitignore` 也因此不再重要。回归测试 `sourceIdentity ignores untracked artifacts but tracks tracked content`。
+2. **v9 迁移测试用墙钟断言，在 CI 上抖动。** `elapsed < 2s` 本地 0.54s 通过、GitHub 运行器上 2.48s 失败（两个平台都挂，Windows 因此级联到对账步骤）。修复：把每次忙等待与次数提为 `pub(crate)` 常量并**确定性地**断言其上界，端到端断言放宽到 15s（仍能抓住"五次各等 5s≈25s"的原始失效模式）。
+
+本机按文档跑完整 macOS 对账流程（runtime / core / macOS 应用 / Swift 四个套件各一次 + 校验）已通过：`remediation ledger OK: 31 entries`。
 
 台账状态：**fixed_gated 21 / fixed_ungated 0 / partial 4 / unfixed 5 / needs_adjudication 1**，共 31 项。原报告中过期的“workflow scope 阻塞”“阶段 5 未实施”和“11 个 job 全绿”已更正；覆盖率首份托管产物仍待工作流上线验证。

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { isExecutedTestCommand, parseTestOutput, testPassed } from './remediation-test-results.mjs';
+import { execFileSync } from 'node:child_process';
+import { isExecutedTestCommand, parseTestOutput, sourceIdentity, testPassed } from './remediation-test-results.mjs';
 import { validateExecutionResults } from './check-remediation-ledger.mjs';
 
 const command = 'cargo test --locked --manifest-path crates/app/Cargo.toml';
@@ -69,4 +70,31 @@ test('successful packaging without the runtime assertion marker is not P0 proof'
   }));
   assert.deepEqual(validateExecutionResults(f.root, [integration], options), []);
   f.cleanup();
+});
+
+test('sourceIdentity ignores untracked artifacts but tracks tracked content', () => {
+  // A CI job builds before it verifies. If the fingerprint included untracked
+  // files, every record written before a build step looked stale and the gate
+  // could never be satisfied. Tracked content changes must still invalidate it.
+  const root = mkdtempSync(join(tmpdir(), 'identity-'));
+  execFileSync('git', ['-C', root, 'init', '-q']);
+  writeFileSync(join(root, 'tracked.txt'), 'a');
+  execFileSync('git', ['-C', root, 'add', '.']);
+  execFileSync('git', ['-C', root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init']);
+  const before = sourceIdentity(root);
+
+  writeFileSync(join(root, 'build-artifact.txt'), 'generated');
+  assert.equal(
+    sourceIdentity(root).fingerprint,
+    before.fingerprint,
+    'an untracked build artifact must not invalidate a recorded result',
+  );
+
+  writeFileSync(join(root, 'tracked.txt'), 'b');
+  assert.notEqual(
+    sourceIdentity(root).fingerprint,
+    before.fingerprint,
+    'a tracked source change must invalidate a recorded result',
+  );
+  rmSync(root, { recursive: true, force: true });
 });
