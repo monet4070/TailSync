@@ -107,7 +107,9 @@
 - `74ee37a`（`S3-P1-2` 第一版）在 `Run application runtime Clippy` 步骤于两个平台 job 上**失败**（`tailsync-runtime` 视角的 dead code），导致其后所有门禁步骤被跳过。该缺陷已修复。
 - 本分支历史上共 3 类导致 CI 变红的自身缺陷，均已定位并修复：源码指纹包含未跟踪文件、CRLF workflow 解析、上述 dead code。
 - `b632b7c` 的矩阵（run `36707387508`）**全绿**，全部 11 个 job 成功：`Plan CI scope`、`Frontend (windows)`、`Frontend (site)`、`Release and recovery scripts`、`Shared production dependency resolution`、`Packaged application (Windows)`、`Packaged application (macOS)`、三个 `RustSec advisories`、`Required verification`。其中两个打包 job 各含 `Verify remediation gate execution`，即 `S3-P1-2` 及其余具名门禁在 **macOS 与 Windows 两个平台**上都以通过状态出现在实际执行结果中。此前失败的那一步（`Run application runtime Clippy`）在两个 job 上均已通过。
-- 该矩阵覆盖包含全部代码改动的提交；其后只有文档改动（台账与报告），并由 `scripts` 侧的门禁校验脚本在本地复核（`check-remediation-ledger.mjs` 通过）。
+- 该矩阵覆盖包含全部代码改动的提交 `b632b7c`。
+- 分支尖端又跑了一次完整矩阵（run `36709267509`，覆盖 `046b2a0`，即含本报告在内的文档改动）**同样全绿**：11 个 job 全部成功，其中 `Packaged application (Windows)` 14m52s、`Packaged application (macOS)` 13m8s。
+- 其后仅有一次文档计数订正（`8992495`），未重跑矩阵；台账校验脚本在本地通过（`check-remediation-ledger.mjs`）。
 
 **必须区分**：CI 通过不等于本报告第 6 节的"未验"项已完成；反之，Windows job 尚在运行时，也不能用 macOS job 的成功代替它。
 
