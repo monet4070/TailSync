@@ -7,6 +7,7 @@
 // Usage:
 //   node scripts/check-remediation-ledger.mjs [--root .] [--write]
 import { readFileSync, readdirSync, existsSync, writeFileSync, realpathSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
@@ -335,7 +336,13 @@ export function validateExecutionResults(root, entries, { job, resultsDir, sourc
             && ['passed', 'failed', 'skipped'].includes(test.status))
           || !Array.isArray(record.integrations) || !record.integrations.every((id) => typeof id === 'string')
           || typeof record.command !== 'string') {
-        errors.push(`${job}/${file}: failed, stale or malformed execution result`);
+        const stale = [];
+        if (record.source?.fingerprint !== source.fingerprint) {
+          const dirty = execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' })
+            .split('\n').filter(Boolean).slice(0, 5).join(' | ');
+          stale.push(`fingerprint ${String(record.source?.fingerprint).slice(0, 8)} != ${source.fingerprint.slice(0, 8)}; dirty tracked files: ${dirty || '(none)'}`);
+        }
+        errors.push(`${job}/${file}: failed, stale or malformed execution result${stale.length ? ' — ' + stale.join('; ') : ''}`);
       } else records.push(record);
     } catch (error) { errors.push(`${job}/${file}: invalid result: ${error.message}`); }
   }
