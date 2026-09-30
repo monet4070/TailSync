@@ -1463,7 +1463,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1514,6 +1517,9 @@
           "message": "synthetic error"
         }
       ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42,
       "future_optional_field": "accepted"
     }
   },
@@ -1563,7 +1569,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1613,7 +1622,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1662,7 +1674,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1712,7 +1727,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1748,7 +1766,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1785,7 +1806,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1828,7 +1852,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1872,7 +1899,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1921,7 +1951,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -1971,7 +2004,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -2009,7 +2045,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -2048,7 +2087,10 @@
           "level": "error",
           "message": "synthetic error"
         }
-      ]
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -2091,7 +2133,10 @@
             "latency": 1
           }
         }
-      }
+      },
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
     }
   },
   {
@@ -2135,7 +2180,325 @@
           }
         }
       },
-      "notifications": {}
+      "notifications": {},
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": 42
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing notification_earliest_available_id",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ],
+      "notification_dropped_total": 0,
+      "service_instance": 42
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type notification_earliest_available_id",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ],
+      "notification_earliest_available_id": [],
+      "notification_dropped_total": 0,
+      "service_instance": 42
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing notification_dropped_total",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ],
+      "notification_earliest_available_id": 1,
+      "service_instance": 42
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type notification_dropped_total",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": [],
+      "service_instance": 42
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: missing service_instance",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0
+    }
+  },
+  {
+    "name": "MacRuntimeSnapshot: wrong type service_instance",
+    "contract": "MacRuntimeSnapshot",
+    "valid": false,
+    "value": {
+      "revision": 1,
+      "history_version": 1,
+      "progress": {
+        "batch_id": "fixture-batch",
+        "name": "synthetic.txt",
+        "sent": 1,
+        "total": 2,
+        "active": true,
+        "direction": "sending",
+        "device": "fixture-peer",
+        "completed_files": 0,
+        "total_files": 1,
+        "speed_bytes_per_second": 1,
+        "status": "transferring",
+        "can_stop": true
+      },
+      "storage": {
+        "root": "/isolated-fixture",
+        "used_bytes": 5,
+        "quota_bytes": 1073741824,
+        "available": true,
+        "error": null
+      },
+      "sync_enabled": true,
+      "status": {
+        "tcp_server_healthy": true,
+        "clipboard_monitor_healthy": true,
+        "clipboard_monitor_failures": 0,
+        "active_routes": {
+          "fixture-peer": {
+            "interface": "lan",
+            "address": "192.0.2.1",
+            "latency": 1
+          }
+        }
+      },
+      "notifications": [
+        {
+          "id": 1,
+          "level": "error",
+          "message": "synthetic error"
+        }
+      ],
+      "notification_earliest_available_id": 1,
+      "notification_dropped_total": 0,
+      "service_instance": []
     }
   },
   {

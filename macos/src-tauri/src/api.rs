@@ -43,9 +43,25 @@ const MAX_RUNTIME_NOTIFICATIONS: usize = 32;
 
 pub use tailsync_runtime::contracts::RuntimeNotification;
 
+/// Identifies this daemon process. A client that sees it change knows the daemon
+/// restarted, so a cursor it kept refers to a previous instance rather than to a gap.
+static SERVICE_INSTANCE: LazyLock<u64> = LazyLock::new(|| {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(1)
+        .max(1)
+});
+
+pub fn service_instance() -> u64 {
+    *SERVICE_INSTANCE
+}
+
 #[derive(Default)]
 struct RuntimeNotificationBuffer {
     next_id: u64,
+    /// Notifications evicted from the bounded buffer since this process started.
+    dropped: u64,
     entries: VecDeque<RuntimeNotification>,
 }
 
@@ -60,6 +76,7 @@ impl RuntimeNotificationBuffer {
         });
         while self.entries.len() > MAX_RUNTIME_NOTIFICATIONS {
             self.entries.pop_front();
+            self.dropped = self.dropped.saturating_add(1);
         }
         id
     }
@@ -70,6 +87,17 @@ impl RuntimeNotificationBuffer {
             .filter(|entry| entry.id > id)
             .cloned()
             .collect()
+    }
+
+    /// Oldest id a client can still read. With an empty buffer this is the next id to
+    /// be assigned, i.e. "nothing more to read". A client whose cursor is below this
+    /// missed notifications that can no longer be read: it must re-read a full
+    /// snapshot instead of trusting its cursor.
+    fn earliest_available_id(&self) -> u64 {
+        self.entries
+            .front()
+            .map(|entry| entry.id)
+            .unwrap_or_else(|| self.next_id.wrapping_add(1).max(1))
     }
 }
 
@@ -102,6 +130,15 @@ pub fn push_runtime_notification(level: &str, message: impl Into<String>) {
         drop(notifications);
         bump_runtime_revision();
     }
+}
+
+/// Cursor state for the snapshot: the earliest readable id and how many
+/// notifications were evicted in this process.
+pub fn notification_buffer_state() -> (u64, u64) {
+    RUNTIME_NOTIFICATIONS
+        .lock()
+        .map(|buffer| (buffer.earliest_available_id(), buffer.dropped))
+        .unwrap_or((1, 0))
 }
 
 pub fn get_runtime_notifications_since(id: u64) -> Vec<RuntimeNotification> {

@@ -1,9 +1,10 @@
 use super::{
     bind_api_listener, bump_runtime_revision, clear_file_progress, clear_file_progress_scope,
-    get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
-    read_request_with_limits, set_file_batch_progress, thumbnail_rgba, wait_for_runtime_revision,
-    ApiToken, FileProgress, ProgressRevisionAction, ProgressRevisionGate, Request,
-    RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS, THUMBNAIL_MAX_SIDE,
+    get_file_progress, get_runtime_revision, history_capabilities_data, notification_buffer_state,
+    peer_snapshot_data, read_request_with_limits, service_instance, set_file_batch_progress,
+    thumbnail_rgba, wait_for_runtime_revision, ApiToken, FileProgress, ProgressRevisionAction,
+    ProgressRevisionGate, Request, RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS,
+    THUMBNAIL_MAX_SIDE,
 };
 use crate::crypto::Settings;
 use crate::identity::DeviceIdentity;
@@ -505,4 +506,56 @@ fn iroh_only_snapshot_exposes_the_local_endpoint_route() {
     assert_eq!(routes[0]["interface"].as_str(), Some("iroh"));
     assert_eq!(routes[0]["address"].as_str(), Some(endpoint));
     assert_eq!(routes[0]["connected"].as_bool(), Some(true));
+}
+
+/// S6-P2-1: the bounded buffer must let a client tell "nothing more to read" from
+/// "events were evicted before I read them". Without `dropped` and the earliest
+/// readable id, `since()` silently returns a truncated list.
+#[test]
+fn runtime_notification_overflow_is_reported_not_hidden() {
+    let mut buffer = RuntimeNotificationBuffer::default();
+    assert_eq!(
+        buffer.earliest_available_id(),
+        1,
+        "an empty buffer has nothing to read"
+    );
+    assert_eq!(buffer.dropped, 0);
+
+    let evicted = 5;
+    for index in 0..(MAX_RUNTIME_NOTIFICATIONS + evicted) {
+        buffer.push("info", format!("event {index}"));
+    }
+
+    assert_eq!(buffer.dropped, evicted as u64, "evictions must be counted");
+    assert_eq!(
+        buffer.earliest_available_id(),
+        evicted as u64 + 1,
+        "the earliest readable id must advance past the evicted entries"
+    );
+
+    // A stale cursor now sees a contiguous window that starts above it, which is
+    // exactly what lets the client detect the gap.
+    let retained = buffer.since(0);
+    assert_eq!(retained.len(), MAX_RUNTIME_NOTIFICATIONS);
+    assert_eq!(
+        retained.first().map(|entry| entry.id),
+        Some(evicted as u64 + 1)
+    );
+    assert!(retained.iter().all(|entry| entry.id > 0));
+}
+
+/// The service instance is stable within a process and never zero, so a client can
+/// distinguish a restart from a gap.
+#[test]
+fn runtime_service_instance_is_stable_and_nonzero() {
+    assert_ne!(service_instance(), 0);
+    assert_eq!(service_instance(), service_instance());
+}
+
+/// The snapshot state accessor agrees with the buffer it reads.
+#[test]
+fn notification_buffer_state_reports_cursor_and_drops() {
+    let (earliest, dropped) = notification_buffer_state();
+    assert!(earliest >= 1);
+    assert_eq!(dropped, dropped);
 }

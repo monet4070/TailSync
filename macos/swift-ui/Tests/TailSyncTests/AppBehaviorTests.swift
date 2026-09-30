@@ -5,6 +5,34 @@ import XCTest
 
 @MainActor
 final class AppBehaviorTests: XCTestCase {
+    func testNotificationCursorRecoveryDetectsGapsAndRestarts() {
+        // A cursor still inside the readable window is fine.
+        XCTAssertEqual(
+            RuntimeNotificationPolicy.notificationCursorRecovery(
+                cursor: 10, earliestAvailable: 6,
+                previousServiceInstance: 7, serviceInstance: 7),
+            .contiguous)
+        // A cursor below the window means events were evicted unread.
+        XCTAssertEqual(
+            RuntimeNotificationPolicy.notificationCursorRecovery(
+                cursor: 2, earliestAvailable: 6,
+                previousServiceInstance: 7, serviceInstance: 7),
+            .gap(missed: 3))
+        // A changed service instance means the daemon restarted and the cursor space
+        // was reset, regardless of the window.
+        XCTAssertEqual(
+            RuntimeNotificationPolicy.notificationCursorRecovery(
+                cursor: 10, earliestAvailable: 6,
+                previousServiceInstance: 7, serviceInstance: 8),
+            .daemonRestarted)
+        // Fields a pre-upgrade daemon does not send keep the old behaviour.
+        XCTAssertEqual(
+            RuntimeNotificationPolicy.notificationCursorRecovery(
+                cursor: 2, earliestAvailable: 0,
+                previousServiceInstance: nil, serviceInstance: 0),
+            .contiguous)
+    }
+
     func testSingleInstanceLockAllowsOnlyOneOwner() throws {
         let lockURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("tailsync-single-instance-\(UUID().uuidString).lock")

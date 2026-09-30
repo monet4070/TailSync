@@ -102,14 +102,17 @@ export function decodeLocalDeviceSnapshot(value: unknown): LocalDeviceSnapshot {
 
 export type MacRuntimeSnapshot = {
   "history_version": number;
+  "notification_dropped_total": number;
+  "notification_earliest_available_id": number;
   "notifications": Array<RuntimeNotification>;
   "progress": FileProgress | null;
   "revision": number;
+  "service_instance": number;
   "status": DaemonStatus;
   "storage": StorageStatus;
   "sync_enabled": boolean;
 };
-function validMacRuntimeSnapshot(value: unknown): value is MacRuntimeSnapshot { return (isRecord(value) && (Object.hasOwn(value, "history_version") && (typeof value["history_version"] === "number" && Number.isSafeInteger(value["history_version"]) && value["history_version"] >= 0)) && (Object.hasOwn(value, "notifications") && (Array.isArray(value["notifications"]) && value["notifications"].every(item => validRuntimeNotification(item)))) && (Object.hasOwn(value, "progress") && (validFileProgress(value["progress"]) || (value["progress"] === null))) && (Object.hasOwn(value, "revision") && (typeof value["revision"] === "number" && Number.isSafeInteger(value["revision"]) && value["revision"] >= 0)) && (Object.hasOwn(value, "status") && validDaemonStatus(value["status"])) && (Object.hasOwn(value, "storage") && validStorageStatus(value["storage"])) && (Object.hasOwn(value, "sync_enabled") && (typeof value["sync_enabled"] === "boolean"))); }
+function validMacRuntimeSnapshot(value: unknown): value is MacRuntimeSnapshot { return (isRecord(value) && (Object.hasOwn(value, "history_version") && (typeof value["history_version"] === "number" && Number.isSafeInteger(value["history_version"]) && value["history_version"] >= 0)) && (Object.hasOwn(value, "notification_dropped_total") && (typeof value["notification_dropped_total"] === "number" && Number.isSafeInteger(value["notification_dropped_total"]) && value["notification_dropped_total"] >= 0)) && (Object.hasOwn(value, "notification_earliest_available_id") && (typeof value["notification_earliest_available_id"] === "number" && Number.isSafeInteger(value["notification_earliest_available_id"]) && value["notification_earliest_available_id"] >= 0)) && (Object.hasOwn(value, "notifications") && (Array.isArray(value["notifications"]) && value["notifications"].every(item => validRuntimeNotification(item)))) && (Object.hasOwn(value, "progress") && (validFileProgress(value["progress"]) || (value["progress"] === null))) && (Object.hasOwn(value, "revision") && (typeof value["revision"] === "number" && Number.isSafeInteger(value["revision"]) && value["revision"] >= 0)) && (Object.hasOwn(value, "service_instance") && (typeof value["service_instance"] === "number" && Number.isSafeInteger(value["service_instance"]) && value["service_instance"] >= 0)) && (Object.hasOwn(value, "status") && validDaemonStatus(value["status"])) && (Object.hasOwn(value, "storage") && validStorageStatus(value["storage"])) && (Object.hasOwn(value, "sync_enabled") && (typeof value["sync_enabled"] === "boolean"))); }
 export function decodeMacRuntimeSnapshot(value: unknown): MacRuntimeSnapshot { if (!validMacRuntimeSnapshot(value)) throw new Error("Invalid MacRuntimeSnapshot response"); return value; }
 
 export type PeerCandidate = {

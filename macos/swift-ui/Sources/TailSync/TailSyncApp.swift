@@ -60,6 +60,38 @@ enum RuntimeNotificationPolicy {
     ) -> Bool {
         isFirstPoll || previousHistoryVersion != currentHistoryVersion
     }
+
+    /// Whether the notification cursor is still usable.
+    ///
+    /// The daemon buffers a bounded number of notifications. A cursor below the
+    /// earliest readable id means events were evicted that this client never saw; a
+    /// changed service instance means the daemon restarted and the cursor space was
+    /// reset. Both mean the cursor must not be trusted: the client adopts the snapshot
+    /// it just received as the new baseline, and the loss is reported instead of
+    /// passing silently.
+    enum CursorRecovery: Equatable {
+        case contiguous
+        case daemonRestarted
+        case gap(missed: UInt64)
+    }
+
+    static func notificationCursorRecovery(
+        cursor: UInt64,
+        earliestAvailable: UInt64,
+        previousServiceInstance: UInt64?,
+        serviceInstance: UInt64
+    ) -> CursorRecovery {
+        if let previous = previousServiceInstance, previous != 0, serviceInstance != 0,
+           previous != serviceInstance {
+            return .daemonRestarted
+        }
+        // `earliestAvailable == 0` keeps the pre-upgrade behaviour: a daemon that does
+        // not report it leaves the cursor authoritative, exactly as before.
+        guard earliestAvailable > 1, cursor &+ 1 < earliestAvailable else {
+            return .contiguous
+        }
+        return .gap(missed: earliestAvailable - (cursor &+ 1))
+    }
 }
 
 enum StatusItemImagePolicy {
@@ -127,6 +159,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var notificationRuntimeRevision: UInt64 = 0
     private var notificationHistoryVersion: UInt64?
     private var notificationEventId: UInt64 = 0
+    /// Identity of the daemon whose cursor space `notificationEventId` belongs to.
+    private var notificationServiceInstance: UInt64?
     private var consecutiveWatchdogFailures = 0
     private var watchdogBackoffSeconds: TimeInterval = 0
     private var watchdogRetryAfter: Date?
@@ -340,6 +374,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     isFirstPoll: self.isFirstNotificationPoll
                 )
                 self.notificationHistoryVersion = snapshot.historyVersion
+
+                // The cursor is only trustworthy while it is still readable. A gap or
+                // a daemon restart means this snapshot is the new baseline, and the
+                // loss is reported instead of passing silently.
+                switch RuntimeNotificationPolicy.notificationCursorRecovery(
+                    cursor: self.notificationEventId,
+                    earliestAvailable: snapshot.notificationEarliestAvailableId,
+                    previousServiceInstance: self.notificationServiceInstance,
+                    serviceInstance: snapshot.serviceInstance
+                ) {
+                case .contiguous:
+                    break
+                case .daemonRestarted:
+                    self.notificationEventId = 0
+                case .gap(let missed):
+                    self.notificationEventId = snapshot.notificationEarliestAvailableId &- 1
+                    print("[TailSync] \(missed) runtime notifications were dropped before this client read them")
+                }
+                if snapshot.serviceInstance != 0 {
+                    self.notificationServiceInstance = snapshot.serviceInstance
+                }
 
                 for event in snapshot.notifications {
                     self.notificationEventId = max(self.notificationEventId, event.id)

@@ -187,20 +187,26 @@ struct ContractLocalDeviceSnapshot: Codable, Sendable {
 
 struct ContractMacRuntimeSnapshot: Codable, Sendable {
   let `history_version`: UInt64
+  let `notification_dropped_total`: UInt64
+  let `notification_earliest_available_id`: UInt64
   let `notifications`: [ContractRuntimeNotification]
   let `progress`: ContractFileProgress?
   let `revision`: UInt64
+  let `service_instance`: UInt64
   let `status`: ContractDaemonStatus
   let `storage`: ContractStorageStatus
   let `sync_enabled`: Bool
-  private enum CodingKeys: String, CodingKey { case `history_version`, `notifications`, `progress`, `revision`, `status`, `storage`, `sync_enabled` }
+  private enum CodingKeys: String, CodingKey { case `history_version`, `notification_dropped_total`, `notification_earliest_available_id`, `notifications`, `progress`, `revision`, `service_instance`, `status`, `storage`, `sync_enabled` }
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     self.`history_version` = try c.decode(UInt64.self, forKey: .`history_version`)
+    self.`notification_dropped_total` = try c.decode(UInt64.self, forKey: .`notification_dropped_total`)
+    self.`notification_earliest_available_id` = try c.decode(UInt64.self, forKey: .`notification_earliest_available_id`)
     self.`notifications` = try c.decode([ContractRuntimeNotification].self, forKey: .`notifications`)
     guard c.contains(.`progress`) else { throw DecodingError.keyNotFound(CodingKeys.`progress`, .init(codingPath: decoder.codingPath, debugDescription: "Required nullable field is missing")) }
     self.`progress` = try c.decodeIfPresent(ContractFileProgress.self, forKey: .`progress`)
     self.`revision` = try c.decode(UInt64.self, forKey: .`revision`)
+    self.`service_instance` = try c.decode(UInt64.self, forKey: .`service_instance`)
     self.`status` = try c.decode(ContractDaemonStatus.self, forKey: .`status`)
     self.`storage` = try c.decode(ContractStorageStatus.self, forKey: .`storage`)
     self.`sync_enabled` = try c.decode(Bool.self, forKey: .`sync_enabled`)

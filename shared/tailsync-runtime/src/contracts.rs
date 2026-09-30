@@ -250,6 +250,16 @@ pub struct MacRuntimeSnapshot {
     pub sync_enabled: bool,
     pub status: DaemonStatus,
     pub notifications: Vec<RuntimeNotification>,
+    /// Oldest notification id still readable. A client whose cursor is below
+    /// `notification_earliest_available_id - 1` has missed events that can no longer
+    /// be read and must re-read a full snapshot instead of trusting its cursor.
+    pub notification_earliest_available_id: u64,
+    /// How many notifications were evicted from the bounded buffer since this daemon
+    /// started, for diagnostics and trend.
+    pub notification_dropped_total: u64,
+    /// Identifies this daemon process. A changed value means the daemon restarted, so
+    /// any cursor the client kept refers to a previous instance.
+    pub service_instance: u64,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]

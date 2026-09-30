@@ -131,6 +131,9 @@ fn fixtures() -> LocalContractExports {
                 level: "error".into(),
                 message: "synthetic error".into(),
             }],
+            notification_earliest_available_id: 1,
+            notification_dropped_total: 0,
+            service_instance: 42,
         },
         windows_runtime: WindowsRuntimeSnapshot {
             revision: 1,

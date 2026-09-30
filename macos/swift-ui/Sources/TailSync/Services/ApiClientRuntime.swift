@@ -60,6 +60,10 @@ extension ApiClient {
     let syncEnabled: Bool
     let status: DaemonStatus
     let notifications: [Notification]
+    /// Oldest notification id the daemon can still serve, and the daemon's process
+    /// identity. Zero means the daemon predates these fields.
+    let notificationEarliestAvailableId: UInt64
+    let serviceInstance: UInt64
   }
 
   /// Wait for a daemon-side state change instead of polling each subsystem.
@@ -110,7 +114,10 @@ extension ApiClient {
       storage: Self.decodeStorageStatus(data["storage"]),
       syncEnabled: data["sync_enabled"] as? Bool ?? true,
       status: Self.decodeDaemonStatus(statusData),
-      notifications: notifications
+      notifications: notifications,
+      notificationEarliestAvailableId: (data["notification_earliest_available_id"] as? NSNumber)?
+        .uint64Value ?? 0,
+      serviceInstance: (data["service_instance"] as? NSNumber)?.uint64Value ?? 0
     )
   }
 

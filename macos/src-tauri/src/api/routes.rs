@@ -137,6 +137,10 @@ async fn runtime_snapshot_data(state: &ApiState, since_notification_id: Option<u
     let revision = get_runtime_revision();
     let sync_enabled = state.settings.lock().await.sync_enabled;
     let storage = db::storage_status_async(&state.db).await;
+    // Cursor/gap information: a slow or reconnecting client uses these to decide
+    // whether its cursor is still readable or it must re-read a full snapshot.
+    let (notification_earliest_available_id, notification_dropped_total) =
+        notification_buffer_state();
     serde_json::to_value(tailsync_runtime::contracts::MacRuntimeSnapshot {
         revision,
         history_version: get_clipboard_version(),
@@ -147,6 +151,9 @@ async fn runtime_snapshot_data(state: &ApiState, since_notification_id: Option<u
         notifications: since_notification_id
             .map(get_runtime_notifications_since)
             .unwrap_or_default(),
+        notification_earliest_available_id,
+        notification_dropped_total,
+        service_instance: service_instance(),
     })
     .expect("typed runtime snapshot is JSON safe")
 }

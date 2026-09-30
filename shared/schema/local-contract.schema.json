@@ -423,6 +423,18 @@
           "format": "uint64",
           "minimum": 0
         },
+        "notification_dropped_total": {
+          "description": "How many notifications were evicted from the bounded buffer since this daemon\nstarted, for diagnostics and trend.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "notification_earliest_available_id": {
+          "description": "Oldest notification id still readable. A client whose cursor is below\n`notification_earliest_available_id - 1` has missed events that can no longer\nbe read and must re-read a full snapshot instead of trusting its cursor.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "notifications": {
           "type": "array",
           "items": {
@@ -444,6 +456,12 @@
           "format": "uint64",
           "minimum": 0
         },
+        "service_instance": {
+          "description": "Identifies this daemon process. A changed value means the daemon restarted, so\nany cursor the client kept refers to a previous instance.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "status": {
           "$ref": "#/$defs/DaemonStatus"
         },
@@ -461,7 +479,10 @@
         "storage",
         "sync_enabled",
         "status",
-        "notifications"
+        "notifications",
+        "notification_earliest_available_id",
+        "notification_dropped_total",
+        "service_instance"
       ]
     },
     "PeerCandidate": {
