@@ -54,7 +54,7 @@
 | `shared/rust-core/src/pairing/pending.rs`（新增） | `PendingTrustStore` / `PendingTrustRecord`：sidecar 持久化、原子私有写入、缺失或损坏时按空处理（只可能要求重新配对，不会把损坏字节变成信任）、`format_version` 不匹配时拒绝加载 |
 | `shared/rust-core/src/pairing/manager.rs` | `persist_pairing` 拆为 `record_pending_pairing`（写注记）+ `promote_pairing`（写信任并清注记，全程持有状态锁）；`promote_pairing` 只在 `local_persisted && remote_persisted` 分支调用；新增 `pending_trust()`、`forget_pending()`、`with_store`/`with_pending_store_at`（重启测试）、测试专用 `promotion_gate` |
 | `shared/rust-core/src/pairing.rs` | `mod pending;` 与重导出；`PairingManager` 增加 `pending` 字段（`persist_trust=false` 时纯内存，测试不写真实数据目录）；测试专用 `PromotionGate` |
-| `shared/rust-core/src/pairing/tests_pending.rs`（新增） | 12 个测试，见下 |
+| `shared/rust-core/src/pairing/tests_pending.rs`（新增） | 14 个测试，见下 |
 | `shared/rust-core/tests/fixtures/legacy-config-v2.json`（新增） | 冻结的旧版 `config-v2.json`（含一台已配对设备） |
 | `macos/src-tauri/src/commands/peers.rs`、`macos/src-tauri/src/api/routes/peers.rs`、`windows/src-tauri/src/commands/peers.rs` | `forget_peer` 同时清除该设备的 pending 注记（macOS 的 SwiftUI 走 Unix socket 路由，不是 Tauri 命令，两处都要接） |
 | `docs/remediation-ledger/entries/S3-P1-2.json`、`manifest.json`、`INDEX.md` | 状态 `unfixed` → `fixed_gated`，登记门禁与 `ci_job` |
