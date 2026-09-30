@@ -28,6 +28,14 @@ export function testPassed(results, test) {
   return matches.length > 0 && matches.every((r) => r.status === 'passed');
 }
 
+/// Git-tracked files that a build regenerates (Tauri codegen for the capability and
+/// schema manifests). Regenerating them during a CI job rewrites their bytes, which
+/// would invalidate every record written before the build step — that is exactly what
+/// broke the Windows verification. They are derived from tracked `tauri.conf.json`
+/// sources and dedicated CI steps already assert they are unchanged after a build, so
+/// they are excluded here while every hand-written source stays covered.
+const GENERATED_SOURCES = ['macos/src-tauri/gen/schemas/', 'windows/src-tauri/gen/schemas/'];
+
 export function sourceIdentity(root) {
   const sha = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   // Tracked files only. Build tooling (Vite, Tauri codegen, bundlers) creates and
@@ -38,6 +46,7 @@ export function sourceIdentity(root) {
   const files = execFileSync('git', ['-C', root, 'ls-files', '--cached', '-z'], { encoding: 'utf8' });
   const hash = createHash('sha256');
   for (const file of [...new Set(files.split('\0').filter(Boolean))].sort()) {
+    if (GENERATED_SOURCES.some((prefix) => file.startsWith(prefix))) continue;
     const path = join(root, file);
     hash.update(file + '\0');
     try { hash.update(lstatSync(path).isSymbolicLink() ? readlinkSync(path) : readFileSync(path)); }
