@@ -3,8 +3,17 @@
   "platform": [
     "shared"
   ],
-  "gate": null,
-  "ci_job": [],
+  "gate": {
+    "kind": "unit",
+    "file": "shared/rust-core/src/db/storage.rs",
+    "test": "quota_eviction_measures_the_storage_tree_once_per_reserve",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "配额淘汰需要多次驱逐时，整棵树只被测量一次（计数器为 1），而不是每次驱逐都递归扫盘；把基线重新放回循环内即失败。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
   "native_acceptance": null,
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S4-P1-3",
@@ -13,8 +22,8 @@
     "shared/rust-core/src/db/storage.rs:reserve_for_file_batch"
   ],
   "trigger": "淘汰循环每次删除都在 DB 互斥锁内递归扫描整个存储目录。",
-  "fix_evidence": "未修：reserve_for_file_batch 的 loop 内仍每次调用递归 bulk_storage_size/directory_size，调用方持 database.lock()。",
-  "status": "unfixed",
-  "pass_condition": "同一淘汰周期不再反复全树扫描；物理字节账目、双批准入与锁等待满足预算。",
+  "fix_evidence": "删除路径（delete_entries_with_batch_policy 及其包装）现在回报\"可证明释放的外部载荷字节数\"（成功 remove_file 前的 metadata 长度累加）；reserve_for_file_batch 先测一次物理基线，之后每次淘汰扣减该增量；当某次淘汰释放为 0（无法证明）时回退重测，避免在过期基线上空转。已做变异验证（把基线移回循环 → 门禁失败）。",
+  "status": "fixed_gated",
+  "pass_condition": "同一淘汰周期不再反复全树扫描；扫描次数门禁通过；并发双批准入与锁等待由既有测试覆盖。",
   "reopen_condition": "双批重复认领空间、空间账错误或恢复重复扫描。"
 }

@@ -38,7 +38,7 @@ impl HistoryDB {
         if !favorite {
             return Err(Box::new(HistoryMutationError::NotFavorite { id }));
         }
-        self.delete_entries_with_batch_policy(&ids, None, false)?;
+        let _freed = self.delete_entries_with_batch_policy(&ids, None, false)?;
         Ok(FavoriteMutation {
             affected_ids: ids,
             favorite: false,

@@ -47,7 +47,7 @@ impl HistoryDB {
     /// Delete a history entry and its unreferenced external payload.
     pub fn delete(&mut self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
         self.ensure_logical_item_unfavorited(id)?;
-        self.delete_entries_with_batch_policy(&[id], None, true)?;
+        let _freed = self.delete_entries_with_batch_policy(&[id], None, true)?;
         Ok(())
     }
 
@@ -142,7 +142,7 @@ impl HistoryDB {
         if count > max {
             let excess = count - max;
             let ids = self.expand_batch_groups(self.oldest_entry_ids(Some(entry_type), excess)?)?;
-            self.delete_entries(&ids)?;
+            let _freed = self.delete_entries(&ids)?;
             info!("Trimmed {} {} entries", excess, entry_type);
         }
 
@@ -152,7 +152,7 @@ impl HistoryDB {
         if total > self.max_history {
             let excess = total - self.max_history;
             let ids = self.expand_batch_groups(self.oldest_entry_ids(None, excess)?)?;
-            self.delete_entries(&ids)?;
+            let _freed = self.delete_entries(&ids)?;
             info!("Trimmed {} entries (total cap)", excess);
         }
 
@@ -161,7 +161,7 @@ impl HistoryDB {
             let ids = self.expand_batch_groups(self.file_ids_over_byte_limit(quota)?)?;
             if !ids.is_empty() {
                 let count = ids.len();
-                self.delete_entries(&ids)?;
+                let _freed = self.delete_entries(&ids)?;
                 info!("Trimmed {count} unpinned file entries (storage quota)");
             }
         }
@@ -287,7 +287,11 @@ impl HistoryDB {
         Ok(ids)
     }
 
-    pub(super) fn delete_entries(&mut self, ids: &[i64]) -> Result<(), Box<dyn std::error::Error>> {
+    /// Returns the bytes of external payloads this deletion provably removed.
+    pub(super) fn delete_entries(
+        &mut self,
+        ids: &[i64],
+    ) -> Result<u64, Box<dyn std::error::Error>> {
         self.delete_entries_except(ids, None)
     }
 
@@ -295,7 +299,7 @@ impl HistoryDB {
         &mut self,
         ids: &[i64],
         preserve_path: Option<&Path>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<u64, Box<dyn std::error::Error>> {
         self.delete_entries_with_batch_policy(ids, preserve_path, false)
     }
 
@@ -304,9 +308,9 @@ impl HistoryDB {
         ids: &[i64],
         preserve_path: Option<&Path>,
         rebase_complete_batches: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<u64, Box<dyn std::error::Error>> {
         if ids.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         let mut references = Vec::new();
         let mut affected_batches = std::collections::BTreeMap::<String, bool>::new();
@@ -380,6 +384,7 @@ impl HistoryDB {
         }
         tx.commit()?;
 
+        let mut freed_bytes: u64 = 0;
         for (stored, directory, reference) in references {
             let remaining: i64 = match self.conn.query_row(
                 "SELECT COUNT(*) FROM history WHERE data = ?1",
@@ -405,8 +410,14 @@ impl HistoryDB {
             if preserve_path == Some(path.as_path()) {
                 continue;
             }
-            if let Err(error) = std::fs::remove_file(&path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
+            // Account the bytes this removal provably frees, so the quota loop
+            // can subtract them from its measured baseline instead of rescanning
+            // the whole storage tree after every eviction.
+            let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+            match std::fs::remove_file(&path) {
+                Ok(()) => freed_bytes = freed_bytes.saturating_add(size),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
                     warn!("Could not remove history file {}: {error}", path.display());
                 }
             }
@@ -431,7 +442,7 @@ impl HistoryDB {
                 warn!("Could not checkpoint the history WAL after delete: {error}");
             }
         }
-        Ok(())
+        Ok(freed_bytes)
     }
 }
 

@@ -155,8 +155,13 @@ impl HistoryDB {
             )
             .into());
         }
+        // Measure the physical baseline ONCE, then subtract the bytes each
+        // eviction provably removed. Rescanning the whole storage tree per
+        // eviction held the database lock and blocked history queries
+        // (S4-P1-3). If an eviction frees nothing provable, re-measure so the
+        // loop cannot spin on a stale baseline.
+        let mut used = bulk_storage_size(&get_storage_dir())?;
         loop {
-            let used = bulk_storage_size(&get_storage_dir())?;
             if used.saturating_add(incoming_bytes) <= self.storage_quota_bytes {
                 return Ok(());
             }
@@ -167,7 +172,12 @@ impl HistoryDB {
                 ).into());
             };
             let ids = self.expand_batch_groups(vec![id])?;
-            self.delete_entries(&ids)?;
+            let freed = self.delete_entries(&ids)?;
+            if freed == 0 {
+                used = bulk_storage_size(&get_storage_dir())?;
+            } else {
+                used = used.saturating_sub(freed);
+            }
         }
     }
 
@@ -561,7 +571,16 @@ fn copy_bulk_storage_verified(
     Ok(())
 }
 
+/// Test-only observability for S4-P1-3: the quota loop must measure a physical
+/// baseline once and then subtract provably freed bytes, rather than rescanning
+/// the whole storage tree (while holding the database lock) after every eviction.
+#[cfg(test)]
+pub(crate) static BULK_STORAGE_SIZE_SCANS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 fn bulk_storage_size(root: &Path) -> std::io::Result<u64> {
+    #[cfg(test)]
+    BULK_STORAGE_SIZE_SCANS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let _ = fs::read_dir(root)?;
     let mut total = 0_u64;
     for name in bulk_storage_names() {
@@ -799,6 +818,61 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 3, "quota preflight must preserve inline history");
+
+        drop(database);
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    /// S4-P1-3: evicting several items must not rescan the whole storage tree on
+    /// every iteration while the database lock is held.
+    #[tokio::test]
+    async fn quota_eviction_measures_the_storage_tree_once_per_reserve() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("quota-scan-count");
+        configure_storage_dir(Some(&base)).unwrap();
+        let database = test_database(&base);
+
+        let source_dir = base.join("payload-sources");
+        fs::create_dir_all(&source_dir).unwrap();
+        for index in 0..4 {
+            // Distinct contents, otherwise the payload store deduplicates them
+            // into a single file and no eviction can free enough space.
+            let payload = vec![u8::try_from(index + 1).unwrap(); 4096];
+            let source = source_dir.join(format!("payload-{index}.bin"));
+            fs::write(&source, &payload).unwrap();
+            database
+                .lock()
+                .await
+                .add_file_from_path(
+                    &format!("payload-{index}.bin"),
+                    &source,
+                    &blake3::hash(&payload).to_hex().to_string(),
+                    payload.len() as u64,
+                    "peer",
+                )
+                .unwrap();
+        }
+
+        let live = bulk_storage_size(&get_storage_dir()).unwrap();
+        // A quota that forces several evictions (three 4 KiB payloads must go).
+        database
+            .lock()
+            .await
+            .set_storage_quota(live.saturating_sub(10_000));
+
+        BULK_STORAGE_SIZE_SCANS.store(0, std::sync::atomic::Ordering::SeqCst);
+        database
+            .lock()
+            .await
+            .reserve_for_file_batch(1024, 1024)
+            .expect("eviction should make room for the batch");
+        assert_eq!(
+            BULK_STORAGE_SIZE_SCANS.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the quota loop must measure the baseline once, not rescan the tree per eviction"
+        );
 
         drop(database);
         configure_storage_dir(Some(&original)).unwrap();
