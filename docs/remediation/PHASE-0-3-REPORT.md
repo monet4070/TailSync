@@ -87,7 +87,7 @@
    - `gh auth refresh -s workflow` 后由我推送；或
    - 你本地 `git -C /Users/monet/TailSync/TailSync-remediation push -u origin codex/remediation-2026-09-29`。
    工作已全部提交在该 worktree 的分支上，不会丢失。
-2. **设备验收（暂缓）**：`docs/performance-budgets.md` 需要你作为维护者兼发布负责人签署；Windows 原生断网/虚拟网卡/VPN 场景、macOS VoiceOver 实操、以及最终双机验收均待环境就绪。
+2. **设备验收（当前环境不可达）**：执行环境仅 macOS 单机，**无法进行任何跨设备实机验收**，也没有 Windows 设备/虚拟机。验收因此分为三类并记录在 `docs/acceptance/acceptance-environment.md`：单机可自动化（应做成门禁）、单机手动（VoiceOver 等）、硬件所限（跨设备场景，环境改变前不关闭）。`docs/performance-budgets.md` 仍需你作为维护者兼发布负责人签署。
 3. **阶段 7 硬门槛**：未签署的性能预算意味着 `S2-F5` 与 `S4-P1-4` 不能关闭。
 
 ## 6. 复现与验收命令
