@@ -1,6 +1,7 @@
 use super::{
     files_to_broadcast, outgoing_batch_failure_disposition, peer_is_transfer_eligible,
-    run_outgoing_recovery_loop, run_periodic_maintenance, summarize_file_batch_failures,
+    run_outgoing_recovery_loop, run_periodic_maintenance, run_transfer_maintenance_tick,
+    summarize_file_batch_failures,
     validate_prepared_batch_sources_with, validate_prepared_file_source, ClipboardEventGate,
     FileBatchDeliveryError, OutgoingBatchFailureDisposition,
     IDENTICAL_CLIPBOARD_EVENT_DEBOUNCE_MS,
@@ -369,4 +370,47 @@ fn canonical_alias_of_a_managed_file_is_not_broadcast() {
     assert!(files_to_broadcast(&[file], &managed_directory).is_empty());
 
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// S5-P2-1: the resident maintenance task must actually reconcile orphaned payload
+/// files against the rows that still exist — a committed row delete is not evidence
+/// that its payload left the disk.
+#[tokio::test]
+async fn transfer_maintenance_tick_sweeps_aged_orphaned_payloads() {
+    use crate::db::HistoryDB;
+    use tokio::sync::Mutex;
+
+    // The storage root is process-global, so serialize this with a local lock.
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _guard = LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+
+    let original = crate::db::get_storage_dir();
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-maintenance-sweep-{:016x}",
+        rand::random::<u64>()
+    ));
+    crate::db::configure_storage_dir(Some(&root)).unwrap();
+    let database = Arc::new(Mutex::new(HistoryDB::new().unwrap()));
+
+    let payload_dir = root.join("file-history");
+    std::fs::create_dir_all(&payload_dir).unwrap();
+    let orphan = payload_dir.join("orphan.bin");
+    std::fs::write(&orphan, b"orphan").unwrap();
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    std::fs::File::options()
+        .write(true)
+        .open(&orphan)
+        .unwrap()
+        .set_modified(aged)
+        .unwrap();
+
+    run_transfer_maintenance_tick(&database).await;
+
+    assert!(
+        !orphan.exists(),
+        "the maintenance tick must sweep an aged orphaned payload"
+    );
+    drop(database);
+    crate::db::configure_storage_dir(Some(&original)).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
 }

@@ -114,17 +114,37 @@ pub(super) async fn run_periodic_maintenance<F, Fut>(
 
 /// Periodically remove expired incoming/outgoing transfer state. The file
 /// walk is blocking I/O and therefore runs outside the async executor.
-pub(super) async fn run_expired_transfer_maintenance(shutdown: watch::Receiver<bool>) {
-    run_periodic_maintenance(
-        shutdown,
-        EXPIRED_TRANSFER_MAINTENANCE_INTERVAL,
-        || async {
-            if let Err(error) = tokio::task::spawn_blocking(sync::cleanup_expired_transfers).await {
-                warn!("Expired-transfer maintenance task failed: {error}");
-            }
-        },
-    )
+pub(super) async fn run_expired_transfer_maintenance(
+    shutdown: watch::Receiver<bool>,
+    database: Arc<Mutex<db::HistoryDB>>,
+) {
+    run_periodic_maintenance(shutdown, EXPIRED_TRANSFER_MAINTENANCE_INTERVAL, move || {
+        let database = database.clone();
+        async move { run_transfer_maintenance_tick(&database).await }
+    })
     .await;
+}
+
+/// Orphan payloads must be older than this before the sweep removes them, so the
+/// sweep cannot race a transfer that is still being written.
+const ORPHAN_SWEEP_GRACE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// One maintenance tick: drop expired transfer state, then reconcile the external
+/// payload files against the rows that still exist.
+///
+/// A committed row delete is not evidence that its payload left the disk — the
+/// post-commit removal can fail on a busy or read-only file and the row is already
+/// gone — so the sweep is what actually reclaims that space.
+pub(super) async fn run_transfer_maintenance_tick(database: &Arc<Mutex<db::HistoryDB>>) {
+    if let Err(error) = tokio::task::spawn_blocking(sync::cleanup_expired_transfers).await {
+        warn!("Expired-transfer maintenance task failed: {error}");
+    }
+    let mut history = database.lock().await;
+    match history.sweep_orphan_payloads(ORPHAN_SWEEP_GRACE) {
+        Ok(0) => {}
+        Ok(removed) => info!("Swept {removed} orphaned history payloads"),
+        Err(error) => warn!("Orphan payload sweep failed: {error}"),
+    }
 }
 
 pub(super) async fn send_file_batch_to_peers(

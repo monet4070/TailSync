@@ -67,4 +67,12 @@ CI 上传 `remediation-tests-macos` / `remediation-tests-windows`（原始日志
 
 本机按文档跑完整 macOS 对账流程（runtime / core / macOS 应用 / Swift 四个套件各一次 + 校验）已通过：`remediation ledger OK: 31 entries`。
 
+### 后续三轮 CI 暴露的第三个缺陷与最终结果
+
+修复上述两项后 Windows 仍失败，错误为「92 个门禁命令未配置」：`parseCiJobs` 只按 `\n` 切分，而 Windows 检出是 CRLF，残留的 `\r` 使每条 `run:` 正则都不匹配。已改为按 `/\r?\n/` 切分并补 CRLF 回归夹具。
+
+最终 **完整双平台 CI 全绿**：run [36669221251](https://github.com/monet4070/TailSync/actions/runs/36669221251)（`bde8222`，`workflow_dispatch`，16m37s），11 个 job 全部 success，含两个打包 job 与 `Required verification`。
+
+**补充（本分支后续提交）**：`S5-P2-1` 的周期调用已接线（`run_expired_transfer_maintenance` 接收数据库句柄，每个 tick 先清过期传输、再以 1 小时宽限清扫孤儿载荷），并有门禁 `transfer_maintenance_tick_sweeps_aged_orphaned_payloads`（变异验证：把宽限期改到远超夹具年龄即失败）。台账更新为 **fixed_gated 22 / partial 3 / unfixed 5 / needs_adjudication 1**。
+
 台账状态：**fixed_gated 21 / fixed_ungated 0 / partial 4 / unfixed 5 / needs_adjudication 1**，共 31 项。原报告中过期的“workflow scope 阻塞”“阶段 5 未实施”和“11 个 job 全绿”已更正；覆盖率首份托管产物仍待工作流上线验证。

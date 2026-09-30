@@ -5,10 +5,10 @@
   ],
   "gate": {
     "kind": "unit",
-    "file": "shared/rust-core/src/db/tests.rs",
-    "test": "orphan_payload_sweep_respects_references_and_the_grace_period",
-    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "按 DB 引用对账：无引用且超过宽限期的载荷被删除，仍被引用的载荷保留，宽限期内保留，二次清理为空操作。变异验证：忽略引用（会删掉被引用的文件）与忽略宽限期，均使该门禁失败。"
+    "file": "shared/platform-clipboard-tests.rs",
+    "test": "transfer_maintenance_tick_sweeps_aged_orphaned_payloads",
+    "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets",
+    "asserts": "常驻维护 tick 会把超过宽限期的无引用载荷清掉（并保留被引用与宽限期内的文件）。变异验证：把宽限期改到远超夹具年龄，该测试失败。"
   },
   "ci_job": [
     "rust-macos",
@@ -22,8 +22,8 @@
     "shared/rust-core/src/db/lifecycle.rs"
   ],
   "trigger": "DB 提交后删文件遇读写冲突静默留存，且全库缺少对账孤儿扫掠。",
-  "fix_evidence": "sweep_orphan_payloads 按存活 DB 引用对账，以 Unix dev/inode 或 Windows 卷标识/128 位文件 ID 识别同一个文件，避免大小写别名误删；非零宽限、临时文件排除和无效引用中止均有测试。周期接线仍未完成。",
-  "status": "partial",
-  "pass_condition": "对账 GC 的门禁通过；**且**已接入周期性维护（或在文档中明确由谁在何时调用），否则保持 partial。",
+  "fix_evidence": "sweep_orphan_payloads 按存活 DB 引用对账，以 Unix dev/inode 或 Windows 卷标识/128 位文件 ID 识别同一个文件，避免大小写别名误删；非零宽限、临时文件排除和无效引用中止均有测试。周期接线仍未完成。 周期调用已接线：run_expired_transfer_maintenance 现在接收 Arc<Mutex<HistoryDB>>，每个 tick 走 run_transfer_maintenance_tick（先清过期传输，再以 1 小时宽限清扫孤儿载荷），两端 clipboard.rs 调用点均已传入 database。",
+  "status": "fixed_gated",
+  "pass_condition": "对账 GC 的门禁通过，且已接入周期性维护（每 30 分钟一次 tick）。",
   "reopen_condition": "孤儿过期仍占空间，或误删仍受引用文件。"
 }
