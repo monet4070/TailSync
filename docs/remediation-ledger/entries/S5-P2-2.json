@@ -6,9 +6,9 @@
   "gate": {
     "kind": "unit",
     "file": "shared/rust-core/src/db/tests.rs",
-    "test": "explicit_delete_truncates_the_write_ahead_log",
+    "test": "a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "正常删除后 WAL 为空/不存在（未覆盖 busy 降级路径）。"
+    "asserts": "双连接下 TRUNCATE checkpoint 返回 busy=1 被识别为 Blocked、reader 释放后为 Completed，删除在两种情况下都成功；若把结果行按 execute_batch 丢弃（恒返回 Completed）该测试即失败。"
   },
   "ci_job": [
     "rust-macos",
@@ -22,8 +22,8 @@
     "shared/rust-core/src/db/lifecycle.rs:execute_batch(\"PRAGMA wal_checkpoint(TRUNCATE);\")"
   ],
   "trigger": "execute_batch 丢弃 (busy, log, checkpointed) 结果行，busy=1 不进入 Err 警告分支。",
-  "fix_evidence": "部分：删除已提交这一点成立，但“忙时留下警告”未落实，未读取 checkpoint 返回列。",
-  "status": "partial",
-  "pass_condition": "busy 返回列被识别并记录诊断，删除保持成功；非 busy 可完成截断。",
+  "fix_evidence": "checkpoint 逻辑抽为 checkpoint_history_wal()，返回 Completed / Blocked{busy,log,checkpointed} / Failed；删除路径读取结果行，busy != 0 时记警告并保持删除成功。已做变异验证（忽略结果行 → 门禁失败）。",
+  "status": "fixed_gated",
+  "pass_condition": "门禁测试在所列平台 CI job 中以通过状态出现。",
   "reopen_condition": "busy 静默通过、删除被误报失败或 WAL 结果未核对。"
 }

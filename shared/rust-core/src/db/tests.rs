@@ -1244,6 +1244,86 @@ fn explicit_delete_truncates_the_write_ahead_log() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// S5-P2-2: `PRAGMA wal_checkpoint(TRUNCATE)` reports a reader-blocked
+/// checkpoint by RETURNING a row with `busy = 1`, not by raising an error. The
+/// delete path must therefore read that row (it used `execute_batch`, which
+/// discards it) and warn while still reporting the delete as successful.
+#[test]
+fn a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-delete-checkpoint-busy-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let mut db = HistoryDB::open_at(&root).unwrap();
+    db.add_text("keep me", "self").unwrap();
+    db.add_text("delete me", "self").unwrap();
+    let id: i64 = db
+        .conn
+        .query_row(
+            "SELECT id FROM history ORDER BY id ASC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    // A second connection holding a read snapshot blocks the post-delete
+    // TRUNCATE checkpoint. SQLite reports that by RETURNING busy = 1, which is
+    // exactly the row the delete path now reads.
+    let reader = rusqlite::Connection::open(root.join("history-v2.db")).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT COUNT(*) FROM history;")
+        .unwrap();
+    assert!(
+        matches!(
+            lifecycle::checkpoint_history_wal(&db.conn),
+            lifecycle::WalCheckpointOutcome::Blocked { busy, .. } if busy == 1
+        ),
+        "a reader-blocked TRUNCATE must be reported as Blocked, not as Completed"
+    );
+
+    // The delete must still succeed even though the checkpoint cannot complete.
+    db.delete(id).unwrap();
+
+    let wal_path = root.join("history-v2.db-wal");
+    let blocked_len = std::fs::metadata(&wal_path)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    assert!(
+        blocked_len > 0,
+        "a reader-blocked TRUNCATE checkpoint must leave frames in {}, so the busy branch is exercised",
+        wal_path.display()
+    );
+
+    reader.execute_batch("ROLLBACK;").unwrap();
+    reader.close().unwrap();
+    assert_eq!(
+        lifecycle::checkpoint_history_wal(&db.conn),
+        lifecycle::WalCheckpointOutcome::Completed,
+        "with the reader gone the same checkpoint must complete"
+    );
+
+    // With the reader gone, the same delete path can truncate the WAL again.
+    db.add_text("delete me too", "self").unwrap();
+    let second: i64 = db
+        .conn
+        .query_row(
+            "SELECT id FROM history ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    db.delete(second).unwrap();
+    assert!(
+        !wal_path.exists() || std::fs::metadata(&wal_path).unwrap().len() == 0,
+        "an unblocked delete must still truncate {}",
+        wal_path.display()
+    );
+
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn main_database_connection_waits_for_transient_locks() {
     let root = std::env::temp_dir().join(format!(

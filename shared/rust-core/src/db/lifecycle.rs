@@ -413,10 +413,57 @@ impl HistoryDB {
         // this after the external encrypted payloads have been handled so a
         // transient checkpoint failure cannot skip their deletion. A busy
         // checkpoint after a committed delete is not a delete failure.
-        if let Err(error) = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
-            warn!("Could not checkpoint the history WAL after delete: {error}");
+        match checkpoint_history_wal(&self.conn) {
+            WalCheckpointOutcome::Completed => {}
+            WalCheckpointOutcome::Blocked {
+                busy,
+                log,
+                checkpointed,
+            } => {
+                warn!(
+                    "History WAL checkpoint was blocked by a reader after a committed delete (busy={busy}, log={log}, checkpointed={checkpointed}); the delete still succeeded"
+                );
+            }
+            WalCheckpointOutcome::Failed(error) => {
+                warn!("Could not checkpoint the history WAL after delete: {error}");
+            }
         }
         Ok(())
+    }
+}
+
+/// Outcome of the post-delete WAL checkpoint.
+///
+/// `PRAGMA wal_checkpoint(TRUNCATE)` reports a reader-blocked attempt by
+/// RETURNING a row with `busy = 1`, not by raising an error, so the result row
+/// must be read: `execute_batch` discards it and leaves a blocked checkpoint
+/// completely silent.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WalCheckpointOutcome {
+    Completed,
+    Blocked {
+        busy: i64,
+        log: i64,
+        checkpointed: i64,
+    },
+    Failed(String),
+}
+
+pub(crate) fn checkpoint_history_wal(conn: &rusqlite::Connection) -> WalCheckpointOutcome {
+    match conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    }) {
+        Ok((0, _, _)) => WalCheckpointOutcome::Completed,
+        Ok((busy, log, checkpointed)) => WalCheckpointOutcome::Blocked {
+            busy,
+            log,
+            checkpointed,
+        },
+        Err(error) => WalCheckpointOutcome::Failed(error.to_string()),
     }
 }
 
