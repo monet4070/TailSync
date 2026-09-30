@@ -92,6 +92,8 @@ pub fn local_iroh_endpoint_id(mode: &str) -> Option<String> {
 pub use server::start_server;
 #[cfg(test)]
 use server::ConnectionLimiter;
+#[cfg(test)]
+pub(crate) use server::{admit_incoming_file_batch, BatchAdmission};
 use server::{local_peer_identity, source_matches_mode};
 mod pool;
 use pool::wait_for_shutdown;

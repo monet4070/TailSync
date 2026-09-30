@@ -381,8 +381,7 @@ async fn transfer_maintenance_tick_sweeps_aged_orphaned_payloads() {
     use tokio::sync::Mutex;
 
     // The storage root is process-global, so serialize this with a local lock.
-    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    let _guard = LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+    let _guard = storage_root_lock().lock().await;
 
     let original = crate::db::get_storage_dir();
     let root = std::env::temp_dir().join(format!(
@@ -410,6 +409,148 @@ async fn transfer_maintenance_tick_sweeps_aged_orphaned_payloads() {
         !orphan.exists(),
         "the maintenance tick must sweep an aged orphaned payload"
     );
+    drop(database);
+    crate::db::configure_storage_dir(Some(&original)).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+
+/// The storage root is process-global, so every test that reconfigures it must take
+/// this lock; a per-test lock would let two tests clobber each other's root.
+fn storage_root_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Shared setup for the batch-admission invariants: a process-global storage root,
+/// a database and an engine, plus two 4 MiB manifests.
+#[allow(clippy::type_complexity)]
+fn admission_fixture() -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    Arc<tokio::sync::Mutex<crate::db::HistoryDB>>,
+    Arc<tokio::sync::Mutex<crate::sync::SyncEngine>>,
+    crate::sync::FileBatchManifest,
+    crate::sync::FileBatchManifest,
+    crate::secure::PeerIdentity,
+) {
+    use crate::db::HistoryDB;
+    use crate::secure::PeerIdentity;
+    use tokio::sync::Mutex;
+
+    let original = crate::db::get_storage_dir();
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-admission-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    crate::db::configure_storage_dir(Some(&root)).unwrap();
+    let database = Arc::new(Mutex::new(HistoryDB::new().unwrap()));
+    let sync_engine = Arc::new(Mutex::new(crate::sync::SyncEngine::new()));
+
+    const BATCH_BYTES: usize = 4 * 1024 * 1024;
+    let manifest_for = |fill: u8, name: &str| {
+        let source = root.join(name);
+        std::fs::write(&source, vec![fill; BATCH_BYTES]).unwrap();
+        crate::sync::prepare_file_batch(vec![source], 1)
+            .unwrap()
+            .manifest
+    };
+    let manifest_a = manifest_for(0xA1, "a.bin");
+    let manifest_b = manifest_for(0xB2, "b.bin");
+
+    let peer = PeerIdentity {
+        hostname: "peer".to_string(),
+        tailscale_ip: String::new(),
+        iroh_endpoint_id: None,
+    };
+    (original, root, database, sync_engine, manifest_a, manifest_b, peer)
+}
+
+async fn admit(
+    database: &Arc<tokio::sync::Mutex<crate::db::HistoryDB>>,
+    sync_engine: &Arc<tokio::sync::Mutex<crate::sync::SyncEngine>>,
+    manifest: &crate::sync::FileBatchManifest,
+    peer: &crate::secure::PeerIdentity,
+) -> Result<crate::network::BatchAdmission, String> {
+    crate::network::admit_incoming_file_batch(
+        manifest,
+        peer,
+        "device-fingerprint",
+        sync_engine,
+        database,
+        1,
+    )
+    .await
+}
+
+/// S4-P1-3: admission must be serialized by the shared admission lock. The lock is
+/// what makes the pending-byte accounting below sound, because the read and the
+/// reservation have to happen without another admission in between.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_batch_admission_waits_for_the_shared_admission_lock() {
+    use crate::network::BatchAdmission;
+
+    let _guard = storage_root_lock().lock().await;
+
+    let (original, root, database, sync_engine, manifest_a, _b, peer) = admission_fixture();
+    database.lock().await.set_storage_quota(6 * 1024 * 1024);
+
+    // Hold the admission lock as an in-flight admission would, and wait for the
+    // holder to confirm it has the lock: relying on a fixed sleep would let a slow
+    // scheduler run the admission first and make the measurement meaningless.
+    let holding = Arc::new(tokio::sync::Notify::new());
+    let holding_for_holder = holding.clone();
+    let holder = tokio::spawn(async move {
+        let _in_flight = crate::sync::file_batch_admission_lock().lock().await;
+        holding_for_holder.notify_one();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    });
+    holding.notified().await;
+
+    let started = Instant::now();
+    let result = admit(&database, &sync_engine, &manifest_a, &peer).await;
+    let waited = started.elapsed();
+    holder.await.unwrap();
+
+    assert!(
+        matches!(result, Ok(BatchAdmission::Admitted)),
+        "the batch should still be admitted once the lock is free: {result:?}"
+    );
+    assert!(
+        waited >= Duration::from_millis(200),
+        "admission must wait for the shared admission lock, but returned after {waited:?}"
+    );
+
+    drop(database);
+    crate::db::configure_storage_dir(Some(&original)).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// S4-P1-3: with admissions serialized, the pending bytes of an already admitted
+/// batch must be counted, so a second batch cannot claim the same space.
+#[tokio::test]
+async fn a_second_batch_cannot_claim_space_reserved_by_the_first() {
+    use crate::network::BatchAdmission;
+
+    let _guard = storage_root_lock().lock().await;
+
+    let (original, root, database, sync_engine, manifest_a, manifest_b, peer) = admission_fixture();
+    // Fits one 4 MiB batch plus the database, but not two.
+    database.lock().await.set_storage_quota(6 * 1024 * 1024);
+
+    let first = admit(&database, &sync_engine, &manifest_a, &peer).await;
+    assert!(
+        matches!(first, Ok(BatchAdmission::Admitted)),
+        "the first batch should fit the quota: {first:?}"
+    );
+
+    let second = admit(&database, &sync_engine, &manifest_b, &peer).await;
+    assert!(
+        matches!(second, Ok(BatchAdmission::Rejected(_))),
+        "the second batch must not claim the space the first reserved: {second:?}"
+    );
+
     drop(database);
     crate::db::configure_storage_dir(Some(&original)).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
