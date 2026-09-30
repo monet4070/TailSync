@@ -91,7 +91,7 @@
 | 6 | `S6-P2-1` 通知 gap/实例标识 | 未修 | 需在版本化响应中新增服务实例标识与最早可用游标 |
 | 6 | `S6-P2-4` Windows 后台偷吃警告 | 未修 | 需带 ID 的可确认读取 |
 | 7 | `S2-F5`、`S4-P1-4` | 未修 | 硬门槛：`docs/performance-budgets.md` 未经维护者签署前不得以“显著/达标”作结论 |
-| 8 | UI 与 runtime/IPC 可维护性、`tray-helper` 清理、`migrate_v1.py` 支持政策 | 未开始 | 见台账与计划中的条件 |
+| 8 | UI 与 runtime/IPC 可维护性、`tray-helper` 清理、`migrate_v1.py` 支持政策 | 部分完成 | `tray-helper` 孤儿组件已移除（macOS Rust/Swift 构建通过、无残留引用）；`migrate_v1.py` 已废弃；UI/runtime-IPC 深化未开始 |
 
 ## 5. 阻塞项与继续方式
 

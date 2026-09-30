@@ -29,7 +29,7 @@
 | 项目 | 需要的证据 |
 |---|---|
 | VoiceOver 验收 | 按 `docs/acceptance/voiceover-connections-checklist.md` 逐项执行,中英各一遍 |
-| macOS 托盘/安装包行为 | 本地构建 + 打包后的托盘与包清单核对(`tray-helper` 清理时需要) |
+| macOS 托盘/安装包行为 | 本地构建 + 打包后的托盘与包清单核对（`tray-helper` 孤儿组件已在本轮移除：仓库内无任何构建或调用引用，其源码会用明文 TCP 连 19889，而 macOS 守护进程只监听 Unix socket；移除后 macOS Rust 与 Swift 构建通过） |
 
 ### 第 3 类:硬件所限,当前不可达(环境改变前不关闭)
 

@@ -26,7 +26,6 @@
 /shared/tailsync-protocol/target/
 /shared/tailsync-themes/target/
 **/swift-ui/.build/
-**/src-tauri/tray-helper/.build/
 
 # Generated language caches
 **/__pycache__/

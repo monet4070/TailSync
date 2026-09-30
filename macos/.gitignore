@@ -14,7 +14,6 @@ src-tauri/target/
 src-tauri/target-macos/
 src-tauri/target-audit-*/
 swift-ui/.build/
-src-tauri/tray-helper/.build/
 TailSync.app/
 TailSync.app.staging/
 release/
