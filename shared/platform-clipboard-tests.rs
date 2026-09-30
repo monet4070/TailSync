@@ -560,3 +560,36 @@ async fn a_second_batch_cannot_claim_space_reserved_by_the_first() {
     crate::db::configure_storage_dir(Some(&original)).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// S4-P1-3: the admission lock must already be held when the batch state is read,
+/// not only around the reservation. Otherwise two concurrent batches can both read
+/// `pending_bytes == 0` and both reserve — the exact double-claim this item is about.
+#[tokio::test]
+async fn the_admission_lock_is_held_while_the_batch_state_is_read() {
+    use crate::network::{admit_incoming_file_batch, ADMISSION_LOCK_COVERAGE_VIOLATIONS};
+
+    let _guard = storage_root_lock().lock().await;
+    let (original, root, database, sync_engine, manifest_a, _manifest_b, peer) = admission_fixture();
+    database.lock().await.set_storage_quota(6 * 1024 * 1024);
+
+    let before = ADMISSION_LOCK_COVERAGE_VIOLATIONS.load(Ordering::SeqCst);
+    let _ = admit_incoming_file_batch(
+        &manifest_a,
+        &peer,
+        "device-fingerprint",
+        &sync_engine,
+        &database,
+        1,
+    )
+    .await;
+    let after = ADMISSION_LOCK_COVERAGE_VIOLATIONS.load(Ordering::SeqCst);
+
+    assert_eq!(
+        after, before,
+        "the admission lock must be held while the batch state is read, not only around the reservation"
+    );
+
+    drop(database);
+    crate::db::configure_storage_dir(Some(&original)).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+}

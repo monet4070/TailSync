@@ -93,7 +93,9 @@ pub use server::start_server;
 #[cfg(test)]
 use server::ConnectionLimiter;
 #[cfg(test)]
-pub(crate) use server::{admit_incoming_file_batch, BatchAdmission};
+pub(crate) use server::{
+    admit_incoming_file_batch, BatchAdmission, ADMISSION_LOCK_COVERAGE_VIOLATIONS,
+};
 use server::{local_peer_identity, source_matches_mode};
 mod pool;
 use pool::wait_for_shutdown;

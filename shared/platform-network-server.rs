@@ -303,6 +303,14 @@ async fn handle_accepted_connection(
     .await
 }
 
+/// Test-only coverage probe: incremented whenever the batch state is read while the
+/// shared admission lock is NOT held. The lock has to span the state reads and the
+/// reservation, not just the reservation, or two concurrent batches can both read
+/// `pending_bytes == 0` and both reserve. Same pattern as `BULK_STORAGE_SIZE_SCANS`.
+#[cfg(test)]
+pub(crate) static ADMISSION_LOCK_COVERAGE_VIOLATIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Outcome of admitting an incoming file batch.
 #[derive(Debug)]
 pub(crate) enum BatchAdmission {
@@ -334,6 +342,10 @@ pub(crate) async fn admit_incoming_file_batch(
     }
     let manifest_hash = sync::SyncEngine::file_batch_manifest_hash(manifest)
         .map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    if sync::file_batch_admission_lock().try_lock().is_ok() {
+        ADMISSION_LOCK_COVERAGE_VIOLATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
     let (already_active, pending_bytes, pending_commit_bytes) = {
         let engine = sync_engine.lock().await;
         (
@@ -343,6 +355,10 @@ pub(crate) async fn admit_incoming_file_batch(
             engine.pending_file_batch_commit_bytes(),
         )
     };
+    #[cfg(test)]
+    if sync::file_batch_admission_lock().try_lock().is_ok() {
+        ADMISSION_LOCK_COVERAGE_VIOLATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
     let receipt = {
         let database = database.lock().await;
         database
