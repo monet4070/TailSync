@@ -1330,6 +1330,44 @@ fn a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds()
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The v9 residual-plaintext cleanup must FAIL when a reader blocks the WAL
+/// truncation, so v9 is not marked complete and the next open retries, instead
+/// of silently leaving pre-v9 plaintext page images in the WAL.
+#[test]
+fn v9_cleanup_wal_truncation_fails_when_a_reader_blocks_it() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-v9-cleanup-wal-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let mut db = HistoryDB::open_at(&root).unwrap();
+    db.add_text("pre-v9 secret", "self").unwrap();
+    db.conn
+        .busy_timeout(std::time::Duration::from_millis(50))
+        .unwrap();
+
+    let reader = rusqlite::Connection::open(root.join("history-v2.db")).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT COUNT(*) FROM history;")
+        .unwrap();
+
+    let error = migrations::truncate_wal_for_v9_cleanup(&db.conn)
+        .expect_err("a reader-blocked WAL truncation must fail so v9 is not marked complete");
+    assert!(
+        error.to_string().contains("could not truncate the WAL"),
+        "unexpected error: {error}"
+    );
+
+    // Once the reader releases, the same step completes.
+    reader.execute_batch("ROLLBACK;").unwrap();
+    reader.close().unwrap();
+    migrations::truncate_wal_for_v9_cleanup(&db.conn)
+        .expect("an unblocked truncation must succeed");
+
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn main_database_connection_waits_for_transient_locks() {
     let root = std::env::temp_dir().join(format!(

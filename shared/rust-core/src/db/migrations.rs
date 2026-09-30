@@ -1,5 +1,29 @@
 use super::*;
 
+/// Truncate the WAL as the last step of the v9 residual-plaintext cleanup.
+///
+/// `PRAGMA wal_checkpoint(TRUNCATE)` reports a reader-blocked checkpoint by
+/// RETURNING `busy = 1` instead of failing, so the result row has to be read.
+/// This step must FAIL rather than silently continue: leaving the WAL un-truncated
+/// can retain pre-v9 plaintext page images, and continuing would then mark v9
+/// complete and skip the `vacuum_pending` retry on the next open.
+/// See docs/remediation/wal-checkpoint-semantics.md.
+pub(crate) fn truncate_wal_for_v9_cleanup(
+    conn: &Connection,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (busy, log, checkpointed): (i64, i64, i64) =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if busy != 0 {
+        return Err(format!(
+            "v9 residual-plaintext cleanup could not truncate the WAL (busy={busy}, log={log}, checkpointed={checkpointed}); the migration will retry on the next open"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 impl HistoryDB {
     pub fn migration_diagnostics(
         &self,
@@ -293,13 +317,14 @@ impl HistoryDB {
                 )?;
                 Ok(())
             })?;
-            // Busy semantics: MUST retry, not continue. A blocked TRUNCATE
-            // returns busy=1 (not an error), which would leave pre-v9 plaintext
-            // page images in the WAL while v9 is still marked complete, bypassing
-            // the `vacuum_pending` retry path. Fixing this is tracked as a
-            // follow-up (docs/remediation/wal-checkpoint-semantics.md) rather than
-            // folded into S5-P2-2.
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+            // Busy semantics: RETRY, not continue. A blocked TRUNCATE returns
+            // busy = 1 rather than an error, so `execute_batch` discarded the row
+            // and v9 could be marked complete while pre-v9 plaintext page images
+            // remained in the WAL — bypassing the `vacuum_pending` retry path.
+            // Failing here keeps v9 incomplete so the next open repeats the
+            // idempotent preparation and cleanup.
+            truncate_wal_for_v9_cleanup(conn)?;
+            conn.execute_batch("VACUUM;")?;
             Self::run_migration_transaction(conn, 9, |conn| {
                 // Mark v9 complete only after the residual-data cleanup
                 // succeeds. If the process exits first, startup repeats the

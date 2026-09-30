@@ -10,7 +10,7 @@
 | `db/lifecycle.rs:416`(已修) | 删除/清理后的 WAL 截断 | **继续**,但记录警告 | 删除已提交,截断只是回收;`WalCheckpointOutcome::Blocked` 会 `warn!` |
 | `db/lifecycle.rs:111` | 用户主动 clear 后的 `TRUNCATE; VACUUM;` | **继续**;VACUUM 是空间回收的优化 | `clear_all` 语义是"清空逻辑数据",截断/VACUUM 失败不改变结果。真实 SQL 错误已被 `first_error` 收集;busy 不报错,故仅影响空间回收 |
 | `db/migrations.rs:141` | v4 图片迁移后的页回收 | **继续** | 紧接着有 `freelist_count` 判断与按需 `VACUUM`;busy 只意味着这次截断没做,后续启动仍可回收 |
-| `db/migrations.rs:293` | v9 明文预览清除后的 `TRUNCATE; VACUUM;` | **重试(不得静默继续)**⚠️ | 见下 |
+| `db/migrations.rs:293` | v9 明文预览清除后的 `TRUNCATE; VACUUM;` | **重试(不得静默继续)**✅ 已修 | 见下 |
 | `db/storage.rs:234` | 存储迁移复制 db/WAL 之前 | **继续**;另有独立风险待跟踪 | 见下 |
 
 ## `migrations.rs:293`:真实风险,按方案另开小 PR
@@ -22,7 +22,7 @@
 
 **因此这里的正确语义是"重试":** 忙时不得静默继续,应让该步失败,使 v9 不进入完成态,由启动时的幂等流程重做。当前 `execute_batch` 丢弃结果行,恰好绕过了这个重试机制。
 
-**处置:** 按方案"若发现独立数据一致性问题,另开小 PR 和故障测试,不借 S5-P2-2 扩大成未经验证的重构",本项**不在 S5-P2-2 的提交内修改**,登记为后续项,要求:读取结果行;busy != 0 时返回错误;并配一个"读者阻挡下 v9 不进入完成态、重启后重做"的故障测试。
+**处置(已修):** 抽出 `truncate_wal_for_v9_cleanup()`,读取结果行;`busy != 0` 时**返回错误**,使 v9 不进入完成态,由下次启动的幂等流程重做。门禁 `v9_cleanup_wal_truncation_fails_when_a_reader_blocks_it`(读者阻挡 → 报错;释放后 → 成功),已做"忽略 busy"的变异验证。
 
 ## `storage.rs:234`:结果行本身安全,另有既存风险
 
