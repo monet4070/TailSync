@@ -16,7 +16,7 @@ use crate::peer::types::DeliveryReceipt;
 use crate::peer::types::{ResolvedCandidate, ResolvedTarget};
 use crate::protocol::Command;
 
-const CHANNEL_SIZE: usize = 64;
+pub(crate) const CHANNEL_SIZE: usize = 64;
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The two bounded queues used by a pooled peer worker.
