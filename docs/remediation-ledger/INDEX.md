@@ -19,7 +19,7 @@
 | S3-P0-1 | P0 | fixed_gated | `anonymous_protocol_anomalies_do_not_consume_the_lockout_budget` | rust-macos, rust-windows |
 | S3-P1-1 | P1 | accepted | `anonymous_handshake_identity_fields_are_pinned` | rust-macos, rust-windows |
 | S3-P1-2 | P1 | unfixed | — | — |
-| S3-P1-3 | P1 | fixed_gated | `remembering_an_address_for_an_untrusted_hostname_persists_nothing` | rust-macos, rust-windows |
+| S3-P1-3 | P1 | fixed_gated | `a_discovery_round_never_persists_a_route_for_a_trusted_hostname` | rust-macos, rust-windows |
 | S3-P1-4 | P1 | fixed_gated | `window_signal_preserves_a_partially_read_frame` | rust-macos, rust-windows |
 | S4-P1-1 | P1 | fixed_gated | `pending_and_inflight_receives_count_toward_the_peer_limit` | rust-macos, rust-windows |
 | S4-P1-2 | P1 | fixed_gated | `pending_file_batch_bytes_exclude_partial_data_already_on_disk` | rust-macos, rust-windows |

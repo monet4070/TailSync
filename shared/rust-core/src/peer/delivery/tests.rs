@@ -1,6 +1,6 @@
 use super::*;
 use crate::identity::DeviceIdentity;
-use crate::peer::pool::CHANNEL_SIZE;
+use crate::peer::pool::{CHANNEL_SIZE, TEXT_WATERMARK_BUDGET};
 use crate::peer::types::{ConnectionInterface, PeerCandidate, ResolvedCandidate, ResolvedTarget};
 use crate::protocol::FileOffset;
 use std::sync::Arc;
@@ -2327,5 +2327,22 @@ async fn a_full_priority_queue_never_drops_a_text_frame_silently() {
     assert!(
         saw_text,
         "the text frame must survive a full queue, not vanish"
+    );
+
+    // The signed budgets (`docs/performance-budgets.md`) are stated against a
+    // frozen geometry: capacity 64 with a priority water mark of 48 (75%). The
+    // recorded single-machine baseline was measured on exactly that geometry,
+    // and a smaller channel does not make the queue visibly wrong — it makes the
+    // signed water mark unreachable while every mechanism above still works. So
+    // pin the geometry here rather than only in the prose of the budget file.
+    let channel_capacity = CHANNEL_SIZE;
+    assert_eq!(
+        channel_capacity, 64,
+        "the priority capacity is part of the signed budget; changing it invalidates the recorded baseline"
+    );
+    assert!(
+        TEXT_WATERMARK_BUDGET * 4 == channel_capacity * 3,
+        "the signed water mark is 75% of capacity ({TEXT_WATERMARK_BUDGET}/{channel_capacity}); \
+         a narrower channel leaves no room for it"
     );
 }

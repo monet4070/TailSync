@@ -121,3 +121,8 @@ pub async fn peer_cache_refresh_loop(
         )
         .await;
 }
+
+#[cfg(test)]
+mod peer_cache_guards {
+    include!("../../../../shared/platform-peer-cache-tests.rs");
+}

@@ -123,3 +123,8 @@ pub async fn peer_health_monitor(
         )
         .await;
 }
+
+#[cfg(test)]
+mod peer_cache_guards {
+    include!("../../../../shared/platform-peer-cache-tests.rs");
+}
