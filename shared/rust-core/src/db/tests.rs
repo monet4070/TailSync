@@ -1364,33 +1364,57 @@ fn orphan_payload_sweep_respects_references_and_the_grace_period() {
     let orphan = db.file_history_dir.join("orphan.bin");
     std::fs::write(&orphan, b"orphan").unwrap();
 
-    assert_eq!(
-        db.sweep_orphan_payloads(std::time::Duration::ZERO).unwrap(),
-        1
-    );
-    assert!(!orphan.exists(), "the unreferenced payload must be removed");
-    assert!(managed[0].exists(), "a referenced payload must survive");
+    // A zero grace is rejected outright: it would delete in-flight temp files,
+    // which atomic writers create inside these very directories.
+    assert!(db.sweep_orphan_payloads(std::time::Duration::ZERO).is_err());
 
-    // The grace period keeps a fresh orphan, and a later sweep removes it.
-    let fresh = db.file_history_dir.join("fresh-orphan.bin");
-    std::fs::write(&fresh, b"fresh").unwrap();
+    // A fresh orphan stays inside the grace period; the comparison must key on the
+    // file's real age, not on the grace argument.
+    let grace = std::time::Duration::from_secs(60);
     assert_eq!(
-        db.sweep_orphan_payloads(std::time::Duration::from_secs(3600))
-            .unwrap(),
+        db.sweep_orphan_payloads(grace).unwrap(),
         0,
         "a payload inside the grace period must be kept"
     );
-    assert!(fresh.exists());
+    assert!(orphan.exists(), "the young orphan must survive");
+
+    let fresh = db.file_history_dir.join("fresh-orphan.bin");
+    std::fs::write(&fresh, b"fresh").unwrap();
+
+    // Backdate both orphans so they are genuinely older than the grace period.
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+    for path in [&orphan, &fresh] {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    }
     assert_eq!(
-        db.sweep_orphan_payloads(std::time::Duration::ZERO).unwrap(),
-        1
+        db.sweep_orphan_payloads(grace).unwrap(),
+        2,
+        "aged unreferenced payloads must be removed"
     );
-    assert!(!fresh.exists());
+    assert!(!orphan.exists() && !fresh.exists());
+    assert!(managed[0].exists(), "a referenced payload must survive");
     assert_eq!(
-        db.sweep_orphan_payloads(std::time::Duration::ZERO).unwrap(),
+        db.sweep_orphan_payloads(grace).unwrap(),
         0,
         "a second sweep must be a no-op"
     );
+
+    // An atomic-write temp file is never swept, however old it is.
+    let temp = db.file_history_dir.join(".managed.bin.4242-abc.tmp");
+    std::fs::write(&temp, b"in flight").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&temp)
+        .unwrap()
+        .set_modified(aged)
+        .unwrap();
+    assert_eq!(db.sweep_orphan_payloads(grace).unwrap(), 0);
+    assert!(temp.exists(), "an in-flight temp file must never be swept");
 
     drop(db);
     std::fs::remove_dir_all(root).unwrap();

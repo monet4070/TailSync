@@ -494,6 +494,12 @@ impl HistoryDB {
         &mut self,
         grace: std::time::Duration,
     ) -> Result<u64, Box<dyn std::error::Error>> {
+        if grace.is_zero() {
+            // Atomic writers create their temp files inside these directories
+            // (`.{name}.{pid}-{rand}.tmp`, `{name}.tmp.{rand}`); a zero grace would
+            // delete a transfer that is still in flight.
+            return Err("orphan sweep requires a non-zero grace period".into());
+        }
         let live = self.referenced_payload_paths()?;
         let mut removed = 0_u64;
         for directory in [
@@ -508,7 +514,12 @@ impl HistoryDB {
             for entry in entries {
                 let entry = entry?;
                 let path = entry.path();
-                if !entry.file_type()?.is_file() || live.contains(&path) {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let is_atomic_temp = name.ends_with(".tmp")
+                    || name.contains(".tmp.")
+                    || (name.starts_with('.') && name.contains(".tmp"));
+                if !entry.file_type()?.is_file() || is_atomic_temp || live.contains(&path) {
                     continue;
                 }
                 let age = match entry.metadata().and_then(|meta| meta.modified()).ok() {
@@ -566,8 +577,15 @@ impl HistoryDB {
                 _ => continue,
             };
             let Some(reference) = reference else { continue };
-            if let Ok(path) = resolve_file_reference_at(&directory, &reference) {
-                live.insert(path);
+            match resolve_file_reference_at(&directory, &reference) {
+                Ok(path) => {
+                    live.insert(path);
+                }
+                // A row that references an unresolvable payload must be visible:
+                // the sweep would otherwise treat that payload as an orphan.
+                Err(error) => warn!(
+                    "History row references an unresolvable payload ({error}); keeping its directory entries is not possible"
+                ),
             }
         }
         Ok(live)
