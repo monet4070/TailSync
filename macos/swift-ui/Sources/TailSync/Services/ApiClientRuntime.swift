@@ -115,9 +115,11 @@ extension ApiClient {
       syncEnabled: data["sync_enabled"] as? Bool ?? true,
       status: Self.decodeDaemonStatus(statusData),
       notifications: notifications,
-      notificationEarliestAvailableId: (data["notification_earliest_available_id"] as? NSNumber)?
-        .uint64Value ?? 0,
-      serviceInstance: (data["service_instance"] as? NSNumber)?.uint64Value ?? 0
+      // Read from the decoded contract: these are required fields, so an app and a
+      // daemon are upgraded together, exactly like every other non-nullable snapshot
+      // field. A fallback here would be dead code and would misrepresent the contract.
+      notificationEarliestAvailableId: contract.notification_earliest_available_id,
+      serviceInstance: contract.service_instance
     )
   }
 

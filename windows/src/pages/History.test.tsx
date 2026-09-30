@@ -560,21 +560,69 @@ describe("History item actions", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("close_history_window");
   });
 
-  it("acknowledges a sync warning by its id so a hidden window cannot swallow it", async () => {
-    // S6-P2-4: the daemon keeps the warning readable until a window acknowledges the
-    // exact id it displayed. A snapshot delivered while no window could show it must
-    // therefore not consume it.
-    let delivered = false;
+  function deliverWarningSnapshots(warnings: Array<Record<string, unknown>>) {
+    let index = 0;
     invokeMock.mockImplementation((command: string) => {
       if (command === "wait_runtime_snapshot") {
-        if (delivered) return new Promise(() => undefined);
-        delivered = true;
+        if (index >= warnings.length) return new Promise(() => undefined);
+        const sync_warning = warnings[index];
+        index += 1;
         return Promise.resolve({
-          revision: 1,
+          revision: index,
           history_version: 1,
           progress: null,
           notifications: [],
-          sync_warning: { id: 7, kind: "expired_event", peer: "peer-a", occurred_at_ms: 1 },
+          sync_warning,
+        });
+      }
+      if (command === "ack_sync_warning") return Promise.resolve(true);
+      return defaultInvoke(command);
+    });
+  }
+
+  function setVisibility(state: "visible" | "hidden") {
+    Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+  }
+
+  it("acknowledges a visible sync warning by its own id", async () => {
+    setVisibility("visible");
+    deliverWarningSnapshots([
+      { id: 7, kind: "expired_event", peer: "peer-a", occurred_at_ms: 1 },
+    ]);
+
+    render(<History />);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", { id: 7 });
+    });
+  });
+
+  it("does not consume a sync warning while the window is hidden", async () => {
+    // The daemon keeps the warning readable until a window that can show it
+    // acknowledges it, so a hidden or tray-only window must leave it alone: showing
+    // it to nobody and then acking it would swallow it exactly as the old
+    // destructive read did.
+    setVisibility("hidden");
+    const warning = { id: 11, kind: "expired_event", peer: "peer-a", occurred_at_ms: 1 };
+    const snapshot = (revision: number) => ({
+      revision,
+      history_version: 1,
+      progress: null,
+      notifications: [],
+      sync_warning: warning,
+    });
+    // The first snapshot arrives while hidden; the second is released only once the
+    // window becomes visible again.
+    let release: (() => void) | undefined;
+    let calls = 0;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "wait_runtime_snapshot") {
+        calls += 1;
+        if (calls === 1) return Promise.resolve(snapshot(1));
+        return new Promise(resolve => {
+          release = () => resolve(snapshot(2));
         });
       }
       if (command === "ack_sync_warning") return Promise.resolve(true);
@@ -583,7 +631,23 @@ describe("History item actions", () => {
 
     render(<History />);
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", { id: 7 });
+      expect(calls).toBeGreaterThanOrEqual(1);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("ack_sync_warning", expect.anything());
+
+    setVisibility("visible");
+    await waitFor(() => {
+      expect(calls).toBeGreaterThanOrEqual(2);
+    });
+    await act(async () => {
+      release?.();
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", { id: 11 });
     });
   });
 

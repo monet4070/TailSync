@@ -367,12 +367,15 @@ export function History({ collection = "all" }: HistoryProps) {
         delivery_shutdown: "history.syncShutdown",
         delivery_expired: "history.syncDeliveryExpired",
       }[warning.kind];
-      if (key) {
+      // Only a window the user can actually see may consume the warning. The daemon
+      // keeps it readable until it is acknowledged, so a hidden or tray-only window
+      // must leave it for the window that can show it — otherwise "displayed to
+      // nobody, then acknowledged" swallows it exactly as the old destructive read
+      // did.
+      if (key && document.visibilityState === "visible") {
         // Keyed by the warning's own id, so the same warning shown once is not
         // repeated by every poll, while a later warning of the same kind and peer
-        // still appears. Acknowledging consumes exactly the warning that was shown:
-        // the daemon keeps it readable until then, so a hidden window cannot swallow
-        // it.
+        // still appears. Acknowledging consumes exactly the warning that was shown.
         showHistoryNotice({
           key: `sync-warning:${warning.id}`,
           level: "warning",

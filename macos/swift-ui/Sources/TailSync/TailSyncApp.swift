@@ -85,8 +85,9 @@ enum RuntimeNotificationPolicy {
            previous != serviceInstance {
             return .daemonRestarted
         }
-        // `earliestAvailable == 0` keeps the pre-upgrade behaviour: a daemon that does
-        // not report it leaves the cursor authoritative, exactly as before.
+        // A zero earliest id means "the daemon reports no window", so the cursor stays
+        // authoritative. The snapshot contract makes the field required, so this is a
+        // defensive default rather than a path for an older daemon.
         guard earliestAvailable > 1, cursor &+ 1 < earliestAvailable else {
             return .contiguous
         }
