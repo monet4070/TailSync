@@ -1,20 +1,34 @@
 {
   "level": "P1",
   "platform": [
-    "shared"
+    "shared",
+    "macos",
+    "windows"
   ],
-  "gate": null,
-  "ci_job": [],
-  "native_acceptance": "故障注入覆盖每个持久化/发送边界；两端 UI 不把 pending 表示为已配对。",
+  "gate": {
+    "kind": "unit",
+    "file": "shared/rust-core/src/pairing/tests_pending.rs",
+    "test": "a_link_that_dies_before_the_peer_acknowledges_leaves_a_pending_note_not_trust",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "被审计的向量本身：双方用户都确认后本端写入注记并发出 PairingPersisted，对端始终未确认、随后链路断开。断言①phase != Paired（未确认的配对不得报告为完成）；②trusted_peer_keys 中没有该设备——这是**唯一**的信任事实源，peer_is_allowed、连接池、peer 目录与两端 UI 都读它，所以\"不把 pending 表示为已配对\"不需要任何 UI 改动；③注记被记录且其 public_key 等于对端密钥。同文件另有 8 个测试覆盖其余边界：会话超时后注记保留、重复确认幂等且不授予信任、完成后恰好一条 active 记录且注记清除、重启后注记仍在且仍为未配对、冻结的旧版 config-v2.json 仍可加载且既有信任不变、旧端→新版序列仍能完成、以及旧端只在本端注记落盘后才会收到持久化帧（该顺序是互通安全性的依据）。变异验证（均实测）：把 record_pending_pairing 改回\"本地确认即写 trust\"（即修复前行为）→ 9 个测试中 5 个失败；把注记写入整个去掉 → 6 个失败。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": "故障注入覆盖每个持久化与发送边界：本端确认后、注记落盘后、PairingPersisted 发出后、会话超时、进程重启——均已由本地测试覆盖（tests_pending.rs）。两端 UI 不把 pending 表示为已配对：由\"pending 不进入 trusted_peer_keys\"保证，无 UI 改动。仍未做（需双设备/双平台）：真实两台设备上的配对中断与重启走查、macOS SwiftUI 与 Windows React 两端在真实 pending 状态下的界面走查。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S3-P1-2",
   "title": "配对单边持久化孤儿需要可恢复的 pending/active 状态",
   "code_symbols": [
-    "shared/rust-core/src/pairing/manager.rs"
+    "shared/rust-core/src/pairing/pending.rs:PendingTrustStore",
+    "shared/rust-core/src/pairing/manager.rs:record_pending_pairing",
+    "shared/rust-core/src/pairing/manager.rs:promote_pairing",
+    "shared/rust-core/src/pairing/tests_pending.rs:a_link_that_dies_before_the_peer_acknowledges_leaves_a_pending_note_not_trust"
   ],
   "trigger": "信任在双方确认前持久化；超时后仅把窗口退回 Waiting，不回收已落盘的单边信任。",
-  "fix_evidence": "未实现：无 pending/active 持久状态与对账；forget_peer 只在手动 UI 命令调用。",
-  "status": "unfixed",
-  "pass_condition": "双方故障点、重启、重复确认及旧→新/新→旧夹具通过；单边 pending 不显示成功。",
+  "fix_evidence": "已实现（2026-09-30）。机制：新增非权威的 pending 注记（sidecar 文件 pairing-pending.json，与 config-v2.json 同目录），配对会话在\"双方确认\"后只写注记并发 PairingPersisted；只有收到对端在同一已认证会话上发出的 PairingPersisted 后才 promote 为权威信任（写 trusted_peer_keys 并清除注记）。因此任何失败路径都不会留下\"单边 active 信任\"：本端要推进到 active，必须已经收到对端\"我已落盘\"的证明，而对端只有在注记已 durable 之后才会发出该帧（顺序由 the_older_peer_concludes_success_only_after_the_new_note_is_durable 钉住）。超时不删除注记（对端可能已落盘而确认丢失），重启后注记仍在且设备仍显示未配对。**为何用 sidecar 而不是新增 Settings 字段**：Settings 是 deny_unknown_fields，新增顶层键会让旧版构建整份配置加载失败；sidecar 对旧版完全不可见，旧版的行为恰好是安全方向（trusted_peer_keys 无此键即视为未配对）。**协议未新增 Command**：新旧端仅靠既有 PairingConfirm/PairingPersisted 互通，避免 Old peer 因 UnknownCommand 直接失败；旧端策略未变，其\"成功\"只可能发生在本端注记已落盘之后。**未实现的自动对账**：重启后不会因为\"对端持有该密钥\"就自动 promote——持有密钥并不证明对端曾落盘，那样做会重新造出本项要消灭的单边信任；完成路径是再次经过携带对端落盘证明的配对会话（UI 对未配对设备本就提供该入口）。",
+  "status": "fixed_gated",
+  "pass_condition": "双方故障点、重启、重复确认与旧→新/新→旧夹具通过（本地已全部覆盖并有变异验证）；单边 pending 不显示成功（未写入 trusted_peer_keys，故两端 UI 均显示未配对，phase 不为 Paired）；超时不删除注记。重新打开条件：单边记录被视为 active，或兼容性路径静默成功/失信。",
   "reopen_condition": "单边记录被视为 active，或兼容性路径静默成功/失信。"
 }

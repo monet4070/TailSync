@@ -20,6 +20,44 @@ impl PairingManager {
         max_failures: u8,
         persist_trust: bool,
     ) -> Arc<Self> {
+        Self::with_store(
+            settings,
+            identity,
+            window_duration,
+            max_failures,
+            persist_trust,
+            None,
+        )
+    }
+
+    /// A manager whose pending-pairing store is the file at `path`. A restart is
+    /// then testable by building a second manager over the same file, which is
+    /// the only way to tell "the note survived" from "the note was in memory".
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub(crate) fn with_pending_store_at(
+        settings: Arc<Mutex<Settings>>,
+        identity: Arc<DeviceIdentity>,
+        path: std::path::PathBuf,
+    ) -> Arc<Self> {
+        Self::with_store(
+            settings,
+            identity,
+            DEFAULT_PAIRING_WINDOW,
+            DEFAULT_MAX_FAILURES,
+            false,
+            Some(path),
+        )
+    }
+
+    fn with_store(
+        settings: Arc<Mutex<Settings>>,
+        identity: Arc<DeviceIdentity>,
+        window_duration: Duration,
+        max_failures: u8,
+        persist_trust: bool,
+        store_path: Option<std::path::PathBuf>,
+    ) -> Arc<Self> {
         let (window_signal, _) = watch::channel(false);
         Arc::new(Self {
             state: Mutex::new(PairingState {
@@ -41,6 +79,11 @@ impl PairingManager {
             window_duration,
             max_failures,
             persist_trust,
+            pending: Mutex::new(match store_path {
+                Some(path) => PendingTrustStore::load_from_path(&path),
+                None if persist_trust => PendingTrustStore::load(),
+                None => PendingTrustStore::in_memory(),
+            }),
         })
     }
 
@@ -485,8 +528,13 @@ impl PairingManager {
             }
 
             if local_confirmed && remote_confirmed && !local_persisted {
+                // Both users confirmed, but the peer has not been observed to
+                // have persisted its own half. Write a *pending* note instead of
+                // trust: if the link dies before the peer's acknowledgement
+                // arrives, this side must not be left holding a durable record
+                // for a device the other side never accepted (S3-P1-2).
                 if let Err(error) = self
-                    .persist_pairing(
+                    .record_pending_pairing(
                         session_id,
                         &hostname,
                         &remote_public_key,
@@ -519,6 +567,24 @@ impl PairingManager {
             }
 
             if local_persisted && remote_persisted {
+                // The peer has now told us it persisted its own half over this
+                // authenticated session. Only here does the local record become
+                // authoritative, so a one-sided active trust cannot outlive a
+                // pairing that the other device never completed.
+                if let Err(error) = self
+                    .promote_pairing(
+                        session_id,
+                        &hostname,
+                        &remote_public_key,
+                        &interface,
+                        &address,
+                    )
+                    .await
+                {
+                    self.fail_session_non_ban(session_id, error.to_string())
+                        .await;
+                    return;
+                }
                 if let Some(claim) = remote_invite.take() {
                     claim.commit();
                 }
@@ -570,7 +636,12 @@ impl PairingManager {
         };
     }
 
-    async fn persist_pairing(
+    /// Write the non-authoritative note that this side confirmed the pairing but
+    /// has not yet seen the peer persist its own half. Nothing here grants
+    /// access: while the note is the only record, `trusted_peer_keys` stays
+    /// untouched, so admission, the connection pool, the peer directory and both
+    /// UIs keep reporting the device as unpaired.
+    async fn record_pending_pairing(
         &self,
         session_id: u64,
         hostname: &str,
@@ -584,10 +655,39 @@ impl PairingManager {
                 return Err(PairingError::SessionClosed);
             }
         }
-        let public_key = {
-            use base64::{engine::general_purpose::STANDARD, Engine as _};
-            STANDARD.encode(remote_public_key)
+        let record = PendingTrustRecord {
+            hostname: hostname.to_string(),
+            public_key: encode_public_key(remote_public_key),
+            interface: interface.to_string(),
+            address: address.to_string(),
+            recorded_at: unix_now(),
+            reconciliations: 0,
         };
+        let mut store = self.pending.lock().await;
+        store
+            .upsert(record)
+            .map_err(|error| PairingError::Transport(format!("Could not record pairing: {error}")))
+    }
+
+    /// Make the pairing authoritative. Reached only after the peer sent
+    /// `PairingPersisted` over the authenticated session, so both devices have
+    /// now observed each other's persistence; the local record and the note that
+    /// tracked its uncertainty change together.
+    async fn promote_pairing(
+        &self,
+        session_id: u64,
+        hostname: &str,
+        remote_public_key: &[u8],
+        interface: &str,
+        address: &str,
+    ) -> Result<(), PairingError> {
+        {
+            let state = self.state.lock().await;
+            if !state.enabled || state.session_id != session_id {
+                return Err(PairingError::SessionClosed);
+            }
+        }
+        let public_key = encode_public_key(remote_public_key);
         let mut settings = self.settings.lock().await;
         let result = if self.persist_trust {
             settings.trust_peer(hostname, &public_key, interface, Some(address))
@@ -597,7 +697,23 @@ impl PairingManager {
         result.map_err(|error| {
             PairingError::Transport(format!("Could not save paired device: {error}"))
         })?;
+        drop(settings);
+        // The trust record is durable now; the note has served its purpose.
+        // A failure to remove it is not fatal (the record is idempotent and
+        // would be cleared by the next successful pairing), but it is worth
+        // knowing about.
+        let mut store = self.pending.lock().await;
+        if let Err(error) = store.remove(hostname) {
+            log::warn!("Could not clear the pending pairing record for {hostname}: {error}");
+        }
         Ok(())
+    }
+
+    /// Pending records are exposed so a caller can tell the user which devices
+    /// are half-paired, and so tests can assert that a failed pairing left a
+    /// note rather than trust.
+    pub async fn pending_trust(&self) -> Vec<PendingTrustRecord> {
+        self.pending.lock().await.records().to_vec()
     }
 
     async fn finish_success(&self, session_id: u64, hostname: &str) -> Result<(), PairingError> {
@@ -710,4 +826,16 @@ fn unix_timestamp_after(duration: Duration) -> u64 {
         .unwrap_or_default()
         .saturating_add(duration)
         .as_secs()
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn encode_public_key(public_key: &[u8]) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    STANDARD.encode(public_key)
 }

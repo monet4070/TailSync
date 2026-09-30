@@ -813,7 +813,7 @@ async fn remote_invite_is_consumed_only_after_both_peers_persist_trust() {
 // install_pairing_session (T110): inbound pairing session install.
 // ------------------------------------------------------------------
 
-fn test_peer_identity() -> PeerIdentity {
+pub(super) fn test_peer_identity() -> PeerIdentity {
     PeerIdentity {
         hostname: "server".into(),
         tailscale_ip: String::new(),
@@ -821,7 +821,7 @@ fn test_peer_identity() -> PeerIdentity {
     }
 }
 
-async fn establish_in_memory_pair(
+pub(super) async fn establish_in_memory_pair(
     server_identity: &Arc<DeviceIdentity>,
     client_identity: &DeviceIdentity,
 ) -> (

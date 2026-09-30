@@ -169,15 +169,21 @@ pub struct PairingManager {
     window_duration: Duration,
     max_failures: u8,
     persist_trust: bool,
+    /// Pairings this device confirmed but has not yet seen the peer persist.
+    /// Held across restarts in production, in memory only when `persist_trust`
+    /// is off so a test never writes to the real data directory.
+    pending: Mutex<PendingTrustStore>,
 }
 
 pub mod invite;
 mod manager;
+mod pending;
 
 pub use invite::{
     InviteClaim, InviteError, InviteHello, RemoteInviteState, RemoteInviteStatus,
     RemotePairingInvite, RemotePairingInviteManager, DEFAULT_INVITE_TTL,
 };
+pub use pending::{store_path as pending_trust_store_path, PendingTrustRecord, PendingTrustStore};
 
 /// Installs an inbound pairing session for an accepted connection (T110
 /// migration). When `pairing` is absent (Iroh transport cannot pair), an
@@ -244,3 +250,5 @@ pub async fn install_pairing_session_with_invite(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_pending;

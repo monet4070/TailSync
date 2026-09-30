@@ -1,0 +1,26 @@
+{
+  "notifications_enabled": true,
+  "progress_bar_enabled": true,
+  "sync_enabled": true,
+  "sync_shortcut": "CommandOrControl+Shift+S",
+  "history_shortcut": "CommandOrControl+Shift+H",
+  "history_limit": 100,
+  "storage_root": null,
+  "storage_quota_bytes": 10737418240,
+  "enabled_peers": {
+    "frozen-legacy-mac": true
+  },
+  "language": "en",
+  "connection_mode": "auto",
+  "trusted_peer_keys": {
+    "frozen-legacy-mac": "dGhpcyBpcyBhIGZyb3plbiBsZWdhY3kgcHVibGljIGtleSB2YWx1ZQ=="
+  },
+  "trusted_peer_addresses": {
+    "frozen-legacy-mac": {
+      "lan": "100.64.0.7"
+    }
+  },
+  "paired_peer_endpoints": {
+    "frozen-legacy-mac": "100.64.0.7"
+  }
+}
