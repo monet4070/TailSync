@@ -1,21 +1,22 @@
 # WAL checkpoint 结果行的影响核对与忙时语义
 
 > 由 `S5-P2-2` 的修复 PR 附带产出(方案阶段 5 要求)。
+> 位置以函数名标识,避免行号随重构漂移。
 > 背景:`PRAGMA wal_checkpoint(TRUNCATE)` 在**被读者阻挡**时**返回一行** `busy = 1`,而不是抛错。任何用 `execute_batch` 执行它的地方都会**静默丢弃**该行,于是"没截断"这件事无人知晓。
 
 ## 结论表
 
 | 位置 | 场景 | busy 时的语义 | 依据 / 处置 |
 |---|---|---|---|
-| `db/lifecycle.rs:416`(已修) | 删除/清理后的 WAL 截断 | **继续**,但记录警告 | 删除已提交,截断只是回收;`WalCheckpointOutcome::Blocked` 会 `warn!` |
-| `db/lifecycle.rs:111` | 用户主动 clear 后的 `TRUNCATE; VACUUM;` | **继续**;VACUUM 是空间回收的优化 | `clear_all` 语义是"清空逻辑数据",截断/VACUUM 失败不改变结果。真实 SQL 错误已被 `first_error` 收集;busy 不报错,故仅影响空间回收 |
-| `db/migrations.rs:141` | v4 图片迁移后的页回收 | **继续** | 紧接着有 `freelist_count` 判断与按需 `VACUUM`;busy 只意味着这次截断没做,后续启动仍可回收 |
-| `db/migrations.rs:293` | v9 明文预览清除后的 `TRUNCATE; VACUUM;` | **重试(不得静默继续)**✅ 已修 | 见下 |
-| `db/storage.rs:234` | 存储迁移复制 db/WAL 之前 | **继续**;另有独立风险待跟踪 | 见下 |
+| 删除收尾 `checkpoint_history_wal`(已修) | 删除/清理后的 WAL 截断 | **继续**,但记录警告 | 删除已提交,截断只是回收;`WalCheckpointOutcome::Blocked` 会 `warn!` |
+| `clear_all_with`(**仅 `#[cfg(test)]` 辅助**,非生产路径) | 用户主动 clear 后的 `TRUNCATE; VACUUM;` | **继续**;VACUUM 是空间回收的优化 | `clear_all` 语义是"清空逻辑数据",截断/VACUUM 失败不改变结果。真实 SQL 错误已被 `first_error` 收集;busy 不报错,故仅影响空间回收 |
+| `migrations` v4 页回收步骤 | v4 图片迁移后的页回收 | **继续** | 紧接着有 `freelist_count` 判断与按需 `VACUUM`;busy 只意味着这次截断没做,后续启动仍可回收 |
+| `migrations` v9 明文清除步骤 | v9 明文预览清除后的 `TRUNCATE; VACUUM;` | **重试(不得静默继续)**✅ 已修 | 见下 |
+| `migrate_storage_with_rollback` 复制前步骤 | 存储迁移复制 db/WAL 之前 | **继续**;另有独立风险待跟踪 | 见下 |
 
-## `migrations.rs:293`:真实风险,按方案另开小 PR
+## v9 明文清除步骤:真实风险,已修
 
-该位置在 v9"清除明文预览残留"之后执行 `TRUNCATE; VACUUM;`,随后才把 v9 标记为完成。若此处 busy:
+该步骤在 v9"清除明文预览残留"之后执行 `TRUNCATE; VACUUM;`,随后才把 v9 标记为完成。若此处 busy:
 
 - WAL **不会被截断**,第 9 版之前遗留在 WAL 页镜像里的明文**可能留存**;
 - 而代码仍会把 v9 标记为完成 —— 但现有设计本来提供了补偿机制:注释写明"Mark v9 complete only after the residual-data cleanup succeeds. If the process exits first, startup repeats the idempotent preparation and vacuum phases."(migration_state 里已有 `vacuum_pending` 阶段)。
