@@ -2266,3 +2266,95 @@ async fn s2_f5_text_latency_baseline() {
         percentile(0.99)
     );
 }
+
+/// S2-F5 budget gate. The 60 s baseline above is `#[ignore]`d (too slow for CI); this
+/// is the short tripwire that runs everywhere and asserts the frozen budget on the
+/// same real channels, scheduler and workload shape: no text event may be dropped and
+/// the priority queue must stay inside its depth threshold while a file batch's
+/// control frames contend with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn s2_f5_text_events_are_neither_dropped_nor_queue_bound() {
+    // The frozen cadence from docs/performance-budgets.md: the budget threshold only
+    // applies to the load it was frozen against, so this gate keeps the 50 ms cadence
+    // and shortens only the duration.
+    const TEXT_INTERVAL: Duration = Duration::from_millis(50);
+    const RUN: Duration = Duration::from_secs(2);
+    const CONTROL_FRAMES: usize = 64;
+    const CHUNK_FRAMES: usize = 256;
+    /// Frozen budget (docs/performance-budgets.md): priority depth <= 48.
+    const DEPTH_LIMIT: usize = 48;
+    const SERVICE: Duration = Duration::from_micros(200);
+
+    let (priority_tx, mut priority_rx) = mpsc::channel(CHANNEL_SIZE);
+    let (bulk_tx, mut bulk_rx) = mpsc::channel(CHANNEL_SIZE);
+
+    let consumer = tokio::spawn(async move {
+        let mut streak = 0usize;
+        let mut delivered = 0usize;
+        while let Some(frame) =
+            receive_scheduled_frame(&mut priority_rx, &mut bulk_rx, &mut streak).await
+        {
+            if frame.command() == Command::TextPayload {
+                delivered += 1;
+            }
+            tokio::time::sleep(SERVICE).await;
+        }
+        delivered
+    });
+
+    let file_priority = priority_tx.clone();
+    let file_bulk = bulk_tx.clone();
+    let files = tokio::spawn(async move {
+        for _ in 0..CONTROL_FRAMES {
+            if file_priority
+                .send(QueuedFrame::new(Command::FileMeta, vec![0u8; 64]).unwrap())
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        for _ in 0..CHUNK_FRAMES {
+            if file_bulk
+                .send(QueuedFrame::new(Command::FileChunk, vec![0u8; 64]).unwrap())
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+
+    let deadline = tokio::time::Instant::now() + RUN;
+    let mut attempted = 0usize;
+    let mut dropped = 0usize;
+    let mut peak_depth = 0usize;
+    while tokio::time::Instant::now() < deadline {
+        peak_depth = peak_depth.max(CHANNEL_SIZE.saturating_sub(priority_tx.capacity()));
+        attempted += 1;
+        if priority_tx
+            .try_send(QueuedFrame::new(Command::TextPayload, b"text".to_vec()).unwrap())
+            .is_err()
+        {
+            dropped += 1;
+        }
+        tokio::time::sleep(TEXT_INTERVAL).await;
+    }
+    drop(priority_tx);
+    drop(bulk_tx);
+    let _ = files.await;
+    let delivered = consumer.await.unwrap();
+
+    assert_eq!(
+        dropped, 0,
+        "no text event may be dropped under the frozen budget"
+    );
+    assert!(
+        peak_depth <= DEPTH_LIMIT,
+        "priority depth {peak_depth} exceeds the frozen threshold {DEPTH_LIMIT}"
+    );
+    assert_eq!(
+        delivered, attempted,
+        "every enqueued text event must be scheduled"
+    );
+}
