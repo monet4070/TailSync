@@ -4,8 +4,9 @@ use super::*;
 /// not inherit the production 5s busy timeout, or five attempts block startup for
 /// roughly 25s. Exposed so a test can assert the bounds without timing.
 pub(crate) const V9_CLEANUP_ATTEMPTS: usize = 5;
+pub(crate) const V9_CLEANUP_BUSY_TIMEOUT_MS: u64 = 50;
 pub(crate) const V9_CLEANUP_BUSY_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_millis(50);
+    std::time::Duration::from_millis(V9_CLEANUP_BUSY_TIMEOUT_MS);
 
 /// Truncate the WAL as the last step of the v9 residual-plaintext cleanup.
 ///
