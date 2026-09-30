@@ -11,17 +11,29 @@ use super::*;
 pub(crate) fn truncate_wal_for_v9_cleanup(
     conn: &Connection,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (busy, log, checkpointed): (i64, i64, i64) =
-        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-    if busy != 0 {
-        return Err(format!(
-            "v9 residual-plaintext cleanup could not truncate the WAL (busy={busy}, log={log}, checkpointed={checkpointed}); the migration will retry on the next open"
-        )
-        .into());
+    // A reader usually releases quickly, so retry briefly before failing: a
+    // transient block must not abort the whole open, but the step must still fail
+    // rather than continue (see the doc above).
+    const ATTEMPTS: usize = 5;
+    let mut last = (0_i64, 0_i64, 0_i64);
+    for attempt in 0..ATTEMPTS {
+        let (busy, log, checkpointed): (i64, i64, i64) =
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        if busy == 0 {
+            return Ok(());
+        }
+        last = (busy, log, checkpointed);
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
-    Ok(())
+    Err(format!(
+        "v9 residual-plaintext cleanup could not truncate the WAL after {ATTEMPTS} attempts (busy={}, log={}, checkpointed={}); v9 stays incomplete and the next open retries",
+        last.0, last.1, last.2
+    )
+    .into())
 }
 
 impl HistoryDB {

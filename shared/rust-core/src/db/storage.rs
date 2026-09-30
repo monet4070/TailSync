@@ -172,11 +172,18 @@ impl HistoryDB {
                 ).into());
             };
             let ids = self.expand_batch_groups(vec![id])?;
+            // The delete also truncates the WAL, which the baseline counted, so
+            // credit both the payload bytes that provably left the disk and the
+            // WAL bytes the checkpoint reclaimed. Without the latter the loop
+            // over-estimates usage and evicts more history than the quota needs.
+            let wal_before = wal_bytes(&get_storage_dir());
             let freed = self.delete_entries(&ids)?;
-            if freed == 0 {
+            let wal_after = wal_bytes(&get_storage_dir());
+            let credited = freed.saturating_add(wal_before.saturating_sub(wal_after));
+            if credited == 0 {
                 used = bulk_storage_size(&get_storage_dir())?;
             } else {
-                used = used.saturating_sub(freed);
+                used = used.saturating_sub(credited);
             }
         }
     }
@@ -578,6 +585,15 @@ fn copy_bulk_storage_verified(
 pub(crate) static BULK_STORAGE_SIZE_SCANS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Size of the WAL file, or 0 when it is absent. Cheap (one stat), so the quota
+/// loop can credit the bytes a delete's `wal_checkpoint(TRUNCATE)` reclaims
+/// without rescanning the storage tree.
+fn wal_bytes(root: &Path) -> u64 {
+    fs::metadata(root.join("history-v2.db-wal"))
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+}
+
 fn bulk_storage_size(root: &Path) -> std::io::Result<u64> {
     #[cfg(test)]
     BULK_STORAGE_SIZE_SCANS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -824,6 +840,87 @@ mod tests {
         fs::remove_dir_all(base).unwrap();
     }
 
+    /// S4-P1-3: the delete truncates the WAL, and the baseline counted it. If the
+    /// loop does not credit that reclaimed space it over-estimates usage and evicts
+    /// more history than the quota requires.
+    #[tokio::test]
+    async fn quota_eviction_credits_the_wal_the_delete_reclaims() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("quota-wal-credit");
+        configure_storage_dir(Some(&base)).unwrap();
+        let database = test_database(&base);
+
+        let payload_size = 1_u64 << 20;
+        let source_dir = base.join("payload-sources");
+        fs::create_dir_all(&source_dir).unwrap();
+        for index in 0..4_u8 {
+            let payload = vec![index + 1; usize::try_from(payload_size).unwrap()];
+            let source = source_dir.join(format!("payload-{index}.bin"));
+            fs::write(&source, &payload).unwrap();
+            database
+                .lock()
+                .await
+                .add_file_from_path(
+                    &format!("payload-{index}.bin"),
+                    &source,
+                    &blake3::hash(&payload).to_hex().to_string(),
+                    payload_size,
+                    "peer",
+                )
+                .unwrap();
+        }
+        // Grow the WAL so the reclaimed space is large enough to matter. Inline
+        // entries stay inside SQLite, so only the WAL moves.
+        for index in 0..160 {
+            database
+                .lock()
+                .await
+                .add_text(&format!("inline {index} {}", "x".repeat(2048)), "self")
+                .unwrap();
+        }
+
+        let dir = get_storage_dir();
+        let live = bulk_storage_size(&dir).unwrap();
+        let wal = wal_bytes(&dir);
+        assert!(wal > 100_000, "the test needs a non-trivial WAL, got {wal}");
+
+        // One eviction plus the reclaimed WAL satisfies this quota; payload bytes
+        // alone do not.
+        database
+            .lock()
+            .await
+            .set_storage_quota(live.saturating_sub(wal).saturating_sub(payload_size) + 1024);
+        let before: i64 = database
+            .lock()
+            .await
+            .conn
+            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            .unwrap();
+
+        database
+            .lock()
+            .await
+            .reserve_for_file_batch(1024, 1024)
+            .expect("eviction plus the reclaimed WAL should make room");
+
+        let after: i64 = database
+            .lock()
+            .await
+            .conn
+            .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            after,
+            before - 1,
+            "the reclaimed WAL must be credited, so a single eviction suffices"
+        );
+
+        drop(database);
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
     /// S4-P1-3: evicting several items must not rescan the whole storage tree on
     /// every iteration while the database lock is held.
     #[tokio::test]
@@ -872,6 +969,14 @@ mod tests {
             BULK_STORAGE_SIZE_SCANS.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "the quota loop must measure the baseline once, not rescan the tree per eviction"
+        );
+
+        // Quota compliance: the real tree must fit after eviction.
+        let quota = live.saturating_sub(10_000);
+        let after = bulk_storage_size(&get_storage_dir()).unwrap();
+        assert!(
+            after + 1024 <= quota,
+            "quota must hold after eviction: used={after} quota={quota}"
         );
 
         drop(database);

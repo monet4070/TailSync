@@ -22,7 +22,7 @@
     "shared/rust-core/src/db/lifecycle.rs:execute_batch(\"PRAGMA wal_checkpoint(TRUNCATE);\")"
   ],
   "trigger": "execute_batch 丢弃 (busy, log, checkpointed) 结果行，busy=1 不进入 Err 警告分支。",
-  "fix_evidence": "checkpoint 逻辑抽为 checkpoint_history_wal()，返回 Completed / Blocked{busy,log,checkpointed} / Failed；删除路径读取结果行，busy != 0 时记警告并保持删除成功。已做变异验证（忽略结果行 → 门禁失败）。 同 PR 已按方案要求完成其余丢弃结果行的逐站影响核对与忙时语义（继续/重试/中止），见 docs/remediation/wal-checkpoint-semantics.md；其中 migrations.rs:293（v9 明文清除）判定为必须重试，按方案另开小 PR 跟踪，不在本提交内修改；storage.rs:234 的既存非原子复制风险另记。门禁已把 busy_timeout 降到 50ms，耗时由 10.5s 降至 0.15s。",
+  "fix_evidence": "checkpoint 逻辑抽为 checkpoint_history_wal()，返回 Completed / Blocked{busy,log,checkpointed} / Failed；删除路径读取结果行，busy != 0 时记警告并保持删除成功。已做变异验证（忽略结果行 → 门禁失败）。 同 PR 已按方案要求完成其余丢弃结果行的逐站影响核对与忙时语义（继续/重试/中止），见 docs/remediation/wal-checkpoint-semantics.md；其中 migrations.rs:293（v9 明文清除）判定为必须重试并**已修**：truncate_wal_for_v9_cleanup() 忙时有界重试后返回错误，使 v9 不进入完成态、下次打开重做；门禁 v9_cleanup_wal_truncation_fails_when_a_reader_blocks_it（已做\"忽略 busy\"的变异验证）。storage.rs:234 的既存非原子复制风险另记。门禁已把 busy_timeout 降到 50ms，耗时由 10.5s 降至 0.15s。",
   "status": "fixed_gated",
   "pass_condition": "门禁测试在所列平台 CI job 中以通过状态出现。",
   "reopen_condition": "busy 静默通过、删除被误报失败或 WAL 结果未核对。"
