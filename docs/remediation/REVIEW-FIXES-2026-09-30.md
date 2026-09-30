@@ -24,6 +24,8 @@
 - 脚本回归覆盖：仅编译/列举、普通函数、忽略测试、无 CI 作业、未执行/跳过/失败、旧源码记录，以及没有端口断言成功标记的打包，均被拒绝。
 - 插桩首次并行运行有两项 Iroh 夹具因 5s 配对窗口关闭而失败；未过滤或忽略测试。覆盖率任务改为串行后，Core 453 项和 runtime 23 项通过并导出 LCOV。PR 常规并行 Core 测试也已通过；串行设置仅用于额外的覆盖率任务。
 
+**本地核对注意**：在 macOS 上对 Windows crate 跑 `cargo clippy --all-targets -- -D warnings` 会因 `#[cfg(windows)]` 分支不存在而报 `clipboard_file.rs` 的 dead-code 错误（6 个），这是交叉编译产物、不是缺陷；该步骤必须在 `windows-latest` 上跑（CI 的 `Run Windows application Clippy` 于 `e955128` 通过）。
+
 本机临时日志位于 `/tmp/tailsync-fix-*.log`，属于本次调试证据；持久的具名测试和 CI 产物才是后续回归依据。历史 P0 故障注入记录仍见 `docs/acceptance/s6-p0-1-mutation-proof.md`，不能冒充本次改动后的 CI 结果。
 
 ## 本机复现与 CI 证据

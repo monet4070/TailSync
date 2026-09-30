@@ -296,6 +296,35 @@ mod tests {
     use super::{is_remote_response, DiscoveryResponse};
     use std::collections::HashSet;
 
+    #[test]
+    fn lan_discovery_response_fields_are_pinned() {
+        // Part of the accepted anonymous-visible set; the LAN answer is readable by
+        // anyone on the link before any handshake. See
+        // docs/security/anonymous-visible-fields.md.
+        let response = DiscoveryResponse {
+            app: "tailsync".into(),
+            version: 1,
+            hostname: "host".into(),
+            tcp_port: 19890,
+            iroh_endpoint_id: Some("endpoint-id".into()),
+            iroh_rtt: true,
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "app",
+                "hostname",
+                "iroh_endpoint_id",
+                "iroh_rtt",
+                "tcp_port",
+                "version"
+            ]
+        );
+    }
+
     fn response(hostname: &str) -> DiscoveryResponse {
         DiscoveryResponse {
             app: "tailsync".into(),

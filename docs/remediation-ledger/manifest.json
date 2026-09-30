@@ -14,7 +14,8 @@
     "fixed_ungated": 0,
     "partial": 3,
     "unfixed": 5,
-    "needs_adjudication": 1
+    "needs_adjudication": 0,
+    "accepted": 1
   },
   "expected_ids": [
     "S1-P0-1",

@@ -32,7 +32,8 @@
         "fixed_ungated",
         "partial",
         "unfixed",
-        "needs_adjudication"
+        "needs_adjudication",
+        "accepted"
       ]
     },
     "platform": {

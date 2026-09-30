@@ -326,6 +326,35 @@ pub async fn start_responder() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn lan_discovery_response_fields_are_pinned() {
+        // Part of the accepted anonymous-visible set; the LAN answer is readable by
+        // anyone on the link before any handshake. See
+        // docs/security/anonymous-visible-fields.md.
+        let response = DiscoveryResponse {
+            app: "tailsync".into(),
+            version: 1,
+            hostname: "host".into(),
+            tcp_port: 19890,
+            iroh_endpoint_id: Some("endpoint-id".into()),
+            iroh_rtt: true,
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "app",
+                "hostname",
+                "iroh_endpoint_id",
+                "iroh_rtt",
+                "tcp_port",
+                "version"
+            ]
+        );
+    }
+
     // S1-P1-5: the target set always contains the global broadcast address, so
     // "no broadcast targets" is not a reachable state. A caller therefore sees
     // only two outcomes: at least one send succeeded, or every send failed.

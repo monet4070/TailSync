@@ -1,4 +1,47 @@
 use super::*;
+
+/// S3-P1-1 has been adjudicated as accepted (no behaviour change): an anonymous
+/// Noise XX initiator receives these fields in message 2, before the responder has
+/// authenticated it. `docs/security/anonymous-visible-fields.md` records the
+/// accepted set, including the fact that discovery already publishes the hostname
+/// and Iroh id, so only `tailscale_ip` and the version fields are incremental.
+/// Changing this set must be deliberate.
+#[test]
+fn anonymous_handshake_identity_fields_are_pinned() {
+    let identity = PeerIdentity {
+        hostname: "test-host".into(),
+        tailscale_ip: "100.64.0.7".into(),
+        iroh_endpoint_id: Some("endpoint-id".into()),
+    };
+    let value = serde_json::to_value(&identity).unwrap();
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "app_version",
+            "hostname",
+            "iroh_endpoint_id",
+            "protocol_version",
+            "tailscale_ip"
+        ],
+        "the anonymous-visible handshake field set changed; update docs/security/anonymous-visible-fields.md"
+    );
+
+    // Without an Iroh endpoint the key is omitted rather than sent empty.
+    let without_iroh = PeerIdentity {
+        hostname: "test-host".into(),
+        tailscale_ip: String::new(),
+        iroh_endpoint_id: None,
+    };
+    let value = serde_json::to_value(&without_iroh).unwrap();
+    assert!(!value.as_object().unwrap().contains_key("iroh_endpoint_id"));
+}
 use crate::identity::DeviceIdentity;
 use crate::pairing::derive_verification_code;
 use std::io;

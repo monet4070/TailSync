@@ -13,7 +13,14 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { isExecutedTestCommand, sourceIdentity, testPassed } from './remediation-test-results.mjs';
 
-const STATUSES = ['fixed_gated', 'fixed_ungated', 'partial', 'unfixed', 'needs_adjudication'];
+const STATUSES = [
+  'fixed_gated',
+  'fixed_ungated',
+  'partial',
+  'unfixed',
+  'needs_adjudication',
+  'accepted',
+];
 
 const norm = (p) => p.replaceAll('\\', '/').replace(/^\.\//, '');
 
