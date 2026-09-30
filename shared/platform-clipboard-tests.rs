@@ -569,7 +569,8 @@ async fn the_admission_lock_is_held_while_the_batch_state_is_read() {
     use crate::network::{admit_incoming_file_batch, ADMISSION_LOCK_COVERAGE_VIOLATIONS};
 
     let _guard = storage_root_lock().lock().await;
-    let (original, root, database, sync_engine, manifest_a, _manifest_b, peer) = admission_fixture();
+    let (original, root, database, sync_engine, manifest_a, _manifest_b, peer) =
+        admission_fixture();
     database.lock().await.set_storage_quota(6 * 1024 * 1024);
 
     let before = ADMISSION_LOCK_COVERAGE_VIOLATIONS.load(Ordering::SeqCst);
