@@ -54,6 +54,29 @@ async fn install_inbound(
         .expect("install the inbound pairing session");
 }
 
+/// Install a session where *this* side is the initiator. The interop fixtures
+/// need both directions: a new side receiving an older peer's pairing and a new
+/// side opening one against an older peer.
+async fn install_outbound(
+    manager: &Arc<PairingManager>,
+    client_connection: Connection,
+    server_identity: &DeviceIdentity,
+) {
+    manager
+        .install_session(PendingPairing {
+            connection: client_connection,
+            hostname: "server".into(),
+            remote_public_key: server_identity.public_key().to_vec(),
+            handshake_hash: vec![9; 32],
+            address: IROH_ENDPOINT_ID.into(),
+            interface: "iroh".into(),
+            remote_invite: None,
+            direction: PairingDirection::Outbound,
+        })
+        .await
+        .expect("install the outbound pairing session");
+}
+
 /// Both users confirm and the peer echoes its confirmation, so the local side
 /// writes its pending note and sends `PairingPersisted`. Returns after the peer
 /// has *received* that frame but before it answers.
@@ -580,11 +603,71 @@ async fn an_older_peer_pairing_into_the_new_side_still_completes() {
     assert!(manager.pending_trust().await.is_empty());
 }
 
-/// New side → old peer, and the ordering property the interop safety rests on:
-/// the older peer can only conclude success after it has received our
-/// persistence frame, which we send only once the local note is durable. So an
-/// older peer that shows "paired" always corresponds to a new side that holds a
-/// record it can still act on.
+/// New side → old peer: this side opens the session. The pass condition names
+/// both interop directions, so the initiator is exercised rather than assumed —
+/// the note/promote split must not depend on who started the pairing.
+#[tokio::test]
+async fn the_new_side_pairing_out_to_an_older_peer_still_completes() {
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = Arc::new(DeviceIdentity::generate_for_test());
+    // This side is the initiator, so the manager holds the outbound half.
+    let manager = manager_for(&settings, &client_identity);
+    manager.enable().await;
+
+    let (client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    install_outbound(&manager, client, &server_identity).await;
+    let mut legacy = FrozenLegacyPeer::new(server);
+    let legacy_task = tokio::spawn(async move { legacy.run().await });
+
+    manager.confirm().await.expect("local confirmation");
+    wait_for_phase(&manager, PairingPhase::Paired).await;
+    legacy_task
+        .await
+        .unwrap()
+        .expect("the older peer's sequence");
+
+    assert_eq!(
+        settings.lock().await.trusted_peer_keys.get("server"),
+        Some(&server_identity.public_key_base64())
+    );
+    assert!(manager.pending_trust().await.is_empty());
+}
+
+/// The boundary before a note exists at all: the local user confirms, the peer
+/// never does, and the link dies. Nothing may be recorded, because there is no
+/// half-pairing yet — a note here would claim the peer had taken part in
+/// something it never saw.
+#[tokio::test]
+async fn a_link_that_dies_before_the_peer_confirms_records_nothing() {
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = manager_for(&settings, &server_identity);
+    manager.enable().await;
+
+    let (mut client, server) = establish_in_memory_pair(&server_identity, &client_identity).await;
+    install_inbound(&manager, server, &client_identity).await;
+
+    manager.confirm().await.expect("local confirmation");
+    let frame = client.read_frame().await.expect("our confirmation");
+    assert_eq!(frame.command, Command::PairingConfirm);
+    // The peer never confirms; the link dies.
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_ne!(manager.status().await.phase, PairingPhase::Paired);
+    assert_eq!(settings.lock().await.trusted_peer_keys.get("client"), None);
+    assert!(
+        manager.pending_trust().await.is_empty(),
+        "one confirmation is not a half-pairing, so nothing may be recorded"
+    );
+}
+
+/// The ordering property the interop safety rests on: the older peer can only
+/// conclude success after it has received our persistence frame, which we send
+/// only once the local note is durable. So an older peer that shows "paired"
+/// always corresponds to a new side that holds a record it can still act on.
 #[tokio::test]
 async fn the_older_peer_concludes_success_only_after_the_new_note_is_durable() {
     let root = std::env::temp_dir().join(format!(

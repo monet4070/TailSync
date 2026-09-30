@@ -40,12 +40,6 @@ pub struct PendingTrustRecord {
     pub address: String,
     /// Unix seconds at which this side recorded the confirmation.
     pub recorded_at: u64,
-    /// How many times reconciliation was attempted. Kept so an unreachable peer
-    /// is visible rather than silently retried forever; nothing expires on the
-    /// count, because a peer that already persisted and lost the
-    /// acknowledgement must still be recoverable later.
-    #[serde(default)]
-    pub reconciliations: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,17 +156,6 @@ impl PendingTrustStore {
     /// sides, or when the user forgets the device.
     pub fn remove(&mut self, hostname: &str) -> std::io::Result<()> {
         self.records.retain(|known| known.hostname != hostname);
-        self.save()
-    }
-
-    pub fn note_reconciliation_attempt(&mut self, hostname: &str) -> std::io::Result<()> {
-        if let Some(record) = self
-            .records
-            .iter_mut()
-            .find(|record| record.hostname == hostname)
-        {
-            record.reconciliations = record.reconciliations.saturating_add(1);
-        }
         self.save()
     }
 

@@ -33,7 +33,11 @@ impl PairingManager {
     /// A manager whose pending-pairing store is the file at `path`. A restart is
     /// then testable by building a second manager over the same file, which is
     /// the only way to tell "the note survived" from "the note was in memory".
-    #[cfg(any(test, feature = "test-support"))]
+    ///
+    /// `cfg(test)` and not `test-support`: the only callers are this crate's own
+    /// tests, and a build that enables `test-support` but never calls it reports
+    /// it as dead code.
+    #[cfg(test)]
     #[doc(hidden)]
     pub(crate) fn with_pending_store_at(
         settings: Arc<Mutex<Settings>>,
@@ -663,7 +667,6 @@ impl PairingManager {
             interface: interface.to_string(),
             address: address.to_string(),
             recorded_at: unix_now(),
-            reconciliations: 0,
         };
         let mut store = self.pending.lock().await;
         store

@@ -56,12 +56,12 @@
 | `shared/rust-core/src/pairing.rs` | `mod pending;` 与重导出；`PairingManager` 增加 `pending` 字段（`persist_trust=false` 时纯内存，测试不写真实数据目录）；测试专用 `PromotionGate` |
 | `shared/rust-core/src/pairing/tests_pending.rs`（新增） | 12 个测试，见下 |
 | `shared/rust-core/tests/fixtures/legacy-config-v2.json`（新增） | 冻结的旧版 `config-v2.json`（含一台已配对设备） |
-| `macos/src-tauri/src/commands/peers.rs`、`windows/src-tauri/src/commands/peers.rs` | `forget_peer` 同时清除该设备的 pending 注记 |
+| `macos/src-tauri/src/commands/peers.rs`、`macos/src-tauri/src/api/routes/peers.rs`、`windows/src-tauri/src/commands/peers.rs` | `forget_peer` 同时清除该设备的 pending 注记（macOS 的 SwiftUI 走 Unix socket 路由，不是 Tauri 命令，两处都要接） |
 | `docs/remediation-ledger/entries/S3-P1-2.json`、`manifest.json`、`INDEX.md` | 状态 `unfixed` → `fixed_gated`，登记门禁与 `ci_job` |
 
 ## 4. 覆盖与变异验证
 
-12 个测试（`shared/rust-core/src/pairing/tests_pending.rs`）：
+14 个测试（`shared/rust-core/src/pairing/tests_pending.rs`）：
 
 | 测试 | 覆盖的边界 |
 |---|---|
@@ -76,15 +76,17 @@
 | `the_settings_shape_stays_readable_by_an_older_build` | `Settings` 形状守卫（`deny_unknown_fields` 的后果显式化）+ 旧版设置 JSON 仍可加载 |
 | `a_frozen_legacy_configuration_still_loads_with_its_trust_intact` | 冻结旧版配置加载后既有信任不变；sidecar 缺失时读作空 |
 | `an_older_peer_pairing_into_the_new_side_still_completes` | 旧端→新版：旧端序列（确认后立即落盘）仍能完成 |
+| `the_new_side_pairing_out_to_an_older_peer_still_completes` | **新版→旧端**（本端为发起方 `Outbound`）：同样完成并写下信任 |
+| `a_link_that_dies_before_the_peer_confirms_records_nothing` | 对端确认之前的断开：既不写信任，也不留注记（一次确认不构成半配对） |
 | `the_older_peer_concludes_success_only_after_the_new_note_is_durable` | 互通安全性的顺序依据：旧端收到持久化帧时，本端注记已落盘（观察真实临时文件） |
 
 **变异验证（每次单独运行并恢复）**：
 
 | 变异 | 结果 |
 |---|---|
-| `record_pending_pairing` 改回"本地确认即写 trust"（修复前行为） | 12 个测试中 **5 个失败** |
-| 去掉注记写入 | 12 个测试中 **6 个失败** |
-| `promote_pairing` 改回"检查后释放状态锁" | `a_cancellation_cannot_slip_between_the_check_and_the_trust_write` **失败** |
+| `record_pending_pairing` 改回"本地确认即写 trust"（修复前行为） | 14 个中 **6 个失败** |
+| 去掉注记写入 | 14 个中 **7 个失败** |
+| `promote_pairing` 改回"检查后释放状态锁" | 14 个中 **1 个失败**（即 `a_cancellation_cannot_slip_between_the_check_and_the_trust_write`） |
 
 ## 5. 本地校验
 
@@ -92,6 +94,7 @@
 - `cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings` 干净。
 - `node scripts/run-remediation-tests.mjs --job rust-macos -- cargo test --locked --manifest-path shared/rust-core/Cargo.toml` 通过，`S3-P1-2` 已计入实际执行的门禁。
 - macOS crate `cargo test --lib`：109 passed / 1 ignored；Windows crate `cargo check --all-targets` 通过。
+- `shared/tailsync-runtime` 的 Clippy（CI 中的一步）此前因 `with_pending_store_at` 被判 dead code 而失败——该函数在启用 `test-support` 却是依赖的构建里存在但无人调用。已改为 `#[cfg(test)]`，现在通过。**这是本阶段引入并修复的一个 CI 红灯，教训与前面几轮相同：本地只跑 `rust-core` 的 Clippy 不足以发现依赖构建视角下的 dead code。**
 - 台账：31 条、`fixed_gated 28 / partial 1 / accepted 1 / unfixed 1`。
 
 ## 6. 未完成与适用边界
@@ -100,5 +103,6 @@
 - **两端 UI 走查未做**：pending 不显示为已配对由数据面保证，但 macOS SwiftUI 与 Windows React 在真实 pending 状态下的界面走查未做。
 - **`pending_trust()` 尚无 UI 出口**：目前只有 Rust API 与测试读取它；"这设备配对未完成，是否重试"的界面提示属阶段 8 的 UI/runtime-IPC 深化。做成 UI 契约字段需要走 `contracts.rs` + 生成器流程（见 S6-P2-1 的先例：新增字段要求 app 与 daemon 同时升级），不在本阶段内。
 - **未实现自动对账**：理由见 §2，完成路径是再次经过配对会话。
+- **测试未使用生产构造器**：14 个测试中多数用 `persist_trust=false`（纯内存注记），只有少数用 `with_pending_store_at` 走真实 sidecar 文件。生产写 `config-v2.json` 的路径由 crypto 自己的测试覆盖；配对测试刻意不写真实配置。因此"注记落盘 → 发持久化帧"的顺序在**磁盘**上被验证（`the_older_peer_concludes_success_only_after_the_new_note_is_durable` 观察真实文件），但 `PairingManager::new` 本身未被端到端覆盖。
 - **"两个将军"残留**：一端 active、另一端 pending 的瞬时不一致无法用有限消息消除（见 §2）。已记录为已知限制而非已解决项。
-- **测试未使用生产构造器**：核心 5 个测试用 `persist_trust=false`（纯内存注记），只有 2 个用 `with_pending_store_at` 走真实 sidecar 文件。生产写 `config-v2.json` 的路径由 crypto 自己的测试覆盖；配对测试刻意不写真实配置。因此"注记落盘 → 发持久化帧"的顺序在**磁盘**上被验证（`the_older_peer_concludes_success_only_after_the_new_note_is_durable` 观察真实文件），但 `PairingManager::new` 本身未被端到端覆盖。
+
