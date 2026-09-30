@@ -1,6 +1,6 @@
 use super::*;
 use crate::identity::DeviceIdentity;
-use crate::peer::pool::{CHANNEL_SIZE, TEXT_WATERMARK_BUDGET};
+use crate::peer::pool::CHANNEL_SIZE;
 use crate::peer::types::{ConnectionInterface, PeerCandidate, ResolvedCandidate, ResolvedTarget};
 use crate::protocol::FileOffset;
 use std::sync::Arc;
@@ -10,6 +10,12 @@ use tokio::time::timeout;
 fn transfer_id(byte: u8) -> TransferId {
     TransferId([byte; 16])
 }
+
+/// Signed in `docs/performance-budgets.md`: the priority queue peak must stay at
+/// or below 48 of 64 (75%). Nothing enforces a water mark at runtime — it is the
+/// bound the recorded `S2-F5` baseline has to satisfy — so it lives here, next to
+/// the measurement and the gate that read it, rather than in production code.
+const SIGNED_TEXT_WATERMARK: usize = 48;
 
 #[test]
 fn text_payload_is_wrapped_in_an_event_envelope() {
@@ -2265,6 +2271,24 @@ async fn s2_f5_text_latency_baseline() {
         percentile(0.50),
         percentile(0.99)
     );
+
+    // Judge the run against the signed thresholds instead of only printing it: a
+    // bare print cannot tell a passing run from a failing one, which is how the
+    // water-mark budget lost its only check when the timed CI gate was replaced.
+    // This test is `#[ignore]`d and never runs in CI, so machine load can slow a
+    // run down without turning the build red — it just has to be re-run.
+    assert_eq!(
+        dropped, 0,
+        "the signed budget allows zero permanently dropped text events"
+    );
+    assert!(
+        percentile(0.99) <= 100_000,
+        "text p99 must stay within the signed 100 ms budget"
+    );
+    assert!(
+        peak_depth <= SIGNED_TEXT_WATERMARK,
+        "priority peak depth must stay within the signed water mark"
+    );
 }
 
 /// S2-F5 CI gate, deterministic by construction: a full priority queue must not make the
@@ -2330,19 +2354,37 @@ async fn a_full_priority_queue_never_drops_a_text_frame_silently() {
     );
 
     // The signed budgets (`docs/performance-budgets.md`) are stated against a
-    // frozen geometry: capacity 64 with a priority water mark of 48 (75%). The
-    // recorded single-machine baseline was measured on exactly that geometry,
-    // and a smaller channel does not make the queue visibly wrong — it makes the
-    // signed water mark unreachable while every mechanism above still works. So
-    // pin the geometry here rather than only in the prose of the budget file.
-    let channel_capacity = CHANNEL_SIZE;
+    // frozen geometry: capacity 64 with a priority water mark of 48 (75%). This
+    // test builds its own channel above, so filling it proves the mechanism but
+    // says nothing about the real queue: shrinking the pool's channel would keep
+    // every assertion above green while making the signed water mark
+    // unreachable. Measure the capacity the pool actually builds, through the
+    // same constructor production uses.
+    let mut state = crate::peer::pool::ConnectionPoolState::new();
+    let production = state
+        .sender_for_candidates(
+            "frozen-geometry-peer".to_string(),
+            vec![ResolvedCandidate {
+                candidate: PeerCandidate::new(ConnectionInterface::Lan, "192.168.1.9"),
+                target: ResolvedTarget::Tcp("192.168.1.9:19890".parse().unwrap()),
+            }],
+            |_, _, priority_rx, bulk_rx, _, _, _| {
+                // Keep the receivers alive so the sender reports its real
+                // capacity; the worker is not under test here.
+                std::mem::forget(priority_rx);
+                std::mem::forget(bulk_rx);
+            },
+        )
+        .expect("a sender for the frozen-geometry peer");
+    let production_capacity = production.channel_for(Command::FileMeta).capacity();
     assert_eq!(
-        channel_capacity, 64,
-        "the priority capacity is part of the signed budget; changing it invalidates the recorded baseline"
+        production_capacity, 64,
+        "the signed budget is stated against a priority capacity of 64; changing it \
+         invalidates the recorded baseline instead of failing loudly"
     );
     assert!(
-        TEXT_WATERMARK_BUDGET * 4 == channel_capacity * 3,
-        "the signed water mark is 75% of capacity ({TEXT_WATERMARK_BUDGET}/{channel_capacity}); \
-         a narrower channel leaves no room for it"
+        SIGNED_TEXT_WATERMARK * 4 == production_capacity * 3,
+        "the signed water mark is 75% of capacity ({SIGNED_TEXT_WATERMARK}/{production_capacity}); \
+         a narrower queue leaves no room for it"
     );
 }

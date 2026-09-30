@@ -17,14 +17,6 @@ use crate::peer::types::{ResolvedCandidate, ResolvedTarget};
 use crate::protocol::Command;
 
 pub(crate) const CHANNEL_SIZE: usize = 64;
-/// Signed priority water-mark budget (`docs/performance-budgets.md`): the queue
-/// peak must stay at or below this, i.e. 75% of [`CHANNEL_SIZE`]. The recorded
-/// single-machine baseline (`p50 55-59us`, `p99 343-705us`, `max 47-51ms`,
-/// `peak depth 30-32`, zero permanent drops) was measured against exactly the
-/// frozen 64/48 geometry, so a smaller channel does not fail loudly — it makes
-/// the signed water mark unreachable and silently invalidates those numbers.
-/// The `S2-F5` gate pins the relation.
-pub const TEXT_WATERMARK_BUDGET: usize = 48;
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The two bounded queues used by a pooled peer worker.

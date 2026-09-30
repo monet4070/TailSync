@@ -28,9 +28,10 @@ fn a_discovery_round_never_persists_a_route_for_a_trusted_hostname() {
 
     let mut settings = crypto::Settings::default();
     // The device the user already paired and pinned.
-    settings
-        .trusted_peer_keys
-        .insert("trusted-mac".to_string(), "pinned-noise-public-key".to_string());
+    settings.trusted_peer_keys.insert(
+        "trusted-mac".to_string(),
+        "pinned-noise-public-key".to_string(),
+    );
     settings.trusted_peer_addresses.insert(
         "trusted-mac".to_string(),
         [("lan".to_string(), "100.64.0.5".to_string())]

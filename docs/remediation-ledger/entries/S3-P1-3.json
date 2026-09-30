@@ -10,7 +10,7 @@
     "file": "shared/platform-peer-cache-tests.rs",
     "test": "a_discovery_round_never_persists_a_route_for_a_trusted_hostname",
     "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets",
-    "asserts": "直接钉住被审计的向量本身，而不只是持久化层的信任守卫：构造一个已配对设备（trusted_peer_keys + trusted_peer_addresses[\"trusted-mac\"][\"lan\"] = 100.64.0.5），再喂给**生产**发现适配器的 remember 一轮伪造发现（同一受信任 hostname、攻击者地址 203.0.113.66、trusted=true），断言 Settings 逐字段不变、受信任路由仍是 100.64.0.5。因为 hostname 确实是受信任的，crypto 的 pin-key 守卫拦不住这个向量；真正拦住它的是适配器的 remember 空操作，即本门禁覆盖的对象。变异验证：把 remember 改成写入 trusted_peer_addresses 后门禁立即失败（实测伪造地址覆盖了 100.64.0.5）。该文件被两个平台 crate 用 include! 引入（macos/windows 的 network/peer_cache.rs），一次门禁覆盖两端。第二层（持久化层对未信任 hostname 返回 false 且不写路由；同名异钥拒绝覆盖信任锚）仍由 shared/rust-core/src/crypto/tests.rs::remembering_an_address_for_an_untrusted_hostname_persists_nothing 与 re_pairing_same_hostname_with_a_different_key_is_rejected 保护。"
+    "asserts": "直接钉住被审计的向量本身，而不只是持久化层的信任守卫：构造一个已配对设备（trusted_peer_keys + trusted_peer_addresses[\"trusted-mac\"][\"lan\"] = 100.64.0.5），再喂给**生产**发现适配器的 remember 一轮伪造发现（同一受信任 hostname、攻击者地址 203.0.113.66、trusted=true），断言 Settings 逐字段不变、受信任路由仍是 100.64.0.5。因为 hostname 确实是受信任的，crypto 的 pin-key 守卫拦不住这个向量；真正拦住它的是适配器的 remember 空操作，即本门禁覆盖的对象。变异验证（两端均实测）：把 macos 或 windows 的 remember 改成写入 trusted_peer_addresses，门禁立即失败并显示伪造地址覆盖了 100.64.0.5。该文件被两个平台 crate 用 include! 引入（各自的 network/peer_cache.rs），一次门禁覆盖两端。范围说明：本门禁只覆盖 remember 这一条路径，不证明 discover/prewarm/record_health 或 PeerRefresh::commit 中没有别的发现→持久化通路；经代码核查，生产写入 trusted_peer_addresses 的两处（platform-network-server.rs、platform-network-pool.rs）都在握手验钥之后。第二层（持久化层对未信任 hostname 返回 false 且不写路由；同名异钥拒绝覆盖信任锚）仍由 shared/rust-core/src/crypto/tests.rs::remembering_an_address_for_an_untrusted_hostname_persists_nothing 与 re_pairing_same_hostname_with_a_different_key_is_rejected 保护。"
   },
   "ci_job": [
     "rust-macos",
@@ -21,10 +21,9 @@
   "id": "S3-P1-3",
   "title": "同名不同公钥不再静默覆盖信任锚",
   "code_symbols": [
-    "shared/rust-core/src/crypto.rs:trust_peer_without_save",
-    "shared/platform-peer-cache-tests.rs:a_discovery_round_never_persists_a_route_for_a_trusted_hostname",
-    "macos/src-tauri/src/network/peer_cache.rs:PeerRefreshAdapter::remember",
-    "windows/src-tauri/src/network/peer_cache.rs:PeerRefreshAdapter::remember"
+    "shared/rust-core/src/crypto.rs:remember_peer_address_without_save",
+    "<Adapter as PeerRefreshAdapter>::remember (macos/src-tauri/src/network/peer_cache.rs, windows/src-tauri/src/network/peer_cache.rs)",
+    "shared/platform-peer-cache-tests.rs:a_discovery_round_never_persists_a_route_for_a_trusted_hostname"
   ],
   "trigger": "换机同名无警告覆盖公钥；未认证广播可能篡改可信设备地址。",
   "fix_evidence": "结论：审计所述\"未认证发现直接改写持久地址\"的调用链在**当前代码**中不存在，但该防线此前只有注释、没有测试——真正的守卫是发现适配器的 remember 空操作（macos/windows src-tauri/src/network/peer_cache.rs），它把发现路由只留在本轮内存候选中；持久地址只在握手证明持有固定公钥之后写入。此前记录的门禁（persistence 层对未信任 hostname 返回 false）**不覆盖被审计的向量**：那里的 hostname 本身就是受信任的，pin-key 检查不会拒绝，因此回归掉这个空操作会让审计发现原样重开而所有门禁保持绿色。现已补上共享门禁（include! 进两个平台 crate）并完成变异验证（remember 改为持久化 → 门禁失败，伪造地址覆盖受信任路由）。另一半（同名异钥静默覆盖信任锚）早已修复并有测试。",
