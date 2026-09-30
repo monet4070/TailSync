@@ -23,7 +23,7 @@
 | S3-P1-4 | P1 | fixed_gated | `window_signal_preserves_a_partially_read_frame` | rust-macos, rust-windows |
 | S4-P1-1 | P1 | fixed_gated | `pending_and_inflight_receives_count_toward_the_peer_limit` | rust-macos, rust-windows |
 | S4-P1-2 | P1 | fixed_gated | `pending_file_batch_bytes_exclude_partial_data_already_on_disk` | rust-macos, rust-windows |
-| S4-P1-3 | P1 | fixed_gated | `file_batch_admission_waits_for_the_shared_admission_lock` | rust-macos, rust-windows |
+| S4-P1-3 | P1 | fixed_gated | `quota_eviction_measures_the_storage_tree_once_per_reserve` | rust-macos, rust-windows |
 | S4-P1-4 | P1 | unfixed | — | — |
 | S4-P1-5 | P1 | fixed_gated | `source_validation_is_shared_for_one_two_and_eight_peers` | rust-macos, rust-windows |
 | S4-P2-1 | P2 | fixed_gated | `create_private_dir_all_locks_created_directories` | rust-macos, rust-windows |

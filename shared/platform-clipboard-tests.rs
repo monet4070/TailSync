@@ -414,7 +414,6 @@ async fn transfer_maintenance_tick_sweeps_aged_orphaned_payloads() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-
 /// The storage root is process-global, so every test that reconfigures it must take
 /// this lock; a per-test lock would let two tests clobber each other's root.
 fn storage_root_lock() -> &'static tokio::sync::Mutex<()> {
@@ -439,10 +438,8 @@ fn admission_fixture() -> (
     use tokio::sync::Mutex;
 
     let original = crate::db::get_storage_dir();
-    let root = std::env::temp_dir().join(format!(
-        "tailsync-admission-{:016x}",
-        rand::random::<u64>()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("tailsync-admission-{:016x}", rand::random::<u64>()));
     std::fs::create_dir_all(&root).unwrap();
     crate::db::configure_storage_dir(Some(&root)).unwrap();
     let database = Arc::new(Mutex::new(HistoryDB::new().unwrap()));
@@ -464,7 +461,15 @@ fn admission_fixture() -> (
         tailscale_ip: String::new(),
         iroh_endpoint_id: None,
     };
-    (original, root, database, sync_engine, manifest_a, manifest_b, peer)
+    (
+        original,
+        root,
+        database,
+        sync_engine,
+        manifest_a,
+        manifest_b,
+        peer,
+    )
 }
 
 async fn admit(
