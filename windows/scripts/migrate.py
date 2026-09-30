@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Compatibility entry point for the shared TailSync v1 recovery tool."""
+"""Deprecated compatibility entry point for the shared TailSync v1 recovery tool.
+
+It now only reports that manual recovery is unsupported; legacy history is imported
+automatically on first launch. See shared/scripts/migrate_v1.py.
+"""
 
 import sys
 from pathlib import Path

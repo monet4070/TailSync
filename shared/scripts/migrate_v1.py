@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
-"""Manual TailSync v1 history recovery through the authenticated local API."""
+"""Deprecated manual TailSync v1 recovery tool.
+
+TailSync imports legacy v1 history automatically on first launch: the migration is
+idempotent by content hash, failures are written to `v1-migration-report.json` in the
+application data directory, and the original `history.db` / `.fernet_key` are retained
+and never deleted automatically. Running this script is therefore no longer supported
+and it deliberately does not connect to anything.
+
+Why the old entry point cannot work: it dialled the legacy JSON TCP API on
+`127.0.0.1:19889`, which Windows no longer starts, while macOS serves its local API
+over a Unix socket that requires peer-PID validation and a capability token. A future
+manual path, if one is ever needed, must use that authenticated local IPC rather than
+reopening a production TCP listener.
+
+The row-level helpers below (`read_legacy_rows`, `migrate_rows`) still describe the
+legacy format and the import protocol, and remain unit-tested, so a supported channel
+can reuse them.
+"""
 
 from __future__ import annotations
 
-import argparse
 import base64
-import json
-import os
-import socket
 import sqlite3
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -15,7 +28,10 @@ from typing import Callable, Iterable, Sequence
 DEFAULT_OLD_DIRECTORY = Path.home() / "TailSync_History"
 DEFAULT_OLD_DB = DEFAULT_OLD_DIRECTORY / "history.db"
 DEFAULT_KEY_FILE = DEFAULT_OLD_DIRECTORY / ".fernet_key"
-DEFAULT_API_PORT = 19889
+
+#: Exit code for "this entry point is deprecated", distinct from the old success (0)
+#: and partial-failure (2) codes so existing callers cannot mistake it for a result.
+DEPRECATION_EXIT_CODE = 3
 IMPORT_CHUNK_SIZE = 512 * 1024
 TEXT_DESCRIPTION_PLACEHOLDER = "Encrypted text"
 
@@ -35,22 +51,6 @@ def read_legacy_rows(database_path: Path) -> list[LegacyRow]:
         ).fetchall()
     finally:
         connection.close()
-
-
-def socket_api_request(payload: dict[str, object], port: int) -> dict[str, object]:
-    encoded = json.dumps(payload, separators=(",", ":")).encode()
-    with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
-        connection.settimeout(5)
-        connection.sendall(encoded + b"\n")
-        response = bytearray()
-        while b"\n" not in response:
-            chunk = connection.recv(65536)
-            if not chunk:
-                break
-            response.extend(chunk)
-    if not response:
-        raise RuntimeError("TailSync local API closed without a response")
-    return json.loads(bytes(response).split(b"\n", 1)[0].decode())
 
 
 def migrate_rows(
@@ -129,42 +129,14 @@ def migrate_rows(
     return migrated, skipped
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", type=Path, default=DEFAULT_OLD_DB)
-    parser.add_argument("--key", type=Path, default=DEFAULT_KEY_FILE)
-    parser.add_argument("--port", type=int, default=DEFAULT_API_PORT)
-    return parser.parse_args()
-
-
 def main() -> int:
-    args = parse_args()
-    if not args.database.is_file():
-        print(f"Old DB not found: {args.database}")
-        return 1
-    if not args.key.is_file():
-        print(f"Key file not found: {args.key}")
-        return 1
-
-    api_token = os.environ.get("TAILSYNC_API_TOKEN", "")
-    if not valid_api_token(api_token):
-        print("TAILSYNC_API_TOKEN must contain the daemon's 64-character hexadecimal API token")
-        return 1
-
-    from cryptography.fernet import Fernet
-
-    fernet_key = args.key.read_text(encoding="utf-8").strip()
-    rows = read_legacy_rows(args.database)
-    print(f"Old DB has {len(rows)} entries")
-    print("Manual recovery import started; automatic startup migration remains preferred.")
-    migrated, skipped = migrate_rows(
-        rows,
-        Fernet(fernet_key.encode()).decrypt,
-        api_token,
-        lambda payload: socket_api_request(payload, args.port),
-    )
-    print(f"\nDone: {migrated} migrated, {skipped} skipped")
-    return 0 if skipped == 0 else 2
+    """Report that this entry point is deprecated; never connect to anything."""
+    print("The manual TailSync v1 recovery tool is no longer supported and will not connect.")
+    print("Legacy history is imported automatically on the next launch; the original")
+    print("history.db and .fernet_key are retained and never deleted automatically.")
+    print("If that import reported failures, read v1-migration-report.json from the")
+    print("application data directory instead.")
+    return DEPRECATION_EXIT_CODE
 
 
 if __name__ == "__main__":

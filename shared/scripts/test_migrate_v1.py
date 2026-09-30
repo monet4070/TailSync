@@ -54,6 +54,23 @@ class MigrationTests(unittest.TestCase):
         reconstructed = b"".join(base64.b64decode(request["chunk_b64"]) for request in chunks)
         self.assertEqual(reconstructed, plaintext)
 
+    def test_main_reports_deprecation_and_connects_to_nothing(self):
+        # The manual entry point is deprecated: it must say so, point at the automatic
+        # import, and never dial the removed local TCP API.
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = migrate_v1.main()
+        output = buffer.getvalue()
+
+        self.assertEqual(code, migrate_v1.DEPRECATION_EXIT_CODE)
+        self.assertIn("no longer supported", output)
+        self.assertIn("automatically", output)
+        self.assertIn("v1-migration-report.json", output)
+        self.assertFalse(hasattr(migrate_v1, "socket_api_request"))
+
     def test_bad_ciphertext_is_reported_and_skipped(self):
         messages = []
         migrated, skipped = migrate_v1.migrate_rows(
