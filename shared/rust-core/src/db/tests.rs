@@ -1330,6 +1330,72 @@ fn a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds()
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// S5-P2-1: a deleted database row is not evidence that its payload left the
+/// disk, so the sweep reconciles the payload directories against the surviving
+/// rows and honours a grace period.
+#[test]
+fn orphan_payload_sweep_respects_references_and_the_grace_period() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-orphan-sweep-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let mut db = HistoryDB::open_at(&root).unwrap();
+
+    let source = root.join("source.bin");
+    let body = b"managed payload";
+    std::fs::write(&source, body).unwrap();
+    db.add_file_from_path(
+        "managed.bin",
+        &source,
+        &blake3::hash(body).to_hex().to_string(),
+        body.len() as u64,
+        "peer",
+    )
+    .unwrap();
+    let managed: Vec<_> = std::fs::read_dir(&db.file_history_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(managed.len(), 1, "expected one managed payload");
+
+    // A payload no row references: the delete path committed but failed to remove
+    // the file.
+    let orphan = db.file_history_dir.join("orphan.bin");
+    std::fs::write(&orphan, b"orphan").unwrap();
+
+    assert_eq!(
+        db.sweep_orphan_payloads(std::time::Duration::ZERO).unwrap(),
+        1
+    );
+    assert!(!orphan.exists(), "the unreferenced payload must be removed");
+    assert!(managed[0].exists(), "a referenced payload must survive");
+
+    // The grace period keeps a fresh orphan, and a later sweep removes it.
+    let fresh = db.file_history_dir.join("fresh-orphan.bin");
+    std::fs::write(&fresh, b"fresh").unwrap();
+    assert_eq!(
+        db.sweep_orphan_payloads(std::time::Duration::from_secs(3600))
+            .unwrap(),
+        0,
+        "a payload inside the grace period must be kept"
+    );
+    assert!(fresh.exists());
+    assert_eq!(
+        db.sweep_orphan_payloads(std::time::Duration::ZERO).unwrap(),
+        1
+    );
+    assert!(!fresh.exists());
+    assert_eq!(
+        db.sweep_orphan_payloads(std::time::Duration::ZERO).unwrap(),
+        0,
+        "a second sweep must be a no-op"
+    );
+
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The v9 residual-plaintext cleanup must FAIL when a reader blocks the WAL
 /// truncation, so v9 is not marked complete and the next open retries, instead
 /// of silently leaving pre-v9 plaintext page images in the WAL.

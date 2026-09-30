@@ -481,6 +481,99 @@ pub(crate) fn checkpoint_history_wal(conn: &rusqlite::Connection) -> WalCheckpoi
     }
 }
 
+impl HistoryDB {
+    /// Remove external payload files that no history row references and that are
+    /// older than `grace`. Returns how many files were removed.
+    ///
+    /// Deleting a database row is not evidence that its payload left the disk:
+    /// the post-commit `remove_file` can fail on a busy or read-only file, and the
+    /// row is gone by then. This reconciles the payload directories against the
+    /// rows that still exist instead of trusting the delete path, and the grace
+    /// period keeps it from racing a transfer that is still being written.
+    pub fn sweep_orphan_payloads(
+        &mut self,
+        grace: std::time::Duration,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let live = self.referenced_payload_paths()?;
+        let mut removed = 0_u64;
+        for directory in [
+            self.file_history_dir.clone(),
+            self.image_history_dir.clone(),
+        ] {
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries {
+                let entry = entry?;
+                let path = entry.path();
+                if !entry.file_type()?.is_file() || live.contains(&path) {
+                    continue;
+                }
+                let age = match entry.metadata().and_then(|meta| meta.modified()).ok() {
+                    Some(modified) => match std::time::SystemTime::now().duration_since(modified) {
+                        Ok(age) => age,
+                        // Clock skew: treat as fresh rather than deleting on a guess.
+                        Err(_) => continue,
+                    },
+                    None => {
+                        warn!(
+                            "Could not read the mtime of {}; leaving it in place",
+                            path.display()
+                        );
+                        continue;
+                    }
+                };
+                if age < grace {
+                    continue;
+                }
+                match std::fs::remove_file(&path) {
+                    Ok(()) => removed += 1,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        warn!(
+                            "Could not remove orphaned payload {}: {error}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Paths of every external payload a surviving history row still references.
+    fn referenced_payload_paths(
+        &self,
+    ) -> Result<std::collections::HashSet<std::path::PathBuf>, Box<dyn std::error::Error>> {
+        let mut statement = self.conn.prepare("SELECT type, data FROM history")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut live = std::collections::HashSet::new();
+        for row in rows {
+            let (entry_type, stored) = row?;
+            let (directory, reference) = match entry_type.as_str() {
+                "file" => (
+                    self.file_history_dir.clone(),
+                    decode_file_reference(&stored),
+                ),
+                "image" | "text" => (
+                    self.image_history_dir.clone(),
+                    decode_image_reference(&stored),
+                ),
+                _ => continue,
+            };
+            let Some(reference) = reference else { continue };
+            if let Ok(path) = resolve_file_reference_at(&directory, &reference) {
+                live.insert(path);
+            }
+        }
+        Ok(live)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

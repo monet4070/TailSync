@@ -30,7 +30,7 @@
 | S4-P2-2 | P2 | fixed_gated | `expired_transfer_cleanup_removes_orphans_but_preserves_recent_and_nested_files` | rust-macos, rust-windows |
 | S5-P1-1 | P1 | fixed_gated | `batch_preflight_stops_when_only_inline_history_can_be_evicted` | rust-macos, rust-windows |
 | S5-P1-2 | P1 | fixed_gated | `image_payload_rejects_non_image_entries_before_decrypting` | rust-macos, rust-windows |
-| S5-P2-1 | P2 | partial | `clear_all_reports_removal_failure_and_continues_other_directories` | rust-macos, rust-windows |
+| S5-P2-1 | P2 | partial | `orphan_payload_sweep_respects_references_and_the_grace_period` | rust-macos, rust-windows |
 | S5-P2-2 | P2 | fixed_gated | `a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds` | rust-macos, rust-windows |
 | S6-P0-1 | P0 | fixed_gated | `undefined` | rust-windows |
 | S6-P2-1 | P2 | unfixed | — | — |

@@ -5,10 +5,10 @@
   ],
   "gate": {
     "kind": "unit",
-    "file": "shared/rust-core/src/db/lifecycle.rs",
-    "test": "clear_all_reports_removal_failure_and_continues_other_directories",
+    "file": "shared/rust-core/src/db/tests.rs",
+    "test": "orphan_payload_sweep_respects_references_and_the_grace_period",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "clear_all 容忍一次 remove_file 失败并继续删除其他目录（未覆盖孤儿对账 GC）。"
+    "asserts": "按 DB 引用对账：无引用且超过宽限期的载荷被删除，仍被引用的载荷保留，宽限期内保留，二次清理为空操作。变异验证：忽略引用（会删掉被引用的文件）与忽略宽限期，均使该门禁失败。"
   },
   "ci_job": [
     "rust-macos",
@@ -22,8 +22,8 @@
     "shared/rust-core/src/db/lifecycle.rs"
   ],
   "trigger": "DB 提交后删文件遇读写冲突静默留存，且全库缺少对账孤儿扫掠。",
-  "fix_evidence": "部分：删除循环改为逐目录 warn/continue，不再级联打断；尚无按 DB 引用对账且带宽限期的孤儿 GC。",
+  "fix_evidence": "已实现 sweep_orphan_payloads(grace)：枚举 file-history / image-history，凡\"没有任何 history 行引用\"且\"mtime 超过宽限期\"的普通文件才删除；引用集合由 surviving 行解码 reference 后解析路径得到（对应删除路径里的 SELECT COUNT(*) WHERE data=?1 反向）。**未完成**：周期性调用尚未接线（run_expired_transfer_maintenance 的闭包没有 DB 句柄，需要把 Arc<Mutex<HistoryDB>> 传进该函数及两端 clipboard.rs 调用点），因此该 GC 目前只能手动触发。",
   "status": "partial",
-  "pass_condition": "无引用孤儿在宽限期后可清理，活跃或受引用文件均保留，重启后可重试。",
+  "pass_condition": "对账 GC 的门禁通过；**且**已接入周期性维护（或在文档中明确由谁在何时调用），否则保持 partial。",
   "reopen_condition": "孤儿过期仍占空间，或误删仍受引用文件。"
 }

@@ -601,7 +601,9 @@ fn bulk_storage_file_bytes(root: &Path) -> u64 {
         .sum()
 }
 
-/// Size of the WAL file, or 0 when it is absent.
+/// Size of the WAL file, or 0 when it is absent. Test-only now that the quota
+/// loop credits the whole db/wal/shm trio.
+#[cfg(test)]
 fn wal_bytes(root: &Path) -> u64 {
     fs::metadata(root.join("history-v2.db-wal"))
         .map(|meta| meta.len())
