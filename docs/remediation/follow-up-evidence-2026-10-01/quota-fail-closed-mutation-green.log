@@ -1,0 +1,9 @@
+   Compiling tailsync-core v2.3.1 (/private/tmp/tailsync-follow-up-xkdja33f/src/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.89s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 1 test
+test db::storage::tests::quota_preflight_preserves_rows_when_live_payload_references_are_invalid ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 492 filtered out; finished in 0.04s
+

@@ -1,0 +1,6 @@
+#[path = "/Users/monet/TailSync/TailSync-remediation/shared/rust-core/src/private_fs.rs"]
+pub mod private_fs;
+#[test]
+fn typecheck_real_acl_assertion() {
+    private_fs::assert_owner_only_windows_acl_for_test(std::path::Path::new("probe"), true);
+}

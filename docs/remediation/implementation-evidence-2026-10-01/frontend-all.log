@@ -1,0 +1,13 @@
+
+> tailsync-v2@2.3.1 test
+> vitest run --run
+
+
+ RUN  v4.1.11 /Users/monet/TailSync/TailSync-remediation/windows
+
+
+ Test Files  49 passed (49)
+      Tests  246 passed (246)
+   Start at  00:15:57
+   Duration  6.70s (transform 1.76s, setup 4.89s, import 4.02s, tests 9.63s, environment 31.20s)
+

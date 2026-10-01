@@ -213,6 +213,68 @@ struct ContractMacRuntimeSnapshot: Codable, Sendable {
   }
 }
 
+struct ContractPairingPeerStatus: Codable, Sendable {
+  let `address`: String
+  let `fingerprint`: String
+  let `hostname`: String
+  let `local_confirmed`: Bool
+  let `remote_confirmed`: Bool
+  let `verification_code`: String
+  private enum CodingKeys: String, CodingKey { case `address`, `fingerprint`, `hostname`, `local_confirmed`, `remote_confirmed`, `verification_code` }
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    self.`address` = try c.decode(String.self, forKey: .`address`)
+    self.`fingerprint` = try c.decode(String.self, forKey: .`fingerprint`)
+    self.`hostname` = try c.decode(String.self, forKey: .`hostname`)
+    self.`local_confirmed` = try c.decode(Bool.self, forKey: .`local_confirmed`)
+    self.`remote_confirmed` = try c.decode(Bool.self, forKey: .`remote_confirmed`)
+    self.`verification_code` = try c.decode(String.self, forKey: .`verification_code`)
+  }
+}
+
+enum ContractPairingPhase: String, Codable, Sendable {
+  case `disabled` = "disabled"
+  case `waiting` = "waiting"
+  case `handshaking` = "handshaking"
+  case `verification` = "verification"
+  case `waiting_for_peer` = "waiting_for_peer"
+  case `finalizing` = "finalizing"
+  case `paired` = "paired"
+  case `cancelled` = "cancelled"
+  case `timed_out` = "timed_out"
+  case `locked` = "locked"
+}
+
+struct ContractPairingStatus: Codable, Sendable {
+  let `error`: String?
+  let `expires_at`: UInt64?
+  let `failed_attempts`: UInt8
+  let `max_failures`: UInt8
+  let `pairing_enabled`: Bool
+  let `peer`: ContractPairingPeerStatus?
+  let `pending`: [ContractPendingPairingSummary]
+  let `pending_store_unavailable`: Bool
+  let `phase`: ContractPairingPhase
+  let `remaining_seconds`: UInt64
+  private enum CodingKeys: String, CodingKey { case `error`, `expires_at`, `failed_attempts`, `max_failures`, `pairing_enabled`, `peer`, `pending`, `pending_store_unavailable`, `phase`, `remaining_seconds` }
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    guard c.contains(.`error`) else { throw DecodingError.keyNotFound(CodingKeys.`error`, .init(codingPath: decoder.codingPath, debugDescription: "Required nullable field is missing")) }
+    self.`error` = try c.decodeIfPresent(String.self, forKey: .`error`)
+    guard c.contains(.`expires_at`) else { throw DecodingError.keyNotFound(CodingKeys.`expires_at`, .init(codingPath: decoder.codingPath, debugDescription: "Required nullable field is missing")) }
+    self.`expires_at` = try c.decodeIfPresent(UInt64.self, forKey: .`expires_at`)
+    self.`failed_attempts` = try c.decode(UInt8.self, forKey: .`failed_attempts`)
+    self.`max_failures` = try c.decode(UInt8.self, forKey: .`max_failures`)
+    self.`pairing_enabled` = try c.decode(Bool.self, forKey: .`pairing_enabled`)
+    guard c.contains(.`peer`) else { throw DecodingError.keyNotFound(CodingKeys.`peer`, .init(codingPath: decoder.codingPath, debugDescription: "Required nullable field is missing")) }
+    self.`peer` = try c.decodeIfPresent(ContractPairingPeerStatus.self, forKey: .`peer`)
+    self.`pending` = try c.decode([ContractPendingPairingSummary].self, forKey: .`pending`)
+    self.`pending_store_unavailable` = try c.decode(Bool.self, forKey: .`pending_store_unavailable`)
+    self.`phase` = try c.decode(ContractPairingPhase.self, forKey: .`phase`)
+    self.`remaining_seconds` = try c.decode(UInt64.self, forKey: .`remaining_seconds`)
+  }
+}
+
 struct ContractPeerCandidate: Codable, Sendable {
   let `address`: String
   let `interface`: ContractConnectionInterface
@@ -318,6 +380,23 @@ struct ContractPeersResponse: Codable, Sendable {
     self.`paired_peer_endpoints` = try c.decode([String: String].self, forKey: .`paired_peer_endpoints`)
     self.`peers` = try c.decode([ContractPeerSnapshot].self, forKey: .`peers`)
     self.`self` = try c.decode(ContractLocalDeviceSnapshot.self, forKey: .`self`)
+  }
+}
+
+struct ContractPendingPairingSummary: Codable, Sendable {
+  let `address`: String
+  let `fingerprint`: String
+  let `hostname`: String
+  let `interface`: String
+  let `locally_trusted`: Bool
+  private enum CodingKeys: String, CodingKey { case `address`, `fingerprint`, `hostname`, `interface`, `locally_trusted` }
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    self.`address` = try c.decode(String.self, forKey: .`address`)
+    self.`fingerprint` = try c.decode(String.self, forKey: .`fingerprint`)
+    self.`hostname` = try c.decode(String.self, forKey: .`hostname`)
+    self.`interface` = try c.decode(String.self, forKey: .`interface`)
+    self.`locally_trusted` = try c.decode(Bool.self, forKey: .`locally_trusted`)
   }
 }
 

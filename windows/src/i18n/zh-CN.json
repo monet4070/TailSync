@@ -329,5 +329,9 @@
   "error.storage_unavailable": "存储暂不可用，请重试。",
   "error.unauthorized": "没有执行此操作的权限。",
   "error.protocol_incompatible": "连接的设备使用不兼容的协议。",
-  "error.internal": "TailSync 无法完成此操作。"
+  "error.internal": "TailSync 无法完成此操作。",
+  "settings.pendingPairing": "配对尚未完成。请在两端打开配对并重新核对验证码，或遗忘此设备。",
+  "settings.pendingPeerCompletion": "本机已信任此设备，对端完成情况待确认。请在两端重新配对以恢复。",
+  "settings.resumePairing": "重新配对",
+  "settings.pendingStoreUnavailable": "无法读取配对恢复记录。请使用兼容版本恢复。"
 }

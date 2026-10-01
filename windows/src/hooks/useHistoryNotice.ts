@@ -15,6 +15,11 @@ export interface HistoryNoticeInput {
   message: string;
 }
 
+export interface HistoryNoticeResult {
+  accepted: boolean;
+  retryAfterMs: number;
+}
+
 const NOTICE_TTL_MS: Record<HistoryNoticeLevel, number> = {
   success: 1_500,
   warning: 4_500,
@@ -49,9 +54,9 @@ export function useHistoryNotice() {
     setNotice(null);
   }, []);
 
-  const show = useCallback((input: HistoryNoticeInput) => {
+  const show = useCallback((input: HistoryNoticeInput): HistoryNoticeResult => {
     const now = Date.now();
-    if (now < mutedUntil.current) return;
+    if (now < mutedUntil.current) return { accepted: false, retryAfterMs: mutedUntil.current - now };
     const current = active.current;
     if (current && current.visibleUntil <= now) {
       if (timer.current !== undefined) window.clearTimeout(timer.current);
@@ -59,13 +64,13 @@ export function useHistoryNotice() {
       active.current = null;
       mutedUntil.current = now + NOTICE_COOLDOWN_MS;
       setNotice(null);
-      return;
+      return { accepted: false, retryAfterMs: NOTICE_COOLDOWN_MS };
     }
     if (current && current.key === input.key && current.expiresAt > now) {
       setNotice((previous) => previous && previous.key === input.key
         ? { ...previous, message: input.message, occurrences: previous.occurrences + 1 }
         : previous);
-      return;
+      return { accepted: true, retryAfterMs: 0 };
     }
 
     if (timer.current !== undefined) window.clearTimeout(timer.current);
@@ -83,6 +88,7 @@ export function useHistoryNotice() {
       timer.current = undefined;
       setNotice(null);
     }, Math.max(0, expiresAt - now));
+    return { accepted: true, retryAfterMs: 0 };
   }, []);
 
   return [notice, show, clear] as const;

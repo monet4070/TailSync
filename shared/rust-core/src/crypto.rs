@@ -294,6 +294,23 @@ impl Settings {
         mode: &str,
         address: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.validate_pairing_key(hostname, public_key)?;
+        self.trusted_peer_keys
+            .insert(hostname.to_string(), public_key.to_string());
+        if let Some(address) = address {
+            self.remember_peer_address_without_save(hostname, mode, address)?;
+            self.paired_peer_endpoints
+                .insert(hostname.to_string(), address.to_string());
+        }
+        self.enabled_peers.insert(hostname.to_string(), true);
+        Ok(())
+    }
+
+    pub(crate) fn validate_pairing_key(
+        &self,
+        hostname: &str,
+        public_key: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // A hostname is a mutable, unauthenticated label. Reusing it with a
         // different pinned key would silently replace the trust anchor of the
         // device already known under that name, so reject the conflict and
@@ -307,14 +324,6 @@ impl Settings {
                 .into());
             }
         }
-        self.trusted_peer_keys
-            .insert(hostname.to_string(), public_key.to_string());
-        if let Some(address) = address {
-            self.remember_peer_address_without_save(hostname, mode, address)?;
-            self.paired_peer_endpoints
-                .insert(hostname.to_string(), address.to_string());
-        }
-        self.enabled_peers.insert(hostname.to_string(), true);
         Ok(())
     }
 
@@ -399,14 +408,23 @@ impl Settings {
 
     pub fn forget_peer(&mut self, hostname: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut updated = self.clone();
-        updated.trusted_peer_keys.remove(hostname);
-        updated.trusted_peer_addresses.remove(hostname);
-        updated.paired_peer_endpoints.remove(hostname);
-        updated.enabled_peers.remove(hostname);
+        updated.remove_peer_settings(hostname);
         updated.save()?;
         *self = updated;
         crate::sync::retire_outgoing_batches_for_peer(hostname);
         Ok(())
+    }
+
+    pub(crate) fn forget_peer_without_save(&mut self, hostname: &str) {
+        self.remove_peer_settings(hostname);
+        crate::sync::retire_outgoing_batches_for_peer(hostname);
+    }
+
+    fn remove_peer_settings(&mut self, hostname: &str) {
+        self.trusted_peer_keys.remove(hostname);
+        self.trusted_peer_addresses.remove(hostname);
+        self.paired_peer_endpoints.remove(hostname);
+        self.enabled_peers.remove(hostname);
     }
 }
 

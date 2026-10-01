@@ -5,15 +5,15 @@
   ],
   "gate": {
     "kind": "unit",
-    "file": "macos/src-tauri/src/api/tests.rs",
-    "test": "runtime_notification_overflow_is_reported_not_hidden",
+    "file": "macos/src-tauri/src/api/transport.rs",
+    "test": "authenticated_runtime_route_keeps_notification_window_consistent_during_overflow",
     "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib",
-    "asserts": "有界缓冲溢出时必须可检测：push 超过 MAX_RUNTIME_NOTIFICATIONS 后 dropped 递增、earliest_available_id 前进到被淘汰之外，且 since(旧游标) 返回的窗口起点高于游标（客户端据此判断 gap）。另有 service_instance 稳定非零、notification_buffer_state 与缓冲一致两项断言。"
+    "asserts": "通过真实认证 Unix wait_runtime_snapshot 路由，确定性注入缓冲溢出，JSON 中 notifications/earliest/dropped 必须属于同一窗口；另保留 helper 级原子性与 Swift gap/restart 测试。"
   },
   "ci_job": [
     "rust-macos"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "原子窗口 gate、Swift gap/restart policy 本机通过；真实慢客户端、daemon 重启和原生通知展示待验。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S6-P2-1",
   "title": "通知环形缓冲溢出需可检测的 gap/实例标识",
@@ -23,6 +23,6 @@
   "trigger": "缓冲固定 32 条，客户端落后时中间错误提示被静默丢弃且无告警。",
   "fix_evidence": "版本化快照新增三个字段：notification_earliest_available_id（仍可读的最早 id）、notification_dropped_total（本进程内被淘汰的通知数）、service_instance（进程标识）。RuntimeNotificationBuffer 记录 dropped 并提供 earliest_available_id；routes.rs 的 runtime_snapshot_data 填充三者。客户端 RuntimeNotificationPolicy.notificationCursorRecovery 据此返回 contiguous / gap(missed) / daemonRestarted：gap 或重启时把游标重置为快照基线并打印丢失条数（不再静默）。客户端与 daemon 的兼容口径已核实并如实记录：生成的 Swift/TS 解码器对这三个字段使用必需解码，因此它们与快照中其它非空字段一样要求**应用与 daemon 一同升级**；ApiClientRuntime 改为直接读解码后的契约值（原先的 `?? 0` 兜底是死代码，会误导为\"旧 daemon 兼容路径\"）。策略中 `earliestAvailable == 0` 的分支是防御性默认值，不是旧 daemon 路径。契约按文档路径更新（改 DTO → 运行 generate-local-contracts.mjs → 生成物随提交），check-local-contracts --check 通过。",
   "status": "fixed_gated",
-  "pass_condition": "溢出、gap 与 daemon 重启三种情形均有测试（Rust 缓冲语义 + Swift 恢复策略）；契约生成物已提交且 --check 通过；**应用与 daemon 需同步升级这一要求已明确记录**（非向后兼容的新增字段）。",
+  "pass_condition": "溢出、gap 与 daemon 重启三种情形均有测试（Rust 缓冲语义 + Swift 恢复策略）；契约生成物随源码保留且 --check 通过；**应用与 daemon 需同步升级这一要求已明确记录**（非向后兼容的新增字段）。",
   "reopen_condition": "漏通知却继续使用旧游标而无提示。"
 }

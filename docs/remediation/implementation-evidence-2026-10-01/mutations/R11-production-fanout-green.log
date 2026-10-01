@@ -1,0 +1,42 @@
+   Compiling tailsync v2.3.1 (/private/tmp/tailsync-implementation.BzV6PH/mutation-src/macos/src-tauri)
+warning: unused import: `history::*`
+  --> src/commands.rs:22:9
+   |
+22 | pub use history::*;
+   |         ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `peers::*`
+  --> src/commands.rs:23:9
+   |
+23 | pub use peers::*;
+   |         ^^^^^^^^
+
+warning: unused import: `platform::*`
+  --> src/commands.rs:24:9
+   |
+24 | pub use platform::*;
+   |         ^^^^^^^^^^^
+
+warning: unused import: `settings::*`
+  --> src/commands.rs:25:9
+   |
+25 | pub use settings::*;
+   |         ^^^^^^^^^^^
+
+warning: unused import: `themes::*`
+  --> src/commands.rs:27:9
+   |
+27 | pub use themes::*;
+   |         ^^^^^^^^^
+
+warning: `tailsync` (lib test) generated 5 warnings (run `cargo fix --lib -p tailsync --tests` to apply 5 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.33s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri/target/debug/deps/tailsync_lib-a553920d99159032)
+
+running 1 test
+test clipboard::tests::production_fanout_and_resume_reuse_source_hashes_and_check_completion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.03s
+

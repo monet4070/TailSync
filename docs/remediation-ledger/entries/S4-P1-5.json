@@ -6,15 +6,15 @@
   "gate": {
     "kind": "unit",
     "file": "shared/platform-clipboard-tests.rs",
-    "test": "source_validation_is_shared_for_one_two_and_eight_peers",
+    "test": "production_fanout_and_resume_reuse_source_hashes_and_check_completion",
     "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets",
-    "asserts": "一个已验证 Arc 被 1/2/8 个对端视图共享，源校验每个文件恰好执行一次，与对端数无关。该文件由 macos/windows 的 clipboard/tests.rs include!，不属于 shared/rust-core crate。"
+    "asserts": "从真实 deliver_prepared_batch_to_peers/send_validated_batch_to_peer 发到 1/2/8 peers，每 peer 注入一次 FileResume 走 restart_batch；源文件 full-hash 只有准备/共享预检/完成校验共三遍，不按 peer/restart 放大。交付后源变化仍拒绝成功。对手只模拟 ACK，不宣称设备传输。逐 peer 重哈希变异实测失败。"
   },
   "ci_job": [
     "rust-macos",
     "rust-windows"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "生产 orchestration + ACK seam 在 macOS 通过并做变异；Windows 共享 include 的新 gate 等原生 CI，真实双机慢客户端/断线另行验收。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S4-P1-5",
   "title": "源文件校验跨对端共享，消除逐对端重哈希",

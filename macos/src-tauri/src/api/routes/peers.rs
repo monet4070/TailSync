@@ -123,20 +123,12 @@ pub(super) async fn handle(command: PeersCommand, req: Request, state: &ApiState
                 };
             }
             let result = state
-                .settings
-                .lock()
+                .pairing
+                .revoke_peer(hostname)
                 .await
-                .forget_peer(hostname)
                 .map_err(|error| error.to_string());
-            if result.is_ok() {
-                state.pool.lock().await.disconnect_hostname(hostname);
-                network::clear_protocol_compatibility_error(hostname);
-                // A half-confirmed pairing for this device would otherwise
-                // outlive the device itself. The SwiftUI client revokes over
-                // this socket route, so clearing the note only in the Tauri
-                // command would leave it behind on macOS.
-                state.pairing.forget_pending(hostname).await;
-            }
+            state.pool.lock().await.disconnect_hostname(hostname);
+            network::clear_protocol_compatibility_error(hostname);
             match result {
                 Ok(()) => Response {
                     ok: true,

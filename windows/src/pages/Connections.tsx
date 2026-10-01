@@ -126,11 +126,12 @@ export function Connections() {
   };
 
   const handleForget = async (peer: PeerDevice) => {
+    setErrorMessage("");
     try {
       await forgetPeer(peer.hostname);
       await refreshDevices();
     } catch (error) {
-      console.error("Forget peer failed:", error);
+      setErrorMessage(String(error));
     }
   };
 

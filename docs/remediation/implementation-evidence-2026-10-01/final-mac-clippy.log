@@ -1,0 +1,4 @@
+    Checking tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+    Checking tailsync-runtime v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/tailsync-runtime)
+    Checking tailsync v2.3.1 (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.20s

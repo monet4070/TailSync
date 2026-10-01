@@ -1,0 +1,21 @@
+{
+  "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+  "macos_version": "27.0",
+  "macos_build": "26A428",
+  "cpu": "Apple M4",
+  "memory_bytes": "17179869184",
+  "build": "debug",
+  "tokio_worker_threads": 4,
+  "transport": "Noise authenticated duplex 256 KiB",
+  "file_count": 16,
+  "file_bytes": 268435456,
+  "chunk_ack_delay_ms": 250,
+  "text_period_ms": 50,
+  "text_samples_per_run": 1200,
+  "meta_ack_delay_ms": [
+    0,
+    50,
+    500
+  ],
+  "rounds_per_scenario": 3
+}

@@ -115,6 +115,36 @@ export type MacRuntimeSnapshot = {
 function validMacRuntimeSnapshot(value: unknown): value is MacRuntimeSnapshot { return (isRecord(value) && (Object.hasOwn(value, "history_version") && (typeof value["history_version"] === "number" && Number.isSafeInteger(value["history_version"]) && value["history_version"] >= 0)) && (Object.hasOwn(value, "notification_dropped_total") && (typeof value["notification_dropped_total"] === "number" && Number.isSafeInteger(value["notification_dropped_total"]) && value["notification_dropped_total"] >= 0)) && (Object.hasOwn(value, "notification_earliest_available_id") && (typeof value["notification_earliest_available_id"] === "number" && Number.isSafeInteger(value["notification_earliest_available_id"]) && value["notification_earliest_available_id"] >= 0)) && (Object.hasOwn(value, "notifications") && (Array.isArray(value["notifications"]) && value["notifications"].every(item => validRuntimeNotification(item)))) && (Object.hasOwn(value, "progress") && (validFileProgress(value["progress"]) || (value["progress"] === null))) && (Object.hasOwn(value, "revision") && (typeof value["revision"] === "number" && Number.isSafeInteger(value["revision"]) && value["revision"] >= 0)) && (Object.hasOwn(value, "service_instance") && (typeof value["service_instance"] === "number" && Number.isSafeInteger(value["service_instance"]) && value["service_instance"] >= 0)) && (Object.hasOwn(value, "status") && validDaemonStatus(value["status"])) && (Object.hasOwn(value, "storage") && validStorageStatus(value["storage"])) && (Object.hasOwn(value, "sync_enabled") && (typeof value["sync_enabled"] === "boolean"))); }
 export function decodeMacRuntimeSnapshot(value: unknown): MacRuntimeSnapshot { if (!validMacRuntimeSnapshot(value)) throw new Error("Invalid MacRuntimeSnapshot response"); return value; }
 
+export type PairingPeerStatus = {
+  "address": string;
+  "fingerprint": string;
+  "hostname": string;
+  "local_confirmed": boolean;
+  "remote_confirmed": boolean;
+  "verification_code": string;
+};
+function validPairingPeerStatus(value: unknown): value is PairingPeerStatus { return (isRecord(value) && (Object.hasOwn(value, "address") && (typeof value["address"] === "string")) && (Object.hasOwn(value, "fingerprint") && (typeof value["fingerprint"] === "string")) && (Object.hasOwn(value, "hostname") && (typeof value["hostname"] === "string")) && (Object.hasOwn(value, "local_confirmed") && (typeof value["local_confirmed"] === "boolean")) && (Object.hasOwn(value, "remote_confirmed") && (typeof value["remote_confirmed"] === "boolean")) && (Object.hasOwn(value, "verification_code") && (typeof value["verification_code"] === "string"))); }
+export function decodePairingPeerStatus(value: unknown): PairingPeerStatus { if (!validPairingPeerStatus(value)) throw new Error("Invalid PairingPeerStatus response"); return value; }
+
+export type PairingPhase = "disabled" | "waiting" | "handshaking" | "verification" | "waiting_for_peer" | "finalizing" | "paired" | "cancelled" | "timed_out" | "locked";
+function validPairingPhase(value: unknown): value is PairingPhase { return (typeof value === "string" && (value === "disabled" || value === "waiting" || value === "handshaking" || value === "verification" || value === "waiting_for_peer" || value === "finalizing" || value === "paired" || value === "cancelled" || value === "timed_out" || value === "locked")); }
+export function decodePairingPhase(value: unknown): PairingPhase { if (!validPairingPhase(value)) throw new Error("Invalid PairingPhase response"); return value; }
+
+export type PairingStatus = {
+  "error": string | null;
+  "expires_at": number | null;
+  "failed_attempts": number;
+  "max_failures": number;
+  "pairing_enabled": boolean;
+  "peer": PairingPeerStatus | null;
+  "pending": Array<PendingPairingSummary>;
+  "pending_store_unavailable": boolean;
+  "phase": PairingPhase;
+  "remaining_seconds": number;
+};
+function validPairingStatus(value: unknown): value is PairingStatus { return (isRecord(value) && (Object.hasOwn(value, "error") && ((typeof value["error"] === "string") || (value["error"] === null))) && (Object.hasOwn(value, "expires_at") && ((typeof value["expires_at"] === "number" && Number.isSafeInteger(value["expires_at"]) && value["expires_at"] >= 0) || (value["expires_at"] === null))) && (Object.hasOwn(value, "failed_attempts") && (typeof value["failed_attempts"] === "number" && Number.isSafeInteger(value["failed_attempts"]) && value["failed_attempts"] >= 0 && value["failed_attempts"] <= 255)) && (Object.hasOwn(value, "max_failures") && (typeof value["max_failures"] === "number" && Number.isSafeInteger(value["max_failures"]) && value["max_failures"] >= 0 && value["max_failures"] <= 255)) && (Object.hasOwn(value, "pairing_enabled") && (typeof value["pairing_enabled"] === "boolean")) && (Object.hasOwn(value, "peer") && (validPairingPeerStatus(value["peer"]) || (value["peer"] === null))) && (Object.hasOwn(value, "pending") && (Array.isArray(value["pending"]) && value["pending"].every(item => validPendingPairingSummary(item)))) && (Object.hasOwn(value, "pending_store_unavailable") && (typeof value["pending_store_unavailable"] === "boolean")) && (Object.hasOwn(value, "phase") && validPairingPhase(value["phase"])) && (Object.hasOwn(value, "remaining_seconds") && (typeof value["remaining_seconds"] === "number" && Number.isSafeInteger(value["remaining_seconds"]) && value["remaining_seconds"] >= 0))); }
+export function decodePairingStatus(value: unknown): PairingStatus { if (!validPairingStatus(value)) throw new Error("Invalid PairingStatus response"); return value; }
+
 export type PeerCandidate = {
   "address": string;
   "interface": ConnectionInterface;
@@ -172,6 +202,16 @@ export type PeersResponse = {
 };
 function validPeersResponse(value: unknown): value is PeersResponse { return (isRecord(value) && (Object.hasOwn(value, "discovery_error") && ((typeof value["discovery_error"] === "string") || (value["discovery_error"] === null))) && (Object.hasOwn(value, "paired_peer_endpoints") && (isRecord(value["paired_peer_endpoints"]) && Object.values(value["paired_peer_endpoints"]).every(item => (typeof item === "string")))) && (Object.hasOwn(value, "peers") && (Array.isArray(value["peers"]) && value["peers"].every(item => validPeerSnapshot(item)))) && (Object.hasOwn(value, "self") && validLocalDeviceSnapshot(value["self"]))); }
 export function decodePeersResponse(value: unknown): PeersResponse { if (!validPeersResponse(value)) throw new Error("Invalid PeersResponse response"); return value; }
+
+export type PendingPairingSummary = {
+  "address": string;
+  "fingerprint": string;
+  "hostname": string;
+  "interface": string;
+  "locally_trusted": boolean;
+};
+function validPendingPairingSummary(value: unknown): value is PendingPairingSummary { return (isRecord(value) && (Object.hasOwn(value, "address") && (typeof value["address"] === "string")) && (Object.hasOwn(value, "fingerprint") && (typeof value["fingerprint"] === "string")) && (Object.hasOwn(value, "hostname") && (typeof value["hostname"] === "string")) && (Object.hasOwn(value, "interface") && (typeof value["interface"] === "string")) && (Object.hasOwn(value, "locally_trusted") && (typeof value["locally_trusted"] === "boolean"))); }
+export function decodePendingPairingSummary(value: unknown): PendingPairingSummary { if (!validPendingPairingSummary(value)) throw new Error("Invalid PendingPairingSummary response"); return value; }
 
 export type PreviewBatchNavigation = {
   "batch_id": string;

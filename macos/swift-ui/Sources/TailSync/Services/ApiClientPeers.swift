@@ -231,14 +231,7 @@ extension ApiClient {
     }
   }
 
-  struct PairingPeerStatus: Decodable {
-    let hostname: String
-    let address: String
-    let fingerprint: String
-    let verification_code: String
-    let local_confirmed: Bool
-    let remote_confirmed: Bool
-  }
+  typealias PairingPeerStatus = ContractPairingPeerStatus
 
   struct PairingStatus: Decodable {
     let pairing_enabled: Bool
@@ -249,6 +242,8 @@ extension ApiClient {
     let max_failures: Int
     let peer: PairingPeerStatus?
     let error: String?
+    let pending: [ContractPendingPairingSummary]?
+    let pending_store_unavailable: Bool?
   }
 
   func getPairingStatus() async throws -> PairingStatus {

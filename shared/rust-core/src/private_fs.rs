@@ -23,6 +23,103 @@ use std::path::Path;
 #[cfg(windows)]
 static PRIVATE_FILE_RESTRICTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// A lease is installed before a writer creates its temporary. GC holds the same
+// registry lock while unlinking, so an aged active writer cannot race cleanup.
+static ATOMIC_WRITERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+pub(crate) struct AtomicWriteLease(std::path::PathBuf);
+impl AtomicWriteLease {
+    pub(crate) fn acquire(path: &Path) -> Self {
+        let key = atomic_temp_key(path);
+        ATOMIC_WRITERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.clone());
+        Self(key)
+    }
+}
+impl Drop for AtomicWriteLease {
+    fn drop(&mut self) {
+        ATOMIC_WRITERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+fn atomic_temp_key(path: &Path) -> std::path::PathBuf {
+    path.parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .and_then(|parent| path.file_name().map(|name| parent.join(name)))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Only recognized PID-bearing writer names can be collected. Legacy temps
+/// without an owner PID and arbitrary .tmp files remain untouched.
+pub(crate) fn collect_inactive_atomic_temp(path: &Path) -> io::Result<bool> {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(false);
+    };
+    let owner = if let Some(stem) = name
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".tmp"))
+    {
+        stem.rsplit_once('.').map(|(_, owner)| owner)
+    } else {
+        name.rsplit_once(".tmp.").map(|(_, owner)| owner)
+    };
+    let Some((pid, nonce)) = owner.and_then(|owner| owner.split_once('-')) else {
+        return Ok(false);
+    };
+    if nonce.len() != 16 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(false);
+    }
+    let Some(pid) = pid.parse::<u32>().ok().filter(|pid| *pid > 0) else {
+        return Ok(false);
+    };
+    let writers = ATOMIC_WRITERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if writers.contains(&atomic_temp_key(path))
+        || (pid != std::process::id() && process_may_be_running(pid))
+    {
+        return Ok(false);
+    }
+    std::fs::remove_file(path)?;
+    Ok(true)
+}
+#[cfg(unix)]
+fn process_may_be_running(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return true;
+    };
+    (unsafe { libc::kill(pid, 0) == 0 })
+        || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+#[cfg(windows)]
+fn process_may_be_running(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE},
+        System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return io::Error::last_os_error().raw_os_error() != Some(ERROR_INVALID_PARAMETER as i32);
+    }
+    let mut code = 0;
+    let alive =
+        unsafe { GetExitCodeProcess(process, &mut code) } == 0 || code == STILL_ACTIVE as u32;
+    unsafe {
+        CloseHandle(process);
+    }
+    alive
+}
+#[cfg(not(any(unix, windows)))]
+fn process_may_be_running(_pid: u32) -> bool {
+    true
+}
+
 /// Restrict an existing directory to the owning user.
 pub fn restrict_private_dir(path: &Path) -> io::Result<()> {
     ensure_expected_type(path, true)?;
@@ -72,7 +169,7 @@ fn has_multiple_hard_links(_path: &Path) -> io::Result<bool> {
 }
 
 fn break_hard_link(path: &Path) -> io::Result<()> {
-    let (temporary, mut output) = allocate_private_temporary(path)?;
+    let (temporary, mut output, _lease) = allocate_private_temporary(path)?;
     let result = (|| -> io::Result<()> {
         let mut input = File::open(path)?;
         io::copy(&mut input, &mut output)?;
@@ -301,7 +398,7 @@ pub fn copy_private_file(source: &Path, target: &Path) -> io::Result<u64> {
 /// synced before the rename, and the parent directory is synced afterwards
 /// on Unix so the rename itself is durable.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let (temporary, mut file) = allocate_private_temporary(path)?;
+    let (temporary, mut file, _lease) = allocate_private_temporary(path)?;
     let result = (|| -> io::Result<()> {
         let write = file.write_all(bytes).and_then(|_| file.sync_all());
         if let Err(error) = write {
@@ -319,9 +416,16 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
-fn allocate_private_temporary(path: &Path) -> io::Result<(std::path::PathBuf, File)> {
+fn allocate_private_temporary(
+    path: &Path,
+) -> io::Result<(std::path::PathBuf, File, AtomicWriteLease)> {
     for _ in 0..8 {
-        let temporary = path.with_extension(format!("tmp.{:016x}", rand::random::<u64>()));
+        let temporary = path.with_extension(format!(
+            "tmp.{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let lease = AtomicWriteLease::acquire(&temporary);
         match create_new_private_file(&temporary) {
             Ok(file) => {
                 // create_new proves this path cannot already be a hard link.
@@ -332,7 +436,7 @@ fn allocate_private_temporary(path: &Path) -> io::Result<(std::path::PathBuf, Fi
                     let _ = std::fs::remove_file(&temporary);
                     return Err(error);
                 }
-                return Ok((temporary, file));
+                return Ok((temporary, file, lease));
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -498,17 +602,68 @@ fn set_private_windows_acl(path: &Path, directory: bool) -> io::Result<()> {
 #[cfg(windows)]
 fn set_private_windows_acl_once(path: &Path, directory: bool) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        SDDL_REVISION_1,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows_sys::Win32::Security::{
-        GetTokenInformation, SetFileSecurityW, TokenUser, DACL_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
+        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     };
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let user_sid = current_windows_user_sid()?;
 
+    // OW is the Windows Owner Rights SID. An explicit process-user ACE keeps
+    // ACL updates idempotent when Windows assigns a group as the object owner.
+    let sddl = if directory {
+        format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;OW)")
+    } else {
+        format!("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{user_sid})(A;;FA;;;OW)")
+    };
+    let sddl = sddl
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut descriptor = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let result = unsafe {
+        SetFileSecurityW(
+            path.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        )
+    };
+    unsafe {
+        LocalFree(descriptor);
+    }
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn current_windows_user_sid() -> io::Result<String> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, LocalFree},
+        Security::Authorization::ConvertSidToStringSidW,
+        Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
     let mut token = std::ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(io::Error::last_os_error());
@@ -556,51 +711,93 @@ fn set_private_windows_acl_once(path: &Path, directory: bool) -> io::Result<()> 
     unsafe {
         CloseHandle(token);
     }
-    let user_sid = user_sid?;
+    user_sid
+}
 
-    // OW is the Windows Owner Rights SID. An explicit process-user ACE keeps
-    // ACL updates idempotent when Windows assigns a group as the object owner.
-    let sddl = if directory {
-        format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;OW)")
-    } else {
-        format!("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{user_sid})(A;;FA;;;OW)")
+#[cfg(all(test, windows))]
+pub(crate) fn assert_owner_only_windows_acl_for_test(path: &Path, directory: bool) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+        },
+        Security::{GetFileSecurityW, DACL_SECURITY_INFORMATION},
     };
-    let sddl = sddl
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let path = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let mut descriptor = std::ptr::null_mut();
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    let result = unsafe {
-        SetFileSecurityW(
-            path.as_ptr(),
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            descriptor,
-        )
-    };
+    let name: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut required = 0;
     unsafe {
-        LocalFree(descriptor);
+        GetFileSecurityW(
+            name.as_ptr(),
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            0,
+            &mut required,
+        );
     }
-    if result == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    assert!(required > 0);
+    let mut descriptor = vec![0usize; (required as usize).div_ceil(std::mem::size_of::<usize>())];
+    assert_ne!(
+        unsafe {
+            GetFileSecurityW(
+                name.as_ptr(),
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        },
+        0
+    );
+    let mut output = std::ptr::null_mut();
+    assert_ne!(
+        unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.as_ptr().cast_mut().cast(),
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut output,
+                std::ptr::null_mut(),
+            )
+        },
+        0
+    );
+    let mut length = 0;
+    unsafe {
+        while *output.add(length) != 0 {
+            length += 1;
+        }
     }
+    let sddl = String::from_utf16(unsafe { std::slice::from_raw_parts(output, length) }).unwrap();
+    unsafe {
+        LocalFree(output.cast());
+    }
+    assert!(
+        sddl.split('(').next().unwrap().contains('P'),
+        "unprotected DACL: {sddl}"
+    );
+    let user = current_windows_user_sid().unwrap();
+    let mut trustees = std::collections::HashSet::new();
+    for ace in sddl.split('(').skip(1) {
+        let fields: Vec<_> = ace.trim_end_matches(')').split(';').collect();
+        assert_eq!(fields.len(), 6);
+        assert_eq!(fields[0], "A");
+        assert!(
+            matches!(fields[5], "SY" | "BA" | "OW") || fields[5] == user,
+            "unexpected access grant: {sddl}"
+        );
+        if directory {
+            assert!(fields[1].contains("OI") && fields[1].contains("CI"));
+        }
+        trustees.insert(fields[5]);
+    }
+    assert!(
+        trustees.contains(user.as_str())
+            && trustees.contains("SY")
+            && trustees.contains("BA")
+            && trustees.contains("OW"),
+        "missing owner policy: {sddl}"
+    );
 }
 
 #[cfg(test)]
@@ -869,6 +1066,66 @@ mod tests {
         std::fs::write(&legacy, b"managed copy").unwrap();
         assert_eq!(std::fs::read(&source).unwrap(), b"original");
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod atomic_temp_lifecycle_tests {
+    use super::*;
+    #[test]
+    fn atomic_writer_exit_probe() {
+        let Some(directory) = std::env::var_os("TAILSYNC_ATOMIC_EXIT_PROBE") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(directory).join(format!(
+            ".payload.{}-0123456789abcdef.tmp",
+            std::process::id()
+        ));
+        let _lease = AtomicWriteLease::acquire(&path);
+        let mut file = create_private_file(&path).unwrap();
+        file.write_all(b"crash residue").unwrap();
+        file.sync_all().unwrap();
+        // Give the parent a live foreign writer to inspect, then exit without Drop.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::process::exit(74);
+    }
+    #[test]
+    fn dead_writer_temp_is_collectible_after_a_process_restart() {
+        let root =
+            std::env::temp_dir().join(format!("tailsync-dead-writer-{}", rand::random::<u64>()));
+        create_private_dir_all(&root).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "private_fs::atomic_temp_lifecycle_tests::atomic_writer_exit_probe",
+            ])
+            .env("TAILSYNC_ATOMIC_EXIT_PROBE", &root)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let path = root.join(format!(".payload.{}-0123456789abcdef.tmp", child.id()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !path.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !collect_inactive_atomic_temp(&path).unwrap(),
+            "foreign live writer was removed"
+        );
+        assert_eq!(child.wait().unwrap().code(), Some(74));
+        assert!(collect_inactive_atomic_temp(&path).unwrap());
+        assert!(!path.exists());
+        // A running foreign process must be protected even without our registry.
+        let live = root.join(format!(
+            ".payload.{}-0123456789abcdef.tmp",
+            std::process::id()
+        ));
+        std::fs::write(&live, b"active").unwrap();
+        let lease = AtomicWriteLease::acquire(&live);
+        assert!(!collect_inactive_atomic_temp(&live).unwrap());
+        drop(lease);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

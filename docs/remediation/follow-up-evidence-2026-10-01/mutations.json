@@ -1,0 +1,233 @@
+[
+  {
+    "name": "quota-fail-closed",
+    "file": "shared/rust-core/src/db/storage.rs",
+    "test": "quota_preflight_preserves_rows_when_live_payload_references_are_invalid",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "shared/rust-core/Cargo.toml",
+      "--lib",
+      "quota_preflight_preserves_rows_when_live_payload_references_are_invalid",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "3db3570dd969db8a980277a10aa68253b02874f2127cbf9d2e752db4bcc3ce6c",
+    "mutation_sha256": "124bfe378f66ae06fe12b1ca87ba640e67afeedc4a7c06ba7b14e3c940c3730e",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r8-checkpoint-timeout",
+    "file": "shared/rust-core/src/db/lifecycle.rs",
+    "test": "default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "shared/rust-core/Cargo.toml",
+      "--lib",
+      "default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "8a1e52f420881c05e0b981ae0fdb92f6354b4e95d92b18f8696c95bf931e944f",
+    "mutation_sha256": "4308e2b3773a6db48722e67f1c46318d3cba6884d3e8220fda1e9b09453cf90d",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r12-temp-gc",
+    "file": "shared/rust-core/src/db/lifecycle.rs",
+    "test": "orphan_sweep_collects_owned_temps_and_preserves_live_writers",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "shared/rust-core/Cargo.toml",
+      "--lib",
+      "orphan_sweep_collects_owned_temps_and_preserves_live_writers",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "8a1e52f420881c05e0b981ae0fdb92f6354b4e95d92b18f8696c95bf931e944f",
+    "mutation_sha256": "c64734e2f7a58ba7a5b7b16445182c5892d2cb949b0a096c9975caecb8689e73",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r1-batch-rollback",
+    "file": "shared/rust-core/src/db.rs",
+    "test": "batch_rollback_preserves_favorited_payloads_with_case_aliases",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "shared/rust-core/Cargo.toml",
+      "--lib",
+      "batch_rollback_preserves_favorited_payloads_with_case_aliases",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "6e3de905c5334f434c9717c8af488c384c45b7e888ade6670d6fe7747d055303",
+    "mutation_sha256": "6af2205f96f0de2dc4d016fbcf0a261880ba825d3c9d673827e8168fd70526bd",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r2-late-install",
+    "file": "shared/rust-core/src/pairing/manager.rs",
+    "test": "revoke_peer_closes_window_before_a_late_session_is_installed",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "shared/rust-core/Cargo.toml",
+      "--lib",
+      "revoke_peer_closes_window_before_a_late_session_is_installed",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "d8c9f315390abc4e4d99f68f3b05e29c7a6ca263f037ccffe4529954eed90454",
+    "mutation_sha256": "a89791887dd80e21b99f49729f2026f4bf57d72508e8b991ca2bc66dd695f269",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r7-authenticated-route",
+    "file": "macos/src-tauri/src/api/routes.rs",
+    "test": "authenticated_runtime_route_keeps_notification_window_consistent_during_overflow",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "macos/src-tauri/Cargo.toml",
+      "--lib",
+      "authenticated_runtime_route_keeps_notification_window_consistent_during_overflow",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "7d5f710be09ee88537daf675634eed3dcfe05abd2270135fc1132a2aab5c0041",
+    "mutation_sha256": "db75e1e8ed1fd7d2f77c153ffa531d5964febb772ce07547c96db2aba749de27",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r8-receipt",
+    "file": "shared/platform-network-server.rs",
+    "test": "production_admission_and_gc_run_storage_work_off_the_async_thread",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "macos/src-tauri/Cargo.toml",
+      "--lib",
+      "production_admission_and_gc_run_storage_work_off_the_async_thread",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "5cfb99ab882003538725f1f25c0e6f77c71c7e782991a57d6e9c52bb9279d154",
+    "mutation_sha256": "99a9c6efbb8bd6fcbbf3a5236b29e2dbd779413cbfb72c0840fecbe4c311095c",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r8-quota",
+    "file": "shared/platform-network-server.rs",
+    "test": "production_admission_and_gc_run_storage_work_off_the_async_thread",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "macos/src-tauri/Cargo.toml",
+      "--lib",
+      "production_admission_and_gc_run_storage_work_off_the_async_thread",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "5cfb99ab882003538725f1f25c0e6f77c71c7e782991a57d6e9c52bb9279d154",
+    "mutation_sha256": "169a7018d5cc1abfd381f7aa1641e4455b9260749e807e091a27ab51fca92053",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r8-gc",
+    "file": "shared/platform-clipboard-transfer.rs",
+    "test": "production_admission_and_gc_run_storage_work_off_the_async_thread",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "macos/src-tauri/Cargo.toml",
+      "--lib",
+      "production_admission_and_gc_run_storage_work_off_the_async_thread",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "d8b8fcccd7153acd955f9642e7a2a5d31117ec597fbf718ab65e2fb34a3e04b6",
+    "mutation_sha256": "1b67ab285d15d0d085b79978e229527c55514c229602ced33956af376b5c69d3",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r11-long-poll",
+    "file": "macos/src-tauri/src/api/transport.rs",
+    "test": "authenticated_long_poll_disconnect_returns_connection_permit",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "macos/src-tauri/Cargo.toml",
+      "--lib",
+      "authenticated_long_poll_disconnect_returns_connection_permit",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "0a66ee86b756e9181875eca6c6246579a921709e3a05fbaf4c959c4b0d9f145c",
+    "mutation_sha256": "336df4e01955acf48285b88be0a17c7ef795e23ce6dc3ae916a776b972989c57",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "name": "r11-fanout",
+    "file": "shared/platform-clipboard-transfer.rs",
+    "test": "production_fanout_and_resume_reuse_source_hashes_and_check_completion",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "macos/src-tauri/Cargo.toml",
+      "--lib",
+      "production_fanout_and_resume_reuse_source_hashes_and_check_completion",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "source_sha256": "d8b8fcccd7153acd955f9642e7a2a5d31117ec597fbf718ab65e2fb34a3e04b6",
+    "mutation_sha256": "ee0206eb2cd4ac45a91de3ee37a19258f29671a7c58b671a891c8e8de87c8c93",
+    "red_exit": 101,
+    "green_exit": 0
+  }
+]

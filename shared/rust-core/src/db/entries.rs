@@ -2,7 +2,6 @@ use super::*;
 use rusqlite::Transaction;
 
 pub(super) struct ExternalHistoryPayload {
-    pub(super) stored: Vec<u8>,
     pub(super) path: PathBuf,
 }
 
@@ -90,17 +89,13 @@ impl HistoryDB {
         if let Err(error) = write_result {
             drop(tx);
             let mut payloads = old_payloads;
-            payloads.push(ExternalHistoryPayload {
-                stored: reference,
-                path: new_path,
-            });
+            payloads.push(ExternalHistoryPayload { path: new_path });
             self.cleanup_external_payloads(&payloads, None);
             return Err(error.into());
         }
         if let Err(error) = tx.commit() {
             let mut payloads = old_payloads;
             payloads.push(ExternalHistoryPayload {
-                stored: reference,
                 path: new_path.clone(),
             });
             self.cleanup_external_payloads(&payloads, None);
@@ -181,7 +176,6 @@ impl HistoryDB {
                     &self.image_history_dir
                 };
                 payloads.push(ExternalHistoryPayload {
-                    stored,
                     path: resolve_file_reference_at(directory, &reference)?,
                 });
             }
@@ -224,25 +218,10 @@ impl HistoryDB {
         payloads: &[ExternalHistoryPayload],
         preserve_path: Option<&Path>,
     ) {
-        for payload in payloads {
-            if preserve_path == Some(payload.path.as_path()) {
-                continue;
-            }
-            let remaining = self.conn.query_row(
-                "SELECT COUNT(*) FROM history WHERE data = ?1",
-                params![&payload.stored],
-                |row| row.get::<_, i64>(0),
-            );
-            if matches!(remaining, Ok(0)) {
-                if let Err(error) = std::fs::remove_file(&payload.path) {
-                    if error.kind() != std::io::ErrorKind::NotFound {
-                        warn!(
-                            "Could not remove unreferenced history payload {}: {error}",
-                            payload.path.display()
-                        );
-                    }
-                }
-            }
-        }
+        let paths: Vec<_> = payloads
+            .iter()
+            .map(|payload| payload.path.clone())
+            .collect();
+        self.remove_unreferenced_payload_paths(&paths, preserve_path);
     }
 }

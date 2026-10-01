@@ -594,3 +594,80 @@ async fn the_admission_lock_is_held_while_the_batch_state_is_read() {
     crate::db::configure_storage_dir(Some(&original)).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[tokio::test]
+async fn production_fanout_and_resume_reuse_source_hashes_and_check_completion() {
+    use tailsync_core::peer::{delivery::PendingFrame, pool::PoolSender, types::{DeliveryReceipt, ResolvedTarget}};
+    use crate::{crypto::Settings, identity::DeviceIdentity, protocol::Command};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    for peer_count in [1, 2, 8] {
+        for change_after_transfer in [false, true] {
+            let root = std::env::temp_dir().join(format!("tailsync-fanout-gate-{}", rand::random::<u64>()));
+            std::fs::create_dir_all(&root).unwrap();
+            let source = root.join("source.bin"); std::fs::write(&source, b"initial bytes").unwrap();
+            let prepared = Arc::new(crate::sync::prepare_file_batch(vec![source.clone()], 1).unwrap());
+            let identity = Arc::new(DeviceIdentity::generate_for_test());
+            let mut settings = Settings::default();
+            let key = STANDARD.encode(identity.public_key());
+            let mut peers = Vec::new();
+            for index in 0..peer_count { let mut peer = transfer_peer(true, true, true); peer.hostname = format!("peer-{index}"); peer.address = "192.168.1.2".into(); peer.tailscale_ip = peer.address.clone(); peer.candidates = vec![tailsync_core::peer::types::PeerCandidate::new(tailsync_core::peer::types::ConnectionInterface::Lan, peer.address.clone())]; settings.trusted_peer_keys.insert(peer.hostname.clone(), key.clone()); peers.push(peer); }
+            let pool = Arc::new(tokio::sync::Mutex::new(crate::network::ConnectionPool::new(identity, Arc::new(tokio::sync::Mutex::new(settings)))));
+            let mut pumps = Vec::new();
+            for peer in &peers {
+                let (priority, mut priority_rx) = tokio::sync::mpsc::channel(64);
+                let (bulk, mut bulk_rx) = tokio::sync::mpsc::channel(64);
+                let (shutdown, mut shutdown_rx) = tokio::sync::watch::channel(false);
+                let sender = PoolSender::new(priority, bulk, shutdown);
+                pool.lock().await.insert_file_sender(ResolvedTarget::Tcp("192.168.1.2:19890".parse().unwrap()), peer.hostname.clone(), sender);
+                let source = source.clone();
+                pumps.push(tokio::spawn(async move {
+                    let mut resumed = false;
+                    loop {
+                        let queued = tokio::select! { biased; _ = shutdown_rx.changed() => break,
+                            frame = priority_rx.recv() => frame, frame = bulk_rx.recv() => frame };
+                        let Some(queued) = queued else { break; };
+                        let mut receipt = DeliveryReceipt::default();
+                        match queued.command() {
+                            Command::FileMeta => { receipt.next_offset = Some(0); },
+                            Command::FileChunk => {
+                                let chunk = crate::protocol::FileChunkPayload::decode(queued.payload()).unwrap();
+                                if !resumed { resumed = true; receipt.resume_required = true; receipt.next_offset = Some(0); }
+                                else { receipt.next_offset = Some(chunk.offset + chunk.data.len() as u64); }
+                            },
+                            Command::FileBatchComplete if change_after_transfer => { std::fs::write(&source, b"changed bytes").unwrap(); },
+                            _ => {},
+                        }
+                        PendingFrame::new(queued, 1).complete(Ok(receipt));
+                    }
+                    assert!(resumed, "production restart path was not exercised");
+                }));
+            }
+            let (delivered, failures) = super::transfer::deliver_prepared_batch_to_peers(prepared.clone(), peers, pool.clone()).await;
+            if change_after_transfer { assert!(delivered.is_empty()); assert_eq!(failures.len(), peer_count); }
+            else { assert_eq!(delivered.len(), peer_count); assert!(failures.is_empty()); }
+            assert_eq!(crate::sync::source_hash_reads_for_test(&prepared.files[0].path), if change_after_transfer { 2 } else { 3 }, "hash passes grew with peers/restarts");
+            pool.lock().await.disconnect_all(); for pump in pumps { pump.await.unwrap(); }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_admission_and_gc_run_storage_work_off_the_async_thread() {
+    let _guard = storage_root_lock().lock().await;
+    let (original, root, database, engine, manifest, _other, peer) = admission_fixture();
+    let async_thread = std::thread::current().id();
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let capture = observed.clone();
+    database.lock().await.observe_storage_work_for_test(Arc::new(move |operation| {
+        assert_ne!(std::thread::current().id(), async_thread, "{operation} blocked the async executor");
+        capture.lock().unwrap().push(operation);
+    }));
+    assert!(matches!(admit(&database, &engine, &manifest, &peer).await.unwrap(), crate::network::BatchAdmission::Admitted));
+    super::run_transfer_maintenance_tick(&database).await;
+    let calls = observed.lock().unwrap().clone();
+    assert_eq!(calls, ["receipt", "quota", "gc"], "the production call sites must all be observed");
+    drop(database);
+    crate::db::configure_storage_dir(Some(&original)).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

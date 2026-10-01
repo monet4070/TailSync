@@ -3,6 +3,14 @@
 use super::*;
 
 impl HistoryDB {
+    /// Observe the actual storage operations at platform call sites. Dev-only.
+    pub fn observe_storage_work_for_test(
+        &mut self,
+        observer: std::sync::Arc<dyn Fn(&'static str) + Send + Sync>,
+    ) {
+        self.storage_work_observer = Some(observer);
+    }
+
     pub fn open_isolated_for_test(root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         if root.exists() {
             return Err("isolated test store must not already exist".into());
@@ -22,6 +30,9 @@ impl HistoryDB {
         Ok(Self {
             conn,
             read_identity: std::sync::Arc::new(()),
+            #[cfg(any(test, feature = "test-support"))]
+            storage_work_observer: None,
+            deferred_checkpoint: false,
             max_history: 100_000,
             storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
             storage_available: true,

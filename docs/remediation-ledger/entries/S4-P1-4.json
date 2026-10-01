@@ -5,7 +5,7 @@
   ],
   "gate": null,
   "ci_job": [],
-  "native_acceptance": null,
+  "native_acceptance": "仍需真实 macOS/Windows 文件传输：引擎锁 wait/hold、回调 wait/hold 分开采样≥200、进度顺序与 terminal 语义；20ms 仍为暂定值。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S4-P1-4",
   "title": "接收引擎锁内的平台进度回调（待测量裁定）",
@@ -13,7 +13,7 @@
     "shared/rust-core/src/sync/receive_engine.rs"
   ],
   "trigger": "每 1MiB 分块在引擎锁内调用平台进度回调与 watch 广播，高带宽下阻塞网络栈。",
-  "fix_evidence": "未改：set_receive_progress 仍在锁内触发 platform.set_file_batch_progress。",
+  "fix_evidence": "仍未改锁内回调。新增 ignored 诊断以真实 macOS set_file_batch_progress，200 次注入 50ms 进度存储持锁：callback p99 60117µs/max 61882µs。它证实可被平台锁拖住，但不是实际设备负载采样，也不是预算通过。共享测量代码另包含 Windows API 分支，尚未在原生 Windows 执行。",
   "status": "unfixed",
   "pass_condition": "锁等待满足冻结预算且进度顺序正确；若超标则锁外回调后达标。",
   "reopen_condition": "同负载等待再超预算或回调顺序/完成语义倒退。"

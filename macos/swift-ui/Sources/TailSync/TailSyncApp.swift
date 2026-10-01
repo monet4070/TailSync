@@ -392,6 +392,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .gap(let missed):
                     self.notificationEventId = snapshot.notificationEarliestAvailableId &- 1
                     print("[TailSync] \(missed) runtime notifications were dropped before this client read them")
+                    if Loc.shared.notificationsEnabled,
+                       Bundle.main.bundleURL.pathExtension == "app", self.daemonActivityAllowed {
+                        let content = UNMutableNotificationContent()
+                        content.title = "TailSync"
+                        content.body = Loc.t("notice.notificationGap").replacingOccurrences(of: "{count}", with: String(missed))
+                        content.sound = nil
+                        let request = UNNotificationRequest(identifier: "tailsync-gap-\(snapshot.serviceInstance)-\(snapshot.notificationEarliestAvailableId)", content: content, trigger: nil)
+                        try? await UNUserNotificationCenter.current().add(request)
+                    }
                 }
                 if snapshot.serviceInstance != 0 {
                     self.notificationServiceInstance = snapshot.serviceInstance

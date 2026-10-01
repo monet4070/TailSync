@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "job": "rust-macos",
+  "command": "cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml -- --test-threads=1",
+  "source": {
+    "sha": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+    "fingerprint": "c1da1fcd88f9c6a9b0bacb742be0635517c4dd9b00d7ec02d190a7679e506bf8"
+  },
+  "exit_code": 0,
+  "source_unchanged": true,
+  "duration_ms": 1110,
+  "tests": [
+    {
+      "name": "contracts::tests::current_capabilities_are_stable_and_json_safe",
+      "status": "passed"
+    },
+    {
+      "name": "contracts::tests::known_stable_error_codes_use_fixed_policy",
+      "status": "passed"
+    },
+    {
+      "name": "contracts::tests::legacy_classifier_does_not_infer_codes_from_private_details",
+      "status": "passed"
+    },
+    {
+      "name": "contracts::tests::stable_error_classifier_covers_public_categories",
+      "status": "passed"
+    },
+    {
+      "name": "contracts::tests::stable_errors_have_fixed_policy_and_discard_legacy_details",
+      "status": "passed"
+    },
+    {
+      "name": "contracts::tests::unknown_stable_error_codes_fail_closed_to_internal_error",
+      "status": "passed"
+    },
+    {
+      "name": "execution::tests::dropped_read_releases_a_worker_waiting_on_the_database_lock",
+      "status": "passed"
+    },
+    {
+      "name": "execution::tests::runs_operation_with_database_guard_inside_blocking_worker",
+      "status": "passed"
+    },
+    {
+      "name": "history::tests::chunked_search_preserves_legacy_offset_filter_and_has_more",
+      "status": "passed"
+    },
+    {
+      "name": "history::tests::client_cancellation_after_commit_does_not_drop_notification",
+      "status": "passed"
+    },
+    {
+      "name": "history::tests::failed_mutation_does_not_publish_a_revision",
+      "status": "passed"
+    },
+    {
+      "name": "history::tests::image_payload_rejects_non_image_entries_before_decrypting",
+      "status": "passed"
+    },
+    {
+      "name": "history::tests::request_defaults_are_applied_at_the_use_case_seam",
+      "status": "passed"
+    },
+    {
+      "name": "history::tests::restore_payload_reads_the_core_entry_once_without_transport_policy",
+      "status": "passed"
+    },
+    {
+      "name": "history::tests::successful_mutation_publishes_after_commit_inside_the_worker",
+      "status": "passed"
+    },
+    {
+      "name": "peer_refresh::coordinator::tests::failure_reuses_candidates_without_replaying_old_health",
+      "status": "passed"
+    },
+    {
+      "name": "peer_refresh::coordinator::tests::one_thousand_requests_have_one_pending_wake",
+      "status": "passed"
+    },
+    {
+      "name": "peer_refresh::coordinator::tests::remembered_routes_are_probed_even_when_discovery_fails",
+      "status": "passed"
+    },
+    {
+      "name": "peer_refresh::coordinator::tests::reset_and_shutdown_resolve_waiters_without_false_success",
+      "status": "passed"
+    },
+    {
+      "name": "peer_refresh::coordinator::tests::stale_mode_and_same_mode_reset_cannot_commit_any_side_effect",
+      "status": "passed"
+    },
+    {
+      "name": "peer_refresh::tests::stale_generation_or_mode_cannot_complete_a_refresh_waiter",
+      "status": "passed"
+    },
+    {
+      "name": "preview::tests::frame_contains_versioned_header_and_exact_payload",
+      "status": "passed"
+    },
+    {
+      "name": "preview::tests::screenshot_sized_image_frame_strips_packed_dimensions_without_base64",
+      "status": "passed"
+    }
+  ],
+  "integrations": []
+}

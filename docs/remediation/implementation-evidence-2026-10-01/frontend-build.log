@@ -1,0 +1,47 @@
+
+> tailsync-v2@2.3.1 build
+> tsc -b && vite build
+
+vite v8.2.2 building client environment for production...
+transforming...
+✓ 1928 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/preview.html                               0.97 kB │ gzip:   0.39 kB
+dist/settings.html                              0.98 kB │ gzip:   0.40 kB
+dist/connections.html                           1.09 kB │ gzip:   0.44 kB
+dist/history.html                               1.21 kB │ gzip:   0.44 kB
+dist/favorites.html                             1.21 kB │ gzip:   0.44 kB
+dist/assets/pdf.worker.min-wgc6bjNh.mjs     1,078.61 kB
+dist/assets/preview-CCD8vyc2.css               17.46 kB │ gzip:   3.84 kB
+dist/assets/art-direction-C1dO0egG.css        101.98 kB │ gzip:  18.29 kB
+dist/assets/check-BcocWzrH.js                   0.13 kB │ gzip:   0.14 kB
+dist/assets/chevron-right-bwoBhd3V.js           0.13 kB │ gzip:   0.14 kB
+dist/assets/chevron-down-CgLhL3YQ.js            0.13 kB │ gzip:   0.14 kB
+dist/assets/grid-2x2-B0De3p-X.js                0.22 kB │ gzip:   0.18 kB
+dist/assets/clipboard-Dwo_nCu5.js               0.25 kB │ gzip:   0.21 kB
+dist/assets/favorites-BQzWEZFK.js               0.28 kB │ gzip:   0.22 kB
+dist/assets/history-Z4ZARPTT.js                 0.28 kB │ gzip:   0.22 kB
+dist/assets/refresh-cw-CT5mY2Eq.js              0.32 kB │ gzip:   0.22 kB
+dist/assets/rotate-cw-BQpC84tg.js               0.39 kB │ gzip:   0.26 kB
+dist/assets/triangle-alert-DqwVvKiW.js          0.48 kB │ gzip:   0.32 kB
+dist/assets/type-C7QI4wWE.js                    0.49 kB │ gzip:   0.30 kB
+dist/assets/zoom-out-CVRcZBD6.js                0.50 kB │ gzip:   0.23 kB
+dist/assets/previewPreferences-BuyAxPiv.js      0.90 kB │ gzip:   0.53 kB
+dist/assets/ThemeLogo-BDjriLYL.js               1.14 kB │ gzip:   0.61 kB
+dist/assets/ImagePreview-CwntcMIn.js            4.20 kB │ gzip:   1.55 kB
+dist/assets/SettingsDialogs-BMAJvx7G.js         7.59 kB │ gzip:   2.51 kB
+dist/assets/jsx-runtime-Rz8PLfrv.js             8.99 kB │ gzip:   3.51 kB
+dist/assets/window-dhzXdKVr.js                 13.33 kB │ gzip:   3.27 kB
+dist/assets/SvgPreview-CKWTDujm.js             14.67 kB │ gzip:   5.05 kB
+dist/assets/preview-BV-E10Cm.js                21.75 kB │ gzip:   7.42 kB
+dist/assets/connections-C5sLtJ2V.js            23.87 kB │ gzip:   6.52 kB
+dist/assets/History-Nus4tMvi.js                40.70 kB │ gzip:  13.34 kB
+dist/assets/settings-CYZObDZr.js               40.94 kB │ gzip:  11.55 kB
+dist/assets/MarkdownPreview-B7Hb05CE.js        74.21 kB │ gzip:  25.24 kB
+dist/assets/TextPreview-BZhcIP8u.js           116.94 kB │ gzip:  39.70 kB
+dist/assets/DocxPreview-DRnunXu2.js           174.93 kB │ gzip:  51.67 kB
+dist/assets/art-direction-K1wQuKmu.js         252.44 kB │ gzip:  78.70 kB
+dist/assets/PdfPreview-C6fpAnR5.js            406.39 kB │ gzip: 121.78 kB
+
+✓ built in 447ms

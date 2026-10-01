@@ -1,0 +1,53 @@
+--- a/src/pages/History.test.tsx
++++ b/src/pages/History.test.tsx
+@@ -35,7 +35,7 @@
+   useTheme: () => ({ theme: "light", colorTheme: "tailsync", resolvedColorTheme: "tailsync" }),
+ }));
+ vi.mock("../hooks/useI18n", () => ({
+-  useI18n: () => ({ t: (key: string) => key }),
++  useI18n: () => ({ t: (key: string) => key === "history.syncExpired" ? key + ":{peer}" : key }),
+ }));
+ 
+ const entry = {
+@@ -651,6 +651,41 @@
+     });
+   });
+ 
++  it("review probe: cooldown still acknowledges an undisplayed warning", async () => {
++    setVisibility("visible");
++    let now = 100000;
++    vi.spyOn(Date, "now").mockImplementation(() => now);
++    let release: ((value: unknown) => void) | undefined;
++    const originalInvoke = invokeMock.getMockImplementation()!;
++    invokeMock.mockImplementation((command: string) => {
++      if (command === "wait_runtime_snapshot") return new Promise(resolve => { release = resolve; });
++      if (command === "ack_sync_warning") return Promise.resolve(true);
++      return originalInvoke(command);
++    });
++    render(<History />);
++    await waitFor(() => expect(release).toBeDefined());
++    const deliver = async (id: number) => {
++      const send = release!;
++      release = undefined;
++      await act(async () => {
++        send({revision:id,history_version:1,progress:null,notifications:[],sync_warning:{id,kind:"expired_event",peer:`review-peer-${id}`,occurred_at_ms:now}});
++        await Promise.resolve();
++      });
++      await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", {id}));
++      await waitFor(() => expect(release).toBeDefined());
++    };
++    await deliver(101);
++    expect(document.body.textContent).toContain("review-peer-101");
++    now += 4000;
++    await deliver(102);
++    expect(document.body.textContent).toContain("review-peer-102");
++    now += 4001;
++    await deliver(103);
++    expect(document.body.textContent).not.toContain("review-peer-103");
++    expect(document.body.textContent).not.toContain("review-peer-102");
++    console.log("review probe confirmed: warning 103 was acknowledged while the notice slot was empty");
++  });
++
+   it("uses one blocking runtime snapshot instead of legacy high-frequency polls", async () => {
+     render(<History />);
+     await screen.findByText(entry.description);

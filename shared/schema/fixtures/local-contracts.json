@@ -3448,6 +3448,683 @@
     }
   },
   {
+    "name": "PairingStatus: production output",
+    "contract": "PairingStatus",
+    "valid": true,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: additive field",
+    "contract": "PairingStatus",
+    "valid": true,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PairingStatus: missing pairing_enabled",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type pairing_enabled",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": [],
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing phase",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type phase",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": [],
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing expires_at",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type expires_at",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": [],
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing remaining_seconds",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type remaining_seconds",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": [],
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing failed_attempts",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type failed_attempts",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": [],
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing max_failures",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type max_failures",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": [],
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing peer",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type peer",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": [],
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing error",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type error",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": [],
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing pending",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type pending",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": {},
+      "pending_store_unavailable": false
+    }
+  },
+  {
+    "name": "PairingStatus: missing pending_store_unavailable",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ]
+    }
+  },
+  {
+    "name": "PairingStatus: wrong type pending_store_unavailable",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": []
+    }
+  },
+  {
+    "name": "PendingPairingSummary: production output",
+    "contract": "PendingPairingSummary",
+    "valid": true,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": "192.168.1.2",
+      "interface": "lan",
+      "fingerprint": "fixture-only",
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: additive field",
+    "contract": "PendingPairingSummary",
+    "valid": true,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": "192.168.1.2",
+      "interface": "lan",
+      "fingerprint": "fixture-only",
+      "locally_trusted": false,
+      "future_optional_field": "accepted"
+    }
+  },
+  {
+    "name": "PendingPairingSummary: missing hostname",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "address": "192.168.1.2",
+      "interface": "lan",
+      "fingerprint": "fixture-only",
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: wrong type hostname",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": [],
+      "address": "192.168.1.2",
+      "interface": "lan",
+      "fingerprint": "fixture-only",
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: missing address",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "interface": "lan",
+      "fingerprint": "fixture-only",
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: wrong type address",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": [],
+      "interface": "lan",
+      "fingerprint": "fixture-only",
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: missing interface",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": "192.168.1.2",
+      "fingerprint": "fixture-only",
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: wrong type interface",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": "192.168.1.2",
+      "interface": [],
+      "fingerprint": "fixture-only",
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: missing fingerprint",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": "192.168.1.2",
+      "interface": "lan",
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: wrong type fingerprint",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": "192.168.1.2",
+      "interface": "lan",
+      "fingerprint": [],
+      "locally_trusted": false
+    }
+  },
+  {
+    "name": "PendingPairingSummary: missing locally_trusted",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": "192.168.1.2",
+      "interface": "lan",
+      "fingerprint": "fixture-only"
+    }
+  },
+  {
+    "name": "PendingPairingSummary: wrong type locally_trusted",
+    "contract": "PendingPairingSummary",
+    "valid": false,
+    "value": {
+      "hostname": "fixture-peer",
+      "address": "192.168.1.2",
+      "interface": "lan",
+      "fingerprint": "fixture-only",
+      "locally_trusted": []
+    }
+  },
+  {
+    "name": "PairingPhase: production output",
+    "contract": "PairingPhase",
+    "valid": true,
+    "value": "disabled"
+  },
+  {
+    "name": "PairingPhase: unknown enum",
+    "contract": "PairingPhase",
+    "valid": false,
+    "value": "unknown_future_enum"
+  },
+  {
     "name": "PeersResponse: production output",
     "contract": "PeersResponse",
     "valid": true,

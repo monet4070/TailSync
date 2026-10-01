@@ -1033,3 +1033,57 @@ async fn diagnostics_pairing_failed_records_the_error() {
         "the targeted failure must be recorded exactly once"
     );
 }
+
+#[tokio::test]
+async fn revoke_peer_closes_window_before_a_late_session_is_installed() {
+    let local = Arc::new(DeviceIdentity::generate_for_test());
+    let peer = DeviceIdentity::generate_for_test();
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let manager = PairingManager::with_policy(
+        settings.clone(),
+        local.clone(),
+        Duration::from_secs(5),
+        5,
+        false,
+    );
+    manager.enable().await;
+    manager.begin_handshake().await.unwrap();
+    let (_client, server) = establish_in_memory_pair(&local, &peer).await;
+    manager.revoke_peer("client").await.unwrap();
+    let late = manager
+        .install_session(PendingPairing {
+            connection: server,
+            hostname: "client".into(),
+            remote_public_key: peer.public_key().to_vec(),
+            handshake_hash: vec![7; 32],
+            address: "192.168.1.3:53317".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: PairingDirection::Inbound,
+        })
+        .await;
+    assert!(
+        matches!(late, Err(PairingError::WindowClosed)),
+        "late session was accepted: {late:?}"
+    );
+    assert!(!manager.is_enabled().await);
+    assert!(!*manager.subscribe_window().borrow());
+    assert!(settings.lock().await.trusted_peer_keys.is_empty());
+    // An explicit new window permits a new user-confirmed pairing.
+    manager.enable().await;
+    let (_client, server) = establish_in_memory_pair(&local, &peer).await;
+    manager
+        .install_session(PendingPairing {
+            connection: server,
+            hostname: "client".into(),
+            remote_public_key: peer.public_key().to_vec(),
+            handshake_hash: vec![8; 32],
+            address: "192.168.1.3:53317".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: PairingDirection::Inbound,
+        })
+        .await
+        .unwrap();
+    manager.cancel().await;
+}

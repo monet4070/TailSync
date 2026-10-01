@@ -1,3 +1,12 @@
 *.sh text eol=lf
 *.toml text eol=lf
 windows/src-tauri/gen/schemas/*.json text eol=lf
+
+# Preserve archived evidence bytes and the whitespace emitted by test runners.
+docs/remediation/review-evidence-2026-09-30/** -text
+docs/remediation/review-evidence-2026-09-30/**/*.log -whitespace
+docs/remediation/review-evidence-2026-09-30/*.patch -whitespace
+docs/remediation/implementation-evidence-2026-10-01/** -text
+docs/remediation/implementation-evidence-2026-10-01/**/*.log -whitespace
+docs/remediation/follow-up-evidence-2026-10-01/** -text
+docs/remediation/follow-up-evidence-2026-10-01/**/*.log -whitespace

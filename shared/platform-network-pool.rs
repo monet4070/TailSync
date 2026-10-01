@@ -24,35 +24,39 @@ impl ConnectionPool {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn sender_for(
         &mut self,
         addr: SocketAddr,
         hostname: String,
     ) -> Result<PoolSender, String> {
         let interface = infer_interface(&addr.ip().to_string()).unwrap_or(ConnectionInterface::Lan);
-        self.sender_for_candidates(
+        self.sender_for_command(
             hostname,
             vec![ResolvedCandidate {
                 candidate: PeerCandidate::new(interface, addr.ip().to_string()),
                 target: ResolvedTarget::Tcp(addr),
             }],
+            Command::TextPayload,
         )
     }
 
-    fn sender_for_peer(&mut self, peer: &tailscale::PeerInfo) -> Result<PoolSender, String> {
-        self.sender_for_candidates(peer.hostname.clone(), resolve_candidates(peer, TCP_PORT)?)
+    fn sender_for_peer(&mut self, peer: &tailscale::PeerInfo, command: Command) -> Result<PoolSender, String> {
+        self.sender_for_command(peer.hostname.clone(), resolve_candidates(peer, TCP_PORT)?, command)
     }
 
-    fn sender_for_candidates(
+    fn sender_for_command(
         &mut self,
         hostname: String,
         candidates: Vec<ResolvedCandidate>,
+        command: Command,
     ) -> Result<PoolSender, String> {
         let identity = self.identity.clone();
         let settings = self.settings.clone();
-        self.core.sender_for_candidates(
+        self.core.sender_for_command(
             hostname,
             candidates,
+            command,
             move |candidates, hostname, priority_rx, bulk_rx, shutdown_rx, retry_wakeup, candidate_rx| {
                 tokio::spawn(connection_task(
                     candidates,
@@ -95,7 +99,10 @@ impl ConnectionPool {
                 cmd.payload_limit()
             ));
         }
-        let tx = self.sender_for(addr, hostname.clone())?;
+        let interface = infer_interface(&addr.ip().to_string()).unwrap_or(ConnectionInterface::Lan);
+        let tx = self.sender_for_command(hostname.clone(), vec![ResolvedCandidate {
+            candidate: PeerCandidate::new(interface, addr.ip().to_string()), target: ResolvedTarget::Tcp(addr),
+        }], cmd)?;
 
         enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), &hostname, cmd, payload).await
     }
@@ -103,6 +110,10 @@ impl ConnectionPool {
     /// Remove a peer from the pool (e.g. when user disables it).
     pub fn disconnect_hostname(&mut self, hostname: &str) {
         self.core.disconnect_hostname(hostname);
+    }
+
+    pub fn disconnect_file_transfer(&mut self, hostname: &str) {
+        self.core.disconnect_file_transfer(hostname);
     }
 
     pub fn disconnect_all(&mut self) {
@@ -114,6 +125,10 @@ impl ConnectionPool {
         self.core.sender_count()
     }
 
+    #[cfg(test)]
+    pub(crate) fn insert_file_sender(&mut self, target: ResolvedTarget, hostname: String, sender: PoolSender) {
+        self.core.insert_sender_for_command(target, hostname, Command::FileMeta, sender);
+    }
     #[cfg(test)]
     pub(super) fn insert_sender(
         &mut self,
@@ -162,7 +177,7 @@ pub async fn queue_peer_frame(
     secure::decode_trusted_key(&trusted_key)
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
 
-    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let tx = { pool.lock().await.sender_for_peer(peer, cmd)? };
     let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
@@ -191,7 +206,7 @@ pub async fn queue_peer_shared_event(
     secure::decode_trusted_key(&trusted_key)
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
 
-    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let tx = { pool.lock().await.sender_for_peer(peer, event.queued().command())? };
     let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
@@ -217,7 +232,7 @@ pub async fn queue_peer_file_frame(
     secure::decode_trusted_key(&trusted_key)
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
 
-    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let tx = { pool.lock().await.sender_for_peer(peer, command)? };
     let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
@@ -250,7 +265,7 @@ pub async fn queue_peer_file_window(
         .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
     secure::decode_trusted_key(&trusted_key)
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
-    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let tx = { pool.lock().await.sender_for_peer(peer, Command::FileChunk)? };
     let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
@@ -284,7 +299,7 @@ pub async fn queue_peer_batch_frame(
         .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
     secure::decode_trusted_key(&trusted_key)
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
-    let tx = { pool.lock().await.sender_for_peer(peer)? };
+    let tx = { pool.lock().await.sender_for_peer(peer, command)? };
     let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
@@ -323,7 +338,7 @@ pub async fn prewarm_connections(
         if peer.candidates.is_empty() { continue; }
         // Keep the current authorization guard until worker creation. The
         // disable/forget path removes workers only after releasing Settings.
-        if let Err(error) = pool.sender_for_peer(&peer) {
+        if let Err(error) = pool.sender_for_peer(&peer, Command::TextPayload) {
             debug!("Could not prewarm {}: {error}", peer.hostname);
         }
     }

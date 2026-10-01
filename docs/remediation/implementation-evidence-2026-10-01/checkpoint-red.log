@@ -1,0 +1,19 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.34s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 1 test
+
+thread 'db::tests::default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout' (3630506) panicked at shared/rust-core/src/db/tests.rs:1263:5:
+default delete waited out the five-second busy timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test db::tests::default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout ... FAILED
+
+failures:
+
+failures:
+    db::tests::default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 480 filtered out; finished in 5.33s
+
+error: test failed, to rerun pass `--lib`

@@ -1,5 +1,5 @@
 import { Activity, Grid2X2, RefreshCw, Trash2, Wifi } from "lucide-react";
-import type { PeerRoute } from "../../tailsyncClient";
+import type { PeerDevice, PeerRoute, PendingPairingSummary } from "../../tailsyncClient";
 import { pairingAddressForPeer } from "../../utils/pairingAddress";
 import { routeSupportsLatencyTest } from "../../utils/peerRoute";
 import { RemotePairingPanel } from "./RemotePairingPanel";
@@ -8,6 +8,14 @@ import {
   routeInterfaceLabel,
 } from "./SettingsFormatters";
 import type { SettingsConnectionsSectionProps } from "./SettingsSectionTypes";
+
+// Reuse the normal authenticated pairing/forget actions. A recovery note itself
+// never becomes a trusted/online device row.
+function pendingPeer(summary: PendingPairingSummary): PeerDevice {
+  return { hostname: summary.hostname, address: summary.address, tailscale_ip: "",
+    connection_mode: summary.interface, fingerprint: summary.fingerprint,
+    trusted: false, enabled: false, online: false };
+}
 
 export function SettingsConnectionsSection({
   settings,
@@ -116,6 +124,18 @@ export function SettingsConnectionsSection({
             : "settings.allowPairing")}
         </button>
       </div>
+
+      {pairingStatus?.pending_store_unavailable && <p role="alert">{t("settings.pendingStoreUnavailable")}</p>}
+      {(pairingStatus?.pending ?? []).map((pending) => (
+        <div key={pending.hostname} className="pairing-window-row" role="status">
+          <div><strong>{pending.hostname}</strong><span>{t(pending.locally_trusted ? "settings.pendingPeerCompletion" : "settings.pendingPairing")}</span>
+            <small>{pending.fingerprint}</small></div>
+          <button type="button" className="pair-device-action" disabled={pairingBusy || !pending.address}
+            onClick={() => void openPairing(pendingPeer(pending))}>{t("settings.resumePairing")}</button>
+          <button type="button" className="pairing-window-close" disabled={pairingBusy}
+            onClick={() => void handleForget(pendingPeer(pending))}>{t("settings.forgetPairing")}</button>
+        </div>
+      ))}
 
       <div className="device-list" aria-live="polite">
         {devices && (

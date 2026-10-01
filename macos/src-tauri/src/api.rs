@@ -134,18 +134,51 @@ pub fn push_runtime_notification(level: &str, message: impl Into<String>) {
 
 /// Cursor state for the snapshot: the earliest readable id and how many
 /// notifications were evicted in this process.
-pub fn notification_buffer_state() -> (u64, u64) {
-    RUNTIME_NOTIFICATIONS
-        .lock()
-        .map(|buffer| (buffer.earliest_available_id(), buffer.dropped))
-        .unwrap_or((1, 0))
+struct NotificationSnapshot {
+    entries: Vec<RuntimeNotification>,
+    earliest: u64,
+    dropped: u64,
 }
 
-pub fn get_runtime_notifications_since(id: u64) -> Vec<RuntimeNotification> {
-    RUNTIME_NOTIFICATIONS
-        .lock()
-        .map(|notifications| notifications.since(id))
-        .unwrap_or_default()
+fn notification_snapshot_from(
+    buffer: &StdMutex<RuntimeNotificationBuffer>,
+    since: Option<u64>,
+    #[cfg(test)] after_state: Option<&dyn Fn()>,
+) -> NotificationSnapshot {
+    let snapshot = {
+        let buffer = buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        NotificationSnapshot {
+            entries: since.map(|id| buffer.since(id)).unwrap_or_default(),
+            earliest: buffer.earliest_available_id(),
+            dropped: buffer.dropped,
+        }
+    };
+    // Test-only overflow boundary: mutations after this read must not produce
+    // an old cursor paired with a new list in the response.
+    #[cfg(test)]
+    if let Some(after_state) = after_state {
+        after_state();
+    }
+    snapshot
+}
+
+#[cfg(test)]
+thread_local! {
+    // One-shot overflow at the production route's snapshot boundary.
+    static NOTIFICATION_SNAPSHOT_TEST_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> = std::cell::RefCell::new(None);
+}
+
+fn runtime_notification_snapshot(since: Option<u64>) -> NotificationSnapshot {
+    #[cfg(test)]
+    let after_state = NOTIFICATION_SNAPSHOT_TEST_HOOK.with(|hook| hook.borrow_mut().take());
+    notification_snapshot_from(
+        &RUNTIME_NOTIFICATIONS,
+        since,
+        #[cfg(test)]
+        after_state.as_deref(),
+    )
 }
 
 /// Monotonic version — bumped on every clipboard change.

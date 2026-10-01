@@ -8,13 +8,13 @@
     "file": "shared/rust-core/src/peer/directory.rs",
     "test": "local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "空/0.0.0.0 返回 None，绝不选 loopback/APIPA/198.18 隧道，优先私网 IPv4 并接受 ULA。"
+    "asserts": "空、unspecified、loopback、198.18、Tailscale-only 与 IPv6-only 返回 None。私网 IPv4 优先；APIPA-only 有意支持，与当前 IPv4 listener 一致。接口 up/non-p2p 过滤由平台先执行；此纯函数不能证明所有 VPN 接口都已排除。"
   },
   "ci_job": [
     "rust-macos",
     "rust-windows"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "本轮选择器补强已在 macOS 执行并做 IPv6 变异。原生 Windows/macOS VPN、虚拟网卡与断网场景仍待验；当前无 IPv6 LAN 广告。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S1-P0-1",
   "title": "local_ip 探测改用接口枚举，排除 VPN 隧道与 0.0.0.0",

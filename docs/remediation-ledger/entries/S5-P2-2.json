@@ -6,15 +6,15 @@
   "gate": {
     "kind": "unit",
     "file": "shared/rust-core/src/db/tests.rs",
-    "test": "a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds",
+    "test": "default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "双连接下 TRUNCATE checkpoint 返回 busy=1 被识别为 Blocked、reader 释放后为 Completed，删除在两种情况下都成功；若把结果行按 execute_batch 丢弃（恒返回 Completed）该测试即失败。"
+    "asserts": "保留生产默认 5000ms busy_timeout，长读事务下删除不等五秒；checkpoint 临时 timeout=0，完成/忙/失败后恢复原策略。忙时登记延后清理，reader 释放后 maintenance retry 完成并清零 WAL。原 busy/result gate 同时保留。 补充重开门禁确认 reader 跨重启存活时仍登记重试，释放后清零 WAL。"
   },
   "ci_job": [
     "rust-macos",
     "rust-windows"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "默认设置的 reader-blocked 回归门禁本机通过；新 Windows CI 尚未执行。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S5-P2-2",
   "title": "WAL 截断忙时应留下诊断且保持删除成功",
@@ -23,7 +23,7 @@
     "shared/rust-core/src/db/migrations.rs:truncate_wal_for_v9_cleanup"
   ],
   "trigger": "execute_batch 丢弃 (busy, log, checkpointed) 结果行，busy=1 不进入 Err 警告分支。",
-  "fix_evidence": "删除收尾读取 checkpoint 结果行，忙时警告但删除保持成功。v9 截断五次尝试，每次 SQLite busy_timeout=50ms，间隔 50ms（最多四次），结束后恢复原始超时；完整迁移夹具覆盖 busy 后 vacuum_pending/版本 8 保留，释放读者后二次打开完成 v11。逐站语义见 docs/remediation/wal-checkpoint-semantics.md。",
+  "fix_evidence": "post-delete checkpoint 只即时尝试，读取 busy/log/checkpointed，失败或忙不反转已提交删除；deferred_checkpoint 由现有维护 tick 补偿。迁移 checkpoint 的严格安全路径不变。 每次磁盘 open 登记一次非阻塞维护重试，覆盖重启丢失内存标记。",
   "status": "fixed_gated",
   "pass_condition": "门禁测试在所列平台 CI job 中以通过状态出现。",
   "reopen_condition": "busy 静默通过、删除被误报失败或 WAL 结果未核对。"

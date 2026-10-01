@@ -5,16 +5,16 @@
   ],
   "gate": {
     "kind": "unit",
-    "file": "shared/rust-core/src/private_fs.rs",
-    "test": "create_private_dir_all_locks_created_directories",
+    "file": "shared/rust-core/src/sync/tests.rs",
+    "test": "actual_incoming_batch_creates_private_directories_and_manifest",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "创建的目录及其父目录为 0o700 且幂等。"
+    "asserts": "从生产 begin_file_batch_shared 入口创建 managed/incoming 与 manifest；Unix 检查所有新目录 0700/manifest 0600；Windows 检查 protected DACL 且 trustee 只含当前用户、SYSTEM、Administrators、Owner Rights，目录继承位存在。退回裸 create_dir_all 的调用点变异在 macOS 失败。"
   },
   "ci_job": [
     "rust-macos",
     "rust-windows"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "Unix 真实调用点与变异本机通过；Windows DACL 分支已加入测试，当前主机不能执行，须原生 rust-windows CI。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S4-P2-1",
   "title": "incoming 目录以 0o700 创建",

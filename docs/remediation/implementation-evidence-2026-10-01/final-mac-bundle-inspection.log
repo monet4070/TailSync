@@ -1,0 +1,5 @@
+macos/TailSync.app/Contents/Info.plist: OK
+{"binary": "TailSync", "sha256": "f4e35545b0214731854ca17ef0325d513bb0cba11e5f38d5440c3b4bdf46fb3d", "bytes": 6850112, "architecture": "arm64"}
+{"binary": "tailsyncd", "sha256": "7431c50c84ffccaf642442f1a05b4ea4c65b1c3df0efe1619379004194dfb7bb", "bytes": 21585584, "architecture": "arm64"}
+{"binary": "clipboard-helper", "sha256": "e1151c46899467da5e2366bf90c4a0ba32b25bc10306e56a056072b87617bf5f", "bytes": 98512, "architecture": "arm64"}
+native release bundle structure/signature/metadata passed

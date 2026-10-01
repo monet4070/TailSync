@@ -86,7 +86,7 @@ pub fn derive_verification_code(
     Ok(format!("{:06}", u64::from_be_bytes(output) % 1_000_000))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PairingPhase {
     Disabled,
@@ -101,7 +101,7 @@ pub enum PairingPhase {
     Locked,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct PairingPeerStatus {
     pub hostname: String,
     pub address: String,
@@ -111,7 +111,16 @@ pub struct PairingPeerStatus {
     pub remote_confirmed: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct PendingPairingSummary {
+    pub hostname: String,
+    pub address: String,
+    pub interface: String,
+    pub fingerprint: String,
+    pub locally_trusted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct PairingStatus {
     pub pairing_enabled: bool,
     pub phase: PairingPhase,
@@ -121,6 +130,8 @@ pub struct PairingStatus {
     pub max_failures: u8,
     pub peer: Option<PairingPeerStatus>,
     pub error: Option<String>,
+    pub pending: Vec<PendingPairingSummary>,
+    pub pending_store_unavailable: bool,
 }
 
 #[doc(hidden)]

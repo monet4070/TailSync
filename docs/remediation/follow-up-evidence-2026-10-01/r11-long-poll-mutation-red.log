@@ -1,0 +1,19 @@
+   Compiling tailsync v2.3.1 (/private/tmp/tailsync-follow-up-xkdja33f/src/macos/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.28s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri/target/debug/deps/tailsync_lib-d89296c539c16691)
+
+running 1 test
+test api::transport::cancellation_tests::authenticated_long_poll_disconnect_returns_connection_permit ... 
+thread 'api::transport::cancellation_tests::authenticated_long_poll_disconnect_returns_connection_permit' (4182828) panicked at src/api/transport.rs:423:14:
+disconnect left route waiting for its poll timeout: Elapsed(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    api::transport::cancellation_tests::authenticated_long_poll_disconnect_returns_connection_permit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 115 filtered out; finished in 1.02s
+
+error: test failed, to rerun pass `--lib`

@@ -5,16 +5,16 @@
   ],
   "gate": {
     "kind": "unit",
-    "file": "shared/platform-clipboard-tests.rs",
-    "test": "transfer_maintenance_tick_sweeps_aged_orphaned_payloads",
-    "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets",
-    "asserts": "常驻维护 tick 会把超过宽限期的无引用载荷清掉（并保留被引用与宽限期内的文件）。变异验证：把宽限期改到远超夹具年龄，该测试失败。"
+    "file": "shared/rust-core/src/db/tests.rs",
+    "test": "orphan_sweep_collects_owned_temps_and_preserves_live_writers",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "按文件身份保留所有 live 引用；已知 PID+nonce atomic temp 超过 grace 且没有 writer lease、所属进程已退出才清理；活跃 writer、未知名/旧版无 PID temp 不删除。补真实子进程退出、不运行 Drop 后的残留回收与外部存活 writer 保全；maintenance 接线门禁仍保留。"
   },
   "ci_job": [
     "rust-macos",
     "rust-windows"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "macOS DB/GC/子进程 writer gates 和变异通过。Windows 文件 ID/DACL/进程查询待新原生 CI。旧版无 PID 临时名因无法排除活跃旧进程而保留，需将来的排他升级清理或人工核对，不能承诺已回收。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S5-P2-1",
   "title": "外部文件删除容错与孤儿对账 GC",
@@ -22,7 +22,7 @@
     "shared/rust-core/src/db/lifecycle.rs"
   ],
   "trigger": "DB 提交后删文件遇读写冲突静默留存，且全库缺少对账孤儿扫掠。",
-  "fix_evidence": "sweep_orphan_payloads 按存活 DB 引用对账，以 Unix dev/inode 或 Windows 卷标识/128 位文件 ID 识别同一个文件，避免大小写别名误删；非零宽限、临时文件排除和无效引用中止均有测试。周期接线仍未完成。 周期调用已接线：run_expired_transfer_maintenance 现在接收 Arc<Mutex<HistoryDB>>，每个 tick 走 run_transfer_maintenance_tick（先清过期传输，再以 1 小时宽限清扫孤儿载荷），两端 clipboard.rs 调用点均已传入 database。",
+  "fix_evidence": "普通 delete/evict/clear/重复替换也接同一 live 文件身份判断，收藏共享载荷不因大小写/别名被误删；Core gate every_history_cleanup_preserves_favorite_payload_case_aliases 和 identity/fail-closed gate 覆盖。原子 writer 在创建之前取得 lease，GC 同锁判断并 unlink；复用周期维护，不新增服务。",
   "status": "fixed_gated",
   "pass_condition": "对账 GC 的门禁通过，且已接入周期性维护（每 30 分钟一次 tick）。",
   "reopen_condition": "孤儿过期仍占空间，或误删仍受引用文件。"

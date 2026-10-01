@@ -1,0 +1,13 @@
+   Compiling tailsync-remediation-review-probe v0.0.0 (/tmp/tailsync-remediation-review.9AflZB/probe)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.73s
+     Running `target/debug/tailsync-remediation-review-probe /tmp/tailsync-remediation-review.9AflZB/probe-data2`
+finalize_cancel phase=Cancelled trust=true disk_trust=true
+after_forget pending=0 trust=false
+late_ack_after_forget phase=Paired trust=true
+known_key_conflict persisted_frame_sent=true phase=Waiting old_pin_retained=true error=Some("Could not save paired device: Device client is already paired with a different key; revoke that pairing before pairing again")
+failed_note_write is_error=true memory_records=1
+delete_with_live_reader ok=true elapsed_ms=5205
+delete_case_alias same_file=true favorite_still_readable=false favorite_path_exists=false
+local_lan_selection input=fd7a:115c:a1e0::1 output=Some(fd7a:115c:a1e0::1)
+local_lan_selection input=fe80::1 output=Some(fe80::1)
+local_lan_selection input=169.254.1.1 output=Some(169.254.1.1)

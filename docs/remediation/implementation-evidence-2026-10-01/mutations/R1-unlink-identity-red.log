@@ -1,0 +1,22 @@
+   Compiling tailsync-core v2.3.1 (/private/tmp/tailsync-implementation.BzV6PH/mutation-src/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.97s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/target/debug/deps/tailsync_core-86da740a75732881)
+
+running 1 test
+test db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases ... FAILED
+
+failures:
+
+---- db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases stdout ----
+
+thread 'db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases' (3750685) panicked at shared/rust-core/src/db/tests.rs:3139:9:
+delete removed a favorite's payload
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 487 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p tailsync-core --lib`

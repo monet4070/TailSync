@@ -1,0 +1,74 @@
+[
+  {
+    "issue": "R1-unlink-identity",
+    "file": "shared/rust-core/src/db/lifecycle.rs",
+    "test": "every_history_cleanup_preserves_favorite_payload_case_aliases",
+    "source_sha256": "0339720f32aa17b65bfcc50d14166824770a4a673aceb8bf61254f66912dda22",
+    "mutation_sha256": "dfd4fe67014050485c467fb68743e86e6e95d6da0af3be6beb0ce646baffa5f3",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "issue": "R5-worker-lane",
+    "file": "shared/rust-core/src/peer/pool.rs",
+    "test": "s2_f5_file_ack_does_not_block_text",
+    "source_sha256": "339076f430b930e0054347e1cf80f6d6314cf6b92be21ae16efe88c2dd05235d",
+    "mutation_sha256": "366fd4ba3abd497c25c951530fbdfe688910ad5d491c25c23f6aab77582bfc22",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "issue": "R9-recovery-key",
+    "file": "shared/rust-core/src/pairing/manager.rs",
+    "test": "pending_recovery_requires_the_same_authenticated_key_and_is_never_active",
+    "source_sha256": "320dd68c6112d65ffb2ddf2ea244166d6c6bc030866869d0e40f5248a1e07c46",
+    "mutation_sha256": "915b01bc8d8fc8d68c4105ab27c5d51146cfa99b3b4b0d1d9e0893f0bba6d4eb",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "issue": "R10-unsupported-ipv6",
+    "file": "shared/rust-core/src/peer/directory.rs",
+    "test": "local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified",
+    "source_sha256": "545b82059b1ae9528db06e4c261607e514c122e734ded0c361fdf7d72eb0c6f1",
+    "mutation_sha256": "4e28bafb4922f87a88534a1981e9bd80bb972b60b9ca1b01a77b588d4bfe3623",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "issue": "R11-incoming-callsite",
+    "file": "shared/rust-core/src/sync/batches.rs",
+    "test": "actual_incoming_batch_creates_private_directories_and_manifest",
+    "source_sha256": "1272f88103d000e566f2633b468e4b9af20ef739a1852a4843b65a0c287ed3ea",
+    "mutation_sha256": "5a3ba70fd895a81f07249d48d10c2d7fb09cd5efe09eeb034e406b4894f32916",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "issue": "R12-temp-exemption",
+    "file": "shared/rust-core/src/db/lifecycle.rs",
+    "test": "orphan_sweep_collects_owned_temps_and_preserves_live_writers",
+    "source_sha256": "0339720f32aa17b65bfcc50d14166824770a4a673aceb8bf61254f66912dda22",
+    "mutation_sha256": "945834ca4d2039a27b0b3fe4e72cd9d9ed51ce77d0f7ae648cc868af66bc7417",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "issue": "R11-api-route",
+    "file": "macos/src-tauri/src/api/transport.rs",
+    "test": "authenticated_long_poll_disconnect_returns_connection_permit",
+    "source_sha256": "45b5735e7c0407ab06b7673f49163b9e886df749e2c6e6ce6ef8040f3d316f89",
+    "mutation_sha256": "bbe2938b510274983b6cc10eb1840e27ac41788007004c524fae17ca68197a01",
+    "red_exit": 101,
+    "green_exit": 0
+  },
+  {
+    "issue": "R11-production-fanout",
+    "file": "shared/platform-clipboard-transfer.rs",
+    "test": "production_fanout_and_resume_reuse_source_hashes_and_check_completion",
+    "source_sha256": "d8b8fcccd7153acd955f9642e7a2a5d31117ec597fbf718ab65e2fb34a3e04b6",
+    "mutation_sha256": "ee0206eb2cd4ac45a91de3ee37a19258f29671a7c58b671a891c8e8de87c8c93",
+    "red_exit": 101,
+    "green_exit": 0
+  }
+]

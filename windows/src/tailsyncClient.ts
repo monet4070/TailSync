@@ -326,35 +326,11 @@ export type PeersResponse = Omit<Contract.PeersResponse, "self" | "peers" | "dis
   discovery_error?: string | null;
 };
 
-export interface PairingPeerStatus {
-  hostname: string;
-  address: string;
-  fingerprint: string;
-  verification_code: string;
-  local_confirmed: boolean;
-  remote_confirmed: boolean;
-}
+export type PairingPeerStatus = Contract.PairingPeerStatus;
 
-export interface PairingStatus {
-  pairing_enabled: boolean;
-  phase:
-    | "disabled"
-    | "waiting"
-    | "handshaking"
-    | "verification"
-    | "waiting_for_peer"
-    | "finalizing"
-    | "paired"
-    | "cancelled"
-    | "timed_out"
-    | "locked";
-  expires_at?: number | null;
-  remaining_seconds: number;
-  failed_attempts: number;
-  max_failures: number;
-  peer?: PairingPeerStatus | null;
-  error?: string | null;
-}
+export type PendingPairingSummary = Contract.PendingPairingSummary;
+export type PairingStatus = Omit<Contract.PairingStatus, "pending" | "pending_store_unavailable" | "expires_at" | "peer" | "error"> &
+  Partial<Pick<Contract.PairingStatus, "pending" | "pending_store_unavailable" | "expires_at" | "peer" | "error">>;
 
 export interface ConnectionTestResult {
   latency_ms: number;

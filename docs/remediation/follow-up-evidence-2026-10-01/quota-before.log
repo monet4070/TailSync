@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 1 test
+
+thread 'db::storage::tests::quota_preflight_preserves_rows_when_live_payload_references_are_invalid' (4109027) panicked at shared/rust-core/src/db/storage.rs:877:9:
+assertion `left == right` failed: quota must stop before deleting rows when unlink is fail-closed
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test db::storage::tests::quota_preflight_preserves_rows_when_live_payload_references_are_invalid ... FAILED
+
+failures:
+
+failures:
+    db::storage::tests::quota_preflight_preserves_rows_when_live_payload_references_are_invalid
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `--lib`

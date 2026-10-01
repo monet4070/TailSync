@@ -1,0 +1,1979 @@
+{
+  "schema_version": 1,
+  "job": "rust-macos",
+  "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml -- --test-threads=1",
+  "source": {
+    "sha": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+    "fingerprint": "c1da1fcd88f9c6a9b0bacb742be0635517c4dd9b00d7ec02d190a7679e506bf8"
+  },
+  "exit_code": 0,
+  "source_unchanged": true,
+  "duration_ms": 28974,
+  "tests": [
+    {
+      "name": "crypto::tests::access_errors_do_not_create_or_poison_the_cache",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::connection_mode_update_does_not_commit_failed_or_invalid_values",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::connection_mode_update_preserves_concurrent_fields_and_skips_noop_save",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::corrupt_config_errors_and_preserves_file",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::corrupt_settings_are_reported_and_preserved",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::create_race_rereads_the_winning_key",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::encryption_keys_must_be_exactly_32_bytes",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::existing_v2_local_selection_is_not_overwritten",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::failed_create_does_not_cache_the_generated_key",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::invalid_legacy_theme_values_fall_back_without_failing",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::key_cache_initializes_only_once_across_threads",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::legacy_builtin_theme_mapping_is_exact",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::legacy_config_with_all_old_fields_loads_and_migrates",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::legacy_custom_theme_falls_back_to_canvas_and_keeps_old_files",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::legacy_manual_connection_mode_maps_to_lan",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::legacy_settings_default_to_an_empty_trust_store",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::legacy_settings_without_connection_mode_default_to_auto",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::macos_keychain_create_and_read_round_trip_without_cli_or_tty",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::missing_settings_use_defaults",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::non_not_found_errors_never_generate_or_create",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::non_theme_unknown_fields_still_error_and_preserve_config",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::obsolete_theme_fields_are_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::paired_peer_address_is_persisted_and_removed_with_pairing",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::paired_peer_iroh_endpoint_is_validated_and_remembered",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::pairing_endpoint_is_not_changed_by_later_route_discovery",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::re_pairing_same_hostname_with_a_different_key_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::remembering_an_address_for_an_untrusted_hostname_persists_nothing",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::repeated_migration_is_idempotent",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::settings_contract_bounds_are_validated",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::settings_update_does_not_commit_when_persistence_fails",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::settings_update_persists_and_applies_db_limits",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::settings_update_rejects_invalid_values_without_persisting",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::settings_update_reports_connection_mode_changes",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::settings_update_routes_changed_shortcuts_through_the_hook",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::settings_update_uses_plain_save_without_a_shortcut_hook",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::test_dek_is_limited_to_cargo_platform_test_executables",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::user_update_preserves_server_owned_settings",
+      "status": "passed"
+    },
+    {
+      "name": "crypto::tests::v2_write_failure_errors_and_preserves_config",
+      "status": "passed"
+    },
+    {
+      "name": "db::file_encryption::tests::corrupted_chunk_is_rejected_without_plaintext_output",
+      "status": "passed"
+    },
+    {
+      "name": "db::file_encryption::tests::encrypted_container_round_trips_multiple_chunks",
+      "status": "passed"
+    },
+    {
+      "name": "db::file_encryption::tests::hash_mismatch_never_installs_a_container",
+      "status": "passed"
+    },
+    {
+      "name": "db::file_encryption::tests::plaintext_migration_is_idempotent",
+      "status": "passed"
+    },
+    {
+      "name": "db::legacy_v1::tests::explicit_legacy_source_overrides_isolated_roots",
+      "status": "passed"
+    },
+    {
+      "name": "db::legacy_v1::tests::legacy_migration_imports_all_types_and_is_idempotent",
+      "status": "passed"
+    },
+    {
+      "name": "db::legacy_v1::tests::legacy_migration_records_bad_rows_and_retries_after_source_changes",
+      "status": "passed"
+    },
+    {
+      "name": "db::lifecycle::tests::clear_all_reports_removal_failure_and_continues_other_directories",
+      "status": "passed"
+    },
+    {
+      "name": "db::paths::tests::custom_parent_uses_fixed_directory_name",
+      "status": "passed"
+    },
+    {
+      "name": "db::paths::tests::unc_storage_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::batch_preflight_accounts_for_encrypted_history_copy_and_margin",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::batch_preflight_stops_when_only_inline_history_can_be_evicted",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::corrupt_sqlite_is_rejected_during_migration_verification",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::existing_target_requires_the_same_owner_marker",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::quota_eviction_credits_the_wal_the_delete_reclaims",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::quota_eviction_measures_the_storage_tree_once_per_reserve",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::storage_migration_calls_the_notify_hook_once_transfers_are_idle",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::storage_migration_reports_when_rollback_also_fails",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::storage_migration_rolls_back_when_persistence_fails",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::storage_migration_succeeds_and_persists_the_new_root",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::storage_migration_times_out_when_transfers_never_become_idle",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::verified_storage_copy_preserves_files_and_valid_sqlite",
+      "status": "passed"
+    },
+    {
+      "name": "db::storage::tests::verified_storage_copy_rejects_symlink_entries",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::automatic_cleanup_keeps_partial_pinned_batches_incomplete",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::backfill_repairs_legacy_text_references_and_marks_corrupt_rows",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::backfill_upgrades_old_classifier_and_persists_secondary_labels",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::changing_limits_can_be_enforced_immediately",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::clearing_history_removes_only_unfavorited_items",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::clipboard_bytes_are_materialized_below_the_controlled_directory",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::clipboard_materialization_preserves_the_original_basename",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::combined_filters_use_secondary_labels_and_validate_date_ranges",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::complete_file_batch_lookup_supports_idempotent_recovery",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::deferred_delete_checkpoint_is_retried_after_reopen",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::duplicate_file_replacement_cleans_old_name_and_preserves_same_path",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::explicit_delete_truncates_the_write_ahead_log",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::failed_batch_persistence_does_not_leave_partial_database_rows",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::favorite_batches_are_mutated_and_deleted_atomically",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::favorites_query_and_delete_authority_are_consistent",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::file_byte_quota_selects_oldest_entries_for_removal",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::file_history_lifecycle_keeps_bytes_out_of_sqlite",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::file_reference_rejects_parent_paths",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::file_reference_round_trip_uses_external_file",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::file_reference_sanitizes_untrusted_original_name",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::image_history_lifecycle_keeps_bytes_out_of_sqlite",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::image_writes_enforce_the_shared_file_byte_quota",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::incomplete_batch_is_retained_but_cannot_be_copied_as_a_group",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::keyword_pages_are_bounded_and_do_not_read_non_text_payloads",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::keyword_search_matches_text_beyond_the_display_preview",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::keyword_search_treats_like_metacharacters_as_literals",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::main_database_connection_waits_for_transient_locks",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::malformed_images_are_rejected_before_database_insert",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::manually_deleting_from_a_complete_batch_rebases_survivors",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_transaction_rolls_back_schema_and_version_together",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v10_normalizes_partial_favorite_batches",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v11_repairs_duplicate_file_batch_identities_before_indexing",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v3_accepts_files_and_records_resolved_hash_mismatches",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v4_preserves_invalid_images_and_exposes_diagnostics",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v5_is_idempotent_and_classifies_media",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v5_repairs_a_partial_schema",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v6_preserves_v5_primary_categories_as_json_and_is_idempotent",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v7_encrypts_plaintext_file_history_and_is_idempotent",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v7_recovers_when_container_was_installed_before_reference_update",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v7_retries_missing_files_without_blocking_schema_upgrade",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::migration_v9_scrubs_legacy_plaintext_previews_from_sqlite_files",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::new_entries_persist_categories_and_category_queries_page_stably",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::open_at_locks_the_managed_storage_tree",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::open_at_rejects_a_newer_schema_before_initializing_tables",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::open_at_repairs_pre_existing_wide_permissions",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::opening_v7_database_adds_batch_columns_before_creating_batch_index",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::orphan_payload_sweep_respects_references_and_the_grace_period",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::orphan_sweep_aborts_before_deletion_when_a_live_reference_is_invalid",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::orphan_sweep_collects_owned_temps_and_preserves_live_writers",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::orphan_sweep_preserves_reused_payloads_with_case_aliases",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::oversized_history_file_is_rejected_before_persistence",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::payload_cleanup_preserves_file_identity_and_fails_closed",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::pinned_entries_are_never_selected_for_quota_cleanup",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::plaintext_clipboard_materialization_does_not_change_the_source_inode",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::prepared_preview_rejects_corruption_and_observes_cancellation",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::prepared_preview_survives_entry_deletion_without_reopening_its_path",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::preview_batch_navigation_reports_typed_membership_errors",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::preview_batch_navigation_uses_actual_order_and_count",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::preview_errors_never_serialize_source_details",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::preview_metadata_describes_text_image_and_file_without_payloads",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::preview_metadata_does_not_decrypt_payload_data",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::preview_payload_loads_text_image_and_file_bytes",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::preview_payload_rejects_oversized_metadata_before_decryption",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::preview_payload_reports_missing_history_id",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::read_revision_rejects_mutations_and_replaced_database_instances",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::received_file_batch_receipt_makes_replays_idempotent",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::remote_clipboard_materialization_copies_and_marks_plaintext_source",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::synthetic_baseline_percentiles_use_nearest_rank",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::synthetic_history_performance_baseline",
+      "status": "skipped"
+    },
+    {
+      "name": "db::tests::text_previews_are_decrypted_only_when_history_is_read",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::typed_preview_payload_reports_missing_entry",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::v9_busy_migration_keeps_pending_state_and_completes_on_reopen",
+      "status": "passed"
+    },
+    {
+      "name": "db::tests::v9_cleanup_wal_truncation_fails_when_a_reader_blocks_it",
+      "status": "passed"
+    },
+    {
+      "name": "diagnostics::tests::collector_may_reenter_record_and_set_collector_without_deadlock",
+      "status": "passed"
+    },
+    {
+      "name": "diagnostics::tests::collector_runs_outside_the_registry_lock",
+      "status": "passed"
+    },
+    {
+      "name": "diagnostics::tests::error_ref_skips_alloc_when_uncollected",
+      "status": "passed"
+    },
+    {
+      "name": "diagnostics::tests::record_is_a_noop_without_a_collector",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::concurrent_initialization_converges_on_one_identity",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::corrupt_identity_is_reported_without_replacement",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::create_only_persistence_never_replaces_an_existing_identity",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::identity_directory_and_file_are_private",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::invalid_identity_version_and_key_lengths_are_preserved",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::missing_identity_is_created_once_and_reloaded",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::public_key_validation_is_canonical_and_fingerprinted",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::trust_peer_filters_blank_addresses_and_falls_back_to_lan_in_auto_mode",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::trust_peer_infers_tailscale_mode_for_cgnat_addresses",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::trust_peer_pins_the_key_and_persists_via_the_hook",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::trust_peer_rejects_an_empty_hostname",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::trust_peer_rejects_pinning_this_device_itself",
+      "status": "passed"
+    },
+    {
+      "name": "identity::tests::trust_peer_rolls_back_the_settings_when_persistence_fails",
+      "status": "passed"
+    },
+    {
+      "name": "image_chunks::tests::compresses_and_reassembles_bounded_image",
+      "status": "passed"
+    },
+    {
+      "name": "image_chunks::tests::multiple_chunks_require_order_and_match_the_digest",
+      "status": "passed"
+    },
+    {
+      "name": "image_chunks::tests::rejects_decompression_bomb_and_forged_dimensions",
+      "status": "passed"
+    },
+    {
+      "name": "image_chunks::tests::rejects_malformed_sizes_and_missing_chunks",
+      "status": "passed"
+    },
+    {
+      "name": "import::tests::begin_import_validates_input_and_rejects_bad_hashes",
+      "status": "passed"
+    },
+    {
+      "name": "import::tests::import_hash_mismatch_is_rejected_and_file_removed",
+      "status": "passed"
+    },
+    {
+      "name": "import::tests::import_rejects_incomplete_and_misordered_chunks",
+      "status": "passed"
+    },
+    {
+      "name": "import::tests::import_rejects_invalid_base64_and_bad_offsets",
+      "status": "passed"
+    },
+    {
+      "name": "import::tests::import_size_limit_matches_protocol_and_file_limits",
+      "status": "passed"
+    },
+    {
+      "name": "import::tests::text_import_round_trip_commits_and_cleans_up",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::corrupt_iroh_identity_is_archived_before_regeneration",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::endpoint_registries_isolate_rtt_capability_observations",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::one_time_invite_completes_over_real_iroh_and_is_consumed",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::pairing_completes_over_a_real_iroh_stream",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::persisted_identity_keeps_the_same_endpoint_id",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::rejected_alpn_does_not_prevent_the_next_business_connection",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::repeated_rtt_probes_reuse_the_persistent_endpoint",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::reverse_direction_rtt_probe_does_not_close_an_existing_business_stream",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::rtt_capability_cache_is_bounded_and_refreshes_existing_entries",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::rtt_capability_cache_rejects_invalid_endpoint_ids",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::rtt_measurement_uses_the_selected_path",
+      "status": "passed"
+    },
+    {
+      "name": "iroh_transport::tests::rtt_samples_label_the_measured_path",
+      "status": "passed"
+    },
+    {
+      "name": "observability::tests::generated_ids_have_expected_shape",
+      "status": "passed"
+    },
+    {
+      "name": "observability::tests::session_id_is_stable_and_short",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::invite::tests::a_claim_is_released_on_drop_and_consumed_on_commit",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::invite::tests::expired_invites_are_rejected_without_waiting",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::invite::tests::invite_round_trips_as_a_native_link",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::invite::tests::malformed_and_tampered_invites_are_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::a_stalled_pairing_session_releases_the_window_before_window_expiry",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::anonymous_protocol_anomalies_do_not_consume_the_lockout_budget",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::both_confirmations_save_both_peer_keys_and_close_windows",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::code_is_six_digits_and_independent_of_key_order",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::diagnostics_events_follow_the_pairing_lifecycle",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::diagnostics_pairing_failed_records_the_error",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::fifth_failure_closes_pairing_window",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::glare_arbitration_keeps_one_deterministic_session_without_banning",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::install_pairing_session_rejects_closed_window",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::install_pairing_session_rejects_invalid_interface",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::install_pairing_session_rejects_self_pairing",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::install_pairing_session_without_manager_writes_error_frame",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::invalid_inputs_are_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::newer_session_preempts_an_unconfirmed_slot_but_not_a_confirmed_one",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::non_ban_pairing_failure_keeps_window_and_counter",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::pairing_waits_for_remote_persisted_ack_before_marking_paired",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::pairing_window_defaults_closed_and_expires",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::preferred_glare_direction_cannot_evict_a_locally_confirmed_session",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::remote_invite_is_consumed_only_after_both_peers_persist_trust",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests::session_timeouts_do_not_consume_pairing_lockout_budget",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_cancellation_cannot_slip_between_the_check_and_the_trust_write",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_cancelled_session_never_writes_trust",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_completed_pairing_promotes_to_trust_and_clears_the_note",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_frozen_legacy_configuration_still_loads_with_its_trust_intact",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_known_pin_conflict_never_advertises_persistence",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_link_that_dies_before_the_peer_acknowledges_leaves_a_pending_note_not_trust",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_link_that_dies_before_the_peer_confirms_records_nothing",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_restart_keeps_the_note_and_still_reports_the_device_unpaired",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::a_session_timeout_after_confirmation_keeps_the_pending_note",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::an_older_peer_pairing_into_the_new_side_still_completes",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::committed_pairing_is_terminal_while_transport_close_is_pending",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::failed_pending_writes_preserve_memory_and_future_formats",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::forgetting_a_device_also_drops_its_half_confirmed_note",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::pending_recovery_requires_the_same_authenticated_key_and_is_never_active",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::repeated_confirmation_is_idempotent_and_grants_nothing",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::revocation_invalidates_a_pending_session_before_a_late_ack",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::the_new_side_pairing_out_to_an_older_peer_still_completes",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::the_older_peer_concludes_success_only_after_the_new_note_is_durable",
+      "status": "passed"
+    },
+    {
+      "name": "pairing::tests_pending::the_settings_shape_stays_readable_by_an_older_build",
+      "status": "passed"
+    },
+    {
+      "name": "peer::admission::tests::disabled_peer_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "peer::admission::tests::malformed_trusted_key_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "peer::admission::tests::missing_enabled_entry_defaults_to_enabled",
+      "status": "passed"
+    },
+    {
+      "name": "peer::admission::tests::paired_enabled_peer_is_allowed",
+      "status": "passed"
+    },
+    {
+      "name": "peer::admission::tests::source_mode_mismatch_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "peer::admission::tests::unpaired_peer_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "peer::admission::tests::wrong_key_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "peer::connection_limiter::tests::dropping_permits_returns_capacity",
+      "status": "passed"
+    },
+    {
+      "name": "peer::connection_limiter::tests::ip_address_variant_uses_the_same_source_accounting",
+      "status": "passed"
+    },
+    {
+      "name": "peer::connection_limiter::tests::limiter_enforces_total_and_per_source_caps",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::a_full_priority_queue_never_drops_a_text_frame_silently",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::candidate_delay_prefers_lan_without_serializing_fallbacks",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::completion_reports_the_result_to_the_enqueuer",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::confirmed_batch_rejects_oversized_payloads",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::confirmed_file_rejects_non_file_commands",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::control_payloads_are_acknowledged_implicitly",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::delivers_batch_with_accept_ack",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::delivers_event_with_acknowledgement",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::delivers_file_chunk_with_offset_ack",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::delivery_config_defaults_match_shared_constants",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::delivery_error_retryability_is_typed",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::delivery_failure_backoff_delays_the_next_reconnect",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::dropping_an_in_flight_frame_reports_shutdown_only_while_shutting_down",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::event_ack_for_another_message_is_a_protocol_error",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::event_ack_must_match_sequence_and_message",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::event_rejection_is_permanent",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::expired_event_rejection_is_typed_and_permanent",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::file_ack_must_match_transfer_and_returns_offset",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::file_resume_ack_marks_batch_replay_required",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::file_window_falls_back_to_stop_and_wait_without_negotiation",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::file_window_returns_confirmed_prefix_when_later_ack_times_out",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::file_window_sends_all_chunks_before_waiting_for_cumulative_acks",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::four_megabyte_window_removes_per_chunk_ack_serialization",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::measured_candidate_delay_follows_route_quality_and_keeps_fallbacks_bounded",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::negotiated_image_chunks_reassemble_before_final_ack",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::oversized_payloads_are_rejected_at_enqueue_time",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::pending_frame_ttl_is_checked_from_enqueue_time",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::race_aborts_remaining_attempts_on_first_success",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::race_applies_handshake_timeout",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::race_joins_all_failures",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::race_preserves_lan_head_start_while_another_immediate_lan_is_connecting",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::race_wins_with_first_successful_attempt",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::race_without_candidates_fails",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::receiver_replay_reselects_only_file_chunks_sent_over_a_fallback_route",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::s2_f5_authenticated_worker_baseline",
+      "status": "skipped"
+    },
+    {
+      "name": "peer::delivery::tests::s2_f5_file_ack_does_not_block_text",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::scheduler_keeps_serving_the_open_channel",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::scheduler_model_latency_baseline",
+      "status": "skipped"
+    },
+    {
+      "name": "peer::delivery::tests::scheduler_serves_bulk_after_a_bounded_priority_burst",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::shared_event_can_encode_without_consuming_history_bytes",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::shared_event_encodes_once_and_shares_bytes_across_peers",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::shared_event_rejects_non_envelope_commands_and_oversized_payloads",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::silent_batch_ack_ends_the_connection_attempt_without_replay",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::silent_file_ack_ends_the_connection_attempt_without_replay",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::text_payload_is_wrapped_in_an_event_envelope",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::worker_delivers_frames_and_registers_session",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::worker_drops_permanently_rejected_frames",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::worker_exits_on_shutdown",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::worker_keeps_pending_frame_across_reconnect",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::worker_reaches_connect_when_refresh_hangs",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::worker_reselects_the_preferred_route_after_receiver_requests_batch_replay",
+      "status": "passed"
+    },
+    {
+      "name": "peer::delivery::tests::worker_wakes_reconnect_backoff_when_new_work_arrives",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::auto_merge_keeps_the_tailnet_address_when_lan_is_preferred",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::automatic_discovery_merges_interfaces_and_prefers_lan",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::automatic_discovery_survives_one_unavailable_interface",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::candidate_sort_keeps_online_routes_ahead_of_offline_lan",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::candidate_sort_prefers_private_addresses_over_apipa_and_loopback",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::connection_modes_keep_only_their_allowed_remembered_routes",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::connection_modes_only_accept_expected_address_ranges",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::discovered_alias_with_paired_address_is_not_listed_twice",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::lan_discovery_succeeds_with_zero_devices_and_fails_only_when_all_transports_fail",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::lan_merge_does_not_label_a_lan_candidate_as_the_tailscale_ip",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::local_info_merging_backfills_tailscale_ip_and_candidates",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::mdns_and_udp_results_are_deduplicated_without_losing_udp_compatibility",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::mdns_only_candidate_is_discovered_but_not_online",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::mdns_self_filter_requires_remote_identity_and_expected_port",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::paired_peer_with_remembered_address_survives_empty_discovery",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::pairing_target_parses_ips_and_endpoint_ids",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::pairing_target_rejects_link_local_ipv6_with_a_clear_message",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::pairing_target_validation_enforces_mode_ranges",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::peer_socket_addr_supports_ipv6_addresses",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_fails_without_any_usable_address",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_keeps_online_unmeasured_routes_before_offline_measurements",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_maps_and_sorts_existing_candidates",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_prefers_the_fastest_measured_online_route",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_rejects_invalid_iroh_endpoints",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_rejects_invalid_tcp_addresses",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_skips_link_local_ipv6_without_a_scope",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_synthesizes_candidate_without_discovery",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::resolve_candidates_uses_tailscale_ip_when_address_is_empty",
+      "status": "passed"
+    },
+    {
+      "name": "peer::directory::tests::trusted_peer_candidates_are_completed_from_all_remembered_interfaces",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::full_table_does_not_rescan_before_cleanup_interval",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::idle_sources_expire_and_free_table_slots",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::lan_loopback_and_tailscale_sources_are_admitted",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::public_and_unspecified_sources_are_never_answered",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::single_source_exhausts_its_burst_and_refills_over_time",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::socket_source_ip_extraction_matches_responder_usage",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::sources_are_billed_independently_under_the_global_cap",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::spoofed_source_flood_keeps_the_table_bounded",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::table_full_denies_new_sources_without_evicting_live_ones",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::throttled_source_does_not_burn_the_global_budget",
+      "status": "passed"
+    },
+    {
+      "name": "peer::discovery_admission::tests::wake_storm_bursts_are_not_throttled",
+      "status": "passed"
+    },
+    {
+      "name": "peer::event_receiver::tests::duplicate_event_is_acknowledged_without_reapply",
+      "status": "passed"
+    },
+    {
+      "name": "peer::event_receiver::tests::non_reliable_command_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "peer::event_receiver::tests::replay_with_unknown_message_id_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "peer::event_receiver::tests::stale_timestamp_is_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "peer::event_receiver::tests::text_event_is_applied_and_acknowledged",
+      "status": "passed"
+    },
+    {
+      "name": "peer::event_receiver::tests::transient_clipboard_failure_does_not_persist_or_deduplicate_event",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::apply_peer_health_clears_stale_current_route_after_session_closes",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::apply_peer_health_marks_connected_route_current",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::apply_peer_health_normalizes_inconsistent_legacy_input",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::apply_peer_health_writes_candidate_and_peer_status",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::authenticated_sessions_force_connected_until_last_session_closes",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::candidate_without_heartbeat_is_discovered_not_online",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::heartbeat_misses_confirm_then_offline_and_recover_immediately",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::heartbeat_rounds_confirm_then_offline_and_recover",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::lan_and_tailscale_health_are_independent",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::online_ttl_expiry_moves_routes_to_offline",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::probe_round_requires_an_explicit_success_observation",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::probe_rounds_move_never_answered_candidates_offline",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::probed_but_never_seen_routes_go_offline_after_two_misses",
+      "status": "passed"
+    },
+    {
+      "name": "peer::health::tests::route_tracking_is_bounded_and_connected_sessions_survive_eviction",
+      "status": "passed"
+    },
+    {
+      "name": "peer::inbound_source::tests::address_and_description_normalize_the_source",
+      "status": "passed"
+    },
+    {
+      "name": "peer::inbound_source::tests::interface_maps_tcp_addresses_and_iroh",
+      "status": "passed"
+    },
+    {
+      "name": "peer::inbound_source::tests::is_allowed_follows_the_connection_mode",
+      "status": "passed"
+    },
+    {
+      "name": "peer::pool::tests::batch_serializers_are_per_peer",
+      "status": "passed"
+    },
+    {
+      "name": "peer::pool::tests::sender_for_candidates_keeps_a_live_worker_across_route_changes",
+      "status": "passed"
+    },
+    {
+      "name": "peer::pool::tests::sender_for_candidates_replaces_dead_workers",
+      "status": "passed"
+    },
+    {
+      "name": "peer::rate_limit::tests::check_peer_event_budget_accepts_events_and_rejects_oversize",
+      "status": "passed"
+    },
+    {
+      "name": "peer::rate_limit::tests::image_continuation_chunks_consume_bytes_without_exhausting_event_burst",
+      "status": "passed"
+    },
+    {
+      "name": "peer::rate_limit::tests::peer_budget_enforces_event_burst_and_byte_capacity",
+      "status": "passed"
+    },
+    {
+      "name": "peer::rate_limit::tests::peer_budget_refills_over_time",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::active_route_serializes",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::connection_mode_allows_only_its_interfaces",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::connection_mode_parses_canonical_and_legacy_spellings",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::health_consistency_invariant_detects_contradictions",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::health_consistency_invariant_holds_for_constructors",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::health_snapshot_serializes_snake_case_fields",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::legacy_candidates_without_capability_fail_closed",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::legacy_peer_info_without_status_fields_defaults_safely",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::local_info_defaults_candidates_when_absent",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::new_candidates_only_assume_tcp_routes_support_rtt",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::peer_status_defaults_to_discovered",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::remembered_candidates_start_discovered_and_offline",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::resolved_target_displays_iroh_prefix",
+      "status": "passed"
+    },
+    {
+      "name": "peer::types::tests::route_latency_serializes",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::atomic_temp_lifecycle_tests::atomic_writer_exit_probe",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::atomic_temp_lifecycle_tests::dead_writer_temp_is_collectible_after_a_process_restart",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::create_private_dir_all_leaves_existing_directories_alone",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::create_private_dir_all_locks_created_directories",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::create_private_dir_all_rejects_a_symlink_root",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::create_private_file_is_owner_only_and_fails_on_existing",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::enforce_private_database_handles_missing_files",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::enforce_private_tree_breaks_legacy_hard_links_without_touching_the_source",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::enforce_private_tree_does_not_follow_a_symlink_root",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::enforce_private_tree_rejects_child_symlinks",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::enforce_private_tree_repairs_pre_existing_paths",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::private_file_creation_rejects_a_symlink_parent",
+      "status": "passed"
+    },
+    {
+      "name": "private_fs::tests::write_private_file_is_atomic_and_owner_only",
+      "status": "passed"
+    },
+    {
+      "name": "secure::handshake::pairing_read_tests::window_signal_preserves_a_partially_read_frame",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::anonymous_handshake_identity_fields_are_pinned",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::capability_advertisements_are_backward_compatible_and_fail_closed",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::capability_negotiation_requires_build_runtime_and_peer_support",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::closed_pairing_window_returns_a_clear_rejection",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::current_client_uses_v4_data_frames_with_legacy_server",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::current_server_uses_v4_data_frames_with_legacy_client",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::encrypted_frame_write_does_not_wait_forever_for_a_stalled_peer",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::encrypted_record_read_resumes_after_ciphertext_cancellation",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::encrypted_record_read_resumes_after_length_prefix_cancellation",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::encrypted_transport_fragments_a_full_file_chunk",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::incompatible_handshake_gets_an_actionable_response_in_the_peer_version",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::negotiated_capabilities_are_bound_to_each_authenticated_session",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::noise_handshake_pins_identity_and_round_trips_encrypted_frame",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::noise_handshake_rejects_wrong_pinned_server_key",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::oversized_handshake_is_rejected_from_header_before_body_read",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::oversized_image_chunk_is_rejected_from_decrypted_header_before_body_read",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::pairing_handshake_derives_matching_verification_codes",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::peer_closing_the_handshake_remains_a_network_error",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::peer_identity_is_backward_compatible_and_only_serializes_iroh_when_present",
+      "status": "passed"
+    },
+    {
+      "name": "secure::tests::peer_identity_rejects_an_explicitly_incompatible_wire_version",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::an_outgoing_batch_without_peers_adopts_recovered_targets_once",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::an_outgoing_batch_without_peers_is_not_marked_complete",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::journal_round_trip_preserves_ids_paths_and_peer_state",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::live_claim_prevents_duplicate_recovery_until_the_sender_finishes",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::peer_rename_is_matched_by_the_persisted_fingerprint",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::pending_selection_round_trip_and_expiry_are_bounded",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::rebind_legacy_batch_keeps_fingerprints_aligned_with_completed_peers",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::rebind_outgoing_batch_peers_updates_repaired_fingerprint",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::rebind_prefers_persisted_identity_when_old_hostname_is_reused",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::rebind_preserves_completed_batch_until_local_history_is_saved",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::retire_outgoing_batches_for_peer_removes_matching_journals",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::retry_state_applies_backoff_and_throttles_duplicate_notifications",
+      "status": "passed"
+    },
+    {
+      "name": "sync::outgoing::tests::stale_journal_is_removed_without_touching_source_file",
+      "status": "passed"
+    },
+    {
+      "name": "sync::prepare::tests::clipboard_files_are_readable_accepts_regular_files",
+      "status": "passed"
+    },
+    {
+      "name": "sync::prepare::tests::clipboard_files_are_readable_rejects_missing_paths",
+      "status": "passed"
+    },
+    {
+      "name": "sync::prepare::tests::collision_safe_name_uniquifies_with_folder_labels",
+      "status": "passed"
+    },
+    {
+      "name": "sync::prepare::tests::manifest_validate_rejects_structural_violations",
+      "status": "passed"
+    },
+    {
+      "name": "sync::prepare::tests::normalize_transferred_file_name_strips_full_and_legacy_prefixes",
+      "status": "passed"
+    },
+    {
+      "name": "sync::prepare::tests::prepare_file_batch_builds_hashed_entries_for_real_files",
+      "status": "passed"
+    },
+    {
+      "name": "sync::prepare::tests::prepare_file_batch_rejects_symlinks_and_folders",
+      "status": "passed"
+    },
+    {
+      "name": "sync::resume::tests::forced_resume_persistence_flushes_before_state_release",
+      "status": "passed"
+    },
+    {
+      "name": "sync::resume::tests::maintenance_immediately_cleans_acknowledged_batch_sidecars",
+      "status": "passed"
+    },
+    {
+      "name": "sync::resume::tests::persist_incoming_batch_writes_atomically",
+      "status": "passed"
+    },
+    {
+      "name": "sync::resume::tests::persist_transfer_state_is_owner_only",
+      "status": "passed"
+    },
+    {
+      "name": "sync::resume::tests::restore_persisted_received_file_accepts_matching_files",
+      "status": "passed"
+    },
+    {
+      "name": "sync::resume::tests::restore_persisted_received_file_rejects_links_outside_incoming",
+      "status": "passed"
+    },
+    {
+      "name": "sync::resume::tests::restore_persisted_received_file_rejects_mismatches_and_missing_files",
+      "status": "passed"
+    },
+    {
+      "name": "sync::resume::tests::resume_persistence_is_buffered_until_the_cadence_is_due",
+      "status": "passed"
+    },
+    {
+      "name": "sync::shadow::tests::shadow_filter_remove_rolls_back_and_expired_entries_miss",
+      "status": "passed"
+    },
+    {
+      "name": "sync::shadow::tests::shadow_filter_stays_sticky_and_bounded",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::active_file_batch_limits_are_enforced_without_affecting_other_peers",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::actual_incoming_batch_creates_private_directories_and_manifest",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::batch_preflight_only_credits_partials_bound_to_the_same_manifest",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::batch_updates_clipboard_only_after_all_files_and_completion",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::cancellation_exposes_only_completed_files_as_incomplete_history",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::cancelled_batch_cache_expires_and_caps_entries",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::cancelled_batch_survives_connection_suspend",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::completed_batch_files_resume_after_engine_restart",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::completed_file_batch_is_idempotent",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::completed_file_batch_replay_skips_receive_and_preserves_the_manifest_on_failure",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::completed_transfer_shortcut_requires_matching_hash",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::connection_suspend_releases_handles_and_preserves_partial_offset",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::corrupt_resumed_file_fails_deferred_verification",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::duplicate_names_get_a_short_source_directory_label",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::durable_completion_seed_shortcuts_a_replayed_batch",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::expired_transfer_cleanup_removes_orphans_but_preserves_recent_and_nested_files",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_batch_count_and_size_boundaries_are_exact",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_meta_accepts_valid_input_and_normalizes_the_name",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_meta_rejects_invalid_chunk_sizes_for_resumable_transfers",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_meta_rejects_missing_or_invalid_names",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_meta_rejects_oversized_files",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_meta_requires_the_batch_protocol",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_receive_limit_is_enforced_per_peer",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_receive_rejects_empty_chunk_without_mutating_resume_state",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::file_receive_restores_the_confirmed_offset_from_disk",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::folder_rejects_the_entire_selection",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::global_active_file_batch_limit_is_enforced",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::newer_clipboard_generation_prevents_old_batch_activation",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::pending_and_inflight_receives_count_toward_the_peer_limit",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::pending_file_batch_bytes_exclude_partial_data_already_on_disk",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::process_restart_reopens_batch_manifest_before_orphaned_chunk",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::receive_suspend_guard_drop_without_runtime_does_not_panic",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::receive_suspend_guard_suspends_active_receives_on_drop",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::reliable_message_dedup_is_bounded_by_insertion_order",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::reliable_message_dedup_is_scoped_to_the_peer",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::resumed_file_is_verified_before_commit",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::shared_batch_cancel_rejects_a_verified_pending_commit_without_leaking_file",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::shared_batch_cancel_waits_for_transfer_state_and_cleans_temp_files",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::shared_batch_commit_reuses_verified_plaintext_clipboard_staging",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::shared_batch_finish_does_not_hold_engine_lock_during_platform_commit",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::shared_batch_finish_keeps_manifest_until_network_ack",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::shared_receive_path_uses_transfer_scoped_state_and_commit",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::stale_connection_suspend_keeps_state_reassigned_to_new_epoch",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::stale_receive_metadata_cannot_downgrade_active_epoch",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::symbolic_link_rejects_the_entire_selection_when_supported",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::transferred_file_name_removes_current_and_legacy_storage_prefixes",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::verify_and_commit_commits_verified_files",
+      "status": "passed"
+    },
+    {
+      "name": "sync::tests::verify_and_commit_removes_corrupt_files_without_committing",
+      "status": "passed"
+    },
+    {
+      "name": "sync_warning::p2_4_tests::peek_does_not_consume_and_ack_consumes_exactly_that_warning",
+      "status": "passed"
+    },
+    {
+      "name": "sync_warning::p2_4_tests::warning_ids_are_monotonic_and_nonzero",
+      "status": "passed"
+    },
+    {
+      "name": "sync_warning::tests::delivery_shutdown_warning_requires_a_real_shutdown",
+      "status": "passed"
+    },
+    {
+      "name": "sync_warning::tests::warning_variants_are_bounded_and_consumed_once",
+      "status": "passed"
+    },
+    {
+      "name": "updates::tests::metadata_requires_the_current_product_and_schema",
+      "status": "passed"
+    },
+    {
+      "name": "updates::tests::metadata_version_must_match_the_downloaded_release",
+      "status": "passed"
+    },
+    {
+      "name": "legacy_isolation_worker",
+      "status": "skipped"
+    },
+    {
+      "name": "legacy_isolation_worker",
+      "status": "passed"
+    }
+  ],
+  "integrations": []
+}

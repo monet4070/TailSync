@@ -1,0 +1,162 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.32s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 96 tests
+test db::file_encryption::tests::corrupted_chunk_is_rejected_without_plaintext_output ... ok
+test db::file_encryption::tests::encrypted_container_round_trips_multiple_chunks ... ok
+test db::file_encryption::tests::hash_mismatch_never_installs_a_container ... ok
+test db::file_encryption::tests::plaintext_migration_is_idempotent ... ok
+test db::legacy_v1::tests::explicit_legacy_source_overrides_isolated_roots ... ok
+test db::legacy_v1::tests::legacy_migration_imports_all_types_and_is_idempotent ... ok
+test db::legacy_v1::tests::legacy_migration_records_bad_rows_and_retries_after_source_changes ... ok
+test db::lifecycle::tests::clear_all_reports_removal_failure_and_continues_other_directories ... ok
+test db::paths::tests::custom_parent_uses_fixed_directory_name ... FAILED
+test db::paths::tests::unc_storage_is_rejected ... ok
+test db::storage::tests::batch_preflight_accounts_for_encrypted_history_copy_and_margin ... ok
+test db::storage::tests::batch_preflight_stops_when_only_inline_history_can_be_evicted ... FAILED
+test db::storage::tests::corrupt_sqlite_is_rejected_during_migration_verification ... ok
+test db::storage::tests::existing_target_requires_the_same_owner_marker ... ok
+test db::storage::tests::quota_eviction_credits_the_wal_the_delete_reclaims ... FAILED
+test db::storage::tests::quota_eviction_measures_the_storage_tree_once_per_reserve ... FAILED
+test db::storage::tests::storage_migration_calls_the_notify_hook_once_transfers_are_idle ... FAILED
+test db::storage::tests::storage_migration_reports_when_rollback_also_fails ... FAILED
+test db::storage::tests::storage_migration_rolls_back_when_persistence_fails ... FAILED
+test db::storage::tests::storage_migration_succeeds_and_persists_the_new_root ... FAILED
+test db::storage::tests::storage_migration_times_out_when_transfers_never_become_idle ... ok
+test db::storage::tests::verified_storage_copy_preserves_files_and_valid_sqlite ... ok
+test db::storage::tests::verified_storage_copy_rejects_symlink_entries ... ok
+test db::tests::a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds ... ok
+test db::tests::automatic_cleanup_keeps_partial_pinned_batches_incomplete ... ok
+test db::tests::backfill_repairs_legacy_text_references_and_marks_corrupt_rows ... ok
+test db::tests::backfill_upgrades_old_classifier_and_persists_secondary_labels ... ok
+test db::tests::changing_limits_can_be_enforced_immediately ... ok
+test db::tests::clearing_history_removes_only_unfavorited_items ... ok
+test db::tests::clipboard_bytes_are_materialized_below_the_controlled_directory ... ok
+test db::tests::clipboard_materialization_preserves_the_original_basename ... ok
+test db::tests::combined_filters_use_secondary_labels_and_validate_date_ranges ... ok
+test db::tests::complete_file_batch_lookup_supports_idempotent_recovery ... ok
+test db::tests::duplicate_file_replacement_cleans_old_name_and_preserves_same_path ... ok
+test db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases ... ok
+test db::tests::explicit_delete_truncates_the_write_ahead_log ... ok
+test db::tests::failed_batch_persistence_does_not_leave_partial_database_rows ... ok
+test db::tests::favorite_batches_are_mutated_and_deleted_atomically ... ok
+test db::tests::favorites_query_and_delete_authority_are_consistent ... ok
+test db::tests::file_byte_quota_selects_oldest_entries_for_removal ... ok
+test db::tests::file_history_lifecycle_keeps_bytes_out_of_sqlite ... ok
+test db::tests::file_reference_rejects_parent_paths ... ok
+test db::tests::file_reference_round_trip_uses_external_file ... ok
+test db::tests::file_reference_sanitizes_untrusted_original_name ... ok
+test db::tests::image_history_lifecycle_keeps_bytes_out_of_sqlite ... ok
+test db::tests::image_writes_enforce_the_shared_file_byte_quota ... ok
+test db::tests::incomplete_batch_is_retained_but_cannot_be_copied_as_a_group ... ok
+test db::tests::keyword_pages_are_bounded_and_do_not_read_non_text_payloads ... ok
+test db::tests::keyword_search_matches_text_beyond_the_display_preview ... ok
+test db::tests::keyword_search_treats_like_metacharacters_as_literals ... ok
+test db::tests::main_database_connection_waits_for_transient_locks ... ok
+test db::tests::malformed_images_are_rejected_before_database_insert ... ok
+test db::tests::manually_deleting_from_a_complete_batch_rebases_survivors ... ok
+test db::tests::migration_transaction_rolls_back_schema_and_version_together ... ok
+test db::tests::migration_v10_normalizes_partial_favorite_batches ... ok
+test db::tests::migration_v11_repairs_duplicate_file_batch_identities_before_indexing ... ok
+test db::tests::migration_v3_accepts_files_and_records_resolved_hash_mismatches ... ok
+test db::tests::migration_v4_preserves_invalid_images_and_exposes_diagnostics ... ok
+test db::tests::migration_v5_is_idempotent_and_classifies_media ... ok
+test db::tests::migration_v5_repairs_a_partial_schema ... ok
+test db::tests::migration_v6_preserves_v5_primary_categories_as_json_and_is_idempotent ... ok
+test db::tests::migration_v7_encrypts_plaintext_file_history_and_is_idempotent ... ok
+test db::tests::migration_v7_recovers_when_container_was_installed_before_reference_update ... ok
+test db::tests::migration_v7_retries_missing_files_without_blocking_schema_upgrade ... ok
+test db::tests::migration_v9_scrubs_legacy_plaintext_previews_from_sqlite_files ... ok
+test db::tests::new_entries_persist_categories_and_category_queries_page_stably ... ok
+test db::tests::open_at_locks_the_managed_storage_tree ... ok
+test db::tests::open_at_rejects_a_newer_schema_before_initializing_tables ... ok
+test db::tests::open_at_repairs_pre_existing_wide_permissions ... ok
+test db::tests::opening_v7_database_adds_batch_columns_before_creating_batch_index ... ok
+test db::tests::orphan_payload_sweep_respects_references_and_the_grace_period ... ok
+test db::tests::orphan_sweep_aborts_before_deletion_when_a_live_reference_is_invalid ... ok
+test db::tests::orphan_sweep_preserves_reused_payloads_with_case_aliases ... ok
+test db::tests::oversized_history_file_is_rejected_before_persistence ... ok
+test db::tests::payload_cleanup_preserves_file_identity_and_fails_closed ... ok
+test db::tests::pinned_entries_are_never_selected_for_quota_cleanup ... ok
+test db::tests::plaintext_clipboard_materialization_does_not_change_the_source_inode ... ok
+test db::tests::prepared_preview_rejects_corruption_and_observes_cancellation ... ok
+test db::tests::prepared_preview_survives_entry_deletion_without_reopening_its_path ... ok
+test db::tests::preview_batch_navigation_reports_typed_membership_errors ... ok
+test db::tests::preview_batch_navigation_uses_actual_order_and_count ... ok
+test db::tests::preview_errors_never_serialize_source_details ... ok
+test db::tests::preview_metadata_describes_text_image_and_file_without_payloads ... ok
+test db::tests::preview_metadata_does_not_decrypt_payload_data ... ok
+test db::tests::preview_payload_loads_text_image_and_file_bytes ... ok
+test db::tests::preview_payload_rejects_oversized_metadata_before_decryption ... ok
+test db::tests::preview_payload_reports_missing_history_id ... ok
+test db::tests::read_revision_rejects_mutations_and_replaced_database_instances ... ok
+test db::tests::received_file_batch_receipt_makes_replays_idempotent ... ok
+test db::tests::remote_clipboard_materialization_copies_and_marks_plaintext_source ... ok
+test db::tests::synthetic_baseline_percentiles_use_nearest_rank ... ok
+test db::tests::synthetic_history_performance_baseline ... ignored, manual synthetic performance baseline
+test db::tests::text_previews_are_decrypted_only_when_history_is_read ... ok
+test db::tests::typed_preview_payload_reports_missing_entry ... ok
+test db::tests::v9_busy_migration_keeps_pending_state_and_completes_on_reopen ... ok
+test db::tests::v9_cleanup_wal_truncation_fails_when_a_reader_blocks_it ... ok
+
+failures:
+
+---- db::paths::tests::custom_parent_uses_fixed_directory_name stdout ----
+
+thread 'db::paths::tests::custom_parent_uses_fixed_directory_name' (3587015) panicked at shared/rust-core/src/db/paths.rs:181:37:
+called `Result::unwrap()` on an `Err` value: "Could not create /tmp/tailsync-implementation-data: private directory cannot be a symlink: /tmp"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- db::storage::tests::batch_preflight_stops_when_only_inline_history_can_be_evicted stdout ----
+
+thread 'db::storage::tests::batch_preflight_stops_when_only_inline_history_can_be_evicted' (3587018) panicked at shared/rust-core/src/db/storage.rs:855:48:
+called `Result::unwrap()` on an `Err` value: "Could not create /tmp/tailsync-implementation-data: private directory cannot be a symlink: /tmp"
+
+---- db::storage::tests::quota_eviction_credits_the_wal_the_delete_reclaims stdout ----
+
+thread 'db::storage::tests::quota_eviction_credits_the_wal_the_delete_reclaims' (3587021) panicked at shared/rust-core/src/db/storage.rs:949:48:
+called `Result::unwrap()` on an `Err` value: "Could not create /tmp/tailsync-implementation-data: private directory cannot be a symlink: /tmp"
+
+---- db::storage::tests::quota_eviction_measures_the_storage_tree_once_per_reserve stdout ----
+
+thread 'db::storage::tests::quota_eviction_measures_the_storage_tree_once_per_reserve' (3587022) panicked at shared/rust-core/src/db/storage.rs:1041:48:
+called `Result::unwrap()` on an `Err` value: "Could not create /tmp/tailsync-implementation-data: private directory cannot be a symlink: /tmp"
+
+---- db::storage::tests::storage_migration_calls_the_notify_hook_once_transfers_are_idle stdout ----
+
+thread 'db::storage::tests::storage_migration_calls_the_notify_hook_once_transfers_are_idle' (3587024) panicked at shared/rust-core/src/db/storage.rs:1292:10:
+called `Result::unwrap()` on an `Err` value: Migrate("No such file or directory (os error 2)")
+
+---- db::storage::tests::storage_migration_reports_when_rollback_also_fails stdout ----
+
+thread 'db::storage::tests::storage_migration_reports_when_rollback_also_fails' (3587030) panicked at shared/rust-core/src/db/storage.rs:1233:9:
+assertion failed: matches!(error, StorageMigrationFailure::RollbackAlsoFailed
+    { ref save_error, ref rollback_error } if save_error ==
+    "simulated save failure" && !rollback_error.is_empty())
+
+---- db::storage::tests::storage_migration_rolls_back_when_persistence_fails stdout ----
+
+thread 'db::storage::tests::storage_migration_rolls_back_when_persistence_fails' (3587032) panicked at shared/rust-core/src/db/storage.rs:1167:9:
+assertion failed: matches!(error, StorageMigrationFailure::SaveFailedAfterRollback
+    { ref save_error } if save_error == "simulated save failure")
+
+---- db::storage::tests::storage_migration_succeeds_and_persists_the_new_root stdout ----
+
+thread 'db::storage::tests::storage_migration_succeeds_and_persists_the_new_root' (3587034) panicked at shared/rust-core/src/db/storage.rs:1107:10:
+called `Result::unwrap()` on an `Err` value: Migrate("No such file or directory (os error 2)")
+
+
+failures:
+    db::paths::tests::custom_parent_uses_fixed_directory_name
+    db::storage::tests::batch_preflight_stops_when_only_inline_history_can_be_evicted
+    db::storage::tests::quota_eviction_credits_the_wal_the_delete_reclaims
+    db::storage::tests::quota_eviction_measures_the_storage_tree_once_per_reserve
+    db::storage::tests::storage_migration_calls_the_notify_hook_once_transfers_are_idle
+    db::storage::tests::storage_migration_reports_when_rollback_also_fails
+    db::storage::tests::storage_migration_rolls_back_when_persistence_fails
+    db::storage::tests::storage_migration_succeeds_and_persists_the_new_root
+
+test result: FAILED. 87 passed; 8 failed; 1 ignored; 0 measured; 380 filtered out; finished in 3.50s
+
+error: test failed, to rerun pass `--lib`

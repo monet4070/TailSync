@@ -15,6 +15,9 @@
     "mac_runtime": {
       "$ref": "#/$defs/MacRuntimeSnapshot"
     },
+    "pairing": {
+      "$ref": "#/$defs/PairingStatus"
+    },
     "peers": {
       "$ref": "#/$defs/PeersResponse"
     },
@@ -32,6 +35,7 @@
     }
   },
   "required": [
+    "pairing",
     "capabilities",
     "stable_error",
     "history",
@@ -485,6 +489,125 @@
         "service_instance"
       ]
     },
+    "PairingPeerStatus": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "local_confirmed": {
+          "type": "boolean"
+        },
+        "remote_confirmed": {
+          "type": "boolean"
+        },
+        "verification_code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hostname",
+        "address",
+        "fingerprint",
+        "verification_code",
+        "local_confirmed",
+        "remote_confirmed"
+      ]
+    },
+    "PairingPhase": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "waiting",
+        "handshaking",
+        "verification",
+        "waiting_for_peer",
+        "finalizing",
+        "paired",
+        "cancelled",
+        "timed_out",
+        "locked"
+      ]
+    },
+    "PairingStatus": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "failed_attempts": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "max_failures": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "pairing_enabled": {
+          "type": "boolean"
+        },
+        "peer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairingPeerStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PendingPairingSummary"
+          }
+        },
+        "pending_store_unavailable": {
+          "type": "boolean"
+        },
+        "phase": {
+          "$ref": "#/$defs/PairingPhase"
+        },
+        "remaining_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "pairing_enabled",
+        "phase",
+        "expires_at",
+        "remaining_seconds",
+        "failed_attempts",
+        "max_failures",
+        "peer",
+        "error",
+        "pending",
+        "pending_store_unavailable"
+      ]
+    },
     "PeerCandidate": {
       "description": "One reachable route for a peer, with the health fields the health monitor\nderives. Legacy serialized candidates without `online`/`status` keep\nworking through serde defaults.",
       "type": "object",
@@ -715,6 +838,33 @@
         "peers",
         "paired_peer_endpoints",
         "discovery_error"
+      ]
+    },
+    "PendingPairingSummary": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "interface": {
+          "type": "string"
+        },
+        "locally_trusted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "hostname",
+        "address",
+        "interface",
+        "fingerprint",
+        "locally_trusted"
       ]
     },
     "PreviewBatchNavigation": {

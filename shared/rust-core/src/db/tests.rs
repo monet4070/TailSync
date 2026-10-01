@@ -349,6 +349,9 @@ fn test_database(root: &Path) -> HistoryDB {
     HistoryDB {
         conn,
         read_identity: std::sync::Arc::new(()),
+        #[cfg(any(test, feature = "test-support"))]
+        storage_work_observer: None,
+        deferred_checkpoint: false,
         max_history: 100,
         storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
         storage_available: true,
@@ -2251,6 +2254,9 @@ fn migration_v4_preserves_invalid_images_and_exposes_diagnostics() {
     let db = HistoryDB {
         conn,
         read_identity: std::sync::Arc::new(()),
+        #[cfg(any(test, feature = "test-support"))]
+        storage_work_observer: None,
+        deferred_checkpoint: false,
         max_history: 100,
         storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
         storage_available: true,
@@ -3216,5 +3222,237 @@ fn orphan_sweep_aborts_before_deletion_when_a_live_reference_is_invalid() {
         "uncertainty must not destroy a recoverable payload"
     );
     drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn batch_rollback_preserves_favorited_payloads_with_case_aliases() {
+    for fail_sql in [false, true] {
+        let root =
+            std::env::temp_dir().join(format!("tailsync-batch-rollback-{}", rand::random::<u64>()));
+        let mut db = HistoryDB::open_at(&root).unwrap();
+        let body = b"shared payload";
+        let hash = blake3::hash(body).to_hex().to_string();
+        let favorite = db.add_file("report.txt", body, "self").unwrap();
+        let fav_id = db.conn.last_insert_rowid();
+        db.set_favorite(fav_id, true).unwrap();
+        let alias = db.file_history_dir.join(format!("{hash}-REPORT.TXT"));
+        // APFS/NTFS case alias; on case-sensitive filesystems use a hardlink
+        // so this regression exercises the same identity with different bytes.
+        if !alias.exists() {
+            std::fs::hard_link(&favorite, &alias).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(&favorite).unwrap(),
+            std::fs::read(&alias).unwrap()
+        );
+        let source = root.join("source.txt");
+        std::fs::write(&source, body).unwrap();
+        let input = HistoryFileInput {
+            name: "REPORT.TXT".into(),
+            path: source,
+            size: body.len() as u64,
+            data_hash: hash,
+        };
+        let files = if fail_sql {
+            db.conn.execute_batch("CREATE TRIGGER reject_batch BEFORE INSERT ON history WHEN NEW.batch_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'injected batch write failure'); END;").unwrap();
+            vec![input]
+        } else {
+            vec![
+                input,
+                HistoryFileInput {
+                    name: "missing.txt".into(),
+                    path: root.join("missing"),
+                    size: 1,
+                    data_hash: blake3::hash(b"x").to_hex().to_string(),
+                },
+            ]
+        };
+        let error = db
+            .add_file_batch("rollback", &files, "self", false)
+            .unwrap_err()
+            .to_string();
+        if fail_sql {
+            assert!(error.contains("injected batch write failure"), "{error}");
+        } else {
+            assert!(
+                error.contains("No such file") || error.contains("cannot find"),
+                "{error}"
+            );
+        }
+        assert!(
+            favorite.exists(),
+            "rollback must preserve the live favorite (sql={fail_sql})"
+        );
+        assert_eq!(db.get_data(fav_id).unwrap(), body);
+        assert_eq!(
+            db.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM history WHERE batch_id='rollback'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout() {
+    let root =
+        std::env::temp_dir().join(format!("tailsync-delete-budget-{}", rand::random::<u64>()));
+    let mut db = HistoryDB::open_at(&root).unwrap();
+    db.add_text("delete", "self").unwrap();
+    let id = db.conn.last_insert_rowid();
+    let reader = Connection::open(root.join("history-v2.db")).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT COUNT(*) FROM history;")
+        .unwrap();
+    let previous: i64 = db
+        .conn
+        .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+        .unwrap();
+    assert_eq!(previous, 5000);
+    let started = std::time::Instant::now();
+    db.delete(id).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "default delete waited out the five-second busy timeout"
+    );
+    let restored: i64 = db
+        .conn
+        .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+        .unwrap();
+    assert_eq!(restored, previous);
+    assert!(db.deferred_checkpoint);
+    db.retry_deferred_checkpoint();
+    assert!(db.deferred_checkpoint);
+    reader.execute_batch("ROLLBACK").unwrap();
+    db.retry_deferred_checkpoint();
+    assert!(!db.deferred_checkpoint);
+    assert_eq!(
+        std::fs::metadata(root.join("history-v2.db-wal"))
+            .unwrap()
+            .len(),
+        0
+    );
+    drop(reader);
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn every_history_cleanup_preserves_favorite_payload_case_aliases() {
+    for operation in ["delete", "clear", "evict", "replace"] {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-payload-alias-{operation}-{}",
+            rand::random::<u64>()
+        ));
+        let mut db = HistoryDB::open_at(&root).unwrap();
+        let body = b"favorite payload shared by a case alias";
+        let favorite = db.add_file("report.txt", body, "self").unwrap();
+        let favorite_id = db.conn.last_insert_rowid();
+        db.set_favorite(favorite_id, true).unwrap();
+        db.add_file("REPORT.TXT", body, "self").unwrap();
+        let ordinary_id = db.conn.last_insert_rowid();
+        match operation {
+            "delete" => db.delete(ordinary_id).unwrap(),
+            "clear" => db.clear_all().unwrap(),
+            // This is the deletion path used by quota eviction.
+            "evict" => {
+                db.delete_entries(&[ordinary_id]).unwrap();
+            }
+            "replace" => {
+                db.add_file("another.txt", body, "self").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            favorite.is_file(),
+            "{operation} removed a favorite's payload"
+        );
+        assert_eq!(db.get_data(favorite_id).unwrap(), body);
+        db.delete_favorite(favorite_id).unwrap();
+        assert!(!favorite.exists());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn payload_cleanup_preserves_file_identity_and_fails_closed() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-payload-identity-{}",
+        rand::random::<u64>()
+    ));
+    let mut db = HistoryDB::open_at(&root).unwrap();
+    let path = db.add_file("report.bin", b"shared", "self").unwrap();
+    let id = db.conn.last_insert_rowid();
+    let alias = db.file_history_dir.join("alias.bin");
+    std::fs::hard_link(&path, &alias).unwrap();
+    let payloads = [super::entries::ExternalHistoryPayload {
+        path: alias.clone(),
+    }];
+    // A live row refers to the same file under a different path spelling.
+    db.cleanup_external_payloads(&payloads, None);
+    assert!(alias.exists());
+    db.conn
+        .execute("DELETE FROM history WHERE id=?1", params![id])
+        .unwrap();
+    db.cleanup_external_payloads(&payloads, Some(&path));
+    assert!(
+        alias.exists(),
+        "preserve_path must compare physical identity"
+    );
+    db.conn.execute("INSERT INTO history (timestamp,type,description,data,size_bytes,source_peer,data_hash) VALUES ('now','file','invalid',x'00',0,'self','invalid')", []).unwrap();
+    db.cleanup_external_payloads(&payloads, None);
+    assert!(
+        alias.exists(),
+        "an invalid live reference cannot authorize deletion"
+    );
+    db.conn.execute("DELETE FROM history", []).unwrap();
+    db.cleanup_external_payloads(&payloads, None);
+    assert!(!alias.exists());
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn orphan_sweep_collects_owned_temps_and_preserves_live_writers() {
+    let root = std::env::temp_dir().join(format!("tailsync-temp-gc-{}", rand::random::<u64>()));
+    let mut db = test_database(&root);
+    let dir = root.join("file-history");
+    std::fs::create_dir_all(&dir).unwrap();
+    let abandoned = dir.join(format!(
+        ".payload.{}-0123456789abcdef.tmp",
+        std::process::id()
+    ));
+    let active = dir.join(format!("image.tmp.{}-fedcba9876543210", std::process::id()));
+    let unknown = dir.join("unknown.tmp");
+    let legacy = dir.join("payload.tmp.0123456789abcdef");
+    for path in [&abandoned, &active, &unknown, &legacy] {
+        std::fs::write(path, b"bytes").unwrap();
+    }
+    let lease = crate::private_fs::AtomicWriteLease::acquire(&active);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(
+        db.sweep_orphan_payloads(std::time::Duration::from_millis(1))
+            .unwrap(),
+        1
+    );
+    assert!(!abandoned.exists());
+    assert!(active.exists());
+    assert!(unknown.exists());
+    assert!(legacy.exists());
+    drop(lease);
+    assert_eq!(
+        db.sweep_orphan_payloads(std::time::Duration::from_millis(1))
+            .unwrap(),
+        1
+    );
+    assert!(!active.exists());
     std::fs::remove_dir_all(root).unwrap();
 }

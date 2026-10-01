@@ -14,7 +14,7 @@
     "rust-macos",
     "rust-windows"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "Vitest 实际 UI 组件与 hook 通过；Windows hide/minimize 与 document.visibilityState 的原生对应关系待验；本轮不把 jsdom 视为原生 Windows UI 验收。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S6-P2-4",
   "title": "Windows 后台长轮询不再偷吃唯一 sync_warning",
@@ -22,7 +22,7 @@
     "windows/src-tauri/src/commands/platform.rs"
   ],
   "trigger": "隐藏窗口时后台长轮询 take() 掉唯一的 sync_warning，打开窗口已无提示。",
-  "fix_evidence": "按方案改为\"带 ID 的可确认读取\"，而不是单独把 take() 换成 peek()：SyncWarning 增加 id（单调、非零）；sync_warning 增加 peek()（非破坏性）与 ack(id)（仅当 id 匹配才消费，返回是否消费成功）；Windows 的 wait_runtime_snapshot 与 get_sync_warning 改用 peek，新增 Tauri 命令 ack_sync_warning(id)（已按 manifest → generate-local-commands.mjs → 生成 dispatch/handler 的路径登记，命令数 76→77），Windows JSON 路由同步补 AckSyncWarning 分支（ack_warning_id 请求字段）。UI 侧通知的 key 由 kind:peer 改为警告自身 id（同一条不重复、新的同类型仍会显示），显示后立即 ackSyncWarning(id)。契约按路径重新生成（SyncWarning 增 id），check-local-contracts 与 check-shared-resolution 通过。测试：Rust 的 peek/ack 语义与 id 单调性，前端断言警告到达后以该 id 调用 ack_sync_warning。 **独立反驳发现的缺口已修**：初版只在 JS 侧改为\"显示后按 id 确认\"，但 useRuntimeSnapshots 不受可见性约束、而隐藏窗口（`hide_then_release_window` 会保留 webview 约 5 秒）仍会\"显示给没人看\"随后确认——缺陷只是从 Rust 的 take() 搬到了 JS 的 ack()。现在确认动作以 `document.visibilityState === \"visible\"` 为前提：隐藏时不显示也不确认，警告留在 daemon 中等待能显示它的窗口。两个前端测试分别覆盖可见时会确认、隐藏时**不**确认（变异：去掉可见性门禁即失败）。已知差异（未改，不属本项范围）：macOS 侧仍用破坏性 take()，但调用点被 `windowIsVisible` 守卫（隐藏窗口不可达），且其 Swift 模型未承接 SyncWarning.id；若将来该守卫变化需要一并迁移。",
+  "fix_evidence": "Core peek/ack(id) 语义保留。Windows 将 showNotice 的接受/拒绝结果与 React 实际 DOM commit 分开：layout effect 记录可见 key 后才能 ack；cooldown/隐藏/展示预算拒绝均安排重试，ack 失败只重试 RPC、不重展示或延长 TTL。History 实际组件的 cooldown 反例已转绿，另有 visibility 和失败 ack tests。",
   "status": "fixed_gated",
   "pass_condition": "读取非破坏性与按 id 确认有测试；**确认动作以窗口可见为前提**（隐藏时不消费）；契约生成物已提交且检查通过。",
   "reopen_condition": "警告丢失或重复展示。"

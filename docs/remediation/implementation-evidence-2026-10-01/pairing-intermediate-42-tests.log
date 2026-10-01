@@ -1,0 +1,50 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.98s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 42 tests
+test pairing::invite::tests::a_claim_is_released_on_drop_and_consumed_on_commit ... ok
+test pairing::invite::tests::expired_invites_are_rejected_without_waiting ... ok
+test pairing::invite::tests::invite_round_trips_as_a_native_link ... ok
+test pairing::invite::tests::malformed_and_tampered_invites_are_rejected ... ok
+test pairing::tests::a_stalled_pairing_session_releases_the_window_before_window_expiry ... ok
+test pairing::tests::anonymous_protocol_anomalies_do_not_consume_the_lockout_budget ... ok
+test pairing::tests::both_confirmations_save_both_peer_keys_and_close_windows ... ok
+test pairing::tests::code_is_six_digits_and_independent_of_key_order ... ok
+test pairing::tests::diagnostics_events_follow_the_pairing_lifecycle ... ok
+test pairing::tests::diagnostics_pairing_failed_records_the_error ... ok
+test pairing::tests::fifth_failure_closes_pairing_window ... ok
+test pairing::tests::glare_arbitration_keeps_one_deterministic_session_without_banning ... ok
+test pairing::tests::install_pairing_session_rejects_closed_window ... ok
+test pairing::tests::install_pairing_session_rejects_invalid_interface ... ok
+test pairing::tests::install_pairing_session_rejects_self_pairing ... ok
+test pairing::tests::install_pairing_session_without_manager_writes_error_frame ... ok
+test pairing::tests::invalid_inputs_are_rejected ... ok
+test pairing::tests::newer_session_preempts_an_unconfirmed_slot_but_not_a_confirmed_one ... ok
+test pairing::tests::non_ban_pairing_failure_keeps_window_and_counter ... ok
+test pairing::tests::pairing_waits_for_remote_persisted_ack_before_marking_paired ... ok
+test pairing::tests::pairing_window_defaults_closed_and_expires ... ok
+test pairing::tests::preferred_glare_direction_cannot_evict_a_locally_confirmed_session ... ok
+test pairing::tests::remote_invite_is_consumed_only_after_both_peers_persist_trust ... ok
+test pairing::tests::session_timeouts_do_not_consume_pairing_lockout_budget ... ok
+test pairing::tests_pending::a_cancellation_cannot_slip_between_the_check_and_the_trust_write ... ok
+test pairing::tests_pending::a_cancelled_session_never_writes_trust ... ok
+test pairing::tests_pending::a_completed_pairing_promotes_to_trust_and_clears_the_note ... ok
+test pairing::tests_pending::a_frozen_legacy_configuration_still_loads_with_its_trust_intact ... ok
+test pairing::tests_pending::a_known_pin_conflict_never_advertises_persistence ... ok
+test pairing::tests_pending::a_link_that_dies_before_the_peer_acknowledges_leaves_a_pending_note_not_trust ... ok
+test pairing::tests_pending::a_link_that_dies_before_the_peer_confirms_records_nothing ... ok
+test pairing::tests_pending::a_restart_keeps_the_note_and_still_reports_the_device_unpaired ... ok
+test pairing::tests_pending::a_session_timeout_after_confirmation_keeps_the_pending_note ... ok
+test pairing::tests_pending::an_older_peer_pairing_into_the_new_side_still_completes ... ok
+test pairing::tests_pending::committed_pairing_is_terminal_while_transport_close_is_pending ... ok
+test pairing::tests_pending::failed_pending_writes_preserve_memory_and_future_formats ... ok
+test pairing::tests_pending::forgetting_a_device_also_drops_its_half_confirmed_note ... ok
+test pairing::tests_pending::repeated_confirmation_is_idempotent_and_grants_nothing ... ok
+test pairing::tests_pending::revocation_invalidates_a_pending_session_before_a_late_ack ... ok
+test pairing::tests_pending::the_new_side_pairing_out_to_an_older_peer_still_completes ... ok
+test pairing::tests_pending::the_older_peer_concludes_success_only_after_the_new_note_is_durable ... ok
+test pairing::tests_pending::the_settings_shape_stays_readable_by_an_older_build ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 438 filtered out; finished in 1.91s
+

@@ -1,0 +1,10 @@
+预计CRC32 $ED03C925
+hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach --readOnly --mountOptions nobrowse --mountPoint ...' instead.
+/dev/disk8          	GUID_partition_scheme          	
+/dev/disk8s1        	Apple_APFS                     	
+/dev/disk9          	EF57347C-0000-11AA-AA11-0030654	
+/dev/disk9s1        	41504653-0000-11AA-AA11-0030654	/private/tmp/tailsync-implementation.BzV6PH/dmg-content
+hdiutil: WARNING: 'hdiutil detach ...' is deprecated. Please use 'diskutil eject ...' instead.
+"disk8" ejected.
+read-only DMG content passed: 8 files match the built signed app
+dmg_sha256=768359fac43ccd5f2924e1b73d43c4b29af19296d2c6216e2fa1807725c980d9

@@ -1,0 +1,290 @@
+[
+  {
+    "ack_us": {
+      "max": 56309,
+      "p50": 2904,
+      "p99": 50013
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 113689,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 56309,
+      "p99": 50013
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 0,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 1,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 56217,
+      "p99": 49930
+    }
+  },
+  {
+    "ack_us": {
+      "max": 58333,
+      "p50": 2472,
+      "p99": 51493
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 114787,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 58333,
+      "p99": 51493
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 50,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 1,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 58237,
+      "p99": 51377
+    }
+  },
+  {
+    "ack_us": {
+      "max": 55616,
+      "p50": 2145,
+      "p99": 48638
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 122159,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 55616,
+      "p99": 48638
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 500,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 1,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 55498,
+      "p99": 48541
+    }
+  },
+  {
+    "ack_us": {
+      "max": 59618,
+      "p50": 2601,
+      "p99": 48573
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 113665,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 59618,
+      "p99": 48573
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 0,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 2,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 59527,
+      "p99": 48481
+    }
+  },
+  {
+    "ack_us": {
+      "max": 57236,
+      "p50": 2358,
+      "p99": 45236
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 114622,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 57236,
+      "p99": 45236
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 50,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 2,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 57125,
+      "p99": 45149
+    }
+  },
+  {
+    "ack_us": {
+      "max": 55808,
+      "p50": 2278,
+      "p99": 49017
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 122495,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 55808,
+      "p99": 49017
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 500,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 2,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 55706,
+      "p99": 48926
+    }
+  },
+  {
+    "ack_us": {
+      "max": 57791,
+      "p50": 2796,
+      "p99": 50568
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 114093,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 57791,
+      "p99": 50568
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 0,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 3,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 57698,
+      "p99": 50478
+    }
+  },
+  {
+    "ack_us": {
+      "max": 55709,
+      "p50": 1954,
+      "p99": 51896
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 115016,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 55709,
+      "p99": 51896
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 50,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 3,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 55636,
+      "p99": 51795
+    }
+  },
+  {
+    "ack_us": {
+      "max": 67092,
+      "p50": 2671,
+      "p99": 50404
+    },
+    "acked": 1200,
+    "attempted": 1200,
+    "benchmark": "authenticated_worker_core_receiver",
+    "chunk_ack_delay_ms": 250,
+    "elapsed_ms": 121923,
+    "enqueued": 1200,
+    "expired": 0,
+    "file_active_ack_us": {
+      "max": 67092,
+      "p99": 50404
+    },
+    "file_active_samples": 1200,
+    "file_bytes": 268435456,
+    "file_count": 16,
+    "meta_ack_delay_ms": 500,
+    "peak_priority_depth": 2,
+    "received": 1200,
+    "rejected": 0,
+    "round": 3,
+    "text_interval_ms": 50,
+    "text_run_s": 60,
+    "wire_us": {
+      "max": 66669,
+      "p99": 50305
+    }
+  }
+]

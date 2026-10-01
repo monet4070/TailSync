@@ -1,5 +1,7 @@
 # 修复与可维护性执行报告（阶段 0–5 已完成的部分）
 
+> **历史执行报告，已被独立复核收窄。** 以下状态和 CI 数字属于当时版本，不是当前工作树验收；现状见 [整改执行记录](IMPLEMENTATION-2026-09-30.md) 与当前 ledger。尤其调度模型不能裁定 S2-F5，配对有限确认不能保证两端同时 active。
+
 > 基线：`origin/main` = `b61a0a04b88f5828707f7ef64781389944471be8`（2026-09-29 核对）。
 > 执行分支：`codex/remediation-2026-09-29`（worktree `TailSync-remediation`）。
 > 以下阶段裁决为原执行记录，并不代表整个执行分支已通过 CI。2026-09-30 复核发现的门禁和代码缺陷已另行修复，当前结果见 `REVIEW-FIXES-2026-09-30.md`；未取得设备证据的条目保持“待验”。
@@ -43,7 +45,7 @@
 
 ### 阶段 3：网络边界 —— 裁决 PASS
 
-- `S1-P1-4`：`resolve_candidates` 改为**逐候选跳过**无作用域的链路本地 IPv6（不再因单个坏候选丢弃整个对端的可路由路由），并在仅剩不可路由候选时报错；`peer_socket_addr` 与两端 `network::test_connection` 也加了同守卫，全仓不再构造 scope-0 的链路本地 socket。门禁 `resolve_candidates_skips_link_local_ipv6_without_a_scope`（已做移除守卫的变异验证）。
+- `S1-P1-4`：`resolve_candidates` 改为**逐候选跳过**无作用域的链路本地 IPv6（不再因单个坏候选丢弃整个对端的可路由路由），并在仅剩不可路由候选时报错；`peer_socket_addr` 与两端 `network::test_connection` 也加了同守卫，拨号路径明确拒绝 scope-0 的链路本地地址。但 LAN 自地址选择器仍可能产生 Tailscale ULA、无 scope 的 fe80、APIPA，与拨号/展示边界不一致；当前 IPv4 listener 仅监听 `0.0.0.0`，未实现 IPv6 listener/scope 支持。门禁 `resolve_candidates_skips_link_local_ipv6_without_a_scope`（已做移除守卫的变异验证）。
 - `S1-P1-5`：保持“成功发送且零设备返回 Ok，全部发送失败返回 Err”的现有契约。新增门禁 `lan_discovery_filters_interfaces_and_distinguishes_send_failure_from_zero_peers`，覆盖真实生产发送路径与 down/loopback/点对点接口过滤；全局广播地址仍恒定存在。macOS 主机测试通过，本次原生 Windows CI 与断网/VPN 验收尚未执行，状态回退为 **partial**。
 
 ### 阶段 5：文件配额与 SQLite 生命周期 —— 裁决 PASS（两项如实保留 partial）

@@ -1,11 +1,11 @@
 //! Durable, deliberately **non-authoritative** record of pairings that both
-//! users confirmed but that are not yet known to be durable on both devices
+//! users confirmed but whose local trust has not yet been committed
 //! (finding S3-P1-2).
 //!
 //! The failure this exists for: the pairing session persisted trust as soon as
 //! both users had confirmed, before the peer had acknowledged its own write. If
 //! the link dropped or the session timed out in between, one side held a
-//! durable trust record for a device the other side had never accepted. Nothing
+//! durable trust record while the other side was still pending. Nothing
 //! recorded that the record was half-formed, so nothing could reconcile it.
 //!
 //! Two invariants keep the fix honest:
@@ -13,8 +13,9 @@
 //! 1. A record here is never consulted for admission. `peer_is_allowed`,
 //!    the connection pool and the peer directory all read
 //!    `Settings::trusted_peer_keys`; a device whose pairing is still pending
-//!    stays out of that map and is therefore reported as unpaired everywhere,
-//!    including both UIs, without any of them having to learn a new state.
+//!    stays out of that map. UIs may display a recovery summary, but it grants
+//!    no trust. An active/pending disagreement can last until recovery; a peer
+//!    completion message does not prove both devices have active trust.
 //! 2. The record lives in a sidecar file rather than as a new `Settings` field.
 //!    `config-v2.json` is parsed with `deny_unknown_fields`, so an older build
 //!    that met a new key there would fail to load *all* settings. An older build
@@ -30,7 +31,7 @@ const STORE_FORMAT_VERSION: u32 = 1;
 
 /// One half-confirmed pairing: the local user confirmed the verification code
 /// and the local side has written this record, but the peer has not yet been
-/// observed to have persisted its own side.
+/// observed to have written its own non-authoritative pending record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingTrustRecord {
     pub hostname: String,
@@ -71,6 +72,7 @@ pub struct PendingTrustStore {
     /// exactly the state this module exists to preserve.
     path: Option<PathBuf>,
     records: Vec<PendingTrustRecord>,
+    writable: bool,
 }
 
 impl PendingTrustStore {
@@ -86,18 +88,20 @@ impl PendingTrustStore {
         Self {
             path: None,
             records: Vec::new(),
+            writable: true,
         }
     }
 
-    /// Load the store, treating a missing, unreadable or unparsable file as
-    /// empty. That direction is the safe one: discarding a pending record can
-    /// only cause a re-pairing, while adopting anything from an unreadable file
-    /// could turn a corrupted byte into trust.
+    /// A missing store starts empty and writable. Unreadable, corrupt or future
+    /// formats expose no records and remain read-only so a later mutation
+    /// cannot overwrite recovery data that this build cannot interpret.
     pub fn load_from_path(path: &Path) -> Self {
+        let mut writable = true;
         let records = match std::fs::read_to_string(path) {
             Ok(text) => match serde_json::from_str::<StoreFile>(&text) {
                 Ok(file) if file.format_version == STORE_FORMAT_VERSION => file.records,
                 Ok(file) => {
+                    writable = false;
                     log::warn!(
                         "Ignoring pending pairing store {} with unsupported format version {}",
                         path.display(),
@@ -106,6 +110,7 @@ impl PendingTrustStore {
                     Vec::new()
                 }
                 Err(error) => {
+                    writable = false;
                     log::warn!(
                         "Ignoring unreadable pending pairing store {}: {error}",
                         path.display()
@@ -115,6 +120,7 @@ impl PendingTrustStore {
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(error) => {
+                writable = false;
                 log::warn!(
                     "Could not read pending pairing store {}: {error}",
                     path.display()
@@ -125,7 +131,12 @@ impl PendingTrustStore {
         Self {
             path: Some(path.to_path_buf()),
             records,
+            writable,
         }
+    }
+
+    pub fn is_writable(&self) -> bool {
+        self.writable
     }
 
     pub fn records(&self) -> &[PendingTrustRecord] {
@@ -146,20 +157,37 @@ impl PendingTrustStore {
     /// pairing session tells the peer that it persisted, so a crash between the
     /// two leaves a recoverable note rather than a half-claimed pairing.
     pub fn upsert(&mut self, record: PendingTrustRecord) -> std::io::Result<()> {
-        self.records
+        let mut updated = self.clone();
+        updated
+            .records
             .retain(|known| known.hostname != record.hostname);
-        self.records.push(record);
-        self.save()
+        updated.records.push(record);
+        if let Err(error) = updated.save() {
+            self.writable = false;
+            return Err(error);
+        }
+        *self = updated;
+        Ok(())
     }
 
     /// Drop the pending record. Called once the pairing became durable on both
     /// sides, or when the user forgets the device.
     pub fn remove(&mut self, hostname: &str) -> std::io::Result<()> {
-        self.records.retain(|known| known.hostname != hostname);
-        self.save()
+        let mut updated = self.clone();
+        updated.records.retain(|known| known.hostname != hostname);
+        if let Err(error) = updated.save() {
+            self.writable = false;
+            return Err(error);
+        }
+        *self = updated;
+        Ok(())
     }
 
     fn save(&self) -> std::io::Result<()> {
+        if !self.writable {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "Pending pairing store is unreadable or uses an unsupported format; preserving the original file"));
+        }
         let Some(path) = &self.path else {
             return Ok(());
         };

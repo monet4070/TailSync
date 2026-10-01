@@ -354,7 +354,24 @@ pub fn revalidate_prepared_file(file: &PreparedFile) -> Result<(), PrepareError>
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
+static SOURCE_HASH_READS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+#[cfg(any(test, feature = "test-support"))]
+pub fn source_hash_reads_for_test(path: &Path) -> usize {
+    *SOURCE_HASH_READS.lock().unwrap().get(path).unwrap_or(&0)
+}
+
 pub(crate) fn hash_source_file(path: &Path) -> Result<String, PrepareError> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        *SOURCE_HASH_READS
+            .lock()
+            .unwrap()
+            .entry(path.to_path_buf())
+            .or_default() += 1;
+    }
     let file = File::open(path).map_err(|error| PrepareError::Io(error.to_string()))?;
     let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut hasher = blake3::Hasher::new();

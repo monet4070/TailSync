@@ -323,6 +323,7 @@ fn encrypt_reader_atomic(
         .ok_or("file-history target has no parent directory")?;
     crate::private_fs::create_private_dir_all(parent)?;
     let temporary = temporary_path(target)?;
+    let _lease = crate::private_fs::AtomicWriteLease::acquire(&temporary);
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut output = crate::private_fs::create_private_file(&temporary)?;
         write_container(reader, &mut output, plaintext_size, data_hash)?;
@@ -369,6 +370,7 @@ pub(super) fn ensure_file_encrypted(
         return Err("legacy file-history size does not match the database".into());
     }
     let temporary = temporary_path(path)?;
+    let _lease = crate::private_fs::AtomicWriteLease::acquire(&temporary);
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut input = File::open(path)?;
         let mut output = crate::private_fs::create_private_file(&temporary)?;

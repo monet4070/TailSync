@@ -1,0 +1,646 @@
+{
+  "baseline": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+  "local": [
+    {
+      "record": "03e51e63f2c20654.json",
+      "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets -- --test-threads=1",
+      "source": {
+        "sha": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+        "fingerprint": "e1f3b968abcd1382e19b55e207603c87c036b443fa43894bdf2ca1f667d107ae"
+      },
+      "exit_code": 0,
+      "source_unchanged": true,
+      "parsed_test_status_counts": {
+        "passed": 109,
+        "skipped": 1
+      }
+    },
+    {
+      "record": "65c7b437425f6836.json",
+      "command": "cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml",
+      "source": {
+        "sha": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+        "fingerprint": "e1f3b968abcd1382e19b55e207603c87c036b443fa43894bdf2ca1f667d107ae"
+      },
+      "exit_code": 0,
+      "source_unchanged": true,
+      "parsed_test_status_counts": {
+        "passed": 23
+      }
+    },
+    {
+      "record": "aa92c4f2205db1dc.json",
+      "command": "swift test --package-path macos/swift-ui",
+      "source": {
+        "sha": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+        "fingerprint": "e1f3b968abcd1382e19b55e207603c87c036b443fa43894bdf2ca1f667d107ae"
+      },
+      "exit_code": 0,
+      "source_unchanged": true,
+      "parsed_test_status_counts": {
+        "passed": 206,
+        "skipped": 3
+      }
+    },
+    {
+      "record": "c1401ca983f129a5.json",
+      "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml -- --test-threads=1",
+      "source": {
+        "sha": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+        "fingerprint": "e1f3b968abcd1382e19b55e207603c87c036b443fa43894bdf2ca1f667d107ae"
+      },
+      "exit_code": 0,
+      "source_unchanged": true,
+      "parsed_test_status_counts": {
+        "passed": 473,
+        "skipped": 3
+      }
+    }
+  ],
+  "ci": [
+    {
+      "run": 36709267509,
+      "job": "rust-macos",
+      "records": [
+        {
+          "command": "swift test --package-path macos/swift-ui",
+          "source": {
+            "sha": "046b2a0890b7e95f2d5af5af7da86a9794e0c399",
+            "fingerprint": "cb38adebd898bd10bd0cb94486fc3df67e6fe1baa9cbbba47b678f303936cf0f"
+          },
+          "exit_code": 0,
+          "source_unchanged": true
+        },
+        {
+          "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+          "source": {
+            "sha": "046b2a0890b7e95f2d5af5af7da86a9794e0c399",
+            "fingerprint": "cb38adebd898bd10bd0cb94486fc3df67e6fe1baa9cbbba47b678f303936cf0f"
+          },
+          "exit_code": 0,
+          "source_unchanged": true
+        },
+        {
+          "command": "cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml",
+          "source": {
+            "sha": "046b2a0890b7e95f2d5af5af7da86a9794e0c399",
+            "fingerprint": "cb38adebd898bd10bd0cb94486fc3df67e6fe1baa9cbbba47b678f303936cf0f"
+          },
+          "exit_code": 0,
+          "source_unchanged": true
+        },
+        {
+          "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --all-targets",
+          "source": {
+            "sha": "046b2a0890b7e95f2d5af5af7da86a9794e0c399",
+            "fingerprint": "cb38adebd898bd10bd0cb94486fc3df67e6fe1baa9cbbba47b678f303936cf0f"
+          },
+          "exit_code": 0,
+          "source_unchanged": true
+        }
+      ],
+      "ledger_gates": [
+        {
+          "id": "S1-P0-1",
+          "kind": "unit",
+          "test": "local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::directory::tests::local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified"
+          ]
+        },
+        {
+          "id": "S1-P0-2",
+          "kind": "unit",
+          "test": "lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::directory::tests::lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local"
+          ]
+        },
+        {
+          "id": "S1-P1-3",
+          "kind": "unit",
+          "test": "candidate_sort_prefers_private_addresses_over_apipa_and_loopback",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::directory::tests::candidate_sort_prefers_private_addresses_over_apipa_and_loopback"
+          ]
+        },
+        {
+          "id": "S1-P1-4",
+          "kind": "unit",
+          "test": "resolve_candidates_skips_link_local_ipv6_without_a_scope",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::directory::tests::resolve_candidates_skips_link_local_ipv6_without_a_scope"
+          ]
+        },
+        {
+          "id": "S2-F1",
+          "kind": "unit",
+          "test": "silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::delivery::tests::silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream"
+          ]
+        },
+        {
+          "id": "S2-F2",
+          "kind": "unit",
+          "test": "delivery_failure_backoff_delays_the_next_reconnect",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::delivery::tests::delivery_failure_backoff_delays_the_next_reconnect"
+          ]
+        },
+        {
+          "id": "S2-F3",
+          "kind": "unit",
+          "test": "sender_for_candidates_keeps_a_live_worker_across_route_changes",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::pool::tests::sender_for_candidates_keeps_a_live_worker_across_route_changes"
+          ]
+        },
+        {
+          "id": "S2-F4",
+          "kind": "unit",
+          "test": "race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::delivery::tests::race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast"
+          ]
+        },
+        {
+          "id": "S2-F5",
+          "kind": "unit",
+          "test": "a_full_priority_queue_never_drops_a_text_frame_silently",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::delivery::tests::a_full_priority_queue_never_drops_a_text_frame_silently"
+          ]
+        },
+        {
+          "id": "S3-P0-1",
+          "kind": "unit",
+          "test": "anonymous_protocol_anomalies_do_not_consume_the_lockout_budget",
+          "marker": null,
+          "matching_passed_names": [
+            "pairing::tests::anonymous_protocol_anomalies_do_not_consume_the_lockout_budget"
+          ]
+        },
+        {
+          "id": "S3-P1-1",
+          "kind": "unit",
+          "test": "anonymous_handshake_identity_fields_are_pinned",
+          "marker": null,
+          "matching_passed_names": [
+            "secure::tests::anonymous_handshake_identity_fields_are_pinned"
+          ]
+        },
+        {
+          "id": "S3-P1-2",
+          "kind": "unit",
+          "test": "a_link_that_dies_before_the_peer_acknowledges_leaves_a_pending_note_not_trust",
+          "marker": null,
+          "matching_passed_names": [
+            "pairing::tests_pending::a_link_that_dies_before_the_peer_acknowledges_leaves_a_pending_note_not_trust"
+          ]
+        },
+        {
+          "id": "S3-P1-3",
+          "kind": "unit",
+          "test": "a_discovery_round_never_persists_a_route_for_a_trusted_hostname",
+          "marker": null,
+          "matching_passed_names": [
+            "network::peer_cache::peer_cache_guards::a_discovery_round_never_persists_a_route_for_a_trusted_hostname"
+          ]
+        },
+        {
+          "id": "S3-P1-4",
+          "kind": "unit",
+          "test": "window_signal_preserves_a_partially_read_frame",
+          "marker": null,
+          "matching_passed_names": [
+            "secure::handshake::pairing_read_tests::window_signal_preserves_a_partially_read_frame"
+          ]
+        },
+        {
+          "id": "S4-P1-1",
+          "kind": "unit",
+          "test": "pending_and_inflight_receives_count_toward_the_peer_limit",
+          "marker": null,
+          "matching_passed_names": [
+            "sync::tests::pending_and_inflight_receives_count_toward_the_peer_limit"
+          ]
+        },
+        {
+          "id": "S4-P1-2",
+          "kind": "unit",
+          "test": "pending_file_batch_bytes_exclude_partial_data_already_on_disk",
+          "marker": null,
+          "matching_passed_names": [
+            "sync::tests::pending_file_batch_bytes_exclude_partial_data_already_on_disk"
+          ]
+        },
+        {
+          "id": "S4-P1-3",
+          "kind": "unit",
+          "test": "quota_eviction_measures_the_storage_tree_once_per_reserve",
+          "marker": null,
+          "matching_passed_names": [
+            "db::storage::tests::quota_eviction_measures_the_storage_tree_once_per_reserve"
+          ]
+        },
+        {
+          "id": "S4-P1-5",
+          "kind": "unit",
+          "test": "source_validation_is_shared_for_one_two_and_eight_peers",
+          "marker": null,
+          "matching_passed_names": [
+            "clipboard::tests::source_validation_is_shared_for_one_two_and_eight_peers"
+          ]
+        },
+        {
+          "id": "S4-P2-1",
+          "kind": "unit",
+          "test": "create_private_dir_all_locks_created_directories",
+          "marker": null,
+          "matching_passed_names": [
+            "private_fs::tests::create_private_dir_all_locks_created_directories"
+          ]
+        },
+        {
+          "id": "S4-P2-2",
+          "kind": "unit",
+          "test": "expired_transfer_cleanup_removes_orphans_but_preserves_recent_and_nested_files",
+          "marker": null,
+          "matching_passed_names": [
+            "sync::tests::expired_transfer_cleanup_removes_orphans_but_preserves_recent_and_nested_files"
+          ]
+        },
+        {
+          "id": "S5-P1-1",
+          "kind": "unit",
+          "test": "batch_preflight_stops_when_only_inline_history_can_be_evicted",
+          "marker": null,
+          "matching_passed_names": [
+            "db::storage::tests::batch_preflight_stops_when_only_inline_history_can_be_evicted"
+          ]
+        },
+        {
+          "id": "S5-P1-2",
+          "kind": "unit",
+          "test": "image_payload_rejects_non_image_entries_before_decrypting",
+          "marker": null,
+          "matching_passed_names": [
+            "history::tests::image_payload_rejects_non_image_entries_before_decrypting"
+          ]
+        },
+        {
+          "id": "S5-P2-1",
+          "kind": "unit",
+          "test": "transfer_maintenance_tick_sweeps_aged_orphaned_payloads",
+          "marker": null,
+          "matching_passed_names": [
+            "clipboard::tests::transfer_maintenance_tick_sweeps_aged_orphaned_payloads"
+          ]
+        },
+        {
+          "id": "S5-P2-2",
+          "kind": "unit",
+          "test": "a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds",
+          "marker": null,
+          "matching_passed_names": [
+            "db::tests::a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds"
+          ]
+        },
+        {
+          "id": "S6-P2-1",
+          "kind": "unit",
+          "test": "runtime_notification_overflow_is_reported_not_hidden",
+          "marker": null,
+          "matching_passed_names": [
+            "api::tests::runtime_notification_overflow_is_reported_not_hidden"
+          ]
+        },
+        {
+          "id": "S6-P2-3",
+          "kind": "unit",
+          "test": "testLocalCapabilitiesRejectsNonMacOSPlatform",
+          "marker": null,
+          "matching_passed_names": [
+            "TailSyncTests.ApiClientCancellationTests::testLocalCapabilitiesRejectsNonMacOSPlatform"
+          ]
+        },
+        {
+          "id": "S6-P2-4",
+          "kind": "unit",
+          "test": "peek_does_not_consume_and_ack_consumes_exactly_that_warning",
+          "marker": null,
+          "matching_passed_names": [
+            "sync_warning::p2_4_tests::peek_does_not_consume_and_ack_consumes_exactly_that_warning"
+          ]
+        },
+        {
+          "id": "S6-P2-6",
+          "kind": "unit",
+          "test": "disconnected_client_drops_pending_response",
+          "marker": null,
+          "matching_passed_names": [
+            "api::transport::cancellation_tests::disconnected_client_drops_pending_response"
+          ]
+        }
+      ]
+    },
+    {
+      "run": 36709267509,
+      "job": "rust-windows",
+      "records": [
+        {
+          "command": "cargo test --locked --manifest-path windows/src-tauri/Cargo.toml --lib",
+          "source": {
+            "sha": "046b2a0890b7e95f2d5af5af7da86a9794e0c399",
+            "fingerprint": "705cd65785f8afe2699ef32e19337fcda671eec9c8dc00299a61ae2f3da1973d"
+          },
+          "exit_code": 0,
+          "source_unchanged": true
+        },
+        {
+          "command": "pwsh -NoProfile -File ./windows/scripts/package-windows.ps1 -SkipChecks",
+          "source": {
+            "sha": "046b2a0890b7e95f2d5af5af7da86a9794e0c399",
+            "fingerprint": "705cd65785f8afe2699ef32e19337fcda671eec9c8dc00299a61ae2f3da1973d"
+          },
+          "exit_code": 0,
+          "source_unchanged": true
+        },
+        {
+          "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+          "source": {
+            "sha": "046b2a0890b7e95f2d5af5af7da86a9794e0c399",
+            "fingerprint": "705cd65785f8afe2699ef32e19337fcda671eec9c8dc00299a61ae2f3da1973d"
+          },
+          "exit_code": 0,
+          "source_unchanged": true
+        },
+        {
+          "command": "cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml",
+          "source": {
+            "sha": "046b2a0890b7e95f2d5af5af7da86a9794e0c399",
+            "fingerprint": "705cd65785f8afe2699ef32e19337fcda671eec9c8dc00299a61ae2f3da1973d"
+          },
+          "exit_code": 0,
+          "source_unchanged": true
+        }
+      ],
+      "ledger_gates": [
+        {
+          "id": "S1-P0-1",
+          "kind": "unit",
+          "test": "local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::directory::tests::local_lan_ip_prefers_private_ipv4_and_never_returns_unspecified"
+          ]
+        },
+        {
+          "id": "S1-P0-2",
+          "kind": "unit",
+          "test": "lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::directory::tests::lan_only_rejects_tailscale_but_keeps_other_ula_and_link_local"
+          ]
+        },
+        {
+          "id": "S1-P1-3",
+          "kind": "unit",
+          "test": "candidate_sort_prefers_private_addresses_over_apipa_and_loopback",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::directory::tests::candidate_sort_prefers_private_addresses_over_apipa_and_loopback"
+          ]
+        },
+        {
+          "id": "S1-P1-4",
+          "kind": "unit",
+          "test": "resolve_candidates_skips_link_local_ipv6_without_a_scope",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::directory::tests::resolve_candidates_skips_link_local_ipv6_without_a_scope"
+          ]
+        },
+        {
+          "id": "S1-P1-5",
+          "kind": "unit",
+          "test": "lan_discovery_filters_interfaces_and_distinguishes_send_failure_from_zero_peers",
+          "marker": null,
+          "matching_passed_names": [
+            "network::lan::tests::lan_discovery_filters_interfaces_and_distinguishes_send_failure_from_zero_peers"
+          ]
+        },
+        {
+          "id": "S2-F1",
+          "kind": "unit",
+          "test": "silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::delivery::tests::silent_event_ack_ends_the_attempt_instead_of_replaying_on_the_stream"
+          ]
+        },
+        {
+          "id": "S2-F2",
+          "kind": "unit",
+          "test": "delivery_failure_backoff_delays_the_next_reconnect",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::delivery::tests::delivery_failure_backoff_delays_the_next_reconnect"
+          ]
+        },
+        {
+          "id": "S2-F3",
+          "kind": "unit",
+          "test": "sender_for_candidates_keeps_a_live_worker_across_route_changes",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::pool::tests::sender_for_candidates_keeps_a_live_worker_across_route_changes"
+          ]
+        },
+        {
+          "id": "S2-F4",
+          "kind": "unit",
+          "test": "race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::delivery::tests::race_releases_a_delayed_fallback_when_the_preferred_route_fails_fast"
+          ]
+        },
+        {
+          "id": "S2-F5",
+          "kind": "unit",
+          "test": "a_full_priority_queue_never_drops_a_text_frame_silently",
+          "marker": null,
+          "matching_passed_names": [
+            "peer::delivery::tests::a_full_priority_queue_never_drops_a_text_frame_silently"
+          ]
+        },
+        {
+          "id": "S3-P0-1",
+          "kind": "unit",
+          "test": "anonymous_protocol_anomalies_do_not_consume_the_lockout_budget",
+          "marker": null,
+          "matching_passed_names": [
+            "pairing::tests::anonymous_protocol_anomalies_do_not_consume_the_lockout_budget"
+          ]
+        },
+        {
+          "id": "S3-P1-1",
+          "kind": "unit",
+          "test": "anonymous_handshake_identity_fields_are_pinned",
+          "marker": null,
+          "matching_passed_names": [
+            "secure::tests::anonymous_handshake_identity_fields_are_pinned"
+          ]
+        },
+        {
+          "id": "S3-P1-2",
+          "kind": "unit",
+          "test": "a_link_that_dies_before_the_peer_acknowledges_leaves_a_pending_note_not_trust",
+          "marker": null,
+          "matching_passed_names": [
+            "pairing::tests_pending::a_link_that_dies_before_the_peer_acknowledges_leaves_a_pending_note_not_trust"
+          ]
+        },
+        {
+          "id": "S3-P1-3",
+          "kind": "unit",
+          "test": "a_discovery_round_never_persists_a_route_for_a_trusted_hostname",
+          "marker": null,
+          "matching_passed_names": [
+            "network::peer_cache::peer_cache_guards::a_discovery_round_never_persists_a_route_for_a_trusted_hostname"
+          ]
+        },
+        {
+          "id": "S3-P1-4",
+          "kind": "unit",
+          "test": "window_signal_preserves_a_partially_read_frame",
+          "marker": null,
+          "matching_passed_names": [
+            "secure::handshake::pairing_read_tests::window_signal_preserves_a_partially_read_frame"
+          ]
+        },
+        {
+          "id": "S4-P1-1",
+          "kind": "unit",
+          "test": "pending_and_inflight_receives_count_toward_the_peer_limit",
+          "marker": null,
+          "matching_passed_names": [
+            "sync::tests::pending_and_inflight_receives_count_toward_the_peer_limit"
+          ]
+        },
+        {
+          "id": "S4-P1-2",
+          "kind": "unit",
+          "test": "pending_file_batch_bytes_exclude_partial_data_already_on_disk",
+          "marker": null,
+          "matching_passed_names": [
+            "sync::tests::pending_file_batch_bytes_exclude_partial_data_already_on_disk"
+          ]
+        },
+        {
+          "id": "S4-P1-3",
+          "kind": "unit",
+          "test": "quota_eviction_measures_the_storage_tree_once_per_reserve",
+          "marker": null,
+          "matching_passed_names": [
+            "db::storage::tests::quota_eviction_measures_the_storage_tree_once_per_reserve"
+          ]
+        },
+        {
+          "id": "S4-P1-5",
+          "kind": "unit",
+          "test": "source_validation_is_shared_for_one_two_and_eight_peers",
+          "marker": null,
+          "matching_passed_names": [
+            "clipboard::tests::source_validation_is_shared_for_one_two_and_eight_peers"
+          ]
+        },
+        {
+          "id": "S4-P2-1",
+          "kind": "unit",
+          "test": "create_private_dir_all_locks_created_directories",
+          "marker": null,
+          "matching_passed_names": [
+            "private_fs::tests::create_private_dir_all_locks_created_directories"
+          ]
+        },
+        {
+          "id": "S4-P2-2",
+          "kind": "unit",
+          "test": "expired_transfer_cleanup_removes_orphans_but_preserves_recent_and_nested_files",
+          "marker": null,
+          "matching_passed_names": [
+            "sync::tests::expired_transfer_cleanup_removes_orphans_but_preserves_recent_and_nested_files"
+          ]
+        },
+        {
+          "id": "S5-P1-1",
+          "kind": "unit",
+          "test": "batch_preflight_stops_when_only_inline_history_can_be_evicted",
+          "marker": null,
+          "matching_passed_names": [
+            "db::storage::tests::batch_preflight_stops_when_only_inline_history_can_be_evicted"
+          ]
+        },
+        {
+          "id": "S5-P1-2",
+          "kind": "unit",
+          "test": "image_payload_rejects_non_image_entries_before_decrypting",
+          "marker": null,
+          "matching_passed_names": [
+            "history::tests::image_payload_rejects_non_image_entries_before_decrypting"
+          ]
+        },
+        {
+          "id": "S5-P2-1",
+          "kind": "unit",
+          "test": "transfer_maintenance_tick_sweeps_aged_orphaned_payloads",
+          "marker": null,
+          "matching_passed_names": [
+            "clipboard::tests::transfer_maintenance_tick_sweeps_aged_orphaned_payloads"
+          ]
+        },
+        {
+          "id": "S5-P2-2",
+          "kind": "unit",
+          "test": "a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds",
+          "marker": null,
+          "matching_passed_names": [
+            "db::tests::a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds"
+          ]
+        },
+        {
+          "id": "S6-P0-1",
+          "kind": "integration",
+          "test": null,
+          "marker": "Packaged TailSync is listening on the legacy local API port",
+          "matching_passed_names": [
+            "integration:S6-P0-1"
+          ],
+          "integration_passed": true
+        },
+        {
+          "id": "S6-P2-4",
+          "kind": "unit",
+          "test": "peek_does_not_consume_and_ack_consumes_exactly_that_warning",
+          "marker": null,
+          "matching_passed_names": [
+            "sync_warning::p2_4_tests::peek_does_not_consume_and_ack_consumes_exactly_that_warning"
+          ]
+        }
+      ]
+    }
+  ]
+}

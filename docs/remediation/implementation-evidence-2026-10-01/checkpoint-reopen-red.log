@@ -1,0 +1,19 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.45s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 1 test
+
+thread 'db::tests::deferred_delete_checkpoint_is_retried_after_reopen' (3809351) panicked at shared/rust-core/src/db/tests.rs:1314:5:
+reopen forgot the blocked WAL
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test db::tests::deferred_delete_checkpoint_is_retried_after_reopen ... FAILED
+
+failures:
+
+failures:
+    db::tests::deferred_delete_checkpoint_is_retried_after_reopen
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 488 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p tailsync-core --lib`

@@ -6,24 +6,26 @@
   "gate": {
     "kind": "unit",
     "file": "shared/rust-core/src/peer/delivery/tests.rs",
-    "test": "a_full_priority_queue_never_drops_a_text_frame_silently",
+    "test": "s2_f5_file_ack_does_not_block_text",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "确定性门禁（不依赖运行速度）：①把 priority 队列填满到容量后走生产入队路径 enqueue_queued_frame，断言它不会报告成功（满队时背压而非丢弃），腾出空间后文本帧仍在队列中不消失；②用**生产构造器** ConnectionPoolState::sender_for_candidates 真建一个 sender，实测其 priority 容量（channel_for(Command::FileMeta)），断言它正好等于由签署水位推出的容量（48 × 4 / 3 = 64）。②是必要的：①用的是测试自建的通道，改小池子的通道会让①全绿而签署预算失去意义。变异验证（均实测）：生产入队改成 try_send 静默丢弃即失败；池子里 mpsc::channel 的实参 64 改成 16（常量不变、只改调用点）即失败；CHANNEL_SIZE 改成 16 即失败。范围说明：水位 48 没有任何运行时机制强制，也不在 CI 里测量；基线（s2_f5_text_latency_baseline，#[ignore]）断言的峰值深度是它**自己按同一常量建的**通道，因此调用点被单独改小时基线看不见，那正是②负责的。"
+    "asserts": "通过生产 ConnectionPoolState 命令选择、Noise 认证连接、worker/executor，在文件 ACK 持续被 gate 挡住时文本独立 ACK；文件故障仅关闭文件 worker，peer revoke 关闭两条 worker。另保留满队背压及生产容量 64 门禁。时延预算由 ignored 的 authenticated_worker_baseline 单独测量，不能以调度模型代替。 基线的 peak_event_priority_depth 仅统计事件 lane 的占用/预留槽位，不能裁定签署共享队列水位。"
   },
   "ci_job": [
     "rust-macos",
     "rust-windows"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "本机固定 1200 文本/60s、16 文件/256MiB、真实 Noise/Core 接收逻辑，三个 ACK 延迟场景各三轮；结果由执行报告保存。仍不替代原生 Windows 与真实设备交付。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S2-F5",
-  "title": "文件控制帧与即时文本队列隔离（已裁定延后）",
+  "title": "文件 ACK 与即时事件使用独立认证 worker（设备性能待验）",
   "code_symbols": [
-    "shared/rust-core/src/peer/pool.rs:channel_for"
+    "shared/rust-core/src/peer/pool.rs:ConnectionPoolState::sender_for_command",
+    "shared/rust-core/src/peer/delivery/tests.rs:s2_f5_file_ack_does_not_block_text",
+    "shared/rust-core/src/peer/delivery/tests_performance.rs:s2_f5_authenticated_worker_baseline"
   ],
   "trigger": "FileMeta/批次帧与剪贴板即时帧共用 priority 队列，文件元数据等待可打满 64 容量并丢弃文本帧。",
-  "fix_evidence": "裁定为**达标并关闭**（2026-09-30）。依据：预算已由维护者签署（docs/performance-budgets.md，文本 p99 ≤ 100ms、水位 ≤ 48、永久丢 0）；单机基线经多次独立复核共 15 轮以上，p99 ≤ 100 ms、峰值深度 ≤ 48、永久丢 == 0 在**每一个**会话中都成立，且距阈值 1–2 个数量级。观测值本身离散且随同机负载移动（本文件曾两次把观测值写成\"包络上界\"，两次都被下一次运行证伪），因此文档明确：观测值只是\"看到过什么\"、不是界限也不穷尽，判定依据只有签署阈值。故**不实现独立认证文件通道**（方案规定达标即如此处置），改为记录适用边界并留下回归门禁：CI 门禁覆盖\"满队不静默丢弃\"与\"生产通道几何被静默收缩\"两类回归；水位/延迟阈值由自判定的基线实测断言。生产入队本就使用 send + 5 秒超时，超时会变成可见的 delivery_stalled 警告，并非静默丢弃。适用边界：单机、逐帧服务时间为 200µs 模型参数、bulk 侧负载比真实传输更密；真实网络的端到端数字未测。",
-  "status": "fixed_gated",
-  "pass_condition": "冻结负载下永久丢文本事件数为 0、延迟与水位满足已批准的预算（所有已观测会话均满足）；CI 门禁通过（满队不静默丢弃；生产 priority 容量实测等于由签署水位推出的 64，收缩即失败）；水位 48 与 p99 ≤ 100 ms 由 `#[ignore]` 的自判定基线断言；观测值未被当作界限（离散度已如实记录为观测、非穷尽）；适用边界已记录。",
+  "fix_evidence": "复核的真实认证 worker 反例显示 500 ms 文件 ACK 等待使文本延迟约 503 ms。已按 command 分为事件/文件两个按需 worker，复用认证、路线、重连与撤销；共享 peer batch serializer 不变，文件 retry 只重建文件 lane。调度模型已改名 scheduler_model_latency_baseline 并撤销其性能关闭作用。生产 worker + Core 接收路径基线及限制见 IMPLEMENTATION-2026-09-30.md；原生 Windows、真实双设备与平台持久化/剪贴板性能待验。",
+  "status": "partial",
+  "pass_condition": "生产 ACK 隔离、背压及容量 gate 通过；性能负载所有文本实际 ACK，文件活动期 p99 ≤100ms。拆分后的事件队列水位不等价于签署的共享 priority 水位≤48，需维护者确认测量范围并取得对应证据；原生 Windows 和设备链路证据齐全后才能完整关闭。",
   "reopen_condition": "同负载再次超过预算或出现永久丢帧。"
 }

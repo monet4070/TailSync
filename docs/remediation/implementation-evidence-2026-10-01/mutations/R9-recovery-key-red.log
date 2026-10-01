@@ -1,0 +1,23 @@
+   Compiling tailsync-core v2.3.1 (/private/tmp/tailsync-implementation.BzV6PH/mutation-src/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.64s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/target/debug/deps/tailsync_core-86da740a75732881)
+
+running 1 test
+test pairing::tests_pending::pending_recovery_requires_the_same_authenticated_key_and_is_never_active ... FAILED
+
+failures:
+
+---- pairing::tests_pending::pending_recovery_requires_the_same_authenticated_key_and_is_never_active stdout ----
+
+thread 'pairing::tests_pending::pending_recovery_requires_the_same_authenticated_key_and_is_never_active' (3754338) panicked at shared/rust-core/src/pairing/tests_pending.rs:935:5:
+assertion failed: manager.record_pending_pairing(session_id, "peer", different.public_key(),
+            "lan", "192.168.1.3").await.is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    pairing::tests_pending::pending_recovery_requires_the_same_authenticated_key_and_is_never_active
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 487 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p tailsync-core --lib`

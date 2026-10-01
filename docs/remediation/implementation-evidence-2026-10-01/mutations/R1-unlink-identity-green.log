@@ -1,0 +1,21 @@
+   Compiling tailsync-core v2.3.1 (/private/tmp/tailsync-implementation.BzV6PH/mutation-src/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.25s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/target/debug/deps/tailsync_core-86da740a75732881)
+
+running 1 test
+test db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 487 filtered out; finished in 0.11s
+
+     Running tests/legacy_data_isolation.rs (/Users/monet/TailSync/TailSync-remediation/target/debug/deps/legacy_data_isolation-aba8fb53cf99fa0d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/received_batch_crash_matrix.rs (/Users/monet/TailSync/TailSync-remediation/target/debug/deps/received_batch_crash_matrix-8f335ba2aabc719d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

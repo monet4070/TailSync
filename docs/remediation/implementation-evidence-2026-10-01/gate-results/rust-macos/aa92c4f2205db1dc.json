@@ -1,0 +1,859 @@
+{
+  "schema_version": 1,
+  "job": "rust-macos",
+  "command": "swift test --package-path macos/swift-ui",
+  "source": {
+    "sha": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+    "fingerprint": "c1da1fcd88f9c6a9b0bacb742be0635517c4dd9b00d7ec02d190a7679e506bf8"
+  },
+  "exit_code": 0,
+  "source_unchanged": true,
+  "duration_ms": 10677,
+  "tests": [
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testAuthenticatedSocketStableErrorsReachTheLocalizedClientBoundary",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testCancelledBeforeConnectionDoesNotCreateASocket",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testConnectionModeFailedSavePreservesLastServerSnapshot",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testConnectionModeSaveDoesNotSendStaleSettingsAndUsesServerSnapshot",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testFiftyPreviewSwitchesReleaseTheirRealSocket",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testLateCancellationCannotShutDownAReusedDescriptor",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testLegacyDaemonTextPreviewErrorUsesJsonCompatibilityPath",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testLocalCapabilitiesAcceptsMacOSPlatform",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testLocalCapabilitiesRejectsNonMacOSPlatform",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ApiClientCancellationTests::testSixtyFourMiBBinaryPreviewCompletesAtDeclaredLengthWithoutWaitingForEOF",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testApiServerErrorsPreserveTheirDiagnosticMessage",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testCanvasUsesTheWindowsEditorialFontFamilies",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testCanvasUsesTheWindowsSemanticColorTokens",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testChangingLanguagePublishesTheLocaleChangeNotification",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testConfigureApplicationMenuRedirectsSettingsKeyEquivalent",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testConnectionsMenuActionAndLocalizationStrings",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testDaemonShutdownPolicyKeepsInteractiveExitUnderTwoSeconds",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testHistoryPreviewStringsExistInBothSupportedLanguages",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testHistoryPreviewTargetHandlesStandaloneAndMissingRows",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testHistoryPreviewTargetUsesFirstFileForCollapsedBatch",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testHistoryPreviewTargetUsesFocusedFileWhenBatchExpanded",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testInteractiveContentDoesNotMakeTheWindowDraggable",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testIrohOnlyConnectionModeDecodesWithoutFallingBack",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testIrohRouteRttCapabilityDefaultsAndExplicitValues",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testNotificationCursorRecoveryDetectsGapsAndRestarts",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testNotificationPollerOnlyRefreshesHistoryForHistoryChanges",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testPairingRejectionsExplainHowToOpenTheOtherDevice",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testPairingStatusPollingDoesNotDependOnSwiftUISceneActivity",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testPeerLatencyPlanDeduplicatesRepeatedRouteIdentifiers",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testPeerLatencyPlanPreservesCoreRouteOrder",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testSettingsRedirectKeepsTheStatusItemWindowOpen",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testSingleInstanceLockAllowsOnlyOneOwner",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testStatusMenuOpensHistoryForAppKitDefinedLeftClick",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testTerminationPreventsAllDaemonActivity",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testThemeVersionConfirmationStringsExistInBothSupportedLanguages",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.AppBehaviorTests::testUnknownConnectionModeFallsBackToAutomatic",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.FilterBarRenderTests::testRenderBuiltinThemeCardsWithDistinctPresentations",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.FilterBarRenderTests::testRenderCustomDateRangeRow",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.FilterBarRenderTests::testRenderFilterBarAtSupportedWindowWidths",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.FilterBarRenderTests::testRenderFilterMenuBodies",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.FilterBarRenderTests::testSearchLayoutExpandsForDisplayTypographyAndAccessibilityScale",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.FilterBarRenderTests::testSearchTextFieldUsesNativePromptAndFontAwareBaselineAtMaximumAccessibilityScale",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testApplyMentionsRestoreFailures",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testApplyReregistersAnUnchangedShortcutWithoutPersisting",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testApplyRestoresThePreviousShortcutWhenPersistenceFails",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testApplyRestoresThePreviousShortcutWhenRegistrationConflicts",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testApplySucceedsAndRegistersOnlyTheNewShortcut",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testCapturedKeysRoundTripThroughTheParser",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testFailedShortcutRegistrationCanBeCancelledWithEscape",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testFormatsStoredShortcutsUsingMacKeyboardSymbols",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testNumpadEightAndNineUseTheirCarbonKeyCodes",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testParsesDigitAndFunctionKeys",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testParsesTheDefaultCombination",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testRejectsMultipleMainKeys",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testRejectsUnsupportedKeysAndModifiers",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testRequiresAtLeastOneModifier",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.GlobalShortcutTests::testResetUsesTheModelShortcutDefaults",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewBinaryTests::testDecodesAValidTextFrame",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewBinaryTests::testDecodesRawRgbaDimensionsForAnImageFrame",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewBinaryTests::testLegacyPreviewFallbackOnlyAcceptsAnExplicitUnknownCommand",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewBinaryTests::testRejectsAFrameWithMismatchedPayloadLength",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewBinaryTests::testRejectsMalformedMetadataBeforeReceivingPayload",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewBinaryTests::testRequestIdentityAndTrailingBytesAreRejected",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testEveryCustomPreviewToolbarRendersAtMinimumWidth",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testModifierScrollOverlayIsMouseTransparent",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testPDFControllerReleasesPendingSearchAndObservers",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testPDFPreviewReusesPreparedDocumentAndDefersThumbnailRendering",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testPDFSearchStartsAsynchronouslyAfterDebounce",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testPreviewControlsUseConsistentMinimumSizes",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testReattachingPDFViewDoesNotRepublishUnchangedState",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testSwitchingToCodeKeepsTextToolbarControlsVisible",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testTextAndMarkdownPreviewsInstallModifierWheelFontControls",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testTextPreviewCanRestoreWrappingAfterHorizontalLayout",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testTextPreviewWrapsLongLinesAtTheViewportWidthByDefault",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testThumbnailLayoutClampsExtremeLongStrips",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testThumbnailLayoutPreservesModerateAspectRatios",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testThumbnailLayoutRendersSquaresAsSquares",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewLayoutTests::testThumbnailLayoutSurvivesDegenerateSizes",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testCodeStylerProducesDistinctSemanticColours",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testFormatDetectionSelectsDedicatedRenderers",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testImageViewportFitsRotationAndAccumulatesDrags",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testInteractivePDFAndSearchControlsKeepTheirSpaceKey",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testLegacyTextPreviewErrorsUseSafeFailureClassification",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testLogicalLineIndexUsesTextKitUtf16Offsets",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testMarkdownDocumentPreservesCommonBlockStructure",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testMarkdownRemovesResourcesAndUnsafeLinkSchemes",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testModifierScrollPolicyConsumesOnlyLocalCommandOrControlWheelEvents",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testPresentationFilesUseTheDocumentPreviewWindow",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testTextFontPreferenceDefaultsToReadableSizeAndClampsValues",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testTypedRemoteErrorsDriveFailureClassification",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewModelTests::testWindowSizePolicyMatchesRendererNeeds",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testNonUtf8SvgIsRejected",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testPackedImageMaterializesAsInMemoryPng",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testPdfMaterializesInMemoryAndDocxUsesPrivateQuickLookFile",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testPowerPointMaterializesToPrivateQuickLookFilesAndRejectsWrongSignatures",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testRejectsOversizedAndOutsideDeletionTargets",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testRejectsSymlinkPreviewRoot",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testSanitizedNameCannotEscapeAsPathOrControlCharacter",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testSanitizedNameFitsFilesystemBudgetAndPreservesExtension",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testScreenshotSizedRawRGBAImageMaterializesInMemory",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testSessionCloseRemovesDocxQuickLookFileButKeepsTextInMemory",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testStartupCleanupRemovesHiddenAndVisibleStaleFiles",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testSvgMaterializesAsEscapedSourceInMemory",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testTextMaterializationStaysInMemory",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewStoreTests::testWriteUsesPrivatePermissionsAndCloseRemovesOnlyPreviewFile",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testActiveMarkupSVGNeverReachesTheWebRenderer",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testBatchNavigationLoadsIdsOutsideTheHistoryPage",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testCloseDeletesInstalledDocxMaterial",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testNewPresentationDiscardsAStaleLoad",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testNonSVGEntriesNeverReachTheWebRenderer",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testOversizedSVGClassifiesToTooLargeWithoutRendering",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testRejectedExternalTargetCannotEnableTrustOrLeaveRendererBusy",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testRenderFailureFallsBackAndRetryRecovers",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testRestorePublishesSuccessFeedback",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testRetryRecoversAfterTypedPayloadFailure",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testSVGExternalReferenceSummaryClassifiesHosts",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testSVGLoadFailureKeepsInMemorySourceViewer",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testSVGLoadUpgradesSourceToBrowserEngineImageMaterial",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testSVGRenderKeepsPreviousMaterialOnTrustRerenderFailure",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testTrustEnableCommitsOnlyAfterSuccessfulRender",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewViewModelTests::testTrustingExternalResourcesReRendersAndResetsPerEntry",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testDocumentHTMLCarriesRestrictiveCSPAndEmbedsSource",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testExternalReferenceExtractionCoversAttributesAndCSS",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testExtractorCoversSrcsetAndHTMLEntityEncodedURLs",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testRealWebViewBlocksMetaRefreshNavigation",
+      "status": "skipped"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testRealWebViewSnapshotRasterizesStaticSVG",
+      "status": "skipped"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testTrustedCSPOnlyListsDisclosedEligibleHosts",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testTrustedCSPPreservesAnExplicitHTTPSPort",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testTrustedDocumentHTMLOpensNetworkContentButNeverScripts",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testTrustEligibilityRefusesLocalhostHostnames",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testTrustEligibilityRequiresHTTPSAndPublicLiteralIPs",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testViewportSizeClampsToDimensionAndPixelBudgets",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testViewportSizeIgnoresPartialRelativeAndWrongAttributes",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryPreviewWebViewSVGRendererTests::testViewportSizeReadsIntrinsicDimensionsWithUnits",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testDraggingBeyondLongPressThresholdCancelsFavorite",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testEscapeClosesOnlyAnExistingPreview",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testFavoriteFillStaysCompleteAfterThePressEnds",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testFavoriteHapticPolicyRequiresPressureCapableInput",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testFirstClickSelectsAndSecondClickRestoresWithoutGestureCompetition",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testLongPressCommitsFavoriteWithoutFallingThroughToRestore",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testModifiedAndRepeatedSpaceDoNotOpenPreview",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testPendingFavoriteMutationWinsOverAStaleHistoryRefresh",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testSpaceOnSelectedRowOpensPreviewExactlyOnce",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.HistoryRowInteractionTests::testSwiftUIOverlayInstallsAFullSizeInteractiveResponder",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LaunchAtLoginControllerTests::testApprovalStateStaysRequestedAndCanOpenSystemSettings",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LaunchAtLoginControllerTests::testEnablingAndDisablingTracksSystemRegistration",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LaunchAtLoginControllerTests::testNeverSeenServiceCanBeRegisteredFromNotFoundState",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LaunchAtLoginControllerTests::testRegistrationFailureFromNeverSeenStateShowsTheRealError",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LaunchAtLoginControllerTests::testRegistrationFailureRollsBackToActualSystemState",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LocalContractTests::testApiClientUsesFixedStableErrorTextAndLegacyFallback",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LocalContractTests::testKnownStableErrorCodeUsesFixedPolicy",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LocalContractTests::testProductionRustFixturesUseTheGeneratedDecoder",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LocalContractTests::testStableErrorCodesUseFixedEnglishAndChineseText",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LocalContractTests::testSwiftRetainsFullUInt64ButRejectsFractionalAndBooleanRevisions",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.LocalContractTests::testUnknownStableErrorCodeMapsToInternalError",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.PairingRecoveryTests::testOldDaemonPairingStatusStillDecodes",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.PairingRecoveryTests::testPendingSummaryDoesNotImplyLocalTrust",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.RemotePairingDeepLinkTests::testNewOperationInvalidatesOldPreview",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.RemotePairingDeepLinkTests::testNewValidInviteReplacesAnOlderUnconsumedInvite",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.RemotePairingDeepLinkTests::testPairingFailureReplacesSuccessfulPreview",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.RemotePairingDeepLinkTests::testReceivedInviteExpandsThePairingInput",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.RemotePairingDeepLinkTests::testUnrelatedOrIncompleteURLsNeverEnterTheInbox",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.RemotePairingDeepLinkTests::testValidInviteIsStoredAndTakenExactlyOnce",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SVGPreviewPolicyFixtureTests::testCSPDirectiveDictionaryPolicy",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SVGPreviewPolicyFixtureTests::testCSPMatchesSharedFixturesExactly",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SVGPreviewPolicyFixtureTests::testReferenceExtractionMatchesSharedFixtures",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SVGPreviewPolicyFixtureTests::testTrustEligibilityMatchesSharedFixtures",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SVGPreviewPolicyFixtureTests::testVisualEligibilityMatchesSharedFixtures",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SettingsErrorRenderTests::testIncompatiblePeerRowRendersUpgradeNoticeInBothLanguages",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SettingsErrorRenderTests::testProtocolErrorToastRendersInBothLanguages",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SettingsGeneralRenderTests::testRenderLaunchAtLoginSettingInChinese",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SettingsUIPreviewTests::testPreviewConnectionsView",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SettingsUIPreviewTests::testPreviewGeneralSection",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.SettingsUIPreviewTests::testPreviewNetworkSection",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testAssetCommitPolicyRejectsOldThemeDigestAndGeneration",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testCanvasFallbackCommitPolicyRejectsASelectionThatChangedDuringResolution",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testInterfaceScaleOverridesThemeMetrics",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testReducedTransparencyMakesColorsOpaqueAndRemovesShadows",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolutionCommitPolicyRejectsOutOfOrderAndStaleResponses",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolutionFailureFallsBackOnlyForTheCurrentRequestAndActiveTheme",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolvedPairDecoderRejectsMixedCoreSnapshots",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolvedV2AdapterFallsBackForMissingOrMalformedTokens",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolvedV2AdapterMapsComponentStates",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolvedV2AdapterMapsSemanticTokens",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolvedV2AdapterPreservesRgbAndAlphaColors",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolvedV2AdapterRetainsDarkStructuralTokens",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testResolvedV2AdapterRetainsEveryInteractiveButtonState",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testStatusItemLogoDoesNotMutateTheCachedThemeImage",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testStructuredThemeErrorRetainsTheCompleteCoreContract",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemeAssetsAreDecodedAtTheirDisplayBound",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemeCardLayoutProvidesAFullCardTargetAndUsableActions",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemeCardPreviewResolvesTheThemeBeingPresented",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemeFallbackWarningRequiresALoadedCatalogueAndMissingSelection",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemePackageSemanticVersionRelations",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemeRefreshCommitPolicyRejectsAnOutOfOrderDescriptorSnapshot",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemeResolutionCacheIdentityIncludesHighContrast",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemeStartupRetryRecoversWhenDaemonBecomesReady",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testThemeStartupRetryStopsAfterItsBoundedAttemptCount",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.ThemeTests::testV2SelectionUsesExactDescriptorId",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.TrustedCSPFailClosedTests::testUndisclosedHostIsNotFetchedInTrustedMode",
+      "status": "skipped"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testClosingHistoryKeepsFavoritesWindowOpen",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testHistoryCollectionsUseIndependentVisibilityNotifications",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testHistoryWindowPinStatePersistsAndUpdatesAttachedWindow",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testHistoryWindowPolicyMovesNormalWindowToTheActiveSpace",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testHistoryWindowPolicyPinsWindowAboveOtherWindowsAcrossSpaces",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testPreviewLifecycleFollowsOnlyItsActiveCollectionWindow",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testPreviewWindowIsRecreatedAfterClose",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testShowConnectionsPresentsWindowWithCorrectTitleAndDimensions",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testShowHistoryCallsCompletionAfterWindowIsPresented",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testTransientWindowDetachesOwnerAndContentWhenClosed",
+      "status": "passed"
+    },
+    {
+      "name": "TailSyncTests.WindowLifecycleTests::testTransientWindowReportsVisibilityChangesOncePerState",
+      "status": "passed"
+    }
+  ],
+  "integrations": []
+}

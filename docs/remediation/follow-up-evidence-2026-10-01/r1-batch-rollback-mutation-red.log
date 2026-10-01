@@ -1,0 +1,19 @@
+   Compiling tailsync-core v2.3.1 (/private/tmp/tailsync-follow-up-xkdja33f/src/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.97s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 1 test
+test db::tests::batch_rollback_preserves_favorited_payloads_with_case_aliases ... 
+thread 'db::tests::batch_rollback_preserves_favorited_payloads_with_case_aliases' (4176235) panicked at shared/rust-core/src/db/tests.rs:3283:9:
+rollback must preserve the live favorite (sql=false)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    db::tests::batch_rollback_preserves_favorited_payloads_with_case_aliases
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 492 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--lib`

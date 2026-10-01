@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
-  ackSyncWarning,
   cancelFileBatch,
   clearHistory,
   deleteEntry,
@@ -24,12 +23,14 @@ import {
   type HistoryCollection,
   type HistoryEntry,
   type MigrationDiagnostics,
+  type SyncWarning,
 } from "../tailsyncClient";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
 import { useTransient } from "../hooks/useTransient";
 import { useHistoryNotice } from "../hooks/useHistoryNotice";
+import { useSyncWarningNotice } from "../hooks/useSyncWarningNotice";
 import {
   useThumbnailCache,
 } from "../hooks/useThumbnailCache";
@@ -118,6 +119,7 @@ export function History({ collection = "all" }: HistoryProps) {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [historyNotice, showHistoryNotice, clearHistoryNotice] = useHistoryNotice();
+  const [syncWarning, setSyncWarning] = useState<SyncWarning | null>(null);
   const newGlowTimers = useRef<Set<number>>(new Set());
 
   const lastVersion = useRef<number>(0);
@@ -172,6 +174,15 @@ export function History({ collection = "all" }: HistoryProps) {
 
   const { theme, themeAssetSlots } = useTheme();
   const { t } = useI18n();
+  const syncWarningKey = syncWarning && {
+    expired_event: "history.syncExpired",
+    delivery_stalled: "history.syncStalled",
+    delivery_shutdown: "history.syncShutdown",
+    delivery_expired: "history.syncDeliveryExpired",
+  }[syncWarning.kind];
+  useSyncWarningNotice(syncWarning,
+    syncWarningKey ? t(syncWarningKey).replace("{peer}", syncWarning!.peer) : null,
+    historyNotice, showHistoryNotice);
   const historyLoadErrorMessage = t("history.loadError");
   const showActionError = useCallback(() => {
     showHistoryNotice({
@@ -359,31 +370,7 @@ export function History({ collection = "all" }: HistoryProps) {
       lastVersion.current = snapshot.history_version;
       await loadHistory();
     }
-    if (snapshot.sync_warning) {
-      const warning = snapshot.sync_warning;
-      const key = {
-        expired_event: "history.syncExpired",
-        delivery_stalled: "history.syncStalled",
-        delivery_shutdown: "history.syncShutdown",
-        delivery_expired: "history.syncDeliveryExpired",
-      }[warning.kind];
-      // Only a window the user can actually see may consume the warning. The daemon
-      // keeps it readable until it is acknowledged, so a hidden or tray-only window
-      // must leave it for the window that can show it — otherwise "displayed to
-      // nobody, then acknowledged" swallows it exactly as the old destructive read
-      // did.
-      if (key && document.visibilityState === "visible") {
-        // Keyed by the warning's own id, so the same warning shown once is not
-        // repeated by every poll, while a later warning of the same kind and peer
-        // still appears. Acknowledging consumes exactly the warning that was shown.
-        showHistoryNotice({
-          key: `sync-warning:${warning.id}`,
-          level: "warning",
-          message: t(key).replace("{peer}", warning.peer),
-        });
-        void ackSyncWarning(warning.id);
-      }
-    }
+    setSyncWarning(snapshot.sync_warning ?? null);
     for (const notification of snapshot.notifications ?? []) {
       if (notification.level === "error") {
         showHistoryNotice({

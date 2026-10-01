@@ -141,7 +141,6 @@ impl HistoryDB {
             drop(tx);
             let mut payloads = old_payloads;
             payloads.push(super::entries::ExternalHistoryPayload {
-                stored: reference,
                 path: file_path.clone(),
             });
             self.cleanup_external_payloads(&payloads, None);
@@ -150,7 +149,6 @@ impl HistoryDB {
         if let Err(error) = tx.commit() {
             let mut payloads = old_payloads;
             payloads.push(super::entries::ExternalHistoryPayload {
-                stored: reference,
                 path: file_path.clone(),
             });
             self.cleanup_external_payloads(&payloads, None);
@@ -225,7 +223,6 @@ impl HistoryDB {
             drop(tx);
             let mut payloads = old_payloads;
             payloads.push(super::entries::ExternalHistoryPayload {
-                stored: reference,
                 path: file_path.clone(),
             });
             self.cleanup_external_payloads(&payloads, None);
@@ -234,7 +231,6 @@ impl HistoryDB {
         if let Err(error) = tx.commit() {
             let mut payloads = old_payloads;
             payloads.push(super::entries::ExternalHistoryPayload {
-                stored: reference,
                 path: file_path.clone(),
             });
             self.cleanup_external_payloads(&payloads, None);
@@ -336,6 +332,10 @@ impl HistoryDB {
         source_device_id: &str,
         batch_id: &str,
     ) -> Result<Option<(String, String)>, Box<dyn std::error::Error>> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(observer) = &self.storage_work_observer {
+            observer("receipt");
+        }
         self.conn
             .query_row(
                 "SELECT manifest_hash, status
@@ -555,7 +555,7 @@ impl HistoryDB {
             match persisted_file {
                 Ok(value) => persisted.push(value),
                 Err(error) => {
-                    remove_unreferenced_persisted_files(&self.conn, &persisted);
+                    remove_unreferenced_persisted_files(self, &persisted);
                     return Err(error);
                 }
             }
@@ -626,7 +626,7 @@ impl HistoryDB {
             Ok(())
         })();
         if let Err(error) = write_result {
-            remove_unreferenced_persisted_files(&self.conn, &persisted);
+            remove_unreferenced_persisted_files(self, &persisted);
             return Err(error);
         }
 

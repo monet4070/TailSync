@@ -1,0 +1,21 @@
+   Compiling tailsync v2.3.1 (/private/tmp/tailsync-follow-up-xkdja33f/src/macos/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.45s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri/target/debug/deps/tailsync_lib-d89296c539c16691)
+
+running 1 test
+test clipboard::tests::production_fanout_and_resume_reuse_source_hashes_and_check_completion ... 
+thread 'clipboard::tests::production_fanout_and_resume_reuse_source_hashes_and_check_completion' (4184010) panicked at src/clipboard/../../../../shared/platform-clipboard-tests.rs:648:13:
+assertion `left == right` failed: hash passes grew with peers/restarts
+  left: 4
+ right: 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    clipboard::tests::production_fanout_and_resume_reuse_source_hashes_and_check_completion
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 115 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

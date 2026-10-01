@@ -3,6 +3,7 @@ use tailsync_runtime::contracts::*;
 
 #[derive(Serialize, schemars::JsonSchema)]
 struct LocalContractExports {
+    pairing: tailsync_core::pairing::PairingStatus,
     capabilities: LocalCapabilities,
     stable_error: StableErrorEnvelope,
     history: tailsync_core::db::HistoryQueryPage,
@@ -71,6 +72,24 @@ fn fixtures() -> LocalContractExports {
         can_stop: true,
     };
     LocalContractExports {
+        pairing: tailsync_core::pairing::PairingStatus {
+            pairing_enabled: false,
+            phase: tailsync_core::pairing::PairingPhase::Disabled,
+            expires_at: None,
+            remaining_seconds: 0,
+            failed_attempts: 0,
+            max_failures: 5,
+            peer: None,
+            error: None,
+            pending_store_unavailable: false,
+            pending: vec![tailsync_core::pairing::PendingPairingSummary {
+                hostname: "fixture-peer".into(),
+                address: "192.168.1.2".into(),
+                interface: "lan".into(),
+                fingerprint: "fixture-only".into(),
+                locally_trusted: false,
+            }],
+        },
         capabilities: LocalCapabilities::current("macos", 5, true, true),
         stable_error: StableErrorEnvelope::new(StableErrorCode::TemporarilyBusy),
         history: HistoryQueryPage {

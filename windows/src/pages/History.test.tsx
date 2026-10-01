@@ -35,7 +35,7 @@ vi.mock("../hooks/useTheme", () => ({
   useTheme: () => ({ theme: "light", colorTheme: "tailsync", resolvedColorTheme: "tailsync" }),
 }));
 vi.mock("../hooks/useI18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({ t: (key: string) => key === "history.syncExpired" ? key + ":{peer}" : key }),
 }));
 
 const entry = {
@@ -562,6 +562,7 @@ describe("History item actions", () => {
 
   function deliverWarningSnapshots(warnings: Array<Record<string, unknown>>) {
     let index = 0;
+    const originalInvoke = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation((command: string) => {
       if (command === "wait_runtime_snapshot") {
         if (index >= warnings.length) return new Promise(() => undefined);
@@ -576,7 +577,7 @@ describe("History item actions", () => {
         });
       }
       if (command === "ack_sync_warning") return Promise.resolve(true);
-      return defaultInvoke(command);
+      return originalInvoke(command);
     });
   }
 
@@ -617,6 +618,7 @@ describe("History item actions", () => {
     // window becomes visible again.
     let release: (() => void) | undefined;
     let calls = 0;
+    const originalInvoke = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation((command: string) => {
       if (command === "wait_runtime_snapshot") {
         calls += 1;
@@ -626,7 +628,7 @@ describe("History item actions", () => {
         });
       }
       if (command === "ack_sync_warning") return Promise.resolve(true);
-      return defaultInvoke(command);
+      return originalInvoke(command);
     });
 
     render(<History />);
@@ -649,6 +651,41 @@ describe("History item actions", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", { id: 11 });
     });
+  });
+
+  it("keeps a suppressed warning pending until the notice is rendered after cooldown", async () => {
+    setVisibility("visible");
+    let now = 100000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let release: ((value: unknown) => void) | undefined;
+    const originalInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "wait_runtime_snapshot") return new Promise(resolve => { release = resolve; });
+      if (command === "ack_sync_warning") return Promise.resolve(true);
+      return originalInvoke(command);
+    });
+    render(<History />);
+    await waitFor(() => expect(release).toBeDefined());
+    const deliver = async (id: number) => {
+      const send = release!; release = undefined;
+      await act(async () => {
+        send({revision:id,history_version:1,progress:null,notifications:[],sync_warning:{id,kind:"expired_event",peer:`peer-${id}`,occurred_at_ms:now}});
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(release).toBeDefined());
+    };
+    await deliver(101);
+    await waitFor(() => expect(document.body.textContent).toContain("peer-101"));
+    now += 4000;
+    await deliver(102);
+    await waitFor(() => expect(document.body.textContent).toContain("peer-102"));
+    now += 4001;
+    await deliver(103);
+    expect(document.body.textContent).not.toContain("peer-103");
+    expect(invokeMock).not.toHaveBeenCalledWith("ack_sync_warning", {id:103});
+    now += 1500;
+    await waitFor(() => expect(document.body.textContent).toContain("peer-103"), {timeout:2500});
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", {id:103}));
   });
 
   it("uses one blocking runtime snapshot instead of legacy high-frequency polls", async () => {

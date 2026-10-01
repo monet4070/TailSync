@@ -1951,3 +1951,41 @@ fn file_meta_rejects_invalid_chunk_sizes_for_resumable_transfers() {
     meta.chunk_size = 0;
     assert!(validate_incoming_file_meta(&mut meta).is_ok());
 }
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn actual_incoming_batch_creates_private_directories_and_manifest() {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    let directory = TestDirectory::new("incoming-permissions");
+    let incoming = directory.path().join("managed").join("incoming");
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    let manifest = manifest_with_sizes(&[0]);
+    SyncEngine::begin_file_batch_shared(
+        &engine,
+        manifest.clone(),
+        "peer".into(),
+        "identity".into(),
+        incoming.clone(),
+        1,
+    )
+    .await
+    .unwrap();
+    for path in [&incoming, &incoming.parent().unwrap().to_path_buf()] {
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        #[cfg(windows)]
+        crate::private_fs::assert_owner_only_windows_acl_for_test(path, true);
+    }
+    let stored = incoming.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::metadata(&stored).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    #[cfg(windows)]
+    crate::private_fs::assert_owner_only_windows_acl_for_test(&stored, false);
+}

@@ -1,0 +1,37 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_runtime-ceedeaea1b255bcc)
+
+running 23 tests
+test contracts::tests::current_capabilities_are_stable_and_json_safe ... ok
+test contracts::tests::known_stable_error_codes_use_fixed_policy ... ok
+test contracts::tests::legacy_classifier_does_not_infer_codes_from_private_details ... ok
+test contracts::tests::stable_error_classifier_covers_public_categories ... ok
+test contracts::tests::stable_errors_have_fixed_policy_and_discard_legacy_details ... ok
+test contracts::tests::unknown_stable_error_codes_fail_closed_to_internal_error ... ok
+test execution::tests::dropped_read_releases_a_worker_waiting_on_the_database_lock ... ok
+test execution::tests::runs_operation_with_database_guard_inside_blocking_worker ... ok
+test history::tests::chunked_search_preserves_legacy_offset_filter_and_has_more ... ok
+test history::tests::client_cancellation_after_commit_does_not_drop_notification ... ok
+test history::tests::failed_mutation_does_not_publish_a_revision ... ok
+test history::tests::image_payload_rejects_non_image_entries_before_decrypting ... ok
+test history::tests::request_defaults_are_applied_at_the_use_case_seam ... ok
+test history::tests::restore_payload_reads_the_core_entry_once_without_transport_policy ... ok
+test history::tests::successful_mutation_publishes_after_commit_inside_the_worker ... ok
+test peer_refresh::coordinator::tests::failure_reuses_candidates_without_replaying_old_health ... ok
+test peer_refresh::coordinator::tests::one_thousand_requests_have_one_pending_wake ... ok
+test peer_refresh::coordinator::tests::remembered_routes_are_probed_even_when_discovery_fails ... ok
+test peer_refresh::coordinator::tests::reset_and_shutdown_resolve_waiters_without_false_success ... ok
+test peer_refresh::coordinator::tests::stale_mode_and_same_mode_reset_cannot_commit_any_side_effect ... ok
+test peer_refresh::tests::stale_generation_or_mode_cannot_complete_a_refresh_waiter ... ok
+test preview::tests::frame_contains_versioned_header_and_exact_payload ... ok
+test preview::tests::screenshot_sized_image_frame_strips_packed_dimensions_without_base64 ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+   Doc-tests tailsync_runtime
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Remediation execution passed: S5-P1-2

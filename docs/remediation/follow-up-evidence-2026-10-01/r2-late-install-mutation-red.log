@@ -1,0 +1,19 @@
+   Compiling tailsync-core v2.3.1 (/private/tmp/tailsync-follow-up-xkdja33f/src/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.94s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 1 test
+test pairing::tests::revoke_peer_closes_window_before_a_late_session_is_installed ... 
+thread 'pairing::tests::revoke_peer_closes_window_before_a_late_session_is_installed' (4177205) panicked at shared/rust-core/src/pairing/tests.rs:1065:5:
+late session was accepted: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    pairing::tests::revoke_peer_closes_window_before_a_late_session_is_installed
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 492 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--lib`

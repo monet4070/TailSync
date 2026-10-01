@@ -1,0 +1,540 @@
+[0/1] Planning build
+Building for debugging...
+[0/4] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.17s)
+Test Suite 'All tests' started at 2026-10-01 01:18:08.783.
+Test Suite 'TailSyncPackageTests.xctest' started at 2026-10-01 01:18:08.785.
+Test Suite 'ApiClientCancellationTests' started at 2026-10-01 01:18:08.785.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testAuthenticatedSocketStableErrorsReachTheLocalizedClientBoundary]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testAuthenticatedSocketStableErrorsReachTheLocalizedClientBoundary]' passed (0.007 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testCancelledBeforeConnectionDoesNotCreateASocket]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testCancelledBeforeConnectionDoesNotCreateASocket]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testConnectionModeFailedSavePreservesLastServerSnapshot]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testConnectionModeFailedSavePreservesLastServerSnapshot]' passed (0.002 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testConnectionModeSaveDoesNotSendStaleSettingsAndUsesServerSnapshot]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testConnectionModeSaveDoesNotSendStaleSettingsAndUsesServerSnapshot]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testFiftyPreviewSwitchesReleaseTheirRealSocket]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testFiftyPreviewSwitchesReleaseTheirRealSocket]' passed (0.005 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testLateCancellationCannotShutDownAReusedDescriptor]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testLateCancellationCannotShutDownAReusedDescriptor]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testLegacyDaemonTextPreviewErrorUsesJsonCompatibilityPath]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testLegacyDaemonTextPreviewErrorUsesJsonCompatibilityPath]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testLocalCapabilitiesAcceptsMacOSPlatform]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testLocalCapabilitiesAcceptsMacOSPlatform]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testLocalCapabilitiesRejectsNonMacOSPlatform]' started.
+Test Case '-[TailSyncTests.ApiClientCancellationTests testLocalCapabilitiesRejectsNonMacOSPlatform]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ApiClientCancellationTests testSixtyFourMiBBinaryPreviewCompletesAtDeclaredLengthWithoutWaitingForEOF]' started.
+CoreData: error: Unable to create token NSXPCConnection.  NSXPCStoreServerEndpointFactory 0x7c1e8cc8d0 -newEndpointWithError returned error Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}
+CoreData: error: NSXPCStoreConnectionManager failed to initialize any connections for store at file:///Users/monet/Library/Application%20Support/AddressBook/AddressBook-v22.abcddb with error = Error Domain=NSCocoaErrorDomain Code=4097 "无法与帮助程序通信。" UserInfo={NSUnderlyingError=0x7c1e8dd560 {Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}}}
+Test Case '-[TailSyncTests.ApiClientCancellationTests testSixtyFourMiBBinaryPreviewCompletesAtDeclaredLengthWithoutWaitingForEOF]' passed (2.052 seconds).
+Test Suite 'ApiClientCancellationTests' passed at 2026-10-01 01:18:10.853.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 2.068 (2.068) seconds
+Test Suite 'AppBehaviorTests' started at 2026-10-01 01:18:10.853.
+Test Case '-[TailSyncTests.AppBehaviorTests testApiServerErrorsPreserveTheirDiagnosticMessage]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testApiServerErrorsPreserveTheirDiagnosticMessage]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testCanvasUsesTheWindowsEditorialFontFamilies]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testCanvasUsesTheWindowsEditorialFontFamilies]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testCanvasUsesTheWindowsSemanticColorTokens]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testCanvasUsesTheWindowsSemanticColorTokens]' passed (0.005 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testChangingLanguagePublishesTheLocaleChangeNotification]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testChangingLanguagePublishesTheLocaleChangeNotification]' passed (0.059 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testConfigureApplicationMenuRedirectsSettingsKeyEquivalent]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testConfigureApplicationMenuRedirectsSettingsKeyEquivalent]' passed (0.012 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testConnectionsMenuActionAndLocalizationStrings]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testConnectionsMenuActionAndLocalizationStrings]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testDaemonShutdownPolicyKeepsInteractiveExitUnderTwoSeconds]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testDaemonShutdownPolicyKeepsInteractiveExitUnderTwoSeconds]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testHistoryPreviewStringsExistInBothSupportedLanguages]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testHistoryPreviewStringsExistInBothSupportedLanguages]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testHistoryPreviewTargetHandlesStandaloneAndMissingRows]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testHistoryPreviewTargetHandlesStandaloneAndMissingRows]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testHistoryPreviewTargetUsesFirstFileForCollapsedBatch]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testHistoryPreviewTargetUsesFirstFileForCollapsedBatch]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testHistoryPreviewTargetUsesFocusedFileWhenBatchExpanded]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testHistoryPreviewTargetUsesFocusedFileWhenBatchExpanded]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testInteractiveContentDoesNotMakeTheWindowDraggable]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testInteractiveContentDoesNotMakeTheWindowDraggable]' passed (0.041 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testIrohOnlyConnectionModeDecodesWithoutFallingBack]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testIrohOnlyConnectionModeDecodesWithoutFallingBack]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testIrohRouteRttCapabilityDefaultsAndExplicitValues]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testIrohRouteRttCapabilityDefaultsAndExplicitValues]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testNotificationCursorRecoveryDetectsGapsAndRestarts]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testNotificationCursorRecoveryDetectsGapsAndRestarts]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testNotificationPollerOnlyRefreshesHistoryForHistoryChanges]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testNotificationPollerOnlyRefreshesHistoryForHistoryChanges]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testPairingRejectionsExplainHowToOpenTheOtherDevice]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testPairingRejectionsExplainHowToOpenTheOtherDevice]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testPairingStatusPollingDoesNotDependOnSwiftUISceneActivity]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testPairingStatusPollingDoesNotDependOnSwiftUISceneActivity]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testPeerLatencyPlanDeduplicatesRepeatedRouteIdentifiers]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testPeerLatencyPlanDeduplicatesRepeatedRouteIdentifiers]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testPeerLatencyPlanPreservesCoreRouteOrder]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testPeerLatencyPlanPreservesCoreRouteOrder]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testSettingsRedirectKeepsTheStatusItemWindowOpen]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testSettingsRedirectKeepsTheStatusItemWindowOpen]' passed (0.020 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testSingleInstanceLockAllowsOnlyOneOwner]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testSingleInstanceLockAllowsOnlyOneOwner]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testStatusMenuOpensHistoryForAppKitDefinedLeftClick]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testStatusMenuOpensHistoryForAppKitDefinedLeftClick]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testTerminationPreventsAllDaemonActivity]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testTerminationPreventsAllDaemonActivity]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testThemeVersionConfirmationStringsExistInBothSupportedLanguages]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testThemeVersionConfirmationStringsExistInBothSupportedLanguages]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.AppBehaviorTests testUnknownConnectionModeFallsBackToAutomatic]' started.
+Test Case '-[TailSyncTests.AppBehaviorTests testUnknownConnectionModeFallsBackToAutomatic]' passed (0.000 seconds).
+Test Suite 'AppBehaviorTests' passed at 2026-10-01 01:18:10.996.
+	 Executed 26 tests, with 0 failures (0 unexpected) in 0.142 (0.143) seconds
+Test Suite 'FilterBarRenderTests' started at 2026-10-01 01:18:10.996.
+Test Case '-[TailSyncTests.FilterBarRenderTests testRenderBuiltinThemeCardsWithDistinctPresentations]' started.
+Test Case '-[TailSyncTests.FilterBarRenderTests testRenderBuiltinThemeCardsWithDistinctPresentations]' passed (0.148 seconds).
+Test Case '-[TailSyncTests.FilterBarRenderTests testRenderCustomDateRangeRow]' started.
+Test Case '-[TailSyncTests.FilterBarRenderTests testRenderCustomDateRangeRow]' passed (0.082 seconds).
+Test Case '-[TailSyncTests.FilterBarRenderTests testRenderFilterBarAtSupportedWindowWidths]' started.
+Test Case '-[TailSyncTests.FilterBarRenderTests testRenderFilterBarAtSupportedWindowWidths]' passed (0.074 seconds).
+Test Case '-[TailSyncTests.FilterBarRenderTests testRenderFilterMenuBodies]' started.
+Test Case '-[TailSyncTests.FilterBarRenderTests testRenderFilterMenuBodies]' passed (0.028 seconds).
+Test Case '-[TailSyncTests.FilterBarRenderTests testSearchLayoutExpandsForDisplayTypographyAndAccessibilityScale]' started.
+Test Case '-[TailSyncTests.FilterBarRenderTests testSearchLayoutExpandsForDisplayTypographyAndAccessibilityScale]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.FilterBarRenderTests testSearchTextFieldUsesNativePromptAndFontAwareBaselineAtMaximumAccessibilityScale]' started.
+Test Case '-[TailSyncTests.FilterBarRenderTests testSearchTextFieldUsesNativePromptAndFontAwareBaselineAtMaximumAccessibilityScale]' passed (0.003 seconds).
+Test Suite 'FilterBarRenderTests' passed at 2026-10-01 01:18:11.331.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.334 (0.335) seconds
+Test Suite 'GlobalShortcutTests' started at 2026-10-01 01:18:11.331.
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplyMentionsRestoreFailures]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplyMentionsRestoreFailures]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplyReregistersAnUnchangedShortcutWithoutPersisting]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplyReregistersAnUnchangedShortcutWithoutPersisting]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplyRestoresThePreviousShortcutWhenPersistenceFails]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplyRestoresThePreviousShortcutWhenPersistenceFails]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplyRestoresThePreviousShortcutWhenRegistrationConflicts]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplyRestoresThePreviousShortcutWhenRegistrationConflicts]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplySucceedsAndRegistersOnlyTheNewShortcut]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testApplySucceedsAndRegistersOnlyTheNewShortcut]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testCapturedKeysRoundTripThroughTheParser]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testCapturedKeysRoundTripThroughTheParser]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testFailedShortcutRegistrationCanBeCancelledWithEscape]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testFailedShortcutRegistrationCanBeCancelledWithEscape]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testFormatsStoredShortcutsUsingMacKeyboardSymbols]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testFormatsStoredShortcutsUsingMacKeyboardSymbols]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testNumpadEightAndNineUseTheirCarbonKeyCodes]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testNumpadEightAndNineUseTheirCarbonKeyCodes]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testParsesDigitAndFunctionKeys]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testParsesDigitAndFunctionKeys]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testParsesTheDefaultCombination]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testParsesTheDefaultCombination]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testRejectsMultipleMainKeys]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testRejectsMultipleMainKeys]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testRejectsUnsupportedKeysAndModifiers]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testRejectsUnsupportedKeysAndModifiers]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testRequiresAtLeastOneModifier]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testRequiresAtLeastOneModifier]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.GlobalShortcutTests testResetUsesTheModelShortcutDefaults]' started.
+Test Case '-[TailSyncTests.GlobalShortcutTests testResetUsesTheModelShortcutDefaults]' passed (0.000 seconds).
+Test Suite 'GlobalShortcutTests' passed at 2026-10-01 01:18:11.335.
+	 Executed 15 tests, with 0 failures (0 unexpected) in 0.004 (0.004) seconds
+Test Suite 'HistoryPreviewBinaryTests' started at 2026-10-01 01:18:11.335.
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testDecodesAValidTextFrame]' started.
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testDecodesAValidTextFrame]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testDecodesRawRgbaDimensionsForAnImageFrame]' started.
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testDecodesRawRgbaDimensionsForAnImageFrame]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testLegacyPreviewFallbackOnlyAcceptsAnExplicitUnknownCommand]' started.
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testLegacyPreviewFallbackOnlyAcceptsAnExplicitUnknownCommand]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testRejectsAFrameWithMismatchedPayloadLength]' started.
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testRejectsAFrameWithMismatchedPayloadLength]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testRejectsMalformedMetadataBeforeReceivingPayload]' started.
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testRejectsMalformedMetadataBeforeReceivingPayload]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testRequestIdentityAndTrailingBytesAreRejected]' started.
+Test Case '-[TailSyncTests.HistoryPreviewBinaryTests testRequestIdentityAndTrailingBytesAreRejected]' passed (0.000 seconds).
+Test Suite 'HistoryPreviewBinaryTests' passed at 2026-10-01 01:18:11.336.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'HistoryPreviewLayoutTests' started at 2026-10-01 01:18:11.336.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testEveryCustomPreviewToolbarRendersAtMinimumWidth]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testEveryCustomPreviewToolbarRendersAtMinimumWidth]' passed (0.786 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testModifierScrollOverlayIsMouseTransparent]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testModifierScrollOverlayIsMouseTransparent]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testPDFControllerReleasesPendingSearchAndObservers]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testPDFControllerReleasesPendingSearchAndObservers]' passed (0.227 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testPDFPreviewReusesPreparedDocumentAndDefersThumbnailRendering]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testPDFPreviewReusesPreparedDocumentAndDefersThumbnailRendering]' passed (0.092 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testPDFSearchStartsAsynchronouslyAfterDebounce]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testPDFSearchStartsAsynchronouslyAfterDebounce]' passed (0.209 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testPreviewControlsUseConsistentMinimumSizes]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testPreviewControlsUseConsistentMinimumSizes]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testReattachingPDFViewDoesNotRepublishUnchangedState]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testReattachingPDFViewDoesNotRepublishUnchangedState]' passed (0.002 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testSwitchingToCodeKeepsTextToolbarControlsVisible]' started.
+CoreData: error: Unable to create token NSXPCConnection.  NSXPCStoreServerEndpointFactory 0x7c1e8cc8d0 -newEndpointWithError returned error Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}
+CoreData: error: NSXPCStoreConnectionManager failed to initialize any connections for store at file:///Users/monet/Library/Application%20Support/AddressBook/AddressBook-v22.abcddb with error = Error Domain=NSCocoaErrorDomain Code=4097 "无法与帮助程序通信。" UserInfo={NSUnderlyingError=0x7c1e8de010 {Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}}}
+CoreData: warning: Caught exception trying to load store metadata during error recovery: NSXPCStoreServerEndpointFactory failed to provide an endpoint
+CoreData: error: addPersistentStoreWithType:configuration:URL:options:error: returned error NSCocoaErrorDomain (4097)
+CoreData: error: userInfo:
+CoreData: error: 	NSUnderlyingException : NSXPCStoreServerEndpointFactory failed to provide an endpoint
+CoreData: error: 	NSUnderlyingError : Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}
+CoreData: error: storeType: NSXPCStore
+CoreData: error: configuration: (null)
+CoreData: error: URL: file:///Users/monet/Library/Application%20Support/AddressBook/AddressBook-v22.abcddb
+CoreData: annotation: options:
+CoreData: annotation: 	NSReadOnlyPersistentStoreOption : 0
+CoreData: annotation: 	NSXPCStoreServerEndpointFactory : <CNCDRemotePersistentStoreEndpointFactory: 0x7c1e8cc8d0>
+CoreData: annotation: 	skipModelCheck : 1
+CoreData: annotation: 	NSPersistentHistoryTrackingKey : 1
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testSwitchingToCodeKeepsTextToolbarControlsVisible]' passed (0.801 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testTextAndMarkdownPreviewsInstallModifierWheelFontControls]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testTextAndMarkdownPreviewsInstallModifierWheelFontControls]' passed (0.034 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testTextPreviewCanRestoreWrappingAfterHorizontalLayout]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testTextPreviewCanRestoreWrappingAfterHorizontalLayout]' passed (0.035 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testTextPreviewWrapsLongLinesAtTheViewportWidthByDefault]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testTextPreviewWrapsLongLinesAtTheViewportWidthByDefault]' passed (0.025 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testThumbnailLayoutClampsExtremeLongStrips]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testThumbnailLayoutClampsExtremeLongStrips]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testThumbnailLayoutPreservesModerateAspectRatios]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testThumbnailLayoutPreservesModerateAspectRatios]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testThumbnailLayoutRendersSquaresAsSquares]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testThumbnailLayoutRendersSquaresAsSquares]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testThumbnailLayoutSurvivesDegenerateSizes]' started.
+Test Case '-[TailSyncTests.HistoryPreviewLayoutTests testThumbnailLayoutSurvivesDegenerateSizes]' passed (0.000 seconds).
+Test Suite 'HistoryPreviewLayoutTests' passed at 2026-10-01 01:18:13.547.
+	 Executed 15 tests, with 0 failures (0 unexpected) in 2.211 (2.212) seconds
+Test Suite 'HistoryPreviewModelTests' started at 2026-10-01 01:18:13.547.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testCodeStylerProducesDistinctSemanticColours]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testCodeStylerProducesDistinctSemanticColours]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testFormatDetectionSelectsDedicatedRenderers]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testFormatDetectionSelectsDedicatedRenderers]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testImageViewportFitsRotationAndAccumulatesDrags]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testImageViewportFitsRotationAndAccumulatesDrags]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testInteractivePDFAndSearchControlsKeepTheirSpaceKey]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testInteractivePDFAndSearchControlsKeepTheirSpaceKey]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testLegacyTextPreviewErrorsUseSafeFailureClassification]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testLegacyTextPreviewErrorsUseSafeFailureClassification]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testLogicalLineIndexUsesTextKitUtf16Offsets]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testLogicalLineIndexUsesTextKitUtf16Offsets]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testMarkdownDocumentPreservesCommonBlockStructure]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testMarkdownDocumentPreservesCommonBlockStructure]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testMarkdownRemovesResourcesAndUnsafeLinkSchemes]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testMarkdownRemovesResourcesAndUnsafeLinkSchemes]' passed (0.476 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testModifierScrollPolicyConsumesOnlyLocalCommandOrControlWheelEvents]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testModifierScrollPolicyConsumesOnlyLocalCommandOrControlWheelEvents]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testPresentationFilesUseTheDocumentPreviewWindow]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testPresentationFilesUseTheDocumentPreviewWindow]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testTextFontPreferenceDefaultsToReadableSizeAndClampsValues]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testTextFontPreferenceDefaultsToReadableSizeAndClampsValues]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testTypedRemoteErrorsDriveFailureClassification]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testTypedRemoteErrorsDriveFailureClassification]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testWindowSizePolicyMatchesRendererNeeds]' started.
+Test Case '-[TailSyncTests.HistoryPreviewModelTests testWindowSizePolicyMatchesRendererNeeds]' passed (0.000 seconds).
+Test Suite 'HistoryPreviewModelTests' passed at 2026-10-01 01:18:14.027.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.479 (0.479) seconds
+Test Suite 'HistoryPreviewStoreTests' started at 2026-10-01 01:18:14.027.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testNonUtf8SvgIsRejected]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testNonUtf8SvgIsRejected]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testPackedImageMaterializesAsInMemoryPng]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testPackedImageMaterializesAsInMemoryPng]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testPdfMaterializesInMemoryAndDocxUsesPrivateQuickLookFile]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testPdfMaterializesInMemoryAndDocxUsesPrivateQuickLookFile]' passed (0.003 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testPowerPointMaterializesToPrivateQuickLookFilesAndRejectsWrongSignatures]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testPowerPointMaterializesToPrivateQuickLookFilesAndRejectsWrongSignatures]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testRejectsOversizedAndOutsideDeletionTargets]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testRejectsOversizedAndOutsideDeletionTargets]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testRejectsSymlinkPreviewRoot]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testRejectsSymlinkPreviewRoot]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testSanitizedNameCannotEscapeAsPathOrControlCharacter]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testSanitizedNameCannotEscapeAsPathOrControlCharacter]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testSanitizedNameFitsFilesystemBudgetAndPreservesExtension]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testSanitizedNameFitsFilesystemBudgetAndPreservesExtension]' passed (0.002 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testScreenshotSizedRawRGBAImageMaterializesInMemory]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testScreenshotSizedRawRGBAImageMaterializesInMemory]' passed (0.013 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testSessionCloseRemovesDocxQuickLookFileButKeepsTextInMemory]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testSessionCloseRemovesDocxQuickLookFileButKeepsTextInMemory]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testStartupCleanupRemovesHiddenAndVisibleStaleFiles]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testStartupCleanupRemovesHiddenAndVisibleStaleFiles]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testSvgMaterializesAsEscapedSourceInMemory]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testSvgMaterializesAsEscapedSourceInMemory]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testTextMaterializationStaysInMemory]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testTextMaterializationStaysInMemory]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testWriteUsesPrivatePermissionsAndCloseRemovesOnlyPreviewFile]' started.
+Test Case '-[TailSyncTests.HistoryPreviewStoreTests testWriteUsesPrivatePermissionsAndCloseRemovesOnlyPreviewFile]' passed (0.001 seconds).
+Test Suite 'HistoryPreviewStoreTests' passed at 2026-10-01 01:18:14.052.
+	 Executed 14 tests, with 0 failures (0 unexpected) in 0.025 (0.026) seconds
+Test Suite 'HistoryPreviewViewModelTests' started at 2026-10-01 01:18:14.052.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testActiveMarkupSVGNeverReachesTheWebRenderer]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testActiveMarkupSVGNeverReachesTheWebRenderer]' passed (0.117 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testBatchNavigationLoadsIdsOutsideTheHistoryPage]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testBatchNavigationLoadsIdsOutsideTheHistoryPage]' passed (0.022 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testCloseDeletesInstalledDocxMaterial]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testCloseDeletesInstalledDocxMaterial]' passed (0.012 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testNewPresentationDiscardsAStaleLoad]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testNewPresentationDiscardsAStaleLoad]' passed (0.187 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testNonSVGEntriesNeverReachTheWebRenderer]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testNonSVGEntriesNeverReachTheWebRenderer]' passed (0.066 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testOversizedSVGClassifiesToTooLargeWithoutRendering]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testOversizedSVGClassifiesToTooLargeWithoutRendering]' passed (0.067 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testRejectedExternalTargetCannotEnableTrustOrLeaveRendererBusy]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testRejectedExternalTargetCannotEnableTrustOrLeaveRendererBusy]' passed (0.066 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testRenderFailureFallsBackAndRetryRecovers]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testRenderFailureFallsBackAndRetryRecovers]' passed (0.024 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testRestorePublishesSuccessFeedback]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testRestorePublishesSuccessFeedback]' passed (0.022 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testRetryRecoversAfterTypedPayloadFailure]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testRetryRecoversAfterTypedPayloadFailure]' passed (0.022 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testSVGExternalReferenceSummaryClassifiesHosts]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testSVGExternalReferenceSummaryClassifiesHosts]' passed (0.024 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testSVGLoadFailureKeepsInMemorySourceViewer]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testSVGLoadFailureKeepsInMemorySourceViewer]' passed (0.168 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testSVGLoadUpgradesSourceToBrowserEngineImageMaterial]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testSVGLoadUpgradesSourceToBrowserEngineImageMaterial]' passed (0.013 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testSVGRenderKeepsPreviousMaterialOnTrustRerenderFailure]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testSVGRenderKeepsPreviousMaterialOnTrustRerenderFailure]' passed (0.077 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testTrustEnableCommitsOnlyAfterSuccessfulRender]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testTrustEnableCommitsOnlyAfterSuccessfulRender]' passed (0.024 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testTrustingExternalResourcesReRendersAndResetsPerEntry]' started.
+Test Case '-[TailSyncTests.HistoryPreviewViewModelTests testTrustingExternalResourcesReRendersAndResetsPerEntry]' passed (0.035 seconds).
+Test Suite 'HistoryPreviewViewModelTests' passed at 2026-10-01 01:18:15.000.
+	 Executed 16 tests, with 0 failures (0 unexpected) in 0.947 (0.947) seconds
+Test Suite 'HistoryPreviewWebViewSVGRendererTests' started at 2026-10-01 01:18:15.000.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testDocumentHTMLCarriesRestrictiveCSPAndEmbedsSource]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testDocumentHTMLCarriesRestrictiveCSPAndEmbedsSource]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testExternalReferenceExtractionCoversAttributesAndCSS]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testExternalReferenceExtractionCoversAttributesAndCSS]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testExtractorCoversSrcsetAndHTMLEntityEncodedURLs]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testExtractorCoversSrcsetAndHTMLEntityEncodedURLs]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testRealWebViewBlocksMetaRefreshNavigation]' started.
+/Users/monet/TailSync/TailSync-remediation/macos/swift-ui/Tests/TailSyncTests/HistoryPreviewWebViewSVGRendererTests.swift:270: -[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testRealWebViewBlocksMetaRefreshNavigation] : Test skipped - set TAILSYNC_WEB_SVG_RENDER_TESTS=1 to exercise the real WKWebView path
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testRealWebViewBlocksMetaRefreshNavigation]' skipped (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testRealWebViewSnapshotRasterizesStaticSVG]' started.
+/Users/monet/TailSync/TailSync-remediation/macos/swift-ui/Tests/TailSyncTests/HistoryPreviewWebViewSVGRendererTests.swift:247: -[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testRealWebViewSnapshotRasterizesStaticSVG] : Test skipped - set TAILSYNC_WEB_SVG_RENDER_TESTS=1 to exercise the real WKWebView path
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testRealWebViewSnapshotRasterizesStaticSVG]' skipped (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustedCSPOnlyListsDisclosedEligibleHosts]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustedCSPOnlyListsDisclosedEligibleHosts]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustedCSPPreservesAnExplicitHTTPSPort]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustedCSPPreservesAnExplicitHTTPSPort]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustedDocumentHTMLOpensNetworkContentButNeverScripts]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustedDocumentHTMLOpensNetworkContentButNeverScripts]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustEligibilityRefusesLocalhostHostnames]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustEligibilityRefusesLocalhostHostnames]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustEligibilityRequiresHTTPSAndPublicLiteralIPs]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testTrustEligibilityRequiresHTTPSAndPublicLiteralIPs]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testViewportSizeClampsToDimensionAndPixelBudgets]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testViewportSizeClampsToDimensionAndPixelBudgets]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testViewportSizeIgnoresPartialRelativeAndWrongAttributes]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testViewportSizeIgnoresPartialRelativeAndWrongAttributes]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testViewportSizeReadsIntrinsicDimensionsWithUnits]' started.
+Test Case '-[TailSyncTests.HistoryPreviewWebViewSVGRendererTests testViewportSizeReadsIntrinsicDimensionsWithUnits]' passed (0.000 seconds).
+Test Suite 'HistoryPreviewWebViewSVGRendererTests' passed at 2026-10-01 01:18:15.002.
+	 Executed 13 tests, with 2 tests skipped and 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'HistoryRowInteractionTests' started at 2026-10-01 01:18:15.002.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testDraggingBeyondLongPressThresholdCancelsFavorite]' started.
+CoreData: error: Unable to create token NSXPCConnection.  NSXPCStoreServerEndpointFactory 0x7c1e8cccd0 -newEndpointWithError returned error Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}
+CoreData: error: NSXPCStoreConnectionManager failed to initialize any connections for store at file:///Users/monet/Library/Application%20Support/AddressBook/AddressBook-v22.abcddb with error = Error Domain=NSCocoaErrorDomain Code=4097 "无法与帮助程序通信。" UserInfo={NSUnderlyingError=0x7c1e956b20 {Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}}}
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testDraggingBeyondLongPressThresholdCancelsFavorite]' passed (0.754 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testEscapeClosesOnlyAnExistingPreview]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testEscapeClosesOnlyAnExistingPreview]' passed (0.014 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testFavoriteFillStaysCompleteAfterThePressEnds]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testFavoriteFillStaysCompleteAfterThePressEnds]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testFavoriteHapticPolicyRequiresPressureCapableInput]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testFavoriteHapticPolicyRequiresPressureCapableInput]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testFirstClickSelectsAndSecondClickRestoresWithoutGestureCompetition]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testFirstClickSelectsAndSecondClickRestoresWithoutGestureCompetition]' passed (0.002 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testLongPressCommitsFavoriteWithoutFallingThroughToRestore]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testLongPressCommitsFavoriteWithoutFallingThroughToRestore]' passed (0.669 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testModifiedAndRepeatedSpaceDoNotOpenPreview]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testModifiedAndRepeatedSpaceDoNotOpenPreview]' passed (0.006 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testPendingFavoriteMutationWinsOverAStaleHistoryRefresh]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testPendingFavoriteMutationWinsOverAStaleHistoryRefresh]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testSpaceOnSelectedRowOpensPreviewExactlyOnce]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testSpaceOnSelectedRowOpensPreviewExactlyOnce]' passed (0.002 seconds).
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testSwiftUIOverlayInstallsAFullSizeInteractiveResponder]' started.
+Test Case '-[TailSyncTests.HistoryRowInteractionTests testSwiftUIOverlayInstallsAFullSizeInteractiveResponder]' passed (0.006 seconds).
+Test Suite 'HistoryRowInteractionTests' passed at 2026-10-01 01:18:16.456.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 1.453 (1.454) seconds
+Test Suite 'LaunchAtLoginControllerTests' started at 2026-10-01 01:18:16.456.
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testApprovalStateStaysRequestedAndCanOpenSystemSettings]' started.
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testApprovalStateStaysRequestedAndCanOpenSystemSettings]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testEnablingAndDisablingTracksSystemRegistration]' started.
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testEnablingAndDisablingTracksSystemRegistration]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testNeverSeenServiceCanBeRegisteredFromNotFoundState]' started.
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testNeverSeenServiceCanBeRegisteredFromNotFoundState]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testRegistrationFailureFromNeverSeenStateShowsTheRealError]' started.
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testRegistrationFailureFromNeverSeenStateShowsTheRealError]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testRegistrationFailureRollsBackToActualSystemState]' started.
+Test Case '-[TailSyncTests.LaunchAtLoginControllerTests testRegistrationFailureRollsBackToActualSystemState]' passed (0.000 seconds).
+Test Suite 'LaunchAtLoginControllerTests' passed at 2026-10-01 01:18:16.457.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'LocalContractTests' started at 2026-10-01 01:18:16.457.
+Test Case '-[TailSyncTests.LocalContractTests testApiClientUsesFixedStableErrorTextAndLegacyFallback]' started.
+Test Case '-[TailSyncTests.LocalContractTests testApiClientUsesFixedStableErrorTextAndLegacyFallback]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.LocalContractTests testKnownStableErrorCodeUsesFixedPolicy]' started.
+Test Case '-[TailSyncTests.LocalContractTests testKnownStableErrorCodeUsesFixedPolicy]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.LocalContractTests testProductionRustFixturesUseTheGeneratedDecoder]' started.
+Test Case '-[TailSyncTests.LocalContractTests testProductionRustFixturesUseTheGeneratedDecoder]' passed (0.007 seconds).
+Test Case '-[TailSyncTests.LocalContractTests testStableErrorCodesUseFixedEnglishAndChineseText]' started.
+Test Case '-[TailSyncTests.LocalContractTests testStableErrorCodesUseFixedEnglishAndChineseText]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.LocalContractTests testSwiftRetainsFullUInt64ButRejectsFractionalAndBooleanRevisions]' started.
+Test Case '-[TailSyncTests.LocalContractTests testSwiftRetainsFullUInt64ButRejectsFractionalAndBooleanRevisions]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.LocalContractTests testUnknownStableErrorCodeMapsToInternalError]' started.
+Test Case '-[TailSyncTests.LocalContractTests testUnknownStableErrorCodeMapsToInternalError]' passed (0.000 seconds).
+Test Suite 'LocalContractTests' passed at 2026-10-01 01:18:16.465.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.008 (0.008) seconds
+Test Suite 'PairingRecoveryTests' started at 2026-10-01 01:18:16.465.
+Test Case '-[TailSyncTests.PairingRecoveryTests testOldDaemonPairingStatusStillDecodes]' started.
+Test Case '-[TailSyncTests.PairingRecoveryTests testOldDaemonPairingStatusStillDecodes]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.PairingRecoveryTests testPendingSummaryDoesNotImplyLocalTrust]' started.
+Test Case '-[TailSyncTests.PairingRecoveryTests testPendingSummaryDoesNotImplyLocalTrust]' passed (0.000 seconds).
+Test Suite 'PairingRecoveryTests' passed at 2026-10-01 01:18:16.466.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'RemotePairingDeepLinkTests' started at 2026-10-01 01:18:16.466.
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testNewOperationInvalidatesOldPreview]' started.
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testNewOperationInvalidatesOldPreview]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testNewValidInviteReplacesAnOlderUnconsumedInvite]' started.
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testNewValidInviteReplacesAnOlderUnconsumedInvite]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testPairingFailureReplacesSuccessfulPreview]' started.
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testPairingFailureReplacesSuccessfulPreview]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testReceivedInviteExpandsThePairingInput]' started.
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testReceivedInviteExpandsThePairingInput]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testUnrelatedOrIncompleteURLsNeverEnterTheInbox]' started.
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testUnrelatedOrIncompleteURLsNeverEnterTheInbox]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testValidInviteIsStoredAndTakenExactlyOnce]' started.
+Test Case '-[TailSyncTests.RemotePairingDeepLinkTests testValidInviteIsStoredAndTakenExactlyOnce]' passed (0.000 seconds).
+Test Suite 'RemotePairingDeepLinkTests' passed at 2026-10-01 01:18:16.466.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'SVGPreviewPolicyFixtureTests' started at 2026-10-01 01:18:16.466.
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testCSPDirectiveDictionaryPolicy]' started.
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testCSPDirectiveDictionaryPolicy]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testCSPMatchesSharedFixturesExactly]' started.
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testCSPMatchesSharedFixturesExactly]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testReferenceExtractionMatchesSharedFixtures]' started.
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testReferenceExtractionMatchesSharedFixtures]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testTrustEligibilityMatchesSharedFixtures]' started.
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testTrustEligibilityMatchesSharedFixtures]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testVisualEligibilityMatchesSharedFixtures]' started.
+Test Case '-[TailSyncTests.SVGPreviewPolicyFixtureTests testVisualEligibilityMatchesSharedFixtures]' passed (0.000 seconds).
+Test Suite 'SVGPreviewPolicyFixtureTests' passed at 2026-10-01 01:18:16.469.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'SettingsErrorRenderTests' started at 2026-10-01 01:18:16.469.
+Test Case '-[TailSyncTests.SettingsErrorRenderTests testIncompatiblePeerRowRendersUpgradeNoticeInBothLanguages]' started.
+Test Case '-[TailSyncTests.SettingsErrorRenderTests testIncompatiblePeerRowRendersUpgradeNoticeInBothLanguages]' passed (0.066 seconds).
+Test Case '-[TailSyncTests.SettingsErrorRenderTests testProtocolErrorToastRendersInBothLanguages]' started.
+Test Case '-[TailSyncTests.SettingsErrorRenderTests testProtocolErrorToastRendersInBothLanguages]' passed (0.009 seconds).
+Test Suite 'SettingsErrorRenderTests' passed at 2026-10-01 01:18:16.544.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.075 (0.075) seconds
+Test Suite 'SettingsGeneralRenderTests' started at 2026-10-01 01:18:16.544.
+Test Case '-[TailSyncTests.SettingsGeneralRenderTests testRenderLaunchAtLoginSettingInChinese]' started.
+Test Case '-[TailSyncTests.SettingsGeneralRenderTests testRenderLaunchAtLoginSettingInChinese]' passed (0.090 seconds).
+Test Suite 'SettingsGeneralRenderTests' passed at 2026-10-01 01:18:16.634.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.090 (0.090) seconds
+Test Suite 'SettingsUIPreviewTests' started at 2026-10-01 01:18:16.634.
+Test Case '-[TailSyncTests.SettingsUIPreviewTests testPreviewConnectionsView]' started.
+Test Case '-[TailSyncTests.SettingsUIPreviewTests testPreviewConnectionsView]' passed (0.204 seconds).
+Test Case '-[TailSyncTests.SettingsUIPreviewTests testPreviewGeneralSection]' started.
+Test Case '-[TailSyncTests.SettingsUIPreviewTests testPreviewGeneralSection]' passed (0.224 seconds).
+Test Case '-[TailSyncTests.SettingsUIPreviewTests testPreviewNetworkSection]' started.
+Test Case '-[TailSyncTests.SettingsUIPreviewTests testPreviewNetworkSection]' passed (0.063 seconds).
+Test Suite 'SettingsUIPreviewTests' passed at 2026-10-01 01:18:17.126.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.492 (0.492) seconds
+Test Suite 'ThemeTests' started at 2026-10-01 01:18:17.126.
+Test Case '-[TailSyncTests.ThemeTests testAssetCommitPolicyRejectsOldThemeDigestAndGeneration]' started.
+Test Case '-[TailSyncTests.ThemeTests testAssetCommitPolicyRejectsOldThemeDigestAndGeneration]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testCanvasFallbackCommitPolicyRejectsASelectionThatChangedDuringResolution]' started.
+Test Case '-[TailSyncTests.ThemeTests testCanvasFallbackCommitPolicyRejectsASelectionThatChangedDuringResolution]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testInterfaceScaleOverridesThemeMetrics]' started.
+Test Case '-[TailSyncTests.ThemeTests testInterfaceScaleOverridesThemeMetrics]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testReducedTransparencyMakesColorsOpaqueAndRemovesShadows]' started.
+Test Case '-[TailSyncTests.ThemeTests testReducedTransparencyMakesColorsOpaqueAndRemovesShadows]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolutionCommitPolicyRejectsOutOfOrderAndStaleResponses]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolutionCommitPolicyRejectsOutOfOrderAndStaleResponses]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolutionFailureFallsBackOnlyForTheCurrentRequestAndActiveTheme]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolutionFailureFallsBackOnlyForTheCurrentRequestAndActiveTheme]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolvedPairDecoderRejectsMixedCoreSnapshots]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolvedPairDecoderRejectsMixedCoreSnapshots]' passed (0.001 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterFallsBackForMissingOrMalformedTokens]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterFallsBackForMissingOrMalformedTokens]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterMapsComponentStates]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterMapsComponentStates]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterMapsSemanticTokens]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterMapsSemanticTokens]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterPreservesRgbAndAlphaColors]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterPreservesRgbAndAlphaColors]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterRetainsDarkStructuralTokens]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterRetainsDarkStructuralTokens]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterRetainsEveryInteractiveButtonState]' started.
+Test Case '-[TailSyncTests.ThemeTests testResolvedV2AdapterRetainsEveryInteractiveButtonState]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testStatusItemLogoDoesNotMutateTheCachedThemeImage]' started.
+Test Case '-[TailSyncTests.ThemeTests testStatusItemLogoDoesNotMutateTheCachedThemeImage]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testStructuredThemeErrorRetainsTheCompleteCoreContract]' started.
+Test Case '-[TailSyncTests.ThemeTests testStructuredThemeErrorRetainsTheCompleteCoreContract]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemeAssetsAreDecodedAtTheirDisplayBound]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemeAssetsAreDecodedAtTheirDisplayBound]' passed (0.008 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemeCardLayoutProvidesAFullCardTargetAndUsableActions]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemeCardLayoutProvidesAFullCardTargetAndUsableActions]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemeCardPreviewResolvesTheThemeBeingPresented]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemeCardPreviewResolvesTheThemeBeingPresented]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemeFallbackWarningRequiresALoadedCatalogueAndMissingSelection]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemeFallbackWarningRequiresALoadedCatalogueAndMissingSelection]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemePackageSemanticVersionRelations]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemePackageSemanticVersionRelations]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemeRefreshCommitPolicyRejectsAnOutOfOrderDescriptorSnapshot]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemeRefreshCommitPolicyRejectsAnOutOfOrderDescriptorSnapshot]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemeResolutionCacheIdentityIncludesHighContrast]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemeResolutionCacheIdentityIncludesHighContrast]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemeStartupRetryRecoversWhenDaemonBecomesReady]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemeStartupRetryRecoversWhenDaemonBecomesReady]' passed (0.003 seconds).
+Test Case '-[TailSyncTests.ThemeTests testThemeStartupRetryStopsAfterItsBoundedAttemptCount]' started.
+Test Case '-[TailSyncTests.ThemeTests testThemeStartupRetryStopsAfterItsBoundedAttemptCount]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.ThemeTests testV2SelectionUsesExactDescriptorId]' started.
+Test Case '-[TailSyncTests.ThemeTests testV2SelectionUsesExactDescriptorId]' passed (0.000 seconds).
+Test Suite 'ThemeTests' passed at 2026-10-01 01:18:17.140.
+	 Executed 25 tests, with 0 failures (0 unexpected) in 0.014 (0.014) seconds
+Test Suite 'TrustedCSPFailClosedTests' started at 2026-10-01 01:18:17.140.
+Test Case '-[TailSyncTests.TrustedCSPFailClosedTests testUndisclosedHostIsNotFetchedInTrustedMode]' started.
+/Users/monet/TailSync/TailSync-remediation/macos/swift-ui/Tests/TailSyncTests/TrustedCSPFailClosedTests.swift:14: -[TailSyncTests.TrustedCSPFailClosedTests testUndisclosedHostIsNotFetchedInTrustedMode] : Test skipped - set TAILSYNC_WEB_SVG_RENDER_TESTS=1 to exercise the real WKWebView path
+Test Case '-[TailSyncTests.TrustedCSPFailClosedTests testUndisclosedHostIsNotFetchedInTrustedMode]' skipped (0.000 seconds).
+Test Suite 'TrustedCSPFailClosedTests' passed at 2026-10-01 01:18:17.140.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'WindowLifecycleTests' started at 2026-10-01 01:18:17.140.
+Test Case '-[TailSyncTests.WindowLifecycleTests testClosingHistoryKeepsFavoritesWindowOpen]' started.
+CoreData: error: Unable to create token NSXPCConnection.  NSXPCStoreServerEndpointFactory 0x7c1e8cccd0 -newEndpointWithError returned error Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}
+CoreData: error: NSXPCStoreConnectionManager failed to initialize any connections for store at file:///Users/monet/Library/Application%20Support/AddressBook/AddressBook-v22.abcddb with error = Error Domain=NSCocoaErrorDomain Code=4097 "无法与帮助程序通信。" UserInfo={NSUnderlyingError=0x7c1e956c40 {Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}}}
+CoreData: warning: Caught exception trying to load store metadata during error recovery: NSXPCStoreServerEndpointFactory failed to provide an endpoint
+CoreData: error: addPersistentStoreWithType:configuration:URL:options:error: returned error NSCocoaErrorDomain (4097)
+CoreData: error: userInfo:
+CoreData: error: 	NSUnderlyingException : NSXPCStoreServerEndpointFactory failed to provide an endpoint
+CoreData: error: 	NSUnderlyingError : Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.contactsd.persistence" UserInfo={NSDebugDescription=connection to service named com.apple.contactsd.persistence}
+CoreData: error: storeType: NSXPCStore
+CoreData: error: configuration: (null)
+CoreData: error: URL: file:///Users/monet/Library/Application%20Support/AddressBook/AddressBook-v22.abcddb
+CoreData: annotation: options:
+CoreData: annotation: 	NSReadOnlyPersistentStoreOption : 0
+CoreData: annotation: 	NSXPCStoreServerEndpointFactory : <CNCDRemotePersistentStoreEndpointFactory: 0x7c1e8cccd0>
+CoreData: annotation: 	skipModelCheck : 1
+CoreData: annotation: 	NSPersistentHistoryTrackingKey : 1
+Test Case '-[TailSyncTests.WindowLifecycleTests testClosingHistoryKeepsFavoritesWindowOpen]' passed (0.108 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testHistoryCollectionsUseIndependentVisibilityNotifications]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testHistoryCollectionsUseIndependentVisibilityNotifications]' passed (0.000 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testHistoryWindowPinStatePersistsAndUpdatesAttachedWindow]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testHistoryWindowPinStatePersistsAndUpdatesAttachedWindow]' passed (0.004 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testHistoryWindowPolicyMovesNormalWindowToTheActiveSpace]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testHistoryWindowPolicyMovesNormalWindowToTheActiveSpace]' passed (0.002 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testHistoryWindowPolicyPinsWindowAboveOtherWindowsAcrossSpaces]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testHistoryWindowPolicyPinsWindowAboveOtherWindowsAcrossSpaces]' passed (0.002 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testPreviewLifecycleFollowsOnlyItsActiveCollectionWindow]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testPreviewLifecycleFollowsOnlyItsActiveCollectionWindow]' passed (0.036 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testPreviewWindowIsRecreatedAfterClose]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testPreviewWindowIsRecreatedAfterClose]' passed (0.041 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testShowConnectionsPresentsWindowWithCorrectTitleAndDimensions]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testShowConnectionsPresentsWindowWithCorrectTitleAndDimensions]' passed (0.017 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testShowHistoryCallsCompletionAfterWindowIsPresented]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testShowHistoryCallsCompletionAfterWindowIsPresented]' passed (0.032 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testTransientWindowDetachesOwnerAndContentWhenClosed]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testTransientWindowDetachesOwnerAndContentWhenClosed]' passed (0.025 seconds).
+Test Case '-[TailSyncTests.WindowLifecycleTests testTransientWindowReportsVisibilityChangesOncePerState]' started.
+Test Case '-[TailSyncTests.WindowLifecycleTests testTransientWindowReportsVisibilityChangesOncePerState]' passed (0.005 seconds).
+Test Suite 'WindowLifecycleTests' passed at 2026-10-01 01:18:17.413.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.273 (0.273) seconds
+Test Suite 'TailSyncPackageTests.xctest' passed at 2026-10-01 01:18:17.413.
+	 Executed 211 tests, with 3 tests skipped and 0 failures (0 unexpected) in 8.623 (8.628) seconds
+Test Suite 'All tests' passed at 2026-10-01 01:18:17.413.
+	 Executed 211 tests, with 3 tests skipped and 0 failures (0 unexpected) in 8.623 (8.630) seconds
+◇ Test run started.
+↳ Testing Library Version: 124.4
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests passed after 0.001 seconds.
+Remediation execution passed: S6-P2-3

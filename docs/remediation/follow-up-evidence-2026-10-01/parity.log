@@ -1,0 +1,1 @@
+Cross-platform contract passed: shared Rust core, 61 Swift API commands, Swift JSON models, tailsync deep links, TCP 19890, Windows no legacy TCP API (Tauri IPC), macOS Unix-socket API, and macOS release requirements.

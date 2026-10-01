@@ -1,0 +1,9 @@
+
+ RUN  v4.1.11 /private/tmp/tailsync-remediation-review.9AflZB/frontend-probe
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 28 skipped (29)
+   Start at  22:32:52
+   Duration  1.15s (transform 230ms, setup 136ms, import 330ms, tests 97ms, environment 481ms)
+

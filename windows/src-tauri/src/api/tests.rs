@@ -433,3 +433,5 @@ fn automatic_snapshot_connects_only_the_exact_authenticated_route() {
     assert_eq!(tailscale["status"].as_str(), Some("discovered"));
     assert_eq!(tailscale["connected"].as_bool(), Some(false));
 }
+
+include!("../../../../shared/platform-progress-measurement-tests.rs");

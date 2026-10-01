@@ -1,0 +1,23 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.03s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 3 tests
+test db::tests::a_reader_blocked_wal_checkpoint_is_observable_and_the_delete_still_succeeds ... ok
+test db::tests::default_delete_checkpoint_is_non_waiting_and_restores_busy_timeout ... ok
+test db::tests::deferred_delete_checkpoint_is_retried_after_reopen ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 486 filtered out; finished in 0.03s
+
+     Running tests/legacy_data_isolation.rs (target/debug/deps/legacy_data_isolation-2c2315e941edc87d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/received_batch_crash_matrix.rs (target/debug/deps/received_batch_crash_matrix-d1f5b64145c5fab8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

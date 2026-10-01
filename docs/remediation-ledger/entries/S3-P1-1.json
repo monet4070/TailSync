@@ -17,7 +17,7 @@
   "native_acceptance": "需匿名发起者实验：枚举 LAN mDNS/UDP、Noise Message 2 与各模式下可获得的字段。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S3-P1-1",
-  "title": "握手 Message 2 的匿名可见字段边界（待裁定）",
+  "title": "握手 Message 2 的匿名可见字段边界（已接受）",
   "code_symbols": [
     "shared/rust-core/src/secure/handshake.rs",
     "shared/rust-core/src/secure.rs"

@@ -111,6 +111,192 @@ async fn wait_for_phase(manager: &Arc<PairingManager>, phase: PairingPhase) {
     );
 }
 
+#[tokio::test]
+async fn revocation_invalidates_a_pending_session_before_a_late_ack() {
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let identity = Arc::new(DeviceIdentity::generate_for_test());
+    let peer = DeviceIdentity::generate_for_test();
+    let manager = manager_for(&settings, &identity);
+    manager.enable().await;
+    let (mut client, server) = establish_in_memory_pair(&identity, &peer).await;
+    install_inbound(&manager, server, &peer).await;
+    reach_local_persistence(&manager, &mut client).await;
+    manager.revoke_peer("client").await.unwrap();
+    let _ = client
+        .write_frame(&Frame::try_new(Command::PairingPersisted, 0, 0, vec![]).unwrap())
+        .await;
+    // Consume the session's terminal frame/EOF so the assertion does not merely
+    // beat the background worker to its promotion.
+    let _ = tokio::time::timeout(Duration::from_secs(1), client.read_frame()).await;
+    assert!(!settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .contains_key("client"));
+    assert!(manager.pending_trust().await.is_empty());
+    assert_ne!(manager.status().await.phase, PairingPhase::Paired);
+}
+
+#[tokio::test]
+async fn a_known_pin_conflict_never_advertises_persistence() {
+    let mut initial = Settings::default();
+    initial
+        .trust_peer_without_save("client", "different-existing-key", "lan", None)
+        .unwrap();
+    let settings = Arc::new(Mutex::new(initial));
+    let identity = Arc::new(DeviceIdentity::generate_for_test());
+    let peer = DeviceIdentity::generate_for_test();
+    let manager = manager_for(&settings, &identity);
+    manager.enable().await;
+    let (mut client, server) = establish_in_memory_pair(&identity, &peer).await;
+    install_inbound(&manager, server, &peer).await;
+    manager.confirm().await.unwrap();
+    assert_eq!(
+        client.read_frame().await.unwrap().command,
+        Command::PairingConfirm
+    );
+    client
+        .write_frame(&Frame::try_new(Command::PairingConfirm, 0, 0, vec![]).unwrap())
+        .await
+        .unwrap();
+    let completion = tokio::time::timeout(Duration::from_secs(1), client.read_frame())
+        .await
+        .unwrap();
+    assert!(!completion.is_ok_and(|frame| frame.command == Command::PairingPersisted));
+    wait_for_phase(&manager, PairingPhase::Waiting).await;
+    assert!(manager.pending_trust().await.is_empty());
+    assert_eq!(
+        settings.lock().await.trusted_peer_keys["client"],
+        "different-existing-key"
+    );
+}
+
+#[tokio::test]
+async fn committed_pairing_is_terminal_while_transport_close_is_pending() {
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    struct DelayedClose {
+        inner: tokio::io::DuplexStream,
+        entered: Arc<tokio::sync::Notify>,
+    }
+    impl AsyncRead for DelayedClose {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+    impl AsyncWrite for DelayedClose {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.entered.notify_one();
+            Poll::Pending
+        }
+    }
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let identity = Arc::new(DeviceIdentity::generate_for_test());
+    let peer = DeviceIdentity::generate_for_test();
+    let manager = manager_for(&settings, &identity);
+    manager.enable().await;
+    let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let io = DelayedClose {
+        inner: server_io,
+        entered: entered.clone(),
+    };
+    let server_identity = identity.clone();
+    let server = tokio::spawn(async move {
+        let mut accepted =
+            crate::secure::accept(io, &server_identity, super::tests::test_peer_identity())
+                .await
+                .unwrap();
+        crate::secure::write_ready(&mut accepted.connection)
+            .await
+            .unwrap();
+        accepted.connection
+    });
+    let mut client = crate::secure::connect(
+        client_io,
+        &peer,
+        super::tests::test_peer_identity(),
+        "server",
+        identity.public_key(),
+    )
+    .await
+    .unwrap();
+    install_inbound(&manager, server.await.unwrap(), &peer).await;
+    reach_local_persistence(&manager, &mut client).await;
+    client
+        .write_frame(&Frame::try_new(Command::PairingPersisted, 0, 0, vec![]).unwrap())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    assert_eq!(manager.status().await.phase, PairingPhase::Paired);
+    assert_eq!(manager.cancel().await.phase, PairingPhase::Paired);
+    assert!(settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .contains_key("client"));
+    let generation = manager.state.lock().await.generation;
+    manager.expire(generation).await;
+    assert_eq!(manager.status().await.phase, PairingPhase::Paired);
+    manager.revoke_peer("client").await.unwrap();
+    assert!(!settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .contains_key("client"));
+}
+
+#[test]
+fn failed_pending_writes_preserve_memory_and_future_formats() {
+    let root =
+        std::env::temp_dir().join(format!("tailsync-pending-atomic-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("pending.json");
+    let record = PendingTrustRecord {
+        hostname: "client".into(),
+        public_key: "key".into(),
+        interface: "lan".into(),
+        address: "192.168.1.2".into(),
+        recorded_at: 1,
+    };
+    let mut store = PendingTrustStore::load_from_path(&path);
+    store.upsert(record.clone()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(store.remove("client").is_err());
+    assert_eq!(store.records(), std::slice::from_ref(&record));
+    let mut changed = record.clone();
+    changed.hostname = "changed".into();
+    assert!(store.upsert(changed).is_err());
+    assert_eq!(store.records(), &[record]);
+    std::fs::remove_dir(&path).unwrap();
+    let future = r#"{"format_version":999,"records":[],"future_data":"keep"}"#;
+    std::fs::write(&path, future).unwrap();
+    let mut store = PendingTrustStore::load_from_path(&path);
+    assert!(store.remove("client").is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), future);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The audited boundary: the peer never acknowledges, and the link dies.
 /// The local side must not be left trusting it, and the half-confirmed pairing
 /// must still be discoverable.
@@ -713,4 +899,90 @@ async fn the_older_peer_concludes_success_only_after_the_new_note_is_durable() {
         note_existed,
         "the older peer must never be able to conclude success before the new side's record is on disk"
     );
+}
+
+#[tokio::test]
+async fn pending_recovery_requires_the_same_authenticated_key_and_is_never_active() {
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let identity = Arc::new(DeviceIdentity::generate_for_test());
+    let manager = manager_for(&settings, &identity);
+    let first = DeviceIdentity::generate_for_test();
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let key = STANDARD.encode(first.public_key());
+    manager
+        .pending
+        .lock()
+        .await
+        .upsert(PendingTrustRecord {
+            hostname: "peer".into(),
+            public_key: key.clone(),
+            interface: "lan".into(),
+            address: "192.168.1.2".into(),
+            recorded_at: 1,
+        })
+        .unwrap();
+    let status = manager.status().await;
+    assert_eq!(status.pending.len(), 1);
+    assert!(!status.pending[0].locally_trusted);
+    assert_eq!(
+        status.pending[0].fingerprint,
+        crate::identity::fingerprint(first.public_key())
+    );
+    assert!(settings.lock().await.trusted_peer_keys.is_empty());
+    manager.enable().await;
+    let session_id = manager.state.lock().await.session_id;
+    let different = DeviceIdentity::generate_for_test();
+    assert!(manager
+        .record_pending_pairing(
+            session_id,
+            "peer",
+            different.public_key(),
+            "lan",
+            "192.168.1.3"
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        manager.pending.lock().await.get("peer").unwrap().public_key,
+        key
+    );
+    manager
+        .record_pending_pairing(session_id, "peer", first.public_key(), "lan", "192.168.1.3")
+        .await
+        .unwrap();
+    manager.revoke_peer("peer").await.unwrap();
+    assert!(manager.status().await.pending.is_empty());
+}
+
+#[tokio::test]
+async fn revocation_succeeds_when_pending_store_cleanup_is_unavailable() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-revoke-readonly-{}",
+        rand::random::<u64>()
+    ));
+    crate::private_fs::create_private_dir_all(&root).unwrap();
+    let path = root.join("pending.json");
+    let future = br#"{"format_version":999,"records":[],"future_data":"keep"}"#;
+    std::fs::write(&path, future).unwrap();
+    let mut initial = Settings::default();
+    initial
+        .trust_peer_without_save("client", "key", "lan", None)
+        .unwrap();
+    let settings = Arc::new(Mutex::new(initial));
+    let manager = PairingManager::with_pending_store_at(
+        settings.clone(),
+        Arc::new(DeviceIdentity::generate_for_test()),
+        path.clone(),
+    );
+    manager.enable().await;
+    manager.revoke_peer("client").await.unwrap();
+    assert!(!settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .contains_key("client"));
+    assert!(!manager.is_enabled().await);
+    assert!(manager.status().await.pending_store_unavailable);
+    assert_eq!(std::fs::read(path).unwrap(), future);
+    std::fs::remove_dir_all(root).unwrap();
 }

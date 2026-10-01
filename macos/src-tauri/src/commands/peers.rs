@@ -57,18 +57,10 @@ pub async fn trust_peer(
 #[command]
 pub async fn forget_peer(state: State<'_, AppState>, hostname: String) -> Result<(), CommandError> {
     let hostname = hostname.trim();
-    state
-        .settings
-        .lock()
-        .await
-        .forget_peer(hostname)
-        .map_err(|error| error.to_string())?;
+    let result = state.pairing.revoke_peer(hostname).await;
     state.pool.lock().await.disconnect_hostname(hostname);
     crate::network::clear_protocol_compatibility_error(hostname);
-    // A half-confirmed pairing for this device would otherwise outlive the
-    // device itself, with nothing in the UI to explain it.
-    state.pairing.forget_pending(hostname).await;
-    Ok(())
+    result.map_err(|error| error.to_string().into())
 }
 
 #[command]

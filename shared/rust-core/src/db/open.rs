@@ -12,6 +12,9 @@ impl HistoryDB {
         Ok(Self {
             conn,
             read_identity: std::sync::Arc::new(()),
+            #[cfg(any(test, feature = "test-support"))]
+            storage_work_observer: None,
+            deferred_checkpoint: false,
             max_history: 1000,
             storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
             storage_available: false,
@@ -63,6 +66,12 @@ impl HistoryDB {
         let mut database = HistoryDB {
             conn,
             read_identity: std::sync::Arc::new(()),
+            // A reader may have prevented a pre-restart delete checkpoint.
+            // Reuse the maintenance retry once on every disk open rather
+            // than persisting a second deletion ledger.
+            #[cfg(any(test, feature = "test-support"))]
+            storage_work_observer: None,
+            deferred_checkpoint: true,
             max_history: i64::MAX / 2,
             storage_quota_bytes: crypto::DEFAULT_STORAGE_QUOTA_BYTES,
             storage_available: true,

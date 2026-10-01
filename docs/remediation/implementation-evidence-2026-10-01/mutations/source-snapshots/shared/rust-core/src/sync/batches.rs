@@ -1,0 +1,1127 @@
+use super::*;
+
+fn persisted_incoming_batch(
+    batch: &IncomingBatch,
+    commit_state: ReceivedBatchCommitState,
+) -> PersistedIncomingBatch {
+    PersistedIncomingBatch {
+        source: batch.source.clone(),
+        source_device_id: batch.source_device_id.clone(),
+        manifest: batch.manifest.clone(),
+        files: batch.files.clone(),
+        local_generation: batch.local_generation,
+        commit_state,
+        clipboard_paths: batch.clipboard_paths.clone(),
+    }
+}
+
+pub(super) fn transition_received_batch_commit(
+    batch: &mut IncomingBatch,
+    next: ReceivedBatchCommitState,
+) -> Result<(), String> {
+    if batch.commit_state >= next {
+        return Ok(());
+    }
+    if batch.commit_state.next() != Some(next) {
+        return Err(format!(
+            "Invalid received batch commit transition: {:?} -> {:?}",
+            batch.commit_state, next
+        ));
+    }
+    persist_incoming_batch(&batch.manifest_path, &persisted_incoming_batch(batch, next))
+        .map_err(|error| error.to_string())?;
+    batch.commit_state = next;
+    maybe_abort_received_batch_stage(next, batch.manifest.batch_id);
+    Ok(())
+}
+
+#[cfg(feature = "acceptance-injection")]
+fn maybe_abort_received_batch_stage(state: ReceivedBatchCommitState, batch_id: TransferId) {
+    let requested = std::env::var("TAILSYNC_RECEIVED_BATCH_ABORT_STAGE").unwrap_or_default();
+    if requested == state.injection_name() {
+        let batch = batch_id.as_hex();
+        eprintln!(
+            "tailsync acceptance injection: stage={} batch={} exit=70",
+            state.injection_name(),
+            &batch[..12]
+        );
+        std::process::exit(70);
+    }
+}
+
+#[cfg(not(feature = "acceptance-injection"))]
+fn maybe_abort_received_batch_stage(_state: ReceivedBatchCommitState, _batch_id: TransferId) {}
+
+fn clipboard_staging_directory(manifest_path: &Path) -> Result<PathBuf, String> {
+    let incoming = manifest_path
+        .parent()
+        .ok_or_else(|| "Received batch manifest has no parent directory".to_string())?;
+    if incoming.file_name().is_some_and(|name| name == "incoming") {
+        Ok(incoming
+            .parent()
+            .ok_or_else(|| "Incoming directory has no storage parent".to_string())?
+            .join("clipboard-files"))
+    } else {
+        Ok(incoming.join("clipboard-files"))
+    }
+}
+
+fn staged_clipboard_paths_are_valid(
+    directory: &Path,
+    paths: &[PathBuf],
+    files: &[ReceivedFile],
+) -> bool {
+    if paths.len() != files.len() || paths.is_empty() {
+        return false;
+    }
+    let Ok(root) = directory.canonicalize() else {
+        return false;
+    };
+    paths.iter().zip(files).all(|(path, file)| {
+        let Ok(canonical) = path.canonicalize() else {
+            return false;
+        };
+        canonical.starts_with(&root)
+            && fs::metadata(&canonical)
+                .map(|metadata| metadata.is_file() && metadata.len() == file.size)
+                .unwrap_or(false)
+            && hash_source_file(&canonical)
+                .map(|hash| hash == file.hash)
+                .unwrap_or(false)
+    })
+}
+
+fn remove_failed_clipboard_staging(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+}
+
+fn rollback_uncommitted_clipboard_staging(batch: &IncomingBatch) {
+    if batch.commit_state < ReceivedBatchCommitState::HistoryPersisted {
+        remove_failed_clipboard_staging(&batch.clipboard_paths);
+    }
+}
+
+fn stage_received_batch_files(
+    files: &[ReceivedFile],
+    source: &str,
+    directory: &Path,
+    existing: &[PathBuf],
+) -> Result<Vec<PathBuf>, String> {
+    if staged_clipboard_paths_are_valid(directory, existing, files) {
+        return Ok(existing.to_vec());
+    }
+    let mut staged = Vec::with_capacity(files.len());
+    for file in files {
+        match crate::db::materialize_remote_clipboard_file_at(
+            directory, &file.path, &file.name, source,
+        ) {
+            Ok(path) => staged.push(path),
+            Err(error) => {
+                remove_failed_clipboard_staging(&staged);
+                return Err(error.to_string());
+            }
+        }
+    }
+    if !staged_clipboard_paths_are_valid(directory, &staged, files) {
+        remove_failed_clipboard_staging(&staged);
+        return Err("Clipboard staging verification failed".to_string());
+    }
+    Ok(staged)
+}
+
+fn persist_clipboard_staging(batch: &mut IncomingBatch, paths: Vec<PathBuf>) -> Result<(), String> {
+    batch.clipboard_paths = paths;
+    if batch.commit_state < ReceivedBatchCommitState::ClipboardStaged {
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::ClipboardStaged)
+    } else {
+        persist_incoming_batch(
+            &batch.manifest_path,
+            &persisted_incoming_batch(batch, batch.commit_state),
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+fn prepare_incoming_batch(
+    manifest: FileBatchManifest,
+    source: String,
+    source_device_id: String,
+    incoming_dir: &Path,
+    session_epoch: u64,
+    default_generation: u64,
+) -> Result<(IncomingBatch, bool), String> {
+    crate::private_fs::create_private_dir_all(incoming_dir).map_err(|error| error.to_string())?;
+    let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
+    let mut files = vec![None; manifest.files.len()];
+    let mut local_generation = default_generation;
+    let mut commit_state = ReceivedBatchCommitState::Receiving;
+    let mut clipboard_paths = Vec::new();
+    let mut persisted_source_device_id = source_device_id;
+    let mut restored_generation = false;
+    if let Ok(data) = fs::read(&manifest_path) {
+        if let Ok(saved) = serde_json::from_slice::<PersistedIncomingBatch>(&data) {
+            if saved.source != source || saved.manifest != manifest {
+                return Err("Batch ID was reused with a different source or manifest".to_string());
+            }
+            if saved.files.len() != manifest.files.len() {
+                return Err("Persisted file batch state has an invalid file count".to_string());
+            }
+            local_generation = saved.local_generation;
+            commit_state = saved.commit_state;
+            clipboard_paths = saved.clipboard_paths;
+            if !saved.source_device_id.is_empty() {
+                persisted_source_device_id = saved.source_device_id.clone();
+            }
+            restored_generation = true;
+            for (index, file) in saved.files.into_iter().enumerate() {
+                if let Some(file) = file {
+                    if let Some(file) =
+                        restore_persisted_received_file(&file, &manifest.files[index], incoming_dir)
+                    {
+                        files[index] = Some(file);
+                    }
+                }
+            }
+        }
+    }
+    persist_incoming_batch(
+        &manifest_path,
+        &PersistedIncomingBatch {
+            source: source.clone(),
+            source_device_id: persisted_source_device_id.clone(),
+            manifest: manifest.clone(),
+            files: files.clone(),
+            local_generation,
+            commit_state,
+            clipboard_paths: clipboard_paths.clone(),
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((
+        IncomingBatch {
+            manifest,
+            source,
+            source_device_id: persisted_source_device_id,
+            session_epoch,
+            local_generation,
+            files,
+            manifest_path,
+            commit_state,
+            clipboard_paths,
+        },
+        restored_generation,
+    ))
+}
+
+impl SyncEngine {
+    pub fn supersede_file_clipboard(&mut self) -> u64 {
+        self.clipboard_generation = self.clipboard_generation.wrapping_add(1).max(1);
+        self.clipboard_generation
+    }
+
+    pub fn begin_file_batch(
+        &mut self,
+        manifest: FileBatchManifest,
+        source: String,
+        incoming_dir: &Path,
+    ) -> Result<(), String> {
+        let session_epoch = self.receive_epoch(&source);
+        self.begin_file_batch_at_epoch_with_identity(
+            manifest,
+            source.clone(),
+            source,
+            incoming_dir,
+            session_epoch,
+        )
+    }
+
+    pub fn begin_file_batch_at_epoch(
+        &mut self,
+        manifest: FileBatchManifest,
+        source: String,
+        incoming_dir: &Path,
+        session_epoch: u64,
+    ) -> Result<(), String> {
+        self.begin_file_batch_at_epoch_with_identity(
+            manifest,
+            source.clone(),
+            source,
+            incoming_dir,
+            session_epoch,
+        )
+    }
+
+    pub fn begin_file_batch_at_epoch_with_identity(
+        &mut self,
+        manifest: FileBatchManifest,
+        source: String,
+        source_device_id: String,
+        incoming_dir: &Path,
+        session_epoch: u64,
+    ) -> Result<(), String> {
+        // Validate before touching disk. The server also validates before its
+        // quota preflight, but this remains the authoritative core check.
+        manifest.validate().map_err(|error| error.to_string())?;
+        let key = (source.clone(), manifest.batch_id);
+        self.prune_cancelled_batches();
+        if self.cancelled_batches.contains_key(&key) {
+            return Err("File batch was cancelled; copy the files again to retry".to_string());
+        }
+        self.prune_completed_batches();
+        if self.completed_batches.contains_key(&key) {
+            if self
+                .completed_batch_manifests
+                .get(&key)
+                .is_some_and(|completed| completed != &manifest)
+            {
+                return Err("Batch ID was reused with a different manifest".to_string());
+            }
+            return Ok(());
+        }
+        if let Some(existing) = self.incoming_batches.get_mut(&key) {
+            if existing.manifest == manifest {
+                existing.session_epoch = existing.session_epoch.max(session_epoch);
+                return Ok(());
+            }
+            return Err("Batch ID was reused with a different manifest".to_string());
+        }
+        let active_for_peer = self
+            .incoming_batches
+            .keys()
+            .filter(|(peer, _)| peer == &source)
+            .count();
+        if active_for_peer >= MAX_ACTIVE_BATCHES_PER_PEER {
+            return Err(format!(
+                "peer {source} already has {MAX_ACTIVE_BATCHES_PER_PEER} active file batches"
+            ));
+        }
+        if self.incoming_batches.len() >= MAX_ACTIVE_BATCHES_GLOBAL {
+            return Err(format!(
+                "global active file batch limit ({MAX_ACTIVE_BATCHES_GLOBAL}) reached"
+            ));
+        }
+        crate::private_fs::create_private_dir_all(incoming_dir)
+            .map_err(|error| error.to_string())?;
+        let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
+        let mut files = vec![None; manifest.files.len()];
+        let mut local_generation = self.clipboard_generation.wrapping_add(1).max(1);
+        let mut commit_state = ReceivedBatchCommitState::Receiving;
+        let mut clipboard_paths = Vec::new();
+        let mut persisted_source_device_id = source_device_id.clone();
+        let mut restored_generation = false;
+        if let Ok(data) = fs::read(&manifest_path) {
+            if let Ok(saved) = serde_json::from_slice::<PersistedIncomingBatch>(&data) {
+                if saved.source != source || saved.manifest != manifest {
+                    return Err(
+                        "Batch ID was reused with a different source or manifest".to_string()
+                    );
+                }
+                if saved.files.len() != manifest.files.len() {
+                    return Err("Persisted file batch state has an invalid file count".to_string());
+                }
+                local_generation = saved.local_generation;
+                commit_state = saved.commit_state;
+                clipboard_paths = saved.clipboard_paths;
+                if !saved.source_device_id.is_empty() {
+                    persisted_source_device_id = saved.source_device_id.clone();
+                }
+                restored_generation = true;
+                for (index, file) in saved.files.into_iter().enumerate() {
+                    if let Some(file) = file {
+                        if let Some(file) = restore_persisted_received_file(
+                            &file,
+                            &manifest.files[index],
+                            incoming_dir,
+                        ) {
+                            files[index] = Some(file);
+                        }
+                    }
+                }
+            }
+        }
+        persist_incoming_batch(
+            &manifest_path,
+            &PersistedIncomingBatch {
+                source: source.clone(),
+                source_device_id: persisted_source_device_id.clone(),
+                manifest: manifest.clone(),
+                files: files.clone(),
+                local_generation,
+                commit_state,
+                clipboard_paths: clipboard_paths.clone(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        if !restored_generation {
+            self.clipboard_generation = local_generation;
+        }
+        self.incoming_batches.insert(
+            key,
+            IncomingBatch {
+                manifest,
+                source,
+                source_device_id: persisted_source_device_id,
+                session_epoch,
+                local_generation,
+                files,
+                manifest_path,
+                commit_state,
+                clipboard_paths,
+            },
+        );
+        Ok(())
+    }
+
+    /// Open/restore a batch with only short state-mutex sections. The
+    /// admission lock remains the quota boundary, while manifest I/O is
+    /// isolated to this batch's operation lock.
+    pub async fn begin_file_batch_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        manifest: FileBatchManifest,
+        source: String,
+        source_device_id: String,
+        incoming_dir: PathBuf,
+        session_epoch: u64,
+    ) -> Result<(), String> {
+        manifest.validate().map_err(|error| error.to_string())?;
+        let key = (source.clone(), manifest.batch_id);
+        let operation_lock = {
+            let mut engine = sync_engine.lock().await;
+            engine.batch_operation_lock(&key)
+        };
+        let _operation_guard = operation_lock.lock().await;
+        let local_generation = {
+            let mut engine = sync_engine.lock().await;
+            engine.prune_cancelled_batches();
+            if engine.cancelled_batches.contains_key(&key) {
+                return Err("File batch was cancelled; copy the files again to retry".to_string());
+            }
+            engine.prune_completed_batches();
+            if engine.completed_batches.contains_key(&key) {
+                if engine
+                    .completed_batch_manifests
+                    .get(&key)
+                    .is_some_and(|completed| completed != &manifest)
+                {
+                    return Err("Batch ID was reused with a different manifest".to_string());
+                }
+                return Ok(());
+            }
+            if let Some(existing) = engine.incoming_batches.get_mut(&key) {
+                if existing.manifest == manifest {
+                    existing.session_epoch = existing.session_epoch.max(session_epoch);
+                    return Ok(());
+                }
+                return Err("Batch ID was reused with a different manifest".to_string());
+            }
+            let active_for_peer = engine
+                .incoming_batches
+                .keys()
+                .filter(|(peer, _)| peer == &source)
+                .count();
+            if active_for_peer >= MAX_ACTIVE_BATCHES_PER_PEER {
+                return Err(format!(
+                    "peer {source} already has {MAX_ACTIVE_BATCHES_PER_PEER} active file batches"
+                ));
+            }
+            if engine.incoming_batches.len() >= MAX_ACTIVE_BATCHES_GLOBAL {
+                return Err(format!(
+                    "global active file batch limit ({MAX_ACTIVE_BATCHES_GLOBAL}) reached"
+                ));
+            }
+            engine.clipboard_generation.wrapping_add(1).max(1)
+        };
+
+        let (batch, restored_generation) = prepare_incoming_batch(
+            manifest,
+            source.clone(),
+            source_device_id,
+            &incoming_dir,
+            session_epoch,
+            local_generation,
+        )?;
+        let mut engine = sync_engine.lock().await;
+        if !restored_generation {
+            engine.clipboard_generation = local_generation;
+        }
+        engine.incoming_batches.insert(key, batch);
+        Ok(())
+    }
+
+    pub fn has_file_batch(&self, source: &str, batch_id: TransferId) -> bool {
+        self.incoming_batches
+            .contains_key(&(source.to_string(), batch_id))
+    }
+
+    pub fn is_file_batch_completed(&self, source: &str, batch_id: TransferId) -> bool {
+        self.completed_batches
+            .contains_key(&(source.to_string(), batch_id))
+    }
+
+    /// Bytes promised by accepted file batches that have not reached disk yet.
+    /// Existing `.part` and completed files are already included in storage
+    /// usage, so only their remaining bytes count toward the next preflight.
+    pub fn pending_file_batch_bytes(&self) -> u64 {
+        self.incoming_batches.values().fold(0_u64, |total, batch| {
+            let remaining =
+                batch
+                    .manifest_path
+                    .parent()
+                    .map_or(batch.manifest.total_bytes, |dir| {
+                        Self::file_batch_remaining_bytes(
+                            &batch.manifest,
+                            &batch.source,
+                            &batch.source_device_id,
+                            dir,
+                        )
+                    });
+            let completed = batch
+                .manifest
+                .files
+                .iter()
+                .zip(&batch.files)
+                .filter_map(|(entry, file)| file.as_ref().map(|_| entry.size))
+                .fold(0_u64, u64::saturating_add);
+            total.saturating_add(remaining.saturating_sub(completed))
+        })
+    }
+
+    /// Future encrypted history copies for admitted batches. The plaintext
+    /// prefixes already on disk do not reduce this second peak-disk cost.
+    pub fn pending_file_batch_commit_bytes(&self) -> u64 {
+        self.incoming_batches.values().fold(0_u64, |total, batch| {
+            total.saturating_add(batch.manifest.total_bytes)
+        })
+    }
+
+    /// Remaining plaintext for an authenticated batch. A same-named `.part`
+    /// belongs to this batch only when its persisted manifest matches. If a
+    /// transfer sidecar exists, it must also agree with the entry identity;
+    /// otherwise its length cannot safely reduce the admission reservation.
+    pub fn file_batch_remaining_bytes(
+        manifest: &FileBatchManifest,
+        source: &str,
+        source_device_id: &str,
+        incoming_dir: &Path,
+    ) -> u64 {
+        let manifest_path = incoming_dir.join(format!("{}.batch.json", manifest.batch_id.as_hex()));
+        let saved = fs::read(manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<PersistedIncomingBatch>(&bytes).ok());
+        let Some(_) = saved.filter(|saved| {
+            saved.source == source
+                && saved.manifest == *manifest
+                && (saved.source_device_id.is_empty() || saved.source_device_id == source_device_id)
+        }) else {
+            return manifest.total_bytes;
+        };
+        manifest.files.iter().fold(0_u64, |remaining, entry| {
+            let id = entry.transfer_id.as_hex();
+            let received = fs::symlink_metadata(incoming_dir.join(format!("{id}.part")))
+                .ok()
+                .filter(|metadata| metadata.is_file() && metadata.len() <= entry.size)
+                .and_then(|metadata| {
+                    let state_path = incoming_dir.join(format!("{id}.resume.json"));
+                    let sidecar = fs::read(state_path)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<PersistedTransfer>(&bytes).ok());
+                    match sidecar {
+                        Some(sidecar)
+                            if sidecar.source == source
+                                && sidecar.meta.transfer_id == Some(entry.transfer_id)
+                                && sidecar.meta.name == entry.name
+                                && sidecar.meta.size == entry.size
+                                && sidecar.meta.hash == entry.hash
+                                && sidecar.meta.batch
+                                    == Some(FileBatchRef {
+                                        batch_id: manifest.batch_id,
+                                        index: entry.index,
+                                    }) =>
+                        {
+                            Some(metadata.len())
+                        }
+                        // Resume sidecars are advisory and may be absent after
+                        // a crash. The batch manifest still binds this ID to
+                        // the authenticated source; an existing contradictory
+                        // sidecar is never accepted.
+                        None => Some(metadata.len()),
+                        _ => None,
+                    }
+                })
+                .unwrap_or(0);
+            remaining.saturating_add(entry.size.saturating_sub(received))
+        })
+    }
+
+    pub fn batch_for_transfer(&self, source: &str, transfer_id: TransferId) -> Option<TransferId> {
+        self.active_receives
+            .get(&(source.to_string(), ReceiveKey::Resumable(transfer_id)))
+            .and_then(|state| state.meta.batch.map(|batch| batch.batch_id))
+    }
+
+    pub fn notify_file_batch_failed(&self, batch_id: Option<TransferId>, message: &str) {
+        if let Some(platform) = self.platform.as_ref() {
+            platform.file_batch_failed(batch_id, message);
+        }
+    }
+
+    pub async fn finish_file_batch(
+        &mut self,
+        source: &str,
+        batch_id: TransferId,
+    ) -> Result<(), String> {
+        let key = (source.to_string(), batch_id);
+        let now = chrono::Utc::now().timestamp();
+        self.prune_completed_batches();
+        let clipboard_generation = self.clipboard_generation;
+        let Some(batch) = self.incoming_batches.get_mut(&key) else {
+            self.prune_cancelled_batches();
+            if self.completed_batches.contains_key(&key)
+                || self.cancelled_batches.contains_key(&key)
+            {
+                return Ok(());
+            }
+            return Err("File batch manifest is not available".to_string());
+        };
+        let files = batch
+            .files
+            .clone()
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "File batch is incomplete".to_string())?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::HashVerified)?;
+        let total = batch.manifest.files.len();
+        let activate_clipboard = batch.local_generation == clipboard_generation;
+        let clipboard_paths = if activate_clipboard {
+            stage_received_batch_files(
+                &files,
+                source,
+                &clipboard_staging_directory(&batch.manifest_path)?,
+                &batch.clipboard_paths,
+            )?
+        } else {
+            Vec::new()
+        };
+        persist_clipboard_staging(batch, clipboard_paths.clone())?;
+        let source_device_id = batch.source_device_id.clone();
+        let manifest_hash = Self::file_batch_manifest_hash(&batch.manifest)?;
+        let platform = self
+            .platform
+            .clone()
+            .ok_or_else(|| "Clipboard platform is unavailable".to_string())?;
+
+        // The platform adapter owns the SQLite/file-history transaction. Do
+        // not discard the durable receive manifest or acknowledge the batch
+        // until that transaction has completed successfully. If it fails,
+        // the sender keeps its journal and can retry the same batch.
+        platform
+            .files_received(FileReceiveCommit {
+                batch_id: Some(batch_id),
+                files,
+                batch_total: total,
+                batch_complete: true,
+                activate_clipboard,
+                device: source.to_string(),
+                source_device_id,
+                manifest_hash: Some(manifest_hash),
+                clipboard_paths: Some(clipboard_paths),
+            })
+            .await?;
+
+        let batch = self
+            .incoming_batches
+            .get_mut(&key)
+            .ok_or_else(|| "File batch state disappeared".to_string())?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::HistoryPersisted)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::ReceiptPersisted)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::Acked)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::Cleaned)?;
+        let batch = self
+            .incoming_batches
+            .remove(&key)
+            .ok_or_else(|| "File batch state disappeared before direct-path cleanup".to_string())?;
+        fs::remove_file(&batch.manifest_path).map_err(|error| error.to_string())?;
+        self.completed_batches.insert(key.clone(), now);
+        self.completed_batch_manifests.insert(key, batch.manifest);
+        Ok(())
+    }
+
+    /// Complete a batch without holding the engine mutex while the platform
+    /// adapter persists history. The batch lock prevents a concurrent cancel
+    /// from racing the durable commit.
+    pub async fn finish_file_batch_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: &str,
+        batch_id: TransferId,
+    ) -> Result<(), String> {
+        let key = (source.to_string(), batch_id);
+        let operation_lock = {
+            let mut engine = sync_engine.lock().await;
+            engine.batch_operation_lock(&key)
+        };
+        let _operation_guard = operation_lock.lock().await;
+        let receive_operation_locks = {
+            let mut engine = sync_engine.lock().await;
+            let mut keys = engine
+                .active_receives
+                .iter()
+                .filter_map(|((peer, receive_key), state)| {
+                    (peer == source
+                        && state
+                            .meta
+                            .batch
+                            .is_some_and(|batch| batch.batch_id == batch_id))
+                    .then_some((peer.clone(), *receive_key))
+                })
+                .collect::<Vec<_>>();
+            keys.extend(
+                engine
+                    .inflight_receives
+                    .iter()
+                    .filter(|(peer, _)| peer == source)
+                    .cloned(),
+            );
+            keys.extend(
+                engine
+                    .pending_receives
+                    .iter()
+                    .filter(|((peer, _), _)| peer == source)
+                    .map(|(key, _)| key.clone()),
+            );
+            keys.sort_unstable_by_key(|(peer, receive_key)| {
+                (peer.clone(), format!("{receive_key:?}"))
+            });
+            keys.dedup();
+            keys.iter()
+                .map(|key| engine.receive_operation_lock(key))
+                .collect::<Vec<_>>()
+        };
+        let mut receive_operation_guards = Vec::with_capacity(receive_operation_locks.len());
+        for receive_operation_lock in receive_operation_locks {
+            receive_operation_guards.push(receive_operation_lock.lock_owned().await);
+        }
+        let (
+            files,
+            activate_clipboard,
+            staging_directory,
+            existing_staging,
+            source_device_id,
+            manifest,
+            platform,
+            now,
+        ) = {
+            let mut engine = sync_engine.lock().await;
+            let now = chrono::Utc::now().timestamp();
+            engine.prune_completed_batches();
+            let clipboard_generation = engine.clipboard_generation;
+            let Some(batch) = engine.incoming_batches.get_mut(&key) else {
+                engine.prune_cancelled_batches();
+                if engine.completed_batches.contains_key(&key)
+                    || engine.cancelled_batches.contains_key(&key)
+                {
+                    return Ok(());
+                }
+                return Err("File batch manifest is not available".to_string());
+            };
+            let files = batch
+                .files
+                .clone()
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| "File batch is incomplete".to_string())?;
+            transition_received_batch_commit(batch, ReceivedBatchCommitState::HashVerified)?;
+            let manifest = batch.manifest.clone();
+            let staging_directory = clipboard_staging_directory(&batch.manifest_path)?;
+            let activate_clipboard = batch.local_generation == clipboard_generation;
+            let source_device_id = batch.source_device_id.clone();
+            let existing_staging = batch.clipboard_paths.clone();
+            let platform = engine
+                .platform
+                .clone()
+                .ok_or_else(|| "Clipboard platform is unavailable".to_string())?;
+            (
+                files,
+                activate_clipboard,
+                staging_directory,
+                existing_staging,
+                source_device_id,
+                manifest,
+                platform,
+                now,
+            )
+        };
+
+        let clipboard_paths = if activate_clipboard {
+            let stage_files = files.clone();
+            let stage_source = source.to_string();
+            tokio::task::spawn_blocking(move || {
+                stage_received_batch_files(
+                    &stage_files,
+                    &stage_source,
+                    &staging_directory,
+                    &existing_staging,
+                )
+            })
+            .await
+            .map_err(|error| format!("Clipboard staging task failed: {error}"))??
+        } else {
+            Vec::new()
+        };
+        {
+            let mut engine = sync_engine.lock().await;
+            let batch = engine
+                .incoming_batches
+                .get_mut(&key)
+                .ok_or_else(|| "File batch state disappeared during staging".to_string())?;
+            persist_clipboard_staging(batch, clipboard_paths.clone())?;
+        }
+
+        let commit = FileReceiveCommit {
+            batch_id: Some(batch_id),
+            files,
+            batch_total: manifest.files.len(),
+            batch_complete: true,
+            activate_clipboard,
+            device: source.to_string(),
+            source_device_id,
+            manifest_hash: Some(Self::file_batch_manifest_hash(&manifest)?),
+            clipboard_paths: Some(clipboard_paths),
+        };
+
+        platform.files_received(commit).await?;
+
+        let mut engine = sync_engine.lock().await;
+        let Some(batch) = engine.incoming_batches.get_mut(&key) else {
+            if engine.completed_batches.contains_key(&key) {
+                return Ok(());
+            }
+            return Err("File batch state disappeared after durable commit".to_string());
+        };
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::HistoryPersisted)?;
+        transition_received_batch_commit(batch, ReceivedBatchCommitState::ReceiptPersisted)?;
+        engine.completed_batches.insert(key.clone(), now);
+        engine.completed_batch_manifests.insert(key, manifest);
+        drop(receive_operation_guards);
+        Ok(())
+    }
+
+    /// Persist the network acknowledgement boundary and only then remove the
+    /// durable receive manifest. The network server calls this after the ACK
+    /// frame has been written successfully.
+    pub async fn acknowledge_file_batch_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: &str,
+        batch_id: TransferId,
+        incoming_dir: &Path,
+    ) -> Result<(), String> {
+        let key = (source.to_string(), batch_id);
+        let operation_lock = {
+            let mut engine = sync_engine.lock().await;
+            engine.batch_operation_lock(&key)
+        };
+        let _operation_guard = operation_lock.lock().await;
+        let mut engine = sync_engine.lock().await;
+        if let Some(batch) = engine.incoming_batches.get_mut(&key) {
+            while batch.commit_state < ReceivedBatchCommitState::Acked {
+                let next = batch
+                    .commit_state
+                    .next()
+                    .ok_or_else(|| "Received batch commit state cannot advance".to_string())?;
+                transition_received_batch_commit(batch, next)?;
+            }
+            transition_received_batch_commit(batch, ReceivedBatchCommitState::Cleaned)?;
+            let batch = engine
+                .incoming_batches
+                .remove(&key)
+                .ok_or_else(|| "File batch state disappeared during cleanup".to_string())?;
+            fs::remove_file(&batch.manifest_path).map_err(|error| error.to_string())?;
+            engine
+                .completed_batches
+                .insert(key.clone(), chrono::Utc::now().timestamp());
+            engine.completed_batch_manifests.insert(key, batch.manifest);
+            return Ok(());
+        }
+
+        let manifest_path = incoming_dir.join(format!("{}.batch.json", batch_id.as_hex()));
+        let Ok(data) = fs::read(&manifest_path) else {
+            return Ok(());
+        };
+        let mut saved = serde_json::from_slice::<PersistedIncomingBatch>(&data)
+            .map_err(|error| format!("Invalid persisted file batch state: {error}"))?;
+        if saved.source != source || saved.manifest.batch_id != batch_id {
+            return Err(
+                "Persisted file batch state belongs to another source or batch".to_string(),
+            );
+        }
+        while saved.commit_state < ReceivedBatchCommitState::Cleaned {
+            let next = saved
+                .commit_state
+                .next()
+                .ok_or_else(|| "Received batch commit state cannot advance".to_string())?;
+            saved.commit_state = next;
+            persist_incoming_batch(&manifest_path, &saved).map_err(|error| error.to_string())?;
+            maybe_abort_received_batch_stage(next, batch_id);
+        }
+        fs::remove_file(manifest_path).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub(super) fn prune_completed_batches(&mut self) {
+        let now = chrono::Utc::now().timestamp();
+        self.completed_batches.retain(|_, completed_at| {
+            now.saturating_sub(*completed_at) <= SEEN_MESSAGE_RETENTION_SECONDS
+        });
+        self.completed_batch_manifests
+            .retain(|key, _| self.completed_batches.contains_key(key));
+    }
+
+    pub async fn cancel_file_batch(&mut self, source: &str, batch_id: TransferId) {
+        let key = (source.to_string(), batch_id);
+        self.prune_cancelled_batches();
+        self.cancelled_batches
+            .insert(key.clone(), chrono::Utc::now().timestamp());
+        if let Some(batch) = self.incoming_batches.remove(&key) {
+            rollback_uncommitted_clipboard_staging(&batch);
+            let _ = fs::remove_file(batch.manifest_path);
+            let completed = batch.files.into_iter().flatten().collect::<Vec<_>>();
+            if !completed.is_empty() {
+                if let Some(platform) = self.platform.clone() {
+                    let source_device_id = batch.source_device_id.clone();
+                    let manifest_hash = Self::file_batch_manifest_hash(&batch.manifest).ok();
+                    if let Err(error) = platform
+                        .files_received(FileReceiveCommit {
+                            batch_id: Some(batch_id),
+                            files: completed,
+                            batch_total: batch.manifest.files.len(),
+                            batch_complete: false,
+                            activate_clipboard: false,
+                            device: source.to_string(),
+                            source_device_id,
+                            manifest_hash,
+                            clipboard_paths: None,
+                        })
+                        .await
+                    {
+                        platform.file_batch_failed(Some(batch_id), &error);
+                    }
+                }
+            } else {
+                self.clear_file_progress(Some(batch_id), Some(source));
+            }
+        }
+        let receive_keys = self
+            .active_receives
+            .iter()
+            .filter_map(|((peer, receive_key), state)| {
+                (peer == source
+                    && state
+                        .meta
+                        .batch
+                        .is_some_and(|batch| batch.batch_id == batch_id))
+                .then_some(*receive_key)
+            })
+            .collect::<Vec<_>>();
+        for receive_key in receive_keys {
+            if let Some(state) = self
+                .active_receives
+                .remove(&(source.to_string(), receive_key))
+            {
+                drop(state.writer);
+                let _ = fs::remove_file(state.tmp_path);
+                if let Some(path) = state.state_path {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+    }
+
+    /// Cancel a batch while keeping platform persistence and temp-file
+    /// cleanup outside the engine mutex. Returns whether any receive state was
+    /// present for the batch.
+    pub async fn cancel_file_batch_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: &str,
+        batch_id: TransferId,
+    ) -> bool {
+        let key = (source.to_string(), batch_id);
+        let operation_lock = {
+            let mut engine = sync_engine.lock().await;
+            engine.batch_operation_lock(&key)
+        };
+        let _operation_guard = operation_lock.lock().await;
+        let receive_operation_locks = {
+            let mut engine = sync_engine.lock().await;
+            let mut keys = engine
+                .active_receives
+                .iter()
+                .filter_map(|((peer, receive_key), state)| {
+                    (peer == source
+                        && state
+                            .meta
+                            .batch
+                            .is_some_and(|batch| batch.batch_id == batch_id))
+                    .then_some((peer.clone(), *receive_key))
+                })
+                .collect::<Vec<_>>();
+            // A chunk temporarily removes its state from `active_receives`
+            // while doing disk I/O. Waiting for all in-flight receives from
+            // this source closes that cancellation race without widening the
+            // engine critical section.
+            keys.extend(
+                engine
+                    .inflight_receives
+                    .iter()
+                    .filter(|(peer, _)| peer == source)
+                    .cloned(),
+            );
+            keys.extend(
+                engine
+                    .pending_receives
+                    .iter()
+                    .filter(|((peer, _), _)| peer == source)
+                    .map(|(key, _)| key.clone()),
+            );
+            keys.sort_unstable_by_key(|(peer, receive_key)| {
+                (peer.clone(), format!("{receive_key:?}"))
+            });
+            keys.dedup();
+            keys.iter()
+                .map(|key| engine.receive_operation_lock(key))
+                .collect::<Vec<_>>()
+        };
+        let mut receive_operation_guards = Vec::with_capacity(receive_operation_locks.len());
+        for receive_operation_lock in receive_operation_locks {
+            receive_operation_guards.push(receive_operation_lock.lock_owned().await);
+        }
+        let (batch, states, platform) = {
+            let mut engine = sync_engine.lock().await;
+            engine.prune_cancelled_batches();
+            engine
+                .cancelled_batches
+                .insert(key.clone(), chrono::Utc::now().timestamp());
+            let batch = engine.incoming_batches.remove(&key);
+            let receive_keys = engine
+                .active_receives
+                .iter()
+                .filter_map(|((peer, receive_key), state)| {
+                    (peer == source
+                        && state
+                            .meta
+                            .batch
+                            .is_some_and(|batch| batch.batch_id == batch_id))
+                    .then_some(*receive_key)
+                })
+                .collect::<Vec<_>>();
+            let states = receive_keys
+                .into_iter()
+                .filter_map(|receive_key| {
+                    engine
+                        .active_receives
+                        .remove(&(source.to_string(), receive_key))
+                })
+                .collect::<Vec<_>>();
+            let platform = engine.platform.clone();
+            (batch, states, platform)
+        };
+
+        let mut was_receiving = !states.is_empty();
+        for state in states {
+            was_receiving = true;
+            drop(state.writer);
+            let _ = fs::remove_file(state.tmp_path);
+            if let Some(path) = state.state_path {
+                let _ = fs::remove_file(path);
+            }
+        }
+        if let Some(batch) = batch {
+            was_receiving = true;
+            rollback_uncommitted_clipboard_staging(&batch);
+            let _ = fs::remove_file(&batch.manifest_path);
+            let completed = batch.files.into_iter().flatten().collect::<Vec<_>>();
+            if !completed.is_empty() {
+                if let Some(platform) = platform {
+                    let source_device_id = batch.source_device_id.clone();
+                    let manifest_hash = Self::file_batch_manifest_hash(&batch.manifest).ok();
+                    if let Err(error) = platform
+                        .files_received(FileReceiveCommit {
+                            batch_id: Some(batch_id),
+                            files: completed,
+                            batch_total: batch.manifest.files.len(),
+                            batch_complete: false,
+                            activate_clipboard: false,
+                            device: source.to_string(),
+                            source_device_id,
+                            manifest_hash,
+                            clipboard_paths: None,
+                        })
+                        .await
+                    {
+                        platform.file_batch_failed(Some(batch_id), &error);
+                    }
+                }
+            } else if let Some(platform) = platform {
+                platform.clear_file_progress(Some(batch_id), Some(source));
+            }
+        }
+        drop(receive_operation_guards);
+        was_receiving
+    }
+
+    pub fn file_batch_manifest_hash(manifest: &FileBatchManifest) -> Result<String, String> {
+        let encoded = serde_json::to_vec(manifest).map_err(|error| error.to_string())?;
+        Ok(blake3::hash(&encoded).to_hex().to_string())
+    }
+
+    /// Seed the in-memory completion cache from a durable receipt so a replay
+    /// after process restart can answer every file with its final offset
+    /// without recreating receive sidecars or rewriting the payload.
+    pub fn remember_completed_file_batch(
+        &mut self,
+        manifest: FileBatchManifest,
+        source: String,
+    ) -> Result<(), String> {
+        manifest.validate().map_err(|error| error.to_string())?;
+        self.prune_completed_batches();
+        let key = (source, manifest.batch_id);
+        self.completed_batches
+            .insert(key.clone(), chrono::Utc::now().timestamp());
+        self.completed_batch_manifests.insert(key, manifest);
+        Ok(())
+    }
+
+    pub async fn cancel_file_batch_local(&mut self, batch_id: TransferId) -> Option<String> {
+        let source = self
+            .incoming_batches
+            .keys()
+            .find_map(|(source, id)| (*id == batch_id).then(|| source.clone()));
+        if let Some(source) = source {
+            self.cancel_file_batch(&source, batch_id).await;
+            return Some(source);
+        }
+        None
+    }
+
+    /// Locate and cancel a local incoming batch without awaiting platform
+    /// persistence while the global engine mutex is held.
+    pub async fn cancel_file_batch_local_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        batch_id: TransferId,
+    ) -> Option<String> {
+        let source = {
+            let engine = sync_engine.lock().await;
+            engine
+                .incoming_batches
+                .keys()
+                .find_map(|(source, id)| (*id == batch_id).then(|| source.clone()))
+        };
+        if let Some(source) = source.as_deref() {
+            Self::cancel_file_batch_shared(sync_engine, source, batch_id).await;
+        }
+        source
+    }
+}

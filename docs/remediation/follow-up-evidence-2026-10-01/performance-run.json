@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--manifest-path",
+    "shared/rust-core/Cargo.toml",
+    "--lib",
+    "s2_f5_authenticated_worker_baseline",
+    "--",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "started_at_utc": "2026-09-30T20:17:14.314676+00:00",
+  "source_aggregate_sha256": "fa2137b149a4270ebeade0b8869f1ad27590bf897c69de107ead6414cdbb2b7b",
+  "source_unchanged_before": true,
+  "exit_code": 0,
+  "elapsed_seconds": 1056.96,
+  "source_unchanged_after": true,
+  "observation_count": 9
+}

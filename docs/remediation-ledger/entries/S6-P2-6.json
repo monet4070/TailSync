@@ -6,14 +6,14 @@
   "gate": {
     "kind": "unit",
     "file": "macos/src-tauri/src/api/transport.rs",
-    "test": "disconnected_client_drops_pending_response",
+    "test": "authenticated_long_poll_disconnect_returns_connection_permit",
     "command": "cargo test --locked --manifest-path macos/src-tauri/Cargo.toml --lib",
-    "asserts": "客户端半端被丢弃时 until_disconnect 返回 None 并取消待决 future。"
+    "asserts": "真实 UnixStream pair 发送带 token/request_id 的 wait_runtime_snapshot；确认已进入实际 revision wait 后断开 socket，真实 serve_connection 返回且 semaphore 许可可再取得。删掉实际取消白名单接线的变异实测失败。"
   },
   "ci_job": [
     "rust-macos"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "Unix API 实际命令/许可门禁本机通过；非 opt-in 老客户端的 half-close 行为保留。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S6-P2-6",
   "title": "长轮询纳入断开取消，释放连接许可",

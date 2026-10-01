@@ -1,0 +1,11 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+   Compiling tailsync-runtime v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/tailsync-runtime)
+   Compiling tailsync v2.3.1 (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.54s
+     Running unittests src/lib.rs (macos/src-tauri/target/debug/deps/tailsync_lib-2f2fd8410dee23b0)
+
+running 1 test
+test clipboard::tests::production_admission_and_gc_run_storage_work_off_the_async_thread ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 115 filtered out; finished in 0.15s
+

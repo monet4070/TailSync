@@ -1,0 +1,10 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.05s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 1 test
+test peer::delivery::tests::s2_f5_authenticated_worker_baseline ... {"ack_us":{"max":95783,"p50":230,"p99":82996},"acked":692,"attempted":692,"benchmark":"authenticated_worker_core_receiver","chunk_ack_delay_ms":250,"enqueued":692,"expired":0,"file_active_ack_us":{"max":95783,"p99":82996},"file_active_samples":692,"file_bytes":268435456,"file_count":16,"meta_ack_delay_ms":0,"peak_priority_depth":1,"received":692,"rejected":0,"text_interval_ms":50,"text_run_s":60,"wire_us":{"max":32808,"p99":24857}}
+error: test failed, to rerun pass `-p tailsync-core --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/monet/TailSync/TailSync-remediation/target/debug/deps/tailsync_core-3d980cc06075d47a s2_f5_authenticated_worker_baseline --ignored --nocapture --test-threads=1` (signal: 2, SIGINT: terminal interrupt signal)

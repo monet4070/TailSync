@@ -16,14 +16,14 @@
   "native_acceptance": "Windows 原生断网、虚拟网卡与 VPN 混合场景记录；单元测试无法替代。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S1-P1-5",
-  "title": "接口状态过滤需区分“已发送探测”与“发现设备”",
+  "title": "Windows 接口过滤与“已发送探测/发现设备”的区别",
   "code_symbols": [
     "windows/src-tauri/src/network/lan.rs:broadcast_targets",
     "windows/src-tauri/src/network/lan.rs:discover"
   ],
   "trigger": "广播目标枚举缺网卡状态位检查；discover() 把结果压成一个布尔，调用方无法区分发送成功与发现设备。",
-  "fix_evidence": "broadcast_targets_for 与 local_ip 共用 eligible_lan_interface；discover_with_targets 是生产 discover 调用的实际发送/接收路径。具名 Windows 测试覆盖接口过滤、零设备和发送失败，原生断网/VPN 验收仍待设备。 macOS 主机已编译运行 Windows crate 的门禁；本次改动尚未在原生 rust-windows CI 上执行，取得该证据后才能转为 fixed_gated。",
+  "fix_evidence": "本条 platform 明确限定 Windows。eligible_lan_interface 与 discover_with_targets 的门禁在历史原生 CI（36709267509，046b2a0）执行并通过；本轮共享 LAN 自地址策略变化后的 Windows CI，以及本条 native_acceptance 的真实断网/虚拟接口/VPN场景仍待验，因此保留 partial。macOS 工厂等价门禁是独立待补边界，不能当作仅 Windows 条目的失败理由。",
   "status": "partial",
-  "pass_condition": "接口与发送路径的具名门禁在 rust-windows 实际执行且通过；原生断网/VPN 场景单独待验，不由单测替代。",
+  "pass_condition": "Windows 接口/发送具名门禁在本版本 rust-windows 执行通过，且原生断网/虚拟接口/VPN 场景验收完成；仅单测或历史 CI 不替代当前原生验收。",
   "reopen_condition": "UI 或健康状态把“无可用 LAN”误报为已发现/连接成功。"
 }

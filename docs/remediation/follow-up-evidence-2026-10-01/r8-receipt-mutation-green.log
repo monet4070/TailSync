@@ -1,0 +1,9 @@
+   Compiling tailsync v2.3.1 (/private/tmp/tailsync-follow-up-xkdja33f/src/macos/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.77s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri/target/debug/deps/tailsync_lib-d89296c539c16691)
+
+running 1 test
+test clipboard::tests::production_admission_and_gc_run_storage_work_off_the_async_thread ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 115 filtered out; finished in 0.16s
+

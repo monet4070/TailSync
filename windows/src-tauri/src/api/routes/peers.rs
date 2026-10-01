@@ -124,15 +124,12 @@ pub(super) async fn handle(command: PeersCommand, req: Request, state: &ApiState
                 };
             }
             let result = state
-                .settings
-                .lock()
+                .pairing
+                .revoke_peer(hostname)
                 .await
-                .forget_peer(hostname)
                 .map_err(|error| error.to_string());
-            if result.is_ok() {
-                state.pool.lock().await.disconnect_hostname(hostname);
-                network::clear_protocol_compatibility_error(hostname);
-            }
+            state.pool.lock().await.disconnect_hostname(hostname);
+            network::clear_protocol_compatibility_error(hostname);
             match result {
                 Ok(()) => Response {
                     ok: true,

@@ -23,6 +23,8 @@ mod shadow;
 use shadow::ShadowFilter;
 mod prepare;
 use prepare::hash_source_file;
+#[cfg(any(test, feature = "test-support"))]
+pub use prepare::source_hash_reads_for_test;
 pub use prepare::{
     clipboard_files_are_readable, normalize_transferred_file_name, prepare_file_batch,
     revalidate_prepared_file, validate_incoming_file_meta, FileBatchEntry, FileBatchManifest,

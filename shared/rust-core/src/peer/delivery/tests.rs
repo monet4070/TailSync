@@ -2169,10 +2169,10 @@ async fn worker_exits_on_shutdown() {
 ///
 /// Run explicitly:
 ///   cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib \
-///     s2_f5_text_latency_baseline -- --ignored --nocapture
+///     scheduler_model_latency_baseline -- --ignored --nocapture
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "performance baseline; run explicitly with --ignored --nocapture"]
-async fn s2_f5_text_latency_baseline() {
+async fn scheduler_model_latency_baseline() {
     // The budget's load: text every 50 ms for 60 s while a >=256 MiB batch moves.
     const TEXT_INTERVAL: Duration = Duration::from_millis(50);
     const RUN: Duration = Duration::from_secs(60);
@@ -2276,7 +2276,7 @@ async fn s2_f5_text_latency_baseline() {
     // bare print cannot tell a passing run from a failing one, which is how the
     // water-mark budget lost its only check when the timed CI gate was replaced.
     // This test is `#[ignore]`d and never runs in CI, so machine load can slow a
-    // run down without turning the build red — it just has to be re-run.
+    // run down without turning the build red — the failed observation must be kept and investigated.
     assert_eq!(
         dropped, 0,
         "the signed budget allows zero permanently dropped text events"
@@ -2389,3 +2389,209 @@ async fn a_full_priority_queue_never_drops_a_text_frame_silently() {
          baseline no longer describes the queue that ships"
     );
 }
+
+struct AuthenticatedAdapter(tokio::sync::Mutex<Option<(SecureConnection, ResolvedCandidate)>>);
+impl ConnectionAdapter for AuthenticatedAdapter {
+    type Connection = SecureConnection;
+    type SessionLease = ();
+    async fn connect(
+        &self,
+        _hostname: &str,
+        _candidates: &[ResolvedCandidate],
+    ) -> Result<(Self::Connection, ResolvedCandidate), String> {
+        self.0
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| "loopback connection already used".into())
+    }
+    fn register_session(
+        &self,
+        _hostname: &str,
+        _interface: ConnectionInterface,
+        _address: &str,
+        _latency_ms: u64,
+    ) {
+    }
+    fn record_protocol_error(&self, _hostname: &str, _error: &str) {}
+    fn clear_protocol_error(&self, _hostname: &str) {}
+    async fn refresh_candidates(
+        &self,
+        _hostname: &str,
+        _candidates: &mut Vec<ResolvedCandidate>,
+    ) -> bool {
+        false
+    }
+}
+
+async fn authenticated_pool_sender(
+    pool: &mut crate::peer::pool::ConnectionPoolState,
+    command: Command,
+    server_identity: &Arc<DeviceIdentity>,
+    client_identity: &DeviceIdentity,
+) -> (
+    crate::peer::pool::PoolSender,
+    SecureConnection,
+    tokio::task::JoinHandle<()>,
+) {
+    let (client, server) = establish_pair(server_identity, client_identity).await;
+    let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    let adapter = AuthenticatedAdapter(tokio::sync::Mutex::new(Some((client, candidate.clone()))));
+    let (task_tx, task_rx) = oneshot::channel();
+    let sender = pool
+        .sender_for_command(
+            "server".into(),
+            vec![candidate],
+            command,
+            move |candidates,
+                  hostname,
+                  priority,
+                  bulk,
+                  shutdown,
+                  retry_wakeup,
+                  candidate_updates| {
+                let task = tokio::spawn(async move {
+                    let config = WorkerConfig {
+                        retry_wakeup,
+                        candidate_updates: Some(candidate_updates),
+                        ..WorkerConfig::default()
+                    };
+                    run_connection_worker(
+                        &adapter, &config, candidates, hostname, priority, bulk, shutdown,
+                    )
+                    .await;
+                });
+                let _ = task_tx.send(task);
+            },
+        )
+        .unwrap();
+    // A reused sender does not spawn a second worker.
+    let task = task_rx.await.unwrap_or_else(|_| tokio::spawn(async {}));
+    (sender, server, task)
+}
+
+#[tokio::test]
+async fn s2_f5_file_ack_does_not_block_text() {
+    let mut pool = crate::peer::pool::ConnectionPoolState::new();
+    let server_identity = server_identity();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let (file_sender, mut file_server, file_worker) = authenticated_pool_sender(
+        &mut pool,
+        Command::FileMeta,
+        &server_identity,
+        &client_identity,
+    )
+    .await;
+    let (text_sender, text_server, text_worker) = authenticated_pool_sender(
+        &mut pool,
+        Command::TextPayload,
+        &server_identity,
+        &client_identity,
+    )
+    .await;
+    let shared = file_sender.same_channel(&text_sender);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let ready = entered.clone();
+    let release_ack = Arc::new(tokio::sync::Notify::new());
+    let allow_ack = release_ack.clone();
+    let file_server_task = tokio::spawn(async move {
+        let meta = file_server.read_frame().await.unwrap();
+        assert_eq!(meta.command, Command::FileMeta);
+        let meta_value: crate::sync::FileMeta = serde_json::from_slice(&meta.payload).unwrap();
+        ready.notify_one();
+        allow_ack.notified().await;
+        file_server
+            .write_frame(
+                &Frame::try_new(
+                    Command::FileAck,
+                    0,
+                    meta.sequence,
+                    FileOffset {
+                        transfer_id: meta_value.transfer_id.unwrap(),
+                        next_offset: 0,
+                    }
+                    .encode(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        if shared {
+            acknowledge_one_text(&mut file_server).await;
+        }
+    });
+    let text_server_task = tokio::spawn(async move {
+        let mut server = text_server;
+        if !shared {
+            acknowledge_one_text(&mut server).await;
+        }
+    });
+    let meta = crate::sync::FileMeta {
+        transfer_id: Some(transfer_id(0x12)),
+        name: "empty.txt".into(),
+        size: 0,
+        hash: blake3::hash(&[]).to_hex().to_string(),
+        chunk_size: crate::protocol::FILE_CHUNK_SIZE as u32,
+        batch: None,
+    };
+    let (file_tx, file_rx) = oneshot::channel();
+    file_sender
+        .channel_for(Command::FileMeta)
+        .send(
+            QueuedFrame::confirmed_file(
+                Command::FileMeta,
+                serde_json::to_vec(&meta).unwrap(),
+                transfer_id(0x12),
+                file_tx,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    entered.notified().await;
+    let start = std::time::Instant::now();
+    let (tx, rx) = oneshot::channel();
+    let mut text = QueuedFrame::new(Command::TextPayload, b"during file ACK".to_vec()).unwrap();
+    text.completion = Some(tx);
+    text_sender
+        .channel_for(Command::TextPayload)
+        .send(text)
+        .await
+        .unwrap();
+    let text_before_ack = timeout(Duration::from_secs(2), rx).await;
+    let elapsed = start.elapsed();
+    release_ack.notify_one();
+    file_rx.await.unwrap().unwrap();
+    file_server_task.await.unwrap();
+    text_server_task.await.unwrap();
+    assert_eq!(pool.sender_count(), 2);
+    pool.disconnect_file_transfer("server");
+    file_worker.await.unwrap();
+    assert_eq!(pool.sender_count(), 1);
+    assert!(!text_worker.is_finished());
+    pool.disconnect_hostname("server");
+    text_worker.await.unwrap();
+    assert_eq!(pool.sender_count(), 0);
+    println!("text delivery while file ACK is held: {elapsed:?}");
+    assert!(text_before_ack.is_ok(), "text waited for the held file ACK");
+    text_before_ack.unwrap().unwrap().unwrap();
+}
+async fn acknowledge_one_text(server: &mut SecureConnection) {
+    let frame = server.read_frame().await.unwrap();
+    assert_eq!(frame.command, Command::TextPayload);
+    let envelope = EventEnvelope::decode(&frame.payload).unwrap();
+    server
+        .write_frame(
+            &Frame::try_new(
+                Command::EventAck,
+                0,
+                frame.sequence,
+                envelope.message_id.ack_payload(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+}
+
+include!("tests_performance.rs");

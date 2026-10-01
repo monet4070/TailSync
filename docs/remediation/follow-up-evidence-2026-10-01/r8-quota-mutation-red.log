@@ -1,0 +1,24 @@
+   Compiling tailsync v2.3.1 (/private/tmp/tailsync-follow-up-xkdja33f/src/macos/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.01s
+     Running unittests src/lib.rs (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri/target/debug/deps/tailsync_lib-d89296c539c16691)
+
+running 1 test
+test clipboard::tests::production_admission_and_gc_run_storage_work_off_the_async_thread ... 
+thread 'clipboard::tests::production_admission_and_gc_run_storage_work_off_the_async_thread' (4180670) panicked at src/clipboard/../../../../shared/platform-clipboard-tests.rs:663:9:
+assertion `left != right` failed: quota blocked the async executor
+  left: ThreadId(2)
+ right: ThreadId(2)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'clipboard::tests::production_admission_and_gc_run_storage_work_off_the_async_thread' (4180670) panicked at src/clipboard/../../../../shared/platform-clipboard-tests.rs:666:72:
+called `Result::unwrap()` on an `Err` value: "task 2 panicked with message \"assertion `left != right` failed: quota blocked the async executor\\n  left: ThreadId(2)\\n right: ThreadId(2)\""
+FAILED
+
+failures:
+
+failures:
+    clipboard::tests::production_admission_and_gc_run_storage_work_off_the_async_thread
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 115 filtered out; finished in 0.13s
+
+error: test failed, to rerun pass `--lib`

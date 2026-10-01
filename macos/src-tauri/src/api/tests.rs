@@ -1,8 +1,8 @@
 use super::{
     bind_api_listener, bump_runtime_revision, clear_file_progress, clear_file_progress_scope,
-    get_file_progress, get_runtime_revision, history_capabilities_data, notification_buffer_state,
-    peer_snapshot_data, read_request_with_limits, service_instance, set_file_batch_progress,
-    thumbnail_rgba, wait_for_runtime_revision, ApiToken, FileProgress, ProgressRevisionAction,
+    get_file_progress, get_runtime_revision, history_capabilities_data, peer_snapshot_data,
+    read_request_with_limits, service_instance, set_file_batch_progress, thumbnail_rgba,
+    wait_for_runtime_revision, ApiToken, FileProgress, ProgressRevisionAction,
     ProgressRevisionGate, Request, RuntimeNotificationBuffer, MAX_RUNTIME_NOTIFICATIONS,
     THUMBNAIL_MAX_SIDE,
 };
@@ -555,7 +555,33 @@ fn runtime_service_instance_is_stable_and_nonzero() {
 /// The snapshot state accessor agrees with the buffer it reads.
 #[test]
 fn notification_buffer_state_reports_cursor_and_drops() {
-    let (earliest, dropped) = notification_buffer_state();
-    assert!(earliest >= 1);
-    assert_eq!(dropped, dropped);
+    let snapshot = super::runtime_notification_snapshot(Some(0));
+    assert!(snapshot.earliest >= 1);
+    if let Some(first) = snapshot.entries.first() {
+        assert_eq!(first.id, snapshot.earliest);
+    }
 }
+
+#[test]
+fn notification_snapshot_keeps_entries_and_cursor_in_one_window_during_overflow() {
+    let buffer = std::sync::Mutex::new(RuntimeNotificationBuffer::default());
+    buffer.lock().unwrap().push("info", "first".into());
+    let overflow = || {
+        let mut buffer = buffer.lock().unwrap();
+        for _ in 0..MAX_RUNTIME_NOTIFICATIONS {
+            buffer.push("info", "next".into());
+        }
+    };
+    let snapshot = super::notification_snapshot_from(&buffer, Some(0), Some(&overflow));
+    assert_eq!(
+        snapshot.entries.first().map(|entry| entry.id),
+        Some(snapshot.earliest)
+    );
+    assert_eq!(snapshot.dropped, snapshot.earliest - 1);
+    let next = super::notification_snapshot_from(&buffer, Some(0), None);
+    assert_eq!(next.earliest, 2);
+    assert_eq!(next.dropped, 1);
+    assert_eq!(next.entries.first().unwrap().id, 2);
+}
+
+include!("../../../../shared/platform-progress-measurement-tests.rs");

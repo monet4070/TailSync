@@ -304,6 +304,7 @@ struct ConnectionsView: View {
     }
 
     var pairingPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
         settingRow {
             Image(systemName: "link.badge.plus")
                 .foregroundColor(palette.accentColor)
@@ -331,6 +332,24 @@ struct ConnectionsView: View {
                     .foregroundColor(.red)
                     .textSelection(.enabled)
             }
+        }
+        if pairingStatus?.pending_store_unavailable == true {
+            Text(Loc.t("settings.pendingStoreUnavailable")).foregroundColor(.red)
+        }
+        ForEach(pairingStatus?.pending ?? [], id: \.hostname) { pending in
+            settingRow {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(pending.hostname).font(.body.weight(.medium))
+                    Text(Loc.t(pending.locally_trusted ? "settings.pendingPeerCompletion" : "settings.pendingPairing")).font(.caption)
+                    Text(pending.fingerprint).font(.caption2).textSelection(.enabled)
+                }
+                Spacer()
+                Button(Loc.t("settings.resumePairing")) { startPairing(address: pending.address) }
+                    .disabled(pairingInProgress || pending.address.isEmpty)
+                Button(Loc.t("settings.unpair")) { forgetPeer(pending.hostname) }
+                    .disabled(pairingInProgress || removingPeers.contains(pending.hostname))
+            }
+        }
         }
     }
 
@@ -854,8 +873,10 @@ struct ConnectionsView: View {
         }
     }
 
-    func startPairing(_ route: PeerRoute) {
-        guard !route.address.isEmpty else { return }
+    func startPairing(_ route: PeerRoute) { startPairing(address: route.address) }
+
+    func startPairing(address: String) {
+        guard !address.isEmpty else { return }
         pairingInProgress = true
         pairingMessage = nil
         showPairingSheet = true
@@ -864,7 +885,7 @@ struct ConnectionsView: View {
                 if pairingStatus?.pairing_enabled != true {
                     pairingStatus = try await ApiClient.shared.enablePairing()
                 }
-                pairingStatus = try await ApiClient.shared.startPairing(address: route.address)
+                pairingStatus = try await ApiClient.shared.startPairing(address: address)
             } catch {
                 pairingMessage = pairingErrorDescription(error)
                 pairingStatus = try? await ApiClient.shared.getPairingStatus()

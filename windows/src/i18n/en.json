@@ -329,5 +329,9 @@
   "error.storage_unavailable": "Storage is unavailable. Try again.",
   "error.unauthorized": "This action is not authorized.",
   "error.protocol_incompatible": "The connected device uses an incompatible protocol.",
-  "error.internal": "TailSync could not complete this action."
+  "error.internal": "TailSync could not complete this action.",
+  "settings.pendingPairing": "Pairing is incomplete. Open pairing on both devices and compare the code again, or forget this device.",
+  "settings.pendingPeerCompletion": "This device trusts the peer; the peer’s completion is unconfirmed. Pair again on both devices to recover.",
+  "settings.resumePairing": "Pair again",
+  "settings.pendingStoreUnavailable": "Pairing recovery data cannot be read. Use a compatible version to recover it."
 }

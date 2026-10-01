@@ -1,0 +1,89 @@
+{
+  "created_at_utc": "2026-09-30T17:23:01.937734+00:00",
+  "baseline_commit": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+  "workspace": "/Users/monet/TailSync/TailSync-remediation",
+  "state": "local uncommitted implementation; no new GitHub CI certification",
+  "tracked_source_identity": {
+    "sha": "914638d125e651c9d08052d20a8cc9ad77deda9a",
+    "fingerprint": "c1da1fcd88f9c6a9b0bacb742be0635517c4dd9b00d7ec02d190a7679e506bf8"
+  },
+  "ledger_counts": {
+    "fixed_gated": 26,
+    "fixed_ungated": 0,
+    "partial": 3,
+    "unfixed": 1,
+    "needs_adjudication": 0,
+    "accepted": 1
+  },
+  "final_tests": {
+    "core_unit": {
+      "passed": 486,
+      "ignored": 3
+    },
+    "core_integration": {
+      "passed": 2,
+      "ignored": 1
+    },
+    "runtime": {
+      "passed": 23
+    },
+    "macos_rust": {
+      "passed": 112,
+      "ignored": 2
+    },
+    "frontend": {
+      "passed": 246,
+      "suites": 49
+    },
+    "swift": {
+      "passed": 208,
+      "skipped": 3
+    },
+    "node_scripts": {
+      "passed": 116
+    }
+  },
+  "checks_passed": [
+    "workspace all-target Clippy -D warnings",
+    "macOS all-target Clippy -D warnings",
+    "frontend build",
+    "frontend lint (existing warnings retained)",
+    "cross-platform contract",
+    "generated local contracts",
+    "ledger structure and rust-macos actual execution results",
+    "Windows crate host compilation (macOS, not native Windows)",
+    "Windows real private_fs module + tests cross-target typecheck (no execution)",
+    "macOS release app build / strict signature / bundle metadata",
+    "community DMG build and checksum",
+    "Read-only DMG content: 8 files hash-identical to built signed app; image unmounted",
+    "production features: all 9 product Cargo manifests keep test-support dev-only"
+  ],
+  "native_app_runtime_smoke": "blocked: installed TailSync occupies TCP19890 and owns the per-user single instance lock",
+  "native_ui_observation": "Computer Use getApp(/Applications/TailSync.app) returned timeoutReached; new app not UI-certified",
+  "performance": {
+    "runs": 9,
+    "text_attempted_per_run": 1200,
+    "text_enqueued_received_acked_per_run": 1200,
+    "file_bytes_per_run": 268435456,
+    "observed_text_p99_us": [
+      45236,
+      51896
+    ],
+    "observed_max_us": [
+      55616,
+      67092
+    ],
+    "peak_priority_depth": 2,
+    "scope": "production pool/worker/executor and Core receiver; native clipboard/history callbacks stubbed; macOS only"
+  },
+  "mutations": {
+    "executed_red_then_green": 8,
+    "evidence": "mutations/results.json",
+    "note": "Mutation source snapshots are exact intermediate revision bytes, not all identical to final sources."
+  },
+  "source_snapshot": {
+    "file": "source-snapshot.json",
+    "aggregate_sha256": "f175674854d323b30ba5887dada48f58de7d788f52d5b0694e08c97c551a33ce",
+    "file_count": 755
+  }
+}

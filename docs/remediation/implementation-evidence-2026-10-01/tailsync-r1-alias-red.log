@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/debug/deps/tailsync_core-3d980cc06075d47a)
+
+running 1 test
+
+thread 'db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases' (3583815) panicked at shared/rust-core/src/db/tests.rs:3089:9:
+delete removed a favorite's payload
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases ... FAILED
+
+failures:
+
+failures:
+    db::tests::every_history_cleanup_preserves_favorite_payload_case_aliases
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 475 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--lib`

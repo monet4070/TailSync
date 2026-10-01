@@ -1,0 +1,71 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Checking tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+    Checking tailsync-runtime v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/tailsync-runtime)
+    Checking tailsync v2.3.1 (/Users/monet/TailSync/TailSync-remediation/windows/src-tauri)
+warning: variants `Busy`, `Win32`, and `InvalidData` are never constructed
+  --> src/clipboard_file.rs:9:5
+   |
+ 8 | pub enum ClipboardFileReadError {
+   |          ---------------------- variants in this enum
+ 9 |     Busy { attempts: u32, elapsed_ms: u64 },
+   |     ^^^^
+10 |     Win32 { code: u32 },
+   |     ^^^^^
+11 |     InvalidData { code: u32 },
+   |     ^^^^^^^^^^^
+   |
+   = note: `ClipboardFileReadError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `CLIPBOARD_READ_DEADLINE` is never used
+  --> src/clipboard_file.rs:32:7
+   |
+32 | const CLIPBOARD_READ_DEADLINE: std::time::Duration = std::time::Duration::from_millis(750);
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `clipboard_retry_delay` is never used
+  --> src/clipboard_file.rs:37:4
+   |
+37 | fn clipboard_retry_delay(attempt: u32) -> std::time::Duration {
+   |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: variants `Win32` and `InvalidData` are never constructed
+  --> src/clipboard_file.rs:10:5
+   |
+ 8 | pub enum ClipboardFileReadError {
+   |          ---------------------- variants in this enum
+ 9 |     Busy { attempts: u32, elapsed_ms: u64 },
+10 |     Win32 { code: u32 },
+   |     ^^^^^
+11 |     InvalidData { code: u32 },
+   |     ^^^^^^^^^^^
+   |
+   = note: `ClipboardFileReadError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tailsync` (lib) generated 3 warnings
+warning: `tailsync` (lib test) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.11s
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+   Compiling tailsync-runtime v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/tailsync-runtime)
+   Compiling tailsync v2.3.1 (/Users/monet/TailSync/TailSync-remediation/windows/src-tauri)
+warning: variants `Win32` and `InvalidData` are never constructed
+  --> src/clipboard_file.rs:10:5
+   |
+ 8 | pub enum ClipboardFileReadError {
+   |          ---------------------- variants in this enum
+ 9 |     Busy { attempts: u32, elapsed_ms: u64 },
+10 |     Win32 { code: u32 },
+   |     ^^^^^
+11 |     InvalidData { code: u32 },
+   |     ^^^^^^^^^^^
+   |
+   = note: `ClipboardFileReadError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tailsync` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.87s
+  Executable unittests src/lib.rs (src-tauri/target/debug/deps/tailsync_lib-82e487cf9073eb8d)
+Windows host-side verification passed: fmt, check --all-targets, test --no-run.

@@ -8,13 +8,13 @@
     "file": "shared/rust-core/src/db/storage.rs",
     "test": "quota_eviction_measures_the_storage_tree_once_per_reserve",
     "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
-    "asserts": "登记门禁为淘汰侧：多次驱逐时整棵树只被测量一次（计数器为 1），且退出时配额成立。同一事项另有三组已执行测试：quota_eviction_credits_the_wal_the_delete_reclaims（WAL 抵扣）、the_admission_lock_is_held_while_the_batch_state_is_read（锁覆盖）、file_batch_admission_waits_for_the_shared_admission_lock 与 a_second_batch_cannot_claim_space_reserved_by_the_first（准入串行与记账）。"
+    "asserts": "登记门禁为淘汰侧：多次驱逐时整棵树只被测量一次（计数器为 1），且退出时配额成立。同一事项另有三组已执行测试：quota_eviction_credits_the_wal_the_delete_reclaims（WAL 抵扣）、the_admission_lock_is_held_while_the_batch_state_is_read（锁覆盖）、file_batch_admission_waits_for_the_shared_admission_lock 与 a_second_batch_cannot_claim_space_reserved_by_the_first（准入串行与记账）。 后续生产入口门禁 production_admission_and_gc_run_storage_work_off_the_async_thread 观察真实 receipt/quota/GC 操作所在线程；quota_preflight_preserves_rows_when_live_payload_references_are_invalid 保护 fail-closed 时的行。"
   },
   "ci_job": [
     "rust-macos",
     "rust-windows"
   ],
-  "native_acceptance": null,
+  "native_acceptance": "准入锁、容量、maintenance gates 本机通过；大型真实存储及原生 Windows 性能待验。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S4-P1-3",
   "title": "配额淘汰不再逐条递归全盘扫描并长期持锁",
@@ -22,8 +22,8 @@
     "shared/rust-core/src/db/storage.rs:reserve_for_file_batch"
   ],
   "trigger": "淘汰循环每次删除都在 DB 互斥锁内递归扫描整个存储目录。",
-  "fix_evidence": "淘汰侧：删除路径（delete_entries_with_batch_policy 及其包装）回报\"可证明释放的外部载荷字节数\"；reserve_for_file_batch 先测一次物理基线，之后每次淘汰扣减\"载荷字节 + db/wal/shm 净变化\"（删除会截断 WAL 但也会让 DB 增长，只抵扣载荷或只抵扣 WAL 都会让 used 低估、循环在超配额处退出）；净变化为负或抵扣<=0 时回退重测。淘汰侧变异验证（分别执行）：抵扣加倍与巨额过度抵扣使**登记门禁** quota_eviction_measures_the_storage_tree_once_per_reserve 失败；只抵扣载荷使**未登记的同族测试** quota_eviction_credits_the_wal_the_delete_reclaims 失败（该门禁自身的场景会先把 WAL 清零，因此对只抵扣载荷不敏感）。准入侧（2026-09-30）：准入临界区从 handle_accepted_connection_inner 抽成 admit_incoming_file_batch，语义经逐行核对与抽取前一致（两处 `?` 仍中止会话，其余仍走 Rejected → FileBatchReject + notify）。三个门禁：锁覆盖（测试钩子在读取引擎状态与回执时探测锁是否已被持有）、准入等待共享锁、第二批不认领已预留空间；三处变异（锁缩小到只包住预留 / 删锁 / 去掉 pending 抵扣）分别使对应门禁失败。未消除的缺口：测试直接调用该函数，不经过生产调用点（在 handle_accepted_connection_inner 中绕过该函数的改动不会被发现），FileBatchReject/notify/中止会话未覆盖；already_active、is_file_batch_completed、receive_epoch 未覆盖。这些仅由代码审查保证，不声称受门禁保护。",
+  "fix_evidence": "物理基线/实际 freed/db-wal-shm 净变化策略保留；准入锁仍覆盖所有状态/receipt/配额预留。receipt 读取、.part 大小计算与 reserve/淘汰进 spawn_blocking，Tokio DB blocking_lock 只在阻塞线程使用。维护 GC 也在阻塞线程执行，避免同步扫盘占异步线程。",
   "status": "fixed_gated",
-  "pass_condition": "扫描次数与配额合规门禁通过（登记项）；并发准入的三个测试通过，且锁覆盖由覆盖门禁保护；**生产调用点接线、already_active/is_file_batch_completed/receive_epoch 仍仅由代码审查保证**。",
+  "pass_condition": "扫描次数与配额合规门禁通过（登记项）；并发准入的三个测试通过，且锁覆盖由覆盖门禁保护；实际准入/GC 入口的 receipt/quota/GC 阻塞线程门禁通过；already_active/is_file_batch_completed/receive_epoch 分支边界仍需各自功能门禁。",
   "reopen_condition": "双批重复认领空间、空间账错误或恢复重复扫描。"
 }

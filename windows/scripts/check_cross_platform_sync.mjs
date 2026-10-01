@@ -309,6 +309,7 @@ const swiftSource = readdirSync(swiftApiDirectory)
   .sort()
   .map((name) => readFileSync(join(swiftApiDirectory, name), 'utf8'))
   .join('\n');
+const swiftContractSource = `${swiftSource}\n${read(macRoot, 'swift-ui/Sources/TailSync/Models/LocalContracts.generated.swift')}`;
 const swiftAppSource = read(macRoot, 'swift-ui/Sources/TailSync/TailSyncApp.swift');
 if (/environment\["TAILSYNC_API_TOKEN"\]\s*=/.test(swiftAppSource) ||
     !/TAILSYNC_API_TOKEN_STDIN/.test(swiftAppSource) ||
@@ -350,6 +351,10 @@ const missingCommands = [...swiftCommands].filter((command) => !rustCommands.has
 if (missingCommands.length) fail(`SwiftUI calls commands missing from the Rust API: ${missingCommands.join(', ')}`);
 
 function structBody(source, name, language) {
+  if (language === 'swift') {
+    const alias = source.match(new RegExp(`\\btypealias\\s+${name}\\s*=\\s*(Contract\\w+)\\b`));
+    if (alias) return structBody(source, alias[1], language);
+  }
   const marker = language === 'rust'
     ? `pub struct ${name}`
     : language === 'typescript' ? `interface ${name}` : `struct ${name}`;
@@ -456,7 +461,7 @@ function swiftFields(source, name) {
   let depth = 0;
   for (const line of structBody(source, name, 'swift').split(/\r?\n/)) {
     if (depth === 0) {
-      const match = line.match(/^\s*(?:let|var)\s+([a-z][a-z0-9_]*)\s*:/);
+      const match = line.match(/^\s*(?:let|var)\s+`?([a-z][a-z0-9_]*)`?\s*:/);
       if (match && !line.slice(match.index + match[0].length).includes('{')) {
         fields.add(match[1]);
       }
@@ -499,7 +504,7 @@ const pairingSource = readCore('src/pairing.rs');
 assertSameFields('SwiftUI/Rust pairing status', rustFields(pairingSource, 'PairingStatus'),
   swiftFields(swiftSource, 'PairingStatus'));
 assertSameFields('SwiftUI/Rust pairing peer', rustFields(pairingSource, 'PairingPeerStatus'),
-  swiftFields(swiftSource, 'PairingPeerStatus'));
+  swiftFields(swiftContractSource, 'PairingPeerStatus'));
 
 const rustHistoryFields = rustFields(readCore('src/db/types.rs'), 'HistoryEntry');
 const swiftHistoryFields = swiftFields(

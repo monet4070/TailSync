@@ -1,0 +1,14 @@
+file:///Users/monet/TailSync/TailSync-remediation/windows/scripts/check_cross_platform_sync.mjs:8
+  throw new Error(message);
+        ^
+
+Error: Could not find swift struct PairingPeerStatus.
+    at fail (file:///Users/monet/TailSync/TailSync-remediation/windows/scripts/check_cross_platform_sync.mjs:8:9)
+    at structBody (file:///Users/monet/TailSync/TailSync-remediation/windows/scripts/check_cross_platform_sync.mjs:357:18)
+    at swiftFields (file:///Users/monet/TailSync/TailSync-remediation/windows/scripts/check_cross_platform_sync.mjs:457:22)
+    at file:///Users/monet/TailSync/TailSync-remediation/windows/scripts/check_cross_platform_sync.mjs:502:3
+    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v26.0.0

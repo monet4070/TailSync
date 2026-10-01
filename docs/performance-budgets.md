@@ -1,5 +1,7 @@
 # 性能预算（Phase 7 前置；已由维护者签署）
 
+> **2026-10-01 修订说明：** 保留维护者已签署的阈值与签字。下面旧版“单机实测”属于调度模型的历史记录，不能用来关闭 S2-F5，且其中 64 文件/64B payload 不符合合法批次/真实字节负载。当前生产 worker 基线见 [整改执行记录](remediation/IMPLEMENTATION-2026-09-30.md)。任何失败观测必须保留，不以重跑直到通过作为验收。
+
 > 用途：第 7 阶段（`S2-F5`、`S4-P1-4`）与第 8 阶段的性能结论，只能对照**本文件经维护者签署后冻结**的负载与阈值给出。**签署前本文件只是提案，不得据此关闭任何性能项**，也不得使用“显著”“达标”等词。
 > 冻结责任人：**仓库维护者兼发布负责人**（见 `docs/audit/CODE-REVIEW-REMEDIATION-PLAN-2026-09-29.md`）。
 > 基线：`origin/main` = `b61a0a04b88f5828707f7ef64781389944471be8`。
@@ -15,21 +17,21 @@
 
 | 参数 | 提案值 | 说明 | 维护者批准值 |
 |---|---|---|---|
-| `S2-F5` 测试负载 | 单个 ≥256 MiB 文件批次 + 每 50 ms 一个文本事件，持续 60 s | 已在 `s2_f5_text_latency_baseline` 中实现 | **批准**（见下节实测） |
+| `S2-F5` 测试负载 | 单个 ≥256 MiB 文件批次 + 每 50 ms 一个文本事件，持续 60 s | 旧模型未满足；当前 authenticated_worker_baseline 使用合法 16 文件/256MiB | **批准**（见下节实测） |
 | 文本端到端延迟上限 | 提案 p99 ≤ 3000 ms（基线采集后校准） | **维护者定为 p99 ≤ 100 ms**；单机调度层基线 p99 为亚毫秒，其余留给真实网络 | **p99 ≤ 100 ms** |
-| 队列水位阈值 | 提案 priority 队列峰值 ≤ 48（容量 64 的 75%） | 单机基线实测峰值 30–32 | **≤ 48** |
-| 允许的永久丢文本事件数 | **0**（硬性） | 单机基线实测 0 | **0**（硬性） |
+| 队列水位阈值 | 提案 priority 队列峰值 ≤ 48（容量 64 的 75%） | 历史模型峰值 30–32；当前生产 worker 见下表 | **≤ 48** |
+| 允许的永久丢文本事件数 | **0**（硬性） | 历史模型为 0；生产 worker 使用 attempted/enqueued/received/ACKed 核对 | **0**（硬性） |
 | `S4-P1-4` 锁等待判定值 | 提案单次引擎锁等待 p99 ≤ 20 ms；样本数 ≥ 200 次分块 | **仍待设备测量确认**（需真实传输中的平台回调耗时）；数值先按提案执行 | **p99 ≤ 20 ms（暂定，待 S4-P1-4 实测确认）** |
 | 样本数 / 重复次数 | 每个场景 ≥ 3 轮，取中位数与 p99；轮间环境一致 | 反对单次易抖动断言（如“< 1 ms”） | **≥ 3 轮** |
 | 基线采集环境 | macOS 与 Windows 各一台，记录 CPU/内存/磁盘与网络类型 | **本轮仅单机 macOS**（Apple Silicon，loopback，逐帧服务时间为模型参数）；Windows 与真实网络待补 | **单机 macOS，Windows 待补** |
 
-## 单机实测基线（2026-09-30）
+## 历史调度模型记录（2026-09-30；不承担 S2-F5 验收）
 
-**方法**：`shared/rust-core/src/peer/delivery/tests.rs::s2_f5_text_latency_baseline`（`#[ignore]`，不进 CI）。它驱动**真实的**通道（容量 `CHANNEL_SIZE = 64`）与**真实的**调度器 `receive_scheduled_frame`（priority 优先、`PRIORITY_BURST_LIMIT = 8` 允许 bulk 穿插），负载即本文件上一节所写：60 秒、每 50 ms 一个文本事件，同时一个 256 MiB 批次推进（64 个 `FileMeta` 控制帧走 priority、256 个 `FileChunk` 走 bulk）。帧自带 `enqueued_at`，延迟由入队到被调度的时间测得；文本入队用 `try_send`，满队即计为丢弃。
+**方法**：`shared/rust-core/src/peer/delivery/tests.rs::scheduler_model_latency_baseline`（`#[ignore]`，不进 CI）。它驱动**真实的**通道（容量 `CHANNEL_SIZE = 64`）与**真实的**调度器 `receive_scheduled_frame`（priority 优先、`PRIORITY_BURST_LIMIT = 8` 允许 bulk 穿插），历史驱动宣称采用本文件负载：60 秒、每 50 ms 一个文本事件，同时推进名义上的 256 MiB 批次（64 个 `FileMeta` 控制帧走 priority、256 个 `FileChunk` 走 bulk）。帧自带 `enqueued_at`，延迟由入队到被调度的时间测得；文本入队用 `try_send`，满队即计为丢弃。
 
 ```bash
 cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib \
-  s2_f5_text_latency_baseline -- --ignored --nocapture
+  scheduler_model_latency_baseline -- --ignored --nocapture
 ```
 
 **逐帧服务时间取 200 µs**（模型参数，非实测网络）。worker 每帧一次 await 写线，单机 loopback 写是最接近的代理；该值随结果一并报告，不藏在结论里。
@@ -40,7 +42,7 @@ cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib \
 | 2 | 57 µs | 343 µs | 48.2 ms | **0** | 32 / 64 |
 | 3 | 59 µs | 569 µs | 47.3 ms | **0** | 30 / 64 |
 
-**对照提案**：p99 ≤ 3000 ms 与深度 ≤ 48 都远未触及（p99 实测亚毫秒；深度 ~31）；硬性要求"永久丢文本事件数为 0"满足。
+**历史观测的用途**：这些数字只描述这个调度模型，不能证明合法批次、真实 worker ACK 等待或应用的永久丢事件数达标。
 
 ### 复现与离散度（复核后重写）
 
@@ -58,15 +60,41 @@ cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib \
 
 **判定依据是签署阈值，不是观测值**：阈值（p99 ≤ 100 ms、水位 ≤ 48、永久丢 0）对上述全部会话都成立。三者的余量差别很大，不要笼统说"都有余量"：p99 的余量是 1–2 个数量级（亚毫秒/毫秒级对 100 ms）；水位只是把观测到的 29–36 对 48，余量约 25–40%，**不到一个数量级**，同机负载继续加重就可能顶到；"永久丢 0"是硬性阈值，**没有任何余量**，任何一次非零丢弃即为不达标。观测值只说明离散度的量级——它随同机负载移动，p50 的 36 ↔ 90 µs 与 p99 的 125 µs ↔ 1.24 ms 都是调度噪声。
 
-`S2-F5` 基线在**改版后自己判定**：`s2_f5_text_latency_baseline` 打印数字之后会断言签署阈值（永久丢 == 0、p99 ≤ 100 ms、峰值深度 ≤ 48），失败即测试失败。它是 `#[ignore]` 的，只在显式运行时执行，所以机器负载不会把 CI 变红——重跑即可。
+历史模型自身的参数检查：`scheduler_model_latency_baseline` 打印数字之后会断言签署阈值（永久丢 == 0、p99 ≤ 100 ms、峰值深度 ≤ 48），失败即测试失败。它是 `#[ignore]` 的，只在显式运行时执行，所有失败会话必须记录并调查，不能重跑抹掉。
 
 **这些数字的边界（必须与数字一起看）**：
 
 - 单机、**服务时间为模型参数**，不是真实网络；测的是**队列与调度**这一层的贡献。
-- 文件帧按通道允许的最快速率发出，因此 bulk 侧比真实传输更密；priority 侧的压力来自批次开始时的 64 个控制帧，与真实形态一致。
+- 文件帧按通道允许的最快速率发出，因此 bulk 侧比真实传输更密；priority 侧的压力来自批次开始时的 64 个控制帧；这超过协议合法批次的 16 文件上限，不能代表生产批次。
 - max（~46–65 ms）近似等于批次开始时清空那 320 帧的时间，反映的是**一次性突发**，不是持续状态。
 - 冻结几何：CI 门禁 `a_full_priority_queue_never_drops_a_text_frame_silently` 会**实测生产构造出的** priority 容量，并要求它正好等于"由签署水位推出的容量"（48 × 4 / 3 = 64）；因此无论改常量还是改调用点，通道被收缩都会让门禁变红。水位 48 本身没有任何运行时机制强制，也不在 CI 里测量；基线断言的是**它自己按同一常量建的**通道的峰值深度，因此调用点被单独改小时基线看不见——那由上面的 CI 门禁负责。
 - **`S4-P1-4`（每分块平台进度回调的锁等待）本轮未测**：它需要在真实传输中测量平台回调的耗时，属设备级测量。
+
+## 生产 worker 历史本机观测（2026-10-01）
+
+运行 `s2_f5_authenticated_worker_baseline -- --ignored --nocapture --test-threads=1`。Apple M4 / 16 GiB / macOS 27.0 (26A428) / Rust 1.91.0，debug 构建，Tokio 4 worker，Noise 认证 duplex（256 KiB），未并行跑重负载检查。16 文件 × 16 MiB 的合法批次，共 256 MiB，实际分块接收、`.part`、摘要验证、提交；每块 ACK 注入 250 ms 延迟保持负载。FileMeta ACK 取 0/50/500 ms 各三轮。
+
+文本固定每 50 ms 计划一次，共 1200 次/60 s；Burst 补迟到调度，端到端从计划时刻到 ACK，核对实际入队/接收/确认。九轮均有 1200 个 file-active 文本样本，attempted = enqueued = received = ACKed = 1200，旧日志 expired/rejected 是驱动填入的字面零，没有测量拒绝或过期计数。文件每轮完整处理 268435456 字节。旧断言通过只证明这次驱动的文本确认/延迟；不能据此宣称签署水位达标。
+
+| 轮次 | FileMeta ACK 延迟 | 文本 p99 | 文本 max | 事件队列占用峰值 | 接收/ACK |
+|---|---|---|---|---|---|
+| 1 | 0 ms | 50.013 ms | 56.309 ms | 2 / 64 | 1200 / 1200 |
+| 1 | 50 ms | 51.493 ms | 58.333 ms | 2 / 64 | 1200 / 1200 |
+| 1 | 500 ms | 48.638 ms | 55.616 ms | 2 / 64 | 1200 / 1200 |
+| 2 | 0 ms | 48.573 ms | 59.618 ms | 2 / 64 | 1200 / 1200 |
+| 2 | 50 ms | 45.236 ms | 57.236 ms | 2 / 64 | 1200 / 1200 |
+| 2 | 500 ms | 49.017 ms | 55.808 ms | 2 / 64 | 1200 / 1200 |
+| 3 | 0 ms | 50.568 ms | 57.791 ms | 2 / 64 | 1200 / 1200 |
+| 3 | 50 ms | 51.896 ms | 55.709 ms | 2 / 64 | 1200 / 1200 |
+| 3 | 500 ms | 50.404 ms | 67.092 ms | 2 / 64 | 1200 / 1200 |
+
+**水位口径**：通道隔离后，旧 `peak_priority_depth` 只采事件 lane（含 reserve 槽位），文件控制帧另走文件 lane。2/64 不等价于签署的共享 priority 水位，原 `peak <= 48` 断言不能证明该预算，已移除；48 阈值与签字保持不变。水位测量范围需维护者确认，S2-F5 因此继续 partial。新驱动改名为 `peak_event_priority_depth` 并记录真实 ACK 结果分类计数。后续源码指纹与运行见 [后续复核](remediation/FOLLOW-UP-2026-10-01.md)。
+
+原始 [执行日志](remediation/implementation-evidence-2026-10-01/worker-baseline.log) 与 [逐轮 JSON](remediation/implementation-evidence-2026-10-01/worker-baseline.json) 保留全部观测。这些是观测值，不是上下界。文件完整执行约114–122秒，文本负载为前60秒。
+
+**适用范围**：生产 pool/worker/executor 与 Core 接收；BenchmarkPlatform 的系统剪贴板/历史通知回调为 stub，未测原生系统剪贴板、最终应用打包、真实网络或 Windows。S2-F5 仍 `partial`。初版单线程/Skip 驱动只尝试692/1200个文本，已中断并保留 [无效驱动记录](remediation/implementation-evidence-2026-10-01/worker-baseline-invalid-skip.log)，不能作为通过证据。
+
+**S4-P1-4 诊断**：实际 macOS 平台进度回调200样本，注入 FILE_PROGRESS 持锁50ms，p50 60.024ms / p99 60.117ms / max 61.882ms。此实验只证明回调会受锁竞争拖延；不判定真实设备20ms预算。见 [诊断日志](remediation/implementation-evidence-2026-10-01/progress-callback-mac.log)，条目继续 `unfixed`。
 
 ## 判定规则
 

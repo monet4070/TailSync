@@ -1,0 +1,186 @@
+
+ RUN  v4.1.11 /Users/monet/TailSync/TailSync-remediation/windows
+
+ ❯ src/pages/History.test.tsx (29 tests | 1 failed | 28 skipped) 68ms
+     × keeps a suppressed warning pending until the notice is rendered after cooldown 67ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/pages/History.test.tsx > History item actions > keeps a suppressed warning pending until the notice is rendered after cooldown
+AssertionError: expected "vi.fn()" to not be called with arguments: [ 'ack_sync_warning', { id: 103 } ]
+
+Received:
+
+  1st vi.fn() call:
+
+  [
+-   "ack_sync_warning",
+-   {
+-     "id": 103,
+-   },
++   "get_history_capabilities",
+  ]
+
+  2nd vi.fn() call:
+
+  [
+-   "ack_sync_warning",
+-   {
+-     "id": 103,
+-   },
++   "get_migration_diagnostics",
+  ]
+
+  3rd vi.fn() call:
+
+  [
+-   "ack_sync_warning",
+-   {
+-     "id": 103,
+-   },
++   "get_settings",
+  ]
+
+  4th vi.fn() call:
+
+  [
+-   "ack_sync_warning",
++   "wait_runtime_snapshot",
+    {
+-     "id": 103,
++     "sinceNotificationId": 0,
++     "sinceRevision": 0,
++     "waitMs": 2500,
+    },
+  ]
+
+  5th vi.fn() call:
+
+  [
+-   "ack_sync_warning",
++   "get_history_page",
+    {
+-     "id": 103,
++     "category": null,
++     "endTime": null,
++     "keyword": null,
++     "limit": 30,
++     "offset": 0,
++     "startTime": null,
+    },
+  ]
+
+  6th vi.fn() call:
+
+  [
+-   "ack_sync_warning",
++   "get_history_page",
+    {
+-     "id": 103,
++     "category": null,
++     "endTime": null,
++     "keyword": null,
++     "limit": 30,
++     "offset": 0,
++     "startTime": null,
+    },
+  ]
+
+  7th vi.fn() call:
+
+  [
+    "ack_sync_warning",
+    {
+-     "id": 103,
++     "id": 101,
+    },
+  ]
+
+  8th vi.fn() call:
+
+  [
+-   "ack_sync_warning",
++   "wait_runtime_snapshot",
+    {
+-     "id": 103,
++     "sinceNotificationId": 0,
++     "sinceRevision": 101,
++     "waitMs": 2500,
+    },
+  ]
+
+  9th vi.fn() call:
+
+  [
+-   "ack_sync_warning",
++   "get_history_page",
+    {
+-     "id": 103,
++     "category": null,
++     "endTime": null,
++     "keyword": null,
++     "limit": 30,
++     "offset": 0,
++     "startTime": null,
+    },
+  ]
+
+  10th vi.fn() call:
+
+  [
+    "ack_sync_warning",
+    {
+-     "id": 103,
++     "id": 102,
+    },
+  ]
+
+  11th vi.fn() call:
+
+  [
+-   "ack_sync_warning",
++   "wait_runtime_snapshot",
+    {
+-     "id": 103,
++     "sinceNotificationId": 0,
++     "sinceRevision": 102,
++     "waitMs": 2500,
+    },
+  ]
+
+  12th vi.fn() call:
+
+Compared values have no visual difference.
+
+  13th vi.fn() call:
+
+  [
+-   "ack_sync_warning",
++   "wait_runtime_snapshot",
+    {
+-     "id": 103,
++     "sinceNotificationId": 0,
++     "sinceRevision": 103,
++     "waitMs": 2500,
+    },
+  ]
+
+
+Number of calls: 13
+
+ ❯ src/pages/History.test.tsx:683:28
+    681|     await deliver(103);
+    682|     expect(document.body.textContent).not.toContain("peer-103");
+    683|     expect(invokeMock).not.toHaveBeenCalledWith("ack_sync_warning", {i…
+       |                            ^
+    684|     now += 1500;
+    685|     await waitFor(() => expect(document.body.textContent).toContain("p…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 28 skipped (29)
+   Start at  23:20:57
+   Duration  882ms (transform 114ms, setup 97ms, import 166ms, tests 68ms, environment 449ms)
+
