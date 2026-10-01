@@ -1085,7 +1085,7 @@ mod acceptance_tests {
     #[ignore = "subprocess worker; run by inbound_test_peer_does_not_modify_user_configuration"]
     async fn inbound_isolation_worker() {
         let Some(root) = std::env::var_os("TAILSYNC_INBOUND_ISOLATION_WORKER") else { return; };
-        let production = directories::ProjectDirs::from("com", "tailsync", "TailSync").unwrap().data_dir().to_path_buf();
+        let production = db::default_user_data_dir_for_test().unwrap();
         let isolated = db::get_data_dir();
         // Fail before writing anything if the test build selects user data.
         assert_ne!(isolated, production, "a test handshake would overwrite the user's config-v2.json");

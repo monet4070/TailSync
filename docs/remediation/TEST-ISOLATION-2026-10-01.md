@@ -37,7 +37,7 @@ Node 子进程测试给继承的三个数据路径放入受控的“用户数据
 变异验证：恢复隐式 HOME 历史导入，Core 门禁因导入旧数据而失败；恢复继承用户数据环境变量，
 三个 Node 门禁全部失败。原始日志与 `mutations.json` 见 [证据目录](test-isolation-evidence-2026-10-01/)。
 
-## 本地验证
+## 本地验证（`77cbbcb`）
 
 - Core：491 个单元测试通过、4 个顶层 ignored；另 2 个 integration 测试通过、1 个 worker ignored。
 - runtime：23 通过。macOS Rust：115 通过、3 个顶层 ignored；其他 targets 无测试。
@@ -47,3 +47,11 @@ Node 子进程测试给继承的三个数据路径放入受控的“用户数据
 
 本地 Rust 验证关闭调试符号和增量缓存以节约磁盘，不改变业务测试断言。源码散列、命令和原始
 输出见证据目录；这些记录对应本地验证时的修复源码，远端原生 CI 结果以对应提交的 Actions 为准。
+
+## Windows 原生编译跟进
+
+`77cbbcb` 的 [原生 CI](https://github.com/monet4070/TailSync/actions/runs/36815934085) 在 Windows
+application Clippy 阶段发现共享测试直接引用 `directories`，而该平台没有直接声明此依赖。
+跟进修复让测试通过 Core 的 dev-only 目录查询取得正常平台目录；查询与生产路径选择复用同一
+函数。没有添加依赖或改变隔离策略。上述原始本地证据保留并明确绑定原提交，后续结果以修复
+提交对应的 CI 为准。

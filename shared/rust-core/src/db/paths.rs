@@ -12,10 +12,7 @@ pub fn get_data_dir() -> PathBuf {
             let directory = std::env::var_os("TAILSYNC_DATA_DIR")
                 .map(PathBuf::from)
                 .or_else(implicit_test_data_directory)
-                .or_else(|| {
-                    directories::ProjectDirs::from("com", "tailsync", "TailSync")
-                        .map(|dirs| dirs.data_dir().to_path_buf())
-                })
+                .or_else(platform_data_directory)
                 .unwrap_or_else(|| {
                     let home = std::env::var("HOME")
                         .or_else(|_| std::env::var("USERPROFILE"))
@@ -29,6 +26,17 @@ pub fn get_data_dir() -> PathBuf {
             directory
         })
         .clone()
+}
+
+fn platform_data_directory() -> Option<PathBuf> {
+    directories::ProjectDirs::from("com", "tailsync", "TailSync")
+        .map(|dirs| dirs.data_dir().to_path_buf())
+}
+
+/// Inspect the normal platform directory without choosing or creating it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn default_user_data_dir_for_test() -> Option<PathBuf> {
+    platform_data_directory()
 }
 
 fn implicit_test_data_directory() -> Option<PathBuf> {
