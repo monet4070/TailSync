@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "sourceBaseCommit": "65485894f06fa5ebb6c75b26f02b169c0e581f21",
+  "capturedAtUtc": "2026-10-01T04:34:40.403307+00:00",
+  "verifiedRepairSourceSha256": {
+    "shared/platform-network-server.rs": "0a94778e8aebd03f44e96509fd2ac7b3c2b4f779c518b0a739c898831847e992",
+    "shared/rust-core/src/crypto.rs": "0cf155c69ce0e74dcaa339ca0903717e29e7603a85b80df7e67362ad3e49725e",
+    "shared/rust-core/src/crypto/keystore.rs": "0b5a55d3380e603487368df1db51d0b9753beb7eaa7f252bf00948fa954666fe",
+    "shared/rust-core/src/crypto/tests.rs": "7d71717df28a6cf5f6dfe9eb8fe49ad9d22d8710f03c066159a17aa449e2eb25",
+    "shared/rust-core/src/db/paths.rs": "ecd6e2545d74ef0d16b46f4b0c062899c795dd5ae3d1d4756a8d67a1f03c3054",
+    "shared/rust-core/src/db/legacy_v1.rs": "db96b11d0ae760348058562262a22eba417fdc01db46e61235755e49c70ee536",
+    "scripts/run-isolated-tests.mjs": "7a9739504e5cf68ef27c0d075f455c7995cfbc26b774d58f508687177a00e712",
+    "scripts/run-remediation-tests.mjs": "fec3e21c389ff6e19cedf7e12c6d8d37d9d9435d8a4719d7f9d0f7d577299637",
+    "scripts/test-environment.mjs": "631a8f4a396a542f1f5637025e64d517445bde21daca220b5bed8a62fae99276",
+    "scripts/test-environment.test.mjs": "453d4c7fcb02f02df3f0020a95eedb4a1461a8f7a6ff939f1f1a97543bbd7799",
+    "macos/scripts/check_macos_sources.sh": "530af730a6a0b6c3bca05cd871036af86035e22b7a42ef21ea10dd51bafa4abb"
+  },
+  "logsSha256": {
+    "inbound-red.log": "db8a1859c6b71bb816d744eb57de9319ca8bb68ca06a86ef1b9d168379f1f9a9",
+    "inbound-green.log": "a81878fae1e0d8363d59437175b853596fea5750ba55ef95c6475accf52e2fad",
+    "core-isolation-green.log": "7e7aa53abbcf80c1e58ff564b0bd4a3bf6d4d9c0cccaa48b0ae872ae6ec1c8bd",
+    "legacy-isolation-mutant-red.log": "52d9f24319f8c00c00b0655a777cc57018f8736426f35b1d5f1d4fdc911a7f88",
+    "launcher-isolation-mutant-red.log": "123129a5474b1fecab577ac01d1cf0debf326962494e3e561984e3921fe3bd1b",
+    "mutations.json": "fa33944cc8773ddfa692fa7974c9412a335bd8b9180ddde4b0f6f60d6afb36ee",
+    "core-tests.log": "21a985fb01c5945cebce29b866df0ba7d62c888b9bdec989ea67a4f2675f5500",
+    "runtime-tests.log": "783e0ee41509d3032962c19410bf2bf03f27a9ccd573f3f7553d9e89e5393c2f",
+    "macos-tests.log": "b121285bbd2498909dc252eb8bf018f6c9ee493efaaa51f094db1040fc257e45",
+    "core-clippy.log": "5b0e724ec7a7d5f9e0211bb18181660f1be2daf5b273f144a1ffeacc185f6c74",
+    "macos-clippy.log": "3728b09fb81e2d369fbebfb72e5cee59b764bc1bd0d47ed9924c91621966c302",
+    "node-tests.log": "a3c63ddd076c69d8d97be18132dc0d39228056f65e4247870a88d9acf85564b3",
+    "verification.json": "3fd21da5633c1607fe5412bc1966383bc43a57beb283222cc805e45041ba04ef"
+  },
+  "localBuildEnvironment": {
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_INCREMENTAL": "0"
+  },
+  "redLogScope": "Before the implicit test data directory repair. The assertion fails before writing user configuration.",
+  "userConfigUnchangedAfterTests": true,
+  "red_mutations_restored": true
+}

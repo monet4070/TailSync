@@ -10,3 +10,5 @@ docs/remediation/implementation-evidence-2026-10-01/** -text
 docs/remediation/implementation-evidence-2026-10-01/**/*.log -whitespace
 docs/remediation/follow-up-evidence-2026-10-01/** -text
 docs/remediation/follow-up-evidence-2026-10-01/**/*.log -whitespace
+docs/remediation/test-isolation-evidence-2026-10-01/** -text
+docs/remediation/test-isolation-evidence-2026-10-01/**/*.log -whitespace

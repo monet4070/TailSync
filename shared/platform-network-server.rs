@@ -1055,6 +1055,63 @@ mod acceptance_tests {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn inbound_test_peer_does_not_modify_user_configuration() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-inbound-isolation-{}-{:016x}",
+            std::process::id(), rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let module = module_path!().split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([format!("{module}::inbound_isolation_worker"), "--exact".into(), "--ignored".into(), "--nocapture".into()])
+            .env("TAILSYNC_INBOUND_ISOLATION_WORKER", &root)
+            .env("HOME", root.join("home"))
+            .env("USERPROFILE", root.join("home"))
+            .env("XDG_DATA_HOME", root.join("home/.local/share"))
+            .env("TMPDIR", &root)
+            .env("TMP", &root)
+            .env("TEMP", &root)
+            .env_remove("TAILSYNC_DATA_DIR")
+            .env_remove("TAILSYNC_STORAGE_DIR")
+            .env_remove("TAILSYNC_V1_DATA_DIR")
+            .output().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(output.status.success(), "isolated inbound worker failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[tokio::test]
+    #[ignore = "subprocess worker; run by inbound_test_peer_does_not_modify_user_configuration"]
+    async fn inbound_isolation_worker() {
+        let Some(root) = std::env::var_os("TAILSYNC_INBOUND_ISOLATION_WORKER") else { return; };
+        let production = directories::ProjectDirs::from("com", "tailsync", "TailSync").unwrap().data_dir().to_path_buf();
+        let isolated = db::get_data_dir();
+        // Fail before writing anything if the test build selects user data.
+        assert_ne!(isolated, production, "a test handshake would overwrite the user's config-v2.json");
+        let user_config = production.join("config-v2.json");
+        let before = std::fs::read(&user_config).ok();
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let mut trusted = crypto::Settings::default();
+        trusted.trusted_peer_keys.insert("client".into(), STANDARD.encode(client_identity.public_key()));
+        let settings = Arc::new(Mutex::new(trusted));
+        let (client, server) = open_session(
+            server_identity, &client_identity, settings,
+            Arc::new(Mutex::new(sync::SyncEngine::new())),
+            Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap())),
+        ).await;
+        let client = client.expect("fixture client admitted");
+        let saved: crypto::Settings = serde_json::from_slice(&std::fs::read(isolated.join("config-v2.json")).unwrap()).unwrap();
+        assert_eq!(saved.trusted_peer_keys["client"], STANDARD.encode(client_identity.public_key()));
+        assert_eq!(saved.trusted_peer_addresses["client"]["lan"], "127.0.0.1");
+        assert_eq!(std::fs::read(&user_config).ok(), before, "test admission changed user configuration");
+        drop(client);
+        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        std::fs::write(std::path::PathBuf::from(root).join("isolated-root.txt"), isolated.to_string_lossy().as_bytes()).unwrap();
+        std::fs::remove_dir_all(isolated).unwrap();
+    }
+
     #[derive(Default)]
     struct RecordingPlatform {
         image_writes: AtomicUsize,

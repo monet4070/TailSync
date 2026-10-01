@@ -1,0 +1,11 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+   Compiling tailsync-runtime v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/tailsync-runtime)
+   Compiling tailsync v2.3.1 (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri)
+    Finished `test` profile [unoptimized] target(s) in 9.60s
+     Running unittests src/lib.rs (/private/tmp/tailsync-test-isolation-yh4pofsf/target/debug/deps/tailsync_lib-9f922dbabe5ba8cd)
+
+running 1 test
+test network::server::acceptance_tests::inbound_test_peer_does_not_modify_user_configuration ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.05s
+

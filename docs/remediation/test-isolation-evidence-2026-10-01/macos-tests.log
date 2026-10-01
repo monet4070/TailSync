@@ -1,0 +1,140 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+   Compiling tailsync-runtime v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/tailsync-runtime)
+   Compiling tailsync v2.3.1 (/Users/monet/TailSync/TailSync-remediation/macos/src-tauri)
+    Finished `test` profile [unoptimized] target(s) in 11.20s
+     Running unittests src/lib.rs (/private/tmp/tailsync-test-isolation-yh4pofsf/target/debug/deps/tailsync_lib-9f922dbabe5ba8cd)
+
+running 118 tests
+test api::routes::registry::tests::all_registered_commands_parse_and_unknown_is_rejected ... ok
+test api::routes::settings::tests::connection_mode_route_preserves_paused_sync_and_returns_live_settings ... ok
+test api::routes::settings::tests::connection_mode_route_rejects_missing_and_invalid_modes_without_mutation ... ok
+test api::routes::stable_capability_tests::macos_socket_advertises_stable_errors ... ok
+test api::tests::api_listener_bind_retry_stops_for_shutdown ... ok
+test api::tests::api_listener_recovers_after_the_address_is_released ... ok
+test api::tests::api_reader_rejects_oversized_and_incomplete_requests ... ok
+test api::tests::api_reader_times_out_slow_clients ... ok
+test api::tests::api_token_requires_exact_hex_and_compares_all_bytes ... ok
+test api::tests::history_capabilities_advertise_multi_label_and_date_contracts ... ok
+test api::tests::history_request_accepts_new_filters_and_legacy_omissions ... ok
+test api::tests::iroh_only_snapshot_exposes_the_local_endpoint_route ... ok
+test api::tests::notification_buffer_state_reports_cursor_and_drops ... ok
+test api::tests::notification_snapshot_keeps_entries_and_cursor_in_one_window_during_overflow ... ok
+test api::tests::peer_snapshot_does_not_infer_a_connection_from_selected_mode ... ok
+test api::tests::peer_snapshot_exposes_protocol_upgrade_notice_for_a_trusted_peer ... ok
+test api::tests::peer_snapshot_keeps_local_identity_when_discovery_fails ... ok
+test api::tests::platform_progress_callback_contention_measurement ... ignored, 200 real callback samples with injected lock contention
+test api::tests::progress_revision_gate_coalesces_updates_and_flushes_terminal_state ... ok
+test api::tests::progress_scope_keeps_other_concurrent_devices_visible ... ok
+test api::tests::runtime_notification_buffer_is_bounded_and_incremental ... ok
+test api::tests::runtime_notification_overflow_is_reported_not_hidden ... ok
+test api::tests::runtime_revision_waiter_wakes_on_change ... ok
+test api::tests::runtime_service_instance_is_stable_and_nonzero ... ok
+test api::tests::runtime_snapshot_request_accepts_bounded_wait_fields ... ok
+test api::tests::thumbnail_alpha_weights_prevent_transparent_color_bleed ... ok
+test api::tests::thumbnail_box_averages_instead_of_point_sampling ... ok
+test api::tests::thumbnail_keeps_a_solid_color_pure ... ok
+test api::tests::thumbnail_leaves_images_within_the_cap_untouched ... ok
+test api::tests::thumbnail_preserves_aspect_ratio_and_caps_longest_edge ... ok
+test api::tests::v2_theme_request_carries_path_and_theme_id ... ok
+test api::transport::cancellation_tests::authenticated_long_poll_disconnect_returns_connection_permit ... ok
+test api::transport::cancellation_tests::authenticated_runtime_route_keeps_notification_window_consistent_during_overflow ... ok
+test api::transport::cancellation_tests::disconnected_client_drops_pending_response ... ok
+test api::transport::tests::incompatible_protocol_socket_error_has_a_fixed_public_envelope ... ok
+test api::transport::tests::preview_response_gets_extended_write_timeout_only ... ok
+test api::transport::tests::stable_error_opt_in_preserves_legacy_and_redacts_details ... ok
+test clipboard::tests::a_second_batch_cannot_claim_space_reserved_by_the_first ... ok
+test clipboard::tests::canonical_alias_of_a_managed_file_is_not_broadcast ... ok
+test clipboard::tests::changed_content_bypasses_the_native_event_debounce ... ok
+test clipboard::tests::consecutive_native_events_for_identical_content_are_debounced ... ok
+test clipboard::tests::file_batch_admission_waits_for_the_shared_admission_lock ... ok
+test clipboard::tests::file_batch_failures_are_summarized_once ... ok
+test clipboard::tests::immediate_transfers_require_enabled_trusted_peers_with_a_route ... ok
+test clipboard::tests::iroh_node_ids_are_valid_broadcast_targets_without_ip_parsing ... ok
+test clipboard::tests::managed_directory_name_prefix_is_not_treated_as_managed ... ok
+test clipboard::tests::outgoing_recovery_commits_history_before_removing_completed_journal ... ok
+test clipboard::tests::outgoing_recovery_keeps_journal_when_local_history_fails ... ok
+test clipboard::tests::outgoing_recovery_retries_pending_work_after_the_peer_returns ... ok
+test clipboard::tests::periodic_maintenance_runs_and_stops_on_shutdown ... ok
+test clipboard::tests::permanent_source_failure_retires_the_outgoing_batch ... ok
+test clipboard::tests::production_admission_and_gc_run_storage_work_off_the_async_thread ... ok
+test clipboard::tests::production_fanout_and_resume_reuse_source_hashes_and_check_completion ... ok
+test clipboard::tests::repeated_native_events_for_a_managed_file_never_broadcast ... ok
+test clipboard::tests::shared_source_validation_rejects_changes_and_missing_files ... ok
+test clipboard::tests::source_validation_is_shared_for_one_two_and_eight_peers ... ok
+test clipboard::tests::the_admission_lock_is_held_while_the_batch_state_is_read ... ok
+test clipboard::tests::transfer_maintenance_tick_sweeps_aged_orphaned_payloads ... ok
+test clipboard::tests::user_owned_file_is_still_broadcast ... ok
+test clipboard_file::tests::helper_output_larger_than_the_pipe_buffer_is_collected ... ok
+test clipboard_file::tests::native_clipboard_image_payload_decodes_to_rgba ... ok
+test clipboard_file::tests::native_clipboard_image_rejects_mismatched_dimensions ... ok
+test clipboard_file::tests::native_clipboard_image_rejects_oversized_dimensions_before_decoding ... ok
+test clipboard_file::tests::resolved_clipboard_helper_path_is_absolute_when_present ... ok
+test clipboard_file::tests::stuck_clipboard_helper_is_killed_after_timeout ... ok
+test clipboard_file::tests::unsupported_test_platform_has_no_file_clipboard_contents ... ok
+test commands::error::tests::command_errors_serialize_without_source_details ... ok
+test commands::error::tests::explicit_categories_use_fixed_policy ... ok
+test commands::error::tests::incompatible_pairing_error_uses_fixed_code_without_peer_details ... ok
+test commands::platform::stable_capability_tests::macos_tauri_advertises_stable_errors ... ok
+test network::lan::tests::discovery_rejects_self_by_hostname_or_local_ip ... ok
+test network::lan::tests::lan_discovery_response_fields_are_pinned ... ok
+test network::mdns::tests::discovery_rejects_self_by_fullname_or_device_fingerprint ... ok
+test network::mdns::tests::published_service_has_expected_type_port_and_security_metadata ... ok
+test network::mdns::tests::service_hostname_is_a_valid_dns_label ... ok
+test network::peer_cache::peer_cache_guards::a_discovery_round_never_persists_a_route_for_a_trusted_hostname ... ok
+test network::rate_limit::contract_tests::re_exported_budget_checker_is_the_shared_core_function ... ok
+test network::server::acceptance_tests::authenticated_but_unpaired_peer_cannot_enter_receive_loop ... ok
+test network::server::acceptance_tests::disabled_iroh_session_does_not_register_rtt_capability ... ok
+test network::server::acceptance_tests::disabling_a_paired_peer_revokes_its_active_receive_session ... ok
+test network::server::acceptance_tests::inbound_isolation_worker ... ignored, subprocess worker; run by inbound_test_peer_does_not_modify_user_configuration
+test network::server::acceptance_tests::inbound_test_peer_does_not_modify_user_configuration ... ok
+test network::server::acceptance_tests::malformed_image_chunk_is_rejected_without_partial_apply_and_next_session_recovers ... ok
+test network::server::acceptance_tests::trusted_iroh_session_registers_rtt_capability ... ok
+test network::server::acceptance_tests::untrusted_iroh_session_does_not_register_rtt_capability ... ok
+test network::tailscale::tests::discovery_requires_the_live_cli ... ok
+test network::tailscale::tests::live_macos_discovery_contains_an_online_peer ... ignored, requires a running macOS Tailscale installation
+test network::tailscale::tests::macos_uses_the_installed_cli_launcher_instead_of_the_gui_executable ... ok
+test network::tailscale::tests::status_parser_accepts_a_notice_before_json ... ok
+test network::tailscale::tests::status_parser_rejects_stopped_backend_and_missing_identity ... ok
+test network::tailscale::tests::status_parser_returns_only_online_valid_peers ... ok
+test network::tailscale::tests::status_parser_surfaces_non_json_cli_output ... ok
+test network::tests::cached_peer_lookup_does_not_run_discovery ... ok
+test network::tests::connection_limiter_caps_each_source_ip ... ok
+test network::tests::connection_pool_rebuilds_a_dead_cached_sender ... ok
+test network::tests::connection_pool_reuses_sender_for_peer ... ok
+test network::tests::connection_race_falls_back_to_tailscale_after_delay ... ok
+test network::tests::connection_race_uses_reachable_lan_before_tailscale_delay ... ok
+test network::tests::connection_worker_stops_when_the_pool_disconnects_it ... ok
+test network::tests::fifteen_minute_old_event_is_not_revived_after_reconnect ... ok
+test network::tests::file_batches_are_serial_per_peer_and_parallel_between_peers ... ok
+test network::tests::file_chunks_use_a_separate_queue_from_priority_messages ... ok
+test network::tests::full_peer_queue_does_not_hold_connection_pool_lock ... ok
+test network::tests::listener_can_rebind_after_a_connection_closes ... ok
+test network::tests::prewarm_recreates_a_trusted_connection_after_pool_disconnect ... ok
+test network::tests::protocol_compatibility_diagnostic_is_recorded_and_cleared ... ok
+test network::tests::reliable_delivery_rejects_an_ack_for_another_message ... ok
+test network::tests::remembered_trusted_peer_is_prewarmed_without_discovery ... ok
+test network::tests::silent_event_ack_ends_the_attempt_without_replaying_on_the_stream ... ok
+test network::tests::tailscale_status_requires_a_tailsync_udp_response_to_be_online ... ok
+test network::types::contract_tests::re_exported_types_are_the_shared_core_types ... ok
+test shutdown_tests::completed_shutdown_tasks_are_not_polled_twice ... ok
+test shutdown_tests::overdue_shutdown_tasks_are_aborted ... ok
+test shutdown_tests::stalled_shutdown_tasks_stay_within_the_interactive_exit_budget ... ok
+test updates::implementation::tests::embedded_update_key_is_never_a_documented_placeholder ... ok
+test updates::implementation::tests::macos_update_archive_contains_validated_signed_metadata ... ok
+test updates::implementation::tests::release_build_key_matches_the_checked_in_trust_anchor ... ok
+test updates::implementation::tests::signed_package_version_must_match_the_release_manifest ... ok
+
+test result: ok. 115 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 9.98s
+
+     Running unittests src/main.rs (/private/tmp/tailsync-test-isolation-yh4pofsf/target/debug/deps/tailsync-6160f8316f210ddc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/interop_probe.rs (/private/tmp/tailsync-test-isolation-yh4pofsf/target/debug/examples/interop_probe-4a293672090137f8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

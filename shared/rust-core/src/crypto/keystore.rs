@@ -142,15 +142,18 @@ pub(crate) fn get_dek() -> Result<DataKey, KeyStoreError> {
     #[cfg(not(test))]
     {
         #[cfg(feature = "test-support")]
-        if running_under_cargo_test_harness() {
+        if running_under_test_harness() {
             return Ok([0x54; DEK_SIZE]);
         }
         DEK_CACHE.get_or_try_init(&SystemKeyStore)
     }
 }
 
-#[cfg(all(not(test), feature = "test-support"))]
-fn running_under_cargo_test_harness() -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn running_under_test_harness() -> bool {
+    if cfg!(test) {
+        return true;
+    }
     let Ok(executable) = std::env::current_exe() else {
         return false;
     };
@@ -169,7 +172,10 @@ pub(super) fn is_cargo_test_harness_executable(executable: &std::path::Path) -> 
     let Some(name) = executable.file_stem().and_then(std::ffi::OsStr::to_str) else {
         return false;
     };
-    let Some(hash) = name.strip_prefix("tailsync_lib-") else {
+    let Some(hash) = name
+        .strip_prefix("tailsync_lib-")
+        .or_else(|| name.strip_prefix("tailsync_runtime-"))
+    else {
         return false;
     };
 

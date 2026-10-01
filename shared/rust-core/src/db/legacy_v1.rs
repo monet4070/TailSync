@@ -151,7 +151,8 @@ fn read_legacy_rows(connection: &Connection) -> Result<Vec<LegacyRow>, rusqlite:
 fn legacy_data_directory() -> Option<PathBuf> {
     legacy_data_directory_from(
         std::env::var_os("TAILSYNC_V1_DATA_DIR").map(PathBuf::from),
-        std::env::var_os("TAILSYNC_DATA_DIR").is_some(),
+        std::env::var_os("TAILSYNC_DATA_DIR").is_some()
+            || super::paths::uses_implicit_test_data_directory(),
         std::env::var_os("TAILSYNC_STORAGE_DIR").is_some(),
         std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))

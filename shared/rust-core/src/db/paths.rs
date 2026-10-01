@@ -11,6 +11,7 @@ pub fn get_data_dir() -> PathBuf {
         .get_or_init(|| {
             let directory = std::env::var_os("TAILSYNC_DATA_DIR")
                 .map(PathBuf::from)
+                .or_else(implicit_test_data_directory)
                 .or_else(|| {
                     directories::ProjectDirs::from("com", "tailsync", "TailSync")
                         .map(|dirs| dirs.data_dir().to_path_buf())
@@ -28,6 +29,29 @@ pub fn get_data_dir() -> PathBuf {
             directory
         })
         .clone()
+}
+
+fn implicit_test_data_directory() -> Option<PathBuf> {
+    #[cfg(any(test, feature = "test-support"))]
+    if crate::crypto::running_under_test_harness() {
+        // Settings, device identities, pending trust and file cleanup all use
+        // this same process-local store. A direct `cargo test` must be safe
+        // even when no launcher supplied explicit isolation variables.
+        return Some(std::env::temp_dir().join(format!(
+            "tailsync-test-data-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        )));
+    }
+    None
+}
+
+pub(super) fn uses_implicit_test_data_directory() -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    if crate::crypto::running_under_test_harness() {
+        return std::env::var_os("TAILSYNC_DATA_DIR").is_none();
+    }
+    false
 }
 
 fn storage_state() -> &'static RwLock<PathBuf> {
@@ -168,6 +192,88 @@ pub fn get_clipboard_files_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn implicit_test_store_keeps_settings_and_legacy_history_out_of_user_data() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-core-isolation-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "db::paths::tests::implicit_test_store_worker",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("TAILSYNC_CORE_ISOLATION_WORKER", &root)
+            .env("HOME", root.join("home"))
+            .env("USERPROFILE", root.join("home"))
+            .env("XDG_DATA_HOME", root.join("home/.local/share"))
+            .env("TMPDIR", &root)
+            .env("TMP", &root)
+            .env("TEMP", &root)
+            .env_remove("TAILSYNC_DATA_DIR")
+            .env_remove("TAILSYNC_STORAGE_DIR")
+            .env_remove("TAILSYNC_V1_DATA_DIR")
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(
+            output.status.success(),
+            "isolated Core worker failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess worker; run by implicit_test_store_keeps_settings_and_legacy_history_out_of_user_data"]
+    fn implicit_test_store_worker() {
+        let Some(root) = std::env::var_os("TAILSYNC_CORE_ISOLATION_WORKER") else {
+            return;
+        };
+        let production = directories::ProjectDirs::from("com", "tailsync", "TailSync")
+            .unwrap()
+            .data_dir()
+            .to_path_buf();
+        let data = get_data_dir();
+        assert_ne!(data, production, "Core unit tests selected user data");
+        assert_eq!(get_storage_dir(), data);
+        let config = production.join("config-v2.json");
+        let original = std::fs::read(&config).ok();
+        let mut settings = crate::crypto::Settings::default();
+        settings
+            .trusted_peer_keys
+            .insert("client".into(), "fixture-key".into());
+        settings
+            .remember_peer_address("client", "lan", "127.0.0.1")
+            .unwrap();
+        assert!(data.join("config-v2.json").is_file());
+        assert_eq!(std::fs::read(&config).ok(), original);
+
+        // Implicit test isolation must also suppress discovery of v1 data in
+        // HOME. Otherwise a safe new store can still import personal history.
+        let legacy = PathBuf::from(root).join("home/TailSync_History");
+        std::fs::create_dir_all(&legacy).unwrap();
+        let key = fernet::Fernet::generate_key();
+        std::fs::write(legacy.join(".fernet_key"), &key).unwrap();
+        let fernet = fernet::Fernet::new(&key).unwrap();
+        let conn = rusqlite::Connection::open(legacy.join("history.db")).unwrap();
+        conn.execute_batch("CREATE TABLE history (id INTEGER PRIMARY KEY, time TEXT, type TEXT, desc TEXT, data BLOB);").unwrap();
+        conn.execute("INSERT INTO history VALUES (1, '2026-01-01T00:00:00Z', 'text', 'user legacy sentinel', ?1)",
+            rusqlite::params![fernet.encrypt(b"user legacy sentinel")]).unwrap();
+        drop(conn);
+        let db = super::super::HistoryDB::new().unwrap();
+        assert!(
+            db.get_all(None, None, 10, 0).unwrap().is_empty(),
+            "test store imported implicit user legacy history"
+        );
+        assert!(!data.join("v1-migration-report.json").exists());
+        assert_eq!(std::fs::read(&config).ok(), original);
+    }
 
     #[test]
     fn custom_parent_uses_fixed_directory_name() {

@@ -274,6 +274,9 @@ fn test_dek_is_limited_to_cargo_platform_test_executables() {
     assert!(super::is_cargo_test_harness_executable(
         std::path::Path::new("/workspace/target/debug/deps/tailsync_lib-b130076dc5f25812")
     ));
+    assert!(super::is_cargo_test_harness_executable(
+        std::path::Path::new("/workspace/target/debug/deps/tailsync_runtime-b130076dc5f25812.exe")
+    ));
     for path in [
         "/workspace/target/debug/tailsync",
         "/workspace/target/debug/deps/tailsync_lib",

@@ -13,12 +13,12 @@ echo '[1/3] Checking Rust sources...'
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo fmt --manifest-path ../shared/rust-core/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path ../shared/rust-core/Cargo.toml --all-targets -- -D warnings
-cargo test --locked --manifest-path ../shared/rust-core/Cargo.toml
+node ../scripts/run-isolated-tests.mjs -- cargo test --locked --manifest-path ../shared/rust-core/Cargo.toml
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets
+node ../scripts/run-isolated-tests.mjs -- cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets
 
 echo '[2/3] Checking the SwiftUI frontend...'
-swift test --package-path swift-ui
+node ../scripts/run-isolated-tests.mjs -- swift test --package-path swift-ui
 swift build -c release --package-path swift-ui
 
 echo '[3/3] Checking cross-platform contracts...'

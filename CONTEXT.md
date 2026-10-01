@@ -137,6 +137,13 @@ node windows/scripts/check_cross_platform_sync.mjs --win-root windows --mac-root
 test --no-run），Windows 原生编译/打包/运行由 CI 负责。注意 host 编译会因
 `#[cfg(target_os = windows)]` 块被裁掉而产生 dead-code 伪警告，属正常现象。
 
+本地验证命令可统一用 `node scripts/run-isolated-tests.mjs -- <命令>` 启动：每次调用都会覆盖
+`TAILSYNC_DATA_DIR`、`TAILSYNC_STORAGE_DIR`、`TAILSYNC_V1_DATA_DIR`，使用私有临时目录，结束后清理；
+不修改 `HOME` 或用户 Keychain。CI 整改门禁和 `check_macos_sources.sh` 已使用同一隔离器。
+直接运行 Core 单元测试或带 dev-only `test-support` 的平台/runtime 测试时，未显式指定数据目录也会
+自动选择进程独立的临时目录，并停止从真实 HOME 隐式发现旧版历史。显式目录供受控测试使用；
+不要手动将测试环境变量指向日常应用数据。普通应用可执行文件仍使用原生产目录和密钥策略。
+
 ## 当前实现说明与已知边界
 
 - `iroh_transport` 的 `repeated_rtt_probes` 测试已于 2026-08-27 解除 `#[ignore]`；测速复用应用的

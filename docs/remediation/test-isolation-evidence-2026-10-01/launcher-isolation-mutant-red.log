@@ -1,0 +1,73 @@
+✖ isolates real settings, storage and legacy paths and cleans up after exit 0 (121.3525ms)
+✖ isolates real settings, storage and legacy paths and cleans up after exit 7 (116.062625ms)
+✖ concurrent invocations have separate stores and do not mutate the caller environment (1.726083ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 0
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 317.660167
+
+✖ failing tests:
+
+test at scripts/test-environment.test.mjs:13:3
+✖ isolates real settings, storage and legacy paths and cleans up after exit 0 (121.3525ms)
+  AssertionError [ERR_ASSERTION]: temporary data survives child exit
+  
+  true !== false
+  
+      at TestContext.<anonymous> (file:///Users/monet/TailSync/TailSync-remediation/scripts/test-environment.test.mjs:39:16)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/test-environment.test.mjs:13:3
+✖ isolates real settings, storage and legacy paths and cleans up after exit 7 (116.062625ms)
+  AssertionError [ERR_ASSERTION]: temporary data survives child exit
+  
+  true !== false
+  
+      at TestContext.<anonymous> (file:///Users/monet/TailSync/TailSync-remediation/scripts/test-environment.test.mjs:39:16)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at scripts/test-environment.test.mjs:49:1
+✖ concurrent invocations have separate stores and do not mutate the caller environment (1.726083ms)
+  AssertionError [ERR_ASSERTION]: Expected "actual" to be strictly unequal to:
+  
+  '/live-data'
+      at TestContext.<anonymous> (file:///Users/monet/TailSync/TailSync-remediation/scripts/test-environment.test.mjs:54:12)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '/live-data',
+    expected: '/live-data',
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }

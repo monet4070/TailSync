@@ -1,0 +1,84 @@
+[
+  {
+    "name": "core-tests",
+    "command": [
+      "node",
+      "scripts/run-isolated-tests.mjs",
+      "--",
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "shared/rust-core/Cargo.toml",
+      "--",
+      "--test-threads=1"
+    ],
+    "exitCode": 0,
+    "durationSeconds": 30.73
+  },
+  {
+    "name": "runtime-tests",
+    "command": [
+      "node",
+      "scripts/run-isolated-tests.mjs",
+      "--",
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "shared/tailsync-runtime/Cargo.toml"
+    ],
+    "exitCode": 0,
+    "durationSeconds": 10.39
+  },
+  {
+    "name": "macos-tests",
+    "command": [
+      "node",
+      "scripts/run-isolated-tests.mjs",
+      "--",
+      "cargo",
+      "test",
+      "--locked",
+      "--manifest-path",
+      "macos/src-tauri/Cargo.toml",
+      "--all-targets",
+      "--",
+      "--test-threads=1"
+    ],
+    "exitCode": 0,
+    "durationSeconds": 22.61
+  },
+  {
+    "name": "core-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--manifest-path",
+      "shared/rust-core/Cargo.toml",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exitCode": 0,
+    "durationSeconds": 17.81
+  },
+  {
+    "name": "macos-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--manifest-path",
+      "macos/src-tauri/Cargo.toml",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exitCode": 0,
+    "durationSeconds": 29.25
+  }
+]

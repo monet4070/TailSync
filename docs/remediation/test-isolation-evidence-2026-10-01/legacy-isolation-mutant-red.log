@@ -1,0 +1,45 @@
+   Compiling tailsync-core v2.3.1 (/Users/monet/TailSync/TailSync-remediation/shared/rust-core)
+warning: function `uses_implicit_test_data_directory` is never used
+  --> shared/rust-core/src/db/paths.rs:49:15
+   |
+49 | pub(super) fn uses_implicit_test_data_directory() -> bool {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tailsync-core` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 8.57s
+     Running unittests src/lib.rs (/private/tmp/tailsync-test-isolation-yh4pofsf/target/debug/deps/tailsync_core-6093a1bf3401df71)
+
+running 1 test
+
+thread 'db::paths::tests::implicit_test_store_keeps_settings_and_legacy_history_out_of_user_data' (5032138) panicked at shared/rust-core/src/db/paths.rs:224:9:
+isolated Core worker failed:
+
+running 1 test
+test db::paths::tests::implicit_test_store_worker ... FAILED
+
+failures:
+
+failures:
+    db::paths::tests::implicit_test_store_worker
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 494 filtered out; finished in 0.04s
+
+
+
+thread 'db::paths::tests::implicit_test_store_worker' (5032140) panicked at shared/rust-core/src/db/paths.rs:270:9:
+test store imported implicit user legacy history
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test db::paths::tests::implicit_test_store_keeps_settings_and_legacy_history_out_of_user_data ... FAILED
+
+failures:
+
+failures:
+    db::paths::tests::implicit_test_store_keeps_settings_and_legacy_history_out_of_user_data
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 494 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `--lib`

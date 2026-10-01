@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { loadLedger, commandCovers } from './check-remediation-ledger.mjs';
 import { isExecutedTestCommand, parseTestOutput, sourceIdentity, testPassed } from './remediation-test-results.mjs';
+import { createIsolatedTestEnvironment } from './test-environment.mjs';
 
 const args = process.argv.slice(2);
 const separator = args.indexOf('--');
@@ -27,13 +28,19 @@ if (gates.some((e) => e.gate.kind === 'unit') && !isExecutedTestCommand(text)) t
 if (/-SkipSmokeTest\b/i.test(text)) throw new Error('Packaged smoke tests cannot be skipped');
 const before = sourceIdentity(root);
 const started = Date.now();
-const child = spawn(command[0], command.slice(1), { cwd: root, env: { ...process.env, CARGO_TERM_COLOR: 'never' }, stdio: ['inherit', 'pipe', 'pipe'] });
+const environment = createIsolatedTestEnvironment({ ...process.env, CARGO_TERM_COLOR: 'never' });
 let output = '';
-for (const [stream, destination] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
-  stream.setEncoding('utf8');
-  stream.on('data', (data) => { output += data; destination.write(data); });
+let exitCode;
+try {
+  const child = spawn(command[0], command.slice(1), { cwd: root, env: environment.env, stdio: ['inherit', 'pipe', 'pipe'] });
+  for (const [stream, destination] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+    stream.setEncoding('utf8');
+    stream.on('data', (data) => { output += data; destination.write(data); });
+  }
+  exitCode = await new Promise((accept, reject) => { child.on('error', reject); child.on('close', (code) => accept(code ?? 1)); });
+} finally {
+  environment.cleanup();
 }
-const exitCode = await new Promise((accept, reject) => { child.on('error', reject); child.on('close', (code) => accept(code ?? 1)); });
 const after = sourceIdentity(root);
 const tests = parseTestOutput(output);
 const integrations = output.split(/\r?\n/).filter((line) => /^REMEDIATION_GATE_PASS S[\w-]+$/.test(line)).map((line) => line.split(' ')[1]);

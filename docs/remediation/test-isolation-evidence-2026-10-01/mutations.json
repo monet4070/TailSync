@@ -1,0 +1,12 @@
+[
+  {
+    "mutation": "allow implicit HOME legacy discovery",
+    "exitCode": 101,
+    "assertion": "test store imported implicit user legacy history"
+  },
+  {
+    "mutation": "inherit live data and storage environment",
+    "exitCode": 1,
+    "failedTests": 3
+  }
+]

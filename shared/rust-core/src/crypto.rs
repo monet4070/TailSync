@@ -584,6 +584,8 @@ pub async fn apply_settings_update(
 
 mod keystore;
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use keystore::running_under_test_harness;
 pub use keystore::{decrypt, encrypt, initialize};
 pub(crate) use keystore::{get_dek, is_key_store_error};
 
