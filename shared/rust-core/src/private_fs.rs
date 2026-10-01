@@ -720,9 +720,14 @@ pub(crate) fn assert_owner_only_windows_acl_for_test(path: &Path, directory: boo
     use windows_sys::Win32::{
         Foundation::LocalFree,
         Security::Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+            SDDL_REVISION_1,
         },
-        Security::{GetFileSecurityW, DACL_SECURITY_INFORMATION},
+        Security::{
+            GetAce, GetFileSecurityW, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+            ACCESS_ALLOWED_ACE, ACE_HEADER, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+            OBJECT_INHERIT_ACE, SE_DACL_PROTECTED,
+        },
     };
     let name: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut required = 0;
@@ -772,32 +777,65 @@ pub(crate) fn assert_owner_only_windows_acl_for_test(path: &Path, directory: boo
     unsafe {
         LocalFree(output.cast());
     }
-    assert!(
-        sddl.split('(').next().unwrap().contains('P'),
-        "unprotected DACL: {sddl}"
+    let descriptor_ptr = descriptor.as_mut_ptr().cast();
+    let mut control = 0;
+    let mut revision = 0;
+    assert_ne!(
+        unsafe { GetSecurityDescriptorControl(descriptor_ptr, &mut control, &mut revision) },
+        0
     );
-    let user = current_windows_user_sid().unwrap();
+    assert_ne!(control & SE_DACL_PROTECTED, 0, "unprotected DACL: {sddl}");
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut dacl = std::ptr::null_mut();
+    assert_ne!(
+        unsafe {
+            GetSecurityDescriptorDacl(descriptor_ptr, &mut present, &mut dacl, &mut defaulted)
+        },
+        0
+    );
+    assert!(present != 0 && !dacl.is_null(), "missing DACL: {sddl}");
+    let expected = std::collections::HashSet::from([
+        current_windows_user_sid().unwrap(),
+        "S-1-5-18".to_string(),     // SYSTEM
+        "S-1-5-32-544".to_string(), // Administrators
+        "S-1-3-4".to_string(),      // Owner Rights
+    ]);
     let mut trustees = std::collections::HashSet::new();
-    for ace in sddl.split('(').skip(1) {
-        let fields: Vec<_> = ace.trim_end_matches(')').split(';').collect();
-        assert_eq!(fields.len(), 6);
-        assert_eq!(fields[0], "A");
+    for index in 0..u32::from(unsafe { (*dacl).AceCount }) {
+        let mut ace = std::ptr::null_mut();
+        assert_ne!(unsafe { GetAce(dacl, index, &mut ace) }, 0);
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        // ACCESS_ALLOWED_ACE_TYPE is zero. Check the tag before reading SidStart.
+        assert_eq!(header.AceType, 0, "unexpected ACE type: {sddl}");
+        let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
+        let sid = unsafe { std::ptr::addr_of!((*allowed).SidStart).cast_mut().cast() };
+        let mut output = std::ptr::null_mut();
+        assert_ne!(unsafe { ConvertSidToStringSidW(sid, &mut output) }, 0);
+        let mut length = 0;
+        unsafe {
+            while *output.add(length) != 0 {
+                length += 1;
+            }
+        }
+        let trustee =
+            String::from_utf16(unsafe { std::slice::from_raw_parts(output, length) }).unwrap();
+        unsafe {
+            LocalFree(output.cast());
+        }
+        // The descriptor's SDDL can abbreviate the process SID (for example
+        // LA for the local Administrator). Compare actual binary ACE SIDs.
         assert!(
-            matches!(fields[5], "SY" | "BA" | "OW") || fields[5] == user,
+            expected.contains(&trustee),
             "unexpected access grant: {sddl}"
         );
         if directory {
-            assert!(fields[1].contains("OI") && fields[1].contains("CI"));
+            let inheritance = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8;
+            assert_eq!(header.AceFlags & inheritance, inheritance);
         }
-        trustees.insert(fields[5]);
+        trustees.insert(trustee);
     }
-    assert!(
-        trustees.contains(user.as_str())
-            && trustees.contains("SY")
-            && trustees.contains("BA")
-            && trustees.contains("OW"),
-        "missing owner policy: {sddl}"
-    );
+    assert_eq!(trustees, expected, "missing owner policy: {sddl}");
 }
 
 #[cfg(test)]
@@ -881,6 +919,63 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"still accessible");
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn owner_acl_assertion_rejects_everyone_access() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{
+            Foundation::LocalFree,
+            Security::Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            Security::{
+                SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+            },
+        };
+        let root = temporary_root("windows-acl-unexpected-trustee");
+        let path = root.join("empty.bin");
+        drop(create_private_file(&path).unwrap());
+        assert_owner_only_windows_acl_for_test(&path, false);
+
+        let sddl: Vec<_> = "D:P(A;;FA;;;WD)".encode_utf16().chain(Some(0)).collect();
+        let name: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut descriptor = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let result = unsafe {
+            SetFileSecurityW(
+                name.as_ptr(),
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor,
+            )
+        };
+        unsafe {
+            LocalFree(descriptor);
+        }
+        assert_ne!(result, 0);
+        let rejected = std::panic::catch_unwind(|| {
+            assert_owner_only_windows_acl_for_test(&path, false);
+        });
+        restrict_private_file(&path).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        let panic = rejected.expect_err("Everyone access must fail the owner-only assertion");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(message.contains("unexpected access grant"), "{message}");
     }
 
     #[cfg(windows)]
