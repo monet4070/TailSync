@@ -1063,11 +1063,12 @@ mod acceptance_tests {
         ));
         std::fs::create_dir(&root).unwrap();
         let module = module_path!().split_once("::").unwrap().1;
+        // Windows known-folder queries need the native USERPROFILE; HOME is
+        // sufficient to redirect any implicit legacy-history discovery.
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([format!("{module}::inbound_isolation_worker"), "--exact".into(), "--ignored".into(), "--nocapture".into()])
             .env("TAILSYNC_INBOUND_ISOLATION_WORKER", &root)
             .env("HOME", root.join("home"))
-            .env("USERPROFILE", root.join("home"))
             .env("XDG_DATA_HOME", root.join("home/.local/share"))
             .env("TMPDIR", &root)
             .env("TMP", &root)
@@ -1085,7 +1086,8 @@ mod acceptance_tests {
     #[ignore = "subprocess worker; run by inbound_test_peer_does_not_modify_user_configuration"]
     async fn inbound_isolation_worker() {
         let Some(root) = std::env::var_os("TAILSYNC_INBOUND_ISOLATION_WORKER") else { return; };
-        let production = db::default_user_data_dir_for_test().unwrap();
+        let production = db::default_user_data_dir_for_test()
+            .expect("query normal data directory with the native profile preserved");
         let isolated = db::get_data_dir();
         // Fail before writing anything if the test build selects user data.
         assert_ne!(isolated, production, "a test handshake would overwrite the user's config-v2.json");

@@ -55,3 +55,10 @@ application Clippy 阶段发现共享测试直接引用 `directories`，而该�
 跟进修复让测试通过 Core 的 dev-only 目录查询取得正常平台目录；查询与生产路径选择复用同一
 函数。没有添加依赖或改变隔离策略。上述原始本地证据保留并明确绑定原提交，后续结果以修复
 提交对应的 CI 为准。
+
+`41122e9` 的 [原生 CI](https://github.com/monet4070/TailSync/actions/runs/36816895559) 已通过 Windows
+application Clippy，但新增 Core 回归子进程在正常平台目录查询处失败。该 fixture 把 USERPROFILE
+覆盖为不存在的模拟目录；Windows 的 `directories` 使用 `SHGetKnownFolderPath` 查询目录。
+跟进修复保留原生 USERPROFILE，只用 HOME 控制旧历史 fixture。两个父测试仍清除全部 TailSync
+路径覆盖，子进程仍在实际写入前断言临时目录与正常用户目录不同，并核对正常配置字节未变。
+没有跳过 Windows 测试或降低隔离断言。

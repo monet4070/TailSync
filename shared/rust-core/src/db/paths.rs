@@ -209,6 +209,8 @@ mod tests {
             rand::random::<u64>()
         ));
         std::fs::create_dir(&root).unwrap();
+        // Keep the native profile intact for Windows known-folder queries.
+        // HOME alone redirects the legacy fixture without replacing USERPROFILE.
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "db::paths::tests::implicit_test_store_worker",
@@ -218,7 +220,6 @@ mod tests {
             ])
             .env("TAILSYNC_CORE_ISOLATION_WORKER", &root)
             .env("HOME", root.join("home"))
-            .env("USERPROFILE", root.join("home"))
             .env("XDG_DATA_HOME", root.join("home/.local/share"))
             .env("TMPDIR", &root)
             .env("TMP", &root)
@@ -243,10 +244,8 @@ mod tests {
         let Some(root) = std::env::var_os("TAILSYNC_CORE_ISOLATION_WORKER") else {
             return;
         };
-        let production = directories::ProjectDirs::from("com", "tailsync", "TailSync")
-            .unwrap()
-            .data_dir()
-            .to_path_buf();
+        let production = default_user_data_dir_for_test()
+            .expect("query normal data directory with the native profile preserved");
         let data = get_data_dir();
         assert_ne!(data, production, "Core unit tests selected user data");
         assert_eq!(get_storage_dir(), data);
