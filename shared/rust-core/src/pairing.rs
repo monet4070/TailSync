@@ -197,6 +197,7 @@ pub(crate) struct PromotionGate {
     pub release: tokio::sync::Notify,
 }
 
+mod commit;
 pub mod invite;
 mod manager;
 mod pending;
@@ -205,7 +206,10 @@ pub use invite::{
     InviteClaim, InviteError, InviteHello, RemoteInviteState, RemoteInviteStatus,
     RemotePairingInvite, RemotePairingInviteManager, DEFAULT_INVITE_TTL,
 };
-pub use pending::{store_path as pending_trust_store_path, PendingTrustRecord, PendingTrustStore};
+pub use pending::{
+    store_path as pending_trust_store_path, PendingTrustPhase, PendingTrustRecord,
+    PendingTrustStore,
+};
 
 /// Installs an inbound pairing session for an accepted connection (T110
 /// migration). When `pairing` is absent (Iroh transport cannot pair), an
@@ -272,5 +276,7 @@ pub async fn install_pairing_session_with_invite(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_commit;
 #[cfg(test)]
 mod tests_pending;

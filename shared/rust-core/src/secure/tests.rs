@@ -206,6 +206,7 @@ async fn current_client_uses_v4_data_frames_with_legacy_server() {
             .read_message(&finish.payload, &mut output)
             .unwrap();
         let mut connection = SecureConnection {
+            remote_public_key: vec![0; 32],
             stream: Box::new(stream),
             transport: handshake.into_transport_mode().unwrap(),
             read_buffer: Vec::new(),
@@ -301,6 +302,7 @@ async fn current_server_uses_v4_data_frames_with_legacy_client() {
         .await
         .unwrap();
     let mut connection = SecureConnection {
+        remote_public_key: vec![0; 32],
         stream: Box::new(stream),
         transport: handshake.into_transport_mode().unwrap(),
         read_buffer: Vec::new(),
@@ -351,6 +353,7 @@ async fn assert_read_resumes_after_cancellation(split_at: usize) {
         writer.write_all(&record[split_at..]).await.unwrap();
     });
     let mut secure = SecureConnection {
+        remote_public_key: vec![0; 32],
         stream: Box::new(reader),
         transport: receiver_transport,
         read_buffer: Vec::new(),
@@ -438,6 +441,7 @@ fn capability_advertisements_are_backward_compatible_and_fail_closed() {
     let enabled = CapabilitySet {
         file_sliding_window: true,
         image_compressed_chunks: false,
+        pairing_commit_proof: false,
     };
     let encoded = encode_handshake_advertisement(identity, enabled).expect("encode capabilities");
     assert_eq!(
@@ -475,6 +479,7 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
     let requested = CapabilitySwitches {
         file_sliding_window: true,
         image_compressed_chunks: true,
+        pairing_commit_proof: false,
     }
     .advertised();
     assert_eq!(
@@ -489,6 +494,7 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
     let both = CapabilitySet {
         file_sliding_window: true,
         image_compressed_chunks: true,
+        pairing_commit_proof: false,
     };
     assert_eq!(
         CapabilitySet::negotiate(both, CapabilitySet::disabled()),
@@ -500,11 +506,13 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
             CapabilitySet {
                 file_sliding_window: true,
                 image_compressed_chunks: false,
+                pairing_commit_proof: false,
             }
         ),
         CapabilitySet {
             file_sliding_window: true,
             image_compressed_chunks: false,
+            pairing_commit_proof: false,
         }
     );
 }
@@ -514,6 +522,7 @@ async fn negotiated_capabilities_are_bound_to_each_authenticated_session() {
     let both = CapabilitySet {
         file_sliding_window: true,
         image_compressed_chunks: true,
+        pairing_commit_proof: false,
     };
     let first = negotiate_capabilities_for_one_session(both, both).await;
     assert_eq!(first, (both, both));
@@ -521,6 +530,7 @@ async fn negotiated_capabilities_are_bound_to_each_authenticated_session() {
     let image_only = CapabilitySet {
         file_sliding_window: false,
         image_compressed_chunks: true,
+        pairing_commit_proof: false,
     };
     let second = negotiate_capabilities_for_one_session(both, image_only).await;
     assert_eq!(second, (image_only, image_only));
@@ -606,6 +616,7 @@ async fn encrypted_record_read_resumes_after_ciphertext_cancellation() {
 async fn encrypted_frame_write_does_not_wait_forever_for_a_stalled_peer() {
     let (_, transport) = transport_pair();
     let mut secure = SecureConnection {
+        remote_public_key: vec![0; 32],
         stream: Box::new(StalledWriter),
         transport,
         read_buffer: Vec::new(),
@@ -882,6 +893,7 @@ fn oversized_image_chunk_is_rejected_from_decrypted_header_before_body_read() {
         .copy_from_slice(&((protocol::MAX_IMAGE_CHUNK_PAYLOAD_SIZE + 1) as u32).to_be_bytes());
     let (_, reader) = tokio::io::duplex(64);
     let secure = SecureConnection {
+        remote_public_key: vec![0; 32],
         stream: Box::new(reader),
         transport: receiver_transport,
         read_buffer: header.to_vec(),
@@ -898,6 +910,7 @@ fn oversized_image_chunk_is_rejected_from_decrypted_header_before_body_read() {
         negotiated_capabilities: CapabilitySet {
             file_sliding_window: false,
             image_compressed_chunks: true,
+            pairing_commit_proof: false,
         },
         wire_version: protocol::VERSION,
     };
@@ -990,4 +1003,94 @@ async fn peer_closing_the_handshake_remains_a_network_error() {
     assert!(!error.contains("older TailSync version"));
     assert!(!error.contains("update TailSync on both devices"));
     legacy_peer.await.unwrap();
+}
+#[tokio::test]
+async fn pairing_runtime_defaults_select_proof_and_gate_unknown_commands() {
+    let expected = std::env::var_os("TAILSYNC_DISABLE_PAIRING_COMMIT_PROOF").is_none();
+    assert_eq!(
+        CapabilitySwitches::runtime_defaults().pairing_commit_proof,
+        expected
+    );
+    let local = DeviceIdentity::generate_for_test();
+    let remote = DeviceIdentity::generate_for_test();
+    let (a, b) = tokio::io::duplex(256 * 1024);
+    let server = tokio::spawn(async move {
+        let (_window, enabled) = tokio::sync::watch::channel(true);
+        let mut accepted = accept_with_pairing_window_and_capabilities(
+            b,
+            &local,
+            PeerIdentity {
+                hostname: "server".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+            enabled,
+            CapabilitySwitches::runtime_defaults(),
+        )
+        .await
+        .unwrap();
+        write_ready(&mut accepted.connection).await.unwrap();
+        assert_eq!(
+            accepted
+                .connection
+                .negotiated_capabilities()
+                .pairing_commit_proof,
+            expected
+        );
+        if expected {
+            assert_eq!(
+                accepted.connection.read_frame().await.unwrap().command,
+                Command::PairingCommitted
+            );
+        }
+    });
+    let mut accepted = connect_pairing(
+        a,
+        &remote,
+        PeerIdentity {
+            hostname: "client".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        accepted
+            .connection
+            .negotiated_capabilities()
+            .pairing_commit_proof,
+        expected
+    );
+    let sent = accepted
+        .connection
+        .write_frame(&Frame::try_new(Command::PairingCommitted, 0, 0, vec![1; 16]).unwrap())
+        .await;
+    assert_eq!(sent.is_ok(), expected);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn plaintext_commit_frame_cannot_create_an_authenticated_pairing() {
+    let identity = DeviceIdentity::generate_for_test();
+    let (mut a, b) = tokio::io::duplex(4096);
+    a.write_all(
+        &Frame::try_new(Command::PairingCommitted, 0, 0, vec![1; 16])
+            .unwrap()
+            .encode_with_version(protocol::LEGACY_VERSION),
+    )
+    .await
+    .unwrap();
+    a.shutdown().await.unwrap();
+    let result = accept(
+        b,
+        &identity,
+        PeerIdentity {
+            hostname: "server".into(),
+            tailscale_ip: String::new(),
+            iroh_endpoint_id: None,
+        },
+    )
+    .await;
+    assert!(result.is_err());
 }

@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 APP_NAME="TailSync"
-BUNDLE="$APP_NAME.app"
-STAGING_BUNDLE="$APP_NAME.app.staging"
+BUNDLE="${TAILSYNC_APP_BUNDLE:-$APP_NAME.app}"
+STAGING_BUNDLE="$BUNDLE.staging"
 APP_VERSION="$(cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | /usr/bin/plutil -extract packages.0.version raw -o - -)"
 SIGN_IDENTITY="${TAILSYNC_CODESIGN_IDENTITY:--}"
 FORMAL_RELEASE="${TAILSYNC_RELEASE:-0}"
@@ -16,6 +16,7 @@ fi
 RUST_TARGET_DIR="$PWD/src-tauri/target-macos"
 SWIFT_MODULE_CACHE_DIR="$PWD/swift-ui/.build/module-cache"
 export CARGO_TARGET_DIR="$RUST_TARGET_DIR"
+export MACOSX_DEPLOYMENT_TARGET=13.0
 export CLANG_MODULE_CACHE_PATH="$SWIFT_MODULE_CACHE_DIR"
 export SWIFTPM_MODULECACHE_OVERRIDE="$SWIFT_MODULE_CACHE_DIR"
 mkdir -p "$SWIFT_MODULE_CACHE_DIR"
@@ -82,7 +83,7 @@ if [[ "$MACOS_TARGET" == "universal-apple-darwin" ]]; then
     lipo -create "$HELPER_ARM64" "$HELPER_X86_64" -output "$HELPER_BIN"
     rm -f "$HELPER_ARM64" "$HELPER_X86_64"
 else
-    (cd src-tauri && swiftc -O clipboard-helper.swift -o "$HELPER_BIN")
+    (cd src-tauri && swiftc -O -target "$(uname -m)-apple-macosx13.0" clipboard-helper.swift -o "$HELPER_BIN")
 fi
 chmod +x "$HELPER_BIN"
 
@@ -177,6 +178,8 @@ test -x "$STAGING_BUNDLE/Contents/MacOS/clipboard-helper"
 /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices:0' "$STAGING_BUNDLE/Contents/Info.plist" | grep -qx '_tailsync._tcp'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$STAGING_BUNDLE/Contents/Info.plist" | grep -qx 'tailsync'
 grep -Fq "\"version\":\"$APP_VERSION\"" "$STAGING_BUNDLE/Contents/Resources/tailsync-update.json"
+
+python3 scripts/check_macos_deployment.py "$STAGING_BUNDLE" --architectures "${MACOS_TARGET/native/$(uname -m)}"
 
 rm -rf "$BUNDLE"
 mv "$STAGING_BUNDLE" "$BUNDLE"

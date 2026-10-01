@@ -5,6 +5,8 @@ impl SyncEngine {
         SyncEngine {
             seen_messages: HashMap::new(),
             seen_message_order: VecDeque::new(),
+            applied_events: HashMap::new(),
+            applied_event_order: VecDeque::new(),
             active_receives: HashMap::new(),
             receive_operation_locks: HashMap::new(),
             batch_operation_locks: HashMap::new(),

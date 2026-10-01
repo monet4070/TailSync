@@ -326,6 +326,126 @@ async fn shared_batch_commit_reuses_verified_plaintext_clipboard_staging() {
         .unwrap();
 }
 
+/// A verified batch that enters plaintext staging must be re-validated against
+/// the clipboard intent token after staging, because the engine lock is
+/// released while staging runs. A newer intent arriving in that window (here a
+/// simulated remote text) must prevent the stale batch from activating.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shared_batch_superseded_during_staging_does_not_activate_clipboard() {
+    use super::batches::staging_test_hook;
+
+    let directory = TestDirectory::new("shared-batch-supersede-staging");
+    let incoming = directory.path().join("incoming");
+    std::fs::create_dir_all(&incoming).unwrap();
+    let data = b"verified plaintext staging";
+    let batch_id = TransferId([0xD1; 16]);
+    let transfer_id = TransferId([0xD2; 16]);
+    let manifest = FileBatchManifest {
+        batch_id,
+        generation: 1,
+        total_bytes: data.len() as u64,
+        files: vec![FileBatchEntry {
+            transfer_id,
+            index: 0,
+            name: "payload.bin".to_string(),
+            source_parent: String::new(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+        }],
+    };
+    let platform = Arc::new(TestPlatform::default());
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    engine.lock().await.set_platform(platform.clone());
+    SyncEngine::begin_file_batch_shared(
+        &engine,
+        manifest.clone(),
+        "peer".to_string(),
+        "device-id".to_string(),
+        incoming.clone(),
+        1,
+    )
+    .await
+    .unwrap();
+    let progress = SyncEngine::begin_file_receive_shared(
+        &engine,
+        FileMeta {
+            transfer_id: Some(transfer_id),
+            name: "payload.bin".to_string(),
+            size: data.len() as u64,
+            hash: blake3::hash(data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: Some(FileBatchRef { batch_id, index: 0 }),
+        },
+        &incoming.join("payload.bin"),
+        "peer".to_string(),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(progress.completed.is_none());
+    let progress = SyncEngine::handle_resumable_file_chunk_shared(
+        &engine,
+        &FileChunkPayload {
+            transfer_id,
+            offset: 0,
+            data: data.to_vec(),
+        },
+        "peer".to_string(),
+    )
+    .await
+    .unwrap();
+    verify_and_commit_received_file(&engine, "peer", progress.completed.unwrap())
+        .await
+        .unwrap();
+
+    struct HookReset;
+    impl Drop for HookReset {
+        fn drop(&mut self) {
+            staging_test_hook::set(None);
+        }
+    }
+
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    staging_test_hook::set(Some(Arc::new(move |id| {
+        if id == batch_id {
+            let _ = entered_tx.send(());
+            let _ = release_rx.lock().unwrap().recv();
+        }
+    })));
+    let _reset = HookReset;
+
+    let finish_engine = engine.clone();
+    let finish = tokio::spawn(async move {
+        SyncEngine::finish_file_batch_shared(&finish_engine, "peer", batch_id).await
+    });
+    entered_rx
+        .recv()
+        .expect("staging hook should report entering the staging window");
+
+    // Simulate a newer clipboard intent (remote text B) arriving while the
+    // batch is between its pre-staging check and its post-staging publication.
+    engine.lock().await.supersede_file_clipboard();
+    release_tx.send(()).unwrap();
+
+    finish.await.unwrap().unwrap();
+
+    let event = platform.received().pop().unwrap();
+    assert!(
+        !event.activate_clipboard,
+        "a batch superseded during staging must not activate the OS clipboard"
+    );
+    assert!(
+        event
+            .clipboard_paths
+            .as_ref()
+            .is_none_or(|paths| paths.is_empty()),
+        "superseded staging must not publish clipboard paths"
+    );
+}
+
 struct BlockingPlatform {
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,

@@ -195,14 +195,23 @@ export function SettingsConnectionsSection({
               } satisfies PeerRoute]
               : [];
           const pairingAddress = pairingAddressForPeer(peer);
+          const incompletePairing = pairingStatus?.pending?.find(
+            (pending) => pending.hostname === peer.hostname,
+          );
+          const paired = peer.trusted && !incompletePairing;
+          const pairingLabel = incompletePairing
+            ? incompletePairing.locally_trusted
+              ? "settings.pendingPeerCompletion"
+              : "settings.pendingPairing"
+            : paired ? "settings.paired" : "settings.notPaired";
           return (
             <div className="device-row peer-device-row" key={peer.hostname}>
               <div className="device-avatar">{peer.hostname.slice(0, 1).toUpperCase()}</div>
               <div className="device-info">
                 <div className="device-name">
                   <span className="device-name-text">{peer.hostname}</span>
-                  <span className={peer.trusted ? "peer-badge paired" : "peer-badge unpaired"}>
-                    {t(peer.trusted ? "settings.paired" : "settings.notPaired")}
+                  <span className={paired ? "peer-badge paired" : "peer-badge unpaired"}>
+                    {t(pairingLabel)}
                   </span>
                 </div>
                 <div className="device-fingerprint">

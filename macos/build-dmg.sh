@@ -60,6 +60,7 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
 fi
 
 codesign --verify --deep --strict "$APP_BUNDLE"
+python3 scripts/check_macos_deployment.py "$APP_BUNDLE"
 /usr/bin/plutil -lint "$APP_BUNDLE/Contents/Info.plist" >/dev/null
 
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_BUNDLE/Contents/Info.plist")

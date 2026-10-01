@@ -273,6 +273,8 @@ pub enum Command {
     PairingCancel = 0x000e,
     EventAck = 0x000f,
     PairingPersisted = 0x0010,
+    PairingCommitted = 0x0011,
+    PairingCommittedAck = 0x0012,
     // Content transfer
     TextPayload = 0x0101,
     ImagePayload = 0x0102,
@@ -309,6 +311,8 @@ impl Command {
             0x000e => Some(Self::PairingCancel),
             0x000f => Some(Self::EventAck),
             0x0010 => Some(Self::PairingPersisted),
+            0x0011 => Some(Self::PairingCommitted),
+            0x0012 => Some(Self::PairingCommittedAck),
             0x0101 => Some(Self::TextPayload),
             0x0102 => Some(Self::ImagePayload),
             0x010d => Some(Self::ImageChunk),
@@ -349,6 +353,8 @@ impl Command {
             | Self::PairingCancel
             | Self::EventAck
             | Self::PairingPersisted
+            | Self::PairingCommitted
+            | Self::PairingCommittedAck
             | Self::FileAck
             | Self::FileComplete
             | Self::FileBatchAccept
@@ -365,6 +371,12 @@ impl Command {
 /// Frame flags
 #[derive(Debug, Default)]
 pub struct Flags(u8);
+
+impl Flags {
+    pub const fn bits(&self) -> u8 {
+        self.0
+    }
+}
 
 /// A complete frame with header, payload, and checksum
 #[derive(Debug)]

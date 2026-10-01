@@ -277,6 +277,8 @@ fn failed_pending_writes_preserve_memory_and_future_formats() {
         interface: "lan".into(),
         address: "192.168.1.2".into(),
         recorded_at: 1,
+        phase: PendingTrustPhase::Pending,
+        commit_nonce: None,
     };
     let mut store = PendingTrustStore::load_from_path(&path);
     store.upsert(record.clone()).unwrap();
@@ -919,6 +921,8 @@ async fn pending_recovery_requires_the_same_authenticated_key_and_is_never_activ
             interface: "lan".into(),
             address: "192.168.1.2".into(),
             recorded_at: 1,
+            phase: PendingTrustPhase::Pending,
+            commit_nonce: None,
         })
         .unwrap();
     let status = manager.status().await;
@@ -955,7 +959,7 @@ async fn pending_recovery_requires_the_same_authenticated_key_and_is_never_activ
 }
 
 #[tokio::test]
-async fn revocation_succeeds_when_pending_store_cleanup_is_unavailable() {
+async fn unreadable_receipts_disable_peer_and_report_incomplete_revocation() {
     let root = std::env::temp_dir().join(format!(
         "tailsync-revoke-readonly-{}",
         rand::random::<u64>()
@@ -975,14 +979,59 @@ async fn revocation_succeeds_when_pending_store_cleanup_is_unavailable() {
         path.clone(),
     );
     manager.enable().await;
+    assert!(manager.revoke_peer("client").await.is_err());
+    assert!(settings
+        .lock()
+        .await
+        .trusted_peer_keys
+        .contains_key("client"));
+    assert_eq!(
+        settings.lock().await.enabled_peers.get("client"),
+        Some(&false)
+    );
+    assert!(!manager.is_enabled().await);
+    assert!(manager.status().await.pending_store_unavailable);
+    assert_eq!(std::fs::read(path).unwrap(), future);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn known_legacy_note_cleanup_failure_still_revokes_trust() {
+    let root =
+        std::env::temp_dir().join(format!("tailsync-revoke-legacy-{}", rand::random::<u64>()));
+    crate::private_fs::create_private_dir_all(&root).unwrap();
+    let path = root.join("pending.json");
+    let mut initial = Settings::default();
+    initial
+        .trust_peer_without_save("client", "key", "lan", None)
+        .unwrap();
+    let settings = Arc::new(Mutex::new(initial));
+    let manager = PairingManager::with_pending_store_at(
+        settings.clone(),
+        Arc::new(DeviceIdentity::generate_for_test()),
+        path.clone(),
+    );
+    manager
+        .pending
+        .lock()
+        .await
+        .upsert(PendingTrustRecord {
+            hostname: "client".into(),
+            public_key: "key".into(),
+            interface: "lan".into(),
+            address: "127.0.0.1".into(),
+            recorded_at: 1,
+            phase: PendingTrustPhase::Pending,
+            commit_nonce: None,
+        })
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
     manager.revoke_peer("client").await.unwrap();
     assert!(!settings
         .lock()
         .await
         .trusted_peer_keys
         .contains_key("client"));
-    assert!(!manager.is_enabled().await);
-    assert!(manager.status().await.pending_store_unavailable);
-    assert_eq!(std::fs::read(path).unwrap(), future);
     std::fs::remove_dir_all(root).unwrap();
 }

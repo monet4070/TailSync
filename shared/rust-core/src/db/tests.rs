@@ -3456,3 +3456,124 @@ fn orphan_sweep_collects_owned_temps_and_preserves_live_writers() {
     assert!(!active.exists());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+// ── Degraded → persistent storage handoff (A03) ─────────────────────
+
+fn isolated_root(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("tailsync-{label}-{:016x}", rand::random::<u64>()))
+}
+
+#[test]
+fn degraded_history_is_migrated_when_storage_recovers() {
+    let root = isolated_root("degraded-handoff");
+    let mut degraded = HistoryDB::new_unavailable().unwrap();
+    degraded.add_text("captured while offline", "peer").unwrap();
+    degraded.add_text("second offline entry", "peer").unwrap();
+
+    let mut persistent = HistoryDB::open_isolated_for_test(&root).unwrap();
+    persistent.add_text("already on disk", "peer").unwrap();
+
+    degraded.adopt_replacement(persistent).unwrap();
+
+    assert!(degraded.is_storage_available());
+    assert_eq!(
+        degraded.count_all_filtered(None, None, None, None).unwrap(),
+        3,
+        "degraded rows must survive the switch and merge with disk rows"
+    );
+    let texts = degraded
+        .get_all(None, None, 1000, 0)
+        .unwrap()
+        .into_iter()
+        .map(|entry| String::from_utf8(degraded.get_data(entry.id).unwrap()).unwrap())
+        .collect::<Vec<_>>();
+    for expected in [
+        "captured while offline",
+        "second offline entry",
+        "already on disk",
+    ] {
+        assert!(
+            texts.iter().any(|text| text == expected),
+            "missing {expected} in {texts:?}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn degraded_history_migration_is_idempotent_by_content_hash() {
+    let root = isolated_root("degraded-handoff-repeat");
+    let mut degraded = HistoryDB::new_unavailable().unwrap();
+    degraded.add_text("offline payload", "peer").unwrap();
+
+    let persistent = HistoryDB::open_isolated_for_test(&root).unwrap();
+    let migrated =
+        super::open::migrate_degraded_history_into(&degraded.conn, &persistent.conn).unwrap();
+    assert_eq!(migrated, 1);
+    // A second pass (partially completed migration retried) inserts nothing.
+    let migrated_again =
+        super::open::migrate_degraded_history_into(&degraded.conn, &persistent.conn).unwrap();
+    assert_eq!(migrated_again, 0);
+    assert_eq!(
+        persistent
+            .count_all_filtered(None, None, None, None)
+            .unwrap(),
+        1
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn failed_degraded_handoff_keeps_the_degraded_store_intact() {
+    let root = isolated_root("degraded-handoff-failure");
+    let mut degraded = HistoryDB::new_unavailable().unwrap();
+    degraded.add_text("must not be lost", "peer").unwrap();
+
+    let mut persistent = HistoryDB::open_isolated_for_test(&root).unwrap();
+    persistent.reject_text_inserts_for_test(true).unwrap();
+
+    let error = degraded.adopt_replacement(persistent).unwrap_err();
+    assert!(
+        error.to_string().contains("injected text write failure"),
+        "{error}"
+    );
+    // No loss, no false success, no switch to a partial persistent state.
+    assert!(!degraded.is_storage_available());
+    assert_eq!(
+        degraded.count_all_filtered(None, None, None, None).unwrap(),
+        1
+    );
+    let text = degraded.get_all(None, None, 1000, 0).unwrap()[0].id;
+    assert_eq!(
+        String::from_utf8(degraded.get_data(text).unwrap()).unwrap(),
+        "must not be lost"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn degraded_merge_promotes_favorite_and_failure_rolls_back_all_rows() {
+    let root = isolated_root("p35-merge-rollback");
+    let mut degraded = HistoryDB::new_unavailable().unwrap();
+    degraded.add_text("same bytes", "peer").unwrap();
+    let id = degraded.get_all(None, None, 10, 0).unwrap()[0].id;
+    degraded.set_favorite(id, true).unwrap();
+    degraded.add_text("new RAM row", "peer").unwrap();
+    let mut persistent = HistoryDB::open_isolated_for_test(&root).unwrap();
+    persistent.add_text("same bytes", "self").unwrap();
+    persistent.reject_text_inserts_for_test(true).unwrap();
+    assert!(super::open::migrate_degraded_history_into(&degraded.conn, &persistent.conn).is_err());
+    assert_eq!(persistent.get_all(None, None, 10, 0).unwrap().len(), 1);
+    assert!(!persistent.get_all(None, None, 10, 0).unwrap()[0].pinned);
+    assert_eq!(degraded.get_all(None, None, 10, 0).unwrap().len(), 2);
+    persistent.reject_text_inserts_for_test(false).unwrap();
+    degraded.adopt_replacement(persistent).unwrap();
+    assert_eq!(degraded.get_all(None, None, 10, 0).unwrap().len(), 2);
+    let favorite = degraded
+        .get_all(None, None, 10, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.pinned)
+        .unwrap();
+    assert_eq!(degraded.get_data(favorite.id).unwrap(), b"same bytes");
+}

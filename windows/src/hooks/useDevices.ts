@@ -7,7 +7,7 @@
 // patch after a successful toggle is injected so the feature stays
 // independent of the settings page state.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getPeers,
@@ -17,6 +17,7 @@ import {
   type PeersResponse,
 } from "../tailsyncClient";
 import type { SettingsData } from "../types/settings.generated";
+import { LatestRequest } from "../utils/asyncControl";
 
 export interface UseDevicesOptions {
   connectionMode: SettingsData["connection_mode"] | undefined;
@@ -28,28 +29,43 @@ export function useDevices(options: UseDevicesOptions) {
   const [devices, setDevices] = useState<PeersResponse | null>(null);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [devicesError, setDevicesError] = useState("");
+  // A device snapshot may be replaced while an earlier request is still in
+  // flight (polling, reconnect, manual refresh). Only the newest request may
+  // commit its result, so a stale response can never roll the UI back to an
+  // older snapshot.
+  const requests = useRef(new LatestRequest());
 
   const onDevicesRefreshed = useCallback(async () => {
-    const result = await getPeers();
-    setDevices(result);
-    setDevicesError(result.discovery_error ?? "");
+    const request = requests.current.begin();
+    try {
+      const result = await getPeers();
+      if (!requests.current.isCurrent(request)) return;
+      setDevices(result);
+      setDevicesError(result.discovery_error ?? "");
+    } finally {
+      if (requests.current.isCurrent(request)) setDevicesLoading(false);
+    }
   }, []);
 
   const refreshDevices = useCallback(async () => {
+    const request = requests.current.begin();
     setDevicesLoading(true);
     try {
       const result = await refreshPeers();
+      if (!requests.current.isCurrent(request)) return;
       setDevices(result);
       setDevicesError(result.discovery_error ?? "");
     } catch (error) {
+      if (!requests.current.isCurrent(request)) return;
       setDevices(null);
       setDevicesError(String(error));
     } finally {
-      setDevicesLoading(false);
+      if (requests.current.isCurrent(request)) setDevicesLoading(false);
     }
   }, []);
 
   const resetDevices = useCallback(() => {
+    requests.current.invalidate();
     setDevices(null);
     setDevicesError("");
   }, []);
@@ -75,20 +91,24 @@ export function useDevices(options: UseDevicesOptions) {
     let active = true;
     let unlisten: (() => void) | undefined;
     const load = async (showLoading = false) => {
+      const request = requests.current.begin();
       if (showLoading) setDevicesLoading(true);
       try {
         const result = await getPeers();
-        if (active) {
-          setDevices(result);
-          setDevicesError(result.discovery_error ?? "");
-        }
+        if (!active || !requests.current.isCurrent(request)) return;
+        setDevices(result);
+        setDevicesError(result.discovery_error ?? "");
       } catch (error) {
-        if (active) {
-          setDevices(null);
-          setDevicesError(String(error));
-        }
+        if (!active || !requests.current.isCurrent(request)) return;
+        setDevices(null);
+        setDevicesError(String(error));
       } finally {
-        if (active && showLoading) setDevicesLoading(false);
+        // Whichever request is newest clears the spinner when it settles.
+        // Clearing only for the request that raised the flag would strand it
+        // when a silent reload supersedes an in-flight manual refresh.
+        if (active && requests.current.isCurrent(request)) {
+          setDevicesLoading(false);
+        }
       }
     };
     void load(true);
@@ -101,6 +121,7 @@ export function useDevices(options: UseDevicesOptions) {
     });
     return () => {
       active = false;
+      requests.current.invalidate();
       window.clearInterval(timer);
       unlisten?.();
     };

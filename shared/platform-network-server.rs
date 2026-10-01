@@ -1165,6 +1165,7 @@ mod acceptance_tests {
                 secure::CapabilitySwitches {
                     file_sliding_window: true,
                     image_compressed_chunks: true,
+                    pairing_commit_proof: false,
                 },
             )
             .await
@@ -1194,6 +1195,7 @@ mod acceptance_tests {
             secure::CapabilitySwitches {
                 file_sliding_window: true,
                 image_compressed_chunks: true,
+                pairing_commit_proof: false,
             },
         )
         .await

@@ -151,7 +151,7 @@ const flowData: Record<
 // codebase supports — LAN latency depends entirely on the user's network, so
 // publishing a fixed number was a falsifiable claim for no benefit.
 const heroStats = [
-  { value: PRODUCT_FACTS.batchBytesLabel, label: "单次原子文件批次上限" },
+  { value: PRODUCT_FACTS.batchBytesLabel, label: "单次文件批次上限" },
   { value: "0", label: "云端中转 · 数据不出网" },
   {
     value: String(PRODUCT_FACTS.categoryCount).padStart(2, "0"),
