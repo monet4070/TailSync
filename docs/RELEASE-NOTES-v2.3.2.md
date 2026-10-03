@@ -52,7 +52,7 @@
 
 - **Windows 原生验收全部未做**：原生安装/卸载、DPAPI、WebView2、原生剪贴板（含 CF_HDROP）、托盘、开机自启、真实中文输入法、前台窗口归还。本版 Windows 侧只有前端测试、生产构建与 macOS 宿主上的 `cargo check` 证据。
 - **真实双设备验收未做**：配对、双向文本/图片/文件、断线续传、网络切换、跨机睡眠/唤醒。
-- **VoiceOver 无障碍验收未做**（清单已备好：`docs/acceptance/voiceover-connections-checklist.md`）。
+- **VoiceOver 无障碍验收未执行**。项目所有者已将其移出必验范围（2026-10-03），因此不构成发布阻塞；`docs/acceptance/voiceover-connections-checklist.md` 保留为可选的将来核查清单。
 - **键盘取用历史的真机验收只完成了一部分**：仅「快捷键唤起 → 第一次 ↓ → 第 0 条显示选中框」经确认；T-01、T-02、T-03、T-05 ~ T-10 仍为待验，见 `docs/acceptance/keyboard-macos-native-2026-10-03.md`。
 - **`S4-P1-4` 未修**：接收引擎锁内的平台进度回调仍在锁内调用。台账的 `pass_condition` 要求真实设备负载采样或把回调移出锁；目前只有注入式竞争实验（macOS 侧 200 样本、注入 50 ms 持锁，callback p99 55 144 µs），既不是真实负载也不是预算通过，见 `docs/acceptance/s4-p1-4-macos-measurement-2026-10-03.md`。
 - **配对单边持久化仍为部分修复（`S3-P1-2`）**：提交证明让「一端 active、一端 pending」在双方重新打开配对窗口并完成认证对账后可以收敛，但**不保证任意失败序列后两端 active 状态永远一致**——不匹配的 consent、已撤销或已禁用的设备不会推进，不一致可能持续到人工恢复。
