@@ -31,7 +31,7 @@
 | VoiceOver 验收 | 按 `docs/acceptance/voiceover-connections-checklist.md` 逐项执行,中英各一遍。**仍为待验** |
 | macOS 托盘/安装包行为 | 本地构建 + 打包后的托盘与包清单核对（`tray-helper` 孤儿组件已在本轮移除：仓库内无任何内建或调用引用，其源码会用明文 TCP 连 19889，而 macOS 守护进程只监听 Unix socket；移除后 macOS Rust 与 Swift 构建通过） |
 | 键盘取用历史真机验收 | 热键唤起 → 首次 ↓ → 第 0 条选中框：**2026-10-03 已通过**，记录见 `docs/acceptance/keyboard-macos-native-2026-10-03.md`。T-01 及其余条目**仍未确认** |
-| macOS 打包与发布门禁 | **2026-10-03 已通过**：2.3.2 universal（x86_64+arm64）、minos 13.0、ad-hoc 签名、`check_macos_deployment.py` PASS、`hdiutil verify` VALID、SHA-256 已生成 |
+| macOS 打包与发布门禁 | **2026-10-03 已通过（除 daemon smoke）**：2.3.2 universal（x86_64+arm64）、minos 13.0、ad-hoc 签名、`check_macos_deployment.py` PASS、`hdiutil verify` VALID、SHA-256 已生成。包内容清单 8 个文件无孤儿组件；`plutil -lint`、`NSLocalNetworkUsageDescription`、`NSBonjourServices=_tailsync._tcp`、URL scheme `tailsync`、`codesign --verify --deep --strict` 全部 PASS；**打包后的 `clipboard-helper` 读写往返 PASS**。`verify_macos_bundle.sh` 的 daemon/API smoke 因本机有实例占用 19890 端口而未执行 |
 
 > **工具链限制（2026-10-03 实测）**：`TAILSYNC_GUI_FOCUS_TESTS=1` 门控的原生焦点测试在 `swift test` 下**无法运行**——该进程不是 `.app` bundle，WindowServer 拒绝让其成为前台应用，窗口拿不到 key 状态，测试在自身前置断言处失败。它需要由真实 `.app` 承载的 GUI 测试宿主。因此"窗口是否真的拿到键盘"只能由真人验收回答，不能用该测试替代。
 
