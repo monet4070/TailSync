@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useRestoreActivity } from "../hooks/useRestoreActivity";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
 import {
   cancelFileBatch,
   clearHistory,
@@ -25,6 +26,8 @@ import {
   type MigrationDiagnostics,
   type SyncWarning,
 } from "../tailsyncClient";
+import { listen } from "@tauri-apps/api/event";
+import { HistoryImeGuard, visibleHistoryIds } from "../utils/historyKeyboard";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
@@ -132,9 +135,32 @@ export function History({ collection = "all" }: HistoryProps) {
   const [windowAlwaysOnTopPending, setWindowAlwaysOnTopPending] = useState(
     !isFavoritesCollection,
   );
+  const searchRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const ime = useRef(new HistoryImeGuard());
+  const restoring = useRef(false);
+  const sessionActive = useRef(true);
+  const previewOpen = useRef(false);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const previewRequestKey = useRef("");
+  const previewQueue = useRef(Promise.resolve());
+  const previewGeneration = useRef(0);
+  const { activeRef: externalRestoring } = useRestoreActivity(() => {
+    previewGeneration.current++;
+    previewRequestKey.current = "";
+  });
+  const pendingPageEdge = useRef<"first" | "last" | null>(null);
+  const closePreview = useCallback(async () => {
+    previewOpen.current = false;
+    setIsPreviewOpen(false);
+    previewGeneration.current++;
+    previewRequestKey.current = "";
+    await closePreviewWindow(collection);
+  }, [collection]);
   const closeHistory = useCallback(async () => {
+    sessionActive.current = false;
     try {
-      await closePreviewWindow(collection);
+      await closePreview();
     } catch (error) {
       console.error("Could not close the preview window:", error);
     }
@@ -143,7 +169,7 @@ export function History({ collection = "all" }: HistoryProps) {
     } catch (error) {
       console.error("Could not release the history window:", error);
     }
-  }, [collection, isFavoritesCollection]);
+  }, [closePreview, isFavoritesCollection]);
   useEffect(() => () => {
     newGlowTimers.current.forEach(window.clearTimeout);
     newGlowTimers.current.clear();
@@ -233,6 +259,17 @@ export function History({ collection = "all" }: HistoryProps) {
     }
   }, [customStartDate, customEndDate]);
 
+  const desiredQueryKey = JSON.stringify([keywordDraft, selectedCategory, selectedDateFilter,
+    activeDateBounds, page, collection]);
+  const desiredQuery = useRef(desiredQueryKey);
+  useLayoutEffect(() => { desiredQuery.current = desiredQueryKey; }, [desiredQueryKey]);
+  const loadedQuery = useRef("");
+  const [loadedQueryKey, setLoadedQueryKey] = useState("");
+  const focusSearch = useCallback(() => {
+    searchRef.current?.focus({ preventScroll: true });
+    searchRef.current?.select();
+  }, []);
+
   /* ── Settings load ────────────────────────────────────────────── */
 
   const loadSettings = useCallback(async () => {
@@ -266,6 +303,8 @@ export function History({ collection = "all" }: HistoryProps) {
 
   const loadHistory = useCallback(async (options?: { detectNewEntries?: boolean }) => {
     const detectNewEntries = options?.detectNewEntries ?? true;
+    const requestedQuery = desiredQueryKey;
+    if (keyword !== keywordDraft) return;
     const requestGeneration = historyRequests.current.begin();
     if (!activeDateBounds.valid) {
       setEntries([]);
@@ -287,7 +326,7 @@ export function History({ collection = "all" }: HistoryProps) {
       );
       const queryKey = JSON.stringify(query);
       const result = await getHistoryPage(query);
-      if (!historyRequests.current.isCurrent(requestGeneration)) return;
+      if (!historyRequests.current.isCurrent(requestGeneration) || desiredQuery.current !== requestedQuery) return;
 
       if (result.total !== null) {
         const normalizedPage = normalizeHistoryPage(page, result.total);
@@ -304,6 +343,8 @@ export function History({ collection = "all" }: HistoryProps) {
           ? entry
           : { ...entry, pinned: pendingFavorite };
       });
+      loadedQuery.current = requestedQuery;
+      setLoadedQueryKey(requestedQuery);
       setEntries(reconciledEntries);
       setTotalEntries(result.total);
       setHasMoreEntries(result.has_more);
@@ -348,6 +389,8 @@ export function History({ collection = "all" }: HistoryProps) {
     }
   }, [
     activeDateBounds,
+    desiredQueryKey,
+    keywordDraft,
     capabilities,
     keyword,
     page,
@@ -398,6 +441,7 @@ export function History({ collection = "all" }: HistoryProps) {
   }, [keywordDraft]);
 
   useEffect(() => {
+    pendingPageEdge.current = null;
     setPage(0);
   }, [keyword, selectedCategory, selectedDateFilter, customStartDate, customEndDate]);
 
@@ -445,12 +489,13 @@ export function History({ collection = "all" }: HistoryProps) {
       await getCurrentWindow().setAlwaysOnTop(next);
       setWindowAlwaysOnTop(next);
       persistHistoryAlwaysOnTop(next);
+      await syncPreviewWindowMinimized(false, collection);
     } catch (error) {
       console.error("Could not change history-window always-on-top state:", error);
     } finally {
       setWindowAlwaysOnTopPending(false);
     }
-  }, [windowAlwaysOnTop, windowAlwaysOnTopPending]);
+  }, [collection, windowAlwaysOnTop, windowAlwaysOnTopPending]);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -491,73 +536,166 @@ export function History({ collection = "all" }: HistoryProps) {
     };
   }, [closeHistory, collection]);
 
-  // Filters, pagination, and deletions can replace the loaded page. Do not
-  // leave keyboard selection pointing at an entry that is no longer visible.
-  useEffect(() => {
-    const loadedIds = new Set(entries.map((entry) => entry.id));
-    if (focusedId !== null && !loadedIds.has(focusedId)) setFocusedId(null);
-  }, [entries, focusedId]);
-
-  /* ── Keyboard preview navigation ────────────────────────────── */
+  const visibleIds = useMemo(() => visibleHistoryIds(entries, expandedBatches, calendarNow),
+    [entries, expandedBatches, calendarNow]);
+  const visibleIdsRef = useRef<number[]>([]);
+  useLayoutEffect(() => { visibleIdsRef.current = visibleIds; }, [visibleIds]);
+  const queryReady = keyword === keywordDraft && loadedQueryKey === desiredQueryKey;
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      // Do not steal shortcuts from inputs/editors or from another handler.
-      // Modifier chords and auto-repeat are deliberately ignored as well.
-      if (
-        event.defaultPrevented ||
-        event.repeat ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey
-      ) {
-        return;
-      }
+    if (!queryReady) return;
+    setFocusedId((current) => {
+      const edge = pendingPageEdge.current;
+      pendingPageEdge.current = null;
+      if (edge) return (edge === "last" ? visibleIds.at(-1) : visibleIds[0]) ?? null;
+      return current !== null && visibleIds.includes(current) ? current : visibleIds[0] ?? null;
+    });
+  }, [visibleIds, queryReady]);
 
-      if (isEditableTarget(event.target)) return;
-      if (event.code !== "Space") return;
+  useEffect(() => {
+    // Scroll only the minimum needed to keep the row visible, smoothly, so the
+    // list glides instead of jumping. Once the row reaches an edge it stays put
+    // and the list slides under it.
+    rootRef.current
+      ?.querySelector<HTMLElement>(`[data-id="${focusedId}"]`)
+      ?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [focusedId]);
 
-      // Space is only handled when it has a selected history row.  This is
-      // important while the search input is focused and when the list is
-      // empty: the browser should retain its normal Space behaviour then.
-      if (focusedId === null) return;
-
-      const targetId = resolvePreviewEntryId(focusedId, entries, expandedBatches);
-      if (targetId === null) return;
-      const focusedEntry = entries.find((entry) => entry.id === focusedId);
-      const batchId = focusedEntry?.batch_id ?? null;
-      event.preventDefault();
-      void openPreviewWindow(
-        targetId,
-        batchId !== null && !expandedBatches.has(batchId) ? batchId : null,
-        collection,
-      ).catch((error: unknown) => {
-        console.error("Could not open the preview window:", error);
-        showActionError();
-      });
+  useEffect(() => {
+    let disposed = false;
+    const stops: Array<() => void> = [];
+    const subscribe = (name: string, callback: () => void) => {
+      void listen(name, () => { if (!disposed) callback(); }).then((stop) => {
+        if (disposed) stop(); else stops.push(stop);
+      }).catch(console.error);
     };
+    subscribe("tailsync://history-open", () => {
+      sessionActive.current = true;
+      setFocusedId(visibleIdsRef.current[0] ?? null);
+      focusSearch();
+    });
+    subscribe("tailsync://preview-close", () => {
+      previewOpen.current = false;
+      setIsPreviewOpen(false);
+      previewGeneration.current++;
+      previewRequestKey.current = "";
+    });
+    return () => { disposed = true; stops.forEach((stop) => stop()); };
+  }, [focusSearch]);
 
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [collection, entries, expandedBatches, focusedId, showActionError]);
+  const showPreview = useCallback((takeFocus: boolean) => {
+    if (!sessionActive.current || !queryReady || focusedId === null || restoring.current || externalRestoring.current) return;
+    const targetId = resolvePreviewEntryId(focusedId, entries, expandedBatches);
+    if (targetId === null) return;
+    const batch = entries.find((entry) => entry.id === focusedId)?.batch_id ?? null;
+    const batchId = batch && !expandedBatches.has(batch) ? batch : null;
+    const key = JSON.stringify([targetId, batchId]);
+    if (!takeFocus && previewOpen.current && previewRequestKey.current === key) return;
+    previewOpen.current = true;
+    setIsPreviewOpen(true);
+    previewRequestKey.current = key;
+    const generation = previewGeneration.current;
+    // Serialize opens; skipped queued work cannot reopen after close/query replacement.
+    previewQueue.current = previewQueue.current.then(async () => {
+      if (generation !== previewGeneration.current || !previewOpen.current ||
+          restoring.current || externalRestoring.current || !sessionActive.current || desiredQuery.current !== loadedQuery.current || previewRequestKey.current !== key) return;
+      try {
+        await openPreviewWindow(targetId, batchId, collection, takeFocus);
+      } catch (error) {
+        if (generation !== previewGeneration.current) return;
+        console.error("Could not open preview:", error);
+        showActionError();
+      }
+    });
+  }, [collection, entries, expandedBatches, externalRestoring, focusedId, queryReady, showActionError]);
 
-  /* ── Actions ──────────────────────────────────────────────────── */
+  useEffect(() => {
+    if (!isPreviewOpen) return;
+    if (!queryReady && pendingPageEdge.current !== null) return;
+    if (!queryReady || focusedId === null) {
+      void closePreview().catch(console.error);
+    } else {
+      showPreview(false);
+    }
+  }, [isPreviewOpen, focusedId, queryReady, closePreview, showPreview]);
 
-  const handleRestore = async (id: number) => {
+  const restoreSelected = useCallback(async (id: number, keepOpen = true) => {
+    if (restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
+    restoring.current = true;
+    previewGeneration.current++;
+    previewRequestKey.current = "";
     try {
       await restoreEntry(id);
       flashSelectedId(id);
-      showHistoryNotice({
-        key: "restore-success",
-        level: "success",
-        message: t("history.restored"),
-      });
-    } catch (e) {
-      console.error("Restore failed:", e);
+      showHistoryNotice({ key: "restore-success", level: "success", message: t("history.restored") });
+      if (!keepOpen) await closeHistory();
+    } catch (error) {
+      console.error("Restore failed:", error);
       showActionError();
+    } finally {
+      restoring.current = false;
     }
-  };
+  }, [externalRestoring, queryReady, visibleIds, flashSelectedId, showHistoryNotice, t, closeHistory, showActionError]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (restoring.current || externalRestoring.current || event.defaultPrevented || ime.current.blocks(event) || !sessionActive.current || showClearConfirm) return;
+      if (event.altKey || event.metaKey) return;
+      const search = event.target === searchRef.current;
+      const editable = isEditableTarget(event.target);
+      if (event.ctrlKey && event.key.toLowerCase() === "f") {
+        event.preventDefault(); focusSearch(); return;
+      }
+      if (editable && !search) return;
+      // Preserve native activation of toolbar/filter buttons.
+      if (event.target instanceof HTMLElement && event.target.closest("button, a, [role='button']")) return;
+      if (event.ctrlKey && event.key !== "Enter") return;
+      if (event.key === "Escape" && !event.repeat) {
+        event.preventDefault();
+        if (previewOpen.current) void closePreview().catch(console.error);
+        else if (!restoring.current) void closeHistory();
+        return;
+      }
+      if (!queryReady || restoring.current || loading) return;
+      if (event.key === "Enter" && !event.shiftKey && !event.repeat && focusedId !== null) {
+        event.preventDefault(); void restoreSelected(focusedId, event.ctrlKey); return;
+      }
+      if (event.shiftKey) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        if (search) {
+          if (event.key === "ArrowDown" && visibleIds.length) {
+            setFocusedId(visibleIds[0]);
+            rootRef.current?.querySelector<HTMLElement>(".history-list")?.focus({ preventScroll: true });
+          }
+          return;
+        }
+        rootRef.current?.querySelector<HTMLElement>(".history-list")?.focus({ preventScroll: true });
+        const index = focusedId === null ? -1 : visibleIds.indexOf(focusedId);
+        if (event.key === "ArrowUp" && index <= 0 && !hasPrev) { focusSearch(); return; }
+        const next = index + (event.key === "ArrowDown" ? 1 : -1);
+        if (next >= 0 && next < visibleIds.length) setFocusedId(visibleIds[next]);
+        else if ((next >= visibleIds.length && hasNext) || (next < 0 && hasPrev)) {
+          pendingPageEdge.current = next < 0 ? "last" : "first";
+          setPage(page + (next < 0 ? -1 : 1));
+        }
+        return;
+      }
+      if (search) return; // Space remains normal search input.
+      if ((event.code === "Space" || event.key === " ") && !event.repeat) {
+        event.preventDefault(); showPreview(false);
+      } else if (event.key === "Tab" && previewOpen.current && !event.repeat) {
+        event.preventDefault(); showPreview(true);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [closeHistory, closePreview, focusSearch, focusedId, hasNext, hasPrev, loading, page,
+    externalRestoring, queryReady, restoreSelected, showClearConfirm, showPreview, visibleIds]);
+
+  /* ── Actions ──────────────────────────────────────────────────── */
+
+  const handleRestore = (id: number) => restoreSelected(id);
 
   const handleDelete = async (id: number) => {
     const entry = entries.find((candidate) => candidate.id === id);
@@ -585,7 +723,7 @@ export function History({ collection = "all" }: HistoryProps) {
     setClearing(true);
     try {
       await clearHistory();
-      await closePreviewWindow(collection);
+      await closePreview();
       clearThumbnails();
       setPage(0);
       setFocusedId(null);
@@ -607,6 +745,10 @@ export function History({ collection = "all" }: HistoryProps) {
   };
 
   const handleRestoreBatch = async (batchId: string) => {
+    if (restoring.current || externalRestoring.current || !queryReady || !sessionActive.current) return;
+    restoring.current = true;
+    previewGeneration.current++;
+    previewRequestKey.current = "";
     try {
       await restoreFileBatch(batchId);
       showHistoryNotice({
@@ -617,6 +759,8 @@ export function History({ collection = "all" }: HistoryProps) {
     } catch (error) {
       console.error("Batch restore failed:", error);
       showActionError();
+    } finally {
+      restoring.current = false;
     }
   };
 
@@ -682,10 +826,14 @@ export function History({ collection = "all" }: HistoryProps) {
 
   return (
     <div
+      ref={rootRef}
+      onCompositionStart={() => ime.current.start()}
+      onCompositionEnd={() => ime.current.end()}
       className={`app ${theme}`}
       data-focused-entry-id={focusedId === null ? undefined : String(focusedId)}
     >
       <HistoryHeader
+        searchRef={searchRef}
         t={t}
         windowAlwaysOnTop={windowAlwaysOnTop}
         windowAlwaysOnTopPending={windowAlwaysOnTopPending}

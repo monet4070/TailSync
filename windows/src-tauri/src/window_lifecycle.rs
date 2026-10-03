@@ -137,6 +137,8 @@ struct ReleaseTicket {
 
 #[derive(Default)]
 pub struct TransientWindowController {
+    #[cfg(any(target_os = "windows", test))]
+    original_foreground: Mutex<Option<(usize, u32, u32)>>,
     generations: Mutex<HashMap<&'static str, u64>>,
 }
 
@@ -179,6 +181,115 @@ impl TransientWindowController {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (generations.get(ticket.label) == Some(&ticket.generation)).then(release)
     }
+}
+
+/// Capture on the hotkey callback thread, before spawning or activating UI.
+pub fn capture_history_foreground(app: &AppHandle) {
+    capture_foreground(app, true);
+}
+
+/// An explicit/menu open starts a fresh session, never inherits a previous HWND.
+pub fn capture_history_foreground_for_open(app: &AppHandle) {
+    capture_foreground(app, false);
+}
+
+fn capture_foreground(app: &AppHandle, preserve_active: bool) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId,
+        };
+        let Some(controller) = app.try_state::<TransientWindowController>() else {
+            return;
+        };
+        let foreground = unsafe { GetForegroundWindow() };
+        let owned = app
+            .webview_windows()
+            .values()
+            .any(|window| window.hwnd().is_ok_and(|hwnd| hwnd.0 == foreground.0));
+        // Toggling an already-active history must retain its original target.
+        if owned
+            && preserve_active
+            && app
+                .get_webview_window(HISTORY_WINDOW_LABEL)
+                .is_some_and(|window| window.is_visible().unwrap_or(false))
+        {
+            return;
+        }
+        let mut original = controller
+            .original_foreground
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *original = None;
+        if foreground.0.is_null() || owned {
+            return;
+        }
+        let mut pid = 0;
+        let tid = unsafe { GetWindowThreadProcessId(foreground, Some(&mut pid)) };
+        if tid != 0 && pid != 0 {
+            *original = Some((foreground.0 as usize, pid, tid));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = (app, preserve_active);
+}
+
+pub fn return_history_foreground(app: &AppHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, ShowWindow,
+            SW_RESTORE,
+        };
+        let Some(controller) = app.try_state::<TransientWindowController>() else {
+            return;
+        };
+        // Consume even on invalid/denied activation: no stale target next session.
+        let Some((original, original_pid, original_tid)) = controller
+            .original_foreground
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
+            return;
+        };
+        let hwnd = HWND(original as *mut std::ffi::c_void);
+        unsafe {
+            if !IsWindow(Some(hwnd)).as_bool() {
+                return;
+            }
+            let mut pid = 0;
+            let tid = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid != original_pid || tid != original_tid {
+                return;
+            }
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            // Must precede hide(), while TailSync still owns the foreground grant.
+            if !SetForegroundWindow(hwnd).as_bool() {
+                log::debug!("Windows denied returning focus to the original HWND");
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
+}
+
+pub fn show_without_activation(window: &tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+        let hwnd =
+            windows::Win32::Foundation::HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    window.show().map_err(|error| error.to_string())
 }
 
 pub fn mark_window_open(app: &AppHandle, label: &'static str) {
@@ -243,6 +354,17 @@ mod tests {
             self.calls.lock().unwrap().push("focus");
             Ok(())
         }
+    }
+
+    #[test]
+    fn foreground_target_is_consumed_once_even_when_return_cannot_activate() {
+        let controller = TransientWindowController::default();
+        *controller.original_foreground.lock().unwrap() = Some((123, 45, 67));
+        assert_eq!(
+            controller.original_foreground.lock().unwrap().take(),
+            Some((123, 45, 67))
+        );
+        assert_eq!(controller.original_foreground.lock().unwrap().take(), None);
     }
 
     #[test]

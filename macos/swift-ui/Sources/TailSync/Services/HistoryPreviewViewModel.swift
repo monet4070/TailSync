@@ -75,6 +75,10 @@ final class HistoryPreviewViewModel: ObservableObject {
         case failed
     }
 
+    var onHostedRestore: ((Int64, Bool) -> Void)?
+
+    func setHostedRestoreState(_ state: RestoreState) { restoreState = state }
+
     var onFormatChange: ((HistoryPreviewWindowKind) -> Void)?
 
     private let session: HistoryPreviewSession
@@ -167,6 +171,10 @@ final class HistoryPreviewViewModel: ObservableObject {
 
     func restoreCurrent() {
         guard let id = currentEntryId, restoreState != .restoring else { return }
+        if let onHostedRestore {
+            onHostedRestore(id, true)
+            return
+        }
         restoreFeedbackTask?.cancel()
         restoreState = .restoring
         restoreFeedbackTask = Task { [weak self] in
@@ -306,6 +314,7 @@ final class HistoryPreviewViewModel: ObservableObject {
     }
 
     func close() {
+        onHostedRestore = nil
         generation += 1
         loadTask?.cancel()
         loadTask = nil
@@ -331,6 +340,7 @@ final class HistoryPreviewViewModel: ObservableObject {
     }
 
     private func navigate(to adjacentId: Int64?, fallbackOffset: Int) {
+        guard restoreState != .restoring else { return }
         let targetIndex: Int?
         if let adjacentId {
             if let existing = items.firstIndex(where: { $0.id == adjacentId }) {

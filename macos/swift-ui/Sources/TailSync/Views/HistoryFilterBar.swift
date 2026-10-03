@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Date-range options for the history filter. Kept in the same order and
@@ -98,20 +99,30 @@ enum HistorySearchLayoutPolicy {
 struct HistorySearchControl: View {
     @Binding var keyword: String
     let onSubmit: () -> Void
+    @StateObject private var fallbackSession = HistoryKeyboardSession()
+    var keyboardSession: HistoryKeyboardSession? = nil
+    var onQueryChanged: () -> Void = {}
 
+    var body: some View {
+        HistoryObservedSearchControl(
+            keyword: $keyword, onSubmit: onSubmit,
+            session: keyboardSession ?? fallbackSession, onQueryChanged: onQueryChanged
+        )
+    }
+}
+
+private struct HistoryObservedSearchControl: View {
+    @Binding var keyword: String
+    let onSubmit: () -> Void
+    @ObservedObject var session: HistoryKeyboardSession
+    let onQueryChanged: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.tailSyncSelection) private var selection
     @Environment(\.tailSyncPalette) private var palette
-    @FocusState private var focused: Bool
+    private var focused: Bool { session.focus == .search }
 
     private var inputTokens: TailSyncThemeComponentTokens? {
         selection.component("input", state: focused ? "focus" : "default", scheme: colorScheme)
-    }
-
-    private var searchFont: Font {
-        selection.typography.searchUsesDisplayFont
-            ? selection.displayFont(size: selection.typography.searchSize)
-            : selection.readingFont(size: selection.typography.searchSize)
     }
 
     private var controlHeight: CGFloat {
@@ -129,26 +140,27 @@ struct HistorySearchControl: View {
                     .foregroundColor(inputTokens?.iconColor ?? palette.tertiaryColor)
                     .frame(width: 15, height: 18)
 
-                TextField(Loc.t("history.search"), text: $keyword)
-                    .textFieldStyle(.plain)
-                    .font(searchFont)
-                    .foregroundColor(inputTokens?.foregroundColor ?? palette.primaryColor)
-                    // Leave lineLimit unset: on macOS, lineLimit(1) enables
-                    // NSTextFieldCell's fixed control-size baseline. That
-                    // baseline ignores custom font metrics and lifts the
-                    // large Songti prompt above the visual centre. NSTextField
-                    // is already a single-line control and keeps wrapping off.
-                    .focused($focused)
-                    .onSubmit(onSubmit)
-                    .accessibilityLabel(Loc.t("history.search"))
-                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: controlHeight)
-                    .clipped()
-                    .layoutPriority(1)
+                HistoryNativeSearchField(
+                    text: $keyword, session: session,
+                    placeholder: Loc.t("history.search"),
+                    font: NSFont(name: FontCandidates.resolve(selection.typography.searchUsesDisplayFont
+                        ? selection.displayFontName
+                        : selection.readingFontName) ?? "",
+                        size: selection.typography.searchSize * selection.interfaceScale)
+                        ?? .systemFont(ofSize: selection.typography.searchSize * selection.interfaceScale),
+                    color: NSColor(inputTokens?.foregroundColor ?? palette.primaryColor),
+                    editorAppearance: HistorySearchEditorAppearance(selection: selection, scheme: colorScheme),
+                    onSubmit: onSubmit, onQueryChanged: onQueryChanged
+                )
+                .accessibilityLabel(Loc.t("history.search"))
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: controlHeight)
+                .clipped()
+                .layoutPriority(1)
 
                 if !keyword.isEmpty {
                     Button {
                         keyword = ""
-                        onSubmit()
+                        onQueryChanged()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 12))
@@ -270,6 +282,8 @@ struct HistoryFilterBar: View {
     let onFilterChanged: () -> Void
     let isFavoritesCollection: Bool
     let onOpenFavorites: () -> Void
+    let keyboardSession: HistoryKeyboardSession?
+    let onQueryChanged: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.tailSyncSelection) private var activeTheme
@@ -291,7 +305,9 @@ struct HistoryFilterBar: View {
         onSubmit: @escaping () -> Void,
         onFilterChanged: @escaping () -> Void,
         isFavoritesCollection: Bool = false,
-        onOpenFavorites: @escaping () -> Void = {}
+        onOpenFavorites: @escaping () -> Void = {},
+        keyboardSession: HistoryKeyboardSession? = nil,
+        onQueryChanged: @escaping () -> Void = {}
     ) {
         self._keyword = keyword
         self._selectedCategory = selectedCategory
@@ -306,6 +322,8 @@ struct HistoryFilterBar: View {
         self.onFilterChanged = onFilterChanged
         self.isFavoritesCollection = isFavoritesCollection
         self.onOpenFavorites = onOpenFavorites
+        self.keyboardSession = keyboardSession
+        self.onQueryChanged = onQueryChanged
     }
 
     private var selectedCategoryLabel: String {
@@ -316,7 +334,7 @@ struct HistoryFilterBar: View {
         VStack(spacing: FilterBarMetrics.rowSpacing) {
             // Row 1 — search
             HStack(spacing: 8) {
-                HistorySearchControl(keyword: $keyword, onSubmit: onSubmit)
+                HistorySearchControl(keyword: $keyword, onSubmit: onSubmit, keyboardSession: keyboardSession, onQueryChanged: onQueryChanged)
                 .frame(maxWidth: .infinity)
 
                 Circle()

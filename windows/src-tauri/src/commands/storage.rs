@@ -160,9 +160,11 @@ pub(super) fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) 
 
 #[command]
 pub async fn restore_file_batch(
+    app: AppHandle,
     state: State<'_, AppState>,
     batch_id: String,
 ) -> Result<(), CommandError> {
+    let _restore = super::restore_coordination::RestoreLease::begin(app)?;
     let paths = materialize_file_batch_paths(state.db.clone(), batch_id).await?;
     crate::clipboard_file::write_clipboard_files(&paths)?;
     crate::api::bump_clipboard_version();

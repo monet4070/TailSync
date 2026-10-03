@@ -151,7 +151,12 @@ pub async fn clear_history(state: State<'_, AppState>) -> Result<(), CommandErro
 /// Restore a history entry back to clipboard.
 /// Handles text (as text), images (as Image), and files (via CF_HDROP).
 #[command]
-pub async fn restore_entry(state: State<'_, AppState>, id: i64) -> Result<(), CommandError> {
+pub async fn restore_entry(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), CommandError> {
+    let _restore = super::restore_coordination::RestoreLease::begin(app)?;
     let payload = HistoryOperations::restore_payload_async(state.db.clone(), id).await?;
     let entry_type = payload.entry_type;
     let file_path = payload.file_path;

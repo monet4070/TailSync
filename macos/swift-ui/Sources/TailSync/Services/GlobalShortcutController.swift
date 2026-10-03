@@ -387,7 +387,9 @@ final class GlobalShortcutController {
             guard let self else { return }
             switch pressedID {
             case self.syncHotKeyID: self.onSyncActivate?()
-            case self.historyHotKeyID: self.onHistoryActivate?()
+            case self.historyHotKeyID:
+                HistoryWindowController.shared.captureOriginatingApplication()
+                self.onHistoryActivate?()
             default: break
             }
         }

@@ -5,10 +5,15 @@ import { useI18n } from "../hooks/useI18n";
 import { useTheme } from "../hooks/useTheme";
 import {
   closePreviewWindow,
+  closeHistoryWindow,
+  closeFavoritesWindow,
+  presentPreviewWindow,
   getPreviewWindowRequest,
   restoreEntry,
   type PreviewWindowSnapshot,
 } from "../tailsyncClient";
+import { useRestoreActivity } from "../hooks/useRestoreActivity";
+import { HistoryImeGuard } from "../utils/historyKeyboard";
 import { PreviewShell } from "../preview/PreviewShell";
 import {
   usePreviewPayload,
@@ -33,7 +38,8 @@ function validSnapshot(snapshot: PreviewWindowSnapshot | null): snapshot is Prev
     Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0 &&
     Number.isSafeInteger(snapshot.entryId) && snapshot.entryId > 0 &&
     (snapshot.batchId === null || typeof snapshot.batchId === "string") &&
-    (snapshot.owner === "history" || snapshot.owner === "favorites");
+    (snapshot.owner === "history" || snapshot.owner === "favorites") &&
+    typeof snapshot.takeFocus === "boolean";
 }
 
 export function Preview() {
@@ -42,14 +48,33 @@ export function Preview() {
   const [target, setTarget] = useState<PreviewTarget | null>(null);
   const [renderFailure, setRenderFailure] = useState<PreviewFailure | null>(null);
   const latestRevision = useRef(0);
+  const [snapshot, setSnapshot] = useState<PreviewWindowSnapshot | null>(null);
+  const restoring = useRef(false);
+  const [localRestoring, setLocalRestoring] = useState(false);
+  const restoreGeneration = useRef(0);
+  const { active: externalRestoring, activeRef: externalRestoringRef } = useRestoreActivity((activity) => {
+    restoreGeneration.current++;
+    if (activity.previewRevision !== undefined) {
+      latestRevision.current = Math.max(latestRevision.current, activity.previewRevision);
+    }
+  });
+  const ime = useRef(new HistoryImeGuard());
+  const [restoreSucceeded, setRestoreSucceeded] = useState(false);
+  const [restoreFailed, setRestoreFailed] = useState(false);
   const { state, retry } = usePreviewPayload(target);
 
   const applySnapshot = useCallback((snapshot: PreviewWindowSnapshot | null) => {
     if (!validSnapshot(snapshot) || snapshot.revision <= latestRevision.current) return;
     latestRevision.current = snapshot.revision;
+    // Consume the revision without changing the target. It must not be replayed
+    // after a failed restore or Ctrl+Enter success.
+    if (restoring.current || externalRestoringRef.current) return;
+    setRestoreFailed(false);
+    setRestoreSucceeded(false);
+    setSnapshot(snapshot);
     setRenderFailure(null);
     setTarget({ entryId: snapshot.entryId, batchId: snapshot.batchId });
-  }, []);
+  }, [externalRestoringRef]);
 
   useEffect(() => {
     let disposed = false;
@@ -60,8 +85,9 @@ export function Preview() {
       if (disposed) stop();
       else unlisten = stop;
     });
+    const generation = restoreGeneration.current;
     void getPreviewWindowRequest().then((snapshot) => {
-      if (!disposed) applySnapshot(snapshot);
+      if (!disposed && generation === restoreGeneration.current) applySnapshot(snapshot);
     }).catch((error: unknown) => {
       console.error("Could not read the preview-window request:", error);
     });
@@ -75,22 +101,16 @@ export function Preview() {
   const frameReady = usePreviewWindowFrame();
 
   useEffect(() => {
-    if (!frameReady || target === null) return undefined;
+    if (!frameReady || snapshot === null || restoring.current || externalRestoringRef.current) return;
+    // Only the native controller may show the window, guarded by revision.
     let disposed = false;
-    const appWindow = getCurrentWindow();
-    void appWindow.isVisible()
-      .then(async (visible) => {
-        if (disposed) return;
-        if (!visible) await appWindow.show();
-        if (!disposed) await appWindow.setFocus();
-      })
-      .catch((error: unknown) => {
-        if (!disposed) console.error("Could not show the preview window:", error);
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [frameReady, target]);
+    void presentPreviewWindow(snapshot.revision).then(() => {
+      if (!disposed && !restoring.current && !externalRestoringRef.current && snapshot.takeFocus) document.querySelector<HTMLElement>(".preview-body")?.focus({ preventScroll: true });
+    }).catch((error: unknown) => {
+      console.error("Could not present preview:", error);
+    });
+    return () => { disposed = true; };
+  }, [externalRestoringRef, frameReady, snapshot]);
   const loadFailure = state.status === "error" ? state.failure : null;
   const failure = renderFailure ?? loadFailure;
 
@@ -99,22 +119,28 @@ export function Preview() {
   }, [payload?.entry_id, target]);
 
   const clearSession = useCallback(() => {
+    setSnapshot(null);
     setTarget(null);
     setRenderFailure(null);
   }, []);
 
   const close = useCallback(() => {
+    if (restoring.current || externalRestoringRef.current) return;
+    latestRevision.current++;
     clearSession();
     void closePreviewWindow().catch((error: unknown) => {
       console.error("Could not hide the preview window:", error);
     });
-  }, [clearSession]);
+  }, [clearSession, externalRestoringRef]);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
-    void listen(PREVIEW_CLOSE_EVENT, () => {
-      if (!disposed) clearSession();
+    void listen<{ revision: number }>(PREVIEW_CLOSE_EVENT, (event) => {
+      if (!disposed && event.payload.revision >= latestRevision.current) {
+        latestRevision.current = event.payload.revision;
+        clearSession();
+      }
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;
@@ -128,15 +154,53 @@ export function Preview() {
   const previousId = payload?.batch?.previous_entry_id ?? null;
   const nextId = payload?.batch?.next_entry_id ?? null;
   const navigate = useCallback((entryId: number) => {
+    if (restoring.current || externalRestoringRef.current) return;
     const batchId = payload?.batch?.batch_id ?? target?.batchId ?? null;
     setRenderFailure(null);
     setTarget({ entryId, batchId });
-  }, [payload?.batch?.batch_id, target?.batchId]);
+  }, [externalRestoringRef, payload?.batch?.batch_id, target?.batchId]);
+
+  const restoreId = payload?.entry_id ?? null;
+  const restore = useCallback(async (keepOpen = true) => {
+    if (restoring.current || externalRestoringRef.current || restoreId === null || state.status !== "ready" ||
+        payload?.entry_id !== target?.entryId || snapshot === null) return;
+    restoring.current = true;
+    setLocalRestoring(true);
+    restoreGeneration.current++;
+    try {
+      setRestoreFailed(false);
+      setRestoreSucceeded(false);
+      await restoreEntry(restoreId);
+      setRestoreSucceeded(true);
+      if (!keepOpen) {
+        const owner = snapshot.owner;
+        latestRevision.current++;
+        clearSession();
+        await closePreviewWindow(owner === "favorites" ? "favorites" : "all");
+        await (owner === "favorites" ? closeFavoritesWindow() : closeHistoryWindow());
+      }
+    } catch (error) {
+      setRestoreFailed(true);
+      throw error;
+    } finally {
+      restoring.current = false;
+      setLocalRestoring(false);
+    }
+  }, [clearSession, externalRestoringRef, payload?.entry_id, restoreId, snapshot, state.status, target?.entryId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat) return;
-      if (event.key === "Escape") {
+      if (event.defaultPrevented || event.repeat || ime.current.blocks(event) || restoring.current || externalRestoringRef.current) return;
+      if (isInteractiveTarget(event.target) && event.key !== "Escape") return;
+      if (event.key === "Enter" && !event.altKey && !event.metaKey && !event.shiftKey) {
+        event.preventDefault();
+        void restore(event.ctrlKey).catch((error: unknown) => {
+          console.error("Preview restore failed:", error);
+          setRestoreFailed(true);
+        });
+        return;
+      }
+      if (event.key === "Escape" && !restoring.current) {
         event.preventDefault();
         close();
         return;
@@ -159,7 +223,7 @@ export function Preview() {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [close, navigate, nextId, previousId]);
+  }, [close, externalRestoringRef, navigate, nextId, previousId, restore]);
 
   useEffect(() => {
     let disposed = false;
@@ -177,21 +241,20 @@ export function Preview() {
     };
   }, [close]);
 
-  const restoreId = payload?.entry_id ?? target?.entryId ?? null;
-  const restore = useCallback(async () => {
-    if (restoreId === null) return;
-    await restoreEntry(restoreId);
-  }, [restoreId]);
-
   const appClassName = useMemo(
     () => `app preview-app ${theme}`,
     [theme],
   );
 
   return (
-    <div className={appClassName}>
+    <div className={appClassName}
+      onCompositionStart={() => ime.current.start()}
+      onCompositionEnd={() => ime.current.end()}>
+      {restoreSucceeded && <div role="status">{t("history.preview.restored")}</div>}
+      {restoreFailed && <div role="alert">{t("history.preview.restoreError")}</div>}
       <PreviewShell
         payload={payload}
+        restoringExternally={externalRestoring || localRestoring}
         loading={state.status === "loading" || state.status === "idle"}
         failure={failure}
         onRetry={() => {
@@ -205,7 +268,7 @@ export function Preview() {
           limitBytes: null,
         })}
         onClose={close}
-        onRestore={restore}
+        onRestore={() => restore()}
         onPrevious={previousId === null ? null : () => navigate(previousId)}
         onNext={nextId === null ? null : () => navigate(nextId)}
         t={t}

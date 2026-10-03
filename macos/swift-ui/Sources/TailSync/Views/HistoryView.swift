@@ -2,6 +2,8 @@ import AppKit
 import Foundation
 import SwiftUI
 
+private enum HistoryPendingSelection { case first, last }
+
 private struct HistoryDateBounds {
     let start: Date?
     let end: Date?
@@ -26,12 +28,49 @@ enum HistoryFavoriteMutationPolicy {
     }
 }
 
+struct HistoryQuery: Equatable, Sendable {
+    let keyword: String?
+    let category: String?
+    let startTime: String?
+    let endTime: String?
+    let limit: Int
+    let offset: Int
+    let collection: String
+}
+
+struct HistoryViewDependencies: Sendable {
+    var load: @Sendable (HistoryQuery) async throws -> [HistoryEntry]
+    var restore: @Sendable (Int64) async throws -> Void
+    var restoreBatch: @Sendable (String) async throws -> Void = {
+        try await ApiClient.shared.restoreFileBatch($0)
+    }
+    var usesRuntimeUpdates = true
+
+    static let live = HistoryViewDependencies(
+        load: { query in
+            try await ApiClient.shared.getHistory(
+                keyword: query.keyword, category: query.category,
+                startTime: query.startTime, endTime: query.endTime,
+                limit: query.limit, offset: query.offset, collection: query.collection
+            )
+        },
+        restore: { try await ApiClient.shared.restoreEntry(id: $0) }
+    )
+}
+
 struct HistoryView: View {
     let collection: String
     private let visibilityNotification: Notification.Name
+    private let dependencies: HistoryViewDependencies
 
-    init(collection: String = "all") {
+    init(
+        collection: String = "all",
+        dependencies: HistoryViewDependencies = .live,
+        keyboardSession: HistoryKeyboardSession? = nil
+    ) {
         self.collection = collection
+        self.dependencies = dependencies
+        _keyboard = StateObject(wrappedValue: keyboardSession ?? HistoryKeyboardSession())
         visibilityNotification = .tailSyncHistoryCollectionVisibilityChanged(
             for: collection
         )
@@ -54,7 +93,18 @@ struct HistoryView: View {
     // Previewing is independent of restoration: selection chooses a row,
     // Space opens it in the reusable preview window, and double-click retains
     // the established clipboard-restore gesture.
-    @State private var focusedEntryId: Int64? = nil
+    @StateObject private var keyboard: HistoryKeyboardSession
+    private var focusedEntryId: Int64? {
+        get { keyboard.selectedID }
+        nonmutating set { keyboard.selectedID = newValue }
+    }
+    @State private var isRestoring = false
+    @State private var loadedQuery: HistoryQuery? = nil
+    @State private var previewFollowTask: Task<Void, Never>? = nil
+    @State private var interactionGeneration = 0
+    @State private var queryTask: Task<Void, Never>? = nil
+    @State private var queryGeneration = 0
+    @State private var pendingPageSelection: HistoryPendingSelection? = nil
     @State private var errorMsg: String? = nil
     @State private var lastVersion: UInt64 = 0
     @State private var runtimeRevision: UInt64 = 0
@@ -71,6 +121,10 @@ struct HistoryView: View {
     @State private var unresolvedMigrationCount = 0
     @State private var syncWarning: String? = nil
     @State private var syncWarningTask: Task<Void, Never>? = nil
+    // Persistent while storage is unavailable, unlike `syncWarning` which is a
+    // transient toast. A user with an open History/Favorites window must be able
+    // to see that new items may not be saved, not just after an unrelated copy.
+    @State private var storageWarning: String? = nil
     @State private var actionMessage: String? = nil
     @State private var actionMessageTask: Task<Void, Never>? = nil
     @State private var restoreFeedbackTask: Task<Void, Never>? = nil
@@ -150,9 +204,19 @@ struct HistoryView: View {
                 dateRangeFilteringSupported: dateRangeFilteringSupported,
                 daemonOnline: daemonOnline,
                 onSubmit: { page = 0; load(targetPage: 0) },
-                onFilterChanged: { page = 0; load(targetPage: 0) },
+                onFilterChanged: {
+                    restoredId = nil
+                    interactionGeneration &+= 1
+                    queryTask?.cancel()
+                    queryTask = nil
+                    pendingPageSelection = nil
+                    page = 0
+                    load(targetPage: 0)
+                },
                 isFavoritesCollection: isFavoritesCollection,
-                onOpenFavorites: { AppDelegate.showFavorites() }
+                onOpenFavorites: { AppDelegate.showFavorites() },
+                keyboardSession: keyboard,
+                onQueryChanged: scheduleSearch
             )
             .padding(.horizontal, 12).padding(.top, 8)
 
@@ -177,6 +241,30 @@ struct HistoryView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
                 .accessibilityElement(children: .combine)
+            }
+
+            if daemonOnline, let storageWarning {
+                HStack(spacing: 7) {
+                    Image(systemName: "externaldrive.badge.exclamationmark")
+                        .foregroundColor(palette.warningColor)
+                    Text(storageWarning)
+                        .font(activeTheme.readingFont(size: 10))
+                        .foregroundColor(palette.secondaryColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(palette.warningSoftColor)
+                .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous)
+                        .stroke(palette.warningColor.opacity(0.3), lineWidth: 1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(storageWarning)
             }
 
             // List
@@ -220,6 +308,7 @@ struct HistoryView: View {
                 }
                 Spacer()
             } else {
+                ScrollViewReader { scroll in
                 List {
                     ForEach(displayedEntries) { entry in
                         VStack(spacing: 4) {
@@ -274,7 +363,9 @@ struct HistoryView: View {
                                 expandedBatchIds: expandedBatchIds
                             ),
                             onSelect: {
+                                guard !isRestoring, !isLoading, queryTask == nil else { return }
                                 focusedEntryId = entry.id
+                                keyboard.focusList()
                             },
                             onRestore: {
                                 restore(entry.id)
@@ -286,9 +377,12 @@ struct HistoryView: View {
                                 toggleFavorite(entry)
                             },
                             onPreview: { request in
+                                guard !isRestoring, resultsAreCurrent else { return }
+                                previewFollowTask?.cancel()
                                 HistoryPreviewWindowController.shared.present(
                                     request,
-                                    owner: previewOwner
+                                    owner: previewOwner,
+                                    takeFocus: false
                                 )
                             },
                             onClosePreview: {
@@ -303,13 +397,25 @@ struct HistoryView: View {
                             }
                         )
                         }
+                        .id(entry.id)
                         .listRowBackground(palette.surfaceColor)
                         .listRowSeparatorTint(palette.dividerColor)
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .onChange(of: keyboard.selectedID) { id in
+                    guard let id else { return }
+                    // Scroll only the minimum needed to keep the row visible, and
+                    // animate it so the list glides instead of jumping. Once the
+                    // row reaches an edge it stays put and the list slides under
+                    // it, so the selection never lurches.
+                    withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.15)) {
+                        scroll.scrollTo(id, anchor: nil)
+                    }
+                }
                 .animation(loc.reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.9), value: entries.count)
+                }
             }
 
             // Pagination + clear
@@ -318,13 +424,13 @@ struct HistoryView: View {
                     let target = page - 1
                     load(targetPage: target)
                 } label: { Image(systemName: "chevron.left") }
-                    .disabled(page == 0 || isLoading)
+                    .disabled(page == 0 || isRestoring || !resultsAreCurrent)
                 Text("\(page + 1)").font(.caption).foregroundColor(palette.tertiaryColor).monospacedDigit()
                 Button {
                     let target = page + 1
                     load(targetPage: target)
                 } label: { Image(systemName: "chevron.right") }
-                    .disabled(!hasNext || isLoading)
+                    .disabled(!hasNext || isRestoring || !resultsAreCurrent)
                 Spacer()
                 if !isFavoritesCollection && !entries.isEmpty {
                     Button(Loc.t("history.clearAll"), role: .destructive) { showingClearAlert = true }
@@ -342,14 +448,33 @@ struct HistoryView: View {
                 Button(Loc.t("history.clearAll"), role: .destructive) { clearAll() }
             }
         }
+        .background(HistoryKeyboardListResponder(session: keyboard).frame(width: 0, height: 0))
+        .onChange(of: keyboard.selectedID) { _ in followPreviewSelection() }
         .onAppear {
+            keyboard.onCommand = handleKeyboard
+            HistoryPreviewWindowController.shared.registerKeyboardHandlers(
+                for: previewOwner,
+                onRestore: { id, keepOpen in restore(id, dismiss: !keepOpen) },
+                onReturn: { keyboard.focusList() }
+            )
+            if !isFavoritesCollection {
+                HistoryWindowController.shared.onKeyboardActivation = {
+                    interactionGeneration &+= 1
+                    restoredId = nil
+                    keyboard.selectedID = displayedEntries.first?.id
+                    keyboard.focusSearch()
+                }
+            }
+            keyboard.focusSearch(selectAll: false)
             load()
-            loadProgressPreference()
-            loadHistoryCapabilities()
-            loadMigrationDiagnostics()
+            if dependencies.usesRuntimeUpdates {
+                loadProgressPreference()
+                loadHistoryCapabilities()
+                loadMigrationDiagnostics()
+            }
         }
         .task(id: windowIsVisible) {
-            guard windowIsVisible else { return }
+            guard windowIsVisible, dependencies.usesRuntimeUpdates else { return }
             await runtimeSnapshotLoop(forceRefresh: true)
         }
         .onReceive(NotificationCenter.default.publisher(
@@ -357,6 +482,11 @@ struct HistoryView: View {
         )) { notification in
             guard let isVisible = notification.userInfo?["visible"] as? Bool else { return }
             windowIsVisible = isVisible
+            if !isVisible {
+                interactionGeneration &+= 1
+                previewFollowTask?.cancel()
+                HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
             reloadActiveDateFilter()
@@ -370,6 +500,17 @@ struct HistoryView: View {
             if !progressBarEnabled { fileProgress = nil }
         }
         .onDisappear {
+            keyboard.onCommand = nil
+            if !isFavoritesCollection { HistoryWindowController.shared.onKeyboardActivation = nil }
+            interactionGeneration &+= 1
+            loadGeneration &+= 1
+            isLoading = false
+            queryTask?.cancel()
+            queryTask = nil
+            previewFollowTask?.cancel()
+            HistoryPreviewWindowController.shared.registerKeyboardHandlers(
+                for: previewOwner, onRestore: nil, onReturn: nil
+            )
             HistoryThumbnailCache.removeAll()
             restoreFeedbackTask?.cancel()
             restoreFeedbackTask = nil
@@ -452,35 +593,17 @@ struct HistoryView: View {
     }
 
     private func load(targetPage: Int? = nil, clearExisting: Bool = true) {
+        // Runtime refreshes must not supersede a typed query or keyboard page turn.
+        if !clearExisting && (queryTask != nil || isLoading || isRestoring) { return }
         loadGeneration += 1
         let generation = loadGeneration
         let requestedPage = targetPage ?? page
-        let requestedKeyword = keyword.isEmpty ? nil : keyword
-        let requestedCategory = categoryFilteringSupported && selectedCategory != "all"
-            ? selectedCategory
-            : nil
-        let requestedBounds = dateRangeFilteringSupported
-            ? dateBounds(for: selectedDateFilter)
-            : HistoryDateBounds(start: nil, end: nil)
-        let requestedStartTime = utcRFC3339(requestedBounds.start)
-        let requestedEndTime = utcRFC3339(requestedBounds.end)
+        let requestedQuery = historyQuery(page: requestedPage)
         isLoading = true
         errorMsg = nil
-        if clearExisting {
-            entries = []
-            hasNext = false
-            focusedEntryId = nil
-        }
         Task {
             do {
-                let result = try await ApiClient.shared.getHistory(
-                    keyword: requestedKeyword,
-                    category: requestedCategory,
-                    startTime: requestedStartTime,
-                    endTime: requestedEndTime,
-                    limit: pageSize + 1,
-                    offset: requestedPage * pageSize,
-                    collection: collection)
+                let result = try await dependencies.load(requestedQuery)
                 guard generation == loadGeneration else { return }
                 entries = HistoryFavoriteMutationPolicy.reconcile(
                     Array(result.prefix(pageSize)),
@@ -488,12 +611,24 @@ struct HistoryView: View {
                 )
                 hasNext = result.count > pageSize
                 page = requestedPage
-                pruneSelection()
+                loadedQuery = requestedQuery
+                if let pendingPageSelection {
+                    keyboard.selectedID = pendingPageSelection == .first
+                        ? displayedEntries.first?.id
+                        : displayedEntries.last?.id
+                    self.pendingPageSelection = nil
+                } else {
+                    pruneSelection()
+                }
             } catch {
                 guard generation == loadGeneration else { return }
-                errorMsg = Loc.t("history.loadError")
+                pendingPageSelection = nil
+                showActionMessage(Loc.t("history.loadError"))
             }
-            if generation == loadGeneration { isLoading = false }
+            if generation == loadGeneration {
+                isLoading = false
+                followPreviewSelection()
+            }
         }
     }
 
@@ -548,6 +683,17 @@ struct HistoryView: View {
             let reconnected = !daemonOnline
             daemonOnline = true
             runtimeRevision = snapshot.revision
+            // Persistent storage banner: keeps showing while the server
+            // reports storage unavailable, and clears immediately when it
+            // reports storage back; the background recovery merges the rows and
+            // bumps the history version, which reloads the list below.
+            if snapshot.storage?.available == false {
+                if storageWarning == nil {
+                    storageWarning = Loc.t("history.storageUnavailable")
+                }
+            } else {
+                storageWarning = nil
+            }
             if reconnected || snapshot.historyVersion != lastVersion {
                 lastVersion = snapshot.historyVersion
                 load(targetPage: page, clearExisting: false)
@@ -594,12 +740,8 @@ struct HistoryView: View {
     }
 
     private func restoreBatch(_ batchId: String) {
-        Task { @MainActor in
-            do {
-                try await ApiClient.shared.restoreFileBatch(batchId)
-            } catch {
-                errorMsg = error.localizedDescription
-            }
+        performRestore(restoredEntryID: nil, dismiss: false) {
+            try await dependencies.restoreBatch(batchId)
         }
     }
 
@@ -662,24 +804,175 @@ struct HistoryView: View {
         load(targetPage: 0)
     }
 
-    private func restore(_ id: Int64) {
+    private func scheduleSearch() {
+        restoredId = nil
+        interactionGeneration &+= 1
+        queryTask?.cancel()
+        queryGeneration &+= 1
+        let generation = queryGeneration
+        // Invalidate the previous request immediately, not after the debounce.
+        loadGeneration += 1
+        isLoading = false
+        pendingPageSelection = nil
+        previewFollowTask?.cancel()
+        HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+        queryTask = Task { @MainActor in
+            // `queryTask != nil` is read as "a search is still pending" by
+            // `resultsAreCurrent` and by the runtime-refresh early return, so
+            // every exit path must clear it — including the composing bail-out
+            // below. Only the newest generation may clear the slot, otherwise a
+            // superseded task would clear its replacement's flag. Clearing does
+            // not make stale results look current: `resultsAreCurrent` still
+            // compares the loaded query against the live keyword, which has
+            // already changed by the time this runs.
+            defer { if generation == queryGeneration { queryTask = nil } }
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled, generation == queryGeneration, !keyboard.isComposing else { return }
+            load(targetPage: 0)
+        }
+    }
+
+    private func handleKeyboard(_ command: HistoryKeyboardCommand) {
+        guard !keyboard.isComposing, !isRestoring else { return }
+        switch command {
+        case .down:
+            guard resultsAreCurrent else { return }
+            keyboard.reconcile(ids: displayedEntries.map(\.id))
+            if keyboard.focus == .search { keyboard.focusList(); return }
+            if let id = focusedEntryId,
+               let index = displayedEntries.firstIndex(where: { $0.id == id }),
+               index + 1 < displayedEntries.count {
+                focusedEntryId = displayedEntries[index + 1].id
+            } else if hasNext {
+                pendingPageSelection = .first
+                load(targetPage: page + 1)
+            }
+        case .up:
+            guard resultsAreCurrent else { return }
+            if keyboard.focus == .search { return }
+            if let id = focusedEntryId,
+               let index = displayedEntries.firstIndex(where: { $0.id == id }), index > 0 {
+                focusedEntryId = displayedEntries[index - 1].id
+            } else if page > 0 {
+                pendingPageSelection = .last
+                load(targetPage: page - 1)
+            } else { keyboard.focusSearch() }
+        case .search: keyboard.focusSearch()
+        case .restore(let keepOpen):
+            guard resultsAreCurrent, let id = focusedEntryId else { return }
+            restore(id, dismiss: !keepOpen)
+        case .escape:
+            if HistoryPreviewWindowController.shared.isPreviewVisible(for: previewOwner) {
+                HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+            } else if isFavoritesCollection {
+                HistoryPreviewWindowController.shared.dismissHost(for: previewOwner)
+            } else { HistoryWindowController.shared.dismissAndReturnToOriginatingApp() }
+        case .preview, .deepPreview:
+            guard resultsAreCurrent, keyboard.focus == .list, let request = selectedPreviewRequest else { return }
+            previewFollowTask?.cancel()
+            if command == .deepPreview,
+               HistoryPreviewWindowController.shared.isPreviewVisible(for: previewOwner),
+               HistoryPreviewWindowController.shared.viewModel.currentItem?.id == request.selectedItem?.id {
+                HistoryPreviewWindowController.shared.focus(for: previewOwner)
+            } else {
+                HistoryPreviewWindowController.shared.present(
+                    request, owner: previewOwner, takeFocus: command == .deepPreview
+                )
+            }
+        }
+    }
+
+    private func historyQuery(page: Int) -> HistoryQuery {
+        let bounds = dateRangeFilteringSupported
+            ? dateBounds(for: selectedDateFilter)
+            : HistoryDateBounds(start: nil, end: nil)
+        return HistoryQuery(
+            keyword: keyword.isEmpty ? nil : keyword,
+            category: categoryFilteringSupported && selectedCategory != "all" ? selectedCategory : nil,
+            startTime: utcRFC3339(bounds.start), endTime: utcRFC3339(bounds.end),
+            limit: pageSize + 1, offset: page * pageSize, collection: collection
+        )
+    }
+
+    private var resultsAreCurrent: Bool {
+        !isLoading && queryTask == nil && loadedQuery == historyQuery(page: page)
+    }
+
+    private var selectedPreviewRequest: HistoryPreviewRequest? {
+        guard let id = focusedEntryId else { return nil }
+        return historyPreviewRequest(focusedId: id, entries: entries, expandedBatchIds: expandedBatchIds)
+    }
+
+    private func followPreviewSelection() {
+        previewFollowTask?.cancel()
+        guard HistoryPreviewWindowController.shared.isPreviewVisible(for: previewOwner) else { return }
+        guard focusedEntryId != nil else {
+            HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+            return
+        }
+        let selected = focusedEntryId
+        let generation = interactionGeneration
+        previewFollowTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled, windowIsVisible, resultsAreCurrent, !isRestoring,
+                  generation == interactionGeneration, selected == focusedEntryId,
+                  HistoryPreviewWindowController.shared.isPreviewVisible(for: previewOwner),
+                  let request = selectedPreviewRequest else { return }
+            HistoryPreviewWindowController.shared.present(request, owner: previewOwner, takeFocus: false)
+        }
+    }
+
+    private func restore(_ id: Int64, dismiss: Bool = false) {
+        performRestore(restoredEntryID: id, dismiss: dismiss) {
+            try await dependencies.restore(id)
+        }
+    }
+
+    // Keyboard, row, batch and hosted-preview restores share one lock and
+    // completion path, so no entry point can mutate the clipboard concurrently.
+    private func performRestore(
+        restoredEntryID: Int64?, dismiss: Bool,
+        operation: @escaping @Sendable () async throws -> Void
+    ) {
+        guard !isRestoring, resultsAreCurrent else { return }
+        isRestoring = true
+        restoredId = nil
+        previewFollowTask?.cancel()
         restoreFeedbackTask?.cancel()
-        restoreFeedbackTask = Task {
+        let generation = interactionGeneration
+        HistoryPreviewWindowController.shared.setRestoreState(.restoring, for: previewOwner)
+        restoreFeedbackTask = Task { @MainActor in
             do {
-                try await ApiClient.shared.restoreEntry(id: id)
+                try await operation()
             } catch {
-                errorMsg = error.localizedDescription
+                isRestoring = false
+                guard !Task.isCancelled, generation == interactionGeneration else {
+                    HistoryPreviewWindowController.shared.setRestoreState(.idle, for: previewOwner)
+                    return
+                }
+                HistoryPreviewWindowController.shared.setRestoreState(.failed, for: previewOwner)
+                showActionMessage(error.localizedDescription)
                 return
             }
-            guard !Task.isCancelled else { return }
-            withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.4)) { restoredId = id }
-            do {
-                try await Task.sleep(nanoseconds: 1_500_000_000)
-            } catch {
+            isRestoring = false
+            guard !Task.isCancelled, generation == interactionGeneration else {
+                HistoryPreviewWindowController.shared.setRestoreState(.idle, for: previewOwner)
                 return
             }
-            guard !Task.isCancelled else { return }
-            withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.4)) { restoredId = nil }
+            HistoryPreviewWindowController.shared.setRestoreState(.restored, for: previewOwner)
+            if dismiss {
+                if isFavoritesCollection {
+                    HistoryPreviewWindowController.shared.dismissHost(for: previewOwner)
+                } else {
+                    HistoryWindowController.shared.dismissAndReturnToOriginatingApp()
+                }
+            } else {
+                restoredId = restoredEntryID
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled, generation == interactionGeneration else { return }
+                restoredId = nil
+                HistoryPreviewWindowController.shared.setRestoreState(.idle, for: previewOwner)
+            }
         }
     }
 
@@ -774,10 +1067,7 @@ struct HistoryView: View {
     /// Remove a selection that no longer refers to a loaded row so a delayed
     /// key event cannot preview deleted or stale content.
     private func pruneSelection() {
-        let validIds = Set(entries.map(\.id))
-        if let focusedEntryId, !validIds.contains(focusedEntryId) {
-            self.focusedEntryId = nil
-        }
+        keyboard.reconcile(ids: displayedEntries.map(\.id))
     }
 }
 

@@ -1,3 +1,4 @@
+pub(crate) mod restore_coordination;
 use crate::db;
 use crate::network;
 use crate::AppState;
@@ -87,6 +88,7 @@ fn install_global_shortcuts(
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
+                    crate::window_lifecycle::capture_history_foreground(app);
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
                         if let Err(error) = toggle_history_window(app).await {

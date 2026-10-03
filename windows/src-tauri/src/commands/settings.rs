@@ -139,6 +139,11 @@ pub async fn update_settings(
 /// Open the history window
 #[command]
 pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    crate::window_lifecycle::capture_history_foreground_for_open(&app);
+    open_history_window_captured(app).await
+}
+
+async fn open_history_window_captured(app: tauri::AppHandle) -> Result<(), CommandError> {
     use tauri::Manager;
 
     crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::HISTORY_WINDOW_LABEL);
@@ -146,6 +151,9 @@ pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), CommandErr
     // Check if window already exists
     if let Some(window) = app.get_webview_window(crate::window_lifecycle::HISTORY_WINDOW_LABEL) {
         crate::window_lifecycle::restore_and_focus_window(&window)?;
+        window
+            .emit("tailsync://history-open", ())
+            .map_err(|error| error.to_string())?;
         return Ok(());
     }
 
@@ -184,13 +192,10 @@ pub(crate) async fn toggle_history_window(app: tauri::AppHandle) -> Result<(), S
         let visible = window.is_visible().map_err(|error| error.to_string())?;
         let focused = window.is_focused().map_err(|error| error.to_string())?;
         if visible && focused {
-            return crate::window_lifecycle::hide_then_release_window(
-                app,
-                crate::window_lifecycle::HISTORY_WINDOW_LABEL,
-            );
+            return close_history_window(app).map_err(|error| error.to_string());
         }
     }
-    open_history_window(app)
+    open_history_window_captured(app)
         .await
         .map_err(|error| error.to_string())
 }
@@ -304,6 +309,14 @@ pub async fn open_connections_window(app: tauri::AppHandle) -> Result<(), Comman
 
 #[command]
 pub fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if let Some(controller) = app.try_state::<crate::preview_window::PreviewWindowController>() {
+        crate::preview_window::close_preview_window(
+            app.clone(),
+            controller,
+            Some(crate::preview_window::PreviewWindowOwner::History),
+        )?;
+    }
+    crate::window_lifecycle::return_history_foreground(&app);
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::HISTORY_WINDOW_LABEL,
@@ -313,6 +326,13 @@ pub fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
 
 #[command]
 pub fn close_favorites_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if let Some(controller) = app.try_state::<crate::preview_window::PreviewWindowController>() {
+        crate::preview_window::close_preview_window(
+            app.clone(),
+            controller,
+            Some(crate::preview_window::PreviewWindowOwner::Favorites),
+        )?;
+    }
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::FAVORITES_WINDOW_LABEL,

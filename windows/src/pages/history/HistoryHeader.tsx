@@ -4,6 +4,7 @@ import { FilterDropdown } from "./HistoryFilterDropdown";
 import type { HistoryHeaderProps } from "./HistoryViewTypes";
 
 export function HistoryHeader({
+  searchRef,
   t,
   windowAlwaysOnTop,
   windowAlwaysOnTopPending,
@@ -84,6 +85,7 @@ export function HistoryHeader({
             <Search size={18} strokeWidth={1.7} aria-hidden="true" />
           </span>
           <input
+            ref={searchRef}
             type="text"
             placeholder={t("history.searchPlaceholder")}
             value={keywordDraft}

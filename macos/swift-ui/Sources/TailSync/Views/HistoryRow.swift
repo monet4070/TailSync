@@ -14,6 +14,19 @@ enum HistoryFavoriteFillPolicy {
     }
 }
 
+struct HistoryRowFocusStyle {
+    let color: Color
+    let cornerRadius: CGFloat
+    let lineWidth: CGFloat
+
+    init(selection: TailSyncThemeSelection, scheme: ColorScheme) {
+        let focus = selection.component("history", state: "focus", scheme: scheme)
+        color = focus?.focusRingColor ?? selection.palette(for: scheme).accentColor
+        cornerRadius = focus?.radius ?? selection.metrics(for: scheme).controlRadius
+        lineWidth = selection.builtin == .highContrast ? 3 : 2
+    }
+}
+
 struct HistoryRow: View {
     let entry: HistoryEntry
     let isRestored: Bool
@@ -46,6 +59,14 @@ struct HistoryRow: View {
     private var component: TailSyncThemeComponentTokens? {
         let state = isRestored ? "selected" : (isFocused ? "focus" : (hovering ? "hover" : "default"))
         return selection.component("history", state: state, scheme: colorScheme)
+    }
+
+    private var focusStyle: HistoryRowFocusStyle {
+        HistoryRowFocusStyle(selection: selection, scheme: colorScheme)
+    }
+
+    private var rowCornerRadius: CGFloat {
+        isFocused ? focusStyle.cornerRadius : (component?.radius ?? selection.metrics.controlRadius)
     }
 
     private var visibleCategoryLabels: [String] {
@@ -107,15 +128,16 @@ struct HistoryRow: View {
         .background(
             component?.backgroundColor ?? (isRestored
                 ? palette.activeColor
-                : isFocused ? palette.hoverColor : .clear)
+                : isFocused ? palette.accentSoftColor : .clear)
         )
-        .clipShape(RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: rowCornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous)
-                .stroke(
-                    isFocused ? (component?.focusRingColor ?? palette.accentColor).opacity(0.7) : (component?.borderColor ?? .clear),
-                    lineWidth: isFocused ? 1 : 0
+            RoundedRectangle(cornerRadius: rowCornerRadius, style: .continuous)
+                .strokeBorder(
+                    isFocused ? focusStyle.color : (component?.borderColor ?? .clear),
+                    lineWidth: isFocused ? focusStyle.lineWidth : 0
                 )
+                .allowsHitTesting(false)
         }
         .overlay {
             RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous)
@@ -137,7 +159,10 @@ struct HistoryRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.4), value: isRestored)
-        .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.18), value: isFocused)
+        // The focus ring must switch instantly, never cross-fade: during fast
+        // navigation an animated ring leaves the previous row's box fading out
+        // while the next one fades in, so two selection boxes are visible at
+        // once. Exactly one row may ever show the ring.
         .animation(Loc.shared.reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
         .animation(Loc.shared.reduceMotion ? nil : .linear(duration: 0.42), value: favoriteProgress)
         .animation(Loc.shared.reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.68), value: showsTransientFavoriteStamp)

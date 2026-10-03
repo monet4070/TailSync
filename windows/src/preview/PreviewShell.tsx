@@ -39,6 +39,7 @@ function failureCopy(failure: PreviewFailure, t: (key: string) => string): strin
 
 export function PreviewShell({
   payload,
+  restoringExternally = false,
   loading,
   failure,
   onRetry,
@@ -50,6 +51,7 @@ export function PreviewShell({
   t,
 }: {
   payload: PreviewPayload | null;
+  restoringExternally?: boolean;
   loading: boolean;
   failure: PreviewFailure | null;
   onRetry: () => void;
@@ -67,10 +69,11 @@ export function PreviewShell({
     ? `${payload.batch.item_index + 1} / ${payload.batch.item_count}`
     : null;
   const headingId = useMemo(() => `preview-heading-${payload?.entry_id ?? "empty"}`, [payload?.entry_id]);
-  const closeRef = useRef<HTMLButtonElement>(null);
+  const bodyRef = useRef<HTMLElement>(null);
+  const restoring = useRef(false);
 
   useEffect(() => {
-    closeRef.current?.focus({ preventScroll: true });
+    bodyRef.current?.focus({ preventScroll: true });
   }, []);
 
   useEffect(() => {
@@ -85,12 +88,16 @@ export function PreviewShell({
   }, [restoreState]);
 
   const restore = async () => {
+    if (restoring.current || restoringExternally) return;
+    restoring.current = true;
     setRestoreState("restoring");
     try {
       await onRestore();
       setRestoreState("restored");
     } catch {
       setRestoreState("failed");
+    } finally {
+      restoring.current = false;
     }
   };
 
@@ -104,19 +111,19 @@ export function PreviewShell({
           {position && <span className="preview-position">{position}</span>}
         </div>
         <div className="preview-titlebar-actions" data-tauri-drag-region="false">
-          <button type="button" className="preview-window-button" title={t("history.preview.previous")} aria-label={t("history.preview.previous")} disabled={!onPrevious} onClick={onPrevious ?? undefined}>
+          <button type="button" className="preview-window-button" title={t("history.preview.previous")} aria-label={t("history.preview.previous")} disabled={restoringExternally || restoreState === "restoring" || !onPrevious} onClick={onPrevious ?? undefined}>
             <ChevronLeft size={15} aria-hidden="true" />
           </button>
-          <button type="button" className="preview-window-button" title={t("history.preview.next")} aria-label={t("history.preview.next")} disabled={!onNext} onClick={onNext ?? undefined}>
+          <button type="button" className="preview-window-button" title={t("history.preview.next")} aria-label={t("history.preview.next")} disabled={restoringExternally || restoreState === "restoring" || !onNext} onClick={onNext ?? undefined}>
             <ChevronRight size={15} aria-hidden="true" />
           </button>
-          <button ref={closeRef} type="button" className="preview-window-button is-close" title={t("history.close")} aria-label={t("history.close")} onClick={onClose}>
+          <button type="button" className="preview-window-button is-close" title={t("history.close")} aria-label={t("history.close")} disabled={restoringExternally || restoreState === "restoring"} onClick={onClose}>
             <X size={15} aria-hidden="true" />
           </button>
         </div>
       </header>
 
-      <section className="preview-body">
+      <section ref={bodyRef} tabIndex={-1} className="preview-body">
         {loading && <div className="preview-state" role="status" data-testid="preview-loading">{t("history.preview.loading")}</div>}
         {!loading && failure && (
           <div className="preview-state preview-state-error" role="alert" data-testid="preview-error">
@@ -154,7 +161,7 @@ export function PreviewShell({
         </span>
         <div className="preview-footer-actions">
           {payload && (
-            <button type="button" className="preview-secondary-button" disabled={restoreState === "restoring"} onClick={() => void restore()}>
+            <button type="button" className="preview-secondary-button" disabled={restoringExternally || restoreState === "restoring"} onClick={() => void restore()}>
               <Download size={14} aria-hidden="true" />
               {restoreState === "restoring" ? t("history.preview.restoring") : t("history.restoreEntry")}
             </button>

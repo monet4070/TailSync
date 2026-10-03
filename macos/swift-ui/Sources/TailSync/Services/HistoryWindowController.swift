@@ -19,6 +19,23 @@ final class HistoryWindowController: ObservableObject {
 
     private let defaults: UserDefaults
     private weak var window: NSWindow?
+    private var originatingApp: NSRunningApplication?
+    var onKeyboardActivation: (() -> Void)?
+
+    func captureOriginatingApplication() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        originatingApp = app
+    }
+
+    func dismissAndReturnToOriginatingApp() {
+        HistoryPreviewWindowController.shared.close(ifOwnedBy: .history)
+        window?.orderOut(nil)
+        let app = originatingApp
+        originatingApp = nil
+        if let app, !app.isTerminated { app.activate(options: []) }
+    }
+
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -34,6 +51,8 @@ final class HistoryWindowController: ObservableObject {
     func detach(_ window: NSWindow? = nil) {
         guard window == nil || self.window === window else { return }
         self.window = nil
+        originatingApp = nil
+        onKeyboardActivation = nil
     }
 
     func togglePinned() {
@@ -44,11 +63,13 @@ final class HistoryWindowController: ObservableObject {
 
     func present() {
         guard let window else { return }
+        captureOriginatingApplication()
         applyPresentationPolicy()
         if window.isMiniaturized { window.deminiaturize(nil) }
         NSApp.activate(ignoringOtherApps: true)
         window.orderFrontRegardless()
         window.makeKey()
+        onKeyboardActivation?()
     }
 
     /// Toggle the history window for the global shortcut. Only a focused,
@@ -57,7 +78,7 @@ final class HistoryWindowController: ObservableObject {
     func toggle() {
         guard let window else { return }
         if window.isVisible && window.isKeyWindow {
-            window.orderOut(nil)
+            dismissAndReturnToOriginatingApp()
         } else {
             present()
         }
@@ -66,5 +87,6 @@ final class HistoryWindowController: ObservableObject {
     private func applyPresentationPolicy() {
         guard let window else { return }
         HistoryWindowPresentationPolicy.configure(window, isPinned: isPinned)
+        HistoryPreviewWindowController.shared.syncHostPresentation(for: .history)
     }
 }

@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { LucideIcon } from "lucide-react";
 import type {
   FileProgress,
@@ -21,6 +21,7 @@ export interface FilterOption {
 }
 
 export interface HistoryHeaderProps {
+  searchRef: RefObject<HTMLInputElement | null>;
   t: Translate;
   windowAlwaysOnTop: boolean;
   windowAlwaysOnTopPending: boolean;

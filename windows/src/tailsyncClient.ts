@@ -164,16 +164,19 @@ export interface PreviewWindowSnapshot {
   entryId: number;
   batchId: string | null;
   owner: PreviewWindowOwner;
+  takeFocus: boolean;
 }
 
 export function openPreviewWindow(
   entryId: number,
   batchId?: string | null,
   owner: HistoryCollection = "all",
+  takeFocus = true,
 ): Promise<PreviewWindowSnapshot> {
   return invoke<PreviewWindowSnapshot>("open_preview_window", {
     request: {
       entryId,
+      takeFocus,
       batchId: batchId ?? null,
       owner: owner === "favorites" ? "favorites" : "history",
     },
@@ -542,4 +545,8 @@ export function getThemeAssetSlot(themeId: string, digest: string, slot: string)
 }
 export function previewThemeAssetSlot(path: string, digest: string, slot: string): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("preview_theme_asset_slot", { path, digest, slot });
+}
+
+export function presentPreviewWindow(revision: number): Promise<void> {
+  return invoke<void>("get_preview_window_request", { readyRevision: revision });
 }
