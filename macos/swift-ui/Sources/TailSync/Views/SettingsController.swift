@@ -60,4 +60,32 @@ extension SettingsView {
             applyingPersistedSettings = false
         }
     }
+
+    /// Keep the storage display current without touching any other setting the
+    /// user may be editing. The consolidated runtime snapshot already carries
+    /// storage status, so this reuses it rather than polling `get_storage_status`
+    /// (which would race the migration that changes the root).
+    @MainActor
+    func observeStorageStatus() async {
+        var since: UInt64 = 0
+        while !Task.isCancelled {
+            guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(since: since) else {
+                // The local service is unreachable: the last reading is no longer
+                // a trustworthy "storage is healthy" claim, so mark it unconfirmed
+                // instead of leaving a stale value on screen.
+                storageStatusUnconfirmed = true
+                try? await Task.sleep(for: .milliseconds(1_000))
+                continue
+            }
+            since = snapshot.revision
+            guard let storage = snapshot.storage else { continue }
+            storageStatusUnconfirmed = false
+            let changed = storage.available != storageStatus?.available
+                || storage.usedBytes != storageStatus?.usedBytes
+                || storage.error != storageStatus?.error
+            if changed {
+                storageStatus = storage
+            }
+        }
+    }
 }

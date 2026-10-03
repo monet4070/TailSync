@@ -26,10 +26,14 @@ extension SettingsView {
                     Text(storageStatus?.root ?? settings.storage_root ?? "")
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let status = storageStatus {
+                    if storageStatusUnconfirmed {
+                        Text(Loc.t("settings.storageStatusUnconfirmed"))
+                            .font(.caption2)
+                            .foregroundColor(palette.warningColor)
+                    } else if let status = storageStatus {
                         Text(status.available
                              ? "\(formatBytes(status.usedBytes)) / \(formatBytes(settings.storage_quota_bytes))"
-                             : (status.error ?? Loc.t("settings.error")))
+                             : Loc.t("settings.storageCapacityUnavailable"))
                             .font(.caption2)
                             .foregroundColor(status.available ? palette.secondaryColor : palette.warningColor)
                     }
@@ -47,6 +51,16 @@ extension SettingsView {
                 .controlSize(.small)
                 .frame(minWidth: 54)
                 .disabled(storageBusy)
+            }
+            if !storageStatusUnconfirmed, storageStatus?.available == false {
+                themedDivider.padding(.leading, 16)
+                storageNoticeRow(
+                    "\(Loc.t("settings.storageUnavailable")) \(Loc.t("settings.storageRecoveryGuidance"))"
+                )
+            }
+            if let storageErrorMessage {
+                themedDivider.padding(.leading, 16)
+                storageNoticeRow(storageErrorMessage)
             }
             themedDivider.padding(.leading, 16)
             settingRow {
@@ -88,6 +102,22 @@ extension SettingsView {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
     }
 
+    func storageNoticeRow(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundColor(palette.warningColor)
+            Text(message)
+                .font(.caption)
+                .foregroundColor(palette.secondaryColor)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(message)
+    }
+
     func chooseStorageLocation() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -95,6 +125,7 @@ extension SettingsView {
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         storageBusy = true
+        storageErrorMessage = nil
         Task { @MainActor in
             defer { storageBusy = false }
             do {
@@ -103,14 +134,17 @@ extension SettingsView {
                 settings = try await ApiClient.shared.getSettings()
                 persistedSettings = settings
                 storageStatus = await ApiClient.shared.getStorageStatus()
+                // The migration succeeded: drop any older failure message so the
+                // settings page reflects the current state.
+                storageErrorMessage = nil
                 let notice = UNMutableNotificationContent()
                 notice.title = "TailSync"
-                notice.body = Loc.t("settings.storageMoving")
+                notice.body = Loc.t("settings.storageChanged")
                 try? await UNUserNotificationCenter.current().add(
                     UNNotificationRequest(identifier: UUID().uuidString, content: notice, trigger: nil)
                 )
             } catch {
-                actionErrorMessage = error.localizedDescription
+                storageErrorMessage = error.localizedDescription
             }
         }
     }
@@ -120,8 +154,9 @@ extension SettingsView {
             do {
                 try await ApiClient.shared.deleteOldStorage(path: storage.oldRoot)
                 oldStorage = nil
+                storageErrorMessage = nil
             } catch {
-                actionErrorMessage = error.localizedDescription
+                storageErrorMessage = error.localizedDescription
             }
         }
     }

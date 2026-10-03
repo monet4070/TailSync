@@ -224,7 +224,13 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                 Ok(result) => {
                     *state.pending_storage_cleanup.lock().await =
                         Some(std::path::PathBuf::from(result.old_root.clone()));
-                    bump_runtime_revision();
+                    // A completed migration swaps the active store to the new root;
+                    // history windows key their reload on `history_version`, so bump
+                    // it to make open History/Favorites views query the new root
+                    // immediately. This also bumps the runtime revision — calling
+                    // both separately would wake long-pollers on a snapshot whose
+                    // revision moved but whose history_version had not.
+                    bump_clipboard_version();
                     Response {
                         ok: true,
                         data: serde_json::to_value(result).ok(),

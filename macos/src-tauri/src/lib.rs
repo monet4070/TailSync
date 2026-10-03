@@ -217,17 +217,33 @@ fn start_storage_monitor(
             }
             let mut history = database.lock().await;
             history.mark_storage_unavailable();
-            match history.reopen_configured_storage() {
+            let reopen = history.reopen_configured_storage();
+            // Release the database lock before touching the version counters: a
+            // wakeup probe serving a runtime snapshot needs this same lock, and
+            // holding it across the bump would block that client for no reason.
+            drop(history);
+            match reopen {
                 Ok(()) => {
                     warned = false;
-                    api::bump_runtime_revision();
+                    // The recovery merges any RAM-only history into the reopened
+                    // store, so the visible list changed. History/Favorites windows
+                    // reload on `history_version`, not on the runtime revision, so
+                    // this bump is what refreshes an already-open window without
+                    // waiting for the next unrelated clipboard event.
+                    // `bump_clipboard_version` also bumps the runtime revision.
+                    api::bump_clipboard_version();
+                    let message = "TailSync storage is available again. File transfer resumed.";
                     if let Some(app) = &app {
                         let _ = app
                             .notification()
                             .builder()
                             .title("TailSync")
-                            .body("TailSync storage is available again. File transfer resumed.")
+                            .body(message)
                             .show();
+                    } else {
+                        // The headless daemon has no notification handle; surface
+                        // the recovery on the runtime channel so it is not lost.
+                        api::push_runtime_notification("info", message);
                     }
                 }
                 Err(error) if !warned => {

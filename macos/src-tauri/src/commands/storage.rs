@@ -100,6 +100,7 @@ pub async fn change_storage_location(
     })?;
     *state.pending_storage_cleanup.lock().await =
         Some(std::path::PathBuf::from(result.old_root.clone()));
+    crate::api::bump_clipboard_version();
     Ok(result)
 }
 

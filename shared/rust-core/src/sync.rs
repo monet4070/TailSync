@@ -28,7 +28,7 @@ pub use prepare::source_hash_reads_for_test;
 pub use prepare::{
     clipboard_files_are_readable, normalize_transferred_file_name, prepare_file_batch,
     revalidate_prepared_file, validate_incoming_file_meta, FileBatchEntry, FileBatchManifest,
-    FileBatchRef, FileMeta, PreparedFile, PreparedFileBatch, MAX_FILE_SIZE,
+    FileBatchRef, FileMeta, FileSelectionRejection, PreparedFile, PreparedFileBatch, MAX_FILE_SIZE,
 };
 mod outgoing;
 pub use outgoing::{

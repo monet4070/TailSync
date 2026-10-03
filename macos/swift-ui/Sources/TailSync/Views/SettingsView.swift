@@ -66,6 +66,13 @@ struct SettingsView: View {
     @State var storageStatus: ApiClient.StorageStatus?
     @State var storageBusy = false
     @State var oldStorage: ApiClient.StorageMigrationResult?
+    // True when the local service cannot be reached, so the last known storage
+    // reading must not keep presenting itself as a healthy current state.
+    @State var storageStatusUnconfirmed = false
+    // Storage operations get their own error slot so a failed migration message
+    // can be cleared by a later success instead of leaking into the generic
+    // settings toast for the rest of the session.
+    @State var storageErrorMessage: String?
     @State var recordingShortcut: ShortcutKind?
     @State var shortcutDraft = ""
     @State var shortcutError = ""
@@ -139,6 +146,9 @@ struct SettingsView: View {
         }
         .task {
             load()
+        }
+        .task {
+            await observeStorageStatus()
         }
         .sheet(item: $pendingThemeImport) { preview in
             themeImportPreview(preview)

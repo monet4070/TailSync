@@ -70,6 +70,21 @@ pub fn record_delivery_expired(peer: &str) {
     record(peer, "delivery_expired");
 }
 
+/// A clipboard file selection was rejected before any transfer started because
+/// it contained a symbolic link. Recorded so the History/Favorites window can
+/// explain why nothing was added, even when system notifications are disabled;
+/// the detail (the offending path) stays in the log.
+pub fn record_file_selection_symlink() {
+    record("", "file_selection_symlink");
+}
+
+/// A clipboard file selection was rejected before any transfer started because
+/// it contained a folder or other non-file item. See
+/// [`record_file_selection_symlink`] for why this is surfaced in-window.
+pub fn record_file_selection_folder() {
+    record("", "file_selection_folder");
+}
+
 /// Record that an in-flight delivery was abandoned because the process is
 /// shutting down. Returns whether a warning was recorded.
 ///

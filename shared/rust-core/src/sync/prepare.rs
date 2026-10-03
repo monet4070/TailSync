@@ -84,6 +84,64 @@ impl PrepareError {
             } | Self::ChangedAfterCopy(_)
         )
     }
+
+    /// A rejection the user can fix by copying different content, classified so
+    /// a caller can surface a stable, localized reason instead of parsing the
+    /// message string.
+    pub fn file_selection_rejection(&self) -> Option<FileSelectionRejection> {
+        match self {
+            Self::SymlinkSelected(_) => Some(FileSelectionRejection::Symlink),
+            Self::NonFileSelected(_) => Some(FileSelectionRejection::Folder),
+            _ => None,
+        }
+    }
+
+    /// A path-free message for user-facing surfaces.
+    ///
+    /// The `Display` form is the stable wire/log contract and keeps the full
+    /// path; this strips it so a user notification never exposes a private
+    /// path. Unknown variants fall back to `Display` because they carry no
+    /// path argument.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::SymlinkSelected(_) => {
+                "The copied selection included a symbolic link, so nothing \
+                 was added to file history. Copy the actual file instead."
+                    .to_string()
+            }
+            Self::NonFileSelected(_) => {
+                "The copied selection included a folder or non-file item, so \
+                 nothing was added to file history. Copy ordinary files instead."
+                    .to_string()
+            }
+            Self::InvalidPathName(_) => {
+                "A selected item does not have a usable file name".to_string()
+            }
+            Self::InspectFailed(_, message) => {
+                format!("A selected item could not be read: {message}")
+            }
+            Self::ReopenFailed { message, .. } => {
+                format!("A selected item could not be reopened: {message}")
+            }
+            Self::ChangedAfterCopy(_) => {
+                "A selected file changed after it was copied; copy it again".to_string()
+            }
+            other => other.to_string(),
+        }
+    }
+}
+
+/// Why a clipboard file selection was rejected before any transfer started.
+///
+/// These are the rejections a re-selection can fix, so the UI is expected to
+/// explain them rather than stay silent. The detail (full path) stays in the
+/// log via [`PrepareError::to_string`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileSelectionRejection {
+    /// The selection contained a symbolic link.
+    Symlink,
+    /// The selection contained a folder or other non-file item.
+    Folder,
 }
 
 pub fn normalize_transferred_file_name(name: &str, data_hash: &str) -> String {

@@ -214,9 +214,19 @@ pub(super) async fn send_file_batch_to_peers(
             if let Some(selection_id) = selection_id {
                 let _ = sync::remove_outgoing_selection(selection_id);
             }
-            let message = error.to_string();
-            warn!("File batch rejected: {message}");
-            notify_file_batch_error(&runtime, &settings, &message).await;
+            // Keep the detailed, path-bearing form in the log; only the
+            // path-free message is allowed to reach the user.
+            warn!("File batch rejected: {error}");
+            match error.file_selection_rejection() {
+                Some(sync::FileSelectionRejection::Symlink) => {
+                    tailsync_core::sync_warning::record_file_selection_symlink();
+                }
+                Some(sync::FileSelectionRejection::Folder) => {
+                    tailsync_core::sync_warning::record_file_selection_folder();
+                }
+                None => {}
+            }
+            notify_file_batch_error(&runtime, &settings, &error.user_message()).await;
             return;
         }
         Err(error) => {
