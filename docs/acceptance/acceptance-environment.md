@@ -29,7 +29,7 @@
 | 项目 | 需要的证据 |
 |---|---|
 | ~~VoiceOver 验收~~ | **已由项目所有者移出必验范围（2026-10-03）**。清单保留在 `docs/acceptance/voiceover-connections-checklist.md` 供将来需要时使用，但不再作为发布门禁项，也不阻塞任何条目关闭。 |
-| macOS 托盘/安装包行为 | 本地构建 + 打包后的托盘与包清单核对（`tray-helper` 孤儿组件已在本轮移除：仓库内无任何内建或调用引用，其源码会用明文 TCP 连 19889，而 macOS 守护进程只监听 Unix socket；移除后 macOS Rust 与 Swift 构建通过）。**2026-10-03 结果**：包清单核对 PASS；打包后的 app 启动成功并在 WindowServer 注册为 `type="UIElement"`（版本 2.3.2、bundleID `com.tailsync.app`、Arch ARM64），退出后无残留进程。**菜单栏状态项是否可见、其菜单是否可用仍未验证**——需要辅助功能或屏幕录制权限，见下方限制。 |
+| macOS 托盘/安装包行为 | 本地构建 + 打包后的托盘与包清单核对（`tray-helper` 孤儿组件已在本轮移除：仓库内无任何内建或调用引用，其源码会用明文 TCP 连 19889，而 macOS 守护进程只监听 Unix socket；移除后 macOS Rust 与 Swift 构建通过）。**2026-10-03 结果**：包清单核对 PASS；打包后的 app 启动成功并在 WindowServer 注册为 `type="UIElement"`（版本 2.3.2、bundleID `com.tailsync.app`、Arch ARM64），退出后无残留进程。状态项**行为**已有 3 项自动化测试覆盖并全部通过（`testSettingsRedirectKeepsTheStatusItemWindowOpen`、`testStatusMenuOpensHistoryForAppKitDefinedLeftClick`、`testStatusItemLogoDoesNotMutateTheCachedThemeImage`）；**图标在菜单栏中的视觉呈现**未由自动化确认——需要辅助功能或屏幕录制权限，见下方限制。 |
 | 键盘取用历史真机验收 | 热键唤起 → 首次 ↓ → 第 0 条选中框：**2026-10-03 已通过**，记录见 `docs/acceptance/keyboard-macos-native-2026-10-03.md`。T-01 及其余条目**仍未确认** |
 | macOS 打包与发布门禁 | **2026-10-03 全部通过**：2.3.2 universal（x86_64+arm64）、minos 13.0、ad-hoc 签名、`check_macos_deployment.py` PASS、`hdiutil verify` VALID、SHA-256 已生成。包内容清单 8 个文件无孤儿组件；`plutil -lint`、`NSLocalNetworkUsageDescription`、`NSBonjourServices=_tailsync._tcp`、URL scheme `tailsync`、`codesign --verify --deep --strict` 全部 PASS；打包后的 `clipboard-helper` 读写往返 PASS；**`verify_macos_bundle.sh` 三阶段全部通过**（含 `[2/3]` 打包 daemon 启动与 `[3/3]` JSON-lines API 校验，输出 `macOS community bundle verification passed.`） |
 
