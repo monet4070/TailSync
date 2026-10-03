@@ -244,3 +244,17 @@ Windows native target 尚未通过构建验证：此前交叉检查受缺少 Win
 - 新增 4 项回归测试，覆盖光标、文字选中/失焦恢复、组词期间主题切换及内置/自定义主题 token。键盘导航专项 18 项全部通过；macOS 全量 248 项，244 通过、4 跳过、0 失败。
 - 新测试包：`/tmp/TailSync-Keyboard-ThemeFix-2.3.1.app`（仍为 2.3.1，arm64、最低 macOS 13.0、ad-hoc 签名）。构建及签名/部署目标检查通过，未打开、安装或覆盖旧测试包。实际 GUI 外观仍需真机验收。
 - 日志：`/tmp/tailsync-theme-focus-red.log`、`/tmp/tailsync-theme-focus-targeted.log`、`/tmp/tailsync-theme-focus-full.log`、`/tmp/tailsync-theme-focus-bundle.log`。
+
+### 10.2 预览联动与 Tab 深读的测试补齐（2026-10-03）
+
+审查发现 `followPreviewSelection`（预览内容实时跟随）与 Tab 深读交接在自动化测试中**零覆盖**——这两条正是契约 §3 Phase 3 的核心。已补 2 项真视图集成测试（`HistoryKeyboardIntegrationTests`）：
+
+| 新增测试 | 断言 |
+|---|---|
+| `testPreviewFollowsSelectionWithoutStealingFocusAndEscapeClosesItFirst` | 空格开预览后**历史列表仍持有第一响应者**（不夺焦）；改选后预览在防抖后跟随到新条目；Escape 先关预览、历史不动 |
+| `testTabFromListEntersDeepReadPreviewForTheSelectedRow` | 列表焦点下 Tab 打开所选条目的深读预览 |
+
+两项都做了**故障注入验证**：把 `followPreviewSelection` 的 `windowIsVisible` 守卫取反、把 Tab 的键位映射改成 `nil`，对应测试均按预期失败；随后已完整回退（工作树只余测试文件改动）。
+
+计数更新：键盘集成测试 **7 项**（原 5 项）；macOS 全量 **250 项，246 通过、4 跳过、0 失败**。§10.1 的 248 项是本次补齐之前的数字。
+

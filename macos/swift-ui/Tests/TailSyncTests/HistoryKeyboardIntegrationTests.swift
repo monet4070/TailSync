@@ -104,6 +104,71 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
         XCTAssertEqual(editor.string, "fast")
     }
 
+    /// Space opens the preview for the selected row without taking the responder
+    /// from the history list, the preview follows a later selection change after
+    /// its follow debounce, and Escape closes the preview first.
+    func testPreviewFollowsSelectionWithoutStealingFocusAndEscapeClosesItFirst() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        let preview = HistoryPreviewWindowController.shared
+        preview.close()
+        defer {
+            preview.close(ifOwnedBy: .history)
+            fixture.close()
+        }
+        try await wait { fixture.session.selectedID == 1 }
+
+        // First Down hands the responder to the list while row 1 stays selected.
+        let editor = try fixture.searchEditor()
+        editor.interpretKeyEvents([event(125, window: fixture.window)])
+        XCTAssertEqual(fixture.session.selectedID, 1)
+        XCTAssertTrue(fixture.window.firstResponder === fixture.session.listResponder)
+
+        // Space opens the preview for row 1. A passive preview must not take the
+        // responder away from the history list.
+        fixture.window.sendEvent(event(49, window: fixture.window))
+        try await wait { preview.isPreviewVisible(for: .history) }
+        XCTAssertEqual(preview.viewModel.currentEntryId, 1)
+        XCTAssertTrue(
+            fixture.window.firstResponder === fixture.session.listResponder,
+            "a passive preview must not steal the history responder"
+        )
+
+        // Moving the selection is followed after the debounce, not immediately.
+        fixture.window.sendEvent(event(125, window: fixture.window))
+        XCTAssertEqual(fixture.session.selectedID, 2)
+        try await wait { preview.viewModel.currentEntryId == 2 }
+
+        // Escape layers: the preview closes first and the history stays put.
+        fixture.window.sendEvent(event(53, window: fixture.window))
+        XCTAssertFalse(preview.isPreviewVisible(for: .history))
+        XCTAssertEqual(fixture.session.selectedID, 2)
+    }
+
+    /// Tab from the list enters deep reading for the selected row even when the
+    /// preview had not been opened yet.
+    func testTabFromListEntersDeepReadPreviewForTheSelectedRow() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        let preview = HistoryPreviewWindowController.shared
+        preview.close()
+        defer {
+            preview.close(ifOwnedBy: .history)
+            fixture.close()
+        }
+        try await wait { fixture.session.selectedID == 1 }
+
+        let editor = try fixture.searchEditor()
+        editor.interpretKeyEvents([event(125, window: fixture.window)])
+        fixture.window.sendEvent(event(125, window: fixture.window))
+        XCTAssertEqual(fixture.session.selectedID, 2)
+
+        // The list responder claims Tab before the key-view loop can move focus.
+        fixture.window.sendEvent(event(48, window: fixture.window))
+        try await wait { preview.isPreviewVisible(for: .history) }
+        XCTAssertEqual(preview.viewModel.currentEntryId, 2)
+    }
+
     private func wait(_ condition: () async -> Bool) async throws {
         for _ in 0..<200 {
             if await condition() { return }
@@ -118,6 +183,8 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
         case 125: characters = String(UnicodeScalar(NSDownArrowFunctionKey)!)
         case 126: characters = String(UnicodeScalar(NSUpArrowFunctionKey)!)
         case 36: characters = "\r"
+        case 49: characters = " "
+        case 48: characters = "\t"
         case 3: characters = "f"
         default: characters = ""
         }
