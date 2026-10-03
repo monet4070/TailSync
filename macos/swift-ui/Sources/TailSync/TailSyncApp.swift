@@ -105,7 +105,7 @@ enum StatusItemImagePolicy {
 }
 
 enum TailSyncAppVersion {
-    private static let developmentFallback = "2.3.1"
+    private static let developmentFallback = "2.3.2"
 
     static var current: String {
         let info = Bundle.main.infoDictionary

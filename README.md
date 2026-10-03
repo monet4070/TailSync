@@ -17,13 +17,13 @@ TailSync prefers your local network and falls back to Tailscale when needed, wit
 [![Windows](https://img.shields.io/badge/Windows-Tauri-0078D4?logo=windows11&logoColor=white)](#platform-support)
 [![Rust](https://img.shields.io/badge/Core-Rust-DEA584?logo=rust&logoColor=black)](#architecture)
 [![Protocol](https://img.shields.io/badge/Protocol-v4-2F81F7)](#security-model)
-[![Version](https://img.shields.io/badge/Version-v2.3.1-D5684B)](https://github.com/monet4070/TailSync/tree/v2.3.1)
+[![Version](https://img.shields.io/badge/Version-v2.3.2-D5684B)](https://github.com/monet4070/TailSync/tree/v2.3.2)
 [![License](https://img.shields.io/badge/License-MIT-22C55E)](#license)
 
 </div>
 
 > [!NOTE]
-> TailSync 2.3.1 is under active development. The macOS and Windows clients implement synchronization and automatic sleep/wake recovery logic. Native Windows and real two-device recovery acceptance remain pending. Tagged builds produce a free Community Release by default: update packages still carry a TailSync private-key signature, SHA-256 checksums, and downgrade protection, but the macOS build is not notarized and the Windows build has no commercial code signature. Paid platform signing can be enabled later as a Trusted Release. Real-device acceptance testing is still required before the first public release.
+> TailSync 2.3.2 is under active development. Earlier versions are already published as free Community Releases. The macOS and Windows clients implement synchronization and automatic sleep/wake recovery logic, but native Windows and real two-device acceptance for this version remain pending. Update packages carry a TailSync private-key signature, SHA-256 checksums, and downgrade protection, while the macOS build is ad-hoc signed (not notarized) and the Windows build has no commercial code signature. Paid platform signing can be enabled later as a Trusted Release.
 
 ## Why TailSync
 
@@ -140,7 +140,7 @@ Under normal conditions, a disconnected peer becomes **offline in about 8–12 s
 - Text, image, and file history is encrypted at rest with a system-protected data key.
 - File history uses 1 MiB AES-256-GCM chunk containers; restore operations write temporary plaintext only into a controlled clipboard directory.
 
-Identity/base compatibility remains v4. Authenticated handshakes negotiate v4 or v5 data frames and optional extensions per connection, with v4 fallback for older peers. Pairing uses persisted consent, authenticated reconciliation and resumable finalization; it is not an atomic distributed commit. File-batch history commits are local SQLite transactions. Incompatible base versions prompt users to update both clients. Pinned device identities remain valid across a protocol upgrade, so re-pairing is not required for that reason alone. The current product version is 2.3.1, and the database schema is v11; these three version numbers are independent.
+Identity/base compatibility remains v4. Authenticated handshakes negotiate v4 or v5 data frames and optional extensions per connection, with v4 fallback for older peers. Pairing uses persisted consent, authenticated reconciliation and resumable finalization; it is not an atomic distributed commit. File-batch history commits are local SQLite transactions. Incompatible base versions prompt users to update both clients. Pinned device identities remain valid across a protocol upgrade, so re-pairing is not required for that reason alone. The current product version is 2.3.2, and the database schema is v11; these three version numbers are independent.
 
 TailSync imports legacy v1 history databases on first launch. Migration is idempotent by content hash; corrupted entries are written to a diagnostic report without preventing startup. The original `history.db` and `.fernet_key` files are retained and never deleted automatically.
 

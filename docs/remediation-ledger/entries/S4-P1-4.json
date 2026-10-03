@@ -13,7 +13,7 @@
     "shared/rust-core/src/sync/receive_engine.rs"
   ],
   "trigger": "每 1MiB 分块在引擎锁内调用平台进度回调与 watch 广播，高带宽下阻塞网络栈。",
-  "fix_evidence": "仍未改锁内回调。新增 ignored 诊断以真实 macOS set_file_batch_progress，200 次注入 50ms 进度存储持锁：callback p99 60117µs/max 61882µs。它证实可被平台锁拖住，但不是实际设备负载采样，也不是预算通过。共享测量代码另包含 Windows API 分支，尚未在原生 Windows 执行。",
+  "fix_evidence": "仍未改锁内回调。ignored 诊断以真实 macOS set_file_batch_progress、200 次注入 50ms 进度存储持锁：2026-10-03 复测 callback p50 55051µs / p99 55144µs / max 56739µs（上次记录 p99 60117µs / max 61882µs）。它证实回调可被平台锁拖住，但不是实际设备负载采样，也不是预算通过；未测真实锁 wait，未验证进度顺序与 terminal 语义。证据：docs/acceptance/s4-p1-4-macos-measurement-2026-10-03.md。共享测量代码另包含 Windows API 分支，尚未在原生 Windows 执行。",
   "status": "unfixed",
   "pass_condition": "锁等待满足冻结预算且进度顺序正确；若超标则锁外回调后达标。",
   "reopen_condition": "同负载等待再超预算或回调顺序/完成语义倒退。"
