@@ -262,3 +262,16 @@ Windows native target 尚未通过构建验证：此前交叉检查受缺少 Win
 
 计数更新：键盘集成测试 **7 项**（原 5 项）；macOS 全量 **250 项，246 通过、4 跳过、0 失败**。§10.1 的 248 项是本次补齐之前的数字。
 
+### 10.3 已知遗留（审查发现，本次**刻意未修**）
+
+代码审查另发现三处 macOS 侧问题。它们都不是崩溃或数据丢失，且在真机验收已通过的核心路径之外；由于项目所有者已确认当前交互行为正确，**本次刻意不改动交互逻辑**，以免推翻该验证。此处记录，供后续单独处理：
+
+| 编号 | 问题 | 位置 | 为什么本次不改 |
+|---|---|---|---|
+| M2 | 后台运行时刷新（`isLoading` 为真）期间，↓/Enter/预览会**静默无反应**——`resultsAreCurrent` 把「正在刷新」等同于「结果不可用」，但同一次查询的刷新并不会改变屏幕上的行。 | `HistoryView.resultsAreCurrent`、`handleKeyboard` 的守卫 | 收窄该守卫会改变用户刚验证过的按键可达性语义，需要在真机上重新走查后才能动 |
+| M3 | 预览 `present()` 无条件把 `restoreState` 置回 `.idle`，因此 ⌘Enter 恢复后 1.5 秒的「已恢复」提示会被一次换行提前清掉。 | `HistoryPreviewViewModel.present` | 纯观感，且属于恢复状态机，改动面比收益大 |
+| M4 | `HistoryFilterBar.onSubmit` 在生产不可达（唯一调用点 `HistoryView` 总是传入 `keyboardSession`），`HistorySearchControl.fallbackSession` 同理；`load(clearExisting:)` 的参数已不再清空任何东西，名字有误导性。 | `HistoryFilterBar`、`HistorySearchControl`、`HistoryView.load` | 属于清理型改动，不影响行为；应与交互改动分开提交，避免混入本次验收范围 |
+
+**已修**：M1（`scheduleSearch` 的防抖任务在组词提前返回时未清 `queryTask`，会让 `queryTask != nil` 长期成立并冻结列表）——该修复不改变正常路径，250 项测试全绿。
+
+
