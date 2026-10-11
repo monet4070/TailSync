@@ -173,7 +173,10 @@ impl SyncEngine {
             received,
             meta.size
         );
-        self.set_receive_progress(&source, &meta, received);
+        let update = self.receive_progress_update(&source, &meta, received);
+        if let Some(update) = update {
+            self.deliver_progress_now(update);
+        }
         self.active_receives.insert(key.clone(), state);
         if received == meta.size {
             let state = self
@@ -333,10 +336,15 @@ impl SyncEngine {
         let received = state.received;
         let complete = received == meta.size;
         if !complete {
-            let mut engine = sync_engine.lock().await;
-            engine.pending_receives.remove(&key);
-            engine.set_receive_progress(&source, &meta, received);
-            engine.active_receives.insert(key, state);
+            let dispatch = {
+                let mut engine = sync_engine.lock().await;
+                engine.pending_receives.remove(&key);
+                engine.active_receives.insert(key, state);
+                engine.progress_dispatch(engine.receive_progress_update(&source, &meta, received))
+            };
+            if let Some(dispatch) = dispatch {
+                dispatch.deliver();
+            }
             return Ok(FileReceiveProgress {
                 transfer_id,
                 next_offset: received,
@@ -344,18 +352,26 @@ impl SyncEngine {
             });
         }
 
-        {
+        let dispatch = {
             let mut engine = sync_engine.lock().await;
             engine.pending_receives.remove(&key);
-            engine.set_receive_progress(&source, &meta, received);
+            engine.progress_dispatch(engine.receive_progress_update(&source, &meta, received))
+        };
+        if let Some(dispatch) = dispatch {
+            dispatch.deliver();
         }
         let pending = match finalize_receive_state(state, &source) {
             Ok(pending) => pending,
             Err(error) => {
-                sync_engine
-                    .lock()
-                    .await
-                    .clear_file_progress(meta.batch.map(|batch| batch.batch_id), Some(&source));
+                let dispatch = sync_engine.lock().await.progress_dispatch(Some(
+                    SyncEngine::clear_progress_update(
+                        meta.batch.map(|batch| batch.batch_id),
+                        Some(&source),
+                    ),
+                ));
+                if let Some(dispatch) = dispatch {
+                    dispatch.deliver();
+                }
                 return Err(error);
             }
         };
@@ -465,15 +481,18 @@ impl SyncEngine {
         if chunk.offset != state.received {
             let next_offset = state.received;
             let progress_meta = state.meta.clone();
-            let progress_name = progress_meta.name.clone();
-            let progress_total = progress_meta.size;
-            let mut engine = sync_engine.lock().await;
-            engine.inflight_receives.remove(&key);
-            engine.active_receives.insert(key, state);
-            if progress_meta.batch.is_some() {
-                engine.set_receive_progress(&source, &progress_meta, next_offset);
-            } else {
-                engine.set_file_progress(&progress_name, next_offset, progress_total);
+            let dispatch = {
+                let mut engine = sync_engine.lock().await;
+                engine.inflight_receives.remove(&key);
+                engine.active_receives.insert(key, state);
+                engine.progress_dispatch(engine.receive_progress_update(
+                    &source,
+                    &progress_meta,
+                    next_offset,
+                ))
+            };
+            if let Some(dispatch) = dispatch {
+                dispatch.deliver();
             }
             return Ok(FileReceiveProgress {
                 transfer_id: chunk.transfer_id,
@@ -510,16 +529,19 @@ impl SyncEngine {
         let next_offset = state.received;
         let completed = state.received == state.meta.size;
         let progress_meta = state.meta.clone();
-        let progress_name = progress_meta.name.clone();
-        let progress_total = progress_meta.size;
         if !completed {
-            let mut engine = sync_engine.lock().await;
-            engine.inflight_receives.remove(&key);
-            engine.active_receives.insert(key, state);
-            if progress_meta.batch.is_some() {
-                engine.set_receive_progress(&source, &progress_meta, next_offset);
-            } else {
-                engine.set_file_progress(&progress_name, next_offset, progress_total);
+            let dispatch = {
+                let mut engine = sync_engine.lock().await;
+                engine.inflight_receives.remove(&key);
+                engine.active_receives.insert(key, state);
+                engine.progress_dispatch(engine.receive_progress_update(
+                    &source,
+                    &progress_meta,
+                    next_offset,
+                ))
+            };
+            if let Some(dispatch) = dispatch {
+                dispatch.deliver();
             }
             return Ok(FileReceiveProgress {
                 transfer_id: chunk.transfer_id,
@@ -528,23 +550,31 @@ impl SyncEngine {
             });
         }
 
-        {
+        let dispatch = {
             let engine = sync_engine.lock().await;
-            if progress_meta.batch.is_some() {
-                engine.set_receive_progress(&source, &progress_meta, next_offset);
-            } else {
-                engine.set_file_progress(&progress_name, next_offset, progress_total);
-            }
+            engine.progress_dispatch(engine.receive_progress_update(
+                &source,
+                &progress_meta,
+                next_offset,
+            ))
+        };
+        if let Some(dispatch) = dispatch {
+            dispatch.deliver();
         }
         let pending = match finalize_receive_state(state, &source) {
             Ok(pending) => pending,
             Err(error) => {
-                let mut engine = sync_engine.lock().await;
-                engine.inflight_receives.remove(&key);
-                engine.clear_file_progress(
-                    progress_meta.batch.map(|batch| batch.batch_id),
-                    Some(&source),
-                );
+                let dispatch = {
+                    let mut engine = sync_engine.lock().await;
+                    engine.inflight_receives.remove(&key);
+                    engine.progress_dispatch(Some(SyncEngine::clear_progress_update(
+                        progress_meta.batch.map(|batch| batch.batch_id),
+                        Some(&source),
+                    )))
+                };
+                if let Some(dispatch) = dispatch {
+                    dispatch.deliver();
+                }
                 return Err(FileReceiveError::Failed(error));
             }
         };
@@ -605,13 +635,10 @@ impl SyncEngine {
             .map_err(|error| FileReceiveError::Failed(error.to_string()))?;
         let next_offset = state.received;
         let completed = state.received == state.meta.size;
-        let progress_name = state.meta.name.clone();
-        let progress_total = state.meta.size;
         let progress_meta = state.meta.clone();
-        if progress_meta.batch.is_some() {
-            self.set_receive_progress(&source, &progress_meta, next_offset);
-        } else {
-            self.set_file_progress(&progress_name, next_offset, progress_total);
+        let update = self.receive_progress_update(&source, &progress_meta, next_offset);
+        if let Some(update) = update {
+            self.deliver_progress_now(update);
         }
 
         if completed {
@@ -664,7 +691,10 @@ impl SyncEngine {
         let pending = match finalize_receive_state(state, source) {
             Ok(pending) => pending,
             Err(error) => {
-                self.clear_file_progress(batch_id, Some(source));
+                self.deliver_progress_now(SyncEngine::clear_progress_update(
+                    batch_id,
+                    Some(source),
+                ));
                 return Err(error);
             }
         };
@@ -1005,7 +1035,27 @@ impl SyncEngine {
     }
 
     pub fn discard_received_file(&self, source: &str, batch_id: Option<TransferId>) {
-        self.clear_file_progress(batch_id, Some(source));
+        self.deliver_progress_now(SyncEngine::clear_progress_update(batch_id, Some(source)));
+    }
+
+    /// Terminal progress clear for a discarded receive. The platform callback
+    /// runs after the engine mutex is released.
+    pub async fn discard_received_file_shared(
+        sync_engine: &Arc<tokio::sync::Mutex<SyncEngine>>,
+        source: &str,
+        batch_id: Option<TransferId>,
+    ) {
+        let dispatch =
+            sync_engine
+                .lock()
+                .await
+                .progress_dispatch(Some(SyncEngine::clear_progress_update(
+                    batch_id,
+                    Some(source),
+                )));
+        if let Some(dispatch) = dispatch {
+            dispatch.deliver();
+        }
     }
 }
 

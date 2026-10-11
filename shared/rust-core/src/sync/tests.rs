@@ -9,7 +9,7 @@ use super::{
 };
 use crate::protocol::{FileChunkPayload, MessageId, TransferId, FILE_CHUNK_SIZE};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -2108,4 +2108,252 @@ async fn actual_incoming_batch_creates_private_directories_and_manifest() {
     );
     #[cfg(windows)]
     crate::private_fs::assert_owner_only_windows_acl_for_test(&stored, false);
+}
+
+/// Records every platform progress callback and, on each one, verifies that the
+/// engine lock is released. `ProgressProbePlatform` is the regression seam for
+/// S4-P1-4: progress callbacks must never run while the engine mutex is held.
+#[derive(Default)]
+struct ProgressProbePlatform {
+    engine: Mutex<Option<std::sync::Weak<tokio::sync::Mutex<SyncEngine>>>>,
+    callbacks: AtomicUsize,
+    engine_lock_held: AtomicBool,
+    events: Mutex<Vec<ProgressProbeEvent>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProgressProbeEvent {
+    File {
+        name: String,
+        received: u64,
+        total: u64,
+    },
+    Batch {
+        transferred: u64,
+        total: u64,
+    },
+    Clear {
+        batch_id: Option<TransferId>,
+        device: Option<String>,
+    },
+}
+
+impl ProgressProbePlatform {
+    fn record(&self, event: ProgressProbeEvent) {
+        self.callbacks.fetch_add(1, Ordering::SeqCst);
+        if let Some(engine) = self
+            .engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            if engine.try_lock().is_err() {
+                self.engine_lock_held.store(true, Ordering::SeqCst);
+            }
+        }
+        self.events.lock().unwrap().push(event);
+    }
+
+    fn events(&self) -> Vec<ProgressProbeEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl SyncPlatform for ProgressProbePlatform {
+    fn write_text(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn write_image(&self, _width: u32, _height: u32, _rgba: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_file_progress(&self, name: &str, received: u64, total: u64) {
+        self.record(ProgressProbeEvent::File {
+            name: name.to_string(),
+            received,
+            total,
+        });
+    }
+
+    fn clear_file_progress(&self, batch_id: Option<TransferId>, device: Option<&str>) {
+        self.record(ProgressProbeEvent::Clear {
+            batch_id,
+            device: device.map(str::to_string),
+        });
+    }
+
+    fn set_file_batch_progress(&self, progress: FileBatchProgress) {
+        self.record(ProgressProbeEvent::Batch {
+            transferred: progress.transferred_bytes,
+            total: progress.total_bytes,
+        });
+    }
+
+    fn files_received(&self, _commit: FileReceiveCommit) -> crate::sync::PlatformResultFuture {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn file_batch_failed(&self, _batch_id: Option<TransferId>, _message: &str) {}
+}
+
+/// S4-P1-4 regression: receive progress callbacks must be delivered after the
+/// engine lock is released, stay monotonic per receive, and never drop the
+/// terminal clear.
+#[tokio::test]
+async fn progress_callbacks_run_outside_the_engine_lock_in_monotonic_order() {
+    let directory = TestDirectory::new("progress-off-lock");
+    let incoming = directory.path().join("incoming");
+    std::fs::create_dir_all(&incoming).unwrap();
+
+    let platform = Arc::new(ProgressProbePlatform::default());
+    let engine = Arc::new(tokio::sync::Mutex::new(SyncEngine::new()));
+    engine.lock().await.set_platform(platform.clone());
+    *platform.engine.lock().unwrap() = Some(Arc::downgrade(&engine));
+
+    // Single (non-batch) receive: two chunks must report strictly increasing
+    // offsets with no duplicate callback for the same offset.
+    let single = b"chunk-one-chunk-two";
+    let (single_first, single_second) = single.split_at(9);
+    let single_id = TransferId([0xB1; 16]);
+    SyncEngine::begin_file_receive_shared(
+        &engine,
+        FileMeta {
+            transfer_id: Some(single_id),
+            name: "single.bin".into(),
+            size: single.len() as u64,
+            hash: blake3::hash(single).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: None,
+        },
+        &incoming.join("single.bin"),
+        "peer".into(),
+        1,
+    )
+    .await
+    .unwrap();
+    for (offset, data) in [
+        (0_u64, single_first),
+        (single_first.len() as u64, single_second),
+    ] {
+        SyncEngine::handle_resumable_file_chunk_shared(
+            &engine,
+            &FileChunkPayload {
+                transfer_id: single_id,
+                offset,
+                data: data.to_vec(),
+            },
+            "peer".into(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // Batched receive: the batch aggregate must also stay monotonic.
+    let batch_id = TransferId([0xB2; 16]);
+    let batch_transfer = TransferId([0xB3; 16]);
+    let batch_data = b"batched-chunks";
+    let (batch_first, batch_second) = batch_data.split_at(8);
+    let manifest = FileBatchManifest {
+        batch_id,
+        generation: 1,
+        total_bytes: batch_data.len() as u64,
+        files: vec![FileBatchEntry {
+            transfer_id: batch_transfer,
+            index: 0,
+            name: "batched.bin".into(),
+            source_parent: String::new(),
+            size: batch_data.len() as u64,
+            hash: blake3::hash(batch_data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+        }],
+    };
+    SyncEngine::begin_file_batch_shared(
+        &engine,
+        manifest,
+        "peer".into(),
+        "identity".into(),
+        incoming.clone(),
+        1,
+    )
+    .await
+    .unwrap();
+    SyncEngine::begin_file_receive_shared(
+        &engine,
+        FileMeta {
+            transfer_id: Some(batch_transfer),
+            name: "batched.bin".into(),
+            size: batch_data.len() as u64,
+            hash: blake3::hash(batch_data).to_hex().to_string(),
+            chunk_size: FILE_CHUNK_SIZE as u32,
+            batch: Some(FileBatchRef { batch_id, index: 0 }),
+        },
+        &incoming.join("batched.bin"),
+        "peer".into(),
+        1,
+    )
+    .await
+    .unwrap();
+    for (offset, data) in [
+        (0_u64, batch_first),
+        (batch_first.len() as u64, batch_second),
+    ] {
+        SyncEngine::handle_resumable_file_chunk_shared(
+            &engine,
+            &FileChunkPayload {
+                transfer_id: batch_transfer,
+                offset,
+                data: data.to_vec(),
+            },
+            "peer".into(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // Terminal event: the clear must still be delivered after the progress
+    // updates, and also outside the engine lock.
+    SyncEngine::discard_received_file_shared(&engine, "peer", Some(batch_id)).await;
+
+    assert!(
+        platform.callbacks.load(Ordering::SeqCst) >= 7,
+        "expected a progress callback per chunk plus a terminal clear"
+    );
+    assert!(
+        !platform.engine_lock_held.load(Ordering::SeqCst),
+        "platform progress callbacks must run with the engine lock released"
+    );
+
+    let events = platform.events();
+    let single_received = events
+        .iter()
+        .filter_map(|event| match event {
+            ProgressProbeEvent::File { name, received, .. } if name == "single.bin" => {
+                Some(*received)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(single_received, vec![0, 9, single.len() as u64]);
+
+    let batch_transferred = events
+        .iter()
+        .filter_map(|event| match event {
+            ProgressProbeEvent::Batch { transferred, .. } => Some(*transferred),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(batch_transferred, vec![0, 8, batch_data.len() as u64]);
+
+    match events.last() {
+        Some(ProgressProbeEvent::Clear {
+            batch_id: cleared,
+            device,
+        }) => {
+            assert_eq!(*cleared, Some(batch_id));
+            assert_eq!(device.as_deref(), Some("peer"));
+        }
+        other => panic!("expected the terminal clear to be delivered last, got {other:?}"),
+    }
 }

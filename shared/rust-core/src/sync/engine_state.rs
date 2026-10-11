@@ -85,7 +85,7 @@ impl SyncEngine {
                 }
             }
         }
-        self.clear_file_progress(None, Some(source));
+        self.deliver_progress_now(SyncEngine::clear_progress_update(None, Some(source)));
     }
 
     /// Release open handles for a disconnected peer while retaining durable
@@ -241,7 +241,7 @@ impl SyncEngine {
         if !self.active_receives.keys().any(|(peer, _)| peer == source)
             && !self.incoming_batches.keys().any(|(peer, _)| peer == source)
         {
-            self.clear_file_progress(None, Some(source));
+            self.deliver_progress_now(SyncEngine::clear_progress_update(None, Some(source)));
         }
     }
 
@@ -481,48 +481,127 @@ impl SyncEngine {
             .ok_or_else(|| "Clipboard platform is unavailable".to_string())
     }
 
-    pub(super) fn set_file_progress(&self, name: &str, received: u64, total: u64) {
-        if let Some(platform) = self.platform.as_ref() {
-            platform.set_file_progress(name, received, total);
+    /// Snapshot a single-file progress callback. The platform store is only
+    /// touched when the snapshot is delivered outside the engine lock.
+    pub(super) fn file_progress_update(name: &str, received: u64, total: u64) -> ProgressUpdate {
+        ProgressUpdate::File {
+            name: name.to_string(),
+            received,
+            total,
         }
     }
 
-    pub(super) fn set_receive_progress(&self, source: &str, meta: &FileMeta, received: u64) {
+    /// Snapshot the progress callback for an in-flight receive.
+    ///
+    /// Batch aggregates are read from the incoming batch state, so this must run
+    /// under the engine lock; the returned payload is delivered after the lock
+    /// is released. `None` means the batch state disappeared and there is
+    /// nothing to report.
+    pub(super) fn receive_progress_update(
+        &self,
+        source: &str,
+        meta: &FileMeta,
+        received: u64,
+    ) -> Option<ProgressUpdate> {
         let Some(batch_ref) = meta.batch else {
-            self.set_file_progress(&meta.name, received, meta.size);
-            return;
+            return Some(Self::file_progress_update(&meta.name, received, meta.size));
         };
-        let Some(batch) = self
+        let batch = self
             .incoming_batches
-            .get(&(source.to_string(), batch_ref.batch_id))
-        else {
-            return;
-        };
+            .get(&(source.to_string(), batch_ref.batch_id))?;
         let completed_files = batch.files.iter().filter(|file| file.is_some()).count();
         let completed_bytes = batch
             .files
             .iter()
             .filter_map(|file| file.as_ref().map(|file| file.size))
             .sum::<u64>();
-        if let Some(platform) = self.platform.as_ref() {
-            platform.set_file_batch_progress(FileBatchProgress {
-                batch_id: batch_ref.batch_id.as_hex(),
-                direction: "receiving".to_string(),
-                device: source.to_string(),
-                current_file: meta.name.clone(),
-                completed_files,
-                total_files: batch.manifest.files.len(),
-                transferred_bytes: completed_bytes
-                    .saturating_add(received)
-                    .min(batch.manifest.total_bytes),
-                total_bytes: batch.manifest.total_bytes,
-            });
+        Some(ProgressUpdate::Batch(FileBatchProgress {
+            batch_id: batch_ref.batch_id.as_hex(),
+            direction: "receiving".to_string(),
+            device: source.to_string(),
+            current_file: meta.name.clone(),
+            completed_files,
+            total_files: batch.manifest.files.len(),
+            transferred_bytes: completed_bytes
+                .saturating_add(received)
+                .min(batch.manifest.total_bytes),
+            total_bytes: batch.manifest.total_bytes,
+        }))
+    }
+
+    /// Snapshot a progress-clear callback.
+    pub(super) fn clear_progress_update(
+        batch_id: Option<TransferId>,
+        device: Option<&str>,
+    ) -> ProgressUpdate {
+        ProgressUpdate::Clear {
+            batch_id,
+            device: device.map(str::to_string),
         }
     }
 
-    pub(super) fn clear_file_progress(&self, batch_id: Option<TransferId>, device: Option<&str>) {
-        if let Some(platform) = self.platform.as_ref() {
-            platform.clear_file_progress(batch_id, device);
+    /// Pair a snapshot with the current platform handle so it can be delivered
+    /// after the engine lock is released.
+    pub(super) fn progress_dispatch(
+        &self,
+        update: Option<ProgressUpdate>,
+    ) -> Option<ProgressDispatch> {
+        update.map(|update| ProgressDispatch {
+            platform: self.platform.clone(),
+            update,
+        })
+    }
+
+    /// Deliver a snapshot immediately. Only valid on `&mut self` compatibility
+    /// paths, which never hold the engine lock while calling the platform.
+    pub(super) fn deliver_progress_now(&self, update: ProgressUpdate) {
+        if let Some(dispatch) = self.progress_dispatch(Some(update)) {
+            dispatch.deliver();
+        }
+    }
+}
+
+/// A platform progress callback captured while the engine lock is held.
+///
+/// The platform store can block and broadcasts a UI revision, so the engine
+/// lock must never be held while it runs. Receive paths snapshot the payload
+/// under the lock and deliver it afterwards through [`ProgressDispatch`].
+pub(super) enum ProgressUpdate {
+    File {
+        name: String,
+        received: u64,
+        total: u64,
+    },
+    Batch(FileBatchProgress),
+    Clear {
+        batch_id: Option<TransferId>,
+        device: Option<String>,
+    },
+}
+
+/// A progress snapshot plus the platform handle that must deliver it once the
+/// engine lock has been released.
+pub(super) struct ProgressDispatch {
+    platform: Option<Arc<dyn SyncPlatform>>,
+    update: ProgressUpdate,
+}
+
+impl ProgressDispatch {
+    /// Invoke the platform progress callback. Callers must hold no engine lock.
+    pub(super) fn deliver(self) {
+        let Some(platform) = self.platform else {
+            return;
+        };
+        match self.update {
+            ProgressUpdate::File {
+                name,
+                received,
+                total,
+            } => platform.set_file_progress(&name, received, total),
+            ProgressUpdate::Batch(progress) => platform.set_file_batch_progress(progress),
+            ProgressUpdate::Clear { batch_id, device } => {
+                platform.clear_file_progress(batch_id, device.as_deref())
+            }
         }
     }
 }

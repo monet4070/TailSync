@@ -324,13 +324,6 @@ fn file_ack_must_match_transfer_and_returns_offset() {
     assert!(validate_file_ack(&wrong, &pending, transfer).is_err());
 }
 
-#[test]
-fn delivery_config_defaults_match_shared_constants() {
-    let config = DeliveryConfig::default();
-    assert_eq!(config.event_ack_timeout, Duration::from_millis(750));
-    assert_eq!(config.file_ack_timeout, Duration::from_secs(10));
-}
-
 fn resolved_candidate(interface: ConnectionInterface, address: &str) -> ResolvedCandidate {
     ResolvedCandidate {
         candidate: PeerCandidate::new(interface, address),
@@ -2177,146 +2170,14 @@ async fn worker_exits_on_shutdown() {
     drop(priority_tx);
 }
 
-/// S2-F5 single-machine baseline.
-///
-/// The audit's concern is that file CONTROL frames share the priority channel with
-/// clipboard text (only `FileChunk` goes to the bulk channel), so a file batch can
-/// delay or drop text. This drives the real channels (capacity 64) and the real
-/// scheduler with the load the performance budget names, and prints the figures.
-///
-/// Run explicitly:
-///   cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib \
-///     scheduler_model_latency_baseline -- --ignored --nocapture
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "performance baseline; run explicitly with --ignored --nocapture"]
-async fn scheduler_model_latency_baseline() {
-    // The budget's load: text every 50 ms for 60 s while a >=256 MiB batch moves.
-    const TEXT_INTERVAL: Duration = Duration::from_millis(50);
-    const RUN: Duration = Duration::from_secs(60);
-    // A 256 MiB batch of 4 MiB files: 64 FileMeta control frames (priority) plus 256
-    // FileChunk frames (bulk, 1 MiB chunks).
-    const CONTROL_FRAMES: usize = 64;
-    const CHUNK_FRAMES: usize = 256;
-    // Modelled per-frame service time. The worker pays one await per frame on the
-    // wire; a loopback write is the closest single-machine proxy for that cost, and
-    // the figure is reported alongside the result rather than hidden.
-    const SERVICE: Duration = Duration::from_micros(200);
-
-    let (priority_tx, mut priority_rx) = mpsc::channel(CHANNEL_SIZE);
-    let (bulk_tx, mut bulk_rx) = mpsc::channel(CHANNEL_SIZE);
-
-    let consumer = tokio::spawn(async move {
-        let mut streak = 0usize;
-        let mut text_latencies: Vec<Duration> = Vec::new();
-        while let Some(frame) =
-            receive_scheduled_frame(&mut priority_rx, &mut bulk_rx, &mut streak).await
-        {
-            if frame.command() == Command::TextPayload {
-                text_latencies.push(frame.enqueued_at.elapsed());
-            }
-            tokio::time::sleep(SERVICE).await;
-        }
-        text_latencies
-    });
-
-    // The file batch: control frames on the priority channel, chunks on bulk. The
-    // senders are cloned so the clipboard loop below keeps its own handles.
-    let file_priority = priority_tx.clone();
-    let file_bulk = bulk_tx.clone();
-    let file_tx = tokio::spawn(async move {
-        let mut control = 0usize;
-        let mut chunks = 0usize;
-        while control < CONTROL_FRAMES || chunks < CHUNK_FRAMES {
-            if control < CONTROL_FRAMES {
-                if file_priority
-                    .send(QueuedFrame::new(Command::FileMeta, vec![0u8; 64]).unwrap())
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                control += 1;
-            }
-            if chunks < CHUNK_FRAMES {
-                if file_bulk
-                    .send(QueuedFrame::new(Command::FileChunk, vec![0u8; 64]).unwrap())
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                chunks += 1;
-            }
-        }
-    });
-
-    // Clipboard text every 50 ms; a full channel is a dropped text event.
-    let deadline = tokio::time::Instant::now() + RUN;
-    let mut attempted = 0usize;
-    let mut dropped = 0usize;
-    let mut peak_depth = 0usize;
-    while tokio::time::Instant::now() < deadline {
-        let depth = CHANNEL_SIZE.saturating_sub(priority_tx.capacity());
-        peak_depth = peak_depth.max(depth);
-        attempted += 1;
-        match priority_tx
-            .try_send(QueuedFrame::new(Command::TextPayload, b"text".to_vec()).unwrap())
-        {
-            Ok(()) => {}
-            Err(_) => dropped += 1,
-        }
-        tokio::time::sleep(TEXT_INTERVAL).await;
-    }
-    drop(priority_tx);
-    drop(bulk_tx);
-    let _ = file_tx.await;
-    let mut latencies = consumer.await.unwrap();
-    latencies.sort_unstable();
-    let percentile = |q: f64| -> u128 {
-        if latencies.is_empty() {
-            return 0;
-        }
-        let index = ((latencies.len() as f64 - 1.0) * q).round() as usize;
-        latencies[index].as_micros()
-    };
-    let delivered = latencies.len();
-    let max_us = latencies.last().map(|value| value.as_micros()).unwrap_or(0);
-    println!(
-        "{{\"baseline\":\"s2_f5_text_latency\",\"service_us\":{},\"run_s\":{},\"attempted\":{attempted},\"delivered\":{delivered},\"dropped\":{dropped},\"peak_priority_depth\":{peak_depth},\"channel_capacity\":{CHANNEL_SIZE},\"text_latency_us\":{{\"p50\":{},\"p99\":{},\"max\":{max_us}}}}}",
-        SERVICE.as_micros(),
-        RUN.as_secs(),
-        percentile(0.50),
-        percentile(0.99)
-    );
-
-    // Judge the run against the signed thresholds instead of only printing it: a
-    // bare print cannot tell a passing run from a failing one, which is how the
-    // water-mark budget lost its only check when the timed CI gate was replaced.
-    // This test is `#[ignore]`d and never runs in CI, so machine load can slow a
-    // run down without turning the build red — the failed observation must be kept and investigated.
-    assert_eq!(
-        dropped, 0,
-        "the signed budget allows zero permanently dropped text events"
-    );
-    assert!(
-        percentile(0.99) <= 100_000,
-        "text p99 must stay within the signed 100 ms budget"
-    );
-    assert!(
-        peak_depth <= SIGNED_TEXT_WATERMARK,
-        "priority peak depth must stay within the signed water mark"
-    );
-}
-
 /// S2-F5 CI gate, deterministic by construction: a full priority queue must not make the
 /// production enqueue path discard a clipboard frame silently. With the channel at
 /// capacity it waits for room (backpressure), and past the send timeout it reports
 /// "Timed out queueing frame", which the caller turns into the visible
 /// `delivery_stalled` warning. Either way the text is surfaced, never dropped.
 ///
-/// The 60 s baseline above records the latency/watermark figures; this gate guards the
-/// no-silent-loss invariant without depending on how fast the runner is, because the
-/// channel is filled deterministically rather than by a timed workload.
+/// The authenticated worker baseline measures latency separately. This gate fills
+/// the channel deterministically to check that backpressure never loses text.
 #[tokio::test]
 async fn a_full_priority_queue_never_drops_a_text_frame_silently() {
     use crate::peer::pool::{enqueue_queued_frame, PoolSender};

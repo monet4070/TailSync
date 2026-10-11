@@ -1111,6 +1111,18 @@ async fn plaintext_commit_frame_cannot_create_an_authenticated_pairing() {
 }
 
 #[test]
+fn composite_runtime_switch_reads_its_kill_switch() {
+    let disabled =
+        CapabilitySwitches::from_env(|name| name == "TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD");
+    assert!(!disabled.composite_clipboard);
+    assert!(!disabled.advertised().archive_resource_updates);
+    assert!(disabled.file_sliding_window);
+    assert!(disabled.image_compressed_chunks);
+    assert!(disabled.pairing_commit_proof);
+    assert!(CapabilitySwitches::from_env(|_| false).composite_clipboard);
+}
+
+#[test]
 fn composite_capability_is_bilateral_v5_and_build_runtime_gated() {
     let supported = CapabilitySet {
         composite_clipboard: true,

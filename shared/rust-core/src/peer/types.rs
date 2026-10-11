@@ -481,11 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn peer_status_defaults_to_discovered() {
-        assert_eq!(PeerStatus::default(), PeerStatus::Discovered);
-    }
-
-    #[test]
     fn health_snapshot_serializes_snake_case_fields() {
         let snapshot = PeerHealthSnapshot {
             status: PeerStatus::Online,

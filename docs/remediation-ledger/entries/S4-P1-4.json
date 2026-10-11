@@ -3,18 +3,28 @@
   "platform": [
     "shared"
   ],
-  "gate": null,
-  "ci_job": [],
-  "native_acceptance": "仍需真实 macOS/Windows 文件传输：引擎锁 wait/hold、回调 wait/hold 分开采样≥200、进度顺序与 terminal 语义；20ms 仍为暂定值。",
+  "gate": {
+    "kind": "unit",
+    "file": "shared/rust-core/src/sync/tests.rs",
+    "test": "progress_callbacks_run_outside_the_engine_lock_in_monotonic_order",
+    "command": "cargo test --locked --manifest-path shared/rust-core/Cargo.toml",
+    "asserts": "真实 chunk 接收（单文件 + batch）在引擎锁外调用 set_file_progress/set_file_batch_progress：回调内 try_lock 引擎成功；offset/transferred 严格单调 [0,9,19]/[0,8,14] 且无重复；discard 的 terminal clear 最后送达且 batch_id/device 正确。把任一进度回调改回锁内（变异）该测试失败。"
+  },
+  "ci_job": [
+    "rust-macos",
+    "rust-windows"
+  ],
+  "native_acceptance": "仍需真实 macOS/Windows 文件传输分别采样引擎锁 wait/hold 与回调 wait/hold ≥200 次，并据此确认或修正 20ms 暂定预算。本次只完成 pass_condition 的 B 分支（锁外回调）+ 独立回归覆盖，未做真实设备负载测量，也未在原生 Windows 执行。",
   "last_verified_main_sha": "b61a0a04b88f5828707f7ef64781389944471be8",
   "id": "S4-P1-4",
-  "title": "接收引擎锁内的平台进度回调（待测量裁定）",
+  "title": "接收引擎锁内的平台进度回调（已改为锁外回调）",
   "code_symbols": [
-    "shared/rust-core/src/sync/receive_engine.rs"
+    "shared/rust-core/src/sync/receive_engine.rs:receive_progress_update",
+    "shared/rust-core/src/sync/engine_state.rs:ProgressDispatch"
   ],
   "trigger": "每 1MiB 分块在引擎锁内调用平台进度回调与 watch 广播，高带宽下阻塞网络栈。",
-  "fix_evidence": "仍未改锁内回调。ignored 诊断以真实 macOS set_file_batch_progress、200 次注入 50ms 进度存储持锁：2026-10-03 复测 callback p50 55051µs / p99 55144µs / max 56739µs（上次记录 p99 60117µs / max 61882µs）。它证实回调可被平台锁拖住，但不是实际设备负载采样，也不是预算通过；未测真实锁 wait，未验证进度顺序与 terminal 语义。证据：docs/acceptance/s4-p1-4-macos-measurement-2026-10-03.md。共享测量代码另包含 Windows API 分支，尚未在原生 Windows 执行。",
-  "status": "unfixed",
+  "fix_evidence": "锁内只采集 ProgressUpdate 快照（receive_progress_update/clear_progress_update），释放 engine mutex 后由 ProgressDispatch::deliver 调用 platform.set_file_progress/set_file_batch_progress/clear_file_progress，平台回调内的 UI revision 广播随之移出锁。接收热路径（begin_file_receive_shared / handle_file_chunk_shared_with_key / 失败与 terminal clear）与 verify_and_commit 的丢弃路径（新增 discard_received_file_shared）均已改；测试见 docs/acceptance/s4-p1-4-off-lock-progress-2026-10-05.md。",
+  "status": "fixed_gated",
   "pass_condition": "锁等待满足冻结预算且进度顺序正确；若超标则锁外回调后达标。",
   "reopen_condition": "同负载等待再超预算或回调顺序/完成语义倒退。"
 }

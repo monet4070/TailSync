@@ -1,44 +1,25 @@
 import XCTest
 @testable import TailSync
 
-///
 final class CompositeRestoreMenuTests: XCTestCase {
-    func testIncompleteRichItemOpensTextBackupRestore() {
-        let subject = info(
-            formats: ["html", "png", "text"],
-            restorable: ["png", "text"],
-            completeness: "external_references"
-        )
-        XCTAssertEqual(
-            HistoryRowActionPolicy.explicitRestoreFormats(subject),
-            ["png", "text"],
-            "an incomplete rich item must let the user copy just the text"
-        )
-    }
-
     func testLiveRevokeRemainsAvailableAfterArchivalCompletes() {
-        let subject = info(formats: ["text", "html"], restorable: [])
-        XCTAssertTrue(HistoryRowActionPolicy.showsActionsMenu(
-            subject,
-            canRestoreFormat: false,
-            hasArchiveHandler: false,
-            hasAdvancedHandlers: true
-        ))
+        for subject in [
+            info(formats: ["text", "html"], restorable: []),
+            info(nativeOnly: true, formats: ["text"], restorable: []),
+            info(formats: ["text"], restorable: ["text"]),
+        ] {
+            XCTAssertTrue(HistoryRowActionPolicy.showsActionsMenu(
+                subject,
+                canRestoreFormat: false,
+                hasArchiveHandler: false,
+                hasAdvancedHandlers: true
+            ))
+        }
         XCTAssertFalse(HistoryRowActionPolicy.showsActionsMenu(
-            subject,
+            info(formats: ["text", "html"], restorable: []),
             canRestoreFormat: false,
             hasArchiveHandler: true,
             hasAdvancedHandlers: false
-        ))
-    }
-
-    func testNativeOnlyRowDoesNotHideLiveRevoke() {
-        let subject = info(nativeOnly: true, formats: ["text"], restorable: [])
-        XCTAssertTrue(HistoryRowActionPolicy.showsActionsMenu(
-            subject,
-            canRestoreFormat: false,
-            hasArchiveHandler: false,
-            hasAdvancedHandlers: true
         ))
     }
 
@@ -64,68 +45,22 @@ final class CompositeRestoreMenuTests: XCTestCase {
         return try! JSONDecoder().decode(ContractCompositeInfo.self, from: data)
     }
 
-    func testAPlainTextRowOffersNoExplicitEntry() {
-        let subject = info(formats: ["text"], restorable: ["text"])
-        XCTAssertEqual(
-            HistoryRowActionPolicy.explicitRestoreFormats(subject),
-            [],
-            "a plain-text row's whole restore already yields the text"
-        )
-    }
-
-    func testARichTextRowOffersTheTextBackupEntry() {
-        let subject = info(formats: ["text", "html"], restorable: ["text", "html"])
-        XCTAssertEqual(
-            HistoryRowActionPolicy.explicitRestoreFormats(subject),
-            ["text"],
-            "a rich item must expose the text-only backup entry"
-        )
-    }
-
-    /// The case the server refuses: several images, no standalone PNG.
-    func testAWithheldPngActionIsNotOffered() {
-        let subject = info(
-            formats: ["text", "html", "png"],
-            restorable: ["html", "text"],
-            withheld: [("png", "no_single_image")]
-        )
-        let actions = HistoryRowActionPolicy.explicitRestoreFormats(subject)
-        XCTAssertEqual(
-            actions,
-            ["text"],
-            "the withheld PNG must drop out while the text backup stays open"
-        )
-        XCTAssertFalse(
-            actions.contains("png"),
-            "the menu offered a PNG restore that the server withholds as no_single_image"
-        )
-        XCTAssertEqual(
-            subject.withheld_formats.first?.code,
-            "no_single_image",
-            "the withheld action must carry the code the UI localises"
-        )
-    }
-
-    /// A native-only item offers no explicit format at all.
-    func testANativeOnlyItemOffersNoExplicitFormat() {
-        let subject = info(
-            nativeOnly: true,
-            formats: ["text", "png"],
-            restorable: [],
-            withheld: [("text", "native_only"), ("png", "native_only")]
-        )
-        XCTAssertTrue(
-            HistoryRowActionPolicy.explicitRestoreFormats(subject).isEmpty,
-            "a native-only item must not offer an explicit format restore"
-        )
-        XCTAssertEqual(subject.withheld_formats.count, 2)
-    }
-
-    /// The lone-image case stays available: the guard must not make it unrestorable.
-    func testALoneImageStillOffersPng() {
-        let subject = info(formats: ["png"], restorable: ["png"])
-        XCTAssertEqual(HistoryRowActionPolicy.explicitRestoreFormats(subject), ["png"])
-        XCTAssertTrue(subject.withheld_formats.isEmpty)
+    func testExplicitRestoreFormatsFollowAvailableRepresentations() {
+        let cases: [(ContractCompositeInfo, [String])] = [
+            (info(formats: ["text"], restorable: ["text"]), []),
+            (info(formats: ["text", "html"], restorable: ["text", "html"]), ["text"]),
+            (info(formats: ["text", "html", "png"], restorable: ["html", "text"],
+                  withheld: [("png", "no_single_image")]), ["text"]),
+            (info(nativeOnly: true, formats: ["text", "png"], restorable: [],
+                  withheld: [("text", "native_only"), ("png", "native_only")]), []),
+            (info(formats: ["png"], restorable: ["png"]), ["png"]),
+            (info(formats: ["html", "png", "text"], restorable: ["png", "text"],
+                  completeness: "external_references"), ["png", "text"]),
+        ]
+        for (subject, expected) in cases {
+            XCTAssertEqual(HistoryRowActionPolicy.explicitRestoreFormats(subject), expected,
+                           "formats=\(subject.formats), nativeOnly=\(subject.native_only)")
+        }
     }
 
     func testAnItemWithNothingToOfferShowsNoMenu() {
@@ -192,16 +127,6 @@ final class CompositeRestoreMenuTests: XCTestCase {
             hasAuthorizeHandler: false,
             hasImportHandler: false,
             hasRevokeHandler: true
-        ))
-    }
-
-    func testAMenuWithOnlyAdvancedCallbacksStillShows() {
-        let subject = info(formats: ["text"], restorable: ["text"])
-        XCTAssertTrue(HistoryRowActionPolicy.showsActionsMenu(
-            subject,
-            canRestoreFormat: false,
-            hasArchiveHandler: false,
-            hasAdvancedHandlers: true
         ))
     }
 

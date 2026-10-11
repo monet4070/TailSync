@@ -148,12 +148,16 @@ impl CapabilitySwitches {
     /// Build flags are the file/image default policy; operators can disable any
     /// extension before starting the process for an immediate rollback.
     pub fn runtime_defaults() -> Self {
+        Self::from_env(|name| std::env::var_os(name).is_some())
+    }
+
+    /// Resolve kill switches without mutating the process environment in tests.
+    pub(crate) fn from_env(is_set: impl Fn(&str) -> bool) -> Self {
         Self {
-            file_sliding_window: std::env::var_os("TAILSYNC_DISABLE_FILE_WINDOW").is_none(),
-            image_compressed_chunks: std::env::var_os("TAILSYNC_DISABLE_IMAGE_CHUNKS").is_none(),
-            pairing_commit_proof: std::env::var_os("TAILSYNC_DISABLE_PAIRING_COMMIT_PROOF")
-                .is_none(),
-            composite_clipboard: std::env::var_os("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD").is_none(),
+            file_sliding_window: !is_set("TAILSYNC_DISABLE_FILE_WINDOW"),
+            image_compressed_chunks: !is_set("TAILSYNC_DISABLE_IMAGE_CHUNKS"),
+            pairing_commit_proof: !is_set("TAILSYNC_DISABLE_PAIRING_COMMIT_PROOF"),
+            composite_clipboard: !is_set("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD"),
         }
     }
 
