@@ -299,6 +299,11 @@ try {
         Write-Host 'Building frontend assets required by the Tauri context...'
         Invoke-Checked -FilePath 'npm' -Arguments @('run', 'build')
 
+        Write-Host 'Running shared history and database upgrade tests...'
+        $coreTestArguments = @('test', '--locked', '--manifest-path', $sharedManifest, '--lib', 'db::tests::')
+        if ($CompositeClipboard) { $coreTestArguments += @('--features', 'protocol-composite-clipboard') }
+        Invoke-Checked -FilePath 'cargo' -Arguments $coreTestArguments
+
         Write-Host 'Running Windows Rust tests...'
         $testArguments = @('test', '--locked', '--manifest-path', $manifestPath, '--lib')
         if ($CompositeClipboard) { $testArguments += @('--features', 'protocol-composite-clipboard') }
@@ -310,6 +315,7 @@ try {
 
     $previousTargetDirectory = $env:CARGO_TARGET_DIR
     $previousCi = $env:CI
+    $bundleConfigPath = $null
     try {
         $env:CARGO_TARGET_DIR = $targetDirectory
         $env:CI = 'true'
@@ -338,11 +344,22 @@ try {
             $buildArguments += '--no-sign'
         }
         if ($configuration.bundle.Count -gt 0) {
-            $buildArguments += @('--config', ($configuration | ConvertTo-Json -Depth 5 -Compress))
+            # Passing JSON through tauri.cmd strips its quotes in Windows
+            # PowerShell. Use a file so both hosts receive the same config.
+            $bundleConfigPath = Join-Path $targetDirectory 'tailsync-bundle-config.json'
+            [System.IO.File]::WriteAllText(
+                $bundleConfigPath,
+                ($configuration | ConvertTo-Json -Depth 5),
+                [System.Text.UTF8Encoding]::new($false)
+            )
+            $buildArguments += @('--config', $bundleConfigPath)
         }
         Invoke-Checked -FilePath $tauriCli -Arguments $buildArguments
     }
     finally {
+        if ($null -ne $bundleConfigPath) {
+            Remove-Item -LiteralPath $bundleConfigPath -Force -ErrorAction SilentlyContinue
+        }
         if ($null -eq $previousTargetDirectory) {
             Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue
         } else {
@@ -523,6 +540,10 @@ try {
         $secondaryProcess = $null
         try {
             $env:TAILSYNC_DATA_DIR = $smokeRoot
+            if ($CompositeClipboard) {
+                Write-Host 'Checking the packaged composite clipboard helper...'
+                Invoke-Checked -FilePath $portablePath -Arguments @('--tailsync-clipboard-helper-check')
+            }
             # S6-P0-1: assert the legacy local API port is free before launch, so a
             # listener observed later can be attributed to TailSync and not to an
             # unrelated process on the runner.

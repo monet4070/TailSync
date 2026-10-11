@@ -212,15 +212,18 @@ impl HistoryDB {
                 match self.read_text_payload_compat(&stored).and_then(|data| {
                     let data = if entry.entry_type == "composite" {
                         entry.composite = super::composite::info_bytes(&data).ok();
-                        if let Some(info) = &mut entry.composite {
+                        let body = if let Some(info) = &mut entry.composite {
                             super::composite::PreparedCompositeMenu::apply_prepared(
                                 self.prepare_composite_menu(entry.id, &data)
                                     .map_err(|e| e.to_string()),
                                 info,
                                 &crate::cancellation::Cancellation::default(),
-                            );
-                        }
-                        super::composite::summary_bytes(&data)?
+                            )
+                        } else {
+                            None
+                        };
+                        body.map(String::into_bytes)
+                            .map_or_else(|| super::composite::summary_bytes(&data), Ok)?
                     } else {
                         data
                     };
@@ -324,15 +327,18 @@ impl HistoryDB {
         match self.read_text_payload_compat(stored).and_then(|data| {
             let data = if entry.entry_type == "composite" {
                 entry.composite = super::composite::info_bytes(&data).ok();
-                if let Some(info) = &mut entry.composite {
+                let body = if let Some(info) = &mut entry.composite {
                     super::composite::PreparedCompositeMenu::apply_prepared(
                         self.prepare_composite_menu(entry.id, &data)
                             .map_err(|e| e.to_string()),
                         info,
                         &crate::cancellation::Cancellation::default(),
-                    );
-                }
-                super::composite::summary_bytes(&data)?
+                    )
+                } else {
+                    None
+                };
+                body.map(String::into_bytes)
+                    .map_or_else(|| super::composite::summary_bytes(&data), Ok)?
             } else {
                 data
             };

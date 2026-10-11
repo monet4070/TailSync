@@ -38,9 +38,18 @@ pub struct PreviewWindowSnapshot {
     pub document_eligible: bool,
 }
 
-#[derive(Default)]
 pub struct PreviewWindowController {
     inner: Mutex<PreviewWindowControllerInner>,
+    window_retiring: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for PreviewWindowController {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::default(),
+            window_retiring: tokio::sync::watch::channel(false).0,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -62,6 +71,9 @@ impl PreviewWindowControllerInner {
         owner: Option<PreviewWindowOwner>,
     ) -> Option<(u64, Option<PreviewWindowOwner>)> {
         if owner.is_some_and(|owner| self.pending_owner != Some(owner)) {
+            return None;
+        }
+        if self.pending_owner.is_none() && self.current.is_none() {
             return None;
         }
         let previous_owner = self.pending_owner;
@@ -94,6 +106,26 @@ impl PreviewWindowRequest {
 }
 
 impl PreviewWindowController {
+    async fn wait_for_window_release(&self) {
+        let mut retiring = self.window_retiring.subscribe();
+        loop {
+            if !*retiring.borrow_and_update() {
+                return;
+            }
+            if retiring.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    fn begin_window_release(&self) {
+        self.window_retiring.send_replace(true);
+    }
+
+    fn finish_window_release(&self) {
+        self.window_retiring.send_replace(false);
+    }
+
     /// Preserve the displayed target on failure/Ctrl+Enter, but tombstone every
     /// pending navigation and renderer presentation from before the restore.
     pub(crate) fn freeze_for_restore(&self) -> u64 {
@@ -132,6 +164,16 @@ impl PreviewWindowController {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .current
             .clone()
+    }
+
+    fn retire(
+        &self,
+        owner: Option<PreviewWindowOwner>,
+    ) -> Option<(u64, Option<PreviewWindowOwner>)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .invalidate(owner)
     }
 
     fn owns(&self, owner: PreviewWindowOwner) -> bool {
@@ -201,6 +243,9 @@ pub async fn open_preview_window(
             .display_kind(request.entry_id)
             .is_ok_and(|kind| kind == "document")
     };
+    // Tauri queues native destruction. A fast reopen must wait asynchronously
+    // for the old WebView/HWND to leave the manager, rather than reuse it.
+    controller.wait_for_window_release().await;
     let (send, receive) = tokio::sync::oneshot::channel();
     let ui_app = app.clone();
     app.run_on_main_thread(move || {
@@ -238,18 +283,19 @@ fn finish_open_preview(
     };
     inner.current = Some(snapshot.clone());
     inner.minimized_with_owner = false;
-    crate::window_lifecycle::mark_window_open(&app, PREVIEW_WINDOW_LABEL);
-
+    // WebView2 creation/focus may dispatch nested IPC and window callbacks.
+    // They must be able to read the controller while native UI work runs.
+    drop(inner);
     if let Some(window) = app.get_webview_window(PREVIEW_WINDOW_LABEL) {
         window
             .emit(PREVIEW_REQUEST_EVENT, &snapshot)
             .map_err(|error| error.to_string())?;
     } else {
-        crate::window_lifecycle::configure_transparent_window(tauri::WebviewWindowBuilder::new(
+        tauri::WebviewWindowBuilder::new(
             &app,
             PREVIEW_WINDOW_LABEL,
             tauri::WebviewUrl::App("preview.html".into()),
-        ))
+        )
         .title("TailSync - Preview")
         .inner_size(900.0, 680.0)
         .min_inner_size(520.0, 360.0)
@@ -258,6 +304,7 @@ fn finish_open_preview(
         .resizable(true)
         .visible(false)
         .focused(false)
+        .transparent(false)
         .center()
         .build()
         .map_err(|error| error.to_string())?;
@@ -276,7 +323,7 @@ impl PreviewWindowOwner {
 }
 
 /// The renderer calls this only after frame restoration. Revision validation
-/// and native show share the close lock, so a late renderer cannot reopen it.
+/// and native show run on the UI thread, so a late renderer cannot reopen it.
 fn present_preview_window(
     app: AppHandle,
     controller: State<'_, PreviewWindowController>,
@@ -294,9 +341,11 @@ fn present_preview_window(
         .current
         .as_ref()
         .filter(|snapshot| snapshot.revision == revision && inner.accepts_revision(revision))
+        .cloned()
     else {
         return Ok(());
     };
+    drop(inner);
     if let Some(window) = app.get_webview_window(PREVIEW_WINDOW_LABEL) {
         if let Some(host) = app.get_webview_window(snapshot.owner.label()) {
             window
@@ -315,59 +364,122 @@ fn present_preview_window(
 /// Return the latest preview request. This closes the create/listen race for
 /// the first render of a newly-created WebView.
 #[command]
-pub fn get_preview_window_request(
+pub async fn get_preview_window_request(
     app: AppHandle,
-    controller: State<'_, PreviewWindowController>,
     ready_revision: Option<u64>,
 ) -> Result<Option<PreviewWindowSnapshot>, crate::commands::CommandError> {
     if let Some(revision) = ready_revision {
-        present_preview_window(app, controller.clone(), revision)?;
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let ui_app = app.clone();
+        app.run_on_main_thread(move || {
+            let controller = ui_app.state::<PreviewWindowController>();
+            let result = present_preview_window(ui_app.clone(), controller.clone(), revision)
+                .map(|()| controller.current());
+            let _ = send.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        return receive.await.map_err(|error| error.to_string())?;
     }
-    Ok(controller.current())
+    Ok(app.state::<PreviewWindowController>().current())
 }
 
-/// Hide the reusable preview immediately, then destroy its WebView after a
-/// short idle grace period. Reopening during the grace period cancels release.
+/// Withdraw the native preview and destroy its WebView immediately, matching
+/// the macOS close lifecycle. A later preview creates a fresh window.
 #[command]
-pub fn close_preview_window(
+pub async fn close_preview_window(
     app: AppHandle,
-    controller: State<'_, PreviewWindowController>,
     owner: Option<PreviewWindowOwner>,
 ) -> Result<(), crate::commands::CommandError> {
-    let mut inner = controller
-        .inner
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some((revision, previous_owner)) = inner.invalidate(owner) else {
+    let started = std::time::Instant::now();
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let ui_app = app.clone();
+    app.run_on_main_thread(move || {
+        let result = finish_close_preview(ui_app, owner);
+        log::info!(
+            "Preview native withdrawal completed in {} ms (success={})",
+            started.elapsed().as_millis(),
+            result.is_ok()
+        );
+        let _ = send.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receive.await.map_err(|error| error.to_string())?
+}
+
+fn finish_close_preview(
+    app: AppHandle,
+    owner: Option<PreviewWindowOwner>,
+) -> Result<(), crate::commands::CommandError> {
+    let controller = app.state::<PreviewWindowController>();
+    let Some((revision, previous_owner)) = controller.retire(owner) else {
         return Ok(());
     };
     let notice = serde_json::json!({ "revision": revision, "owner": previous_owner });
+    // Withdraw the HWND before changing renderer content or returning focus.
+    // No transparent topmost host may survive a five-second idle grace period.
     if let Some(window) = app.get_webview_window(PREVIEW_WINDOW_LABEL) {
-        if window.is_focused().unwrap_or(false) {
+        let return_focus = window.is_focused().unwrap_or(false);
+        controller.begin_window_release();
+        let closed_app = app.clone();
+        let started = std::time::Instant::now();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                closed_app
+                    .state::<PreviewWindowController>()
+                    .finish_window_release();
+                log::info!(
+                    "Preview native window destroyed in {} ms",
+                    started.elapsed().as_millis()
+                );
+            }
+        });
+        if let Err(error) = crate::window_lifecycle::withdraw_and_destroy_preview(&window) {
+            controller.finish_window_release();
+            return Err(error.into());
+        }
+        if return_focus {
             if let Some(host) =
                 previous_owner.and_then(|owner| app.get_webview_window(owner.label()))
             {
-                let _ = host.set_focus(); // Esc returns to host, never the external app.
+                // Activating the HWND alone does not reliably return keyboard
+                // input from a hidden WebView2 controller to history's content.
+                if let Err(error) = crate::window_lifecycle::focus_window_content(&host) {
+                    log::warn!("Could not return preview focus to its owner: {error}");
+                }
             }
         }
-        let _ = window.emit(PREVIEW_CLOSE_EVENT, &notice);
     }
     if let Some(owner) = previous_owner {
         let _ = app.emit_to(owner.label(), PREVIEW_CLOSE_EVENT, &notice);
     }
-    crate::window_lifecycle::hide_then_release_window(app, PREVIEW_WINDOW_LABEL).map_err(Into::into)
+    Ok(())
 }
 
 /// Keep the reusable preview paired only with the active source window's
 /// minimized state. The marker records only a minimize initiated here, so a
 /// manually minimized preview is never undone later.
 #[command]
-pub fn sync_preview_window_minimized(
+pub async fn sync_preview_window_minimized(
     app: AppHandle,
-    controller: State<'_, PreviewWindowController>,
     owner: PreviewWindowOwner,
     minimized: bool,
 ) -> Result<(), crate::commands::CommandError> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let ui_app = app.clone();
+    app.run_on_main_thread(move || {
+        let result = finish_sync_preview_minimized(ui_app, owner, minimized);
+        let _ = send.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receive.await.map_err(|error| error.to_string())?
+}
+
+fn finish_sync_preview_minimized(
+    app: AppHandle,
+    owner: PreviewWindowOwner,
+    minimized: bool,
+) -> Result<(), crate::commands::CommandError> {
+    let controller = app.state::<PreviewWindowController>();
     if !controller.owns(owner) {
         return Ok(());
     }
@@ -466,6 +578,49 @@ mod tests {
         assert!(!inner.accepts_revision(pending));
         assert!(inner.current.is_none());
         assert!(inner.pending_owner.is_none());
+    }
+
+    #[test]
+    fn close_transition_releases_controller_before_focus_callbacks_reenter() {
+        let controller = PreviewWindowController::default();
+        let previous = controller.replace(request(1));
+        let (revision, owner) = controller
+            .retire(Some(PreviewWindowOwner::History))
+            .unwrap();
+        assert!(revision > previous.revision);
+        assert_eq!(owner, Some(PreviewWindowOwner::History));
+        // Native focus/hide can synchronously reenter through WebView2 IPC.
+        // Simulate that callback without risking a hung test on lock regression.
+        assert!(controller.inner.try_lock().is_ok());
+        assert!(!controller.owns(PreviewWindowOwner::History));
+        assert_eq!(controller.current(), None);
+    }
+
+    #[test]
+    fn repeated_close_does_not_retire_a_window_twice() {
+        let controller = PreviewWindowController::default();
+        controller.replace(request(1));
+        assert!(controller.retire(None).is_some());
+        assert!(controller.retire(None).is_none());
+    }
+
+    #[tokio::test]
+    async fn quick_reopen_waits_for_native_destruction_without_blocking_ui() {
+        let controller = PreviewWindowController::default();
+        controller.begin_window_release();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(25),
+            controller.wait_for_window_release()
+        )
+        .await
+        .is_err());
+        controller.finish_window_release();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(25),
+            controller.wait_for_window_release(),
+        )
+        .await
+        .expect("native destruction must unblock the next preview");
     }
 
     #[test]

@@ -814,7 +814,6 @@ impl Drop for PendingPayloads {
     }
 }
 
-#[cfg(unix)]
 /// Visit every live external payload path for a raw connection.
 ///
 /// Free-function form so the pre-upgrade rollback package can enumerate payloads
@@ -889,6 +888,7 @@ pub(super) fn live_payload_paths(
     Ok(paths.into_iter().collect())
 }
 
+#[cfg(unix)]
 fn payload_file_identity(path: &std::path::Path) -> std::io::Result<PayloadFileIdentity> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::metadata(path)?;

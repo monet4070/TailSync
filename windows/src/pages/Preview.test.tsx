@@ -57,6 +57,66 @@ describe("Preview keyboard restore integration", () => {
     vi.clearAllMocks();
     mocks.pull.mockResolvedValue(snapshot());
     mocks.restore.mockResolvedValue(undefined);
+    mocks.closePreview.mockResolvedValue(undefined);
+  });
+
+  it.each(["Escape", "Enter"])("keeps preview content while %s waits for Windows to hide it", async (key) => {
+    let hidden!: () => void;
+    mocks.closePreview.mockImplementation(() => new Promise<void>(resolve => { hidden = resolve; }));
+    await mount();
+    fireEvent.keyDown(document.activeElement!, { key });
+    await waitFor(() => expect(mocks.closePreview).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("heading", { name: "entry-7" })).toBeInTheDocument();
+    expect(screen.queryByText("history.preview.loading")).toBeNull();
+    expect(mocks.closeHistory).not.toHaveBeenCalled();
+    await act(async () => hidden());
+    expect(screen.getByRole("heading", { name: "entry-7" })).toBeInTheDocument();
+    expect(screen.queryByText("history.preview.loading")).toBeNull();
+  });
+
+  it("a delayed close acknowledgement cannot clear a newly opened preview", async () => {
+    let hidden!: () => void;
+    mocks.closePreview.mockImplementation(() => new Promise<void>(resolve => { hidden = resolve; }));
+    await mount();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    await emit("tailsync://preview-request", snapshot(3, 8));
+    await act(async () => hidden());
+    expect(screen.getByRole("heading", { name: "entry-8" })).toBeInTheDocument();
+  });
+
+  it("a native close notice keeps the last frame but retires restore and presentation", async () => {
+    await mount();
+    await emit("tailsync://preview-close", { revision: 2 });
+    expect(screen.getByRole("heading", { name: "entry-7" })).toBeInTheDocument();
+    expect(screen.queryByText("history.preview.loading")).toBeNull();
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "history.restoreEntry" }));
+    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(mocks.present).toHaveBeenCalledTimes(1);
+    await emit("tailsync://preview-request", snapshot(3, 8));
+    expect(screen.getByRole("heading", { name: "entry-8" })).toBeInTheDocument();
+    expect(mocks.present).toHaveBeenLastCalledWith(3);
+  });
+
+  it("ignores repeat close input while hiding and allows another attempt if hiding fails", async () => {
+    let reject!: (error: Error) => void;
+    mocks.closePreview.mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }));
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      fireEvent.keyDown(document.activeElement!, { key: "Escape", repeat: true });
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+      expect(mocks.closePreview).toHaveBeenCalledTimes(1);
+      expect(mocks.restore).not.toHaveBeenCalled();
+      await act(async () => reject(new Error("native hide failed")));
+      expect(screen.getByRole("heading", { name: "entry-7" })).toBeInTheDocument();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      expect(mocks.closePreview).toHaveBeenCalledTimes(2);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   it("Enter and restore button share one request; success closes preview then host without paste", async () => {

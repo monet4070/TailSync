@@ -17,7 +17,7 @@ bytes and any temporary plaintext files.
 
 ## Decision
 
-TailSync uses one reusable, non-modal preview window per application process.
+TailSync uses one active, non-modal preview window per application process.
 The history window sends only an entry identifier and optional batch context;
 the preview window loads one bounded payload at a time from the local backend.
 
@@ -38,6 +38,13 @@ collection window cannot hide, restore, or close another window's preview.
 Space and Escape close the preview unless an interactive control currently
 owns the keystroke. A batch exposes previous/next navigation without loading
 all batch payloads into memory.
+
+Closing a preview destroys its native window and rendered content on both
+platforms. A later preview creates a fresh window with its saved frame.
+Windows withdraws the native HWND and removes its topmost state before queuing
+WebView2 destruction; it does not cache a transparent preview host for the
+five-second grace period used by the other transient windows. A quick reopen
+waits asynchronously for destruction so it cannot reuse the retiring window.
 
 ## Security constraints
 

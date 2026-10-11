@@ -276,9 +276,9 @@ describe("history row details styles", () => {
 
   it("styles the diagnostics panel with theme variables so both schemes resolve", () => {
     const rules = historyRules();
-    const panel = rules.find((rule) => rule.selectorText === ".item-diagnostics");
+    const panel = rules.find((rule) => rule.selectorText.includes(".history-row-popover"));
     expect(panel).toBeDefined();
-    expect(panel?.style.background).toContain("var(--bg-card)");
+    expect(panel?.style.background).toContain("var(--bg-raised)");
     const label = rules.find((rule) => rule.selectorText === ".item-diagnostics dt");
     expect(label?.style.color).toBe("var(--text-tertiary)");
   });

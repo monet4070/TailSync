@@ -933,6 +933,148 @@ pub fn materialize(bundle: &super::PortableBundle, index: usize) -> Result<Vec<u
     debug_assert_eq!(bytes.len(), total, "the pre-computed length must be exact");
     Ok(bytes)
 }
+/// History-only body projection. Image attributes and a lightbox's generated
+/// metadata are not the copied prose. Keep captions and ordinary body text,
+/// including text that happens to mention image sizes. Never decode images.
+pub fn history_text_summary(bytes: &[u8]) -> String {
+    use super::content_analysis::{
+        append_break, append_html_text, attribute_span, find_tag_end, TextFacts, DEPTH_LIMIT,
+        RUN_LIMIT,
+    };
+    if bytes.len() > super::Mime::Html.limit() {
+        return String::new();
+    }
+    let Ok(html) = std::str::from_utf8(bytes) else {
+        return String::new();
+    };
+    // (element name, excluded text, inside an image lightbox)
+    let mut stack: Vec<(String, bool, bool)> = Vec::new();
+    let mut text = TextFacts::default();
+    let mut pending_space = false;
+    let mut raw_tag: Option<String> = None;
+    let mut cursor = 0;
+    let mut nodes = 0;
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'<' {
+            let end = html[cursor..].find('<').map_or(bytes.len(), |n| cursor + n);
+            if raw_tag.is_none() && !stack.last().is_some_and(|frame| frame.1) {
+                append_html_text(&html[cursor..end], &mut text, &mut pending_space);
+                if text.truncated {
+                    break;
+                }
+            }
+            cursor = end;
+            continue;
+        }
+        if bytes[cursor..].starts_with(b"<!--") {
+            cursor = html[cursor + 4..]
+                .find("-->")
+                .map_or(bytes.len(), |n| cursor + n + 7);
+            continue;
+        }
+        let Some(end) = find_tag_end(bytes, cursor + 1) else {
+            break;
+        };
+        let mut name_start = cursor + 1;
+        let closing = bytes.get(name_start) == Some(&b'/');
+        if closing {
+            name_start += 1;
+        }
+        let mut name_end = name_start;
+        while name_end < end && bytes[name_end].is_ascii_alphanumeric() {
+            name_end += 1;
+        }
+        let tag = html[name_start..name_end].to_ascii_lowercase();
+        if let Some(raw) = &raw_tag {
+            if closing && tag == *raw {
+                raw_tag = None;
+                stack.pop();
+            }
+            cursor = end + 1;
+            continue;
+        }
+        if tag.is_empty() {
+            cursor = end + 1;
+            continue;
+        }
+        nodes += 1;
+        if nodes > RUN_LIMIT {
+            break;
+        }
+        let block = matches!(
+            tag.as_str(),
+            "p" | "div"
+                | "br"
+                | "li"
+                | "tr"
+                | "blockquote"
+                | "pre"
+                | "figcaption"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+        );
+        if closing {
+            if let Some(index) = stack.iter().rposition(|frame| frame.0 == tag) {
+                stack.truncate(index);
+            }
+            if block && !stack.last().is_some_and(|frame| frame.1) {
+                append_break(&mut text, &mut pending_space);
+            }
+            cursor = end + 1;
+            continue;
+        }
+        let classes = attribute_span(bytes, name_end, end, b"class")
+            .map(|(start, finish)| &html[start..finish])
+            .unwrap_or("");
+        let has_class = |name: &str| {
+            classes
+                .split_ascii_whitespace()
+                .any(|token| token.eq_ignore_ascii_case(name))
+        };
+        let in_lightbox = stack.last().is_some_and(|frame| frame.2)
+            || has_class("lightbox")
+            || has_class("lightbox-wrapper");
+        let excluded = stack.last().is_some_and(|frame| frame.1)
+            || matches!(tag.as_str(), "head" | "script" | "style" | "template")
+            || (in_lightbox && has_class("meta"));
+        if block && !excluded {
+            append_break(&mut text, &mut pending_space);
+        }
+        let void = matches!(
+            tag.as_str(),
+            "area"
+                | "base"
+                | "br"
+                | "col"
+                | "embed"
+                | "hr"
+                | "img"
+                | "input"
+                | "link"
+                | "meta"
+                | "param"
+                | "source"
+                | "track"
+                | "wbr"
+        );
+        if !void && bytes.get(end.wrapping_sub(1)) != Some(&b'/') {
+            if stack.len() >= DEPTH_LIMIT {
+                break;
+            }
+            stack.push((tag.clone(), excluded, in_lightbox));
+            if matches!(tag.as_str(), "script" | "style") {
+                raw_tag = Some(tag);
+            }
+        }
+        cursor = end + 1;
+    }
+    text.text.trim().to_string()
+}
+
 /// Search/preview projection only; the original HTML and resources stay intact.
 pub fn text_summary(bytes: &[u8]) -> String {
     let Ok(html) = std::str::from_utf8(bytes) else {
@@ -994,6 +1136,23 @@ mod resource_tests {
     use super::*;
     use crate::composite::*;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+    #[test]
+    fn history_summary_skips_image_widget_metadata_but_keeps_prose_and_captions() {
+        let html = br#"<head><title>page title</title></head>
+          <div class='lightbox-wrapper'><a class='lightbox' href='https://example.com/a.png'>
+          <img src='missing.png' alt='image'><div class='meta'><span class='filename'>image</span>
+          <span class='informations'>2557x1320 154 KB</span></div></a>
+          <figcaption>Real caption</figcaption></div>
+          <p>&#x4E2D;&#25991; &amp; body</p><div class='meta'>Ordinary metadata prose</div>
+          <p>image/png 2557x1320 is meaningful body text</p><!-- hidden comment -->
+          <script>secret &lt;script&gt;</script><style>.x { content: 'hidden'; }</style>"#;
+        assert_eq!(history_text_summary(html), "Real caption\n中文 & body\nOrdinary metadata prose\nimage/png 2557x1320 is meaningful body text");
+        assert!(
+            text_summary(html).contains("154 KB"),
+            "restore text is unchanged"
+        );
+        assert!(history_text_summary(b"<img alt='image' src='missing'>").is_empty());
+    }
     #[test]
     fn dependency_inventory_ignores_comments_and_checks_each_image() {
         let png = STANDARD.encode(packed_to_png(1, 1, &[255, 0, 0, 128]).unwrap());

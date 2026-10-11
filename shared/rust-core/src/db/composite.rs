@@ -117,8 +117,8 @@ impl PreparedCompositeMenu {
         self,
         info: &mut CompositeInfo,
         cancellation: &crate::cancellation::Cancellation,
-    ) {
-        let complete = self
+    ) -> Option<String> {
+        let html = self
             .html
             .read(
                 cancellation,
@@ -145,19 +145,19 @@ impl PreparedCompositeMenu {
                             ..binding.clone()
                         })
                         .collect::<Vec<_>>();
-                    return composite::html::restore_reference_inventory_complete(
-                        &bundle.representations[index].bytes,
-                        &bindings,
-                    )
-                    .ok();
+                    return Some((bundle.representations[index].bytes.clone(), bindings));
                 }
-                composite::html::restore_reference_inventory_complete(&b, &self.bindings).ok()
-            })
-            == Some(true);
+                Some((b, self.bindings))
+            });
+        let complete = html.as_ref().and_then(|(bytes, bindings)| {
+            composite::html::restore_reference_inventory_complete(bytes, bindings).ok()
+        }) == Some(true);
         if !complete {
             tracing::debug!(target: "tailsync.runtime.execution", operation = "history.restore_menu", outcome = "withheld", "HTML restore inventory is incomplete or unreadable");
             Self::withhold_html(info);
         }
+        html.map(|(bytes, _)| composite::html::history_text_summary(&bytes))
+            .filter(|text| !text.is_empty())
     }
     pub(super) fn withhold_html(info: &mut CompositeInfo) {
         if !info.native_only && info.formats.iter().any(|f| f == "html") {
@@ -174,14 +174,15 @@ impl PreparedCompositeMenu {
         prepared: Result<Option<Self>, String>,
         info: &mut CompositeInfo,
         cancellation: &crate::cancellation::Cancellation,
-    ) {
+    ) -> Option<String> {
         match prepared {
             Ok(Some(menu)) => menu.apply(info, cancellation),
             Err(_) => {
                 tracing::debug!(target: "tailsync.runtime.execution", operation = "history.restore_menu", outcome = "unavailable", "HTML restore inventory unavailable");
                 Self::withhold_html(info);
+                None
             }
-            Ok(None) => {}
+            Ok(None) => None,
         }
     }
 }
@@ -334,7 +335,34 @@ pub(super) fn summary_bytes(decoded: &[u8]) -> Result<Vec<u8>, Box<dyn std::erro
         return Err("Invalid composite manifest".into());
     }
     validate_manifest(&m)?;
-    Ok(m.summary.into_bytes())
+    // Older portable/Windows captures stored the generic rich-content label.
+    // Project their existing PNG dimensions without rewriting archive identity
+    // or reading/decoding the full image on every history listing.
+    let summary =
+        if m.summary == "Rich clipboard content" && !m.native_only && m.archive_version.is_none() {
+            let representations: Vec<_> = m
+                .parts
+                .iter()
+                .filter(|p| p.role == "representation")
+                .collect();
+            if representations.len() == 1
+                && representations[0].mime == Mime::Png as u8
+                && !m.parts.iter().any(|p| p.role == "resource")
+                && m.bindings.is_empty()
+            {
+                match (representations[0].width, representations[0].height) {
+                    (Some(width), Some(height)) if width > 0 && height > 0 => {
+                        format!("image/png · {width}×{height} · 1 frame")
+                    }
+                    _ => m.summary,
+                }
+            } else {
+                m.summary
+            }
+        } else {
+            m.summary
+        };
+    Ok(summary.into_bytes())
 }
 pub(super) fn info_bytes(decoded: &[u8]) -> Result<CompositeInfo, Box<dyn std::error::Error>> {
     let m: Manifest = serde_json::from_slice(decoded)?;
@@ -525,6 +553,24 @@ fn image_summary(archive: &NativeArchive) -> Option<String> {
         } else {
             ""
         }
+    ))
+}
+fn portable_image_summary(bundle: &PortableBundle) -> Option<String> {
+    if bundle.representations.len() != 1
+        || !bundle.resources.is_empty()
+        || !bundle.bindings.is_empty()
+    {
+        return None;
+    }
+    let png = bundle.representation(Mime::Png)?;
+    let metadata = crate::protocol::image::metadata("public.png", png)?;
+    Some(format!(
+        "{} · {}×{} · {} frame{}",
+        metadata.mime,
+        metadata.width,
+        metadata.height,
+        metadata.frames,
+        if metadata.frames == 1 { "" } else { "s" }
     ))
 }
 fn native_summary(snapshot: &NativeSnapshot) -> PortableBundle {
@@ -1700,15 +1746,23 @@ impl HistoryDB {
             summary: archive
                 .and_then(image_summary)
                 .or_else(|| {
+                    archive
+                        .is_none()
+                        .then(|| portable_image_summary(bundle))
+                        .flatten()
+                })
+                .or_else(|| {
                     bundle
-                        .text()
-                        .map(str::to_string)
+                        .representation(Mime::Html)
+                        .map(composite::html::history_text_summary)
+                        .filter(|s| !s.is_empty())
                         .or_else(|| {
                             bundle
-                                .representation(Mime::Html)
-                                .map(composite::html::text_summary)
+                                .text()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
                         })
-                        .filter(|s| !s.is_empty())
                 })
                 .unwrap_or_else(|| "Rich clipboard content".into()),
             completeness: bundle.completeness as u8,
@@ -3585,6 +3639,193 @@ mod tests {
     }
 
     #[test]
+    fn rich_history_body_projects_new_legacy_and_archived_rows_without_mutation() {
+        for mode in ["mixed", "html_only", "archived"] {
+            let root = root();
+            let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+            let body = "正文识别 & unique-body";
+            let html = "<div class='lightbox-wrapper'><a class='lightbox'><img src='tailsync-resource:1' alt='image'><div class='meta'><span class='filename'>image</span><span class='informations'>2557×1320 154 KB</span></div></a></div><p>正文识别 &amp; unique-body</p>";
+            let marker = "tailsync-resource:1";
+            let mut b = PortableBundle {
+                representations: vec![Representation {
+                    mime: Mime::Html,
+                    bytes: html.as_bytes().to_vec(),
+                }],
+                resources: vec![Resource {
+                    id: 1,
+                    png: composite::packed_to_png(1, 1, &[1, 2, 3, 255]).unwrap(),
+                }],
+                bindings: vec![ResourceBinding {
+                    representation: 0,
+                    resource: 1,
+                    offset: html.find(marker).unwrap() as u32,
+                    length: marker.len() as u32,
+                }],
+                completeness: Completeness::Complete,
+            };
+            if mode != "html_only" {
+                b.representations.push(Representation {
+                    mime: Mime::Text,
+                    bytes: "image\n2557×1320 154 KB\n正文识别 & unique-body"
+                        .as_bytes()
+                        .to_vec(),
+                });
+            }
+            let id = db.add_composite(&b, None, "fixture").unwrap();
+            let stored: Vec<u8> = db
+                .conn
+                .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(manifest(&stored).unwrap().summary, body, "{mode}");
+            if mode == "archived" {
+                let expected = db.composite_identity(id).unwrap().unwrap();
+                assert!(db
+                    .commit_composite_archive(id, &expected, &b)
+                    .unwrap()
+                    .is_some());
+            }
+            // An old row can have no body in its saved summary. Listing and
+            // searching must still use the validated HTML, without migration.
+            let stored: Vec<u8> = db
+                .conn
+                .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+            let mut m = manifest(&stored).unwrap();
+            m.summary = "image\n2557×1320 154 KB".into();
+            let digest = archive_digest(&m).unwrap();
+            m.identity.as_mut().unwrap().archive_digest = digest.clone();
+            let legacy = crypto::encrypt(&serde_json::to_vec(&m).unwrap()).unwrap();
+            db.conn
+                .execute(
+                    "UPDATE history SET data=?1 WHERE id=?2",
+                    params![legacy, id],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "UPDATE history_composite_identity SET archive_digest=?1 WHERE history_id=?2",
+                    params![digest, id],
+                )
+                .unwrap();
+            let identity = db.composite_identity(id).unwrap();
+            let parts: Vec<(i64, Vec<u8>)> = db
+                .conn
+                .prepare(
+                    "SELECT part_id,stored FROM history_parts WHERE history_id=?1 ORDER BY part_id",
+                )
+                .unwrap()
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for keyword in [None, Some("unique-body"), Some("正文识别")] {
+                let rows = db.get_all(keyword, None, 10, 0).unwrap();
+                assert_eq!(rows.len(), 1, "{mode}: {keyword:?}");
+                assert_eq!(rows[0].description, body, "{mode}");
+                let chunk = db
+                    .prepare_read_chunk(
+                        HistoryQuery {
+                            collection: HistoryCollection::All,
+                            keyword,
+                            category: None,
+                            start_time: None,
+                            end_time: None,
+                            limit: 10,
+                            offset: 0,
+                        },
+                        None,
+                        &db.read_revision().unwrap(),
+                        10,
+                    )
+                    .unwrap();
+                let rows = chunk
+                    .matching_entries(keyword, &crate::cancellation::Cancellation::default())
+                    .unwrap();
+                assert_eq!(rows.len(), 1, "{mode}: {keyword:?}");
+                assert_eq!(rows[0].description, body, "{mode}");
+            }
+            assert!(db.get_all(Some("154 KB"), None, 10, 0).unwrap().is_empty());
+            assert_eq!(db.composite_identity(id).unwrap(), identity);
+            assert_eq!(db.get_composite(id).unwrap(), b);
+            let after: Vec<u8> = db
+                .conn
+                .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(after, legacy);
+            let after_parts: Vec<(i64, Vec<u8>)> = db
+                .conn
+                .prepare(
+                    "SELECT part_id,stored FROM history_parts WHERE history_id=?1 ORDER BY part_id",
+                )
+                .unwrap()
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(after_parts, parts);
+            drop(db);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn rich_history_missing_or_corrupt_html_retains_saved_summary() {
+        for corrupt in [false, true] {
+            let root = root();
+            let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+            let b = bundle("正文 safe fallback");
+            let id = db.add_composite(&b, None, "fixture").unwrap();
+            if corrupt {
+                db.conn
+                    .execute(
+                        "UPDATE history_parts SET stored=?1 WHERE history_id=?2 AND mime=?3",
+                        params![
+                            crypto::encrypt(b"corrupt HTML").unwrap(),
+                            id,
+                            Mime::Html as u8
+                        ],
+                    )
+                    .unwrap();
+            } else {
+                db.conn
+                    .execute(
+                        "DELETE FROM history_parts WHERE history_id=?1 AND mime=?2",
+                        params![id, Mime::Html as u8],
+                    )
+                    .unwrap();
+            }
+            for keyword in [None, Some("safe fallback")] {
+                let rows = db.get_all(keyword, None, 10, 0).unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].description, "正文 safe fallback");
+                let chunk = db
+                    .prepare_read_chunk(
+                        HistoryQuery {
+                            collection: HistoryCollection::All,
+                            keyword,
+                            category: None,
+                            start_time: None,
+                            end_time: None,
+                            limit: 10,
+                            offset: 0,
+                        },
+                        None,
+                        &db.read_revision().unwrap(),
+                        10,
+                    )
+                    .unwrap();
+                let rows = chunk
+                    .matching_entries(keyword, &crate::cancellation::Cancellation::default())
+                    .unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].description, "正文 safe fallback");
+            }
+            drop(db);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn o06_sync_and_owned_listing_withhold_unbound_missing_or_corrupt_html() {
         for mode in ["unbound", "missing", "corrupt", "missing_src", "comment"] {
             let root = root();
@@ -3745,6 +3986,7 @@ mod tests {
         assert!(old_identity.may_rebind(&db.composite_identity(current).unwrap().unwrap()));
         assert!(db.get_composite(favorite).is_ok());
         assert!(db.get_composite(held).is_ok());
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -3772,6 +4014,7 @@ mod tests {
         let mut b = bundle("url");
         b.representations[1].bytes = b"<img src='https://fixture.invalid/same.png'>".to_vec();
         assert!(identity::portable_dedupe_key(&b).unwrap().is_none());
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -3810,6 +4053,7 @@ mod tests {
             .update_composite_archive_summary(id, &current, "deleted")
             .unwrap());
         assert!(db.composite_identity(id).is_err());
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
     fn derived_bundle(padding: usize) -> PortableBundle {
@@ -3873,6 +4117,7 @@ mod tests {
         let db = HistoryDB::open_at(&root).unwrap();
         assert_eq!(db.get_composite_archived(id).unwrap().unwrap(), derived);
         assert_eq!(db.get_composite(id).unwrap(), base);
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -3954,6 +4199,7 @@ mod tests {
         drop(db);
         let db = HistoryDB::open_at(&root).unwrap();
         assert_eq!(db.get_composite_archived(id).unwrap().unwrap(), archived);
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -4000,6 +4246,7 @@ mod tests {
             .commit_composite_archive(id, &held, &derived)
             .unwrap()
             .is_none());
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4092,6 +4339,7 @@ mod tests {
         let db = HistoryDB::open_at(&root).unwrap();
         assert_eq!(db.get_composite_archived(id).unwrap().unwrap(), derived);
         assert_eq!(db.get_composite(id).unwrap(), base);
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -4134,6 +4382,7 @@ mod tests {
             .commit_composite_archive(id, &committed, &public)
             .is_err());
         assert_eq!(db.get_composite_archived(id).unwrap().unwrap(), derived);
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -4213,6 +4462,7 @@ mod tests {
         assert_eq!(db.composite_identity(id).unwrap().unwrap(), original);
         assert!(db.get_composite_archived(id).unwrap().is_none());
         assert_eq!(payloads(), before_payloads);
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4368,6 +4618,7 @@ mod tests {
             .unwrap();
         assert!(db.get_composite(id).is_err());
         assert!(db.composite_identity(id).is_err());
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -4441,6 +4692,8 @@ mod tests {
             2
         );
         assert_eq!(source.get_all(None, None, 20, 0).unwrap().len(), 2);
+        drop(source);
+        drop(target);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4913,6 +5166,151 @@ mod lifecycle_tests {
 
     fn solid_png(red: u8, green: u8, blue: u8) -> Vec<u8> {
         composite::packed_to_png(1, 1, &[red, green, blue, 255]).unwrap()
+    }
+
+    #[test]
+    fn standalone_portable_and_windows_images_have_image_summaries() {
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let png = solid_png(255, 0, 0);
+        let bundle = PortableBundle {
+            representations: vec![Representation {
+                mime: Mime::Png,
+                bytes: png.clone(),
+            }],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        let native = NativeSnapshot {
+            before: 1,
+            after: 1,
+            items: 1,
+            state: SnapshotState::Stable,
+            formats: vec![NativeFormat {
+                item: 0,
+                name: "PNG".into(),
+                state: FormatState::Captured,
+                bytes: png,
+            }],
+        };
+        for snapshot in [None, Some(&native)] {
+            let id = db.add_composite(&bundle, snapshot, "fixture").unwrap();
+            assert_eq!(
+                db.get_all(None, None, 10, 0)
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .unwrap()
+                    .description,
+                "image/png · 1×1 · 1 frame"
+            );
+
+            // Recreate an older encrypted row with the generic label. Reading
+            // corrects its presentation only; identity and stored bytes survive.
+            let stored: Vec<u8> = db
+                .conn
+                .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+            let mut m = manifest(&stored).unwrap();
+            m.summary = "Rich clipboard content".into();
+            let digest = archive_digest(&m).unwrap();
+            m.identity.as_mut().unwrap().archive_digest = digest.clone();
+            let legacy = crypto::encrypt(&serde_json::to_vec(&m).unwrap()).unwrap();
+            db.conn
+                .execute(
+                    "UPDATE history SET data=?1 WHERE id=?2",
+                    params![legacy, id],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "UPDATE history_composite_identity SET archive_digest=?1 WHERE history_id=?2",
+                    params![digest, id],
+                )
+                .unwrap();
+            let identity = db.composite_identity(id).unwrap();
+            let page = db
+                .prepare_read_chunk(
+                    HistoryQuery {
+                        collection: HistoryCollection::All,
+                        keyword: None,
+                        category: None,
+                        start_time: None,
+                        end_time: None,
+                        limit: 10,
+                        offset: 0,
+                    },
+                    None,
+                    &db.read_revision().unwrap(),
+                    10,
+                )
+                .unwrap();
+            let entries = page
+                .matching_entries(None, &crate::cancellation::Cancellation::default())
+                .unwrap();
+            assert_eq!(
+                entries
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .unwrap()
+                    .description,
+                "image/png · 1×1 · 1 frame"
+            );
+            assert_eq!(
+                db.get_all(None, None, 10, 0)
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .unwrap()
+                    .description,
+                "image/png · 1×1 · 1 frame"
+            );
+            assert_eq!(db.composite_identity(id).unwrap(), identity);
+            let after: Vec<u8> = db
+                .conn
+                .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(after, legacy);
+        }
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mixed_rich_content_is_not_relabelled_as_a_standalone_image() {
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let bundle = PortableBundle {
+            representations: vec![
+                Representation {
+                    mime: Mime::Png,
+                    bytes: solid_png(0, 0, 255),
+                },
+                Representation {
+                    mime: Mime::Html,
+                    bytes: b"<p>caption</p>".to_vec(),
+                },
+            ],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        assert_eq!(portable_image_summary(&bundle), None);
+        let id = db.add_composite(&bundle, None, "fixture").unwrap();
+        let stored: Vec<u8> = db
+            .conn
+            .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        let mut m = manifest(&stored).unwrap();
+        m.summary = "Rich clipboard content".into();
+        m.identity.as_mut().unwrap().archive_digest = archive_digest(&m).unwrap();
+        assert_eq!(
+            summary_bytes(&serde_json::to_vec(&m).unwrap()).unwrap(),
+            b"Rich clipboard content"
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

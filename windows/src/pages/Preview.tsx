@@ -51,6 +51,8 @@ export function Preview() {
   const [renderFailure, setRenderFailure] = useState<PreviewFailure | null>(null);
   const latestRevision = useRef(0);
   const [snapshot, setSnapshot] = useState<PreviewWindowSnapshot | null>(null);
+  const sessionClosedRef = useRef(false);
+  const [sessionClosed, setSessionClosed] = useState(false);
   const restoring = useRef(false);
   const [localRestoring, setLocalRestoring] = useState(false);
   const restoreGeneration = useRef(0);
@@ -77,7 +79,7 @@ export function Preview() {
     const previous = historyVersion.current;
     historyVersion.current = runtime.history_version;
     if (previous !== null && previous !== runtime.history_version) {
-      await refreshDocument(() => !restoring.current && !externalRestoringRef.current);
+      await refreshDocument(() => !sessionClosedRef.current && !restoring.current && !externalRestoringRef.current);
     }
   }, 2500, documentTarget !== null);
 
@@ -87,6 +89,8 @@ export function Preview() {
     // Consume the revision without changing the target. It must not be replayed
     // after a failed restore or Ctrl+Enter success.
     if (restoring.current || externalRestoringRef.current) return;
+    sessionClosedRef.current = false;
+    setSessionClosed(false);
     setRestoreFailed(false);
     setRestoreSucceeded(false);
     setSnapshot(snapshot);
@@ -120,7 +124,7 @@ export function Preview() {
   const frameReady = usePreviewWindowFrame();
 
   useEffect(() => {
-    if (!frameReady || snapshot === null || restoring.current || externalRestoringRef.current) return;
+    if (sessionClosed || !frameReady || snapshot === null || restoring.current || externalRestoringRef.current) return;
     // Only the native controller may show the window, guarded by revision.
     let disposed = false;
     void presentPreviewWindow(snapshot.revision).then(() => {
@@ -129,7 +133,7 @@ export function Preview() {
       console.error("Could not present preview:", error);
     });
     return () => { disposed = true; };
-  }, [externalRestoringRef, frameReady, snapshot]);
+  }, [externalRestoringRef, frameReady, sessionClosed, snapshot]);
   const loading = documentEligible
     ? documentState.status === "idle" || documentState.status === "loading"
     : state.status === "idle" || state.status === "loading";
@@ -143,20 +147,29 @@ export function Preview() {
     setRenderFailure(null);
   }, [loadedEntryId, target]);
 
-  const clearSession = useCallback(() => {
-    setSnapshot(null);
-    setTarget(null);
-    setRenderFailure(null);
+  const retireSession = useCallback(() => {
+    // Keep the last frame until the native host has left the window stack.
+    // Native destruction releases this renderer and its payload immediately.
+    sessionClosedRef.current = true;
+    setSessionClosed(true);
   }, []);
 
   const close = useCallback(() => {
-    if (restoring.current || externalRestoringRef.current) return;
-    latestRevision.current++;
-    clearSession();
-    void closePreviewWindow().catch((error: unknown) => {
-      console.error("Could not hide the preview window:", error);
+    if (sessionClosedRef.current || restoring.current || externalRestoringRef.current) return;
+    const closingRevision = ++latestRevision.current;
+    retireSession();
+    void closePreviewWindow().then(() => {
+      // Keep the rendered content until Windows has hidden the WebView.
+      // A newer open must survive a delayed close acknowledgement.
+      if (latestRevision.current === closingRevision) retireSession();
+    }).catch((error: unknown) => {
+      console.error("Could not close the preview window:", error);
+      if (latestRevision.current === closingRevision) {
+        sessionClosedRef.current = false;
+        setSessionClosed(false);
+      }
     });
-  }, [clearSession, externalRestoringRef]);
+  }, [retireSession, externalRestoringRef]);
 
   useEffect(() => {
     let disposed = false;
@@ -164,7 +177,7 @@ export function Preview() {
     void listen<{ revision: number }>(PREVIEW_CLOSE_EVENT, (event) => {
       if (!disposed && event.payload.revision >= latestRevision.current) {
         latestRevision.current = event.payload.revision;
-        clearSession();
+        retireSession();
       }
     }).then((stop) => {
       if (disposed) stop();
@@ -174,12 +187,12 @@ export function Preview() {
       disposed = true;
       unlisten?.();
     };
-  }, [clearSession]);
+  }, [retireSession]);
 
   const previousId = payload?.batch?.previous_entry_id ?? null;
   const nextId = payload?.batch?.next_entry_id ?? null;
   const navigate = useCallback((entryId: number) => {
-    if (restoring.current || externalRestoringRef.current) return;
+    if (sessionClosedRef.current || restoring.current || externalRestoringRef.current) return;
     const batchId = payload?.batch?.batch_id ?? target?.batchId ?? null;
     setRenderFailure(null);
     setTarget({ entryId, batchId });
@@ -190,7 +203,7 @@ export function Preview() {
   const ready = documentEligible ? documentState.status === "ready" || documentRestoreFallback : state.status === "ready";
   const restoreId = documentRestoreFallback ? target?.entryId ?? null : loadedEntryId;
   const restore = useCallback(async (keepOpen = true) => {
-    if (restoring.current || externalRestoringRef.current || restoreId === null || !ready ||
+    if (sessionClosedRef.current || restoring.current || externalRestoringRef.current || restoreId === null || !ready ||
         restoreId !== target?.entryId || snapshot === null) return;
     restoring.current = true;
     setLocalRestoring(true);
@@ -202,23 +215,26 @@ export function Preview() {
       setRestoreSucceeded(true);
       if (!keepOpen) {
         const owner = snapshot.owner;
-        latestRevision.current++;
-        clearSession();
+        const closingRevision = ++latestRevision.current;
+        retireSession();
         await closePreviewWindow(owner === "favorites" ? "favorites" : "all");
+        if (latestRevision.current === closingRevision) retireSession();
         await (owner === "favorites" ? closeFavoritesWindow() : closeHistoryWindow());
       }
     } catch (error) {
+      sessionClosedRef.current = false;
+      setSessionClosed(false);
       setRestoreFailed(true);
       throw error;
     } finally {
       restoring.current = false;
       setLocalRestoring(false);
     }
-  }, [clearSession, externalRestoringRef, loadedEntryId, ready, restoreId, snapshot, target?.entryId]);
+  }, [retireSession, externalRestoringRef, loadedEntryId, ready, restoreId, snapshot, target?.entryId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || ime.current.blocks(event) || restoring.current || externalRestoringRef.current) return;
+      if (event.defaultPrevented || event.repeat || ime.current.blocks(event) || sessionClosedRef.current || restoring.current || externalRestoringRef.current) return;
       if (isInteractiveTarget(event.target) && event.key !== "Escape") return;
       if (event.key === "Enter" && !event.altKey && !event.metaKey && !event.shiftKey) {
         event.preventDefault();

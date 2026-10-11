@@ -611,6 +611,9 @@ export function History({ collection = "all" }: HistoryProps) {
       setIsPreviewOpen(false);
       previewGeneration.current++;
       previewRequestKey.current = "";
+      if (sessionActive.current) {
+        rootRef.current?.querySelector<HTMLElement>(".history-list")?.focus({ preventScroll: true });
+      }
     });
     return () => { disposed = true; archiveRequestGeneration.current++; stops.forEach((stop) => stop()); };
   }, [focusSearch]);
