@@ -1078,14 +1078,18 @@ pub(crate) fn attribute_span(
     None
 }
 
-fn append_break(text: &mut TextFacts, pending_space: &mut bool) {
+pub(super) fn append_break(text: &mut TextFacts, pending_space: &mut bool) {
     *pending_space = false;
     if !text.text.is_empty() && !text.text.ends_with('\n') && text.text.len() < TEXT_LIMIT {
         text.text.push('\n');
     }
 }
 
-fn append_html_text(value: &str, text: &mut TextFacts, pending_space: &mut bool) -> bool {
+pub(super) fn append_html_text(
+    value: &str,
+    text: &mut TextFacts,
+    pending_space: &mut bool,
+) -> bool {
     let mut unsupported = false;
     let mut cursor = 0usize;
     while cursor < value.len() {

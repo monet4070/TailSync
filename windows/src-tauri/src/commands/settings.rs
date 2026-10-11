@@ -198,7 +198,9 @@ pub(crate) async fn toggle_history_window(app: tauri::AppHandle) -> Result<(), S
         let visible = window.is_visible().map_err(|error| error.to_string())?;
         let focused = window.is_focused().map_err(|error| error.to_string())?;
         if visible && focused {
-            return close_history_window(app).map_err(|error| error.to_string());
+            return close_history_window(app)
+                .await
+                .map_err(|error| error.to_string());
         }
     }
     open_history_window_captured(app)
@@ -314,13 +316,16 @@ pub async fn open_connections_window(app: tauri::AppHandle) -> Result<(), Comman
 }
 
 #[command]
-pub fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
-    if let Some(controller) = app.try_state::<crate::preview_window::PreviewWindowController>() {
+pub async fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if app
+        .try_state::<crate::preview_window::PreviewWindowController>()
+        .is_some()
+    {
         crate::preview_window::close_preview_window(
             app.clone(),
-            controller,
             Some(crate::preview_window::PreviewWindowOwner::History),
-        )?;
+        )
+        .await?;
     }
     crate::window_lifecycle::return_history_foreground(&app);
     crate::window_lifecycle::hide_then_release_window(
@@ -331,13 +336,16 @@ pub fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
 }
 
 #[command]
-pub fn close_favorites_window(app: tauri::AppHandle) -> Result<(), CommandError> {
-    if let Some(controller) = app.try_state::<crate::preview_window::PreviewWindowController>() {
+pub async fn close_favorites_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if app
+        .try_state::<crate::preview_window::PreviewWindowController>()
+        .is_some()
+    {
         crate::preview_window::close_preview_window(
             app.clone(),
-            controller,
             Some(crate::preview_window::PreviewWindowOwner::Favorites),
-        )?;
+        )
+        .await?;
     }
     crate::window_lifecycle::hide_then_release_window(
         app,

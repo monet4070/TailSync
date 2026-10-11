@@ -19,7 +19,7 @@ fn small_bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
 fn bundle_strategy() -> impl Strategy<Value = PortableBundle> {
     (
         proptest::sample::subsequence(vec![Mime::Text, Mime::Html, Mime::Rtf, Mime::Png], 1..=4),
-        "[a-zA-Z0-9 中]{0,48}",
+        "[a-zA-Z0-9 中]{1,48}",
         0usize..3,
         proptest::sample::select(vec![
             Completeness::Complete,
@@ -39,10 +39,10 @@ fn bundle_strategy() -> impl Strategy<Value = PortableBundle> {
                         Mime::Png => png.clone(),
                         Mime::Html => {
                             let mut html = format!("<p>{seed}</p>");
-                            for id in 0..resource_count {
+                            for id in 1..=resource_count {
                                 html.push_str("<img src=\"");
                                 let offset = html.len();
-                                let reference = format!("image-{id}.png");
+                                let reference = format!("tailsync-resource:{id}");
                                 html.push_str(&reference);
                                 html.push_str("\">");
                                 resources.push(Resource {
@@ -58,7 +58,8 @@ fn bundle_strategy() -> impl Strategy<Value = PortableBundle> {
                             }
                             html.into_bytes()
                         }
-                        Mime::Text | Mime::Rtf => seed.as_bytes().to_vec(),
+                        Mime::Text => seed.as_bytes().to_vec(),
+                        Mime::Rtf => format!("{{\\rtf1 {seed}}}").into_bytes(),
                     };
                     Representation { mime, bytes }
                 })

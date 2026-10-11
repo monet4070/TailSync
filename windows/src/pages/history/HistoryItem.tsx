@@ -1,9 +1,11 @@
 import { useId, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
-  ArrowLeftRight,
+  ChevronDown,
+  CircleEllipsis,
   FileText,
   HelpCircle,
+  Info,
   Star,
 } from "lucide-react";
 import { useLongPressFavorite } from "../../hooks/useLongPressFavorite";
@@ -23,6 +25,7 @@ import {
   showsMaintenanceActions,
 } from "./historyRowActions";
 import { LazyThumbnail } from "./HistoryThumbnail";
+import { HistoryRowPopover } from "./HistoryRowPopover";
 import type { HistoryCategory, HistoryEntry } from "../../tailsyncClient";
 import { thumbnailKeyForEntry, type ThumbnailData } from "../../hooks/useThumbnailCache";
 import type { Translate } from "./HistoryViewTypes";
@@ -90,7 +93,9 @@ export function HistoryItem({
   const diagnosticsToggle = useRef<HTMLButtonElement>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const advancedId = useId();
-  const advancedToggle = useRef<HTMLButtonElement>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsId = useId();
+  const actionsToggle = useRef<HTMLButtonElement>(null);
   const longPress = useLongPressFavorite(
     () => void handleFavoriteChange(entry),
     true,
@@ -115,10 +120,13 @@ export function HistoryItem({
       })
     : false;
 
+  const showsActions = restoreFormats.length > 0 || maintenanceActions || advancedActions;
+
   return (
     <article
       className={[
         "history-item",
+        entry.composite && "is-composite",
         isNew && "is-new",
         isSelected && "restored",
         isFocused && "focused",
@@ -196,8 +204,7 @@ export function HistoryItem({
           </span>
           <span className="item-time">{formatTime(entry.timestamp)}</span>
           <span className="item-peer">
-            <ArrowLeftRight className="item-peer-icon" size={11} strokeWidth={1.8} aria-hidden="true" />
-            {entry.source_peer}
+            {entry.source_peer === "self" ? t("history.peer.self") : entry.source_peer}
           </span>
         </div>
         <div className="item-desc" title={entry.description}>
@@ -206,70 +213,68 @@ export function HistoryItem({
         <div className="item-footer">
           <span className="item-size">{formatSize(entry.size_bytes)}</span>
           {statusLabel && <span className="item-composite-status">{statusLabel}</span>}
-          {restoreFormats.map(format => (
-            <button key={format} type="button" className="item-copy-format"
-              onClick={() => void handleRestore(entry.id, format)}
-              aria-label={t(`history.composite.copy.${format}`)}>
-              {t(`history.composite.copy.${format}`)}
-            </button>
-          ))}
-          {maintenanceActions && (
-            <button type="button" className="item-copy-format"
-              onClick={() => void handleArchiveImages(entry.id)}
-              aria-label={t("history.composite.archiveImages")}
-              title={t("history.composite.archiveImagesHint")}>
-              {t("history.composite.archiveImages")}
-            </button>
-          )}
-          {advancedActions && (
-            <button type="button" className="item-copy-format item-advanced-toggle"
-              ref={advancedToggle}
-              id={`${advancedId}-toggle`}
-              aria-expanded={advancedOpen}
-              aria-controls={advancedOpen ? advancedId : undefined}
-              aria-label={t("history.composite.advanced")}
-              onContextMenu={(event) => event.stopPropagation()}
-              onClick={() => setAdvancedOpen(open => !open)}>
-              {t("history.composite.advanced")}
-            </button>
-          )}
+          <span className="item-row-actions">
           {entry.composite && (
-            <button type="button" className="item-copy-format item-details-toggle"
+            <button type="button" className="item-action-button item-details-toggle"
               ref={diagnosticsToggle}
               id={`${diagnosticsId}-toggle`}
               aria-expanded={diagnosticsOpen}
               aria-controls={diagnosticsOpen ? diagnosticsId : undefined}
               aria-label={t("history.composite.details")}
+              title={t("history.composite.details")}
               onContextMenu={(event) => event.stopPropagation()}
-              onClick={() => setDiagnosticsOpen(open => !open)}>
-              {t("history.composite.details")}
+              onClick={() => { setActionsOpen(false); setDiagnosticsOpen(open => !open); }}>
+              <Info size={17} strokeWidth={1.8} aria-hidden="true" />
             </button>
           )}
+          {showsActions && (
+            <button type="button" className="item-action-button item-more-toggle"
+              ref={actionsToggle}
+              aria-expanded={actionsOpen}
+              aria-controls={actionsOpen ? actionsId : undefined}
+              aria-label={t("history.composite.moreActions")}
+              title={t("history.composite.moreActions")}
+              onContextMenu={event => event.stopPropagation()}
+              onClick={() => { setDiagnosticsOpen(false); setAdvancedOpen(false); setActionsOpen(open => !open); }}>
+              <CircleEllipsis size={17} strokeWidth={1.8} aria-hidden="true" />
+              <ChevronDown size={11} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+          )}
+          </span>
           <span className="favorite-stamp" aria-hidden="true">
             <Star size={13} fill="currentColor" />
           </span>
         </div>
-        {advancedActions && advancedOpen && (
-          <div className="item-advanced-actions"
-            id={advancedId}
-            tabIndex={-1}
-            role="group"
-            aria-label={t("history.composite.advanced")}
-            onClick={(event) => event.stopPropagation()}
-            onDoubleClick={(event) => event.stopPropagation()}
-            onContextMenu={(event) => event.stopPropagation()}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              event.currentTarget.focus({ preventScroll: true });
-            }}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setAdvancedOpen(false);
-                advancedToggle.current?.focus({ preventScroll: true });
-              }
-            }}>
+        {showsActions && actionsOpen && (
+          <HistoryRowPopover id={actionsId} anchor={actionsToggle} kind="actions"
+            label={t("history.composite.moreActions")} onDismiss={() => { setActionsOpen(false); setAdvancedOpen(false); }}>
+            {restoreFormats.map(format => (
+              <button key={format} type="button" className="item-copy-format"
+                onClick={() => { setActionsOpen(false); void handleRestore(entry.id, format); }}
+                aria-label={t(`history.composite.copy.${format}`)}>
+                {t(`history.composite.copy.${format}`)}
+              </button>
+            ))}
+            {maintenanceActions && (
+              <button type="button" className="item-copy-format"
+                onClick={() => { setActionsOpen(false); void handleArchiveImages(entry.id); }}
+                aria-label={t("history.composite.archiveImages")}
+                title={t("history.composite.archiveImagesHint")}>
+                {t("history.composite.archiveImages")}
+              </button>
+            )}
+            {advancedActions && (
+              <button type="button" className="item-copy-format item-advanced-toggle"
+                id={`${advancedId}-toggle`}
+                aria-expanded={advancedOpen}
+                aria-controls={advancedOpen ? advancedId : undefined}
+                aria-label={t("history.composite.advanced")}
+                onClick={() => setAdvancedOpen(open => !open)}>
+                {t("history.composite.advanced")}
+                <ChevronDown size={13} aria-hidden="true" />
+              </button>
+            )}
+            {advancedActions && advancedOpen && <div className="item-advanced-actions" id={advancedId}>
             {maintenanceActions && <button type="button" className="item-copy-format"
               onClick={() => void handleAuthorizeSource(entry.id)}
               aria-label={t("history.composite.authorizeSource")}>
@@ -287,35 +292,23 @@ export function HistoryItem({
                 {t("history.composite.revokeSource")}
               </button>
             )}
-          </div>
+            </div>}
+          </HistoryRowPopover>
         )}
         {entry.composite && diagnosticsOpen && (
-          <dl className="item-diagnostics"
-            id={diagnosticsId}
-            aria-labelledby={`${diagnosticsId}-toggle`}
-            tabIndex={0}
-            onClick={(event) => event.stopPropagation()}
-            onDoubleClick={(event) => event.stopPropagation()}
-            onContextMenu={(event) => event.stopPropagation()}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              event.currentTarget.focus({ preventScroll: true });
-            }}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setDiagnosticsOpen(false);
-                diagnosticsToggle.current?.focus({ preventScroll: true });
-              }
-            }}>
+          <HistoryRowPopover id={diagnosticsId} anchor={diagnosticsToggle} kind="details"
+            label={t("history.composite.details")} labelledBy={`${diagnosticsId}-toggle`}
+            onDismiss={() => setDiagnosticsOpen(false)}>
+            <div className="item-diagnostics-title">{t("history.composite.details")}</div>
+            <dl className="item-diagnostics" tabIndex={0}>
             {rowDiagnostics(entry.composite, t).map(row => (
               <div className="item-diagnostics-row" key={row.label}>
                 <dt>{row.label}</dt>
                 <dd>{row.value}</dd>
               </div>
             ))}
-          </dl>
+            </dl>
+          </HistoryRowPopover>
         )}
       </div>
     </article>

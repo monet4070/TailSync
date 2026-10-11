@@ -99,6 +99,11 @@ function completeLongPress(row: HTMLElement, pointerId: number) {
   fireEvent.pointerUp(row, { pointerId });
 }
 
+function openRowActions() {
+  const toggle = screen.getByRole("button", { name: "history.composite.moreActions" });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+}
+
 describe("History item actions", () => {
   afterEach(() => vi.useRealTimers());
 
@@ -272,6 +277,7 @@ describe("History item actions", () => {
     expect(document.querySelectorAll(".history-item")).toHaveLength(1);
     expect(screen.getByText(/history.composite.resourcesMissing/)).toBeInTheDocument();
     expect(screen.queryByText(/history\.composite\.formats/)).toBeNull();
+    openRowActions();
     expect(
       screen.queryByRole("button", { name: "history.composite.copy.text" })
     ).toBeInTheDocument();
@@ -282,6 +288,7 @@ describe("History item actions", () => {
       screen.getByRole("button", { name: "history.composite.archiveImages" })
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "history.composite.authorizeSource" })).toBeNull();
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
     expect(
       screen.getByRole("button", { name: "history.composite.authorizeSource" })
@@ -305,6 +312,7 @@ describe("History item actions", () => {
     render(<History />);
     await screen.findByText(entry.description);
     expect(screen.queryByRole("button", { name: "history.composite.copy.text" })).toBeNull();
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.copy.png" }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: entry.id, restoreFormat: "png" }));
   });
@@ -394,6 +402,7 @@ describe("History item actions", () => {
     render(<History />);
     await screen.findByText(entry.description);
     expect(invokeMock.mock.calls.some(([command]) => command === "archive_entry_images")).toBe(false);
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.archiveImages" }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("archive_entry_images", { id: entry.id }));
     expect(await screen.findByText(/#2: history.composite.archiveInvalid/)).toBeInTheDocument();
@@ -416,6 +425,7 @@ describe("History item actions", () => {
     });
     render(<History />);
     await screen.findByText(entry.description);
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.archiveImages" }));
     await waitFor(() => expect(finish).toBeTypeOf("function"));
     await act(async () => onCloseRequestedMock.mock.calls[0][0]({ preventDefault: vi.fn() }));
@@ -447,6 +457,7 @@ describe("History item actions", () => {
     render(<History />);
     await screen.findByText(entry.description);
     expect(invokeMock.mock.calls.some(([command]) => command === "source_context_grant_create")).toBe(false);
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
     fireEvent.click(screen.getByRole("button", { name: "history.composite.authorizeSource" }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("source_context_grant_create", { id: entry.id }));
@@ -471,6 +482,7 @@ describe("History item actions", () => {
     (dialog === "save" ? saveMock : openMock).mockReturnValue(pending);
     render(<History />);
     await screen.findByText(entry.description);
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
     fireEvent.click(screen.getByRole("button", { name: dialog === "save" ? "history.composite.authorizeSource" : "history.composite.importSourcePacket" }));
     await act(async () => onCloseRequestedMock.mock.calls[0][0]({ preventDefault: vi.fn() }));
@@ -496,6 +508,7 @@ describe("History item actions", () => {
     saveMock.mockResolvedValue("/tmp/ticket.json");
     render(<History />);
     await screen.findByText(entry.description);
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
     fireEvent.click(screen.getByRole("button", { name: "history.composite.authorizeSource" }));
     await waitFor(() => expect(finish).toBeTypeOf("function"));
@@ -525,6 +538,7 @@ describe("History item actions", () => {
     openMock.mockResolvedValue("/tmp/packet.json");
     render(<History />);
     await screen.findByText(entry.description);
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
     fireEvent.click(screen.getByRole("button", { name: "history.composite.importSourcePacket" }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("source_context_import", { id: entry.id, path: "/tmp/packet.json" }));
@@ -1917,10 +1931,13 @@ describe("History item actions", () => {
     fireEvent.keyDown(document.activeElement!, { key: "Tab" });
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_preview_window", { request: { entryId: 8, batchId: null, owner: "history", takeFocus: true } }));
     await act(async () => historyListeners.get("tailsync://preview-close")?.({ payload: {} }));
+    expect(document.querySelector(".history-list")).toHaveFocus();
     invokeMock.mockClear();
     fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
     await act(async () => {});
     expect(invokeMock).not.toHaveBeenCalledWith("open_preview_window", expect.anything());
+    fireEvent.keyDown(document.activeElement!, { key: " ", code: "Space" });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_preview_window", { request: { entryId: 7, batchId: null, owner: "history", takeFocus: false } }));
   });
 
   it("late preview completion does not reopen after Escape, and reopening history resets search focus", async () => {

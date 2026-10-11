@@ -32,6 +32,7 @@ pub(crate) trait WindowActivation {
     fn unminimize_window(&self) -> tauri::Result<()>;
     fn show_window(&self) -> tauri::Result<()>;
     fn focus_window(&self) -> tauri::Result<()>;
+    fn focus_webview(&self) -> tauri::Result<()>;
 }
 
 impl<R: tauri::Runtime> WindowActivation for tauri::WebviewWindow<R> {
@@ -54,12 +55,24 @@ impl<R: tauri::Runtime> WindowActivation for tauri::WebviewWindow<R> {
     }
 
     fn show_window(&self) -> tauri::Result<()> {
+        // WebView2 owns a separate surface. Restore it before the host window
+        // after an explicit surface hide, including a quick reopen while idle.
+        self.as_ref().show()?;
         self.show()
     }
 
     fn focus_window(&self) -> tauri::Result<()> {
         self.set_focus()
     }
+
+    fn focus_webview(&self) -> tauri::Result<()> {
+        self.as_ref().set_focus()
+    }
+}
+
+pub(crate) fn focus_window_content<W: WindowActivation>(window: &W) -> Result<(), String> {
+    window.focus_window().map_err(|error| error.to_string())?;
+    window.focus_webview().map_err(|error| error.to_string())
 }
 
 pub(crate) fn restore_and_focus_window<W: WindowActivation>(window: &W) -> Result<(), String> {
@@ -68,7 +81,7 @@ pub(crate) fn restore_and_focus_window<W: WindowActivation>(window: &W) -> Resul
         .unminimize_window()
         .map_err(|error| error.to_string())?;
     window.show_window().map_err(|error| error.to_string())?;
-    window.focus_window().map_err(|error| error.to_string())?;
+    focus_window_content(window)?;
     Ok(())
 }
 
@@ -278,6 +291,7 @@ pub fn return_history_foreground(app: &AppHandle) {
 }
 
 pub fn show_without_activation(window: &tauri::WebviewWindow) -> Result<(), String> {
+    window.as_ref().show().map_err(|error| error.to_string())?;
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
@@ -298,6 +312,45 @@ pub fn mark_window_open(app: &AppHandle, label: &'static str) {
     }
 }
 
+/// Preview has a close/recreate lifecycle, separate from the idle-cached
+/// history/settings windows. Hide its native host before touching WebView2.
+pub(crate) fn withdraw_and_destroy_preview(window: &tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    withdraw_native_preview(windows::Win32::Foundation::HWND(
+        window.hwnd().map_err(|error| error.to_string())?.0,
+    ))?;
+    // Keep Tauri/Tao's visibility state in sync. Do not hide just the WebView:
+    // that leaves a transparent HWND in the window stack until destruction.
+    window.hide().map_err(|error| error.to_string())?;
+    window.destroy().map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn withdraw_native_preview(hwnd: windows::Win32::Foundation::HWND) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IsWindowVisible, SetWindowPos, ShowWindow, HWND_NOTOPMOST, SWP_HIDEWINDOW, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
+    };
+    unsafe {
+        // SW_HIDE returns the previous visibility, not an error code.
+        let _ = ShowWindow(hwnd, SW_HIDE);
+        SetWindowPos(
+            hwnd,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        )
+        .map_err(|error| error.to_string())?;
+        if IsWindowVisible(hwnd).as_bool() {
+            return Err("Preview native host remained visible after withdrawal".to_string());
+        }
+    }
+    Ok(())
+}
+
 pub fn hide_then_release_window(app: AppHandle, label: &'static str) -> Result<(), String> {
     let Some(window) = app.get_webview_window(label) else {
         return Ok(());
@@ -305,22 +358,36 @@ pub fn hide_then_release_window(app: AppHandle, label: &'static str) -> Result<(
     let controller = app
         .try_state::<TransientWindowController>()
         .ok_or_else(|| "Transient window controller is unavailable".to_string())?;
-    let ticket =
-        controller.begin_release(label, || window.hide().map_err(|error| error.to_string()))?;
+    let ticket = controller.begin_release(label, || {
+        // Hiding the HWND alone can leave the transparent WebView2 surface
+        // drawn until the five-second idle destruction. Hide both surfaces.
+        window.as_ref().hide().map_err(|error| error.to_string())?;
+        if let Err(error) = window.hide() {
+            let _ = window.as_ref().show();
+            return Err(error.to_string());
+        }
+        Ok(())
+    })?;
 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(TRANSIENT_WINDOW_IDLE_RELEASE).await;
-        let Some(controller) = app.try_state::<TransientWindowController>() else {
-            return;
-        };
-        let result = controller.release_if_current(ticket, || {
-            app.get_webview_window(label)
-                .map(|window| window.destroy().map_err(|error| error.to_string()))
-                .unwrap_or(Ok(()))
+        let ui_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(controller) = ui_app.try_state::<TransientWindowController>() else {
+                return;
+            };
+            // Validate and destroy in the same UI turn: an already queued
+            // destroy must never tear down a window that just reopened.
+            let result = controller.release_if_current(ticket, || {
+                ui_app
+                    .get_webview_window(label)
+                    .map(|window| window.destroy().map_err(|error| error.to_string()))
+                    .unwrap_or(Ok(()))
+            });
+            if let Some(Err(error)) = result {
+                log::debug!("Could not release idle {label} window: {error}");
+            }
         });
-        if let Some(Err(error)) = result {
-            log::debug!("Could not release idle {label} window: {error}");
-        }
     });
     Ok(())
 }
@@ -354,6 +421,11 @@ mod tests {
             self.calls.lock().unwrap().push("focus");
             Ok(())
         }
+
+        fn focus_webview(&self) -> tauri::Result<()> {
+            self.calls.lock().unwrap().push("webview-focus");
+            Ok(())
+        }
     }
 
     #[test]
@@ -375,7 +447,63 @@ mod tests {
 
         assert_eq!(
             *window.calls.lock().unwrap(),
-            vec!["desktop", "unminimize", "show", "focus"]
+            vec!["desktop", "unminimize", "show", "focus", "webview-focus"]
+        );
+    }
+
+    #[test]
+    fn returning_to_history_focuses_native_host_then_keyboard_content() {
+        let window = FakeWindow::default();
+        focus_window_content(&window).unwrap();
+        assert_eq!(
+            *window.calls.lock().unwrap(),
+            vec!["focus", "webview-focus"]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn withdrawing_preview_removes_visible_topmost_native_host() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GetWindowLongPtrW, IsWindowVisible, GWL_EXSTYLE,
+            WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+        };
+        struct OwnedWindow(windows::Win32::Foundation::HWND);
+        impl Drop for OwnedWindow {
+            fn drop(&mut self) {
+                let _ = unsafe { DestroyWindow(self.0) };
+            }
+        }
+        // An actual Win32 host validates visibility/hit-test exclusion and
+        // topmost removal, rather than just counting mocked hide calls.
+        let host = OwnedWindow(unsafe {
+            CreateWindowExW(
+                WS_EX_TOPMOST,
+                w!("STATIC"),
+                w!("TailSync preview lifecycle test"),
+                WS_POPUP | WS_VISIBLE,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("create native preview fixture")
+        });
+        assert!(unsafe { IsWindowVisible(host.0) }.as_bool());
+        assert_ne!(
+            unsafe { GetWindowLongPtrW(host.0, GWL_EXSTYLE) } & WS_EX_TOPMOST.0 as isize,
+            0
+        );
+        withdraw_native_preview(host.0).unwrap();
+        assert!(!unsafe { IsWindowVisible(host.0) }.as_bool());
+        assert_eq!(
+            unsafe { GetWindowLongPtrW(host.0, GWL_EXSTYLE) } & WS_EX_TOPMOST.0 as isize,
+            0
         );
     }
 

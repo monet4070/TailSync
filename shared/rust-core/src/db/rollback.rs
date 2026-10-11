@@ -453,7 +453,12 @@ pub(super) fn prepare_for(
         );
     }
     crate::private_fs::enforce_private_database(&temporary)?;
-    std::fs::File::open(&temporary)?.sync_all()?;
+    // SQLite has closed its snapshot handle. Windows FlushFileBuffers needs
+    // write access even when all bytes were already written by SQLite.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&temporary)?
+        .sync_all()?;
     std::fs::rename(&temporary, &snapshot)?;
 
     // 2) Independent copies of every live payload.

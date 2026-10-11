@@ -336,7 +336,7 @@ fn publish(input: &[u8]) -> Result<PublishReceipt, String> {
         registered("org.tailsync.clipboard-source")?,
         Buffer::new(&token)?,
     ));
-    let _clipboard = match Clipboard::open() {
+    let clipboard = match Clipboard::open() {
         Ok(c) => c,
         Err(_) => {
             return Ok(PublishReceipt {
@@ -369,6 +369,10 @@ fn publish(input: &[u8]) -> Result<PublishReceipt, String> {
         }
         std::mem::forget(buffer);
     }
+    // CloseClipboard finalizes the write and Windows may synthesize formats or
+    // advance the sequence again when the short-lived owner is destroyed.
+    // The receipt must identify the state a separate monitor can actually read.
+    drop(clipboard);
     let revision = unsafe { GetClipboardSequenceNumber() } as i64;
     if revision == 0 {
         state = PublishState::Partial;
@@ -382,6 +386,9 @@ fn publish(input: &[u8]) -> Result<PublishReceipt, String> {
 pub fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let out = match args.as_slice() {
+        // Startup probes must advertise the wire protocol without opening or
+        // reading the clipboard.
+        [s] if s == "--self-check" => b"CWH1 protocol=2 analyze=1\n".to_vec(),
         [s] if s == "--read-snapshot" => snapshot()?.encode().map_err(|e| e.to_string())?,
         [s] if s == "--write-snapshot" => {
             let mut input = vec![];

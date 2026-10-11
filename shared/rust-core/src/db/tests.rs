@@ -3324,13 +3324,17 @@ fn batch_rollback_preserves_favorited_payloads_with_case_aliases() {
         };
         let error = db
             .add_file_batch("rollback", &files, "self", false)
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
         if fail_sql {
-            assert!(error.contains("injected batch write failure"), "{error}");
+            assert!(
+                error.to_string().contains("injected batch write failure"),
+                "{error}"
+            );
         } else {
             assert!(
-                error.contains("No such file") || error.contains("cannot find"),
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| { error.kind() == std::io::ErrorKind::NotFound }),
                 "{error}"
             );
         }
@@ -3551,6 +3555,7 @@ fn degraded_history_is_migrated_when_storage_recovers() {
             "missing {expected} in {texts:?}"
         );
     }
+    drop(degraded);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -3576,6 +3581,8 @@ fn degraded_history_migration_is_idempotent_by_content_hash() {
             .unwrap(),
         1
     );
+    drop(persistent);
+    drop(degraded);
     std::fs::remove_dir_all(root).unwrap();
 }
 

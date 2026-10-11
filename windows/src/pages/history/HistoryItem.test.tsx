@@ -63,9 +63,14 @@ function fixture(nativeOnly = false, canRevokeSource = false) {
   return { callbacks, props };
 }
 
-function openDetails(container: HTMLElement) {
+function openRowActions() {
+  const toggle = screen.getByRole("button", { name: "history.composite.moreActions" });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+}
+
+function openDetails() {
   fireEvent.click(screen.getByRole("button", { name: "history.composite.details" }));
-  const value = container.querySelector<HTMLElement>(".item-diagnostics dd");
+  const value = document.querySelector<HTMLElement>(".item-diagnostics dd");
   expect(value).not.toBeNull();
   return value!;
 }
@@ -80,25 +85,42 @@ describe("HistoryItem readonly diagnostics", () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  it("dismisses keyboard-opened actions on Escape without forwarding it to the history window", () => {
+    const { props } = fixture();
+    render(<HistoryItem {...props} />);
+    const historyKeyDown = vi.fn();
+    document.addEventListener("keydown", historyKeyDown);
+    try {
+      openRowActions();
+      const toggle = screen.getByRole("button", { name: "history.composite.moreActions" });
+      fireEvent.keyDown(toggle, { key: "Escape" });
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByRole("group", { name: "history.composite.moreActions" })).toBeNull();
+      expect(historyKeyDown).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", historyKeyDown);
+    }
+  });
+
   it("does not restore the row on double-clicking readonly detail content", () => {
     const { callbacks, props } = fixture();
-    const { container } = render(<HistoryItem {...props} />);
-    fireEvent.doubleClick(openDetails(container));
+    render(<HistoryItem {...props} />);
+    fireEvent.doubleClick(openDetails());
     expect(callbacks.handleRestore).not.toHaveBeenCalled();
   });
 
   it("does not delete the row on a context menu inside readonly details", () => {
     const { callbacks, props } = fixture();
-    const { container } = render(<HistoryItem {...props} />);
-    fireEvent.contextMenu(openDetails(container));
+    render(<HistoryItem {...props} />);
+    fireEvent.contextMenu(openDetails());
     expect(callbacks.handleDelete).not.toHaveBeenCalled();
   });
 
   it("does not favorite the row while selecting or holding readonly detail text", () => {
     vi.useFakeTimers();
     const { callbacks, props } = fixture();
-    const { container } = render(<HistoryItem {...props} />);
-    const value = openDetails(container);
+    render(<HistoryItem {...props} />);
+    const value = openDetails();
     const pointerDown = new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 20 });
     Object.defineProperty(pointerDown, "pointerId", { value: 19 });
     fireEvent(value, pointerDown);
@@ -112,6 +134,7 @@ describe("HistoryItem readonly diagnostics", () => {
   it("keeps a live revoke action reachable after archival has become complete", () => {
     const { callbacks, props } = fixture(true, true);
     render(<HistoryItem {...props} />);
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
     fireEvent.click(screen.getByRole("button", { name: "history.composite.revokeSource" }));
     expect(callbacks.handleRevokeSource).toHaveBeenCalledTimes(1);
@@ -121,6 +144,7 @@ describe("HistoryItem readonly diagnostics", () => {
   it("keeps the ordinary row whole restore while exposing the text backup entry", () => {
     const { callbacks, props } = fixture();
     const { container } = render(<HistoryItem {...props} />);
+    openRowActions();
     expect(screen.getByRole("button", { name: "history.composite.copy.text" })).toBeTruthy();
     expect(container.querySelector(".item-diagnostics")).toBeNull();
     fireEvent.doubleClick(screen.getByRole("article"));
@@ -134,6 +158,7 @@ describe("HistoryItem readonly diagnostics", () => {
       composite: { ...props.entry.composite, completeness: "external_references" as const },
     };
     render(<HistoryItem {...props} entry={entry} />);
+    openRowActions();
     const toggle = screen.getByRole("button", { name: "history.composite.advanced" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
@@ -147,6 +172,7 @@ describe("HistoryItem readonly diagnostics", () => {
   it("a live revoke does not reopen source authorization for a complete item", () => {
     const { props } = fixture(false, true);
     render(<HistoryItem {...props} />);
+    openRowActions();
     fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
     expect(screen.getByRole("button", { name: "history.composite.revokeSource" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "history.composite.authorizeSource" })).toBeNull();
@@ -179,6 +205,7 @@ describe("HistoryItem readonly diagnostics", () => {
       composite: { ...props.entry.composite, completeness: "external_references" as const },
     };
     render(<HistoryItem {...props} entry={entry} />);
+    openRowActions();
     const archive = screen.getByRole("button", { name: "history.composite.archiveImages" });
     expect(archive.getAttribute("title")).toBe("history.composite.archiveImagesHint");
   });
@@ -191,10 +218,10 @@ describe("HistoryItem readonly diagnostics", () => {
 
   it("owns detail keyboard events and returns focus on Escape", () => {
     const { callbacks, props } = fixture();
-    const { container } = render(<HistoryItem {...props} />);
+    render(<HistoryItem {...props} />);
     const toggle = screen.getByRole("button", { name: "history.composite.details" });
-    const value = openDetails(container);
-    const panel = value.closest<HTMLElement>(".item-diagnostics")!;
+    const value = openDetails();
+    const panel = value.closest<HTMLElement>(".history-row-popover")!;
     const observer = vi.fn();
     document.addEventListener("keydown", observer);
     try {
@@ -205,7 +232,7 @@ describe("HistoryItem readonly diagnostics", () => {
       expect(callbacks.handleRestore).not.toHaveBeenCalled();
       expect(toggle.getAttribute("aria-controls")).toBe(panel.id);
       fireEvent.keyDown(value, { key: "Escape" });
-      expect(container.querySelector(".item-diagnostics")).toBeNull();
+      expect(document.querySelector(".item-diagnostics")).toBeNull();
       expect(document.activeElement).toBe(toggle);
       expect(observer).not.toHaveBeenCalled();
     } finally {
@@ -224,6 +251,56 @@ describe("HistoryItem readonly diagnostics", () => {
     expect(toggles[1].getAttribute("aria-expanded")).toBe("false");
     const panel = document.getElementById(toggles[0].getAttribute("aria-controls")!);
     expect(panel?.getAttribute("aria-labelledby")).toBe(toggles[0].id);
+  });
+
+  it("renders details outside the row and dismisses when the list scrolls", () => {
+    const { props } = fixture();
+    const { container } = render(<div className="app"><div className="history-list"><HistoryItem {...props} /></div></div>);
+    openDetails();
+    const row = screen.getByRole("article");
+    const panel = document.querySelector(".history-row-popover")!;
+    expect(row.contains(panel)).toBe(false);
+    expect(container.querySelector(".app")?.contains(panel)).toBe(true);
+    fireEvent.scroll(container.querySelector(".history-list")!);
+    expect(document.querySelector(".history-row-popover")).toBeNull();
+  });
+
+  it("keeps scrolling inside details open and dismisses on an outside pointer press", () => {
+    const { props, callbacks } = fixture();
+    render(<HistoryItem {...props} />);
+    const value = openDetails();
+    const panel = value.closest<HTMLElement>(".history-row-popover")!;
+    fireEvent.scroll(panel);
+    expect(document.querySelector(".history-row-popover")).toBe(panel);
+    fireEvent.pointerDown(document.body);
+    expect(document.querySelector(".history-row-popover")).toBeNull();
+    expect(callbacks.handleDelete).not.toHaveBeenCalled();
+    expect(callbacks.handleRestore).not.toHaveBeenCalled();
+  });
+
+  it("keeps only one row popover open across keyboard activation of different rows", () => {
+    const { props } = fixture();
+    render(<><HistoryItem {...props} /><HistoryItem {...props} entry={{ ...props.entry, id: 42 }} /></>);
+    const toggles = screen.getAllByRole("button", { name: "history.composite.details" });
+    fireEvent.click(toggles[0]);
+    fireEvent.click(toggles[1]);
+    expect(document.querySelectorAll(".history-row-popover")).toHaveLength(1);
+    expect(toggles[0].getAttribute("aria-expanded")).toBe("false");
+    expect(toggles[1].getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("navigates action buttons without restoring the row and returns focus on Escape", () => {
+    const { props, callbacks } = fixture(false, true);
+    render(<HistoryItem {...props} />);
+    openRowActions();
+    const panel = screen.getByRole("group", { name: "history.composite.moreActions" });
+    fireEvent.keyDown(panel, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "history.composite.advanced" }));
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "history.composite.copy.text" }));
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "history.composite.moreActions" }));
+    expect(callbacks.handleRestore).not.toHaveBeenCalled();
   });
 
 });
