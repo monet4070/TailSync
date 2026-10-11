@@ -1,16 +1,7 @@
-pub const CLASSIFIER_VERSION: i64 = 4;
+pub const CLASSIFIER_VERSION: i64 = 5;
 pub const MAX_SAMPLE_BYTES: usize = 16 * 1024;
 
-pub const CATEGORIES: [&str; 8] = [
-    "text",
-    "website",
-    "code",
-    "command",
-    "structured_data",
-    "path",
-    "image",
-    "file",
-];
+pub const CATEGORIES: [&str; 6] = ["text", "website", "code", "path", "image", "file"];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Classification {
@@ -48,5 +39,13 @@ impl Classification {
 }
 
 pub fn is_known_category(category: &str) -> bool {
-    CATEGORIES.contains(&category)
+    CATEGORIES.contains(&canonical_category(category))
+}
+
+/// Accept legacy names from saved records and older clients as the same code group.
+pub fn canonical_category(category: &str) -> &str {
+    match category {
+        "command" | "structured_data" => "code",
+        _ => category,
+    }
 }

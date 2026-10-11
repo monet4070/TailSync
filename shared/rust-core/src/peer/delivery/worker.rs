@@ -410,7 +410,7 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                     }
                 }
                 Err(error) if !error.is_retryable() => {
-                    record_permanent_delivery_warning(&hostname, &error);
+                    record_permanent_delivery_warning(&hostname, frame.queued.command(), &error);
                     log::warn!("Dropping event rejected by remote peer: {error}");
                     log::debug!("Rejected event route: {target}");
                     let window_failed = frame.queued.file_window.is_some();
@@ -529,7 +529,11 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                             }
                         }
                         Err(error) if !error.is_retryable() => {
-                            record_permanent_delivery_warning(&hostname, &error);
+                            record_permanent_delivery_warning(
+                                &hostname,
+                                frame.queued.command(),
+                                &error,
+                            );
                             log::warn!("Dropping event rejected by remote peer: {error}");
                             log::debug!("Rejected event route: {target}");
                             let window_failed = frame.queued.file_window.is_some();

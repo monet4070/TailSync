@@ -48,6 +48,11 @@ pub struct Settings {
     /// still pinned by public key so trusted peers can safely change routes.
     #[serde(default)]
     pub paired_peer_endpoints: std::collections::HashMap<String, String>,
+    /// Whether newly copied rich content on this device automatically downloads
+    /// and stores referenced public network images. Disabled by default and
+    /// never triggered by remote peers or existing history entries.
+    #[serde(default)]
+    pub auto_save_network_images: bool,
 }
 
 /// Settings validation failures (T353 migration). Display strings reach the
@@ -151,6 +156,7 @@ impl Default for Settings {
             trusted_peer_keys: std::collections::HashMap::new(),
             trusted_peer_addresses: std::collections::HashMap::new(),
             paired_peer_endpoints: std::collections::HashMap::new(),
+            auto_save_network_images: false,
         }
     }
 }
@@ -554,6 +560,8 @@ pub async fn apply_settings_update(
         .map_err(SettingsUpdateError::Validation)?;
     let history_limit = new_settings.history_limit as i64;
     let storage_quota_bytes = new_settings.storage_quota_bytes;
+    let limits_changed = settings_guard.history_limit != new_settings.history_limit
+        || settings_guard.storage_quota_bytes != new_settings.storage_quota_bytes;
     let mode_changed = settings_guard.connection_mode != new_settings.connection_mode;
     let shortcuts_changed = settings_guard.sync_shortcut != new_settings.sync_shortcut
         || settings_guard.history_shortcut != new_settings.history_shortcut;
@@ -570,12 +578,14 @@ pub async fn apply_settings_update(
     }
     *settings_guard = new_settings;
     drop(settings_guard);
-    let mut database_guard = database.lock().await;
-    database_guard.set_max_history(history_limit);
-    database_guard.set_storage_quota(storage_quota_bytes);
-    database_guard
-        .enforce_limits()
-        .map_err(|error| SettingsUpdateError::Database(error.to_string()))?;
+    if limits_changed {
+        let mut database_guard = database.lock().await;
+        database_guard.set_max_history(history_limit);
+        database_guard.set_storage_quota(storage_quota_bytes);
+        database_guard
+            .enforce_limits()
+            .map_err(|error| SettingsUpdateError::Database(error.to_string()))?;
+    }
     Ok(SettingsUpdateOutcome {
         mode_changed,
         connection_mode,

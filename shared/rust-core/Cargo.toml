@@ -13,6 +13,7 @@ directories = "6"
 fernet = { version = "0.2", default-features = false, features = ["rustcrypto"] }
 fs2 = "0.4"
 hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "webp"] }
 # Exact pin: iroh's network behavior across versions needs explicit
 # verification (macOS/Windows device pairing over LAN and Tailscale, plus
 # the iroh_transport RTT tests) — a compile pass is not enough. Upgrades
@@ -21,7 +22,9 @@ hex = "0.4"
 iroh = "=1.1.0"
 log = "0.4"
 rand = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
@@ -31,9 +34,11 @@ tailsync-history-classifier = { path = "../tailsync-history-classifier" }
 tailsync-protocol = { path = "../tailsync-protocol" }
 tailsync-themes = { path = "../tailsync-themes" }
 flate2 = "1"
+png = "0.18"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+url = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Threading"] }
@@ -53,6 +58,15 @@ acceptance-injection = []
 # are applied independently during each authenticated handshake.
 protocol-file-sliding-window = []
 protocol-image-compressed-chunks = []
+protocol-composite-clipboard = []
+# Repair-plan R0 (docs/COMPOSITE-CLIPBOARD-REPAIR-EXECUTION-PLAN-2026-10-04.md §4 R0.2):
+# seam regressions that assert the *desired* behaviour of the defects recorded in
+# artifacts/composite-repair/2026-10-04-r0/. They are intentionally RED before the
+# corresponding stage lands, so they are gated instead of being deleted or weakened.
+# Each entry in expected-failures.json is removed as its stage closes; at R6 the
+# suite joins the standard entry. See that file for the current ledger.
+# Test runners select test-support explicitly; this flag cannot enable test keys.
+repair-regressions = []
 
 [dev-dependencies]
 proptest = "1"

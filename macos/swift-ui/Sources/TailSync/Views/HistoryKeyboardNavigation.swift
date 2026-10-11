@@ -3,12 +3,13 @@ import SwiftUI
 
 /// Commands originate in the actual first responder, never in a global event monitor.
 enum HistoryKeyboardCommand: Equatable {
-    case down, up, search, escape, preview, deepPreview
+    case down, up, search, escape, preview, deepPreview, delete
     case restore(keepOpen: Bool)
 
     static func event(_ event: NSEvent) -> Self? {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if modifiers == [.command], event.keyCode == 3 { return .search }
+        if modifiers == [.command], event.keyCode == 51, !event.isARepeat { return .delete }
         if modifiers.isEmpty {
             switch event.keyCode {
             case 125: return .down
@@ -94,8 +95,8 @@ final class HistoryKeyboardListNSView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self,
               let command = HistoryKeyboardCommand.event(event),
-              command == .search || command == .restore(keepOpen: true) else { return false }
-        session?.isComposing = false
+              command == .search || command == .restore(keepOpen: true) || command == .delete else { return false }
+        if command != .delete { session?.isComposing = false }
         session?.onCommand?(command)
         return true
     }

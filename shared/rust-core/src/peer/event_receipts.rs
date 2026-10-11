@@ -3,13 +3,12 @@
 //! reapplies the effect; history can still be retried and durably acknowledged.
 //! This deliberately provides at-most-once effect attempts, not atomic OS/SQL
 //! exactly-once delivery. No clipboard bytes or paths are stored here.
+use super::effect_journal::{ClaimOutcome, EffectJournal};
 use crate::protocol::{unix_timestamp_ms, EventEnvelope, EVENT_TIMESTAMP_WINDOW_MS};
 use serde::{Deserialize, Serialize};
-use std::sync::{LazyLock, Mutex};
 
 const MAX_RECEIPTS: usize = 4096;
 const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;
-static STORE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,8 +18,14 @@ pub(super) struct Receipt {
     digest: String,
     timestamp_ms: i64,
     pub received: bool,
+    #[serde(skip)]
+    pub history_ref: Option<i64>,
 }
 impl Receipt {
+    pub fn operation_key(&self) -> super::operation_lock::OperationKey {
+        super::operation_lock::OperationKey::new(self.source.clone(), self.event_id.clone())
+    }
+
     pub fn new(
         source: String,
         command: crate::protocol::Command,
@@ -36,6 +41,7 @@ impl Receipt {
             digest: hash.finalize().to_hex().to_string(),
             timestamp_ms: envelope.timestamp_ms,
             received: false,
+            history_ref: None,
         }
     }
 }
@@ -48,7 +54,9 @@ struct Store {
 #[derive(Clone, Copy)]
 pub(super) enum Operation {
     Lookup,
+    #[allow(dead_code)]
     Claim,
+    ClaimPrepared(i64),
     Complete,
     Remove,
 }
@@ -71,75 +79,125 @@ fn update_at(
     key: Receipt,
     operation: Operation,
 ) -> Result<Option<Receipt>, String> {
-    let _guard = STORE_LOCK
+    let _guard = super::composite_receipts::LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut store = match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_file() && meta.len() <= MAX_STORE_BYTES => {
-            crate::private_fs::restrict_private_file(path)
-                .map_err(|_| "Remote event receipt store is unavailable")?;
-            let bytes =
-                std::fs::read(path).map_err(|_| "Remote event receipt store is unavailable")?;
-            serde_json::from_slice::<Store>(&bytes)
-                .map_err(|_| "Remote event receipt store is corrupt")?
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Store {
-            version: 1,
-            records: vec![],
-        },
-        _ => return Err("Remote event receipt store is unavailable".into()),
-    };
-    if store.version != 1 || store.records.len() > MAX_RECEIPTS {
-        return Err("Remote event receipt store format is unsupported".into());
+    let root = path.parent().ok_or("Remote receipt directory missing")?;
+    let journal = super::composite_receipts::initialize_at(root)?;
+    if key.timestamp_ms < journal.replay_floor_ms()? {
+        return Err("event timestamp is outside the accepted window (journal replay floor)".into());
     }
-    // Never evict a receipt whose ORIGINAL envelope can still pass timestamp
-    // admission. Future-skewed events can therefore occupy a slot for 10 min.
-    let now = unix_timestamp_ms();
-    store
-        .records
-        .retain(|r| r.timestamp_ms.saturating_add(EVENT_TIMESTAMP_WINDOW_MS) >= now);
-    let index = store
-        .records
-        .iter()
-        .position(|r| r.source == key.source && r.event_id == key.event_id);
-    if let Some(index) = index {
-        if store.records[index].digest != key.digest {
-            return Err("Remote event ID collision".into());
-        }
+    if matches!(operation, Operation::Claim | Operation::ClaimPrepared(_))
+        && journal.lookup(&key.source, &key.event_id)?.is_none()
+        && journal.count_for_kind("legacy")? >= MAX_RECEIPTS
+    {
+        return Err(format!(
+            "{}remote receipt capacity reached",
+            crate::protocol::TEMPORARY_PRESSURE_MARKER
+        ));
+    }
+    let existing = journal.lookup(&key.source, &key.event_id)?;
+    if existing
+        .as_ref()
+        .is_some_and(|record| record.digest != key.digest)
+    {
+        return Err("Remote event ID collision".into());
     }
     let result = match operation {
-        Operation::Lookup => return Ok(index.map(|i| store.records[i].clone())),
-        Operation::Claim => {
-            if let Some(index) = index {
-                return Ok(Some(store.records[index].clone()));
+        Operation::Lookup => existing,
+        Operation::Claim | Operation::ClaimPrepared(_) => match journal.claim_prepared(
+            &key.source,
+            &key.event_id,
+            &key.digest,
+            key.timestamp_ms,
+            None,
+            None,
+            match operation {
+                Operation::ClaimPrepared(id) => Some(id),
+                _ => None,
+            },
+        )? {
+            ClaimOutcome::Claimed => {
+                journal.mark_legacy(&key.source, &key.event_id, false)?;
+                None
             }
-            if store.records.len() >= MAX_RECEIPTS {
-                return Err("Remote event receipt capacity reached; retry after expired events are collected".into());
-            }
-            store.records.push(key);
-            None
-        }
+            ClaimOutcome::Existing(record) => Some(record),
+        },
         Operation::Complete => {
-            let index = index.ok_or("Remote event receipt claim is missing")?;
-            store.records[index].received = true;
-            Some(store.records[index].clone())
+            journal.mark_legacy(&key.source, &key.event_id, true)?;
+            if journal
+                .lookup(&key.source, &key.event_id)?
+                .is_some_and(|r| r.result.is_none())
+            {
+                journal.report(
+                    &key.source,
+                    &key.event_id,
+                    crate::protocol::composite::AckResult::ApplyUnknown as u8,
+                )?;
+            }
+            journal.complete(&key.source, &key.event_id)?;
+            journal.lookup(&key.source, &key.event_id)?
         }
         Operation::Remove => {
-            if let Some(index) = index {
-                store.records.remove(index);
-            }
+            journal.remove(&key.source, &key.event_id)?;
             None
         }
     };
+    write_mirror(path, &journal)?;
+    result
+        .map(|record| {
+            Ok(Receipt {
+                history_ref: record.history_ref,
+                received: journal.legacy_received(&record.source, &record.event_id)?,
+                source: record.source,
+                event_id: record.event_id,
+                digest: record.digest,
+                timestamp_ms: record.timestamp_ms,
+            })
+        })
+        .transpose()
+}
+
+pub(super) fn write_mirror(path: &std::path::Path, journal: &EffectJournal) -> Result<(), String> {
+    let now = unix_timestamp_ms();
+    let records: Vec<Receipt> = journal
+        .records_for_kind(Some("legacy"))?
+        .into_iter()
+        .filter(|record| {
+            record
+                .timestamp_ms
+                .saturating_add(EVENT_TIMESTAMP_WINDOW_MS)
+                >= now
+        })
+        .map(|record| {
+            Ok(Receipt {
+                history_ref: record.history_ref,
+                received: journal.legacy_received(&record.source, &record.event_id)?,
+                source: record.source,
+                event_id: record.event_id,
+                digest: record.digest,
+                timestamp_ms: record.timestamp_ms,
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    if records.len() > MAX_RECEIPTS {
+        return Err("Remote event receipt capacity reached".into());
+    }
+    let bytes = serde_json::to_vec(&Store {
+        version: 1,
+        records,
+    })
+    .map_err(|_| "Remote receipt encoding failed")?;
+    if bytes.len() as u64 > MAX_STORE_BYTES {
+        return Err("Remote receipt store too large".into());
+    }
     crate::private_fs::create_private_dir_all(
-        path.parent()
-            .ok_or("Remote event receipt directory is missing")?,
+        path.parent().ok_or("Remote receipt directory missing")?,
     )
-    .map_err(|_| "Remote event receipt directory is unavailable")?;
-    let bytes = serde_json::to_vec(&store).map_err(|_| "Remote event receipt encoding failed")?;
+    .map_err(|_| "Remote receipt directory unavailable")?;
     crate::private_fs::write_private_file(path, &bytes)
-        .map_err(|_| "Remote event receipt persistence failed")?;
-    Ok(result)
+        .map_err(|_| "Remote receipt persistence failed")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -147,7 +205,10 @@ mod tests {
     use super::*;
     use crate::protocol::Command;
     fn path() -> std::path::PathBuf {
-        crate::db::get_data_dir().join(format!("receipt-test-{:016x}.json", rand::random::<u64>()))
+        let root =
+            crate::db::get_data_dir().join(format!("receipt-test-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        root.join(super::super::effect_journal::LEGACY_MIRROR_FILE_NAME)
     }
     fn key() -> Receipt {
         Receipt::new(
@@ -205,11 +266,16 @@ mod tests {
         assert!(update_at(&path, key.clone(), Operation::Claim)
             .unwrap_err()
             .contains("capacity"));
-        let mut store: Store = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        for r in &mut store.records {
-            r.timestamp_ms = 0;
-        }
-        std::fs::write(&path, serde_json::to_vec(&store).unwrap()).unwrap();
+        // Expiry is driven by the authoritative journal, never by editing a mirror.
+        let conn = rusqlite::Connection::open(
+            path.parent()
+                .unwrap()
+                .join(super::super::effect_journal::JOURNAL_FILE_NAME),
+        )
+        .unwrap();
+        conn.execute("UPDATE effects SET timestamp_ms = 0", [])
+            .unwrap();
+        drop(conn);
         assert!(update_at(&path, key.clone(), Operation::Claim)
             .unwrap()
             .is_none());

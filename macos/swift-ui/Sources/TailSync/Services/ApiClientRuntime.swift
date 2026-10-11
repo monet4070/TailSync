@@ -19,7 +19,6 @@ extension ApiClient {
     guard let data = response["data"],
       let encoded = try? JSONSerialization.data(withJSONObject: data),
       let capabilities = try? JSONDecoder().decode(LocalCapabilities.self, from: encoded),
-      capabilities.schemaVersion == 1,
       (capabilities.wireVersion == 4 || capabilities.wireVersion == 5),
       !capabilities.platform.isEmpty,
       capabilities.maxPreviewBytes == UInt64(HistoryPreviewData.maxBytes),
@@ -169,6 +168,7 @@ extension ApiClient {
   }
 
   struct SyncWarning {
+    let id: UInt64
     let kind: String
     let peer: String
   }
@@ -177,11 +177,14 @@ extension ApiClient {
     guard let response = try? await request(["cmd": "get_sync_warning"]),
       response["ok"] as? Bool == true,
       let data = response["data"] as? [String: Any],
+      let id = data["id"] as? UInt64,
       let kind = data["kind"] as? String,
       let peer = data["peer"] as? String
     else { return nil }
-    return SyncWarning(kind: kind, peer: peer)
+    return SyncWarning(id: id, kind: kind, peer: peer)
   }
+
+  func acknowledgeSyncWarning(_ id: UInt64) async { _ = try? await request(["cmd": "ack_sync_warning", "ack_warning_id": id]) }
 
   struct UpdateInfo: Decodable {
     let current_version: String
@@ -280,4 +283,5 @@ extension ContractLocalCapabilities {
   var supportsBinaryPreview: Bool { supports_binary_preview }
   var supportsRuntimeSnapshot: Bool { supports_runtime_snapshot }
   var supportsStableErrors: Bool { supports_stable_errors }
+  var supportsDocumentPreview: Bool { document_preview_version == 1 }
 }

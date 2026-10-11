@@ -7,6 +7,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var sync_shortcut: String = "CommandOrControl+Shift+S"
     var history_shortcut: String = "CommandOrControl+Shift+H"
     var history_limit: Int = 100
+    var auto_save_network_images: Bool = false
     var storage_root: String? = nil
     var storage_quota_bytes: UInt64 = 10 * 1024 * 1024 * 1024
     var enabled_peers: [String: Bool] = [:]
@@ -18,6 +19,7 @@ struct AppSettings: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case notifications_enabled, progress_bar_enabled, sync_enabled, sync_shortcut, history_shortcut, history_limit
+        case auto_save_network_images
         case storage_root, storage_quota_bytes
         case enabled_peers, language, connection_mode
         case trusted_peer_keys, trusted_peer_addresses, paired_peer_endpoints
@@ -33,6 +35,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         sync_shortcut = try values.decodeIfPresent(String.self, forKey: .sync_shortcut) ?? "CommandOrControl+Shift+S"
         history_shortcut = try values.decodeIfPresent(String.self, forKey: .history_shortcut) ?? "CommandOrControl+Shift+H"
         history_limit = try values.decodeIfPresent(Int.self, forKey: .history_limit) ?? 100
+        auto_save_network_images = try values.decodeIfPresent(Bool.self, forKey: .auto_save_network_images) ?? false
         storage_root = try values.decodeIfPresent(String.self, forKey: .storage_root)
         storage_quota_bytes = try values.decodeIfPresent(UInt64.self, forKey: .storage_quota_bytes) ?? 10 * 1024 * 1024 * 1024
         enabled_peers = try values.decodeIfPresent([String: Bool].self, forKey: .enabled_peers) ?? [:]

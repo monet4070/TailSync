@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemePackagePreview } from "../components/ThemePackagePreview";
 import {
   applyThemePackageOperation,
@@ -14,6 +14,76 @@ import type {
   ThemeValidationV2,
 } from "../tailsyncClient";
 import { decodeThemeDiagnostic, formatThemeError } from "../tailsyncClient";
+import * as client from "../tailsyncClient";
+import type { SettingsData } from "../types/settings.generated";
+import { Settings } from "./Settings";
+
+const clientMocks = vi.hoisted(() => ({
+  getSettings: vi.fn(),
+  updateSettings: vi.fn(),
+  getStorageStatus: vi.fn(),
+  listThemesV2: vi.fn(),
+  getLocalThemeSettingsV2: vi.fn(),
+  getUpdateStatus: vi.fn(),
+}));
+
+const hookMocks = vi.hoisted(() => ({
+  setLocale: vi.fn(),
+  setTheme: vi.fn(),
+  translate: (key: string) => key,
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  isEnabled: vi.fn().mockResolvedValue(false),
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../hooks/useTheme", () => ({
+  useTheme: () => ({
+    theme: "light",
+    colorTheme: "builtin:canvas@1",
+    themePreference: "system",
+    setTheme: hookMocks.setTheme,
+  }),
+}));
+vi.mock("../hooks/useI18n", () => ({
+  useI18n: () => ({
+    t: hookMocks.translate,
+    setLocale: hookMocks.setLocale,
+    locale: "en",
+  }),
+}));
+vi.mock("../tailsyncClient", async (importOriginal) => {
+  const actual = await importOriginal<typeof client>();
+  return { ...actual, ...clientMocks };
+});
+
+const baseSettings: SettingsData = {
+  connection_mode: "auto",
+  enabled_peers: {},
+  history_limit: 100,
+  history_shortcut: "Alt+H",
+  language: "en",
+  notifications_enabled: true,
+  paired_peer_endpoints: {},
+  progress_bar_enabled: true,
+  storage_quota_bytes: 10737418240,
+  storage_root: null,
+  sync_enabled: true,
+  sync_shortcut: "Alt+S",
+  trusted_peer_addresses: {},
+  trusted_peer_keys: {},
+  auto_save_network_images: false,
+};
+
+const withAutoSaveNetworkImages = (enabled: boolean): SettingsData => ({
+  ...baseSettings,
+  auto_save_network_images: enabled,
+});
 
 const resolved = (mode: "light" | "dark", highContrast = false): ResolvedThemeV2 => ({
   id: "custom:studio.night",
@@ -238,5 +308,75 @@ describe("Settings Theme V2 workflow", () => {
     await waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(3));
     expect(loadAsset).toHaveBeenCalledTimes(3);
     createObjectURL.mockRestore();
+  });
+});
+
+describe("Settings auto-save network images", () => {
+  beforeEach(() => {
+    clientMocks.getSettings.mockResolvedValue(baseSettings);
+    clientMocks.getStorageStatus.mockResolvedValue({
+      root: "C:\\TailSync",
+      used_bytes: 0,
+      quota_bytes: 10737418240,
+      available: true,
+      error: null,
+    });
+    clientMocks.listThemesV2.mockResolvedValue([]);
+    clientMocks.getLocalThemeSettingsV2.mockResolvedValue({
+      activeThemeId: "builtin:canvas@1",
+      appearance: "system",
+      highContrast: false,
+    });
+    clientMocks.getUpdateStatus.mockResolvedValue({ updates_enabled: true });
+    clientMocks.updateSettings.mockResolvedValue(undefined);
+  });
+
+  it("defaults to disabled when the generated type omits the field", async () => {
+    render(<Settings />);
+
+    const toggle = await screen.findByRole("checkbox", {
+      name: "settings.autoSaveNetworkImages",
+    });
+    expect(toggle).not.toBeChecked();
+  });
+
+  it("reflects an enabled value delivered by the generated contract", async () => {
+    clientMocks.getSettings.mockResolvedValue(withAutoSaveNetworkImages(true));
+    render(<Settings />);
+
+    const toggle = await screen.findByRole("checkbox", {
+      name: "settings.autoSaveNetworkImages",
+    });
+    expect(toggle).toBeChecked();
+  });
+
+  it("persists the toggle through the production updateSettings entry point", async () => {
+    render(<Settings />);
+
+    const toggle = await screen.findByRole("checkbox", {
+      name: "settings.autoSaveNetworkImages",
+    });
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(client.updateSettings).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(client.updateSettings).mock.calls[0][0];
+    expect(payload.auto_save_network_images).toBe(true);
+    expect(screen.getByRole("checkbox", { name: "settings.autoSaveNetworkImages" })).toBeChecked();
+  });
+
+  it("rolls back to the persisted value and reports the error when the save fails", async () => {
+    clientMocks.updateSettings.mockRejectedValue(new Error("save failed"));
+    render(<Settings />);
+
+    const toggle = await screen.findByRole("checkbox", {
+      name: "settings.autoSaveNetworkImages",
+    });
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: "settings.autoSaveNetworkImages" })).not.toBeChecked(),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("settings.saveFailed");
+    expect(clientMocks.getSettings).toHaveBeenCalledTimes(2);
   });
 });

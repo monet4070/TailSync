@@ -21,15 +21,19 @@ export function persistHistoryAlwaysOnTop(value: boolean): void {
   }
 }
 
+function canonicalCategory(category: HistoryCategory): HistoryCategory {
+  return category === "command" || category === "structured_data" ? "code" : category;
+}
+
 export function resolvedCategory(entry: HistoryEntry): HistoryCategory {
-  return entry.category && HISTORY_CATEGORIES.includes(entry.category)
-    ? entry.category
-    : entry.type;
+  return entry.category && HISTORY_CATEGORIES.includes(canonicalCategory(entry.category))
+    ? canonicalCategory(entry.category)
+    : entry.type === "composite" ? (entry.composite?.image_count ? "image" : "text") : entry.type;
 }
 
 export function resolvedCategories(entry: HistoryEntry): HistoryCategory[] {
   const primary = resolvedCategory(entry);
-  const categories = (entry.categories ?? []).filter((category) =>
+  const categories = (entry.categories ?? []).map(canonicalCategory).filter((category) =>
     HISTORY_CATEGORIES.includes(category),
   );
   return [primary, ...categories.filter((category) => category !== primary)].filter(

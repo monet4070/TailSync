@@ -14,6 +14,7 @@ fn info(name: &str) -> PeerIdentity {
 fn switches(proof: bool) -> CapabilitySwitches {
     CapabilitySwitches {
         pairing_commit_proof: proof,
+        composite_clipboard: false,
         ..CapabilitySwitches::default()
     }
 }

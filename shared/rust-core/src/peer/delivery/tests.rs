@@ -18,6 +18,14 @@ fn transfer_id(byte: u8) -> TransferId {
 const SIGNED_TEXT_WATERMARK: usize = 48;
 
 #[test]
+fn archive_failures_are_not_reported_as_lost_clipboard_copies() {
+    assert!(!carries_clipboard_content(Command::ArchiveUpdatePayload));
+    assert!(!carries_clipboard_content(Command::ArchiveUpdateChunk));
+    assert!(carries_clipboard_content(Command::CompositePayload));
+    assert!(carries_clipboard_content(Command::CompositeChunk));
+}
+
+#[test]
 fn text_payload_is_wrapped_in_an_event_envelope() {
     let frame = QueuedFrame::new(Command::TextPayload, b"hello".to_vec()).unwrap();
     assert!(matches!(frame.acknowledgement, AckExpectation::Event(_)));
@@ -124,6 +132,7 @@ fn completion_reports_the_result_to_the_enqueuer() {
         queued: frame,
         sequence: 7,
         undelivered_peer: None,
+        selected_composite: std::sync::OnceLock::new(),
     };
     pending.complete(Ok(DeliveryReceipt {
         next_offset: Some(3),
@@ -136,7 +145,7 @@ fn completion_reports_the_result_to_the_enqueuer() {
 #[test]
 fn dropping_an_in_flight_frame_reports_shutdown_only_while_shutting_down() {
     let _warning_guard = crate::sync_warning::test_lock();
-    let _ = crate::sync_warning::take();
+    while crate::sync_warning::take().is_some() {}
     crate::sync_warning::reset_shutdown_for_test();
 
     // A forced reconnect also drops the in-flight frame; the durable retry
@@ -275,6 +284,7 @@ fn event_ack_must_match_sequence_and_message() {
         queued: frame,
         sequence: 3,
         undelivered_peer: None,
+        selected_composite: std::sync::OnceLock::new(),
     };
     let good = Frame::try_new(Command::EventAck, 0, 3, message_id.ack_payload()).unwrap();
     validate_event_ack(&good, &pending, message_id).unwrap();
@@ -297,6 +307,7 @@ fn file_ack_must_match_transfer_and_returns_offset() {
         queued: frame,
         sequence: 5,
         undelivered_peer: None,
+        selected_composite: std::sync::OnceLock::new(),
     };
     let mut payload = Vec::new();
     payload.extend_from_slice(&transfer.0);
@@ -970,6 +981,8 @@ impl DeliveryConnection for WindowConnection {
             file_sliding_window: true,
             image_compressed_chunks: false,
             pairing_commit_proof: false,
+            composite_clipboard: false,
+            archive_resource_updates: false,
         }
     }
 }
@@ -990,6 +1003,8 @@ impl DeliveryConnection for ImageConnection {
             file_sliding_window: false,
             image_compressed_chunks: true,
             pairing_commit_proof: false,
+            composite_clipboard: false,
+            archive_resource_updates: false,
         }
     }
 }
@@ -2597,3 +2612,563 @@ async fn acknowledge_one_text(server: &mut SecureConnection) {
 }
 
 include!("tests_performance.rs");
+
+struct CompositeConnection(MemoryConnection, bool);
+impl DeliveryConnection for CompositeConnection {
+    async fn write_frame(&mut self, frame: &Frame) -> Result<(), String> {
+        self.0.write_frame(frame).await
+    }
+    async fn read_frame(&mut self) -> Result<Frame, String> {
+        self.0.read_frame().await
+    }
+    fn negotiated_capabilities(&self) -> CapabilitySet {
+        CapabilitySet {
+            composite_clipboard: self.1,
+            ..CapabilitySet::disabled()
+        }
+    }
+}
+fn composite_event() -> SharedEvent {
+    use crate::composite::*;
+    use rand::{RngCore, SeedableRng};
+    let mut rgba = vec![0; 512 * 512 * 4];
+    rand::rngs::StdRng::seed_from_u64(37).fill_bytes(&mut rgba);
+    let bundle = PortableBundle {
+        representations: vec![
+            Representation {
+                mime: Mime::Text,
+                bytes: b"text and image".to_vec(),
+            },
+            Representation {
+                mime: Mime::Png,
+                bytes: packed_to_png(512, 512, &rgba).unwrap(),
+            },
+        ],
+        resources: vec![],
+        bindings: vec![],
+        completeness: Completeness::Complete,
+    };
+    SharedEvent::encode(Command::CompositePayload, bundle.encode().unwrap()).unwrap()
+}
+
+/// Exercise the actual delivery cache, including retry and final-owner release.
+/// Incompressible chunks retain their headers as well as the source body.
+#[tokio::test]
+async fn composite_cache_reserves_allocated_chunks_and_releases_after_last_owner() {
+    use crate::composite::{Completeness, Mime, PortableBundle, Representation};
+    use crate::protocol::composite::{AckResult, CompositeAck};
+    let compressible = PortableBundle {
+        representations: vec![Representation {
+            mime: Mime::Text,
+            bytes: vec![b'x'; 32 * 1024],
+        }],
+        resources: vec![],
+        bindings: vec![],
+        completeness: Completeness::Complete,
+    };
+    for event in [
+        composite_event(),
+        SharedEvent::encode(Command::CompositePayload, compressible.encode().unwrap()).unwrap(),
+    ] {
+        let queued = event.queued();
+        let expected = EventEnvelope::decode(queued.payload()).unwrap();
+        let pending = PendingFrame::new_for_peer(queued, 91, "fixture");
+        let mut first_cache = None;
+        for _ in 0..2 {
+            let (a, b) = tokio::io::duplex(64 * 1024);
+            let mut client = CompositeConnection(MemoryConnection { io: a }, true);
+            let expected_server = expected.clone();
+            let task = tokio::spawn(async move {
+                let mut server = MemoryConnection { io: b };
+                let mut assembler = crate::composite::chunks::CompositeAssembler::for_test();
+                loop {
+                    let frame = server.read_frame().await.unwrap();
+                    let accepted = assembler.accept(&frame.payload, 3).unwrap();
+                    let terminal = accepted.complete.is_some();
+                    if let Some((envelope, _, _)) = accepted.complete {
+                        assert_eq!(envelope, expected_server);
+                    }
+                    let ack = CompositeAck {
+                        message_id: accepted.metadata.message_id,
+                        digest: accepted.metadata.digest,
+                        chunk_index: accepted.metadata.index,
+                        result: if terminal {
+                            AckResult::Applied
+                        } else {
+                            AckResult::Chunk
+                        },
+                    };
+                    server
+                        .write_frame(
+                            &Frame::try_new(Command::CompositeAck, 0, frame.sequence, ack.encode())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    if terminal {
+                        break;
+                    }
+                }
+            });
+            deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default())
+                .await
+                .unwrap();
+            task.await.unwrap();
+            let cache = pending.queued.composite_chunks.lock().unwrap();
+            let cached = cache.as_ref().unwrap().as_ref().unwrap();
+            let allocated = cached.chunks.iter().map(Vec::capacity).sum::<usize>()
+                + cached.chunks.capacity() * std::mem::size_of::<Vec<u8>>()
+                + std::mem::size_of::<CachedChunks>()
+                + 2 * std::mem::size_of::<usize>();
+            assert!(
+                cached._memory.reserved_bytes() >= allocated as u64,
+                "cache reserved {} bytes for {} allocated bytes",
+                cached._memory.reserved_bytes(),
+                allocated
+            );
+            if cached.chunks[0][28] == 1 {
+                assert!(
+                    cached._memory.reserved_bytes()
+                        < CachedChunks::memory_bound(expected.content.len()),
+                    "compressed cache kept its unused raw-body reservation"
+                );
+            }
+            if let Some(first) = &first_cache {
+                assert!(
+                    std::sync::Weak::ptr_eq(first, &Arc::downgrade(cached)),
+                    "retry replaced the cache"
+                );
+            } else {
+                first_cache = Some(Arc::downgrade(cached));
+            }
+        }
+        drop(pending);
+        assert!(
+            first_cache.as_ref().unwrap().upgrade().is_some(),
+            "shared event still owns cache"
+        );
+        drop(event);
+        assert!(
+            first_cache.unwrap().upgrade().is_none(),
+            "cache outlived its last event owner"
+        );
+    }
+}
+#[tokio::test]
+async fn composite_chunks_require_matching_final_ack_and_preserve_native_revision() {
+    use crate::protocol::composite::{AckResult, CompositeAck};
+    let event = composite_event();
+    let queued = event.queued();
+    let expected = EventEnvelope::decode(queued.payload()).unwrap();
+    let pending = PendingFrame::new_for_peer(queued, 91, "fixture");
+    let (a, b) = tokio::io::duplex(8192);
+    let mut client = CompositeConnection(MemoryConnection { io: a }, true);
+    let mut server = MemoryConnection { io: b };
+    let task = tokio::spawn(async move {
+        let mut assembler = crate::composite::chunks::CompositeAssembler::for_test();
+        let mut frames = 0;
+        loop {
+            let frame = server.read_frame().await.unwrap();
+            frames += 1;
+            assert_eq!(frame.command, Command::CompositeChunk);
+            let admitted = assembler
+                .accept_with_revision(&frame.payload, 12, Some(99))
+                .unwrap();
+            let terminal = admitted.complete.is_some();
+            if let Some((e, g, r)) = admitted.complete {
+                assert_eq!(e, expected);
+                assert_eq!((g, r), (12, Some(99)));
+            }
+            let ack = CompositeAck {
+                message_id: admitted.metadata.message_id,
+                digest: admitted.metadata.digest,
+                chunk_index: admitted.metadata.index,
+                result: if terminal {
+                    AckResult::Applied
+                } else {
+                    AckResult::Chunk
+                },
+            };
+            server
+                .write_frame(
+                    &Frame::try_new(Command::CompositeAck, 0, frame.sequence, ack.encode())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if terminal {
+                assert!(frames > 1);
+                break;
+            }
+        }
+    });
+    deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default())
+        .await
+        .unwrap();
+    task.await.unwrap();
+    // A reconnect with reduced capabilities cannot change an attempted event.
+    client.1 = false;
+    assert!(matches!(
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default()).await,
+        Err(DeliveryError::Rejected(_))
+    ));
+}
+// The global warning fixture lock spans this single-thread test runtime.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn composite_old_peer_gets_one_image_and_a_stable_selected_identity() {
+    let _warning_guard = crate::sync_warning::test_lock_async().await;
+    let event = composite_event();
+    let queued = event.queued();
+    let original = EventEnvelope::decode(queued.payload()).unwrap();
+    let pending = PendingFrame::new_for_peer(queued, 31, "fixture");
+    let (a, b) = tokio::io::duplex(8192);
+    let mut client = CompositeConnection(MemoryConnection { io: a }, false);
+    let mut server = MemoryConnection { io: b };
+    let task = tokio::spawn(async move {
+        let mut selected = None;
+        for _ in 0..2 {
+            let frame = server.read_frame().await.unwrap();
+            assert_eq!(frame.command, Command::ImagePayload);
+            let e = EventEnvelope::decode(&frame.payload).unwrap();
+            assert_ne!(e.message_id, original.message_id);
+            if let Some(old) = selected {
+                assert_eq!(old, e.message_id);
+            } else {
+                selected = Some(e.message_id);
+            }
+            crate::protocol::PackedImage::try_from(e.content.as_slice()).unwrap();
+            server
+                .write_frame(
+                    &Frame::try_new(
+                        Command::EventAck,
+                        0,
+                        frame.sequence,
+                        e.message_id.ack_payload(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default())
+        .await
+        .unwrap();
+    client.1 = true;
+    deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default())
+        .await
+        .unwrap();
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn composite_partial_terminal_ack_never_counts_as_success() {
+    use crate::protocol::composite::{AckResult, CompositeAck};
+    let pending = PendingFrame::new_for_peer(composite_event().queued(), 61, "fixture");
+    let (a, b) = tokio::io::duplex(8192);
+    let mut client = CompositeConnection(MemoryConnection { io: a }, true);
+    let mut server = MemoryConnection { io: b };
+    let task = tokio::spawn(async move {
+        loop {
+            let frame = server.read_frame().await.unwrap();
+            let m = crate::composite::chunks::inspect(&frame.payload).unwrap();
+            let final_chunk = m.index + 1 == m.count;
+            let ack = CompositeAck {
+                message_id: m.message_id,
+                digest: m.digest,
+                chunk_index: m.index,
+                result: if final_chunk {
+                    AckResult::FailedPartial
+                } else {
+                    AckResult::Chunk
+                },
+            };
+            server
+                .write_frame(
+                    &Frame::try_new(Command::CompositeAck, 0, frame.sequence, ack.encode())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if final_chunk {
+                break;
+            }
+        }
+    });
+    assert!(matches!(
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default()).await,
+        Err(DeliveryError::CompositeResult(AckResult::FailedPartial))
+    ));
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn large_legacy_deliverable_rgba_image_uses_byte_budget() {
+    use crate::composite::{Completeness, Mime, PortableBundle, Representation};
+    // The old image frame needs 8 dimension bytes and 28 event bytes too.
+    let rgba = vec![0x7f; 2048 * 4095 * 4];
+    let bundle = PortableBundle {
+        representations: vec![Representation {
+            mime: Mime::Png,
+            bytes: crate::composite::packed_to_png(2048, 4095, &rgba).unwrap(),
+        }],
+        resources: vec![],
+        bindings: vec![],
+        completeness: Completeness::Complete,
+    };
+    let event = SharedEvent::encode(Command::CompositePayload, bundle.encode().unwrap()).unwrap();
+    let pending = PendingFrame::new_for_peer(event.queued(), 63, "fixture");
+    let (a, b) = tokio::io::duplex(8192);
+    let mut client = CompositeConnection(MemoryConnection { io: a }, false);
+    let mut server = MemoryConnection { io: b };
+    let task = tokio::spawn(async move {
+        let frame = server.read_frame().await.unwrap();
+        assert_eq!(frame.command, Command::ImagePayload);
+        let event = EventEnvelope::decode(&frame.payload).unwrap();
+        let image = crate::protocol::PackedImage::try_from(event.content.as_slice()).unwrap();
+        assert_eq!((image.width, image.height), (2048, 4095));
+        assert_eq!(image.rgba, rgba);
+        server
+            .write_frame(
+                &Frame::try_new(
+                    Command::EventAck,
+                    0,
+                    frame.sequence,
+                    event.message_id.ack_payload(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    });
+    deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default())
+        .await
+        .unwrap();
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn maximum_legal_rgba_image_legacy_refusal_is_permanent_and_has_no_write() {
+    use crate::composite::{Completeness, Mime, PortableBundle, Representation};
+    let rgba = vec![0x7f; crate::composite::RGBA_LIMIT];
+    let mut bundle = PortableBundle {
+        representations: vec![Representation {
+            mime: Mime::Png,
+            bytes: crate::composite::packed_to_png(2048, 4096, &rgba).unwrap(),
+        }],
+        resources: vec![],
+        bindings: vec![],
+        completeness: Completeness::Complete,
+    };
+    let event = SharedEvent::encode(Command::CompositePayload, bundle.encode().unwrap()).unwrap();
+    let pending = PendingFrame::new_for_peer(event.queued(), 64, "fixture");
+    let (a, mut b) = tokio::io::duplex(8192);
+    let mut client = CompositeConnection(MemoryConnection { io: a }, false);
+    for _ in 0..2 {
+        assert!(matches!(
+            deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default()).await,
+            Err(DeliveryError::Rejected(_))
+        ));
+    }
+    use tokio::io::AsyncReadExt;
+    assert!(tokio::time::timeout(Duration::from_millis(10), b.read_u8())
+        .await
+        .is_err());
+    // A text representation still has an honest single-format downgrade.
+    bundle.representations.push(Representation {
+        mime: Mime::Text,
+        bytes: b"large image text fallback".to_vec(),
+    });
+    let (command, content) = crate::composite::legacy_content(&bundle).unwrap();
+    assert_eq!(command, Command::TextPayload);
+    assert_eq!(content, b"large image text fallback");
+    // The text ceiling likewise includes its event envelope.
+    let text = PortableBundle {
+        representations: vec![Representation {
+            mime: Mime::Text,
+            bytes: vec![b'x'; Mime::Text.limit()],
+        }],
+        resources: vec![],
+        bindings: vec![],
+        completeness: Completeness::Complete,
+    };
+    text.validate().unwrap();
+    assert!(matches!(
+        crate::composite::legacy_content(&text),
+        Err(crate::protocol::ProtocolError::UnsupportedCompositeFallback)
+    ));
+}
+
+/// R0 seam regressions for the composite-clipboard repair.
+/// Plan §4 R0.2; ledger `artifacts/composite-repair/2026-10-04-r0/expected-failures.json`.
+#[cfg(feature = "repair-regressions")]
+mod repair_regressions {
+    use super::*;
+
+    /// R4-04 / G-7 / T18 — a retry must reuse the encoded chunks.
+    ///
+    /// Every delivery attempt used to re-run `chunks::encode`, re-compressing the
+    /// whole payload. A 32 MiB event retried for five minutes meant gigabytes of
+    /// wasted CPU. The event's identity — and therefore its encoding — is fixed, so
+    /// the compressed bytes are computed once and shared.
+    #[tokio::test]
+    async fn rr18_a_retry_reuses_the_encoded_chunks() {
+        use crate::protocol::composite::{AckResult, CompositeAck};
+        let event = composite_event();
+        let queued = event.queued();
+        let expected = EventEnvelope::decode(queued.payload()).unwrap();
+        let pending = PendingFrame::new_for_peer(queued, 77, "fixture");
+
+        async fn serve(mut server: MemoryConnection, expected: EventEnvelope) {
+            let mut assembler = crate::composite::chunks::CompositeAssembler::for_test();
+            loop {
+                let frame = server.read_frame().await.unwrap();
+                let admitted = assembler
+                    .accept_with_revision(&frame.payload, 3, Some(7))
+                    .unwrap();
+                let terminal = admitted.complete.is_some();
+                if let Some((envelope, _, _)) = admitted.complete {
+                    assert_eq!(envelope, expected);
+                }
+                let ack = CompositeAck {
+                    message_id: admitted.metadata.message_id,
+                    digest: admitted.metadata.digest,
+                    chunk_index: admitted.metadata.index,
+                    result: if terminal {
+                        AckResult::Applied
+                    } else {
+                        AckResult::Chunk
+                    },
+                };
+                let ack_frame =
+                    Frame::try_new(Command::CompositeAck, 0, frame.sequence, ack.encode()).unwrap();
+                server.write_frame(&ack_frame).await.unwrap();
+                if terminal {
+                    break;
+                }
+            }
+        }
+
+        // First delivery.
+        let before = crate::composite::chunks::encode_calls();
+        let (a, b) = tokio::io::duplex(64 * 1024);
+        let mut client = CompositeConnection(MemoryConnection { io: a }, true);
+        let task = tokio::spawn(serve(MemoryConnection { io: b }, expected.clone()));
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default())
+            .await
+            .unwrap();
+        task.await.unwrap();
+        let after_first = crate::composite::chunks::encode_calls();
+        assert_eq!(
+            after_first - before,
+            1,
+            "the first delivery must encode exactly once"
+        );
+
+        // Retry the same frame: the identity is fixed, so the chunks are reused.
+        let (a, b) = tokio::io::duplex(64 * 1024);
+        let mut client = CompositeConnection(MemoryConnection { io: a }, true);
+        let task = tokio::spawn(serve(MemoryConnection { io: b }, expected));
+        deliver_pending_frame(&mut client, &pending, &DeliveryConfig::default())
+            .await
+            .unwrap();
+        task.await.unwrap();
+        assert_eq!(
+            crate::composite::chunks::encode_calls() - after_first,
+            0,
+            "a retry must not re-encode the payload"
+        );
+    }
+
+    /// R4-03 / D-4 — temporary pressure must stay retryable.
+    ///
+    /// The sender only sees the peer's error text. Before the marker, a full
+    /// assembly budget or an exhausted raw budget was classified as a permanent
+    /// `Rejected`, which dropped the clipboard content for good.
+    #[test]
+    fn rr17_temporary_pressure_is_retryable_while_illegal_content_is_not() {
+        // The marker has to survive the protocol's Display, because that text is all
+        // the sender receives.
+        let pressure = crate::protocol::ProtocolError::AdmissionRejected(format!(
+            "{}{}",
+            crate::protocol::TEMPORARY_PRESSURE_MARKER,
+            "composite assembly budget exhausted"
+        ));
+        assert!(
+            peer_error_is_temporary(&pressure.to_string()),
+            "the marker must survive the wire representation"
+        );
+        assert!(
+            DeliveryError::transport("peer under temporary pressure".to_string()).is_retryable(),
+            "temporary pressure must be retryable"
+        );
+
+        // A real budget rejection is marked end to end.
+        let ledger = std::sync::Arc::new(crate::composite::budgets::BudgetLedger::default());
+        let now = std::time::Instant::now();
+        let _held = ledger.admit_assembly(&[1_u8; 32], 1024, now).unwrap();
+        let error = ledger.admit_assembly(&[1_u8; 32], 1024, now).unwrap_err();
+        assert!(
+            peer_error_is_temporary(&error.to_string()),
+            "a budget rejection must be classified as temporary pressure, got {error}"
+        );
+
+        // Genuinely illegal content stays a permanent rejection.
+        assert!(!peer_error_is_temporary(
+            "event: invalid composite clipboard payload"
+        ));
+        assert!(!DeliveryError::rejected("bad".to_string()).is_retryable());
+    }
+
+    /// R4-04 / D-5 / T19.
+    ///
+    /// The verification reproduced this against production code: a permanent
+    /// `Rejected` reports `is_retryable() == false`, and
+    /// `record_permanent_delivery_warning` left the warning slot empty. Every
+    /// PeerError-class composite loss — assembly-budget rejection, capability
+    /// downgrade, an un-degradable RTF-only fallback — was therefore log-only,
+    /// while `CompositeResult` and `Expired` did raise warnings.
+    ///
+    /// Desired: a permanent rejection that drops clipboard content is visible to
+    /// the user. R4-04 wires `Rejected` in; the "only when the event carried
+    /// clipboard content" refinement may change this function's signature, so the
+    /// observable requirement is asserted here rather than the shape of the call.
+    #[test]
+    fn rr06_permanent_rejection_is_user_visible() {
+        let _guard = crate::sync_warning::test_lock();
+        while crate::sync_warning::take().is_some() {}
+
+        let rejected = DeliveryError::Rejected("composite assembly budget exhausted".into());
+        assert!(
+            !rejected.is_retryable(),
+            "Rejected is permanent by contract, so the durable retry cannot rescue the content"
+        );
+
+        // A composite chunk is clipboard content, so losing it must be visible.
+        record_permanent_delivery_warning("peer", Command::CompositeChunk, &rejected);
+
+        let warning = crate::sync_warning::peek();
+        assert!(
+            warning.is_some(),
+            "a permanent rejection that drops clipboard content must raise a user-visible \
+             warning, not only a log line (D-5); CompositeResult and Expired already do"
+        );
+    }
+}
+
+#[test]
+fn fanout_shares_the_original_deadline_and_cache() {
+    let mut event = composite_event();
+    event.created_at -= Duration::from_secs(10);
+    let first = event.queued();
+    let later = event.queued();
+    assert_eq!(first.enqueued_at, later.enqueued_at);
+    assert!(Arc::ptr_eq(
+        &first.composite_chunks,
+        &later.composite_chunks
+    ));
+    assert!(Arc::ptr_eq(
+        &first.composite_fallback,
+        &later.composite_fallback
+    ));
+}

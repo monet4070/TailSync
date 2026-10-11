@@ -7,6 +7,9 @@ use tailsync_runtime::contracts::{StableErrorCode, StableErrorEnvelope};
 pub struct CommandError(StableErrorEnvelope);
 
 impl CommandError {
+    pub(crate) fn restore(outcome: &tailsync_runtime::history::RestoreOutcome) -> Self {
+        Self(outcome.error_envelope())
+    }
     pub(crate) fn code(code: StableErrorCode) -> Self {
         Self(StableErrorEnvelope::new(code))
     }
@@ -28,14 +31,28 @@ impl CommandError {
 }
 
 impl From<String> for CommandError {
-    fn from(_message: String) -> Self {
-        Self::code(StableErrorCode::InternalError)
+    fn from(message: String) -> Self {
+        Self::from(message.as_str())
     }
 }
 
 impl From<&str> for CommandError {
-    fn from(_message: &str) -> Self {
-        Self::code(StableErrorCode::InternalError)
+    fn from(message: &str) -> Self {
+        Self::code(match message {
+            "content analysis busy" | "content analysis is stale" | "history image is stale" => {
+                StableErrorCode::TemporarilyBusy
+            }
+            "publish_partial" => StableErrorCode::PublishPartial,
+            "publish_unknown" => StableErrorCode::PublishUnknown,
+            "publish_superseded" => StableErrorCode::PublishSuperseded,
+            "native_only" => StableErrorCode::NativeOnly,
+            "originals_incomplete" => StableErrorCode::OriginalsIncomplete,
+            "resources_incomplete" => StableErrorCode::ResourcesIncomplete,
+            "no_single_image" => StableErrorCode::NoSingleImage,
+            "format_unavailable" => StableErrorCode::FormatUnavailable,
+            "unsupported_format" => StableErrorCode::UnsupportedFormat,
+            _ => StableErrorCode::InternalError,
+        })
     }
 }
 
@@ -66,6 +83,37 @@ impl std::fmt::Display for CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_admission_pressure_keeps_its_retry_policy_without_private_details() {
+        for message in [
+            "content analysis busy",
+            "content analysis is stale",
+            "history image is stale",
+        ] {
+            let error = CommandError::from(message);
+            assert_eq!(error.envelope().code, StableErrorCode::TemporarilyBusy);
+            assert!(error.envelope().retryable);
+        }
+        assert_eq!(
+            CommandError::from("content analysis busy /private/input")
+                .envelope()
+                .code,
+            StableErrorCode::InternalError
+        );
+    }
+    #[test]
+    fn restore_outcome_survives_the_command_boundary() {
+        let error = CommandError::restore(&tailsync_runtime::history::RestoreOutcome::Unknown {
+            detail: "private details".into(),
+        });
+        let encoded = serde_json::to_value(error).unwrap();
+        assert_eq!(
+            encoded["message_key"],
+            "history.restore.code.publish_unknown"
+        );
+        assert_eq!(encoded["retryable"], true);
+        assert!(!encoded.to_string().contains("private details"));
+    }
 
     #[test]
     fn command_errors_serialize_without_source_details() {

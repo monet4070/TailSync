@@ -74,6 +74,19 @@ final class SettingsUIPreviewTests: XCTestCase {
     }
 
     @MainActor
+    func testPreviewHistorySection() throws {
+        try render(name: "history-zh-light.png", lang: "zh-CN", scheme: .light) {
+            SettingsView().historySection
+        }
+        try render(name: "history-en-light.png", lang: "en", scheme: .light) {
+            SettingsView().historySection
+        }
+        try render(name: "history-zh-dark.png", lang: "zh-CN", scheme: .dark) {
+            SettingsView().historySection
+        }
+    }
+
+    @MainActor
     func testPreviewConnectionsView() throws {
         try render(name: "connections-zh-light.png", lang: "zh-CN", scheme: .light) {
             let view = ConnectionsView()

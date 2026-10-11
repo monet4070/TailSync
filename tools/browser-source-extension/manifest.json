@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "TailSync Source Context (optional)",
+  "version": "0.1.0",
+  "description": "Optional helper: with an explicit user gesture, read same-origin/blob static PNG bytes for exact TailSync-authorized image nodes and download a bounded packet. No cookies, storage, history, clipboard or long-term host access.",
+  "action": {
+    "default_title": "TailSync source context",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["activeTab", "scripting"]
+}

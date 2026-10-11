@@ -6,7 +6,8 @@ mod structured;
 mod website;
 
 pub use model::{
-    is_known_category, Classification, CATEGORIES, CLASSIFIER_VERSION, MAX_SAMPLE_BYTES,
+    canonical_category, is_known_category, Classification, CATEGORIES, CLASSIFIER_VERSION,
+    MAX_SAMPLE_BYTES,
 };
 
 pub fn classify_text(text: &str) -> Classification {
@@ -24,13 +25,13 @@ pub fn classify_text(text: &str) -> Classification {
             };
         }
         if structured::is_structured_json(sample) {
-            return Classification::new("structured_data", 99);
+            return Classification::new("code", 99);
         }
         if command::is_command(sample) {
-            return Classification::ambiguous("command", 92);
+            return Classification::new("code", 92);
         }
         if command::is_command_block(sample) {
-            return Classification::new("command", 96);
+            return Classification::new("code", 96);
         }
         if paths::is_path(sample) {
             return Classification::new("path", 96);
@@ -41,7 +42,7 @@ pub fn classify_text(text: &str) -> Classification {
     if code_score >= 8 {
         Classification::new("code", 96)
     } else if !truncated && code_score >= 6 {
-        Classification::ambiguous("code", 90)
+        Classification::new("code", 90)
     } else {
         Classification::new("text", 75)
     }

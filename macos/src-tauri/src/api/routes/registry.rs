@@ -2,13 +2,20 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HistoryCommand {
     GetHistory,
+    GetHistoryPage,
     GetPreviewData,
+    ValidateDocumentPreview,
+    CancelDocumentPreview,
     DeleteEntry,
     SetHistoryFavorite,
     DeleteFavoriteEntry,
     ClearHistory,
     ClearAll,
     RestoreEntry,
+    ArchiveEntryImages,
+    SourceContextGrantCreate,
+    SourceContextGrantRevoke,
+    SourceContextImport,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PeersCommand {
@@ -61,6 +68,7 @@ pub(super) enum BuiltinCommand {
     GetStorageStatus,
     GetVersion,
     GetSyncWarning,
+    AckSyncWarning,
     GetHistoryCapabilities,
     GetMigrationDiagnostics,
     GetStatus,
@@ -94,13 +102,24 @@ impl LocalCommand {
     pub(super) fn parse(name: &str) -> Option<Self> {
         Some(match name {
             "get_history" => Self::History(HistoryCommand::GetHistory),
+            "get_history_page" => Self::History(HistoryCommand::GetHistoryPage),
             "get_preview_data" => Self::History(HistoryCommand::GetPreviewData),
+            "validate_document_preview" => Self::History(HistoryCommand::ValidateDocumentPreview),
+            "cancel_document_preview" => Self::History(HistoryCommand::CancelDocumentPreview),
             "delete_entry" => Self::History(HistoryCommand::DeleteEntry),
             "set_history_favorite" => Self::History(HistoryCommand::SetHistoryFavorite),
             "delete_favorite_entry" => Self::History(HistoryCommand::DeleteFavoriteEntry),
             "clear_history" => Self::History(HistoryCommand::ClearHistory),
             "clear_all" => Self::History(HistoryCommand::ClearAll),
             "restore_entry" => Self::History(HistoryCommand::RestoreEntry),
+            "archive_entry_images" => Self::History(HistoryCommand::ArchiveEntryImages),
+            "source_context_grant_create" => {
+                Self::History(HistoryCommand::SourceContextGrantCreate)
+            }
+            "source_context_grant_revoke" => {
+                Self::History(HistoryCommand::SourceContextGrantRevoke)
+            }
+            "source_context_import" => Self::History(HistoryCommand::SourceContextImport),
             "get_peers" => Self::Peers(PeersCommand::GetPeers),
             "refresh_peers" => Self::Peers(PeersCommand::RefreshPeers),
             "toggle_peer" => Self::Peers(PeersCommand::TogglePeer),
@@ -141,6 +160,7 @@ impl LocalCommand {
             "get_storage_status" => Self::Builtin(BuiltinCommand::GetStorageStatus),
             "get_version" => Self::Builtin(BuiltinCommand::GetVersion),
             "get_sync_warning" => Self::Builtin(BuiltinCommand::GetSyncWarning),
+            "ack_sync_warning" => Self::Builtin(BuiltinCommand::AckSyncWarning),
             "get_history_capabilities" => Self::Builtin(BuiltinCommand::GetHistoryCapabilities),
             "get_migration_diagnostics" => Self::Builtin(BuiltinCommand::GetMigrationDiagnostics),
             "get_status" => Self::Builtin(BuiltinCommand::GetStatus),
@@ -169,6 +189,7 @@ impl LocalCommand {
             "migrate_entry" => Self::Builtin(BuiltinCommand::MigrateEntry),
             "quit" => Self::Builtin(BuiltinCommand::Quit),
             "get_preview_binary" => Self::BinaryPreview,
+            "get_document_preview" => Self::BinaryPreview,
             _ => return None,
         })
     }
@@ -179,13 +200,20 @@ mod tests {
     #[test]
     fn all_registered_commands_parse_and_unknown_is_rejected() {
         assert!(LocalCommand::parse("get_history").is_some());
+        assert!(LocalCommand::parse("get_history_page").is_some());
         assert!(LocalCommand::parse("get_preview_data").is_some());
+        assert!(LocalCommand::parse("validate_document_preview").is_some());
+        assert!(LocalCommand::parse("cancel_document_preview").is_some());
         assert!(LocalCommand::parse("delete_entry").is_some());
         assert!(LocalCommand::parse("set_history_favorite").is_some());
         assert!(LocalCommand::parse("delete_favorite_entry").is_some());
         assert!(LocalCommand::parse("clear_history").is_some());
         assert!(LocalCommand::parse("clear_all").is_some());
         assert!(LocalCommand::parse("restore_entry").is_some());
+        assert!(LocalCommand::parse("archive_entry_images").is_some());
+        assert!(LocalCommand::parse("source_context_grant_create").is_some());
+        assert!(LocalCommand::parse("source_context_grant_revoke").is_some());
+        assert!(LocalCommand::parse("source_context_import").is_some());
         assert!(LocalCommand::parse("get_peers").is_some());
         assert!(LocalCommand::parse("refresh_peers").is_some());
         assert!(LocalCommand::parse("toggle_peer").is_some());
@@ -226,6 +254,7 @@ mod tests {
         assert!(LocalCommand::parse("get_storage_status").is_some());
         assert!(LocalCommand::parse("get_version").is_some());
         assert!(LocalCommand::parse("get_sync_warning").is_some());
+        assert!(LocalCommand::parse("ack_sync_warning").is_some());
         assert!(LocalCommand::parse("get_history_capabilities").is_some());
         assert!(LocalCommand::parse("get_migration_diagnostics").is_some());
         assert!(LocalCommand::parse("get_status").is_some());
@@ -246,6 +275,7 @@ mod tests {
         assert!(LocalCommand::parse("migrate_entry").is_some());
         assert!(LocalCommand::parse("quit").is_some());
         assert!(LocalCommand::parse("get_preview_binary").is_some());
+        assert!(LocalCommand::parse("get_document_preview").is_some());
         assert!(LocalCommand::parse("unknown_command").is_none());
     }
 }

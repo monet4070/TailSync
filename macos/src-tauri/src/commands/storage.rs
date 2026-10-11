@@ -165,7 +165,10 @@ pub async fn restore_file_batch(
     batch_id: String,
 ) -> Result<(), CommandError> {
     let paths = materialize_file_batch_paths(state.db.clone(), batch_id).await?;
+    let mut engine = state.sync_engine.lock().await;
+    engine.supersede_file_clipboard();
     crate::clipboard_file::write_clipboard_files(&paths)?;
+    drop(engine);
     crate::api::bump_clipboard_version();
     Ok(())
 }

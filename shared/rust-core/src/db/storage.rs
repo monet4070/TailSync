@@ -125,7 +125,11 @@ struct StorageMarker {
 impl HistoryDB {
     fn storage_status_snapshot(&self) -> StorageStatusSnapshot {
         StorageStatusSnapshot {
-            root: get_storage_dir(),
+            root: self
+                .image_history_dir
+                .parent()
+                .unwrap_or(&self.image_history_dir)
+                .to_path_buf(),
             quota_bytes: self.storage_quota_bytes,
             available: self.storage_available,
         }
@@ -151,7 +155,9 @@ impl HistoryDB {
             return Err("Configured storage is unavailable; file transfer is paused".into());
         }
         let required_free = required_free_space_for_batch(incoming_bytes, encrypted_copy_bytes);
-        let available = fs2::available_space(get_storage_dir())?;
+        let storage_root = self.storage_status_snapshot().root;
+        crate::private_fs::create_private_dir_all(&storage_root)?;
+        let available = fs2::available_space(&storage_root)?;
         if available < required_free {
             return Err(format!(
                 "Not enough free disk space for this file batch ({} bytes available, {} bytes required)",
@@ -164,7 +170,7 @@ impl HistoryDB {
         // eviction held the database lock and blocked history queries
         // (S4-P1-3). If an eviction frees nothing provable, re-measure so the
         // loop cannot spin on a stale baseline.
-        let mut used = bulk_storage_size(&get_storage_dir())?;
+        let mut used = bulk_storage_size(&storage_root)?;
         loop {
             if used.saturating_add(incoming_bytes) <= self.storage_quota_bytes {
                 return Ok(());
@@ -183,16 +189,16 @@ impl HistoryDB {
             // credit both the payload bytes that provably left the disk and the
             // WAL bytes the checkpoint reclaimed. Without the latter the loop
             // over-estimates usage and evicts more history than the quota needs.
-            let files_before = bulk_storage_file_bytes(&get_storage_dir());
+            let files_before = bulk_storage_file_bytes(&storage_root);
             let freed = self.delete_entries(&ids)?;
-            let files_after = bulk_storage_file_bytes(&get_storage_dir());
+            let files_after = bulk_storage_file_bytes(&storage_root);
             // Credit the payload bytes that left the disk plus the NET change of
             // the db/wal/shm trio: the delete truncates the WAL but also grows the
             // database. Crediting only the payload bytes (or only the WAL) leaves
             // `used` under-stated and lets the loop exit above the quota.
             let credited = i128::from(freed) + i128::from(files_before) - i128::from(files_after);
             if credited <= 0 {
-                used = bulk_storage_size(&get_storage_dir())?;
+                used = bulk_storage_size(&storage_root)?;
                 if used.saturating_add(incoming_bytes) > self.storage_quota_bytes {
                     return Err(
                         "Storage cleanup did not reclaim physical space; file transfer is paused"
@@ -203,6 +209,21 @@ impl HistoryDB {
                 used = used.saturating_sub(u64::try_from(credited).unwrap_or(u64::MAX));
             }
         }
+    }
+
+    pub(super) fn check_archive_storage_reservation(
+        &self,
+        incoming_bytes: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let root = self.storage_status_snapshot().root;
+        let required = required_free_space_for_batch(incoming_bytes, 0);
+        if fs2::available_space(&root)? < required {
+            return Err("Insufficient free storage for resource archive".into());
+        }
+        if bulk_storage_size(&root)?.saturating_add(incoming_bytes) > self.storage_quota_bytes {
+            return Err("Storage quota exceeded for resource archive".into());
+        }
+        Ok(())
     }
 
     /// Find the oldest unpinned row that owns an external encrypted payload.
@@ -222,9 +243,13 @@ impl HistoryDB {
         })?;
         for row in rows {
             let (id, entry_type, stored) = row?;
+            if self.protected_history.contains(&id) {
+                continue;
+            }
             let external = match entry_type.as_str() {
                 "file" => decode_file_reference(&stored).is_some(),
                 "image" => decode_image_reference(&stored).is_some(),
+                "composite" => !self.composite_part_payloads(&[id])?.is_empty(),
                 _ => false,
             };
             if external {
@@ -318,12 +343,17 @@ impl HistoryDB {
     }
 
     pub fn reopen_storage_at(&mut self, root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.protected_history.is_empty() {
+            return Err("Pending clipboard history must settle before changing storage".into());
+        }
         let previous_root = get_storage_dir();
         if !self.storage_available && !paths_equivalent(&previous_root, root) {
             return Err("StorageUnavailableWithPendingHistory: recover the current storage location before switching roots".into());
         }
         configure_storage_dir(Some(root))?;
-        let replacement = match Self::open_at(root) {
+        // Relocation copies an already-open store. Preserve its schema; startup
+        // upgrades run outside the maintenance lock and make their own snapshots.
+        let replacement = match Self::open_at_with_policy(root, MigrationPolicy::LegacyOnly) {
             Ok(database) => database,
             Err(error) => {
                 let _ = configure_storage_dir(Some(&previous_root));
@@ -651,7 +681,10 @@ fn bulk_storage_size(root: &Path) -> std::io::Result<u64> {
     Ok(total)
 }
 
-fn copy_file_verified(source: &Path, target: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn copy_file_verified(
+    source: &Path,
+    target: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = BufReader::new(fs::File::open(source)?);
     let mut writer = crate::private_fs::create_private_file(target)?;
     let mut source_hasher = blake3::Hasher::new();
@@ -676,7 +709,7 @@ fn copy_file_verified(source: &Path, target: &Path) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn hash_file(path: &Path) -> std::io::Result<blake3::Hash> {
+pub(super) fn hash_file(path: &Path) -> std::io::Result<blake3::Hash> {
     let mut reader = BufReader::new(fs::File::open(path)?);
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
@@ -1468,5 +1501,89 @@ mod tests {
         assert_eq!(get_storage_dir(), PathBuf::from(result.new_root));
         drop(db);
         configure_storage_dir(Some(&original)).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod composite_quota_tests {
+    use super::*;
+
+    #[test]
+    fn reused_composite_part_is_reserved_again_after_its_last_reference_is_evicted() {
+        use crate::composite::{Completeness, Mime, PortableBundle, Representation};
+        use crate::protocol::native_clipboard::*;
+        use rand::{RngCore, SeedableRng};
+        let image = |seed| {
+            let mut pixels = vec![0; 200 * 200 * 4];
+            rand::rngs::StdRng::seed_from_u64(seed).fill_bytes(&mut pixels);
+            crate::composite::packed_to_png(200, 200, &pixels).unwrap()
+        };
+        let first = image(401);
+        let second = image(402);
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-shared-part-quota-{:016x}",
+            rand::random::<u64>()
+        ));
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let bundle = PortableBundle {
+            representations: vec![Representation {
+                mime: Mime::Png,
+                bytes: first.clone(),
+            }],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        db.add_composite(&bundle, None, "fixture").unwrap();
+        db.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        let quota = bulk_storage_size(&root).unwrap() + 80 * 1024;
+        db.set_storage_quota(quota);
+        let native = NativeSnapshot {
+            before: 0,
+            after: 0,
+            items: 1,
+            state: SnapshotState::Stable,
+            formats: vec![NativeFormat {
+                item: 0,
+                name: "public.png".into(),
+                state: FormatState::Captured,
+                bytes: second,
+            }],
+        };
+        assert!(db.add_composite(&bundle, Some(&native), "fixture").is_err());
+        assert!(bulk_storage_size(&root).unwrap() <= quota);
+        assert_eq!(
+            std::fs::read_dir(root.join("image-history"))
+                .unwrap()
+                .count(),
+            0
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn physical_quota_uses_the_open_database_storage_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-owned-quota-{:016x}",
+            rand::random::<u64>()
+        ));
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        crate::private_fs::write_private_file(
+            &root.join("image-history/quota-fixture.bin"),
+            &vec![0; 192 * 1024],
+        )
+        .unwrap();
+        let own_usage = bulk_storage_size(&root).unwrap();
+        db.set_storage_quota(1);
+        let error = db.reserve_for_file_batch(1, 0).unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("{own_usage} bytes are used")),
+            "{error}"
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

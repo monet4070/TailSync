@@ -2,12 +2,17 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HistoryCommand {
     GetHistory,
+    GetHistoryPage,
     DeleteEntry,
     SetHistoryFavorite,
     DeleteFavoriteEntry,
     ClearHistory,
     ClearAll,
     RestoreEntry,
+    ArchiveEntryImages,
+    SourceContextGrantCreate,
+    SourceContextGrantRevoke,
+    SourceContextImport,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PeersCommand {
@@ -76,12 +81,21 @@ impl LocalCommand {
     pub(super) fn parse(name: &str) -> Option<Self> {
         Some(match name {
             "get_history" => Self::History(HistoryCommand::GetHistory),
+            "get_history_page" => Self::History(HistoryCommand::GetHistoryPage),
             "delete_entry" => Self::History(HistoryCommand::DeleteEntry),
             "set_history_favorite" => Self::History(HistoryCommand::SetHistoryFavorite),
             "delete_favorite_entry" => Self::History(HistoryCommand::DeleteFavoriteEntry),
             "clear_history" => Self::History(HistoryCommand::ClearHistory),
             "clear_all" => Self::History(HistoryCommand::ClearAll),
             "restore_entry" => Self::History(HistoryCommand::RestoreEntry),
+            "archive_entry_images" => Self::History(HistoryCommand::ArchiveEntryImages),
+            "source_context_grant_create" => {
+                Self::History(HistoryCommand::SourceContextGrantCreate)
+            }
+            "source_context_grant_revoke" => {
+                Self::History(HistoryCommand::SourceContextGrantRevoke)
+            }
+            "source_context_import" => Self::History(HistoryCommand::SourceContextImport),
             "get_peers" => Self::Peers(PeersCommand::GetPeers),
             "refresh_peers" => Self::Peers(PeersCommand::RefreshPeers),
             "toggle_peer" => Self::Peers(PeersCommand::TogglePeer),
@@ -147,12 +161,17 @@ mod tests {
     #[test]
     fn all_registered_commands_parse_and_unknown_is_rejected() {
         assert!(LocalCommand::parse("get_history").is_some());
+        assert!(LocalCommand::parse("get_history_page").is_some());
         assert!(LocalCommand::parse("delete_entry").is_some());
         assert!(LocalCommand::parse("set_history_favorite").is_some());
         assert!(LocalCommand::parse("delete_favorite_entry").is_some());
         assert!(LocalCommand::parse("clear_history").is_some());
         assert!(LocalCommand::parse("clear_all").is_some());
         assert!(LocalCommand::parse("restore_entry").is_some());
+        assert!(LocalCommand::parse("archive_entry_images").is_some());
+        assert!(LocalCommand::parse("source_context_grant_create").is_some());
+        assert!(LocalCommand::parse("source_context_grant_revoke").is_some());
+        assert!(LocalCommand::parse("source_context_import").is_some());
         assert!(LocalCommand::parse("get_peers").is_some());
         assert!(LocalCommand::parse("refresh_peers").is_some());
         assert!(LocalCommand::parse("toggle_peer").is_some());

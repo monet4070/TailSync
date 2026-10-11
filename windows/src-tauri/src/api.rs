@@ -554,6 +554,7 @@ pub fn load_api_token() -> Result<ApiToken, String> {
 
 pub struct ApiState {
     pub db: Arc<Mutex<db::HistoryDB>>,
+    pub image_archive: Arc<crate::automatic_images::AutomaticImageArchive>,
     pub sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pub settings: Arc<Mutex<crypto::Settings>>,
     pub identity: Arc<DeviceIdentity>,
@@ -569,6 +570,8 @@ pub struct ApiState {
 #[derive(Debug, Deserialize)]
 struct Request {
     cmd: String,
+    #[serde(default)]
+    restore_format: Option<String>,
     #[serde(default)]
     ack_warning_id: Option<u64>,
     #[serde(default)]
@@ -634,6 +637,10 @@ struct Request {
     favorite: Option<bool>,
     #[serde(default)]
     collection: Option<String>,
+    #[serde(default)]
+    cache_key: Option<String>,
+    #[serde(default)]
+    grant_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -52,7 +52,7 @@ final class TailSyncTransientWindowController: NSWindowController, NSWindowDeleg
         guard let eventWindow = notification.object as? NSWindow,
               eventWindow === window else { return }
         reportVisibility(
-            eventWindow.occlusionState.contains(.visible),
+            eventWindow.isVisible && !eventWindow.isMiniaturized,
             for: notification
         )
     }

@@ -7,6 +7,9 @@ use tailsync_runtime::contracts::{StableErrorCode, StableErrorEnvelope};
 pub struct CommandError(StableErrorEnvelope);
 
 impl CommandError {
+    pub(crate) fn restore(outcome: &tailsync_runtime::history::RestoreOutcome) -> Self {
+        Self(outcome.error_envelope())
+    }
     pub(crate) fn code(code: StableErrorCode) -> Self {
         Self(StableErrorEnvelope::new(code))
     }
@@ -28,14 +31,49 @@ impl CommandError {
 }
 
 impl From<String> for CommandError {
-    fn from(_message: String) -> Self {
-        Self::code(StableErrorCode::InternalError)
+    fn from(message: String) -> Self {
+        Self::from(message.as_str())
     }
 }
 
 impl From<&str> for CommandError {
-    fn from(_message: &str) -> Self {
-        Self::code(StableErrorCode::InternalError)
+    fn from(message: &str) -> Self {
+        Self::code(match message {
+            "content analysis busy" | "content analysis is stale" | "history image is stale" => {
+                StableErrorCode::TemporarilyBusy
+            }
+            "publish_partial" => StableErrorCode::PublishPartial,
+            "publish_unknown" => StableErrorCode::PublishUnknown,
+            "publish_superseded" => StableErrorCode::PublishSuperseded,
+            "native_only" => StableErrorCode::NativeOnly,
+            "originals_incomplete" => StableErrorCode::OriginalsIncomplete,
+            "resources_incomplete" => StableErrorCode::ResourcesIncomplete,
+            "no_single_image" => StableErrorCode::NoSingleImage,
+            "format_unavailable" => StableErrorCode::FormatUnavailable,
+            "unsupported_format" => StableErrorCode::UnsupportedFormat,
+            _ => StableErrorCode::InternalError,
+        })
+    }
+}
+
+impl From<tailsync_core::db::PreviewErrorInfo> for CommandError {
+    fn from(error: tailsync_core::db::PreviewErrorInfo) -> Self {
+        use tailsync_core::db::PreviewErrorCode;
+        if error.retryable {
+            return Self::code(StableErrorCode::TemporarilyBusy);
+        }
+        let code = match error.code {
+            PreviewErrorCode::EntryNotFound
+            | PreviewErrorCode::BatchNotFound
+            | PreviewErrorCode::EntryNotInBatch
+            | PreviewErrorCode::MetadataUnavailable => StableErrorCode::NotFound,
+            PreviewErrorCode::PayloadUnavailable => StableErrorCode::StorageUnavailable,
+            PreviewErrorCode::UnsupportedType => StableErrorCode::UnsupportedFormat,
+            PreviewErrorCode::PreviewTooLarge | PreviewErrorCode::InvalidSize => {
+                StableErrorCode::InvalidArgument
+            }
+        };
+        Self::code(code)
     }
 }
 
@@ -67,6 +105,24 @@ impl std::fmt::Display for CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_admission_pressure_keeps_its_retry_policy_without_private_details() {
+        for message in [
+            "content analysis busy",
+            "content analysis is stale",
+            "history image is stale",
+        ] {
+            let error = CommandError::from(message);
+            assert_eq!(error.envelope().code, StableErrorCode::TemporarilyBusy);
+            assert!(error.envelope().retryable);
+        }
+        assert_eq!(
+            CommandError::from("content analysis busy /private/input")
+                .envelope()
+                .code,
+            StableErrorCode::InternalError
+        );
+    }
 
     #[test]
     fn command_errors_serialize_without_source_details() {

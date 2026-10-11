@@ -21,6 +21,8 @@ pub struct CapabilitySet {
     pub file_sliding_window: bool,
     pub image_compressed_chunks: bool,
     pub pairing_commit_proof: bool,
+    pub composite_clipboard: bool,
+    pub archive_resource_updates: bool,
 }
 
 impl CapabilitySet {
@@ -29,11 +31,17 @@ impl CapabilitySet {
             file_sliding_window: false,
             image_compressed_chunks: false,
             pairing_commit_proof: false,
+            composite_clipboard: false,
+            archive_resource_updates: false,
         }
     }
 
     pub const fn is_empty(&self) -> bool {
-        !self.file_sliding_window && !self.image_compressed_chunks && !self.pairing_commit_proof
+        !self.file_sliding_window
+            && !self.image_compressed_chunks
+            && !self.pairing_commit_proof
+            && !self.composite_clipboard
+            && !self.archive_resource_updates
     }
 
     /// Negotiate each extension independently. A remote advertisement can
@@ -44,6 +52,11 @@ impl CapabilitySet {
             image_compressed_chunks: local.image_compressed_chunks
                 && remote.image_compressed_chunks,
             pairing_commit_proof: local.pairing_commit_proof && remote.pairing_commit_proof,
+            composite_clipboard: local.composite_clipboard && remote.composite_clipboard,
+            archive_resource_updates: local.archive_resource_updates
+                && remote.archive_resource_updates
+                && local.composite_clipboard
+                && remote.composite_clipboard,
         }
     }
 }
@@ -55,6 +68,80 @@ pub struct CapabilitySwitches {
     pub file_sliding_window: bool,
     pub image_compressed_chunks: bool,
     pub pairing_commit_proof: bool,
+    pub composite_clipboard: bool,
+}
+
+/// Startup helper-health report, set by the platform layer.
+///
+/// `None` means the platform has not probed yet. Composite clipboard is
+/// `compiled_feature && runtime_enabled && helper_healthy` (ADR-004 K8), and the
+/// startup order requires the no-body self-check to run *before* the migration
+/// policy is frozen — so an unreported probe is deliberately not serviceable
+/// rather than optimistically assumed healthy.
+const HELPER_UNKNOWN: u8 = 0;
+const HELPER_HEALTHY: u8 = 1;
+const HELPER_UNHEALTHY: u8 = 2;
+
+static ORIGIN_HEALTH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static JOURNAL_HEALTH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn set_origin_health(healthy: bool) {
+    ORIGIN_HEALTH.store(healthy, std::sync::atomic::Ordering::Release);
+}
+pub fn set_journal_health(healthy: bool) {
+    JOURNAL_HEALTH.store(healthy, std::sync::atomic::Ordering::Release);
+}
+
+static HELPER_HEALTH: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(HELPER_UNKNOWN);
+
+/// Record the result of the platform's no-body helper self-check.
+///
+/// Call during startup, before opening the database and before the first
+/// handshake, so the decision is consistent for both the capability and the
+/// schema policy.
+pub fn set_helper_health(healthy: bool) {
+    HELPER_HEALTH.store(
+        if healthy {
+            HELPER_HEALTHY
+        } else {
+            HELPER_UNHEALTHY
+        },
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+
+/// The last reported helper health, or `None` if the platform has not probed.
+pub fn helper_health() -> Option<bool> {
+    match HELPER_HEALTH.load(std::sync::atomic::Ordering::SeqCst) {
+        HELPER_HEALTHY => Some(true),
+        HELPER_UNHEALTHY => Some(false),
+        _ => None,
+    }
+}
+
+/// Restore unknown health after a test fixture; platform tests use the dev-only
+/// test-support edge so their fake native adapter must not leak healthy state.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_helper_health_for_test() {
+    HELPER_HEALTH.store(HELPER_UNKNOWN, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether composite clipboard is serviceable right now: the full K8 predicate.
+///
+/// This is what the database migration policy and the platform's capture switch
+/// both consult, so "the feature is on" can never mean "the schema upgrades even
+/// though the platform cannot service it".
+pub fn composite_serviceable() -> bool {
+    composite_capture_serviceable()
+        && ORIGIN_HEALTH.load(std::sync::atomic::Ordering::Acquire)
+        && JOURNAL_HEALTH.load(std::sync::atomic::Ordering::Acquire)
+}
+/// A healthy reader may preserve history while automatic publication is disabled.
+pub fn composite_capture_serviceable() -> bool {
+    CapabilitySwitches::runtime_defaults()
+        .advertised()
+        .composite_clipboard
+        && helper_health() == Some(true)
 }
 
 impl CapabilitySwitches {
@@ -66,7 +153,17 @@ impl CapabilitySwitches {
             image_compressed_chunks: std::env::var_os("TAILSYNC_DISABLE_IMAGE_CHUNKS").is_none(),
             pairing_commit_proof: std::env::var_os("TAILSYNC_DISABLE_PAIRING_COMMIT_PROOF")
                 .is_none(),
+            composite_clipboard: std::env::var_os("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD").is_none(),
         }
+    }
+
+    pub fn serviceable_advertisement(self) -> CapabilitySet {
+        let mut capabilities = self.advertised();
+        capabilities.composite_clipboard &= helper_health() == Some(true)
+            && ORIGIN_HEALTH.load(std::sync::atomic::Ordering::Acquire)
+            && JOURNAL_HEALTH.load(std::sync::atomic::Ordering::Acquire);
+        capabilities.archive_resource_updates &= capabilities.composite_clipboard;
+        capabilities
     }
 
     pub const fn advertised(self) -> CapabilitySet {
@@ -76,6 +173,10 @@ impl CapabilitySwitches {
             image_compressed_chunks: cfg!(feature = "protocol-image-compressed-chunks")
                 && self.image_compressed_chunks,
             pairing_commit_proof: self.pairing_commit_proof,
+            composite_clipboard: cfg!(feature = "protocol-composite-clipboard")
+                && self.composite_clipboard,
+            archive_resource_updates: cfg!(feature = "protocol-composite-clipboard")
+                && self.composite_clipboard,
         }
     }
 }
@@ -108,6 +209,10 @@ const fn capabilities_for_wire(capabilities: CapabilitySet, wire_version: u8) ->
         image_compressed_chunks: wire_version == protocol::VERSION
             && capabilities.image_compressed_chunks,
         pairing_commit_proof: capabilities.pairing_commit_proof,
+        composite_clipboard: wire_version == protocol::VERSION && capabilities.composite_clipboard,
+        archive_resource_updates: wire_version == protocol::VERSION
+            && capabilities.composite_clipboard
+            && capabilities.archive_resource_updates,
     }
 }
 
@@ -299,7 +404,33 @@ impl SecureConnection {
         {
             return Err("Pairing commit proof was not negotiated".into());
         }
-        if self.wire_version == protocol::LEGACY_VERSION && frame.command == Command::ImageChunk {
+        if matches!(
+            frame.command,
+            Command::CompositePayload | Command::CompositeChunk | Command::CompositeAck
+        ) && !self.negotiated_capabilities.composite_clipboard
+        {
+            return Err("Composite clipboard was not negotiated".into());
+        }
+        if matches!(
+            frame.command,
+            Command::ArchiveUpdatePayload | Command::ArchiveUpdateChunk | Command::ArchiveUpdateAck
+        ) && (!self.negotiated_capabilities.archive_resource_updates
+            || !self.negotiated_capabilities.composite_clipboard)
+        {
+            return Err("Archive resource updates were not negotiated".into());
+        }
+        if self.wire_version == protocol::LEGACY_VERSION
+            && matches!(
+                frame.command,
+                Command::ImageChunk
+                    | Command::CompositePayload
+                    | Command::CompositeChunk
+                    | Command::CompositeAck
+                    | Command::ArchiveUpdatePayload
+                    | Command::ArchiveUpdateChunk
+                    | Command::ArchiveUpdateAck
+            )
+        {
             return Err(ProtocolError::UnsupportedVersion(self.wire_version).into());
         }
         if frame.payload.len() > frame.command.payload_limit() {
@@ -346,8 +477,38 @@ impl SecureConnection {
         let command_code = u16::from_be_bytes([self.read_buffer[6], self.read_buffer[7]]);
         let command =
             Command::from_u16(command_code).ok_or(ProtocolError::UnknownCommand(command_code))?;
-        if self.wire_version == protocol::LEGACY_VERSION && command == Command::ImageChunk {
+        if self.wire_version == protocol::LEGACY_VERSION
+            && matches!(
+                command,
+                Command::ImageChunk
+                    | Command::CompositePayload
+                    | Command::CompositeChunk
+                    | Command::CompositeAck
+                    | Command::ArchiveUpdatePayload
+                    | Command::ArchiveUpdateChunk
+                    | Command::ArchiveUpdateAck
+            )
+        {
             return Err(ProtocolError::UnsupportedVersion(protocol::LEGACY_VERSION));
+        }
+        if matches!(
+            command,
+            Command::CompositePayload | Command::CompositeChunk | Command::CompositeAck
+        ) && !self.negotiated_capabilities.composite_clipboard
+        {
+            return Err(ProtocolError::AdmissionRejected(
+                "Composite clipboard was not negotiated".into(),
+            ));
+        }
+        if matches!(
+            command,
+            Command::ArchiveUpdatePayload | Command::ArchiveUpdateChunk | Command::ArchiveUpdateAck
+        ) && (!self.negotiated_capabilities.archive_resource_updates
+            || !self.negotiated_capabilities.composite_clipboard)
+        {
+            return Err(ProtocolError::AdmissionRejected(
+                "Archive resource updates were not negotiated".into(),
+            ));
         }
         let payload_length = u32::from_be_bytes([
             self.read_buffer[12],

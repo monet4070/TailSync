@@ -260,6 +260,7 @@ mod tests {
         HistoryDB {
             conn: connection,
             read_identity: std::sync::Arc::new(()),
+            display_authority: rand::random(),
             #[cfg(any(test, feature = "test-support"))]
             storage_work_observer: None,
             deferred_checkpoint: false,
@@ -268,6 +269,9 @@ mod tests {
             storage_available: true,
             file_history_dir: root.join("file-history"),
             image_history_dir: root.join("image-history"),
+            // This fixture builds the pre-composite schema by hand.
+            has_composite_schema: false,
+            protected_history: std::collections::HashSet::new(),
         }
     }
 

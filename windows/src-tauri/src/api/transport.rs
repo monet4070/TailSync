@@ -197,6 +197,8 @@ async fn write_response(
 fn response_timeout_for_command(command: &str) -> Duration {
     if command == "get_preview_data" {
         Duration::from_secs(30)
+    } else if command == "archive_entry_images" || command == "source_context_import" {
+        Duration::from_secs(60)
     } else {
         API_WRITE_TIMEOUT
     }

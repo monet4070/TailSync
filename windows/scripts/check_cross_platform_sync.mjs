@@ -122,6 +122,8 @@ function assertTreeMatch(relativeDirectory, allowedDrift = []) {
 // macOS ships SwiftUI. Cross-platform checks below cover their shared runtime
 // and serialized contracts instead of requiring frontend source parity.
 assertTreeMatch('src-tauri/src', [
+  // Windows WebViews coordinate restore leases in Rust; SwiftUI uses its native coordinator.
+  'commands/restore_coordination.rs',
   'api.rs',
   'api/routes.rs',
   'api/routes/history.rs',

@@ -41,13 +41,25 @@ pub struct HistoryReadRevision {
     external_version: i64,
 }
 
+impl HistoryReadRevision {
+    pub fn authority(&self) -> usize {
+        Arc::as_ptr(&self.identity) as usize
+    }
+    pub fn generation(&self) -> u64 {
+        self.changes
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct HistoryReadCursor {
     timestamp: String,
     id: i64,
 }
 
-enum PayloadSource {
+pub(super) enum PayloadSource {
+    PlainBytes(Vec<u8>),
+    Checked(Box<PayloadSource>, String, usize),
+    CompositeFirstImage(Box<super::composite::PreparedContentAnalysis>),
     Inline(Vec<u8>),
     Encrypted(File),
     Container(File),
@@ -55,13 +67,26 @@ enum PayloadSource {
 }
 
 impl PayloadSource {
-    fn read(
+    pub(super) fn read(
         self,
         cancellation: &Cancellation,
         limit: u64,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         cancellation.check()?;
         let data = match self {
+            Self::PlainBytes(bytes) => bytes,
+            Self::CompositeFirstImage(prepared) => {
+                let packed = prepared.read_first_image(cancellation)?;
+                cancellation.check()?;
+                return Ok(packed);
+            }
+            Self::Checked(source, hash, size) => {
+                let bytes = source.read(cancellation, size as u64)?;
+                if bytes.len() != size || blake3::hash(&bytes).to_hex().as_str() != hash {
+                    return Err("Composite part digest mismatch".into());
+                }
+                bytes
+            }
             Self::Inline(bytes) => {
                 if bytes.len() as u64 > limit.saturating_add(28) {
                     return Err("encrypted payload exceeds read limit".into());
@@ -127,6 +152,7 @@ fn open_payload(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
 struct Candidate {
     entry: HistoryEntry,
     text: Option<Result<PayloadSource, String>>,
+    menu: Result<Option<super::composite::PreparedCompositeMenu>, String>,
 }
 
 pub struct HistoryReadChunk {
@@ -161,31 +187,51 @@ impl HistoryReadChunk {
             .filter(|s| !s.trim().is_empty())
             .map(str::to_lowercase);
         let mut entries = Vec::new();
-        for mut candidate in self.candidates {
+        for candidate in self.candidates {
+            let Candidate {
+                mut entry,
+                text,
+                menu,
+            } = candidate;
             cancellation.check()?;
             let mut full_match = false;
-            if let Some(source) = candidate.text {
+            if let Some(source) = text {
                 let text = source
                     .and_then(|source| {
                         source
                             .read(cancellation, PREVIEW_MAX_BYTES)
                             .map_err(|e| e.to_string())
                     })
-                    .and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()));
+                    .and_then(|bytes| {
+                        let bytes = if entry.entry_type == "composite" {
+                            entry.composite = super::composite::info_bytes(&bytes).ok();
+                            if let Some(info) = &mut entry.composite {
+                                super::composite::PreparedCompositeMenu::apply_prepared(
+                                    menu,
+                                    info,
+                                    cancellation,
+                                );
+                            }
+                            super::composite::summary_bytes(&bytes).map_err(|e| e.to_string())?
+                        } else {
+                            bytes
+                        };
+                        String::from_utf8(bytes).map_err(|e| e.to_string())
+                    });
                 cancellation.check()?;
                 if let Ok(text) = text {
                     full_match = keyword
                         .as_ref()
                         .is_some_and(|keyword| text.to_lowercase().contains(keyword));
-                    candidate.entry.description = text_preview(&text);
+                    entry.description = text_preview(&text);
                 } else {
                     tracing::debug!(target: "tailsync.runtime.execution", operation = "history.text", outcome = "unavailable", "history text unavailable");
                 }
             }
             if keyword.as_ref().is_none_or(|keyword| {
-                full_match || HistoryDB::entry_metadata_matches_keyword(&candidate.entry, keyword)
+                full_match || HistoryDB::entry_metadata_matches_keyword(&entry, keyword)
             }) {
-                entries.push(candidate.entry);
+                entries.push(entry);
             }
         }
         Ok(entries)
@@ -194,28 +240,81 @@ impl HistoryReadChunk {
 
 pub struct PreparedPreview {
     pub metadata: PreviewMetadata,
-    source: PayloadSource,
-    data_hash: String,
+    pub(super) source: PayloadSource,
+    pub(super) data_hash: String,
 }
 
 impl PreparedPreview {
+    /// Includes decrypt copies, binary framing and bounded PNG workspace. The
+    /// lease travels with the admitted result until the IPC worker finishes.
+    pub fn read_admitted(
+        self,
+        cancellation: &Cancellation,
+    ) -> Result<
+        (
+            PreviewMetadata,
+            PreviewPayload,
+            crate::composite::budgets::PipelineLease,
+        ),
+        PreviewError,
+    > {
+        let size = self.metadata.size_bytes;
+        let png_extra = if matches!(&self.source, PayloadSource::CompositeFirstImage(_)) {
+            192 * 1024 * 1024 - 1024 * 1024
+        } else {
+            0
+        };
+        let memory = crate::composite::budgets::global()
+            .reserve_pipeline(
+                size.saturating_mul(3)
+                    .saturating_add(png_extra)
+                    .saturating_add(1024 * 1024),
+            )
+            .map_err(|e| PreviewError::PayloadUnavailable {
+                entry_id: self.metadata.entry_id,
+                reason: e.to_string(),
+            })?;
+        let (metadata, payload) = self.read_inner(cancellation)?;
+        Ok((metadata, payload, memory))
+    }
+
     pub fn read(
         self,
         cancellation: &Cancellation,
     ) -> Result<(PreviewMetadata, PreviewPayload), PreviewError> {
+        let (metadata, payload, _memory) = self.read_admitted(cancellation)?;
+        Ok((metadata, payload))
+    }
+
+    fn read_inner(
+        self,
+        cancellation: &Cancellation,
+    ) -> Result<(PreviewMetadata, PreviewPayload), PreviewError> {
         let id = self.metadata.entry_id;
+        let self_sized = matches!(&self.source, PayloadSource::CompositeFirstImage(_));
+        let mut metadata = self.metadata;
         let data = self
             .source
-            .read(cancellation, self.metadata.size_bytes)
+            .read(
+                cancellation,
+                if self_sized {
+                    32 * 1024 * 1024
+                } else {
+                    metadata.size_bytes
+                },
+            )
             .map_err(|error| PreviewError::PayloadUnavailable {
                 entry_id: id,
                 reason: error.to_string(),
             })?;
-        if data.len() as u64 != self.metadata.size_bytes {
+        if !self_sized && data.len() as u64 != metadata.size_bytes {
             return Err(PreviewError::PayloadUnavailable {
                 entry_id: id,
                 reason: "payload length differs from history metadata".into(),
             });
+        }
+        if self_sized {
+            metadata.size_bytes = data.len() as u64;
         }
         if self.data_hash.len() == 64 && blake3::hash(&data).to_hex().as_str() != self.data_hash {
             return Err(PreviewError::PayloadUnavailable {
@@ -224,12 +323,12 @@ impl PreparedPreview {
             });
         }
         let payload = PreviewPayload {
-            kind: self.metadata.kind.as_str().into(),
-            name: self.metadata.name.clone(),
+            kind: metadata.kind.as_str().into(),
+            name: metadata.name.clone(),
             size_bytes: data.len() as u64,
             data,
         };
-        Ok((self.metadata, payload))
+        Ok((metadata, payload))
     }
 }
 
@@ -259,7 +358,21 @@ impl HistoryDB {
         }
     }
 
-    fn prepare_text(&self, stored: Vec<u8>) -> Result<PayloadSource, Box<dyn std::error::Error>> {
+    pub fn validate_storage_authority(
+        &self,
+        revision: &HistoryReadRevision,
+    ) -> Result<(), HistoryReadError> {
+        if Arc::ptr_eq(&self.read_identity, &revision.identity) {
+            Ok(())
+        } else {
+            Err(HistoryReadError::Changed)
+        }
+    }
+
+    pub(super) fn prepare_text(
+        &self,
+        stored: Vec<u8>,
+    ) -> Result<PayloadSource, Box<dyn std::error::Error>> {
         if let Some(reference) = decode_image_reference(&stored) {
             Ok(PayloadSource::Encrypted(open_payload(
                 &resolve_file_reference_at(&self.image_history_dir, &reference)?,
@@ -297,7 +410,7 @@ impl HistoryDB {
             filters.push_str(condition);
         };
         if let Some(keyword) = keyword {
-            append_condition("(type = 'text' OR description LIKE ? ESCAPE '\\' OR source_peer LIKE ? ESCAPE '\\' OR type LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(history.categories) AS label WHERE label.value LIKE ? ESCAPE '\\'))");
+            append_condition("(type IN ('text', 'composite') OR description LIKE ? ESCAPE '\\' OR source_peer LIKE ? ESCAPE '\\' OR type LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(history.categories) AS label WHERE label.value LIKE ? ESCAPE '\\'))");
             for _ in 0..5 {
                 values.push(Value::Text(format!(
                     "%{}%",
@@ -314,7 +427,7 @@ impl HistoryDB {
         let sql = format!("SELECT id, timestamp, type, description, data_hash, size_bytes, source_peer,
             category, category_confidence, classifier_version, categories, pinned, batch_id, batch_index, batch_total, batch_status,
             CASE WHEN batch_id IS NULL THEN NULL ELSE (SELECT COUNT(*) FROM history AS b WHERE b.batch_id = history.batch_id) END,
-            CASE WHEN type = 'text' THEN data ELSE NULL END
+            CASE WHEN type IN ('text', 'composite') THEN data ELSE NULL END
             FROM history{filters} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?");
         values.push(Value::Integer(count as i64));
         // With no keyword the public offset still belongs to SQL. With a
@@ -335,11 +448,38 @@ impl HistoryDB {
                 break;
             };
             let entry = Self::row_to_entry(row)?;
-            let text = row.get::<_, Option<Vec<u8>>>(17)?.map(|stored| {
+            let stored = row.get::<_, Option<Vec<u8>>>(17)?;
+            let text = stored.map(|stored| {
                 bytes = bytes.saturating_add(stored.len());
-                self.prepare_text(stored).map_err(|error| error.to_string())
+                if entry.entry_type == "composite" {
+                    // Menu preparation already needs the manifest while SQL is
+                    // available. Retain that plaintext for the owned read worker
+                    // instead of decrypting the same manifest twice.
+                    self.read_text_payload_compat(&stored)
+                        .map(PayloadSource::PlainBytes)
+                        .map_err(|error| error.to_string())
+                } else {
+                    self.prepare_text(stored).map_err(|error| error.to_string())
+                }
             });
-            candidates.push(Candidate { entry, text });
+            let menu = if entry.entry_type == "composite" {
+                match &text {
+                    Some(Ok(PayloadSource::PlainBytes(decoded))) => self
+                        .prepare_composite_menu(entry.id, decoded)
+                        .map_err(|e| e.to_string()),
+                    Some(Err(_)) => Err("Composite manifest unavailable".into()),
+                    _ => Ok(None),
+                }
+            } else {
+                Ok(None)
+            };
+            bytes = bytes.saturating_add(
+                menu.as_ref()
+                    .ok()
+                    .and_then(|m| m.as_ref())
+                    .map_or(0, |m| m.declared_bytes()),
+            );
+            candidates.push(Candidate { entry, text, menu });
         }
         let cursor = candidates.last().map(|candidate| HistoryReadCursor {
             timestamp: candidate.entry.timestamp.clone(),
@@ -364,7 +504,46 @@ impl HistoryDB {
             Some(batch) => self.get_preview_batch_navigation(batch, id)?.first_entry_id,
             None => id,
         };
-        let metadata = self.get_preview_metadata(id)?;
+        let mut metadata = self.get_preview_metadata(id)?;
+        if self
+            .get_type(id)
+            .map_err(|_| PreviewError::EntryNotFound { entry_id: id })?
+            == "composite"
+        {
+            let display_kind =
+                self.display_kind(id)
+                    .map_err(|error| PreviewError::MetadataUnavailable {
+                        entry_id: id,
+                        reason: error.to_string(),
+                    })?;
+            if display_kind == "image" {
+                return self.prepare_composite_image(id);
+            }
+            let stored: Vec<u8> = self
+                .conn
+                .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+                .map_err(|e| PreviewError::PayloadUnavailable {
+                    entry_id: id,
+                    reason: e.to_string(),
+                })?;
+            let summary =
+                super::composite::summary_bytes(&crypto::decrypt(&stored).map_err(|e| {
+                    PreviewError::PayloadUnavailable {
+                        entry_id: id,
+                        reason: e.to_string(),
+                    }
+                })?)
+                .map_err(|e| PreviewError::PayloadUnavailable {
+                    entry_id: id,
+                    reason: e.to_string(),
+                })?;
+            metadata.size_bytes = summary.len() as u64;
+            return Ok(PreparedPreview {
+                metadata,
+                data_hash: blake3::hash(&summary).to_hex().to_string(),
+                source: PayloadSource::PlainBytes(summary),
+            });
+        }
         let source = (|| -> Result<_, Box<dyn std::error::Error>> {
             let (stored, data_hash): (Vec<u8>, String) = self.conn.query_row(
                 "SELECT data, data_hash FROM history WHERE id = ?1",

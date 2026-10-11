@@ -4,6 +4,13 @@ import Foundation
 struct HistoryPreviewDependencies: @unchecked Sendable {
     var load: @Sendable (Int64, String?) async throws -> HistoryPreviewData
     var restore: @Sendable (Int64) async throws -> Void
+    var loadDocument: @Sendable (Int64, String, UInt64, String) async throws -> ApiClient.HistoryDocumentPreview? = { _, _, _, _ in nil }
+    var validateDocument: @Sendable (ApiClient.HistoryDocumentPreview) async throws -> Bool = { _ in false }
+    var validateDocumentStamp: (@Sendable (Int64, String, UInt64, String, String) async throws -> Bool)? = nil
+    var cancelDocument: @Sendable (Int64, String, UInt64, String) async -> Void = { _, _, _, _ in }
+    var materializeDocument: @Sendable (ApiClient.HistoryDocumentPreview, HistoryPreviewDocumentStrings) throws -> HistoryPreviewDocumentMaterial = { _, _ in
+        throw HistoryPreviewDocumentError.invalidImage
+    }
 
     static let live = HistoryPreviewDependencies(
         load: { id, batchId in
@@ -11,8 +18,86 @@ struct HistoryPreviewDependencies: @unchecked Sendable {
         },
         restore: { id in
             try await ApiClient.shared.restoreEntry(id: id)
+        },
+        loadDocument: { id, owner, generation, requestId in
+            try await ApiClient.shared.getDocumentPreview(
+                id: id, owner: owner, generation: generation, requestId: requestId)
+        },
+        validateDocument: { preview in
+            try await ApiClient.shared.validateDocumentPreview(preview)
+        },
+        validateDocumentStamp: { id, owner, generation, requestId, stamp in
+            try await ApiClient.shared.validateDocumentPreview(id: id, owner: owner, generation: generation, requestId: requestId, stamp: stamp)
+        },
+        cancelDocument: { id, owner, generation, requestId in
+            await ApiClient.shared.cancelDocumentPreview(
+                id: id, owner: owner, generation: generation, requestId: requestId)
+        },
+        materializeDocument: { preview, strings in
+            try HistoryPreviewDocumentBuilder.materialize(preview, strings: strings)
         }
     )
+}
+
+enum HistoryPreviewDocumentGeneration {
+    private static let lock = NSLock()
+    private static var current = UInt64(Date().timeIntervalSince1970 * 1000)
+
+    static func next() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        current = max(current &+ 1, UInt64(Date().timeIntervalSince1970 * 1000))
+        return current
+    }
+}
+
+struct HistoryPreviewDocumentRequest: Equatable, Sendable {
+    let entryId: Int64
+    let owner: String
+    let generation: UInt64
+    let requestId: String
+}
+
+@MainActor
+enum HistoryPreviewDocumentCancellation {
+    private static var pending: [String: (HistoryPreviewDocumentRequest, @Sendable (Int64, String, UInt64, String) async -> Void)] = [:]
+    private static var running: HistoryPreviewDocumentRequest?
+    private static var worker: Task<Void, Never>?
+
+    static func enqueue(_ request: HistoryPreviewDocumentRequest, cancel: @escaping @Sendable (Int64, String, UInt64, String) async -> Void) {
+        guard request.owner == "history" || request.owner == "favorites" else { return }
+        if let running, running.owner == request.owner, running.generation >= request.generation { return }
+        if let queued = pending[request.owner], queued.0.generation >= request.generation { return }
+        pending[request.owner] = (request, cancel)
+        guard worker == nil else { return }
+        worker = Task {
+            while let owner = pending.keys.sorted().first, let (request, cancel) = pending.removeValue(forKey: owner) {
+                running = request
+                await cancel(request.entryId, request.owner, request.generation, request.requestId)
+                running = nil
+            }
+            worker = nil
+        }
+    }
+}
+
+enum HistoryPreviewDocumentWork {
+    private static let lock = NSLock()
+    private static var running = false
+
+    static func acquire() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !running else { return false }
+        running = true
+        return true
+    }
+
+    static func release() {
+        lock.lock()
+        running = false
+        lock.unlock()
+    }
 }
 
 enum HistoryPreviewLoadState: Equatable {
@@ -23,6 +108,7 @@ enum HistoryPreviewLoadState: Equatable {
         material: HistoryPreviewMaterial,
         format: HistoryPreviewFormat
     )
+    case document(HistoryPreviewDocumentMaterial)
     case failed(HistoryPreviewFailure)
 }
 
@@ -85,9 +171,12 @@ final class HistoryPreviewViewModel: ObservableObject {
     private let dependencies: HistoryPreviewDependencies
     private let svgWebRenderer: any HistoryPreviewWebSVGRendering
     private var generation = 0
+    private var documentOwner: HistoryPreviewOwner = .history
     private var loadTask: Task<Void, Never>?
     private var restoreFeedbackTask: Task<Void, Never>?
     private var svgRenderTask: Task<Void, Never>?
+    private var activeDocument: HistoryPreviewDocumentRequest?
+    private var installedDocument: (request: HistoryPreviewDocumentRequest, stamp: String)?
 
     init(
         session: HistoryPreviewSession = HistoryPreviewSession(),
@@ -108,16 +197,23 @@ final class HistoryPreviewViewModel: ObservableObject {
         if case .ready(let payload, _, _) = state, let entryId = payload.entryId {
             return entryId
         }
+        if case .document(let document) = state {
+            return document.entryId
+        }
         return currentItem?.id
     }
 
     var currentName: String {
         if case .ready(let payload, _, _) = state { return payload.name }
+        if case .document = state {
+            return currentItem?.nameHint ?? Loc.t("history.preview.documentTitle")
+        }
         return currentItem?.nameHint ?? Loc.t("history.preview.title")
     }
 
     var currentSize: Int64 {
         if case .ready(let payload, _, _) = state { return payload.sizeBytes }
+        if case .document = state { return currentItem?.sizeBytes ?? 0 }
         return currentItem?.sizeBytes ?? 0
     }
 
@@ -143,12 +239,13 @@ final class HistoryPreviewViewModel: ObservableObject {
         return currentIndex + 1 < items.count
     }
 
-    func present(_ request: HistoryPreviewRequest) {
+    func present(_ request: HistoryPreviewRequest, owner: HistoryPreviewOwner = .history) {
         guard !request.items.isEmpty,
               request.items.indices.contains(request.selectedIndex) else {
             close()
             return
         }
+        documentOwner = owner
         items = request.items
         currentIndex = request.selectedIndex
         restoreState = .idle
@@ -167,6 +264,27 @@ final class HistoryPreviewViewModel: ObservableObject {
     func retry() {
         guard currentItem != nil else { return }
         loadCurrent()
+    }
+
+    func refreshSavedDocument() async {
+        guard currentItem?.displayKind == "document", restoreState != .restoring else { return }
+        let requestedGeneration = generation
+        if case .loading = state {
+            await loadTask?.value
+        }
+        guard requestedGeneration == generation, restoreState != .restoring, !Task.isCancelled else { return }
+        if case .failed = state {
+            retry()
+            return
+        }
+        guard case .document = state, let installed = installedDocument,
+              let validate = dependencies.validateDocumentStamp else { return }
+        let request = installed.request
+        guard let current = try? await validate(request.entryId, request.owner, request.generation, request.requestId, installed.stamp),
+              !current, requestedGeneration == generation,
+              installedDocument?.stamp == installed.stamp,
+              restoreState != .restoring, !Task.isCancelled else { return }
+        retry()
     }
 
     func restoreCurrent() {
@@ -323,6 +441,8 @@ final class HistoryPreviewViewModel: ObservableObject {
         svgRenderTask?.cancel()
         svgRenderTask = nil
         svgWebRenderer.cancel()
+        cancelActiveDocument()
+        installedDocument = nil
         session.close()
         state = .idle
         restoreState = .idle
@@ -384,67 +504,188 @@ final class HistoryPreviewViewModel: ObservableObject {
         isRenderingSVG = false
         svgExternalResourcesTrusted = false
         svgVisualFallback = nil
+        cancelActiveDocument()
+        installedDocument = nil
         session.close()
         state = .loading
         let batchLookup = item.resolvesBatchFirst ? item.batchId : nil
+        let documentStrings = HistoryPreviewDocumentStrings.live()
 
         loadTask = Task { [weak self] in
             guard let self else { return }
-            var preparedMaterial: HistoryPreviewMaterial?
-            do {
-                let payload = try await dependencies.load(item.id, batchLookup)
-                try Task.checkCancellation()
-                let material = try await session.prepare(payload)
-                preparedMaterial = material
-                try Task.checkCancellation()
-                guard requestGeneration == generation else {
-                    session.discard(material)
-                    preparedMaterial = nil
-                    return
-                }
-                session.install(payload, material: material)
-                preparedMaterial = nil
-                let format = HistoryPreviewFormat.detect(
-                    payload: payload,
-                    categoryHint: item.category
-                )
-                state = .ready(payload: payload, material: material, format: format)
-                onFormatChange?(format.windowKind)
-                // SVG materializes as its escaped source; the locked-down
-                // browser-engine snapshot upgrades it to a rasterized image
-                // while the load task (and its generation) still govern it.
-                // Documents with active markup or oversized payloads never
-                // reach a web view: they classify straight to the source
-                // viewer with an explicit reason, matching Windows.
-                if format == .svg {
-                    if let source = String(data: payload.data, encoding: .utf8) {
-                        if payload.data.count > HistoryPreviewWebSVGLimits.maximumInputBytes {
-                            svgVisualFallback = .tooLarge
-                        } else if !HistoryPreviewWebViewSVGRenderer.isSVGVisualEligible(source) {
-                            svgVisualFallback = .blockedContent
-                        } else {
-                            startSVGRender(payload: payload)
-                        }
-                    } else {
-                        // Invalid UTF-8 SVG never reaches the materializer's
-                        // text path either; the load fails with invalidText.
-                        svgVisualFallback = .blockedContent
-                    }
-                }
-            } catch is CancellationError {
-                if let preparedMaterial {
-                    session.discard(preparedMaterial)
-                }
+            guard !Task.isCancelled, requestGeneration == generation else { return }
+            if item.displayKind == "document",
+               await loadDocument(
+                   item: item,
+                   strings: documentStrings,
+                   requestGeneration: requestGeneration
+               ) {
                 return
-            } catch {
-                if let preparedMaterial {
-                    session.discard(preparedMaterial)
-                }
-                guard requestGeneration == generation else { return }
-                session.close()
-                state = .failed(HistoryPreviewFailure.classify(error))
             }
+            await loadLegacy(
+                item: item,
+                batchLookup: batchLookup,
+                requestGeneration: requestGeneration
+            )
         }
+    }
+
+    private func loadDocument(
+        item: HistoryPreviewItem,
+        strings: HistoryPreviewDocumentStrings,
+        requestGeneration: Int
+    ) async -> Bool {
+        let owner = documentOwner.wireValue
+        let request = HistoryPreviewDocumentRequest(
+            entryId: item.id,
+            owner: owner,
+            generation: HistoryPreviewDocumentGeneration.next(),
+            requestId: UUID().uuidString
+        )
+        activeDocument = request
+        do {
+            let candidate = try await dependencies.loadDocument(
+                request.entryId,
+                request.owner,
+                request.generation,
+                request.requestId
+            )
+            try Task.checkCancellation()
+            guard requestGeneration == generation else {
+                abandonDocument(request)
+                return true
+            }
+            guard let preview = candidate else {
+                if activeDocument == request { activeDocument = nil }
+                return false
+            }
+            guard HistoryPreviewDocumentWork.acquire() else {
+                abandonDocument(request)
+                state = .failed(HistoryPreviewFailure(kind: .unavailable, canRetry: true))
+                return true
+            }
+            let materializer = dependencies.materializeDocument
+            let worker = Task.detached(priority: .userInitiated) {
+                defer { HistoryPreviewDocumentWork.release() }
+                try Task.checkCancellation()
+                return try materializer(preview, strings)
+            }
+            let material = try await withTaskCancellationHandler {
+                try await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            try Task.checkCancellation()
+            guard requestGeneration == generation else {
+                abandonDocument(request)
+                return true
+            }
+            let validator = dependencies.validateDocument
+            let valid = (try? await validator(preview)) ?? false
+            try Task.checkCancellation()
+            guard requestGeneration == generation else {
+                abandonDocument(request)
+                return true
+            }
+            guard valid else {
+                abandonDocument(request)
+                session.close()
+                state = .failed(HistoryPreviewFailure(kind: .unavailable, canRetry: true))
+                return true
+            }
+            activeDocument = request
+            installedDocument = (
+                HistoryPreviewDocumentRequest(entryId: preview.entryId, owner: preview.owner, generation: preview.generation, requestId: preview.requestId),
+                preview.stamp
+            )
+            session.close()
+            state = .document(material)
+            onFormatChange?(.document)
+            return true
+        } catch is CancellationError {
+            abandonDocument(request)
+            return true
+        } catch {
+            abandonDocument(request)
+            guard requestGeneration == generation else { return true }
+            session.close()
+            state = .failed(HistoryPreviewFailure.classify(error))
+            return true
+        }
+    }
+
+    private func loadLegacy(
+        item: HistoryPreviewItem,
+        batchLookup: String?,
+        requestGeneration: Int
+    ) async {
+        var preparedMaterial: HistoryPreviewMaterial?
+        do {
+            let payload = try await dependencies.load(item.id, batchLookup)
+            try Task.checkCancellation()
+            let material = try await session.prepare(payload)
+            preparedMaterial = material
+            try Task.checkCancellation()
+            guard requestGeneration == generation else {
+                session.discard(material)
+                preparedMaterial = nil
+                return
+            }
+            session.install(payload, material: material)
+            preparedMaterial = nil
+            let format = HistoryPreviewFormat.detect(
+                payload: payload,
+                categoryHint: item.category,
+                displayKind: item.displayKind
+            )
+            state = .ready(payload: payload, material: material, format: format)
+            onFormatChange?(format.windowKind)
+            // SVG materializes as its escaped source; the locked-down
+            // browser-engine snapshot upgrades it to a rasterized image
+            // while the load task (and its generation) still govern it.
+            // Documents with active markup or oversized payloads never
+            // reach a web view: they classify straight to the source
+            // viewer with an explicit reason, matching Windows.
+            if format == .svg {
+                if let source = String(data: payload.data, encoding: .utf8) {
+                    if payload.data.count > HistoryPreviewWebSVGLimits.maximumInputBytes {
+                        svgVisualFallback = .tooLarge
+                    } else if !HistoryPreviewWebViewSVGRenderer.isSVGVisualEligible(source) {
+                        svgVisualFallback = .blockedContent
+                    } else {
+                        startSVGRender(payload: payload)
+                    }
+                } else {
+                    // Invalid UTF-8 SVG never reaches the materializer's
+                    // text path either; the load fails with invalidText.
+                    svgVisualFallback = .blockedContent
+                }
+            }
+        } catch is CancellationError {
+            if let preparedMaterial {
+                session.discard(preparedMaterial)
+            }
+            return
+        } catch {
+            if let preparedMaterial {
+                session.discard(preparedMaterial)
+            }
+            guard requestGeneration == generation else { return }
+            session.close()
+            state = .failed(HistoryPreviewFailure.classify(error))
+        }
+    }
+
+    private func abandonDocument(_ request: HistoryPreviewDocumentRequest) {
+        if activeDocument == request {
+            activeDocument = nil
+        }
+        HistoryPreviewDocumentCancellation.enqueue(request, cancel: dependencies.cancelDocument)
+    }
+
+    private func cancelActiveDocument() {
+        guard let request = activeDocument else { return }
+        abandonDocument(request)
     }
 
     deinit {

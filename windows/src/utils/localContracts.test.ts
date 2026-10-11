@@ -4,7 +4,7 @@ import * as contracts from "../types/localContracts.generated";
 import fixtures from "../../../shared/schema/fixtures/local-contracts.json";
 
 const valid = {
-  schema_version: 1,
+  schema_version: 2,
   wire_version: 4,
   platform: "windows",
   max_preview_bytes: 64 * 1024 * 1024,
@@ -14,6 +14,15 @@ const valid = {
 };
 
 describe("local IPC capabilities", () => {
+  it("accepts optional display metadata but rejects unknown display versions and kinds", () => {
+    const display = { version: 1, kind: "document", thumbnail_eligible: true, cache_key: "th1:bound" };
+    expect(contracts.decodeHistoryDisplayInfo(display)).toEqual(display);
+    expect(() => contracts.decodeHistoryDisplayInfo({ ...display, version: 2 })).toThrow();
+    expect(() => contracts.decodeHistoryDisplayInfo({ ...display, kind: "future" })).toThrow();
+    expect(decodeLocalCapabilities({ ...valid, history_display_version: 1 }).history_display_version).toBe(1);
+    expect(() => decodeLocalCapabilities({ ...valid, history_display_version: 2 })).toThrow();
+    expect(decodeLocalCapabilities(valid).history_display_version).toBeUndefined();
+  });
   it("decodes every production Rust fixture through the TypeScript runtime decoder", () => {
     for (const fixture of fixtures) {
       const decode = Reflect.get(contracts, `decode${fixture.contract}`) as (value: unknown) => unknown;

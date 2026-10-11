@@ -7,6 +7,88 @@ import XCTest
 /// history/restore operations. No daemon requests or clipboard mutations.
 @MainActor
 final class HistoryKeyboardIntegrationTests: XCTestCase {
+    func testCommandDeleteDeletesSelectedRowOnceAndKeepsAdjacentSelection() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        fixture.session.focusList()
+        fixture.window.sendEvent(event(125, window: fixture.window))
+        XCTAssertEqual(fixture.session.selectedID, 2)
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        fixture.window.sendEvent(event(36, window: fixture.window, modifiers: .command))
+        try await wait { fixture.session.selectedID == 3 }
+        let deletions = await service.deletedIDs
+        let restores = await service.restoreCount
+        XCTAssertEqual(deletions, [2])
+        XCTAssertEqual(restores, 0, "restore must wait until deletion completes")
+        XCTAssertTrue(fixture.window.firstResponder === fixture.session.listResponder)
+    }
+
+    func testCommandDeletePreservesSearchEditingCompositionAndStaleQuery() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        let editor = try fixture.searchEditor()
+        editor.string = "typing"
+        editor.setSelectedRange(NSRange(location: 6, length: 0))
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        XCTAssertEqual(editor.string, "", "Command Delete keeps native delete-to-line-start editing")
+        fixture.session.focusList()
+        fixture.session.isComposing = true
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        fixture.session.isComposing = false
+        let currentEditor = try fixture.searchEditor()
+        currentEditor.insertText("missing", replacementRange: NSRange(location: NSNotFound, length: 0))
+        fixture.session.focusList()
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        try await wait { await service.failedQueryCount == 1 }
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        let deletions = await service.deletedIDs
+        XCTAssertEqual(deletions, [])
+    }
+
+    func testCommandDeleteProtectsFavoritesAndUsesFavoritesDeletion() async throws {
+        let protected = HistoryKeyboardTestService(pinned: true)
+        let history = Fixture(service: protected)
+        defer { history.close() }
+        try await wait { history.session.selectedID == 1 }
+        history.session.focusList()
+        history.window.sendEvent(event(51, window: history.window, modifiers: .command))
+        try await Task.sleep(for: .milliseconds(100))
+        let protectedDeletions = await protected.deletedIDs
+        XCTAssertEqual(protectedDeletions, [])
+
+        let service = HistoryKeyboardTestService(pinned: true)
+        let favorites = Fixture(service: service, collection: "favorites")
+        defer { favorites.close() }
+        try await wait { favorites.session.selectedID == 1 }
+        favorites.session.focusList()
+        favorites.window.sendEvent(event(51, window: favorites.window, modifiers: .command))
+        try await wait { favorites.session.selectedID == 2 }
+        let collections = await service.deletedCollections
+        XCTAssertEqual(collections, ["favorites"])
+    }
+
+    func testCommandDeleteFailureKeepsSelectionAndAllowsRetry() async throws {
+        let service = HistoryKeyboardTestService(failDelete: true)
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        fixture.session.focusList()
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        try await wait { await service.deleteFinishedCount == 1 }
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(fixture.session.selectedID, 1)
+        await service.allowDelete()
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        try await wait { fixture.session.selectedID == 2 }
+        let deletions = await service.deletedIDs
+        XCTAssertEqual(deletions, [1, 1])
+    }
+
     func testRealHistoryViewFirstDownArrowSearchAndRestoreLock() async throws {
         let service = HistoryKeyboardTestService()
         let fixture = Fixture(service: service)
@@ -169,6 +251,61 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
         XCTAssertEqual(preview.viewModel.currentEntryId, 2)
     }
 
+    func testCoveredHostKeepsPreviewOpenAndFollowingSelectionForBothCollections() async throws {
+        for collection in ["all", "favorites"] {
+            let service = HistoryKeyboardTestService()
+            let window = HistoryOcclusionTestWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 450, height: 600),
+                styleMask: [.titled], backing: .buffered, defer: false
+            )
+            let fixture = Fixture(service: service, collection: collection, hostWindow: window)
+            let preview = HistoryPreviewWindowController.shared
+            let owner = HistoryPreviewOwner(collection: collection)
+            preview.shutdown()
+            preview.registerHostWindow(window, for: owner)
+            let controller = TailSyncTransientWindowController(
+                window: window,
+                onVisibilityChange: { visible in
+                    NotificationCenter.default.post(
+                        name: .tailSyncHistoryCollectionVisibilityChanged(for: collection),
+                        object: nil, userInfo: ["visible": visible]
+                    )
+                },
+                onClose: {}
+            )
+            defer {
+                preview.shutdown()
+                fixture.close()
+                withExtendedLifetime(controller) {}
+            }
+            window.alphaValue = 0
+            window.orderFront(nil)
+            try await wait { fixture.session.selectedID == 1 }
+            let editor = try fixture.searchEditor()
+            editor.interpretKeyEvents([event(125, window: window)])
+            window.sendEvent(event(49, window: window))
+            try await wait { preview.isPreviewVisible(for: owner) }
+
+            window.reportedOcclusionState = []
+            controller.windowDidChangeOcclusionState(Notification(
+                name: NSWindow.didChangeOcclusionStateNotification, object: window
+            ))
+            try await Task.sleep(for: .milliseconds(150))
+
+            XCTAssertTrue(window.isVisible)
+            XCTAssertTrue(preview.isPreviewVisible(for: owner), "Covering an open host must not close its preview")
+            window.sendEvent(event(125, window: window))
+            try await wait { preview.viewModel.currentEntryId == 2 }
+            XCTAssertTrue(preview.isPreviewVisible(for: owner))
+
+            window.orderOut(nil)
+            controller.windowDidChangeOcclusionState(Notification(
+                name: NSWindow.didChangeOcclusionStateNotification, object: window
+            ))
+            try await wait { !preview.hasAllocatedWindow }
+        }
+    }
+
     private func wait(_ condition: () async -> Bool) async throws {
         for _ in 0..<200 {
             if await condition() { return }
@@ -186,6 +323,7 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
         case 49: characters = " "
         case 48: characters = "\t"
         case 3: characters = "f"
+        case 51: characters = "\u{7F}"
         default: characters = ""
         }
         return NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
@@ -198,16 +336,17 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
     private final class Fixture {
         let session = HistoryKeyboardSession()
         let window: NSWindow
-        init(service: HistoryKeyboardTestService) {
+        init(service: HistoryKeyboardTestService, collection: String = "all", hostWindow: NSWindow? = nil) {
             _ = NSApplication.shared
             let dependencies = HistoryViewDependencies(
                 load: { try await service.load($0) },
                 restore: { try await service.restore($0) },
+                delete: { try await service.delete($0, collection: $1) },
                 usesRuntimeUpdates: false
             )
-            let view = HistoryView(dependencies: dependencies, keyboardSession: session)
+            let view = HistoryView(collection: collection, dependencies: dependencies, keyboardSession: session)
             let hosting = NSHostingView(rootView: view)
-            window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 450, height: 600),
+            window = hostWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 450, height: 600),
                 styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.contentView = hosting
@@ -224,12 +363,37 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
     }
 }
 
+private final class HistoryOcclusionTestWindow: NSWindow {
+    var reportedOcclusionState: NSWindow.OcclusionState = [.visible]
+
+    override var occlusionState: NSWindow.OcclusionState { reportedOcclusionState }
+}
+
 private actor HistoryKeyboardTestService {
     private(set) var restoreCount = 0
     private(set) var failedQueryCount = 0
     private(set) var slowQueryCount = 0
     let failRestore: Bool
-    init(failRestore: Bool = false) { self.failRestore = failRestore }
+    let pinned: Bool
+    var failDelete: Bool
+    private(set) var deletedIDs: [Int64] = []
+    private(set) var deletedCollections: [String] = []
+    private(set) var deleteFinishedCount = 0
+    private var removedIDs: Set<Int64> = []
+    init(failRestore: Bool = false, pinned: Bool = false, failDelete: Bool = false) {
+        self.failRestore = failRestore
+        self.pinned = pinned
+        self.failDelete = failDelete
+    }
+    func allowDelete() { failDelete = false }
+    func delete(_ id: Int64, collection: String) async throws {
+        deletedIDs.append(id)
+        deletedCollections.append(collection)
+        try await Task.sleep(for: .milliseconds(80))
+        deleteFinishedCount += 1
+        if failDelete { throw ApiError.serverError("test delete failed") }
+        removedIDs.insert(id)
+    }
     func load(_ query: HistoryQuery) async throws -> [HistoryEntry] {
         if query.keyword == "slow" {
             slowQueryCount += 1
@@ -241,12 +405,13 @@ private actor HistoryKeyboardTestService {
             failedQueryCount += 1
             throw ApiError.serverError("test query failed")
         }
-        return try (query.offset + 1...min(query.offset + query.limit, 32)).map { try entry($0) }
+        return try (query.offset + 1...min(query.offset + query.limit, 32))
+            .filter { !removedIDs.contains(Int64($0)) }.map { try entry($0) }
     }
     private func entry(_ id: Int) throws -> HistoryEntry {
         let data = Data("""
         {"id":\(id),"timestamp":"2026-10-03T00:00:00Z","type":"text",
-         "description":"row \(id)","data_hash":"hash\(id)","size_bytes":4,"source_peer":"local"}
+         "description":"row \(id)","data_hash":"hash\(id)","size_bytes":4,"source_peer":"local","pinned":\(pinned)}
         """.utf8)
         return try JSONDecoder().decode(HistoryEntry.self, from: data)
     }

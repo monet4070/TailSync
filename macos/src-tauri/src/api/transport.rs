@@ -262,6 +262,40 @@ async fn serve_connection<S>(
         }
         return;
     }
+    if req.cmd == "get_document_preview" {
+        let Some(response) = until_disconnect(
+            &mut reader,
+            crate::api::document_preview_response(&state, req.document_request, req.request_id),
+        )
+        .await
+        else {
+            return;
+        };
+        match response {
+            Ok(preview) => {
+                let _ = write_binary_response(
+                    &mut writer,
+                    preview.bytes(),
+                    response_timeout_for_command(&req.cmd),
+                )
+                .await;
+                drop(preview);
+            }
+            Err(error) => {
+                let _ = write_response(
+                    &mut writer,
+                    false,
+                    None,
+                    &error,
+                    &command,
+                    stable_errors,
+                    response_timeout_for_command(&req.cmd),
+                )
+                .await;
+            }
+        }
+        return;
+    }
     // A history preview can contain up to 64 MiB of decrypted bytes,
     // expanding to roughly 90 MiB when wrapped in Base64/JSON. Keep the
     // normal five-second API timeout for every other command but allow this
@@ -274,7 +308,11 @@ async fn serve_connection<S>(
     let cancel_on_disconnect = req.request_id.is_some()
         && matches!(
             req.cmd.as_str(),
-            "get_history" | "get_preview_data" | "wait_runtime_snapshot"
+            "get_history"
+                | "get_preview_data"
+                | "wait_runtime_snapshot"
+                | "archive_entry_images"
+                | "source_context_import"
         );
     let response = if cancel_on_disconnect {
         let Some(response) = until_disconnect(&mut reader, handle_cmd(req, &state)).await else {
@@ -321,8 +359,16 @@ mod cancellation_tests {
     fn test_state() -> Arc<ApiState> {
         let settings = Arc::new(Mutex::new(crypto::Settings::default()));
         let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let database = Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap()));
         Arc::new(ApiState {
-            db: Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap())),
+            documents: Default::default(),
+            db: database.clone(),
+            image_archive: Arc::new(crate::automatic_images::AutomaticImageArchive::new(
+                database,
+                false,
+                Arc::new(tailsync_core::composite::resource_archive::ReqwestTransport::new()),
+                Arc::new(crate::api::bump_clipboard_version),
+            )),
             sync_engine: Arc::new(Mutex::new(sync::SyncEngine::new())),
             pool: Arc::new(Mutex::new(network::ConnectionPool::new(
                 identity.clone(),
@@ -651,8 +697,13 @@ async fn write_binary_response(
 }
 
 fn response_timeout_for_command(command: &str) -> Duration {
-    if command == "get_preview_data" || command == "get_preview_binary" {
+    if command == "get_preview_data"
+        || command == "get_preview_binary"
+        || command == "get_document_preview"
+    {
         Duration::from_secs(30)
+    } else if command == "archive_entry_images" || command == "source_context_import" {
+        Duration::from_secs(60)
     } else {
         API_WRITE_TIMEOUT
     }
@@ -747,6 +798,33 @@ mod tests {
         );
         assert!(!line.contains("/private/peer"));
         assert!(!line.contains("token=secret"));
+    }
+
+    #[tokio::test]
+    async fn composite_restore_outcomes_survive_socket_error_encoding() {
+        for code in [
+            "publish_partial",
+            "publish_unknown",
+            "publish_superseded",
+            "native_only",
+            "no_single_image",
+            "format_unavailable",
+            "unsupported_format",
+        ] {
+            let (mut writer, reader) = tokio::io::duplex(4096);
+            send_json(&mut writer, false, None, code, "restore_entry", true)
+                .await
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(reader).read_line(&mut line).await.unwrap();
+            let response: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"]["code"], code);
+            assert_eq!(
+                response["error"]["message_key"],
+                format!("history.restore.code.{code}")
+            );
+        }
     }
 
     #[test]

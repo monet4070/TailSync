@@ -22,6 +22,11 @@
   },
   "description": "Encrypted settings stored alongside the app",
   "properties": {
+    "auto_save_network_images": {
+      "default": false,
+      "description": "Whether newly copied rich content on this device automatically downloads\nand stores referenced public network images. Disabled by default and\nnever triggered by remote peers or existing history entries.",
+      "type": "boolean"
+    },
     "connection_mode": {
       "allOf": [
         {
@@ -116,6 +121,7 @@
     }
   },
   "required": [
+    "auto_save_network_images",
     "connection_mode",
     "enabled_peers",
     "history_limit",

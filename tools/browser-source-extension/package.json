@@ -1,0 +1,9 @@
+{
+  "name": "tailsync-browser-source-extension",
+  "private": true,
+  "type": "module",
+  "description": "Optional Chromium MV3 helper for the O05 consent-bound source context adapter. Not part of the app build; run `node --test` for the unit tests.",
+  "scripts": {
+    "test": "node --test test/collect.test.mjs"
+  }
+}

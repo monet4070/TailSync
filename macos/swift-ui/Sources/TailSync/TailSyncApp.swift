@@ -53,6 +53,11 @@ enum DaemonLifecyclePolicy {
 }
 
 enum RuntimeNotificationPolicy {
+    static func shouldNotifyArrival(sourcePeer: String) -> Bool {
+        let source = sourcePeer.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !source.isEmpty && source != "self"
+    }
+
     static func shouldRefreshHistory(
         previousHistoryVersion: UInt64?,
         currentHistoryVersion: UInt64,
@@ -145,6 +150,11 @@ struct TailSyncApp: App {
                     AppDelegate.showSettings()
                 }
                 .keyboardShortcut(",", modifiers: .command)
+                Divider()
+                Button(Loc.shared.lang.hasPrefix("zh") ? "历史记录" : "History") {
+                    AppDelegate.showHistory()
+                }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
             }
         }
     }
@@ -442,7 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                       newest.id > self.lastNotifiedId,
                       self.daemonActivityAllowed else { continue }
                 self.lastNotifiedId = newest.id
-                guard newest.source_peer != "self" else { continue }
+                guard RuntimeNotificationPolicy.shouldNotifyArrival(sourcePeer: newest.source_peer) else { continue }
                 let body: String = switch newest.type {
                     case "image": "📷 Image received"
                     case "file":  "📎 \(newest.description)"

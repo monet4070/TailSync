@@ -12,6 +12,10 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+mod port;
+pub use port::{
+    publication_permit, AdmissionHold, BlockingPlatformPort, ClipboardPort, PortFuture,
+};
 mod resume;
 pub use resume::cleanup_expired_transfers;
 use resume::{
@@ -184,8 +188,136 @@ pub struct FileBatchProgress {
 pub type PlatformResultFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 
 pub trait SyncPlatform: Send + Sync {
+    fn prepare_restore_plan(
+        &self,
+        plan: crate::composite::restore::RestorePlan,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<crate::composite::restore::RestorePlan, String> {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Restore preparation cancelled".into());
+        }
+        Ok(plan)
+    }
+    /// Native format contract used during off-thread preparation; no OS I/O.
+    fn restore_target(&self) -> crate::composite::restore::RestoreTarget {
+        crate::composite::restore::RestoreTarget::Adapter
+    }
+    /// One already prepared output set. Native adapters override this to pass
+    /// the expected revision to the same helper/journal path as other writes.
+    fn write_restore_plan(
+        &self,
+        plan: &crate::composite::restore::RestorePlan,
+        expected: Option<i64>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<crate::composite::NativePublish, String> {
+        if let Some(expected) = expected {
+            let Some(observed) = self.clipboard_revision() else {
+                return Ok(crate::composite::NativePublish::NoEffect {
+                    detail: "Clipboard revision unavailable before publication".into(),
+                });
+            };
+            if observed != expected {
+                return Ok(crate::composite::NativePublish::Superseded(
+                    crate::protocol::native_clipboard::PublishReceipt {
+                        state: crate::protocol::native_clipboard::PublishState::Superseded,
+                        revision: observed,
+                        token: [0; 16],
+                    },
+                ));
+            }
+        }
+        if let Some(snapshot) = plan.native() {
+            self.write_native_cancellable(snapshot, cancelled)
+        } else {
+            self.write_composite_cancellable(
+                plan.portable().ok_or("Restore plan has no output")?,
+                expected,
+                cancelled,
+            )
+        }
+    }
+    fn supports_native_snapshot(
+        &self,
+        _snapshot: &crate::protocol::native_clipboard::NativeSnapshot,
+    ) -> bool {
+        false
+    }
+    /// Publish a native snapshot. Returns a typed outcome rather than a bare error:
+    /// the caller must distinguish "nothing happened" from "the platform may have
+    /// changed and the receipt was lost" (ADR-004 K2).
+    fn write_native_snapshot(
+        &self,
+        _snapshot: &crate::protocol::native_clipboard::NativeSnapshot,
+    ) -> Result<crate::composite::NativePublish, String> {
+        Err("Native restoration unavailable".into())
+    }
+    fn write_text_cancellable(
+        &self,
+        text: &str,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(format!(
+                "{}cancelled before write",
+                crate::protocol::NO_EFFECT_MARKER
+            ));
+        }
+        self.write_text(text)
+    }
+    fn write_image_cancellable(
+        &self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(format!(
+                "{}cancelled before write",
+                crate::protocol::NO_EFFECT_MARKER
+            ));
+        }
+        self.write_image(width, height, rgba)
+    }
+    fn write_native_cancellable(
+        &self,
+        snapshot: &crate::protocol::native_clipboard::NativeSnapshot,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<crate::composite::NativePublish, String> {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(crate::composite::NativePublish::NoEffect {
+                detail: "Cancelled before write".into(),
+            });
+        }
+        self.write_native_snapshot(snapshot)
+    }
     fn write_text(&self, text: &str) -> Result<(), String>;
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String>;
+    /// Publish a composite bundle. Typed for the same reason as
+    /// [`Self::write_native_snapshot`].
+    fn write_composite_cancellable(
+        &self,
+        bundle: &crate::composite::PortableBundle,
+        expected: Option<i64>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<crate::composite::NativePublish, String> {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(crate::composite::NativePublish::NoEffect {
+                detail: "Clipboard operation cancelled".into(),
+            });
+        }
+        self.write_composite(bundle, expected)
+    }
+    fn write_composite(
+        &self,
+        _bundle: &crate::composite::PortableBundle,
+        _expected_revision: Option<i64>,
+    ) -> Result<crate::composite::NativePublish, String> {
+        Err("Composite clipboard is unavailable on this adapter".into())
+    }
+    fn clipboard_revision(&self) -> Option<i64> {
+        None
+    }
     /// Consume a platform-native receipt for a programmatic text write. The
     /// receipt is keyed by the OS clipboard sequence/change counter, so a
     /// user copying identical text later is not mistaken for a TailSync echo.
@@ -362,6 +494,7 @@ pub struct SyncEngine {
     peer_device_ids: HashMap<String, String>,
     receive_epochs: HashMap<String, u64>,
     clipboard_generation: u64,
+    legacy_arrivals: HashMap<(String, MessageId), u64>,
     /// Shadow-packet filter for text (echo suppression)
     shadow_filter: ShadowFilter,
     /// Shadow-packet filter for images
@@ -377,6 +510,7 @@ impl Default for SyncEngine {
 
 mod batches;
 mod clipboard;
+pub use clipboard::{CompositePublishGate, PreparedComposite, PreparedImage, PreparedText};
 mod engine_state;
 mod receive_engine;
 

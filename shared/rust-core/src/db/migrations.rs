@@ -88,19 +88,33 @@ impl HistoryDB {
         })
     }
 
+    /// Migrate to the current build's schema version.
+    ///
+    /// Test/dev entry point; production uses [`Self::migrate_to`] with the target
+    /// derived from the migration policy.
+    #[cfg(test)]
     pub(super) fn migrate(
         conn: &Connection,
         file_history_dir: &Path,
         image_history_dir: &Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        Self::migrate_to(conn, file_history_dir, image_history_dir, SCHEMA_VERSION)
+    }
+
+    /// Migrate up to `target`, never beyond it.
+    ///
+    /// `target` comes from [`MigrationPolicy::effective_target`], so a `LegacyOnly`
+    /// open stops at v11 and never creates composite structures — including for a
+    /// database that already sits at v12, where `target` is raised back to 12 for
+    /// data preservation.
+    pub(super) fn migrate_to(
+        conn: &Connection,
+        file_history_dir: &Path,
+        image_history_dir: &Path,
+        target: i64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         Self::ensure_migration_issue_schema(conn)?;
-        let version: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        let version: i64 = schema::schema_version(conn)?;
 
         if version < 1 {
             info!("Running database migration v1...");
@@ -413,12 +427,30 @@ impl HistoryDB {
                 )?;
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?1)",
-                    params![SCHEMA_VERSION],
+                    params![11_i64],
                 )?;
                 Ok(())
             })?;
         }
 
+        // v12 carries the composite structures. Both the DDL and the version marker
+        // commit in one transaction, so a crash can never leave the tables without
+        // the version (or the reverse). Gated on `target` so a LegacyOnly open
+        // leaves a v11 database untouched — see ADR-004 K8.
+        if version < 12 && target >= 12 {
+            Self::run_migration_transaction(conn, 12, |conn| {
+                schema::initialize_composite(conn)?;
+                conn.execute("INSERT INTO schema_version(version) VALUES (12)", [])?;
+                Ok(())
+            })?;
+        }
+        if version < 13 && target >= 13 {
+            Self::run_migration_transaction(conn, 13, |conn| {
+                schema::initialize_composite_identity(conn)?;
+                conn.execute("INSERT INTO schema_version(version) VALUES (13)", [])?;
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 

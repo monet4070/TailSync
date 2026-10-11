@@ -65,6 +65,9 @@ struct SettingsView: View {
     @State var saveCoordinator = SettingsSaveCoordinator()
     @State var storageStatus: ApiClient.StorageStatus?
     @State var storageBusy = false
+    @State var qqImageAccessBusy = false
+    @State var qqImageAccessAuthorized = false
+    @State var qqImageAccessMessageKey: String?
     @State var oldStorage: ApiClient.StorageMigrationResult?
     // True when the local service cannot be reached, so the last known storage
     // reading must not keep presenting itself as a healthy current state.

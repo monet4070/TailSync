@@ -96,6 +96,14 @@ impl ClipboardChangeDetector {
         250
     }
 
+    pub fn observed_revision(&self) -> Option<i64> {
+        let current = objc2_app_kit::NSPasteboard::generalPasteboard().changeCount();
+        (current != self.last_change_count).then_some(current as i64)
+    }
+    pub fn acknowledge(&mut self, revision: i64) {
+        self.last_change_count = revision as isize;
+    }
+
     pub fn changed(&mut self) -> bool {
         use objc2_app_kit::NSPasteboard;
 
@@ -124,6 +132,11 @@ impl ClipboardChangeDetector {
     pub fn idle_poll_interval_ms(&self) -> u64 {
         200
     }
+
+    pub fn observed_revision(&self) -> Option<i64> {
+        None
+    }
+    pub fn acknowledge(&mut self, _: i64) {}
 
     pub fn changed(&mut self) -> bool {
         true

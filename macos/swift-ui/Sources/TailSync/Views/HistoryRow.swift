@@ -29,12 +29,15 @@ struct HistoryRowFocusStyle {
 
 struct HistoryRow: View {
     let entry: HistoryEntry
+    let owner: String
     let isRestored: Bool
     let isFocused: Bool
     let showsMultipleLabels: Bool
     let favoriteProgress: CGFloat
     let showsTransientFavoriteStamp: Bool
+    let trailingContentWidth: CGFloat
     @State private var thumbnail: NSImage? = nil
+    @State private var installedThumbnailKey: HistoryThumbnailKey? = nil
     @State private var hovering = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.tailSyncSelection) private var selection
@@ -42,18 +45,22 @@ struct HistoryRow: View {
 
     init(
         entry: HistoryEntry,
+        owner: String = "all",
         isRestored: Bool,
         isFocused: Bool,
         showsMultipleLabels: Bool,
         favoriteProgress: CGFloat = 0,
-        showsTransientFavoriteStamp: Bool = false
+        showsTransientFavoriteStamp: Bool = false,
+        trailingContentWidth: CGFloat = 0
     ) {
         self.entry = entry
+        self.owner = owner
         self.isRestored = isRestored
         self.isFocused = isFocused
         self.showsMultipleLabels = showsMultipleLabels
         self.favoriteProgress = favoriteProgress
         self.showsTransientFavoriteStamp = showsTransientFavoriteStamp
+        self.trailingContentWidth = trailingContentWidth
     }
 
     private var component: TailSyncThemeComponentTokens? {
@@ -73,10 +80,14 @@ struct HistoryRow: View {
         showsMultipleLabels ? entry.categoryLabels : [entry.categoryLabel]
     }
 
+    private var thumbnailKey: HistoryThumbnailKey {
+        HistoryThumbnailKey(entry: entry, owner: owner)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Group {
-                if entry.type == "image", let thumb = thumbnail {
+                if entry.hasThumbnail, installedThumbnailKey == thumbnailKey, let thumb = thumbnail {
                     thumbnailImage(thumb)
                 } else {
                     Image(systemName: entry.icon).frame(width: 24, height: 24)
@@ -86,14 +97,23 @@ struct HistoryRow: View {
                 }
             }
             .frame(width: HistoryThumbnailLayout.columnWidth)
-            .task {
-                guard entry.type == "image" else { return }
-                if let cached = HistoryThumbnailCache.image(for: entry.id) {
+            .task(id: thumbnailKey) {
+                thumbnail = nil
+                installedThumbnailKey = nil
+                guard entry.hasThumbnail else {
+                    thumbnail = nil
+                    return
+                }
+                if let cached = HistoryThumbnailCache.image(for: thumbnailKey) {
+                    guard !Task.isCancelled else { return }
                     thumbnail = cached
-                } else if let img = await ApiClient.shared.getImageData(id: entry.id),
+                    installedThumbnailKey = thumbnailKey
+                } else if let img = await ApiClient.shared.getImageData(id: entry.id, cacheKey: entry.display?.cache_key),
                           let image = rgbaToImage(img) {
-                    HistoryThumbnailCache.insert(image, for: entry.id)
+                    guard !Task.isCancelled else { return }
+                    HistoryThumbnailCache.insert(image, for: thumbnailKey, encodedBytes: img.rgba.count)
                     thumbnail = image
+                    installedThumbnailKey = thumbnailKey
                 }
             }
 
@@ -107,8 +127,23 @@ struct HistoryRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .layoutPriority(1)
                     Text(entry.formattedTime).font(.caption).foregroundColor(palette.tertiaryColor)
+                    Spacer(minLength: 8)
+                    Text(entry.sourceDisplayName)
+                        .font(.caption2)
+                        .foregroundColor(component?.secondaryTextColor ?? palette.tertiaryColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 90, alignment: .trailing)
+                        .layoutPriority(1)
+                    if entry.pinned || showsTransientFavoriteStamp {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(palette.accentColor)
+                            .transition(.scale.combined(with: .opacity))
+                    }
                 }
-                Text(entry.description)
+                .padding(.trailing, 6)
+                Text(entry.listDescription)
                     .font(selection.builtin == .tailsync
                           ? selection.displayFont(size: selection.typography.historyContentSize)
                           : selection.builtin == .forest
@@ -116,11 +151,15 @@ struct HistoryRow: View {
                               : selection.readingFont(size: selection.typography.historyContentSize, weight: .medium))
                     .foregroundColor(component?.foregroundColor ?? palette.primaryColor)
                     .lineLimit(1)
-                HStack(spacing: 6) {
+                HStack(alignment: .lastTextBaseline, spacing: 6) {
+                    if let status = HistoryRowStatusLabel.text(for: entry.composite) {
+                        Text(status)
+                            .font(.caption2).foregroundColor(palette.secondaryColor)
+                    }
                     Text(entry.formattedSize).font(.caption2).foregroundColor(component?.secondaryTextColor ?? palette.tertiaryColor).monospacedDigit()
                     Spacer()
-                    Text(entry.source_peer).font(.caption2).foregroundColor(component?.secondaryTextColor ?? palette.tertiaryColor).lineLimit(1)
                 }
+                .padding(.trailing, entry.composite == nil ? 0 : trailingContentWidth + 8)
             }
         }
         .padding(.vertical, component?.padding ?? max(2, (selection.metrics.rowPadding - 6) / 2))
@@ -145,15 +184,6 @@ struct HistoryRow: View {
                 .scaleEffect(x: max(0.001, min(favoriteProgress, 1)), y: 1, anchor: .leading)
                 .opacity(favoriteProgress > 0 ? 1 : 0)
                 .allowsHitTesting(false)
-        }
-        .overlay(alignment: .topTrailing) {
-            if entry.pinned || showsTransientFavoriteStamp {
-                Image(systemName: "star.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(palette.accentColor)
-                    .padding(4)
-                    .transition(.scale.combined(with: .opacity))
-            }
         }
         .accessibilityAddTraits(isFocused ? .isSelected : [])
         .contentShape(Rectangle())
@@ -192,12 +222,18 @@ struct HistoryRow: View {
 /// declarative progress fill and completion stamp.
 struct HistoryInteractiveRow: View {
     let entry: HistoryEntry
+    var owner: String = "all"
     let isRestored: Bool
     let isFocused: Bool
     let showsMultipleLabels: Bool
     let previewRequest: HistoryPreviewRequest?
     let onSelect: () -> Void
     let onRestore: () -> Void
+    var onRestoreFormat: ((String) -> Void)? = nil
+    var onArchiveImages: (() -> Void)? = nil
+    var onAuthorizeSource: (() -> Void)? = nil
+    var onImportSourcePacket: (() -> Void)? = nil
+    var onRevokeSource: (() -> Void)? = nil
     let onDelete: () -> Void
     let onFavorite: () -> Void
     let onPreview: (HistoryPreviewRequest) -> Void
@@ -205,14 +241,17 @@ struct HistoryInteractiveRow: View {
     let isPreviewVisible: () -> Bool
 
     @Environment(\.tailSyncSelection) private var selection
+    @Environment(\.tailSyncPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var favoriteProgress: CGFloat = 0
     @State private var favoritePressActive = false
     @State private var showsTransientFavoriteStamp = false
+    @State private var trailingContentWidth: CGFloat = 0
 
     var body: some View {
         HistoryRow(
             entry: entry,
+            owner: owner,
             isRestored: isRestored,
             isFocused: isFocused,
             showsMultipleLabels: showsMultipleLabels,
@@ -221,7 +260,8 @@ struct HistoryInteractiveRow: View {
                 isPressActive: favoritePressActive,
                 pressProgress: favoriteProgress
             ),
-            showsTransientFavoriteStamp: showsTransientFavoriteStamp
+            showsTransientFavoriteStamp: showsTransientFavoriteStamp,
+            trailingContentWidth: trailingContentWidth
         )
         .contentShape(Rectangle())
         .overlay {
@@ -248,6 +288,26 @@ struct HistoryInteractiveRow: View {
                 }
             )
         }
+        .overlay(alignment: .bottomTrailing) {
+            if let info = entry.composite {
+                HistoryRowTrailingActions(
+                    info: info,
+                    canRestoreFormat: onRestoreFormat != nil,
+                    onRestoreFormat: onRestoreFormat,
+                    onArchiveImages: onArchiveImages,
+                    onAuthorizeSource: onAuthorizeSource,
+                    onImportSourcePacket: onImportSourcePacket,
+                    onRevokeSource: onRevokeSource
+                )
+                .fixedSize(horizontal: true, vertical: false)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: HistoryRowTrailingWidthKey.self, value: geometry.size.width)
+                    }
+                }
+            }
+        }
+        .onPreferenceChange(HistoryRowTrailingWidthKey.self) { trailingContentWidth = $0 }
         .accessibilityAction(
             named: Text(Loc.t(entry.pinned ? "history.unpin" : "history.pin"))
         ) {
@@ -264,6 +324,11 @@ struct HistoryInteractiveRow: View {
             showsTransientFavoriteStamp = false
         }
     }
+}
+
+private struct HistoryRowTrailingWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -314,27 +379,79 @@ enum HistoryThumbnailLayout {
     }
 }
 
-enum HistoryThumbnailCache {
-    private static let cache: NSCache<NSNumber, NSImage> = {
-        let cache = NSCache<NSNumber, NSImage>()
-        cache.countLimit = 30
-        // Keep the in-memory preview budget within the 1–4 MiB contract even
-        // when AppKit retains decoded backing stores larger than their point
-        // size. The count limit remains a second guard for tiny thumbnails.
-        cache.totalCostLimit = 4 * 1024 * 1024
-        return cache
-    }()
+struct HistoryThumbnailKey: Hashable {
+    let authorityKey: String
+    let owner: String
+    let id: Int64
+    let dataHash: String
+    let captureId: String
+    let contentId: String
+    let archiveRevision: Int64
+    let archiveDigest: String
+    let classifierVersion: Int64
+    let spec: Int
 
-    static func image(for id: Int64) -> NSImage? {
-        cache.object(forKey: NSNumber(value: id))
+    init(entry: HistoryEntry, owner: String = "all") {
+        authorityKey = entry.display?.cache_key ?? ""
+        self.owner = owner
+        let identity = entry.composite?.identity
+        id = entry.id
+        dataHash = entry.data_hash
+        captureId = identity?.capture_id ?? ""
+        contentId = identity?.content_id ?? ""
+        archiveRevision = identity?.archive_revision ?? 0
+        archiveDigest = identity?.archive_digest ?? ""
+        classifierVersion = entry.classifier_version
+        spec = Int(HistoryThumbnailLayout.maxSide)
     }
 
-    static func insert(_ image: NSImage, for id: Int64) {
-        let pixels = max(1, Int(image.size.width * image.size.height))
-        cache.setObject(image, forKey: NSNumber(value: id), cost: pixels * 4)
+    var storageKey: NSString {
+        "\(authorityKey)|\(owner)|\(id)|\(dataHash)|\(captureId)|\(contentId)|\(archiveRevision)|\(archiveDigest)|\(classifierVersion)|\(spec)" as NSString
+    }
+}
+
+enum HistoryThumbnailCache {
+    private struct Cached {
+        let image: NSImage
+        let cost: Int
+    }
+    private static var cache: [HistoryThumbnailKey: Cached] = [:]
+    private static var order: [HistoryThumbnailKey] = []
+    private(set) static var memoryCost = 0
+    static let byteLimit = 4 * 1024 * 1024
+
+    static func image(for key: HistoryThumbnailKey) -> NSImage? {
+        guard let cached = cache[key] else { return nil }
+        order.removeAll { $0 == key }
+        order.append(key)
+        return cached.image
+    }
+
+    static func insert(_ image: NSImage, for key: HistoryThumbnailKey, encodedBytes: Int = 0) {
+        guard !key.authorityKey.isEmpty, encodedBytes >= 0, !image.representations.isEmpty else { return }
+        var cost = encodedBytes
+        for representation in image.representations {
+            guard let bitmap = representation as? NSBitmapImageRep, bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0 else { return }
+            let (bytes, overflow) = bitmap.bytesPerRow.multipliedReportingOverflow(by: bitmap.pixelsHigh)
+            let (nextCost, costOverflow) = cost.addingReportingOverflow(bytes)
+            guard !overflow, !costOverflow, bytes > 0, nextCost <= byteLimit else { return }
+            cost = nextCost
+        }
+        if let old = cache.removeValue(forKey: key) { memoryCost -= old.cost }
+        order.removeAll { $0 == key }
+        while (memoryCost + cost > byteLimit || cache.count >= 30), let oldest = order.first {
+            order.removeFirst()
+            if let removed = cache.removeValue(forKey: oldest) { memoryCost -= removed.cost }
+        }
+        guard memoryCost + cost <= byteLimit else { return }
+        cache[key] = Cached(image: image, cost: cost)
+        order.append(key)
+        memoryCost += cost
     }
 
     static func removeAll() {
-        cache.removeAllObjects()
+        cache.removeAll()
+        order.removeAll()
+        memoryCost = 0
     }
 }

@@ -369,6 +369,15 @@ final class HistoryKeyboardNavigationTests: XCTestCase {
         )
     }
 
+    func testCommandDeleteRequiresOnlyCommandAndSuppressesHeldKey() throws {
+        XCTAssertEqual(HistoryKeyboardCommand.event(try keyEvent(51, modifiers: .command)), .delete)
+        XCTAssertNil(HistoryKeyboardCommand.event(try keyEvent(51, modifiers: .command, repeatKey: true)))
+        for modifiers: NSEvent.ModifierFlags in [[], .control, .option, .shift, [.command, .shift], [.command, .option], [.command, .control]] {
+            XCTAssertNil(HistoryKeyboardCommand.event(try keyEvent(51, modifiers: modifiers)))
+        }
+        XCTAssertNil(HistoryKeyboardCommand.event(try keyEvent(117)), "Forward Delete is not the requested Mac shortcut")
+    }
+
     func testCommandEventMappingRejectsTypingAndUnownedModifierCombinations() throws {
         for code: UInt16 in [0, 3, 51, 123, 124] {
             XCTAssertNil(HistoryKeyboardCommand.event(try keyEvent(code)), "keyCode \(code)")

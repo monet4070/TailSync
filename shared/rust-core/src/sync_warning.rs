@@ -14,7 +14,13 @@ pub struct SyncWarning {
 /// Monotonic source of `SyncWarning::id`.
 static NEXT_WARNING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-static LATEST_WARNING: OnceLock<Mutex<Option<SyncWarning>>> = OnceLock::new();
+#[derive(Default)]
+struct WarningQueue {
+    pending: std::collections::VecDeque<SyncWarning>,
+    overflow: u64,
+}
+static LATEST_WARNING: OnceLock<Mutex<WarningQueue>> = OnceLock::new();
+const WARNING_LIMIT: usize = 64;
 
 /// Set once the process begins shutting down. Delivery workers tear their
 /// connection down both on shutdown and on an explicit reconnect (a route
@@ -38,21 +44,111 @@ pub(crate) fn reset_shutdown_for_test() {
 }
 
 #[cfg(test)]
-static TEST_WARNING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-/// Serialize tests that observe the process-global warning slot. Production
-/// intentionally exposes only one latest warning, so tests in other Modules
-/// must not consume each other's value while the Rust harness runs in parallel.
+static TEST_WARNING_PERMIT: OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = OnceLock::new();
 #[cfg(test)]
-pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-    TEST_WARNING_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+fn test_permit() -> std::sync::Arc<tokio::sync::Semaphore> {
+    TEST_WARNING_PERMIT
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)))
+        .clone()
+}
+/// Sync harness cases use the same permit as async cases. No production lock
+/// crosses an await; async cases wait cooperatively on their runtime.
+#[cfg(test)]
+pub(crate) fn test_lock() -> tokio::sync::OwnedSemaphorePermit {
+    loop {
+        if let Ok(permit) = test_permit().try_acquire_owned() {
+            return permit;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+#[cfg(test)]
+pub(crate) async fn test_lock_async() -> tokio::sync::OwnedSemaphorePermit {
+    test_permit().acquire_owned().await.unwrap()
 }
 
-fn latest_warning() -> &'static Mutex<Option<SyncWarning>> {
-    LATEST_WARNING.get_or_init(|| Mutex::new(None))
+fn latest_warning() -> &'static Mutex<WarningQueue> {
+    LATEST_WARNING.get_or_init(|| Mutex::new(WarningQueue::default()))
+}
+
+pub fn record_composite_result(peer: &str, result: crate::protocol::composite::AckResult) {
+    use crate::protocol::composite::AckResult;
+    match result {
+        AckResult::StoredIncomplete => record(peer, "composite_incomplete"),
+        AckResult::ApplyUnknown => record(peer, "composite_apply_unknown"),
+        AckResult::FailedPartial => record(peer, "composite_partial"),
+        AckResult::Superseded => record(peer, "composite_superseded"),
+        _ => {}
+    }
+}
+/// A permanent rejection dropped clipboard content.
+///
+/// R4-04 / D-5: `CompositeResult` and `Expired` already raised warnings, but a
+/// `Rejected` — an assembly-budget rejection, a capability downgrade, an
+/// un-degradable RTF-only fallback — was log-only while the content was lost for
+/// good. The user has to be able to see that.
+/// A captured clipboard item could not be written to history.
+///
+/// R5-01: this used to be a `warn!` and nothing else. The clipboard had already been
+/// read and (for a composite item) already broadcast, so the content was gone with no
+/// trace the user could see. A storage failure has to be a visible outcome, not a log
+/// line — the plan is explicit that a body which could not be stored must never be
+/// reported as saved.
+pub fn record_capture_not_saved() {
+    record("", "capture_not_saved");
+}
+/// A received event failed history admission before any native effect.
+pub fn record_receive_not_saved(peer: &str) {
+    record(peer, "receive_not_saved");
+}
+pub fn record_capture_failed() {
+    record("", "capture_failed");
+}
+/// Called only after a successful history commit. Conversion support is a
+/// separate fact from reading and saving the source bytes.
+pub fn record_saved_capture(
+    snapshot: &crate::protocol::native_clipboard::NativeSnapshot,
+    portable: Option<&crate::composite::PortableBundle>,
+    origin: crate::composite::origin::Origin,
+    native_formats_admitted: bool,
+) {
+    let read_incomplete = snapshot.formats.iter().any(|f| {
+        matches!(
+            f.state,
+            crate::protocol::native_clipboard::FormatState::Failed
+                | crate::protocol::native_clipboard::FormatState::TooLarge
+        )
+    }) || portable
+        .is_some_and(|b| b.completeness == crate::composite::Completeness::MissingFormats);
+    tracing::debug!(
+        history_saved = true,
+        native_formats_admitted,
+        portable_convertible = portable.is_some(),
+        archived_resource_count = portable.map_or(0, |b| b.resources.len()),
+        read_incomplete,
+        ?origin,
+        "capture outcome"
+    );
+    if read_incomplete {
+        record_capture_failed();
+    }
+    if matches!(
+        origin,
+        crate::composite::origin::Origin::Unknown
+            | crate::composite::origin::Origin::UnknownMismatch
+    ) {
+        record("", "capture_origin_unknown");
+    }
+}
+pub fn record_capture_not_shared() {
+    record("", "capture_not_shared");
+}
+pub fn record_clipboard_unavailable() {
+    record("", "clipboard_unavailable");
+}
+
+pub fn record_delivery_rejected(peer: &str) {
+    record(peer, "delivery_rejected");
 }
 
 pub fn record_expired_event(peer: &str) {
@@ -104,47 +200,70 @@ fn record(peer: &str, kind: &'static str) {
         .fetch_add(1, Ordering::SeqCst)
         .wrapping_add(1)
         .max(1);
-    *latest_warning()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(SyncWarning {
+    let mut queue = latest_warning().lock().unwrap_or_else(|p| p.into_inner());
+    let peer: String = peer.chars().take(255).collect();
+    if queue
+        .pending
+        .iter()
+        .any(|w| w.kind == kind && w.peer == peer)
+    {
+        return;
+    }
+    if queue.pending.len() >= WARNING_LIMIT - 1 {
+        queue.overflow = queue.overflow.saturating_add(1);
+        if !queue.pending.iter().any(|w| w.kind == "warning_overflow") {
+            queue.pending.push_back(SyncWarning {
+                id,
+                kind: "warning_overflow",
+                peer: String::new(),
+                occurred_at_ms: crate::protocol::unix_timestamp_ms(),
+            });
+        }
+        return;
+    }
+    queue.pending.push_back(SyncWarning {
         id,
         kind,
-        peer: peer.chars().take(255).collect(),
+        peer,
         occurred_at_ms: crate::protocol::unix_timestamp_ms(),
     });
 }
 
-/// Read the current warning WITHOUT consuming it.
-///
-/// A background poll (for example a window that is hidden in the tray) must be able
-/// to observe the warning without taking it away from the window that can actually
-/// show it. The consumer acknowledges with [`ack`] once it has been displayed.
+/// Read the oldest undisplayed warning; the existing optional DTO stays compatible.
 pub fn peek() -> Option<SyncWarning> {
     latest_warning()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+        .unwrap_or_else(|p| p.into_inner())
+        .pending
+        .front()
+        .cloned()
 }
-
-/// Consume the warning only if `id` still identifies it. Returns whether a warning
-/// was consumed, so the caller can tell "shown and acknowledged" from "a newer
-/// warning replaced it before I acknowledged".
+/// Acknowledging one warning never clears a different pending warning.
 pub fn ack(id: u64) -> bool {
-    let mut slot = latest_warning()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if slot.as_ref().is_some_and(|warning| warning.id == id) {
-        slot.take();
+    let mut queue = latest_warning().lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(index) = queue.pending.iter().position(|w| w.id == id) {
+        queue.pending.remove(index);
         return true;
     }
     false
 }
-
+pub fn overflow_count() -> u64 {
+    latest_warning()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .overflow
+}
+/// Compatibility consuming read. New UIs use peek + ack after presentation.
 pub fn take() -> Option<SyncWarning> {
     latest_warning()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take()
+        .unwrap_or_else(|p| p.into_inner())
+        .pending
+        .pop_front()
+}
+#[cfg(test)]
+fn clear_for_test() {
+    *latest_warning().lock().unwrap_or_else(|p| p.into_inner()) = WarningQueue::default();
 }
 
 #[cfg(test)]
@@ -156,7 +275,7 @@ mod tests {
         type WarningRecorder = fn(&str);
 
         let _guard = test_lock();
-        let _ = take();
+        clear_for_test();
         let peer = "x".repeat(300);
         let variants: [(&str, WarningRecorder); 3] = [
             ("expired_event", record_expired_event),
@@ -186,7 +305,7 @@ mod tests {
     #[test]
     fn delivery_shutdown_warning_requires_a_real_shutdown() {
         let _guard = test_lock();
-        let _ = take();
+        clear_for_test();
         reset_shutdown_for_test();
 
         // A forced reconnect abandons the in-flight frame but the durable
@@ -214,7 +333,7 @@ mod p2_4_tests {
     #[test]
     fn peek_does_not_consume_and_ack_consumes_exactly_that_warning() {
         let _guard = test_lock();
-        let _ = take(); // clear anything another test left behind
+        clear_for_test(); // clear anything another test left behind
 
         record_expired_event("peer-a");
         let shown = peek().expect("a warning is readable");
@@ -224,35 +343,56 @@ mod p2_4_tests {
             "peek must not consume the warning"
         );
 
-        // A newer warning replaces the slot; acknowledging the older id must not
-        // clear the newer warning instead.
         record_delivery_stalled("peer-b");
-        let newer = peek().expect("the newer warning is readable");
-        assert_ne!(newer.id, shown.id, "a new warning gets a new id");
-        assert!(
-            !ack(shown.id),
-            "acking a replaced warning must report failure"
-        );
         assert_eq!(
-            peek().map(|warning| warning.id),
-            Some(newer.id),
-            "the newer warning must survive a stale acknowledgement"
+            peek().unwrap().id,
+            shown.id,
+            "a second warning must not overwrite the first"
         );
-
-        assert!(ack(newer.id), "acking the current warning must succeed");
-        assert!(peek().is_none(), "the acknowledged warning is consumed");
+        assert!(ack(shown.id));
+        let newer = peek().expect("the next warning remains pending");
+        assert_ne!(newer.id, shown.id);
+        assert!(!ack(shown.id));
+        assert!(ack(newer.id));
+        assert!(peek().is_none());
         assert!(!ack(newer.id), "acking twice must not succeed");
     }
 
     #[test]
     fn warning_ids_are_monotonic_and_nonzero() {
         let _guard = test_lock();
-        let _ = take();
+        clear_for_test();
         record_expired_event("peer-a");
         let first = peek().expect("warning").id;
+        ack(first);
         record_expired_event("peer-a");
         let second = peek().expect("warning").id;
         assert!(first > 0 && second > first, "{first} then {second}");
-        let _ = take();
+        clear_for_test();
+    }
+    #[test]
+    fn queue_preserves_undisplayed_warnings_and_reports_overflow() {
+        let _guard = test_lock();
+        clear_for_test();
+        record_expired_event("first");
+        let first = peek().unwrap();
+        for index in 0..100 {
+            record_delivery_rejected(&index.to_string());
+        }
+        assert_eq!(peek(), Some(first.clone()));
+        assert_eq!(
+            latest_warning().lock().unwrap().pending.len(),
+            WARNING_LIMIT
+        );
+        assert!(overflow_count() > 0);
+        assert!(ack(first.id));
+        let mut overflow = 0;
+        while let Some(warning) = take() {
+            if warning.kind == "warning_overflow" {
+                overflow += 1;
+            }
+        }
+        assert_eq!(overflow, 1);
+        clear_for_test();
     }
 }

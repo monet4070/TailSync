@@ -2,8 +2,8 @@
 //!
 //! Shared by the macOS and Windows network layers (T106 migration). A
 //! reliable text/image event is decoded, timestamp-checked, de-duplicated,
-//! applied (clipboard side effect via the sync engine followed by the history
-//! write), and acknowledged. `on_applied` lets the caller run platform side
+//! prepared in durable history, claimed, then applied through an unlocked
+//! clipboard port and acknowledged. `on_applied` lets the caller run platform side
 //! effects (clipboard version bump) at the exact position of the original
 //! server code — before the acknowledgement is written.
 
@@ -180,94 +180,177 @@ async fn process_event_content(
     sync_engine: &Arc<Mutex<SyncEngine>>,
     database: &Arc<Mutex<HistoryDB>>,
 ) -> Result<(), ReliableEventError> {
-    match command {
-        Command::TextPayload => {
-            let text = String::from_utf8(content.to_vec())
-                .map_err(|_| ReliableEventError::permanent("text event is not valid UTF-8"))?;
-            {
-                let mut engine = sync_engine.lock().await;
-                let claimed = event_receipts::update(receipt.clone(), Operation::Claim)
-                    .await
-                    .map_err(receipt_error)?
-                    .is_some();
-                if !claimed {
-                    if let Err(error) = engine.handle_incoming_text(&text, source.to_string()).await
-                    {
-                        event_receipts::update(receipt.clone(), Operation::Remove)
-                            .await
-                            .map_err(receipt_error)?;
-                        return Err(ReliableEventError::retryable(error));
-                    }
-                    engine.mark_event_applied(source, message_id);
-                }
-            }
-
-            let db = database.clone();
-            let db_text = text.clone();
-            let db_source = source.to_string();
-            let result = tokio::task::spawn_blocking(move || {
-                db.blocking_lock()
-                    .add_text(&db_text, &db_source)
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .map_err(|error| ReliableEventError::retryable(error.to_string()))?;
-            result.map_err(ReliableEventError::retryable)?;
-
-            info!("Received text from {}: {} chars", source, text.len());
-        }
+    let text = match command {
+        Command::TextPayload => Some(
+            String::from_utf8(content.to_vec())
+                .map_err(|_| ReliableEventError::permanent("text event is not valid UTF-8"))?,
+        ),
         Command::ImagePayload => {
             crate::protocol::PackedImage::try_from(content)
-                .map(|_| ())
                 .map_err(|error| ReliableEventError::permanent(error.to_string()))?;
-            {
-                let mut engine = sync_engine.lock().await;
-                let claimed = event_receipts::update(receipt.clone(), Operation::Claim)
-                    .await
-                    .map_err(receipt_error)?
-                    .is_some();
-                if !claimed {
-                    if let Err(error) = engine
-                        .handle_incoming_image(content, source.to_string())
-                        .await
-                    {
-                        event_receipts::update(receipt.clone(), Operation::Remove)
-                            .await
-                            .map_err(receipt_error)?;
-                        return Err(ReliableEventError::retryable(error));
-                    }
-                    engine.mark_event_applied(source, message_id);
-                }
-            }
-
-            let db = database.clone();
-            let image = content.to_vec();
-            let db_source = source.to_string();
-            let result = tokio::task::spawn_blocking(move || {
-                db.blocking_lock()
-                    .add_image(&image, &db_source)
-                    .map_err(|error| error.to_string())
-            })
-            .await
-            .map_err(|error| ReliableEventError::retryable(error.to_string()))?;
-            result.map_err(ReliableEventError::retryable)?;
-
-            info!("Received image from {}: {} bytes", source, content.len());
+            None
         }
         _ => {
             return Err(ReliableEventError::permanent(format!(
-                "{:?} is not a reliable event command",
-                command
+                "{command:?} is not a reliable event command"
             )))
         }
+    };
+    if !database.lock().await.is_storage_available() {
+        crate::sync_warning::record_receive_not_saved(source);
+        return Err(ReliableEventError::retryable(
+            "History storage is unavailable; native effect was not attempted",
+        ));
     }
-    // RAM history is accepted as before, but never called durable. On restart
-    // its claim suppresses native replay while history is reconstructed.
+    let arrival_generation = sync_engine
+        .lock()
+        .await
+        .legacy_arrival_generation(source, message_id)
+        .map_err(ReliableEventError::retryable)?;
+    let _operation = super::operation_lock::global()
+        .acquire(receipt.operation_key())
+        .await
+        .map_err(receipt_error)?;
+    let existing = event_receipts::update(receipt.clone(), Operation::Lookup)
+        .await
+        .map_err(receipt_error)?;
+    if existing.as_ref().is_some_and(|record| record.received) {
+        return Ok(());
+    }
+    let (history_ref, protection) =
+        if let Some(id) = existing.as_ref().and_then(|record| record.history_ref) {
+            (
+                id,
+                crate::db::PendingHistoryProtection::new(database.clone(), id),
+            ) // deletion breaks the reference; never recreate acknowledged content
+        } else {
+            let db = database.clone();
+            let bytes = content.to_vec();
+            let stored_source = source.to_string();
+            let saved = tokio::task::spawn_blocking(move || {
+                let id = {
+                    let mut guard = db.blocking_lock();
+                    if command == Command::TextPayload {
+                        guard.prepare_legacy_text(
+                            std::str::from_utf8(&bytes).expect("validated UTF-8"),
+                            &stored_source,
+                        )
+                    } else {
+                        guard.prepare_legacy_image(&bytes, &stored_source)
+                    }
+                    .map_err(|error| error.to_string())?
+                };
+                Ok::<_, String>((id, crate::db::PendingHistoryProtection::new(db, id)))
+            })
+            .await
+            .map_err(|error| ReliableEventError::retryable(error.to_string()))?;
+            match saved {
+                Ok(saved) => saved,
+                Err(error) => {
+                    // Persist a conservative suppression marker: after restart a retry
+                    // may recover history, but cannot acquire freshness and overwrite
+                    // a newer copy. No native effect has been started.
+                    event_receipts::update(receipt.clone(), Operation::Claim)
+                        .await
+                        .map_err(receipt_error)?;
+                    crate::sync_warning::record_receive_not_saved(source);
+                    return Err(ReliableEventError::retryable(error));
+                }
+            }
+        };
+    let claimed = match event_receipts::update(
+        receipt.clone(),
+        Operation::ClaimPrepared(history_ref),
+    )
+    .await
+    {
+        Ok(record) => record.is_some(),
+        Err(error) => {
+            database.lock().await.release_history(history_ref);
+            return Err(receipt_error(error));
+        }
+    };
+    let publication: crate::sync::AdmissionHold = Arc::new(crate::sync::publication_permit().await);
+    if !claimed && sync_engine.lock().await.clipboard_generation() == arrival_generation {
+        // Metadata commits and helper I/O never hold the engine mutex.
+        let port = sync_engine.lock().await.clipboard_port();
+        let error = if let Some(text) = text {
+            let prepared = sync_engine
+                .lock()
+                .await
+                .prepare_incoming_text(&text)
+                .map_err(ReliableEventError::retryable)?;
+            let result = match port {
+                Some(port) => {
+                    port.write_text_admitted(text, vec![publication.clone(), protection.clone()])
+                        .await
+                }
+                None => Err(format!(
+                    "{}clipboard unavailable",
+                    crate::protocol::NO_EFFECT_MARKER
+                )),
+            };
+            sync_engine
+                .lock()
+                .await
+                .finish_incoming_text(prepared, result)
+                .err()
+        } else {
+            let prepared = sync_engine
+                .lock()
+                .await
+                .prepare_incoming_image(content)
+                .map_err(ReliableEventError::retryable)?;
+            let result = match port {
+                Some(port) => {
+                    port.write_image_admitted(
+                        prepared.width,
+                        prepared.height,
+                        prepared.rgba.clone(),
+                        vec![publication.clone(), protection.clone()],
+                    )
+                    .await
+                }
+                None => Err(format!(
+                    "{}clipboard unavailable",
+                    crate::protocol::NO_EFFECT_MARKER
+                )),
+            };
+            sync_engine
+                .lock()
+                .await
+                .finish_incoming_image(prepared, result)
+                .err()
+        };
+        if let Some(error) = error {
+            if crate::protocol::failure_is_proven_no_effect(&error) {
+                event_receipts::update(receipt.clone(), Operation::Remove)
+                    .await
+                    .map_err(receipt_error)?;
+            } else {
+                crate::sync_warning::record_composite_result(
+                    source,
+                    crate::protocol::composite::AckResult::ApplyUnknown,
+                );
+            }
+            database.lock().await.release_history(history_ref);
+            return Err(ReliableEventError::retryable(error));
+        }
+        sync_engine
+            .lock()
+            .await
+            .mark_event_applied(source, message_id);
+    }
     if database.lock().await.is_storage_available() {
         event_receipts::update(receipt, Operation::Complete)
             .await
             .map_err(receipt_error)?;
     }
+    database.lock().await.release_history(history_ref);
+    sync_engine
+        .lock()
+        .await
+        .settle_legacy_arrival(source, message_id);
     Ok(())
 }
 
@@ -286,11 +369,20 @@ mod tests {
     use crate::protocol::TransferId;
     use crate::secure::{self, PeerIdentity};
     use crate::sync::{FileBatchProgress, FileReceiveCommit, SyncPlatform};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    fn history_fixture() -> HistoryDB {
+        let root = crate::db::get_data_dir()
+            .join(format!("event-receiver-{:016x}", rand::random::<u64>()));
+        HistoryDB::open_isolated_for_test(&root).unwrap()
+    }
 
     struct TestPlatform {
         writes: std::sync::Mutex<Vec<String>>,
         fail_text: AtomicBool,
+        /// When set, the text failure carries the no-effect marker, i.e. the platform
+        /// *proves* it did not touch the clipboard.
+        fail_text_provably: AtomicBool,
     }
 
     impl Default for TestPlatform {
@@ -298,6 +390,7 @@ mod tests {
             Self {
                 writes: std::sync::Mutex::new(Vec::new()),
                 fail_text: AtomicBool::new(false),
+                fail_text_provably: AtomicBool::new(false),
             }
         }
     }
@@ -305,7 +398,11 @@ mod tests {
     impl SyncPlatform for TestPlatform {
         fn write_text(&self, text: &str) -> Result<(), String> {
             if self.fail_text.load(Ordering::Relaxed) {
-                return Err("clipboard unavailable".to_string());
+                return Err(if self.fail_text_provably.load(Ordering::Relaxed) {
+                    format!("{}clipboard unavailable", crate::protocol::NO_EFFECT_MARKER)
+                } else {
+                    "clipboard unavailable".to_string()
+                });
             }
             self.writes.lock().unwrap().push(text.to_string());
             Ok(())
@@ -378,6 +475,98 @@ mod tests {
         (client, server)
     }
 
+    /// A platform whose text write blocks for 250 ms, standing in for the helper
+    /// subprocess the composite path now spawns.
+    #[derive(Default)]
+    struct SlowTextPlatform {
+        writes: AtomicUsize,
+        delay: std::time::Duration,
+    }
+
+    impl SyncPlatform for SlowTextPlatform {
+        fn write_text(&self, _: &str) -> Result<(), String> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            Ok(())
+        }
+        fn write_image(&self, _: u32, _: u32, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_file_progress(&self, _: &str, _: u64, _: u64) {}
+        fn clear_file_progress(&self, _: Option<TransferId>, _: Option<&str>) {}
+        fn set_file_batch_progress(&self, _: FileBatchProgress) {}
+        fn files_received(&self, _: FileReceiveCommit) -> crate::sync::PlatformResultFuture {
+            Box::pin(async { Ok(()) })
+        }
+        fn file_batch_failed(&self, _: Option<TransferId>, _: &str) {}
+    }
+
+    /// R3-01 / Gate R3 — the **production** inbound text path must not hold the
+    /// engine lock, or an async worker, across the native write.
+    ///
+    /// The verification measured the old path with the production
+    /// `handle_incoming_text`: a 250 ms platform call dragged a 10 ms timer out to
+    /// 255 ms, because `sync_engine.lock()` was held across the await. The fix is
+    /// two short lock phases with the port call in between, so the runtime keeps
+    /// making progress.
+    #[tokio::test(flavor = "current_thread")]
+    async fn inbound_text_does_not_stall_the_runtime_on_a_slow_platform() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
+        const NATIVE_DELAY_MS: u64 = 250;
+        const TIMER_MS: u64 = 10;
+        const CEILING_MS: u128 = 150;
+
+        let root =
+            crate::db::get_data_dir().join(format!("r3-slow-text-{:016x}", rand::random::<u64>()));
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (_client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let db = Arc::new(Mutex::new(
+            HistoryDB::open_isolated_for_test(&root).unwrap(),
+        ));
+        let platform = Arc::new(SlowTextPlatform {
+            writes: AtomicUsize::new(0),
+            delay: std::time::Duration::from_millis(NATIVE_DELAY_MS),
+        });
+        let mut engine = SyncEngine::new();
+        engine.set_platform(platform.clone());
+        let engine = Arc::new(Mutex::new(engine));
+
+        let envelope = EventEnvelope::new(b"slow fixture".to_vec());
+        let frame = text_frame(1, &envelope);
+        let mut sequence = None;
+
+        let started = std::time::Instant::now();
+        let pulse = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(TIMER_MS)).await;
+            started.elapsed().as_millis()
+        });
+        tokio::task::yield_now().await;
+
+        process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut sequence,
+            || (),
+        )
+        .await
+        .expect("the text event must be applied");
+
+        let observed = pulse.await.expect("the timer task must run");
+        assert_eq!(platform.writes.load(Ordering::SeqCst), 1);
+        assert!(
+            observed < CEILING_MS,
+            "a {TIMER_MS}ms timer was observed at {observed}ms while a {NATIVE_DELAY_MS}ms native \
+             write was in flight: the engine lock (or an async worker) is still held across the \
+             native call"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
     async fn test_engine() -> (Arc<Mutex<SyncEngine>>, Arc<TestPlatform>) {
         let platform = Arc::new(TestPlatform::default());
         let mut engine = SyncEngine::new();
@@ -391,10 +580,12 @@ mod tests {
 
     #[tokio::test]
     async fn text_event_is_applied_and_acknowledged() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
-        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let db = Arc::new(Mutex::new(history_fixture()));
         let (engine, platform) = test_engine().await;
 
         let envelope = EventEnvelope::new(b"hello from peer".to_vec());
@@ -429,12 +620,22 @@ mod tests {
             .has_seen_message("client", envelope.message_id));
     }
 
+    /// R4-02 — an **unproven** write failure keeps the claim.
+    ///
+    /// This replaces the old `transient_clipboard_failure_does_not_persist_or_deduplicate_event`,
+    /// which asserted the opposite. The plan is explicit: only a *proven* `NoEffect`
+    /// may release an at-most-once claim, because re-applying a system write that may
+    /// already have happened is worse than skipping it. The retry therefore records
+    /// the history and acknowledges the event, but does **not** write the clipboard
+    /// again.
     #[tokio::test]
-    async fn transient_clipboard_failure_does_not_persist_or_deduplicate_event() {
+    async fn an_unproven_clipboard_failure_keeps_the_claim_and_is_not_reapplied() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
-        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let db = Arc::new(Mutex::new(history_fixture()));
         let (engine, platform) = test_engine().await;
         platform.fail_text.store(true, Ordering::Relaxed);
 
@@ -460,13 +661,11 @@ mod tests {
                 .await
                 .count_all_filtered(None, None, None, None)
                 .unwrap(),
-            0
+            1
         );
-        assert!(!engine
-            .lock()
-            .await
-            .has_seen_message("client", envelope.message_id));
 
+        // The platform recovers, but the first failure proved nothing, so the native
+        // effect is not applied a second time.
         platform.fail_text.store(false, Ordering::Relaxed);
         let outcome = process_reliable_event(
             &mut server,
@@ -486,17 +685,76 @@ mod tests {
                 .await
                 .count_all_filtered(None, None, None, None)
                 .unwrap(),
-            1
+            1,
+            "the content is still recorded in history"
         );
-        assert_eq!(platform.writes.lock().unwrap().as_slice(), ["retry me"]);
+        assert!(
+            platform.writes.lock().unwrap().is_empty(),
+            "an unproven failure must not be re-applied"
+        );
+    }
+
+    /// R4-02 — a **proven** no-effect failure does release the claim, so the effect is
+    /// retried rather than lost.
+    #[tokio::test]
+    async fn a_proven_no_effect_failure_releases_the_claim_and_retries() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let db = Arc::new(Mutex::new(history_fixture()));
+        let (engine, platform) = test_engine().await;
+        platform.fail_text.store(true, Ordering::Relaxed);
+        platform.fail_text_provably.store(true, Ordering::Relaxed);
+
+        let envelope = EventEnvelope::new(b"retry me".to_vec());
+        let frame = text_frame(1, &envelope);
+        client.write_frame(&frame).await.unwrap();
+
+        let mut last_sequence = None;
+        let error = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is_retryable());
+
+        platform.fail_text.store(false, Ordering::Relaxed);
+        let outcome = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReliableEventOutcome::Applied);
+        let _ = client.read_frame().await.unwrap();
+        assert_eq!(
+            platform.writes.lock().unwrap().as_slice(),
+            ["retry me"],
+            "a proven no-effect releases the claim, so the effect is applied on retry"
+        );
     }
 
     #[tokio::test]
     async fn duplicate_event_is_acknowledged_without_reapply() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
-        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let db = Arc::new(Mutex::new(history_fixture()));
         let (engine, platform) = test_engine().await;
 
         let envelope = EventEnvelope::new(b"hello from peer".to_vec());
@@ -540,10 +798,12 @@ mod tests {
 
     #[tokio::test]
     async fn replay_with_unknown_message_id_is_rejected() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
-        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let db = Arc::new(Mutex::new(history_fixture()));
         let (engine, _platform) = test_engine().await;
 
         let first = EventEnvelope::new(b"one".to_vec());
@@ -582,10 +842,12 @@ mod tests {
 
     #[tokio::test]
     async fn stale_timestamp_is_rejected() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
-        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let db = Arc::new(Mutex::new(history_fixture()));
         let (engine, _platform) = test_engine().await;
 
         let mut envelope = EventEnvelope::new(b"ancient".to_vec());
@@ -610,10 +872,12 @@ mod tests {
 
     #[tokio::test]
     async fn non_reliable_command_is_rejected() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
-        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let db = Arc::new(Mutex::new(history_fixture()));
         let (engine, _platform) = test_engine().await;
 
         let envelope = EventEnvelope::new(b"payload".to_vec());
@@ -641,11 +905,13 @@ mod tests {
     /// retry after the history write failed; the retry must still persist the
     /// history row and acknowledge the event.
     #[tokio::test]
-    async fn db_failure_after_clipboard_apply_does_not_reapply_on_retry() {
+    async fn db_failure_prevents_clipboard_apply_until_history_recovers() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
-        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let db = Arc::new(Mutex::new(history_fixture()));
         db.lock().await.reject_text_inserts_for_test(true).unwrap();
         let (engine, platform) = test_engine().await;
 
@@ -666,8 +932,12 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.is_retryable());
-        // The clipboard effect landed exactly once, but nothing was committed.
-        assert_eq!(platform.writes.lock().unwrap().as_slice(), ["event A"]);
+        let warning = crate::sync_warning::peek().unwrap();
+        assert_eq!(warning.kind, "receive_not_saved");
+        assert_eq!(warning.peer, "client");
+        assert!(crate::sync_warning::ack(warning.id));
+        // Failed history preparation must prevent all native effects.
+        assert!(platform.writes.lock().unwrap().is_empty());
         assert!(!engine
             .lock()
             .await
@@ -698,7 +968,7 @@ mod tests {
 
         // The clipboard effect was not written a second time, the history row
         // is durable, the event is marked seen, and the applied state cleared.
-        assert_eq!(platform.writes.lock().unwrap().as_slice(), ["event A"]);
+        assert!(platform.writes.lock().unwrap().is_empty());
         assert_eq!(
             db.lock()
                 .await
@@ -720,10 +990,12 @@ mod tests {
     /// newer local clipboard intent that appeared before the retry.
     #[tokio::test]
     async fn retry_of_an_applied_event_does_not_overwrite_newer_local_clipboard() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
-        let db = Arc::new(Mutex::new(HistoryDB::new_unavailable().unwrap()));
+        let db = Arc::new(Mutex::new(history_fixture()));
         db.lock().await.reject_text_inserts_for_test(true).unwrap();
         let (engine, platform) = test_engine().await;
 
@@ -744,7 +1016,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.is_retryable());
-        assert_eq!(platform.writes.lock().unwrap().as_slice(), ["remote A"]);
+        assert!(platform.writes.lock().unwrap().is_empty());
 
         // The user copies newer content locally before the remote retry lands.
         platform
@@ -752,6 +1024,7 @@ mod tests {
             .lock()
             .unwrap()
             .push("newer local B".to_string());
+        engine.lock().await.supersede_file_clipboard();
 
         db.lock().await.reject_text_inserts_for_test(false).unwrap();
         let outcome = process_reliable_event(
@@ -770,7 +1043,7 @@ mod tests {
 
         assert_eq!(
             platform.writes.lock().unwrap().as_slice(),
-            ["remote A", "newer local B"],
+            ["newer local B"],
             "the stale remote retry must not overwrite newer local clipboard intent"
         );
         assert_eq!(
@@ -783,6 +1056,8 @@ mod tests {
     }
     #[tokio::test]
     async fn receiver_restart_preserves_newer_intent_and_acks_old_text_and_image() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
         for failed_history in [false, true] {
             for (command, content) in [
                 (Command::TextPayload, b"remote old A".to_vec()),

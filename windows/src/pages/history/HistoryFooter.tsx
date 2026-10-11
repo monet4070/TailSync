@@ -28,6 +28,7 @@ export function HistoryFooter({
   historyNotice,
   clearHistoryNotice,
   retryHistory,
+  retryRestore,
 }: HistoryFooterProps) {
   return (
     <>
@@ -98,6 +99,8 @@ export function HistoryFooter({
         onDismiss={clearHistoryNotice}
         action={historyNotice?.key === "history-load"
           ? { label: t("history.retry"), onClick: retryHistory }
+          : historyNotice?.key === "restore-failed" && retryRestore
+          ? { label: t("history.restore.recopy"), onClick: retryRestore }
           : undefined}
       />
 

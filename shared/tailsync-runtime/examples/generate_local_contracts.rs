@@ -8,11 +8,19 @@ struct LocalContractExports {
     stable_error: StableErrorEnvelope,
     history: tailsync_core::db::HistoryQueryPage,
     favorite: tailsync_core::db::FavoriteMutation,
+    history_restore: tailsync_runtime::history::HistoryRestoreReport,
+    resource_archive: tailsync_runtime::history::ArchiveEntryImagesReport,
+    source_context_grant: tailsync_runtime::source_context::SourceContextGrantReport,
+    source_context_revoke: tailsync_runtime::source_context::SourceContextRevokeReport,
+    source_context_import: tailsync_runtime::source_context::SourceContextImportReport,
     mac_runtime: MacRuntimeSnapshot,
     windows_runtime: WindowsRuntimeSnapshot,
     peers: PeersResponse,
     preview_error: tailsync_core::db::PreviewErrorInfo,
     preview: tailsync_runtime::preview::PreviewFrameMetadata,
+    document: tailsync_runtime::document_preview::DocumentFrameMetadata,
+    document_model: tailsync_core::composite::display_document::DisplayDocument,
+    document_request: tailsync_runtime::document_preview::DocumentRequest,
 }
 
 fn main() {
@@ -24,6 +32,15 @@ fn main() {
             StableErrorCode::StorageUnavailable,
             StableErrorCode::Unauthorized,
             StableErrorCode::ProtocolIncompatible,
+            StableErrorCode::PublishPartial,
+            StableErrorCode::PublishUnknown,
+            StableErrorCode::PublishSuperseded,
+            StableErrorCode::NativeOnly,
+            StableErrorCode::OriginalsIncomplete,
+            StableErrorCode::ResourcesIncomplete,
+            StableErrorCode::NoSingleImage,
+            StableErrorCode::FormatUnavailable,
+            StableErrorCode::UnsupportedFormat,
             StableErrorCode::InternalError,
         ];
         let policies = codes.map(StableErrorEnvelope::new);
@@ -72,6 +89,33 @@ fn fixtures() -> LocalContractExports {
         can_stop: true,
     };
     LocalContractExports {
+        history_restore: tailsync_runtime::history::HistoryRestoreReport::default(),
+        resource_archive: tailsync_runtime::history::ArchiveEntryImagesReport {
+            archived: 1,
+            deduplicated: 0,
+            complete: false,
+            failures: vec![tailsync_runtime::history::ArchiveResourceFailure {
+                image_index: 1,
+                code: "archive_decode".into(),
+            }],
+        },
+        source_context_grant: tailsync_runtime::source_context::SourceContextGrantReport {
+            grant_id: "ab".repeat(32),
+            origin: "https://example.com".into(),
+            expires_at: 1_760_000_000,
+            node_count: 1,
+            budget_bytes: 16 * 1024 * 1024,
+            ticket: "{\"kind\":\"tailsync-source-ticket\"}".into(),
+        },
+        source_context_revoke: tailsync_runtime::source_context::SourceContextRevokeReport {
+            revoked: true,
+        },
+        source_context_import: tailsync_runtime::source_context::SourceContextImportReport {
+            imported: 1,
+            deduplicated: 0,
+            complete: true,
+            failures: vec![],
+        },
         pairing: tailsync_core::pairing::PairingStatus {
             pairing_enabled: false,
             phase: tailsync_core::pairing::PairingPhase::Disabled,
@@ -96,7 +140,31 @@ fn fixtures() -> LocalContractExports {
             entries: vec![HistoryEntry {
                 id: 7,
                 timestamp: "2026-09-08T00:00:00Z".into(),
-                entry_type: "text".into(),
+                composite: Some(CompositeInfo {
+                    identity: Some(tailsync_core::composite::identity::HistoryIdentity {
+                        version: 1,
+                        capture_id: "07".repeat(16),
+                        content_id: format!("hcl1:1:{}", "08".repeat(32)),
+                        dedupe_key: None,
+                        archive_revision: 1,
+                        archive_digest: "09".repeat(32),
+                    }),
+                    native_only: false,
+                    native_item_count: 1,
+                    formats: vec!["text".into(), "html".into(), "png".into()],
+                    // The fixture shows the distinction R5-04 turns on: `png` is present
+                    // but withheld, because this item carries two images and no standalone
+                    // PNG, so the server would refuse an explicit PNG restore.
+                    restorable_formats: vec!["text".into(), "html".into()],
+                    withheld_formats: vec![WithheldRestoreFormat {
+                        format: "png".into(),
+                        code: "no_single_image".into(),
+                    }],
+                    representation_count: 3,
+                    image_count: 2,
+                    completeness: "complete".into(),
+                }),
+                entry_type: "composite".into(),
                 description: "synthetic fixture".into(),
                 data_hash: "00".repeat(32),
                 size_bytes: 5,
@@ -111,9 +179,16 @@ fn fixtures() -> LocalContractExports {
                 batch_total: None,
                 batch_count: None,
                 batch_status: "complete".into(),
+                display: Some(HistoryDisplayInfo {
+                    version: 1,
+                    kind: "document".into(),
+                    thumbnail_eligible: true,
+                    cache_key: format!("th1:{}", "00".repeat(32)),
+                }),
             }],
             total: Some(1),
             has_more: false,
+            display_index_pending: Some(false),
         },
         favorite: FavoriteMutation {
             affected_ids: vec![7],
@@ -198,6 +273,108 @@ fn fixtures() -> LocalContractExports {
                 previous_entry_id: None,
                 next_entry_id: None,
             }),
+        },
+        document_model: {
+            use tailsync_core::composite::display_document::*;
+            DisplayDocument {
+                version: 1,
+                blocks: vec![
+                    DocumentBlock {
+                        kind: DocumentBlockKind::Paragraph,
+                        paragraph: Some(DocumentParagraph {
+                            list: Some(DocumentListKind::Bullet),
+                            heading: Some(2),
+                            quote_depth: 1,
+                            code_block: false,
+                            list_depth: 1,
+                            runs: vec![DocumentRun {
+                                text: "hello".into(),
+                                link: Some("https://example.com/reading?q=1&mode=preview".into()),
+                                style: DocumentRunStyle {
+                                    bold: true,
+                                    monospace: true,
+                                    highlight: Some(DocumentColor {
+                                        red: 255,
+                                        green: 255,
+                                        blue: 0,
+                                    }),
+                                    color: Some(DocumentColor {
+                                        red: 255,
+                                        green: 0,
+                                        blue: 0,
+                                    }),
+                                    ..Default::default()
+                                },
+                                unsupported: false,
+                            }],
+                        }),
+                        table: None,
+                        image: None,
+                    },
+                    DocumentBlock {
+                        kind: DocumentBlockKind::Image,
+                        paragraph: None,
+                        table: None,
+                        image: Some(DocumentImage {
+                            asset: Some(0),
+                            availability: DocumentImageAvailability::Available,
+                            ordinal: 0,
+                        }),
+                    },
+                    DocumentBlock {
+                        kind: DocumentBlockKind::Table,
+                        paragraph: None,
+                        table: Some(DocumentTable {
+                            rows: vec![DocumentTableRow {
+                                cells: vec![DocumentTableCell {
+                                    header: true,
+                                    runs: vec![DocumentRun {
+                                        text: "h".into(),
+                                        link: None,
+                                        style: DocumentRunStyle::default(),
+                                        unsupported: false,
+                                    }],
+                                }],
+                            }],
+                            truncated: false,
+                        }),
+                        image: None,
+                    },
+                ],
+                assets: vec![DocumentAsset {
+                    index: 0,
+                    offset: 0,
+                    length: 3,
+                    width: 1,
+                    height: 1,
+                    sha256: "0b".repeat(32),
+                }],
+                partial: vec![DocumentPartial {
+                    code: DocumentPartialCode::NativeStylesUnavailable,
+                    detail: "synthetic".into(),
+                }],
+                styles_partial: true,
+                first_image: Some(0),
+            }
+        },
+        document: tailsync_runtime::document_preview::DocumentFrameMetadata {
+            request_id: Some("fixture-request".into()),
+            entry_id: 7,
+            kind: "document".into(),
+            name: "document".into(),
+            stamp: format!("dc1:{}", "0a".repeat(32)),
+            owner: "history".into(),
+            generation: 1,
+            model_bytes: 100,
+            size_bytes: 103,
+            document: Default::default(),
+            batch: None,
+        },
+        document_request: tailsync_runtime::document_preview::DocumentRequest {
+            entry_id: 7,
+            owner: "history".into(),
+            generation: 1,
+            request_id: "fixture-request".into(),
         },
     }
 }

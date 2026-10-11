@@ -11,7 +11,10 @@ use imports::{
     append_import_chunk, begin_import, finish_import, import_response, import_size_limit,
 };
 use routes::handle_cmd;
-pub(crate) use routes::{history_capabilities_data, peer_snapshot_data, preview_binary_response};
+pub(crate) use routes::{
+    document_preview_response, history_capabilities_data, peer_snapshot_data,
+    preview_binary_response,
+};
 pub(crate) use tailsync_core::import::ImportRegistry;
 pub use transport::start;
 #[cfg(test)]
@@ -641,7 +644,9 @@ pub fn load_api_token() -> Result<ApiToken, String> {
 }
 
 pub struct ApiState {
+    pub(crate) documents: tailsync_runtime::document_preview::DocumentSession,
     pub db: Arc<Mutex<db::HistoryDB>>,
+    pub image_archive: Arc<crate::automatic_images::AutomaticImageArchive>,
     pub sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pub settings: Arc<Mutex<crypto::Settings>>,
     pub identity: Arc<DeviceIdentity>,
@@ -657,6 +662,14 @@ pub struct ApiState {
 #[derive(Debug, Deserialize)]
 struct Request {
     cmd: String,
+    document_request: Option<tailsync_runtime::document_preview::DocumentRequest>,
+    document_stamp: Option<String>,
+    #[serde(default)]
+    restore_format: Option<String>,
+    restore_original_id: Option<i64>,
+    restore_identity: Option<tailsync_core::composite::identity::HistoryIdentity>,
+    #[serde(default)]
+    ack_warning_id: Option<u64>,
     #[serde(default)]
     error_schema_version: Option<u32>,
     #[serde(default)]
@@ -739,11 +752,15 @@ struct Request {
     #[serde(default)]
     collection: Option<String>,
     #[serde(default)]
+    cache_key: Option<String>,
+    #[serde(default)]
     since_revision: Option<u64>,
     #[serde(default)]
     wait_ms: Option<u64>,
     #[serde(default)]
     since_notification_id: Option<u64>,
+    #[serde(default)]
+    grant_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

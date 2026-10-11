@@ -41,8 +41,16 @@ impl ConnectionPool {
         )
     }
 
-    fn sender_for_peer(&mut self, peer: &tailscale::PeerInfo, command: Command) -> Result<PoolSender, String> {
-        self.sender_for_command(peer.hostname.clone(), resolve_candidates(peer, TCP_PORT)?, command)
+    fn sender_for_peer(
+        &mut self,
+        peer: &tailscale::PeerInfo,
+        command: Command,
+    ) -> Result<PoolSender, String> {
+        self.sender_for_command(
+            peer.hostname.clone(),
+            resolve_candidates(peer, TCP_PORT)?,
+            command,
+        )
     }
 
     fn sender_for_command(
@@ -57,7 +65,13 @@ impl ConnectionPool {
             hostname,
             candidates,
             command,
-            move |candidates, hostname, priority_rx, bulk_rx, shutdown_rx, retry_wakeup, candidate_rx| {
+            move |candidates,
+                  hostname,
+                  priority_rx,
+                  bulk_rx,
+                  shutdown_rx,
+                  retry_wakeup,
+                  candidate_rx| {
                 tokio::spawn(connection_task(
                     candidates,
                     hostname,
@@ -100,9 +114,14 @@ impl ConnectionPool {
             ));
         }
         let interface = infer_interface(&addr.ip().to_string()).unwrap_or(ConnectionInterface::Lan);
-        let tx = self.sender_for_command(hostname.clone(), vec![ResolvedCandidate {
-            candidate: PeerCandidate::new(interface, addr.ip().to_string()), target: ResolvedTarget::Tcp(addr),
-        }], cmd)?;
+        let tx = self.sender_for_command(
+            hostname.clone(),
+            vec![ResolvedCandidate {
+                candidate: PeerCandidate::new(interface, addr.ip().to_string()),
+                target: ResolvedTarget::Tcp(addr),
+            }],
+            cmd,
+        )?;
 
         enqueue_pool_frame(tx, ResolvedTarget::Tcp(addr), &hostname, cmd, payload).await
     }
@@ -126,8 +145,14 @@ impl ConnectionPool {
     }
 
     #[cfg(test)]
-    pub(crate) fn insert_file_sender(&mut self, target: ResolvedTarget, hostname: String, sender: PoolSender) {
-        self.core.insert_sender_for_command(target, hostname, Command::FileMeta, sender);
+    pub(crate) fn insert_file_sender(
+        &mut self,
+        target: ResolvedTarget,
+        hostname: String,
+        sender: PoolSender,
+    ) {
+        self.core
+            .insert_sender_for_command(target, hostname, Command::FileMeta, sender);
     }
     #[cfg(test)]
     pub(super) fn insert_sender(
@@ -190,11 +215,12 @@ pub async fn queue_peer_frame(
 /// every peer of one broadcast, so a large image is encoded once and never
 /// copied per peer. Trust and route selection mirror [`queue_peer_frame`];
 /// the payload limit was already enforced when the event was encoded.
-pub async fn queue_peer_shared_event(
+pub async fn queue_peer_shared_event<G>(
     pool: &Arc<Mutex<ConnectionPool>>,
     peer: &tailscale::PeerInfo,
     event: &SharedEvent,
-) -> Result<(), String> {
+    current: impl std::future::Future<Output = Option<G>>,
+) -> Result<bool, String> {
     let settings = { pool.lock().await.settings.clone() };
     let trusted_key = settings
         .lock()
@@ -203,15 +229,43 @@ pub async fn queue_peer_shared_event(
         .get(&peer.hostname)
         .cloned()
         .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
-    secure::decode_trusted_key(&trusted_key)
+    let pinned = secure::decode_trusted_key(&trusted_key)
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
-
-    let tx = { pool.lock().await.sender_for_peer(peer, event.queued().command())? };
+    let mut queued = event.queued();
+    if queued.command() == Command::ArchiveUpdatePayload {
+        let authority = settings.clone();
+        let hostname = peer.hostname.clone();
+        let mode = settings.lock().await.connection_mode.clone();
+        queued = queued.with_archive_authorization(Arc::new(move || {
+            let settings = authority.blocking_lock();
+            settings.sync_enabled
+                && settings.connection_mode == mode
+                && settings
+                    .enabled_peers
+                    .get(&hostname)
+                    .copied()
+                    .unwrap_or(true)
+                && settings
+                    .trusted_peer_keys
+                    .get(&hostname)
+                    .and_then(|key| secure::decode_trusted_key(key).ok())
+                    .as_ref()
+                    == Some(&pinned)
+        }))?;
+    }
+    let tx = { pool.lock().await.sender_for_peer(peer, queued.command())? };
     let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
-    enqueue_pool_queued_frame(tx, preferred, &peer.hostname, event.queued()).await
+    tailsync_core::peer::pool::enqueue_queued_frame_checked(tx, preferred, queued, current)
+        .await
+        .inspect_err(|error| {
+            warn!("Delivery to {} stalled: {error}", peer.hostname);
+            if event.queued().command() != Command::ArchiveUpdatePayload {
+                tailsync_core::sync_warning::record_delivery_stalled(&peer.hostname);
+            }
+        })
 }
 
 pub async fn queue_peer_file_frame(
@@ -265,7 +319,11 @@ pub async fn queue_peer_file_window(
         .ok_or_else(|| format!("Peer {} is not paired", peer.hostname))?;
     secure::decode_trusted_key(&trusted_key)
         .map_err(|error| format!("Peer {} has an invalid pinned key: {error}", peer.hostname))?;
-    let tx = { pool.lock().await.sender_for_peer(peer, Command::FileChunk)? };
+    let tx = {
+        pool.lock()
+            .await
+            .sender_for_peer(peer, Command::FileChunk)?
+    };
     let preferred = resolve_candidates(peer, TCP_PORT)?
         .first()
         .map(|candidate| candidate.target.clone())
@@ -330,12 +388,25 @@ pub async fn prewarm_connections(
         let settings = pool.settings.clone();
         let settings = settings.lock().await;
         if !settings.trusted_peer_keys.contains_key(&peer.hostname)
-            || !settings.enabled_peers.get(&peer.hostname).copied().unwrap_or(true)
-        { continue; }
-        let Some(mode) = tailsync_core::peer::types::ConnectionMode::parse(&settings.connection_mode) else { continue; };
+            || !settings
+                .enabled_peers
+                .get(&peer.hostname)
+                .copied()
+                .unwrap_or(true)
+        {
+            continue;
+        }
+        let Some(mode) =
+            tailsync_core::peer::types::ConnectionMode::parse(&settings.connection_mode)
+        else {
+            continue;
+        };
         let mut peer = peer;
-        peer.candidates.retain(|candidate| mode.allows(candidate.interface));
-        if peer.candidates.is_empty() { continue; }
+        peer.candidates
+            .retain(|candidate| mode.allows(candidate.interface));
+        if peer.candidates.is_empty() {
+            continue;
+        }
         // Keep the current authorization guard until worker creation. The
         // disable/forget path removes workers only after releasing Settings.
         if let Err(error) = pool.sender_for_peer(&peer, Command::TextPayload) {
@@ -400,7 +471,8 @@ impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
         candidates: &[ResolvedCandidate],
     ) -> Result<(secure::SecureConnection, ResolvedCandidate), String> {
         let (conn, candidate) =
-            race_connect_and_handshake(candidates, hostname, &self.identity, &self.settings).await?;
+            race_connect_and_handshake(candidates, hostname, &self.identity, &self.settings)
+                .await?;
         if candidate.candidate.interface == ConnectionInterface::Iroh {
             super::iroh::remember_rtt_capability(&candidate.candidate.address);
         }
@@ -558,7 +630,12 @@ async fn connect_and_handshake(
 ) -> Result<secure::SecureConnection, Box<dyn std::error::Error + Send + Sync>> {
     let (expected_key, mode) = {
         let settings = settings.lock().await;
-        if !settings.enabled_peers.get(hostname).copied().unwrap_or(true) {
+        if !settings
+            .enabled_peers
+            .get(hostname)
+            .copied()
+            .unwrap_or(true)
+        {
             return Err(std::io::Error::other("Peer is disabled").into());
         }
         (
@@ -572,14 +649,12 @@ async fn connect_and_handshake(
     };
     let expected_key = secure::decode_trusted_key(&expected_key)?;
     if matches!(target, ResolvedTarget::Iroh(_))
-        && !tailsync_core::peer::types::ConnectionMode::parse(&mode).is_some_and(|mode| {
-            mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
-        })
+        && !tailsync_core::peer::types::ConnectionMode::parse(&mode)
+            .is_some_and(|mode| mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh))
     {
-        return Err(std::io::Error::other(
-            "Iroh is unavailable in the selected connection mode",
-        )
-        .into());
+        return Err(
+            std::io::Error::other("Iroh is unavailable in the selected connection mode").into(),
+        );
     }
     let connection = match target {
         ResolvedTarget::Tcp(address) => {
@@ -633,14 +708,17 @@ async fn connect_and_handshake(
     let mut latest = settings.lock().await;
     if !latest.enabled_peers.get(hostname).copied().unwrap_or(true)
         || latest.connection_mode != mode
-        || latest.trusted_peer_keys.get(hostname).and_then(|key| secure::decode_trusted_key(key).ok()).as_ref() != Some(&expected_key)
+        || latest
+            .trusted_peer_keys
+            .get(hostname)
+            .and_then(|key| secure::decode_trusted_key(key).ok())
+            .as_ref()
+            != Some(&expected_key)
     {
         return Err(std::io::Error::other("Peer authorization changed during handshake").into());
     }
     if let Some(endpoint_id) = &connection.peer_identity().iroh_endpoint_id {
-        if let Err(error) =
-            latest.remember_peer_address(hostname, "iroh", endpoint_id)
-        {
+        if let Err(error) = latest.remember_peer_address(hostname, "iroh", endpoint_id) {
             warn!("Could not remember Iroh endpoint for {hostname}: {error}");
         }
     }

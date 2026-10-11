@@ -7,6 +7,10 @@ license = "MIT"
 
 [features]
 test-support = []
+# Repair-plan R0 seam regressions (docs/COMPOSITE-CLIPBOARD-REPAIR-EXECUTION-PLAN-2026-10-04.md §4 R0.2).
+# Legitimately red until the owning stage lands; see artifacts/composite-repair/2026-10-04-r0/expected-failures.json.
+# Test runners select test-support explicitly; this flag cannot enable test keys.
+repair-regressions = []
 
 [dependencies]
 tailsync-core = { path = "../rust-core" }
@@ -16,5 +20,9 @@ schemars = "1.2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tailsync-core = { path = "../rust-core", features = ["test-support"] }
+base64 = "0.23"

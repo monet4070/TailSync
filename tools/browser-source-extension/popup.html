@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>TailSync source context</title>
+    <style>
+      body { font: 13px system-ui, sans-serif; margin: 12px; width: 320px; }
+      h1 { font-size: 14px; margin: 0 0 8px; }
+      label { display: block; margin: 8px 0 4px; }
+      #scope { color: #444; min-height: 18px; margin: 6px 0; word-break: break-all; }
+      #status { min-height: 32px; margin-top: 8px; }
+      #status[data-ok="false"] { color: #b00020; }
+      button { width: 100%; padding: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1>TailSync source context</h1>
+    <p>This optional helper reads only the images TailSync authorized on the current page.</p>
+    <label for="ticket">TailSync source ticket (.json)</label>
+    <input id="ticket" type="file" accept="application/json,.json" />
+    <div id="scope"></div>
+    <button id="collect" disabled>Collect current page images</button>
+    <div id="status"></div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

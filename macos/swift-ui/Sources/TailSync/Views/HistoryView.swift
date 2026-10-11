@@ -9,6 +9,18 @@ private struct HistoryDateBounds {
     let end: Date?
 }
 
+enum HistoryBatchPresentation {
+    static func isBatchStart(_ entry: HistoryEntry, in entries: [HistoryEntry]) -> Bool {
+        guard let batchId = entry.batch_id,
+              let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
+        let visibleCount = entries.filter { $0.batch_id == batchId }.count
+        let hasMultipleFiles = max(entry.batch_count ?? 0, entry.batch_total ?? 0, visibleCount) > 1
+        // Keep incomplete-batch warnings even if only one member is available.
+        guard hasMultipleFiles || entry.batch_status != "complete" else { return false }
+        return index == 0 || entries[index - 1].batch_id != batchId
+    }
+}
+
 enum HistoryFavoriteMutationPolicy {
     static func logicalItemKey(_ entry: HistoryEntry) -> String {
         entry.batch_id.map { "batch:\($0)" } ?? "entry:\(entry.id)"
@@ -41,9 +53,20 @@ struct HistoryQuery: Equatable, Sendable {
 struct HistoryViewDependencies: Sendable {
     var load: @Sendable (HistoryQuery) async throws -> [HistoryEntry]
     var restore: @Sendable (Int64) async throws -> Void
+    var delete: @Sendable (Int64, String) async throws -> Void = { id, collection in
+        if collection == "favorites" { try await ApiClient.shared.deleteFavoriteEntry(id: id) }
+        else { try await ApiClient.shared.deleteEntry(id: id) }
+    }
+    var restoreFormat: @Sendable (Int64, String) async throws -> Void = { try await ApiClient.shared.restoreEntry(id: $0, format: $1) }
+    var archiveImages: @Sendable (Int64) async throws -> ContractArchiveEntryImagesReport = { try await ApiClient.shared.archiveEntryImages(id: $0) }
+    var sourceContextGrant: @Sendable (Int64) async throws -> ContractSourceContextGrantReport = { try await ApiClient.shared.sourceContextGrantCreate(id: $0) }
+    var sourceContextImport: @Sendable (Int64, String) async throws -> ContractSourceContextImportReport = { try await ApiClient.shared.sourceContextImport(id: $0, path: $1) }
+    var sourceContextRevoke: @Sendable (String) async throws -> ContractSourceContextRevokeReport = { try await ApiClient.shared.sourceContextGrantRevoke(grantId: $0) }
     var restoreBatch: @Sendable (String) async throws -> Void = {
         try await ApiClient.shared.restoreFileBatch($0)
     }
+    var restoreGuarded: (@Sendable (Int64, String?, Int64, ContractHistoryIdentity?) async throws -> Void)? = nil
+    var restoreReported: (@Sendable (Int64, String?, Int64, ContractHistoryIdentity?) async throws -> ContractHistoryRestoreReport)? = nil
     var usesRuntimeUpdates = true
 
     static let live = HistoryViewDependencies(
@@ -54,7 +77,13 @@ struct HistoryViewDependencies: Sendable {
                 limit: query.limit, offset: query.offset, collection: query.collection
             )
         },
-        restore: { try await ApiClient.shared.restoreEntry(id: $0) }
+        restore: { try await ApiClient.shared.restoreEntry(id: $0) },
+        restoreGuarded: { id, format, originalID, identity in
+            try await ApiClient.shared.restoreEntry(id: id, format: format, originalID: originalID, identity: identity)
+        },
+        restoreReported: { id, format, originalID, identity in
+            try await ApiClient.shared.restoreEntryWithReport(id: id, format: format, originalID: originalID, identity: identity)
+        }
     )
 }
 
@@ -99,6 +128,7 @@ struct HistoryView: View {
         nonmutating set { keyboard.selectedID = newValue }
     }
     @State private var isRestoring = false
+    @State private var isDeleting = false
     @State private var loadedQuery: HistoryQuery? = nil
     @State private var previewFollowTask: Task<Void, Never>? = nil
     @State private var interactionGeneration = 0
@@ -112,6 +142,7 @@ struct HistoryView: View {
     @State private var fileProgress: ApiClient.FileProgress? = nil
     @State private var progressBarEnabled = true
     @State private var showingClearAlert = false
+    @State private var lastSourceGrantId: String? = nil
     @State private var loadGeneration = 0
     @State private var supportedCategories: Set<String> = []
     @State private var multipleLabelsSupported = false
@@ -126,6 +157,7 @@ struct HistoryView: View {
     // to see that new items may not be saved, not just after an unrelated copy.
     @State private var storageWarning: String? = nil
     @State private var actionMessage: String? = nil
+    @State private var retryRestoreAction: (() -> Void)? = nil
     @State private var actionMessageTask: Task<Void, Never>? = nil
     @State private var restoreFeedbackTask: Task<Void, Never>? = nil
     @State private var expandedBatchIds: Set<String> = []
@@ -133,7 +165,7 @@ struct HistoryView: View {
 
     private let pageSize = 30
     private let collapsedBatchFileLimit = 2
-    private let knownCategories = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]
+    private let knownCategories = ["text", "website", "code", "path", "image", "file"]
 
     private var activeTheme: TailSyncThemeSelection {
         TailSyncThemeSelection(
@@ -175,7 +207,9 @@ struct HistoryView: View {
     }
 
     private func batchCount(_ entry: HistoryEntry) -> Int {
-        entry.batch_count ?? entry.batch_total ?? 1
+        if let count = entry.batch_count ?? entry.batch_total { return count }
+        guard let batchId = entry.batch_id else { return 1 }
+        return max(1, entries.filter { $0.batch_id == batchId }.count)
     }
 
     private func logicalItemKey(_ entry: HistoryEntry) -> String {
@@ -354,6 +388,7 @@ struct HistoryView: View {
                         }
                         HistoryInteractiveRow(
                             entry: entry,
+                            owner: collection,
                             isRestored: restoredId == entry.id,
                             isFocused: focusedEntryId == entry.id,
                             showsMultipleLabels: multipleLabelsSupported,
@@ -370,6 +405,29 @@ struct HistoryView: View {
                             onRestore: {
                                 restore(entry.id)
                             },
+                            onRestoreFormat: { format in
+                                performRestore(restoredEntryID: entry.id, dismiss: false) { resolvedID in
+                                    if let reported = dependencies.restoreReported {
+                                        return try await reported(resolvedID ?? entry.id, format, entry.id, entry.composite?.identity)
+                                    }
+                                    if let guarded = dependencies.restoreGuarded {
+                                        try await guarded(resolvedID ?? entry.id, format, entry.id, entry.composite?.identity)
+                                    } else { try await dependencies.restoreFormat(resolvedID ?? entry.id, format) }
+                                    return nil
+                                }
+                            },
+                            onArchiveImages: {
+                                archiveImages(entry.id)
+                            },
+                            onAuthorizeSource: {
+                                authorizeSourceContext(entry.id)
+                            },
+                            onImportSourcePacket: {
+                                importSourcePacket(entry.id)
+                            },
+                            onRevokeSource: lastSourceGrantId == nil ? nil : {
+                                revokeSourceContext()
+                            },
                             onDelete: {
                                 delete(entry)
                             },
@@ -377,7 +435,7 @@ struct HistoryView: View {
                                 toggleFavorite(entry)
                             },
                             onPreview: { request in
-                                guard !isRestoring, resultsAreCurrent else { return }
+                                guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
                                 previewFollowTask?.cancel()
                                 HistoryPreviewWindowController.shared.present(
                                     request,
@@ -524,6 +582,7 @@ struct HistoryView: View {
         .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
                 if let actionMessage {
+                    VStack(spacing: 6) {
                     Text(actionMessage)
                         .font(activeTheme.readingFont(size: 11))
                         .foregroundColor(palette.toastTextColor)
@@ -534,6 +593,10 @@ struct HistoryView: View {
                         .clipShape(RoundedRectangle(cornerRadius: activeTheme.metrics.controlRadius, style: .continuous))
                         .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
                         .accessibilityLabel(actionMessage)
+                    if let retryRestoreAction {
+                        Button(Loc.t("history.restore.recopy"), action: retryRestoreAction)
+                    }
+                    }
                 }
                 if let syncWarning {
                     Text(syncWarning)
@@ -697,28 +760,49 @@ struct HistoryView: View {
             if reconnected || snapshot.historyVersion != lastVersion {
                 lastVersion = snapshot.historyVersion
                 load(targetPage: page, clearExisting: false)
+                await HistoryPreviewWindowController.shared.refreshSavedDocument(for: previewOwner)
                 if reconnected {
                     historyCapabilitiesChecked = false
                     loadHistoryCapabilities()
                 }
-                if let warning = await ApiClient.shared.takeSyncWarning() {
-                    let messageKey: String?
-                    switch warning.kind {
-                    case "expired_event": messageKey = "history.syncExpired"
-                    case "delivery_stalled": messageKey = "history.syncStalled"
-                    case "delivery_shutdown": messageKey = "history.syncShutdown"
-                    case "delivery_expired": messageKey = "history.syncDeliveryExpired"
-                    default: messageKey = nil
-                    }
-                    if let messageKey {
-                        syncWarning = Loc.t(messageKey)
-                            .replacingOccurrences(of: "{peer}", with: warning.peer)
-                        syncWarningTask?.cancel()
-                        syncWarningTask = Task { @MainActor in
-                            try? await Task.sleep(for: .seconds(8))
-                            guard !Task.isCancelled else { return }
-                            syncWarning = nil
-                        }
+            }
+            // Warnings are independent of history mutations. A hidden or cancelled
+            // window leaves the warning pending for the next visible consumer.
+            if syncWarning == nil, windowIsVisible, !Task.isCancelled,
+               let warning = await ApiClient.shared.takeSyncWarning(),
+               windowIsVisible, !Task.isCancelled {
+                let messageKey: String?
+                switch warning.kind {
+                case "composite_incomplete": messageKey = "history.composite.syncIncomplete"
+                case "composite_apply_unknown": messageKey = "history.composite.applyUnknown"
+                case "composite_partial": messageKey = "history.composite.partial"
+                case "composite_superseded": messageKey = "history.composite.superseded"
+                case "file_selection_symlink": messageKey = "history.fileSelectionSymlink"
+                case "file_selection_folder": messageKey = "history.fileSelectionFolder"
+                case "delivery_rejected": messageKey = "history.deliveryRejected"
+                case "expired_event": messageKey = "history.syncExpired"
+                case "delivery_stalled": messageKey = "history.syncStalled"
+                case "delivery_shutdown": messageKey = "history.syncShutdown"
+                case "delivery_expired": messageKey = "history.syncDeliveryExpired"
+                // Capture failure remains visible independently of delivery.
+                case "clipboard_unavailable": messageKey = "history.clipboardUnavailable"
+                case "capture_origin_unknown": messageKey = "history.captureOriginUnknown"
+                case "capture_not_shared": messageKey = "history.captureNotShared"
+                case "capture_failed": messageKey = "history.captureFailed"
+                case "warning_overflow": messageKey = "history.warningOverflow"
+                case "capture_not_saved": messageKey = "history.captureNotSaved"
+                case "receive_not_saved": messageKey = "history.receiveNotSaved"
+                default: messageKey = nil
+                }
+                if let messageKey {
+                    syncWarning = Loc.t(messageKey)
+                        .replacingOccurrences(of: "{peer}", with: warning.peer)
+                    await ApiClient.shared.acknowledgeSyncWarning(warning.id)
+                    syncWarningTask?.cancel()
+                    syncWarningTask = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(8))
+                        guard !Task.isCancelled else { return }
+                        syncWarning = nil
                     }
                 }
             }
@@ -734,14 +818,13 @@ struct HistoryView: View {
     }
 
     private func isBatchStart(_ entry: HistoryEntry) -> Bool {
-        guard let batchId = entry.batch_id,
-              let index = entries.firstIndex(where: { $0.id == entry.id }) else { return false }
-        return index == 0 || entries[index - 1].batch_id != batchId
+        HistoryBatchPresentation.isBatchStart(entry, in: entries)
     }
 
     private func restoreBatch(_ batchId: String) {
-        performRestore(restoredEntryID: nil, dismiss: false) {
+        performRestore(restoredEntryID: nil, dismiss: false) { _ in
             try await dependencies.restoreBatch(batchId)
+            return nil
         }
     }
 
@@ -833,7 +916,7 @@ struct HistoryView: View {
     }
 
     private func handleKeyboard(_ command: HistoryKeyboardCommand) {
-        guard !keyboard.isComposing, !isRestoring else { return }
+        guard !keyboard.isComposing, !isRestoring, !isDeleting, !showingClearAlert else { return }
         switch command {
         case .down:
             guard resultsAreCurrent else { return }
@@ -861,6 +944,10 @@ struct HistoryView: View {
         case .restore(let keepOpen):
             guard resultsAreCurrent, let id = focusedEntryId else { return }
             restore(id, dismiss: !keepOpen)
+        case .delete:
+            guard resultsAreCurrent, keyboard.focus == .list,
+                  let entry = displayedEntries.first(where: { $0.id == focusedEntryId }) else { return }
+            delete(entry)
         case .escape:
             if HistoryPreviewWindowController.shared.isPreviewVisible(for: previewOwner) {
                 HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
@@ -923,27 +1010,138 @@ struct HistoryView: View {
     }
 
     private func restore(_ id: Int64, dismiss: Bool = false) {
-        performRestore(restoredEntryID: id, dismiss: dismiss) {
-            try await dependencies.restore(id)
+        let identity = entries.first(where: { $0.id == id })?.composite?.identity
+        performRestore(restoredEntryID: id, dismiss: dismiss) { resolvedID in
+            if let reported = dependencies.restoreReported {
+                return try await reported(resolvedID ?? id, nil, id, identity)
+            }
+            if let guarded = dependencies.restoreGuarded {
+                try await guarded(resolvedID ?? id, nil, id, identity)
+            } else { try await dependencies.restore(resolvedID ?? id) }
+            return nil
         }
     }
 
     // Keyboard, row, batch and hosted-preview restores share one lock and
     // completion path, so no entry point can mutate the clipboard concurrently.
+    private func archiveImages(_ id: Int64) {
+        guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
+        isRestoring = true
+        let generation = interactionGeneration
+        restoreFeedbackTask?.cancel()
+        restoreFeedbackTask = Task { @MainActor in
+            do {
+                let report = try await dependencies.archiveImages(id)
+                guard !Task.isCancelled, generation == interactionGeneration else { isRestoring = false; return }
+                actionMessage = HistoryResourceArchiveFeedback.message(report)
+            } catch {
+                guard !Task.isCancelled, generation == interactionGeneration else { isRestoring = false; return }
+                actionMessage = Loc.t("history.composite.archivePartial")
+            }
+            isRestoring = false
+            load(clearExisting: false)
+        }
+    }
+
+    private func authorizeSourceContext(_ id: Int64) {
+        guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
+        isRestoring = true
+        let generation = interactionGeneration
+        restoreFeedbackTask?.cancel()
+        restoreFeedbackTask = Task { @MainActor in
+            defer { if generation == interactionGeneration { isRestoring = false } }
+            do {
+                let panel = NSSavePanel()
+                panel.nameFieldStringValue = "tailsync-source-ticket.json"
+                panel.canCreateDirectories = true
+                guard panel.runModal() == .OK, let url = panel.url else { return }
+                guard !Task.isCancelled, generation == interactionGeneration else { return }
+                let createGrant = dependencies.sourceContextGrant
+                let grantTask = Task.detached { try await createGrant(id) }
+                let report = try await grantTask.value
+                guard !Task.isCancelled, generation == interactionGeneration else {
+                    Task { _ = try? await dependencies.sourceContextRevoke(report.grant_id) }
+                    return
+                }
+                do {
+                    try Data(report.ticket.utf8).write(to: url, options: .withoutOverwriting)
+                } catch {
+                    _ = try? await dependencies.sourceContextRevoke(report.grant_id)
+                    actionMessage = Loc.t("history.composite.sourceSaveFailed")
+                    return
+                }
+                lastSourceGrantId = report.grant_id
+                actionMessage = Loc.t("history.composite.sourceAuthorized")
+            } catch {
+                guard !Task.isCancelled, generation == interactionGeneration else { return }
+                actionMessage = Loc.t("history.composite.sourceUnavailable")
+            }
+        }
+    }
+
+    private func importSourcePacket(_ id: Int64) {
+        guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
+        isRestoring = true
+        let generation = interactionGeneration
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url,
+              generation == interactionGeneration else {
+            if generation == interactionGeneration { isRestoring = false }
+            return
+        }
+        restoreFeedbackTask?.cancel()
+        restoreFeedbackTask = Task { @MainActor in
+            defer { if generation == interactionGeneration { isRestoring = false } }
+            do {
+                let report = try await dependencies.sourceContextImport(id, url.path)
+                guard !Task.isCancelled, generation == interactionGeneration else { return }
+                actionMessage = report.complete
+                    ? Loc.t("history.composite.sourceImported")
+                    : Loc.t("history.composite.sourcePartial")
+            } catch {
+                guard !Task.isCancelled, generation == interactionGeneration else { return }
+                actionMessage = Loc.t("history.composite.sourcePartial")
+            }
+            load(clearExisting: false)
+        }
+    }
+
+    private func revokeSourceContext() {
+        guard let grantId = lastSourceGrantId else { return }
+        let generation = interactionGeneration
+        Task { @MainActor in
+            guard let report = try? await dependencies.sourceContextRevoke(grantId), report.revoked,
+                  generation == interactionGeneration else { return }
+            lastSourceGrantId = nil
+            actionMessage = Loc.t("history.composite.sourceRevoked")
+        }
+    }
+
     private func performRestore(
         restoredEntryID: Int64?, dismiss: Bool,
-        operation: @escaping @Sendable () async throws -> Void
+        operation: @escaping @Sendable (Int64?) async throws -> ContractHistoryRestoreReport?
     ) {
-        guard !isRestoring, resultsAreCurrent else { return }
+        guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
         isRestoring = true
+        retryRestoreAction = nil
+        actionMessageTask?.cancel()
+        actionMessageTask = nil
+        actionMessage = nil
         restoredId = nil
         previewFollowTask?.cancel()
         restoreFeedbackTask?.cancel()
         let generation = interactionGeneration
+        let retryIdentity = restoredEntryID.flatMap { id in
+            entries.first(where: { $0.id == id }).map(HistoryRestoreRetryIdentity.init)
+        }
         HistoryPreviewWindowController.shared.setRestoreState(.restoring, for: previewOwner)
         restoreFeedbackTask = Task { @MainActor in
+            let report: ContractHistoryRestoreReport?
             do {
-                try await operation()
+                report = try await operation(restoredEntryID)
             } catch {
                 isRestoring = false
                 guard !Task.isCancelled, generation == interactionGeneration else {
@@ -951,7 +1149,26 @@ struct HistoryView: View {
                     return
                 }
                 HistoryPreviewWindowController.shared.setRestoreState(.failed, for: previewOwner)
-                showActionMessage(error.localizedDescription)
+                let needsExplicitRetry: Bool
+                if case ApiError.serverError(let code) = error {
+                    needsExplicitRetry = code == "publish_partial" || code == "publish_unknown"
+                } else {
+                    needsExplicitRetry = false
+                }
+                showActionMessage(error.localizedDescription, persistent: needsExplicitRetry)
+                if needsExplicitRetry {
+                    retryRestoreAction = {
+                        var retryID = restoredEntryID
+                        if let retryIdentity {
+                            guard let resolvedID = retryIdentity.resolve(in: entries) else {
+                                showActionMessage(Loc.t("error.not_found"))
+                                return
+                            }
+                            retryID = resolvedID
+                        }
+                        performRestore(restoredEntryID: retryID, dismiss: dismiss, operation: operation)
+                    }
+                }
                 return
             }
             isRestoring = false
@@ -960,7 +1177,10 @@ struct HistoryView: View {
                 return
             }
             HistoryPreviewWindowController.shared.setRestoreState(.restored, for: previewOwner)
-            if dismiss {
+            if let report, !report.complete {
+                showActionMessage(Loc.t("history.restore.availableContent").replacingOccurrences(of: "{count}", with: "\(report.missing_images)"))
+            }
+            if dismiss && report?.complete != false {
                 if isFavoritesCollection {
                     HistoryPreviewWindowController.shared.dismissHost(for: previewOwner)
                 } else {
@@ -977,28 +1197,38 @@ struct HistoryView: View {
     }
 
     private func delete(_ entry: HistoryEntry) {
-        guard favoriteMutations[logicalItemKey(entry)] == nil else { return }
+        guard !isRestoring, !isDeleting, resultsAreCurrent,
+              favoriteMutations[logicalItemKey(entry)] == nil else { return }
         if entry.pinned && !isFavoritesCollection {
             showActionMessage(Loc.t("history.favoriteProtected"))
             return
         }
+        isDeleting = true
+        let generation = interactionGeneration
+        let ids = displayedEntries.map(\.id)
+        let removedIDs = Set(entries.filter {
+            $0.id == entry.id || (isFavoritesCollection && logicalItemKey($0) == logicalItemKey(entry))
+        }.map(\.id))
+        let index = ids.firstIndex(of: entry.id) ?? 0
+        let nextID = ids.dropFirst(index + 1).first { !removedIDs.contains($0) }
+            ?? ids.prefix(index).last { !removedIDs.contains($0) }
         Task {
+            defer { isDeleting = false }
             do {
-                if isFavoritesCollection {
-                    try await ApiClient.shared.deleteFavoriteEntry(id: entry.id)
-                } else {
-                    try await ApiClient.shared.deleteEntry(id: entry.id)
-                }
-                entries.removeAll { $0.id == entry.id }
+                try await dependencies.delete(entry.id, collection)
+                guard generation == interactionGeneration else { return }
+                entries.removeAll { removedIDs.contains($0.id) }
+                if let selectedID = focusedEntryId, removedIDs.contains(selectedID) { focusedEntryId = nextID }
                 HistoryPreviewWindowController.shared.closeIfShowing(entryId: entry.id)
                 pruneSelection()
-                loadMigrationDiagnostics()
+                if dependencies.usesRuntimeUpdates { loadMigrationDiagnostics() }
                 if isFavoritesCollection {
                     // A favorite file batch is one logical item. Refresh the
                     // collection so sibling rows disappear immediately too.
                     load(targetPage: page, clearExisting: false)
                 }
             } catch {
+                guard generation == interactionGeneration else { return }
                 showActionMessage(Loc.t("history.deleteError"))
             }
         }
@@ -1020,6 +1250,7 @@ struct HistoryView: View {
     }
 
     private func toggleFavorite(_ entry: HistoryEntry) {
+        guard !isDeleting else { return }
         let mutationKey = logicalItemKey(entry)
         let favorite = !entry.pinned
         guard favoriteMutations[mutationKey] == nil else { return }
@@ -1054,13 +1285,18 @@ struct HistoryView: View {
         }
     }
 
-    private func showActionMessage(_ message: String) {
+    private func showActionMessage(_ message: String, persistent: Bool = false) {
+        retryRestoreAction = nil
         actionMessageTask?.cancel()
         actionMessage = message
+        // An uncertain native effect needs a deliberate recovery decision.
+        // Keep its explanation and action available for slower/assistive input.
+        guard !persistent else { return }
         actionMessageTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled else { return }
             actionMessage = nil
+            retryRestoreAction = nil
         }
     }
 

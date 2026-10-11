@@ -13,6 +13,7 @@ import {
   type PreviewWindowSnapshot,
 } from "../tailsyncClient";
 import { useRestoreActivity } from "../hooks/useRestoreActivity";
+import { useRuntimeSnapshots } from "../hooks/useRuntimeSnapshots";
 import { HistoryImeGuard } from "../utils/historyKeyboard";
 import { PreviewShell } from "../preview/PreviewShell";
 import {
@@ -20,6 +21,7 @@ import {
   type PreviewFailure,
   type PreviewTarget,
 } from "../preview/usePreviewPayload";
+import { useDocumentPreview, type DocumentTarget } from "../preview/useDocumentPreview";
 import {
   usePreviewWindowFrame,
 } from "../preview/usePreviewWindowFrame";
@@ -61,7 +63,23 @@ export function Preview() {
   const ime = useRef(new HistoryImeGuard());
   const [restoreSucceeded, setRestoreSucceeded] = useState(false);
   const [restoreFailed, setRestoreFailed] = useState(false);
-  const { state, retry } = usePreviewPayload(target);
+  const documentEligible = snapshot?.documentEligible === true;
+  const { state, retry } = usePreviewPayload(documentEligible ? null : target);
+  const documentTarget = useMemo<DocumentTarget | null>(() => {
+    if (!documentEligible || !target || !snapshot) return null;
+    return { entryId: target.entryId, owner: snapshot.owner === "favorites" ? "favorites" : "history" };
+  }, [documentEligible, snapshot, target]);
+  const { state: documentState, retry: retryDocument, refresh: refreshDocument } = useDocumentPreview(documentTarget);
+  const historyVersion = useRef<number | null>(null);
+
+  useEffect(() => { historyVersion.current = null; }, [documentTarget]);
+  useRuntimeSnapshots(async (runtime) => {
+    const previous = historyVersion.current;
+    historyVersion.current = runtime.history_version;
+    if (previous !== null && previous !== runtime.history_version) {
+      await refreshDocument(() => !restoring.current && !externalRestoringRef.current);
+    }
+  }, 2500, documentTarget !== null);
 
   const applySnapshot = useCallback((snapshot: PreviewWindowSnapshot | null) => {
     if (!validSnapshot(snapshot) || snapshot.revision <= latestRevision.current) return;
@@ -97,7 +115,8 @@ export function Preview() {
     };
   }, [applySnapshot]);
 
-  const payload = state.status === "ready" ? state.payload : null;
+  const payload = !documentEligible && state.status === "ready" ? state.payload : null;
+  const documentPreview = documentState.status === "ready" ? documentState.prepared : null;
   const frameReady = usePreviewWindowFrame();
 
   useEffect(() => {
@@ -111,12 +130,18 @@ export function Preview() {
     });
     return () => { disposed = true; };
   }, [externalRestoringRef, frameReady, snapshot]);
-  const loadFailure = state.status === "error" ? state.failure : null;
+  const loading = documentEligible
+    ? documentState.status === "idle" || documentState.status === "loading"
+    : state.status === "idle" || state.status === "loading";
+  const loadFailure = documentEligible
+    ? (documentState.status === "error" ? documentState.failure : null)
+    : (state.status === "error" ? state.failure : null);
   const failure = renderFailure ?? loadFailure;
+  const loadedEntryId = payload?.entry_id ?? documentPreview?.frame.metadata.entry_id ?? null;
 
   useEffect(() => {
     setRenderFailure(null);
-  }, [payload?.entry_id, target]);
+  }, [loadedEntryId, target]);
 
   const clearSession = useCallback(() => {
     setSnapshot(null);
@@ -160,10 +185,13 @@ export function Preview() {
     setTarget({ entryId, batchId });
   }, [externalRestoringRef, payload?.batch?.batch_id, target?.batchId]);
 
-  const restoreId = payload?.entry_id ?? null;
+  const documentRestoreFallback = documentEligible && documentState.status === "error"
+    && snapshot?.entryId === target?.entryId;
+  const ready = documentEligible ? documentState.status === "ready" || documentRestoreFallback : state.status === "ready";
+  const restoreId = documentRestoreFallback ? target?.entryId ?? null : loadedEntryId;
   const restore = useCallback(async (keepOpen = true) => {
-    if (restoring.current || externalRestoringRef.current || restoreId === null || state.status !== "ready" ||
-        payload?.entry_id !== target?.entryId || snapshot === null) return;
+    if (restoring.current || externalRestoringRef.current || restoreId === null || !ready ||
+        restoreId !== target?.entryId || snapshot === null) return;
     restoring.current = true;
     setLocalRestoring(true);
     restoreGeneration.current++;
@@ -186,7 +214,7 @@ export function Preview() {
       restoring.current = false;
       setLocalRestoring(false);
     }
-  }, [clearSession, externalRestoringRef, payload?.entry_id, restoreId, snapshot, state.status, target?.entryId]);
+  }, [clearSession, externalRestoringRef, loadedEntryId, ready, restoreId, snapshot, target?.entryId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -254,12 +282,15 @@ export function Preview() {
       {restoreFailed && <div role="alert">{t("history.preview.restoreError")}</div>}
       <PreviewShell
         payload={payload}
+        documentPreview={documentPreview}
+        restoreAvailable={documentRestoreFallback}
         restoringExternally={externalRestoring || localRestoring}
-        loading={state.status === "loading" || state.status === "idle"}
+        loading={loading}
         failure={failure}
         onRetry={() => {
           setRenderFailure(null);
-          retry();
+          if (documentEligible) retryDocument();
+          else retry();
         }}
         onCorrupt={() => setRenderFailure({
           kind: "corrupt",

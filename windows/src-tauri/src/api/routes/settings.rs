@@ -111,7 +111,7 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                         &state.db,
                         requested_settings,
                         &|settings: &crate::crypto::Settings| {
-                            settings.save().map_err(|error| error.to_string())
+                            crate::automatic_images::persist(settings, &state.image_archive)
                         },
                         None,
                     )

@@ -1,4 +1,5 @@
 import { useRestoreActivity } from "../hooks/useRestoreActivity";
+import { StableIpcError } from "../utils/stableIpcError";
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
 import {
   cancelFileBatch,
@@ -16,6 +17,11 @@ import {
   openPreviewWindow,
   syncPreviewWindowMinimized,
   restoreEntry,
+  archiveEntryImages,
+  sourceContextGrantCreate,
+  sourceContextGrantRevoke,
+  sourceContextImport,
+  sourceContextExportTicket,
   restoreFileBatch,
   setHistoryFavorite,
   type FileProgress,
@@ -27,14 +33,16 @@ import {
   type SyncWarning,
 } from "../tailsyncClient";
 import { listen } from "@tauri-apps/api/event";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { HistoryImeGuard, visibleHistoryIds } from "../utils/historyKeyboard";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
 import { useTransient } from "../hooks/useTransient";
-import { useHistoryNotice } from "../hooks/useHistoryNotice";
+import { useHistoryNotice, type HistoryNotice } from "../hooks/useHistoryNotice";
 import { useSyncWarningNotice } from "../hooks/useSyncWarningNotice";
 import {
+  thumbnailKeyForEntry,
   useThumbnailCache,
 } from "../hooks/useThumbnailCache";
 import { buildHistoryQuery } from "../utils/historyQuery";
@@ -92,12 +100,13 @@ export function History({ collection = "all" }: HistoryProps) {
   const isFavoritesCollection = collection === "favorites";
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const favoriteMutations = useRef(new Map<string, boolean>());
+  const deleting = useRef(false);
   const [totalEntries, setTotalEntries] = useState<number | null>(0);
   const [hasMoreEntries, setHasMoreEntries] = useState(false);
   const [capabilities, setCapabilities] = useState<HistoryCapabilities | null>(null);
   const [migrationDiagnostics, setMigrationDiagnostics] = useState<MigrationDiagnostics | null>(null);
   const { thumbnails, loadThumbnail, retain: retainThumbnails, clear: clearThumbnails } =
-    useThumbnailCache(MAX_CACHED_THUMBNAILS, MAX_CACHED_THUMBNAIL_BYTES);
+    useThumbnailCache(MAX_CACHED_THUMBNAILS, MAX_CACHED_THUMBNAIL_BYTES / 2);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [keyword, setKeyword] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<"all" | HistoryCategory>("all");
@@ -122,6 +131,12 @@ export function History({ collection = "all" }: HistoryProps) {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [historyNotice, showHistoryNotice, clearHistoryNotice] = useHistoryNotice();
+  const [failedRestore, setFailedRestore] = useState<{
+    id: number; format?: string; type: string; dataHash: string; identity: import("../types/localContracts.generated").HistoryIdentity | null; message: string;
+  } | null>(null);
+  const renderedHistoryNotice = useMemo<HistoryNotice | null>(() => failedRestore
+    ? { key: "restore-failed", level: "error", message: failedRestore.message, occurrences: 1 }
+    : historyNotice, [failedRestore, historyNotice]);
   const [syncWarning, setSyncWarning] = useState<SyncWarning | null>(null);
   const newGlowTimers = useRef<Set<number>>(new Set());
 
@@ -135,11 +150,13 @@ export function History({ collection = "all" }: HistoryProps) {
   const [windowAlwaysOnTopPending, setWindowAlwaysOnTopPending] = useState(
     !isFavoritesCollection,
   );
+  const [lastSourceGrantId, setLastSourceGrantId] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const ime = useRef(new HistoryImeGuard());
   const restoring = useRef(false);
   const sessionActive = useRef(true);
+  const archiveRequestGeneration = useRef(0);
   const previewOpen = useRef(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const previewRequestKey = useRef("");
@@ -159,6 +176,7 @@ export function History({ collection = "all" }: HistoryProps) {
   }, [collection]);
   const closeHistory = useCallback(async () => {
     sessionActive.current = false;
+    archiveRequestGeneration.current++;
     try {
       await closePreview();
     } catch (error) {
@@ -175,8 +193,8 @@ export function History({ collection = "all" }: HistoryProps) {
     newGlowTimers.current.clear();
   }, []);
   useEffect(() => {
-    retainThumbnails(new Set(entries.map((entry) => entry.id)));
-  }, [entries, retainThumbnails]);
+    retainThumbnails(new Set(entries.map(entry => thumbnailKeyForEntry(entry, collection))));
+  }, [collection, entries, retainThumbnails]);
   useEffect(() => {
     const refreshCalendar = () => {
       const nextNow = new Date();
@@ -201,14 +219,27 @@ export function History({ collection = "all" }: HistoryProps) {
   const { theme, themeAssetSlots } = useTheme();
   const { t } = useI18n();
   const syncWarningKey = syncWarning && {
+    delivery_rejected: "history.deliveryRejected",
     expired_event: "history.syncExpired",
+    composite_incomplete: "history.composite.syncIncomplete",
+    composite_apply_unknown: "history.composite.applyUnknown",
+    composite_partial: "history.composite.partial",
+    composite_superseded: "history.composite.superseded",
     delivery_stalled: "history.syncStalled",
     delivery_shutdown: "history.syncShutdown",
     delivery_expired: "history.syncDeliveryExpired",
+    // Capture failure remains visible independently of delivery.
+    clipboard_unavailable: "history.clipboardUnavailable",
+    capture_failed: "history.captureFailed",
+    capture_origin_unknown: "history.captureOriginUnknown",
+    capture_not_shared: "history.captureNotShared",
+    warning_overflow: "history.warningOverflow",
+    capture_not_saved: "history.captureNotSaved",
+    receive_not_saved: "history.receiveNotSaved",
   }[syncWarning.kind];
   useSyncWarningNotice(syncWarning,
     syncWarningKey ? t(syncWarningKey).replace("{peer}", syncWarning!.peer) : null,
-    historyNotice, showHistoryNotice);
+    renderedHistoryNotice, showHistoryNotice);
   const historyLoadErrorMessage = t("history.loadError");
   const showActionError = useCallback(() => {
     showHistoryNotice({
@@ -325,7 +356,7 @@ export function History({ collection = "all" }: HistoryProps) {
         collection,
       );
       const queryKey = JSON.stringify(query);
-      const result = await getHistoryPage(query);
+      const result = await getHistoryPage(query, () => sessionActive.current && historyRequests.current.isCurrent(requestGeneration) && desiredQuery.current === requestedQuery);
       if (!historyRequests.current.isCurrent(requestGeneration) || desiredQuery.current !== requestedQuery) return;
 
       if (result.total !== null) {
@@ -571,6 +602,7 @@ export function History({ collection = "all" }: HistoryProps) {
     };
     subscribe("tailsync://history-open", () => {
       sessionActive.current = true;
+      archiveRequestGeneration.current++;
       setFocusedId(visibleIdsRef.current[0] ?? null);
       focusSearch();
     });
@@ -580,7 +612,7 @@ export function History({ collection = "all" }: HistoryProps) {
       previewGeneration.current++;
       previewRequestKey.current = "";
     });
-    return () => { disposed = true; stops.forEach((stop) => stop()); };
+    return () => { disposed = true; archiveRequestGeneration.current++; stops.forEach((stop) => stop()); };
   }, [focusSearch]);
 
   const showPreview = useCallback((takeFocus: boolean) => {
@@ -619,27 +651,226 @@ export function History({ collection = "all" }: HistoryProps) {
     }
   }, [isPreviewOpen, focusedId, queryReady, closePreview, showPreview]);
 
-  const restoreSelected = useCallback(async (id: number, keepOpen = true) => {
-    if (restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
+  const restoreSelected = useCallback(async (id: number, keepOpen = true, format?: string, heldIdentity?: import("../types/localContracts.generated").HistoryIdentity | null, originalId?: number) => {
+    if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
+    const entry = entries.find((entry) => entry.id === id);
+    if (!entry) return;
     restoring.current = true;
+    setFailedRestore(null);
+    clearHistoryNotice();
     previewGeneration.current++;
     previewRequestKey.current = "";
     try {
-      await restoreEntry(id);
+      const report = await restoreEntry(id, format, heldIdentity ?? entry.composite?.identity, originalId ?? id);
+      setFailedRestore(null);
       flashSelectedId(id);
-      showHistoryNotice({ key: "restore-success", level: "success", message: t("history.restored") });
-      if (!keepOpen) await closeHistory();
+      showHistoryNotice({ key: "restore-success", level: report?.complete === false ? "warning" : "success", message: report?.complete === false
+        ? t("history.restore.availableContent").replace("{count}", String(report.missing_images))
+        : t("history.restored") });
+      if (!keepOpen && report?.complete !== false) await closeHistory();
     } catch (error) {
       console.error("Restore failed:", error);
+      const key = error instanceof StableIpcError ? error.messageKey : null;
+      if (key?.startsWith("history.restore.code.")) {
+        const canRecopy = ["history.restore.code.publish_partial", "history.restore.code.publish_unknown"].includes(key);
+        setFailedRestore(canRecopy ? {
+          id, format, type: entry.type, dataHash: entry.data_hash, identity: entry.composite?.identity ?? null, message: t(key),
+        } : null);
+        showHistoryNotice({ key: "restore-failed", level: "error", message: t(key) });
+      } else {
+        setFailedRestore(null);
+        showActionError();
+      }
+    } finally {
+      restoring.current = false;
+    }
+  }, [entries, externalRestoring, queryReady, visibleIds, flashSelectedId, clearHistoryNotice, showHistoryNotice, t, closeHistory, showActionError]);
+
+  const handleArchiveImages = async (id: number) => {
+    if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
+    const entry = entries.find((candidate) => candidate.id === id);
+    if (!entry) return;
+    restoring.current = true;
+    const generation = archiveRequestGeneration.current;
+    clearHistoryNotice();
+    try {
+      const report = await archiveEntryImages(id);
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) return;
+      const failureMessages = report.failures.slice(0, 8).map(failure => {
+        const reason = ["archive_not_http", "archive_user_info", "archive_not_public"].includes(failure.code)
+          ? "archiveBlocked" : ["archive_decode", "archive_mime"].includes(failure.code)
+          ? "archiveInvalid" : ["archive_too_many", "archive_too_large", "archive_total_budget"].includes(failure.code)
+          ? "archiveLimit" : "archiveUnavailable";
+        return `#${failure.image_index + 1}: ${t(`history.composite.${reason}`)}`;
+      });
+      showHistoryNotice({
+        key: "archive-images",
+        level: report.complete ? "success" : "error",
+        message: report.complete
+          ? t("history.composite.archiveDone")
+          : [t("history.composite.archivePartial"), ...failureMessages].join(" · "),
+      });
+      await loadHistory({ detectNewEntries: false });
+    } catch (error) {
+      console.error("Archive images failed:", error);
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) return;
       showActionError();
     } finally {
       restoring.current = false;
     }
-  }, [externalRestoring, queryReady, visibleIds, flashSelectedId, showHistoryNotice, t, closeHistory, showActionError]);
+  };
+
+  const handleAuthorizeSource = async (id: number) => {
+    if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
+    restoring.current = true;
+    const generation = archiveRequestGeneration.current;
+    clearHistoryNotice();
+    try {
+      const path = await save({ defaultPath: "tailsync-source-ticket.json" });
+      if (!path || !sessionActive.current || archiveRequestGeneration.current !== generation) return;
+      const report = await sourceContextGrantCreate(id);
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) {
+        await sourceContextGrantRevoke(report.grant_id);
+        return;
+      }
+      try {
+        await sourceContextExportTicket(path, report.ticket);
+      } catch (exportError) {
+        console.error("Source ticket export failed:", exportError);
+        try {
+          await sourceContextGrantRevoke(report.grant_id);
+        } catch {
+        }
+        if (sessionActive.current && archiveRequestGeneration.current === generation) showActionError();
+        return;
+      }
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) {
+        await sourceContextGrantRevoke(report.grant_id);
+        return;
+      }
+      setLastSourceGrantId(report.grant_id);
+      showHistoryNotice({
+        key: "source-context",
+        level: "success",
+        message: t("history.composite.sourceAuthorized"),
+      });
+    } catch (error) {
+      console.error("Source context grant failed:", error);
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) return;
+      showActionError();
+    } finally {
+      restoring.current = false;
+    }
+  };
+
+  const handleImportSourcePacket = async (id: number) => {
+    if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
+    restoring.current = true;
+    const generation = archiveRequestGeneration.current;
+    clearHistoryNotice();
+    try {
+      const picked = await open({ multiple: false });
+      const path = typeof picked === "string" ? picked : null;
+      if (!path || !sessionActive.current || archiveRequestGeneration.current !== generation) return;
+      const report = await sourceContextImport(id, path);
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) return;
+      showHistoryNotice({
+        key: "source-context",
+        level: report.complete ? "success" : "error",
+        message: report.complete
+          ? t("history.composite.sourceImported")
+          : t("history.composite.sourcePartial"),
+      });
+      await loadHistory({ detectNewEntries: false });
+    } catch (error) {
+      console.error("Source packet import failed:", error);
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) return;
+      showActionError();
+    } finally {
+      restoring.current = false;
+    }
+  };
+
+  const handleRevokeSource = async () => {
+    const grantId = lastSourceGrantId;
+    if (!grantId) return;
+    const generation = archiveRequestGeneration.current;
+    try {
+      const report = await sourceContextGrantRevoke(grantId);
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) return;
+      if (!report.revoked) { showActionError(); return; }
+      setLastSourceGrantId(null);
+      showHistoryNotice({
+        key: "source-context",
+        level: "success",
+        message: t("history.composite.sourceRevoked"),
+      });
+    } catch (error) {
+      console.error("Source context revoke failed:", error);
+      showActionError();
+    }
+  };
+
+  const retryFailedRestore = useCallback(() => {
+    if (!failedRestore || !queryReady || restoring.current || externalRestoring.current) return;
+    const original = entries.find((entry) => entry.id === failedRestore.id);
+    // Deduplication can replace a row after an Unknown write. Follow only its
+    // complete content identity; never recreate deleted content or guess by title.
+    const identity = failedRestore.identity;
+    const replacement = original
+      ? original.type !== failedRestore.type ? undefined
+        : identity ? original.composite?.identity?.version === 1 && identity.version === 1 &&
+            original.composite.identity.capture_id === identity.capture_id && original.composite.identity.content_id === identity.content_id ? original : undefined
+          : original.data_hash === failedRestore.dataHash && !original.composite?.identity ? original : undefined
+      : identity?.version === 1 && identity.dedupe_key ? entries.find((entry) => entry.type === failedRestore.type &&
+          entry.composite?.identity?.version === 1 && entry.composite.identity.content_id === identity.content_id &&
+          entry.composite.identity.dedupe_key === identity.dedupe_key) : undefined;
+    if (!replacement) {
+      setFailedRestore(null);
+      clearHistoryNotice();
+      showHistoryNotice({ key: "restore-missing", level: "error", message: t("error.not_found") });
+      return;
+    }
+    void restoreSelected(replacement.id, true, failedRestore.format, failedRestore.identity, failedRestore.id);
+  }, [entries, failedRestore, queryReady, externalRestoring, clearHistoryNotice, showHistoryNotice, t, restoreSelected]);
+
+  const handleDelete = useCallback(async (id: number) => {
+    if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady) return;
+    const entry = entries.find((candidate) => candidate.id === id);
+    if (!entry || favoriteMutations.current.has(logicalHistoryItemKey(entry))) return;
+    if (entry.pinned && !isFavoritesCollection) {
+      showHistoryNotice({ key: "favorite-protected", level: "error", message: t("history.favoriteProtected") });
+      return;
+    }
+    deleting.current = true;
+    const generation = archiveRequestGeneration.current;
+    const removedIds = new Set(entries.filter((candidate) => candidate.id === id ||
+      (isFavoritesCollection && logicalHistoryItemKey(candidate) === logicalHistoryItemKey(entry))).map((candidate) => candidate.id));
+    const index = visibleIds.indexOf(id);
+    const nextId = visibleIds.slice(index + 1).find((candidate) => !removedIds.has(candidate)) ??
+      visibleIds.slice(0, Math.max(index, 0)).reverse().find((candidate) => !removedIds.has(candidate)) ?? null;
+    try {
+      if (isFavoritesCollection) await deleteFavoriteEntry(id);
+      else await deleteEntry(id);
+      if (!sessionActive.current || archiveRequestGeneration.current !== generation) return;
+      setFocusedId((current) => current !== null && removedIds.has(current) ? nextId : current);
+      // Preserve page animation and avoid marking rows pulled from the next page as new.
+      await Promise.all([
+        loadHistory({ detectNewEntries: false }),
+        loadMigrationDiagnostics(),
+      ]);
+    } catch (e) {
+      console.error("Delete failed:", e);
+      if (sessionActive.current && archiveRequestGeneration.current === generation) showActionError();
+    } finally {
+      deleting.current = false;
+    }
+  }, [entries, externalRestoring, isFavoritesCollection, loadHistory, loadMigrationDiagnostics,
+    queryReady, showActionError, showHistoryNotice, t, visibleIds]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (restoring.current || externalRestoring.current || event.defaultPrevented || ime.current.blocks(event) || !sessionActive.current || showClearConfirm) return;
+      if (deleting.current || restoring.current || externalRestoring.current || event.defaultPrevented || ime.current.blocks(event) || !sessionActive.current || showClearConfirm) return;
       if (event.altKey || event.metaKey) return;
       const search = event.target === searchRef.current;
       const editable = isEditableTarget(event.target);
@@ -681,7 +912,10 @@ export function History({ collection = "all" }: HistoryProps) {
         }
         return;
       }
-      if (search) return; // Space remains normal search input.
+      if (search) return; // Preserve native search editing, including Delete and Space.
+      if (event.key === "Delete" && !event.ctrlKey && !event.repeat && focusedId !== null) {
+        event.preventDefault(); void handleDelete(focusedId); return;
+      }
       if ((event.code === "Space" || event.key === " ") && !event.repeat) {
         event.preventDefault(); showPreview(false);
       } else if (event.key === "Tab" && previewOpen.current && !event.repeat) {
@@ -691,33 +925,11 @@ export function History({ collection = "all" }: HistoryProps) {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closeHistory, closePreview, focusSearch, focusedId, hasNext, hasPrev, loading, page,
-    externalRestoring, queryReady, restoreSelected, showClearConfirm, showPreview, visibleIds]);
+    externalRestoring, handleDelete, queryReady, restoreSelected, showClearConfirm, showPreview, visibleIds]);
 
   /* ── Actions ──────────────────────────────────────────────────── */
 
-  const handleRestore = (id: number) => restoreSelected(id);
-
-  const handleDelete = async (id: number) => {
-    const entry = entries.find((candidate) => candidate.id === id);
-    if (entry && favoriteMutations.current.has(logicalHistoryItemKey(entry))) return;
-    try {
-      if (isFavoritesCollection) {
-        await deleteFavoriteEntry(id);
-      } else {
-        await deleteEntry(id);
-      }
-      if (focusedId === id) setFocusedId(null);
-      // A mutation refresh must preserve the current page animation context.
-      // It must also avoid marking a row pulled up from the next page as new.
-      await Promise.all([
-        loadHistory({ detectNewEntries: false }),
-        loadMigrationDiagnostics(),
-      ]);
-    } catch (e) {
-      console.error("Delete failed:", e);
-      showActionError();
-    }
-  };
+  const handleRestore = (id: number, format?: string) => restoreSelected(id, true, format);
 
   const handleClearHistory = async () => {
     setClearing(true);
@@ -765,6 +977,7 @@ export function History({ collection = "all" }: HistoryProps) {
   };
 
   const handleFavoriteChange = async (entry: HistoryEntry) => {
+    if (deleting.current) return;
     const mutationKey = logicalHistoryItemKey(entry);
     if (favoriteMutations.current.has(mutationKey)) return;
     const favorite = !entry.pinned;
@@ -878,6 +1091,11 @@ export function History({ collection = "all" }: HistoryProps) {
         setFocusedId={setFocusedId}
         setExpandedBatches={setExpandedBatches}
         handleRestore={handleRestore}
+        handleArchiveImages={handleArchiveImages}
+        handleAuthorizeSource={handleAuthorizeSource}
+        handleImportSourcePacket={handleImportSourcePacket}
+        handleRevokeSource={handleRevokeSource}
+        canRevokeSource={lastSourceGrantId !== null}
         handleRestoreBatch={handleRestoreBatch}
         handleDelete={handleDelete}
         handleFavoriteChange={handleFavoriteChange}
@@ -903,9 +1121,10 @@ export function History({ collection = "all" }: HistoryProps) {
         setShowClearConfirm={setShowClearConfirm}
         handleClearHistory={handleClearHistory}
         isFavoritesCollection={isFavoritesCollection}
-        historyNotice={historyNotice}
-        clearHistoryNotice={clearHistoryNotice}
+        historyNotice={renderedHistoryNotice}
+        clearHistoryNotice={() => { setFailedRestore(null); clearHistoryNotice(); }}
         retryHistory={retryHistory}
+        retryRestore={failedRestore ? retryFailedRestore : undefined}
       />
     </div>
   );

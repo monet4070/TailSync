@@ -19,6 +19,11 @@ export function HistoryMainContent({
   setFocusedId,
   setExpandedBatches,
   handleRestore,
+  handleArchiveImages,
+  handleAuthorizeSource,
+  handleImportSourcePacket,
+  handleRevokeSource,
+  canRevokeSource,
   handleRestoreBatch,
   handleDelete,
   handleFavoriteChange,
@@ -90,6 +95,11 @@ export function HistoryMainContent({
       setFocusedId={setFocusedId}
       setExpandedBatches={setExpandedBatches}
       handleRestore={handleRestore}
+      handleArchiveImages={handleArchiveImages}
+      handleAuthorizeSource={handleAuthorizeSource}
+      handleImportSourcePacket={handleImportSourcePacket}
+      handleRevokeSource={handleRevokeSource}
+      canRevokeSource={canRevokeSource}
       handleRestoreBatch={handleRestoreBatch}
       handleDelete={handleDelete}
       handleFavoriteChange={handleFavoriteChange}

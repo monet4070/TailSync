@@ -71,6 +71,8 @@ export interface SettingsHistorySectionProps {
   historyLimitDraft: number;
   setHistoryLimitDraft: Dispatch<SetStateAction<number>>;
   commitHistoryLimit: () => Promise<void>;
+  autoSaveNetworkImages: boolean;
+  setAutoSaveNetworkImages: (enabled: boolean) => Promise<void>;
 }
 
 export interface SettingsStorageSectionProps {

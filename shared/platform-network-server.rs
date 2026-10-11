@@ -167,9 +167,9 @@ where
     S: secure::SessionIo + 'static,
 {
     let mode = settings.lock().await.connection_mode.clone();
-    if !tailsync_core::peer::types::ConnectionMode::parse(&mode).is_some_and(|mode| {
-        mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
-    }) {
+    if !tailsync_core::peer::types::ConnectionMode::parse(&mode)
+        .is_some_and(|mode| mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh))
+    {
         return Err("Iroh connections are unavailable in the selected connection mode".into());
     }
     let accepted = timeout(
@@ -340,8 +340,8 @@ pub(crate) async fn admit_incoming_file_batch(
     if let Err(error) = manifest.validate() {
         return Ok(BatchAdmission::Rejected(error.to_string()));
     }
-    let manifest_hash = sync::SyncEngine::file_batch_manifest_hash(manifest)
-        .map_err(|error| error.to_string())?;
+    let manifest_hash =
+        sync::SyncEngine::file_batch_manifest_hash(manifest).map_err(|error| error.to_string())?;
     #[cfg(test)]
     if sync::file_batch_admission_lock().try_lock().is_ok() {
         ADMISSION_LOCK_COVERAGE_VIOLATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -363,10 +363,13 @@ pub(crate) async fn admit_incoming_file_batch(
     let receipt_source = source_device_id.to_string();
     let receipt_batch = manifest.batch_id.as_hex();
     let receipt = tokio::task::spawn_blocking(move || {
-        receipt_database.blocking_lock()
+        receipt_database
+            .blocking_lock()
             .received_file_batch_receipt(&receipt_source, &receipt_batch)
             .map_err(|error| error.to_string())
-    }).await.map_err(|error| error.to_string())??;
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     let durable_complete = match receipt {
         Some((stored_hash, _status)) if stored_hash != manifest_hash => {
             return Ok(BatchAdmission::Rejected(
@@ -388,14 +391,22 @@ pub(crate) async fn admit_incoming_file_batch(
         // cannot both reserve against the same physical baseline.
         let preflight = tokio::task::spawn_blocking(move || {
             let remaining = sync::SyncEngine::file_batch_remaining_bytes(
-                &reservation_manifest, &reservation_hostname, &reservation_source,
+                &reservation_manifest,
+                &reservation_hostname,
+                &reservation_source,
                 &db::get_incoming_dir(),
-            ).saturating_add(pending_bytes);
-            let commit_bytes = reservation_manifest.total_bytes.saturating_add(pending_commit_bytes);
-            reservation_database.blocking_lock()
+            )
+            .saturating_add(pending_bytes);
+            let commit_bytes = reservation_manifest
+                .total_bytes
+                .saturating_add(pending_commit_bytes);
+            reservation_database
+                .blocking_lock()
                 .reserve_for_file_batch(remaining, commit_bytes)
                 .map_err(|error| error.to_string())
-        }).await.map_err(|error| error.to_string())?;
+        })
+        .await
+        .map_err(|error| error.to_string())?;
         if let Err(error) = preflight {
             return Ok(BatchAdmission::Rejected(error));
         }
@@ -515,21 +526,51 @@ async fn handle_accepted_connection_inner(
     // ── Receive loop ─────────────────────────────────────────────
     let mut last_activity = tokio::time::Instant::now();
     let mut last_reliable_sequence = None;
+    // Admission is keyed on the authenticated public-key fingerprint, not on the
+    // connection or the peer's display name (repair plan §4 R2-04).
+    let composite_assembler_identity = *blake3::hash(&peer_public_key).as_bytes();
+    let mut composite_assembler = Some(tailsync_core::composite::chunks::CompositeAssembler::new(
+        composite_assembler_identity,
+    ));
+    let mut archive_assembler = Some(
+        tailsync_core::composite::chunks::CompositeAssembler::archive(composite_assembler_identity),
+    );
     let mut image_assembler = tailsync_core::image_chunks::ImageAssembler::default();
     let mut image_chunks_enabled = stream.negotiated_capabilities().image_compressed_chunks;
 
     loop {
+        if let Some(assembler) = composite_assembler.as_mut() {
+            assembler.expire();
+        }
+        if let Some(assembler) = archive_assembler.as_mut() {
+            assembler.expire();
+        }
+        let composite_arrival = {
+            let engine = sync_engine.lock().await;
+            (engine.clipboard_generation(), engine.clipboard_revision())
+        };
         let frame = match timeout(
             CONNECTION_TIMEOUT,
             stream.read_frame_with_admission(|command, payload_length| match command {
-                Command::ImageChunk => {
+                Command::ImageChunk | Command::CompositeChunk | Command::ArchiveUpdateChunk => {
                     tailsync_core::peer::rate_limit::check_peer_chunk_bytes(
                         &peer_info.hostname,
                         payload_length,
                     )
                     .map_err(ProtocolError::AdmissionRejected)
                 }
-                Command::TextPayload | Command::ImagePayload | Command::FileBatchStart => {
+                Command::CompositePayload | Command::ArchiveUpdatePayload
+                    if payload_length > 512 * 1024 =>
+                {
+                    Err(ProtocolError::AdmissionRejected(
+                        "Direct composite event exceeds limit".into(),
+                    ))
+                }
+                Command::CompositePayload
+                | Command::ArchiveUpdatePayload
+                | Command::TextPayload
+                | Command::ImagePayload
+                | Command::FileBatchStart => {
                     check_peer_event_budget(&peer_info.hostname, payload_length)
                         .map_err(ProtocolError::AdmissionRejected)
                 }
@@ -671,6 +712,229 @@ async fn handle_accepted_connection_inner(
                         warn!("Disabling compressed image chunks for this session: {error}");
                         image_chunks_enabled = false;
                         secure::write_image_chunk_error(&mut stream).await?;
+                    }
+                }
+            }
+            Command::ArchiveUpdatePayload | Command::ArchiveUpdateChunk => {
+                use tailsync_core::protocol::composite::{AckResult, CompositeAck};
+                let sequence = frame.sequence;
+                let complete = if frame.command == Command::ArchiveUpdateChunk {
+                    let metadata =
+                        tailsync_core::composite::chunks::inspect_archive(&frame.payload)?;
+                    if metadata.index == 0 {
+                        check_peer_event_budget(&peer_info.hostname, 0)?;
+                    }
+                    let mut assembler = archive_assembler
+                        .take()
+                        .expect("Archive assembler is restored after every chunk");
+                    let payload = frame.payload;
+                    let (assembler, result) = tokio::task::spawn_blocking(move || {
+                        let result = assembler.accept_with_revision(&payload, 0, None);
+                        (assembler, result)
+                    })
+                    .await?;
+                    archive_assembler = Some(assembler);
+                    match result {
+                        Ok(accepted) => match accepted.complete {
+                            Some((envelope, _, _)) => {
+                                Some((envelope, metadata.index, accepted.budget))
+                            }
+                            None => {
+                                let ack = CompositeAck {
+                                    message_id: metadata.message_id,
+                                    digest: metadata.digest,
+                                    chunk_index: metadata.index,
+                                    result: AckResult::Chunk,
+                                };
+                                stream
+                                    .write_frame(&Frame::try_new(
+                                        Command::ArchiveUpdateAck,
+                                        0,
+                                        sequence,
+                                        ack.encode(),
+                                    )?)
+                                    .await?;
+                                None
+                            }
+                        },
+                        Err(error) => {
+                            secure::write_error(&mut stream, &error.to_string()).await?;
+                            None
+                        }
+                    }
+                } else {
+                    Some((
+                        crate::protocol::EventEnvelope::decode(&frame.payload)?,
+                        u16::MAX,
+                        None,
+                    ))
+                };
+                if let Some((envelope, index, budget)) = complete {
+                    let _budget = budget;
+                    if last_reliable_sequence.is_some_and(|last| sequence <= last) {
+                        secure::write_error(&mut stream, "Archive sequence is out of order")
+                            .await?;
+                        continue;
+                    }
+                    let authorization_settings = settings.clone();
+                    let authorization_hostname = peer_info.hostname.clone();
+                    let authorization_key = peer_public_key.clone();
+                    let authorization_source = source.clone();
+                    let authorized = Arc::new(move || {
+                        let settings = authorization_settings.blocking_lock();
+                        settings.sync_enabled
+                            && peer_is_allowed(
+                                &settings,
+                                &authorization_hostname,
+                                &authorization_key,
+                                &authorization_source,
+                            )
+                    });
+                    match tailsync_core::peer::archive_receiver::receive(
+                        envelope,
+                        source_device_id.clone(),
+                        composite_assembler_identity,
+                        index,
+                        database.clone(),
+                        authorized,
+                        Arc::new(crate::api::bump_clipboard_version),
+                    )
+                    .await
+                    {
+                        Ok(ack) => {
+                            stream
+                                .write_frame(&Frame::try_new(
+                                    Command::ArchiveUpdateAck,
+                                    0,
+                                    sequence,
+                                    ack.encode(),
+                                )?)
+                                .await?;
+                            last_reliable_sequence = Some(sequence);
+                        }
+                        Err(error) => secure::write_error(&mut stream, &error).await?,
+                    }
+                }
+            }
+            Command::CompositePayload | Command::CompositeChunk => {
+                use tailsync_core::protocol::composite::{AckResult, CompositeAck};
+                let sequence = frame.sequence;
+                let complete = if frame.command == Command::CompositeChunk {
+                    let metadata = tailsync_core::composite::chunks::inspect(&frame.payload)?;
+                    if metadata.index == 0 {
+                        check_peer_event_budget(&peer_info.hostname, 0)?;
+                    }
+                    let mut assembler = composite_assembler
+                        .take()
+                        .expect("the assembler is restored after every chunk");
+                    let payload = frame.payload;
+                    let (assembler, result) = tokio::task::spawn_blocking(move || {
+                        let result = assembler.accept_with_revision(
+                            &payload,
+                            composite_arrival.0,
+                            composite_arrival.1,
+                        );
+                        (assembler, result)
+                    })
+                    .await?;
+                    composite_assembler = Some(assembler);
+                    match result {
+                        Ok(accepted) => match accepted.complete {
+                            Some((envelope, generation, revision)) => Some((
+                                envelope,
+                                generation,
+                                revision,
+                                metadata.index,
+                                accepted.validated,
+                                accepted.budget,
+                            )),
+                            None => {
+                                let ack = CompositeAck {
+                                    message_id: metadata.message_id,
+                                    digest: metadata.digest,
+                                    chunk_index: metadata.index,
+                                    result: AckResult::Chunk,
+                                };
+                                stream
+                                    .write_frame(&Frame::try_new(
+                                        Command::CompositeAck,
+                                        0,
+                                        sequence,
+                                        ack.encode(),
+                                    )?)
+                                    .await?;
+                                None
+                            }
+                        },
+                        Err(error) => {
+                            secure::write_error(&mut stream, &error.to_string()).await?;
+                            None
+                        }
+                    }
+                } else {
+                    Some((
+                        crate::protocol::EventEnvelope::decode(&frame.payload)?,
+                        composite_arrival.0,
+                        composite_arrival.1,
+                        u16::MAX,
+                        None,
+                        None,
+                    ))
+                };
+                if let Some((envelope, generation, revision, index, validated, budget)) = complete {
+                    if last_reliable_sequence.is_some_and(|last| sequence <= last) {
+                        secure::write_error(&mut stream, "Composite sequence is out of order")
+                            .await?;
+                        continue;
+                    }
+                    let authorization_settings = settings.clone();
+                    let authorization_hostname = peer_info.hostname.clone();
+                    let authorization_key = peer_public_key.clone();
+                    let authorization_source = source.clone();
+                    let authorized = Arc::new(move || {
+                        peer_is_allowed(
+                            &authorization_settings.blocking_lock(),
+                            &authorization_hostname,
+                            &authorization_key,
+                            &authorization_source,
+                        )
+                    });
+                    match tailsync_core::peer::composite_receiver::receive_assembled(
+                        envelope,
+                        source_device_id.clone(),
+                        peer_info.hostname.clone(),
+                        composite_assembler_identity,
+                        generation,
+                        revision,
+                        index,
+                        sync_engine.clone(),
+                        database.clone(),
+                        authorized,
+                        validated,
+                        budget,
+                    )
+                    .await
+                    {
+                        Ok(ack) => {
+                            tailsync_core::sync_warning::record_composite_result(
+                                &peer_info.hostname,
+                                ack.result,
+                            );
+                            last_reliable_sequence = Some(sequence);
+                            crate::api::bump_clipboard_version();
+                            stream
+                                .write_frame(&Frame::try_new(
+                                    Command::CompositeAck,
+                                    0,
+                                    sequence,
+                                    ack.encode(),
+                                )?)
+                                .await?;
+                        }
+                        Err(error) => {
+                            warn!("Composite receive could not complete: {error}");
+                            break;
+                        }
                     }
                 }
             }
@@ -1041,9 +1305,7 @@ pub(super) fn local_peer_identity(mode: &str) -> secure::PeerIdentity {
         hostname: lan::local_hostname(),
         tailscale_ip: String::new(),
         iroh_endpoint_id: tailsync_core::peer::types::ConnectionMode::parse(mode)
-            .is_some_and(|mode| {
-                mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
-            })
+            .is_some_and(|mode| mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh))
             .then(iroh::local_endpoint_id)
             .flatten(),
     }
@@ -1059,14 +1321,20 @@ mod acceptance_tests {
     fn inbound_test_peer_does_not_modify_user_configuration() {
         let root = std::env::temp_dir().join(format!(
             "tailsync-inbound-isolation-{}-{:016x}",
-            std::process::id(), rand::random::<u64>()
+            std::process::id(),
+            rand::random::<u64>()
         ));
         std::fs::create_dir(&root).unwrap();
         let module = module_path!().split_once("::").unwrap().1;
         // Windows known-folder queries need the native USERPROFILE; HOME is
         // sufficient to redirect any implicit legacy-history discovery.
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([format!("{module}::inbound_isolation_worker"), "--exact".into(), "--ignored".into(), "--nocapture".into()])
+            .args([
+                format!("{module}::inbound_isolation_worker"),
+                "--exact".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ])
             .env("TAILSYNC_INBOUND_ISOLATION_WORKER", &root)
             .env("HOME", root.join("home"))
             .env("XDG_DATA_HOME", root.join("home/.local/share"))
@@ -1076,47 +1344,81 @@ mod acceptance_tests {
             .env_remove("TAILSYNC_DATA_DIR")
             .env_remove("TAILSYNC_STORAGE_DIR")
             .env_remove("TAILSYNC_V1_DATA_DIR")
-            .output().unwrap();
+            .output()
+            .unwrap();
         std::fs::remove_dir_all(&root).unwrap();
-        assert!(output.status.success(), "isolated inbound worker failed:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "isolated inbound worker failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[tokio::test]
     #[ignore = "subprocess worker; run by inbound_test_peer_does_not_modify_user_configuration"]
     async fn inbound_isolation_worker() {
-        let Some(root) = std::env::var_os("TAILSYNC_INBOUND_ISOLATION_WORKER") else { return; };
+        let Some(root) = std::env::var_os("TAILSYNC_INBOUND_ISOLATION_WORKER") else {
+            return;
+        };
         let production = db::default_user_data_dir_for_test()
             .expect("query normal data directory with the native profile preserved");
         let isolated = db::get_data_dir();
         // Fail before writing anything if the test build selects user data.
-        assert_ne!(isolated, production, "a test handshake would overwrite the user's config-v2.json");
+        assert_ne!(
+            isolated, production,
+            "a test handshake would overwrite the user's config-v2.json"
+        );
         let user_config = production.join("config-v2.json");
         let before = std::fs::read(&user_config).ok();
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
         let mut trusted = crypto::Settings::default();
-        trusted.trusted_peer_keys.insert("client".into(), STANDARD.encode(client_identity.public_key()));
+        trusted.trusted_peer_keys.insert(
+            "client".into(),
+            STANDARD.encode(client_identity.public_key()),
+        );
         let settings = Arc::new(Mutex::new(trusted));
         let (client, server) = open_session(
-            server_identity, &client_identity, settings,
+            server_identity,
+            &client_identity,
+            settings,
             Arc::new(Mutex::new(sync::SyncEngine::new())),
             Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap())),
-        ).await;
+        )
+        .await;
         let client = client.expect("fixture client admitted");
-        let saved: crypto::Settings = serde_json::from_slice(&std::fs::read(isolated.join("config-v2.json")).unwrap()).unwrap();
-        assert_eq!(saved.trusted_peer_keys["client"], STANDARD.encode(client_identity.public_key()));
+        let saved: crypto::Settings =
+            serde_json::from_slice(&std::fs::read(isolated.join("config-v2.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            saved.trusted_peer_keys["client"],
+            STANDARD.encode(client_identity.public_key())
+        );
         assert_eq!(saved.trusted_peer_addresses["client"]["lan"], "127.0.0.1");
-        assert_eq!(std::fs::read(&user_config).ok(), before, "test admission changed user configuration");
+        assert_eq!(
+            std::fs::read(&user_config).ok(),
+            before,
+            "test admission changed user configuration"
+        );
         drop(client);
-        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
-        std::fs::write(std::path::PathBuf::from(root).join("isolated-root.txt"), isolated.to_string_lossy().as_bytes()).unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::write(
+            std::path::PathBuf::from(root).join("isolated-root.txt"),
+            isolated.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
         std::fs::remove_dir_all(isolated).unwrap();
     }
 
     #[derive(Default)]
     struct RecordingPlatform {
         image_writes: AtomicUsize,
+        composite_writes: AtomicUsize,
+        native_revision: AtomicUsize,
     }
 
     impl sync::SyncPlatform for RecordingPlatform {
@@ -1129,6 +1431,31 @@ mod acceptance_tests {
             Ok(())
         }
 
+        fn clipboard_revision(&self) -> Option<i64> {
+            Some((self.native_revision.load(Ordering::SeqCst) + 1) as i64)
+        }
+        fn write_composite(
+            &self,
+            _: &tailsync_core::composite::PortableBundle,
+            expected: Option<i64>,
+        ) -> Result<tailsync_core::composite::NativePublish, String> {
+            use crate::protocol::native_clipboard::{PublishReceipt, PublishState};
+            use tailsync_core::composite::NativePublish;
+            if expected != self.clipboard_revision() {
+                return Ok(NativePublish::Superseded(PublishReceipt {
+                    state: PublishState::Superseded,
+                    revision: self.clipboard_revision().unwrap(),
+                    token: [0; 16],
+                }));
+            }
+            self.composite_writes.fetch_add(1, Ordering::SeqCst);
+            self.native_revision.fetch_add(1, Ordering::SeqCst);
+            Ok(NativePublish::Published(PublishReceipt {
+                state: PublishState::Published,
+                revision: self.clipboard_revision().unwrap(),
+                token: [1; 16],
+            }))
+        }
         fn set_file_progress(&self, _name: &str, _received: u64, _total: u64) {}
 
         fn clear_file_progress(&self, _batch_id: Option<TransferId>, _device: Option<&str>) {}
@@ -1148,7 +1475,10 @@ mod acceptance_tests {
         settings: Arc<Mutex<crypto::Settings>>,
         sync_engine: Arc<Mutex<sync::SyncEngine>>,
         database: Arc<Mutex<db::HistoryDB>>,
-    ) -> (Result<secure::SecureConnection, String>, tokio::task::JoinHandle<()>) {
+    ) -> (
+        Result<secure::SecureConnection, String>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let (client_io, server_io) = tokio::io::duplex(256 * 1024);
         let expected_server_key = server_identity.public_key().to_vec();
         let server = tokio::spawn(async move {
@@ -1166,6 +1496,7 @@ mod acceptance_tests {
                     file_sliding_window: true,
                     image_compressed_chunks: true,
                     pairing_commit_proof: false,
+                    composite_clipboard: true,
                 },
             )
             .await
@@ -1196,6 +1527,7 @@ mod acceptance_tests {
                 file_sliding_window: true,
                 image_compressed_chunks: true,
                 pairing_commit_proof: false,
+                composite_clipboard: true,
             },
         )
         .await
@@ -1206,13 +1538,16 @@ mod acceptance_tests {
     async fn open_iroh_admission_session(
         trusted: bool,
         enabled: bool,
-    ) -> (Result<secure::SecureConnection, String>, tokio::task::JoinHandle<()>, String) {
+    ) -> (
+        Result<secure::SecureConnection, String>,
+        tokio::task::JoinHandle<()>,
+        String,
+    ) {
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
         let client_identity = DeviceIdentity::generate_for_test();
-        let endpoint_key = ring::signature::Ed25519KeyPair::from_seed_unchecked(
-            &rand::random::<[u8; 32]>(),
-        )
-        .unwrap();
+        let endpoint_key =
+            ring::signature::Ed25519KeyPair::from_seed_unchecked(&rand::random::<[u8; 32]>())
+                .unwrap();
         let endpoint_id = hex::encode(ring::signature::KeyPair::public_key(&endpoint_key).as_ref());
         let expected_hostname = lan::local_hostname();
         let expected_server_key = server_identity.public_key().to_vec();
@@ -1226,7 +1561,9 @@ mod acceptance_tests {
                 STANDARD.encode(client_identity.public_key()),
             );
         }
-        current.enabled_peers.insert("iroh-admission-client".into(), enabled);
+        current
+            .enabled_peers
+            .insert("iroh-admission-client".into(), enabled);
         let settings = Arc::new(Mutex::new(current));
         let pairing = PairingManager::new(settings.clone(), server_identity.clone());
         let sync_engine = Arc::new(Mutex::new(sync::SyncEngine::new()));
@@ -1268,7 +1605,10 @@ mod acceptance_tests {
     async fn untrusted_iroh_session_does_not_register_rtt_capability() {
         let (client, server, endpoint_id) = open_iroh_admission_session(false, true).await;
         assert!(client.is_err());
-        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!iroh::supports_rtt(&endpoint_id));
     }
 
@@ -1276,7 +1616,10 @@ mod acceptance_tests {
     async fn disabled_iroh_session_does_not_register_rtt_capability() {
         let (client, server, endpoint_id) = open_iroh_admission_session(true, false).await;
         assert!(client.is_err());
-        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!iroh::supports_rtt(&endpoint_id));
     }
 
@@ -1286,7 +1629,10 @@ mod acceptance_tests {
         let client = client.expect("trusted Iroh session");
         assert!(iroh::supports_rtt(&endpoint_id));
         drop(client);
-        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     fn image_fixture() -> Vec<Vec<u8>> {
@@ -1303,7 +1649,10 @@ mod acceptance_tests {
         let chunks = tailsync_core::image_chunks::compress(&envelope)
             .unwrap()
             .expect("fixture must use compressed chunks");
-        assert!(chunks.len() >= 2, "fixture must exercise a partial assembly");
+        assert!(
+            chunks.len() >= 2,
+            "fixture must exercise a partial assembly"
+        );
         chunks
     }
 
@@ -1343,8 +1692,16 @@ mod acceptance_tests {
             .write_frame(&Frame::try_new(Command::ImageChunk, 0, 1, first.clone()).unwrap())
             .await
             .unwrap();
-        assert_eq!(client.read_frame().await.unwrap().command, Command::EventAck);
-        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        assert_eq!(
+            client.read_frame().await.unwrap().command,
+            Command::EventAck
+        );
+        assert!(database
+            .lock()
+            .await
+            .get_all(None, None, 10, 0)
+            .unwrap()
+            .is_empty());
         assert_eq!(platform.image_writes.load(Ordering::SeqCst), 0);
 
         // A duplicate/late first chunk is invalid while the second is due.
@@ -1365,7 +1722,12 @@ mod acceptance_tests {
         let disabled = client.read_frame().await.unwrap();
         assert_eq!(disabled.command, Command::PeerError);
         assert_eq!(disabled.payload, error.payload);
-        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        assert!(database
+            .lock()
+            .await
+            .get_all(None, None, 10, 0)
+            .unwrap()
+            .is_empty());
         assert_eq!(platform.image_writes.load(Ordering::SeqCst), 0);
         drop(client);
         tokio::time::timeout(Duration::from_secs(2), server)
@@ -1414,7 +1776,12 @@ mod acceptance_tests {
                     assert_eq!(response.command, Command::EventAck, "{case}");
                 }
             }
-            assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+            assert!(database
+                .lock()
+                .await
+                .get_all(None, None, 10, 0)
+                .unwrap()
+                .is_empty());
             assert_eq!(platform.image_writes.load(Ordering::SeqCst), 0, "{case}");
             drop(candidate);
             tokio::time::timeout(Duration::from_secs(2), task)
@@ -1437,7 +1804,12 @@ mod acceptance_tests {
             .await
             .unwrap();
         assert_eq!(fresh.read_frame().await.unwrap().command, Command::EventAck);
-        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        assert!(database
+            .lock()
+            .await
+            .get_all(None, None, 10, 0)
+            .unwrap()
+            .is_empty());
         assert_eq!(platform.image_writes.load(Ordering::SeqCst), 0);
         drop(fresh);
         tokio::time::timeout(Duration::from_secs(2), fresh_server)
@@ -1460,8 +1832,16 @@ mod acceptance_tests {
             database.clone(),
         )
         .await;
-        assert!(client.err().expect("unpaired peer must be rejected").contains("not paired"));
-        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        assert!(client
+            .err()
+            .expect("unpaired peer must be rejected")
+            .contains("not paired"));
+        assert!(database
+            .lock()
+            .await
+            .get_all(None, None, 10, 0)
+            .unwrap()
+            .is_empty());
         tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .unwrap()
@@ -1503,11 +1883,184 @@ mod acceptance_tests {
         let rejection = client.read_frame().await.unwrap();
         assert_eq!(rejection.command, Command::PeerError);
         assert!(String::from_utf8_lossy(&rejection.payload).contains("revoked"));
-        assert!(database.lock().await.get_all(None, None, 10, 0).unwrap().is_empty());
+        assert!(database
+            .lock()
+            .await
+            .get_all(None, None, 10, 0)
+            .unwrap()
+            .is_empty());
         drop(client);
         tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[cfg(feature = "protocol-composite-clipboard")]
+    #[tokio::test]
+    async fn composite_authenticated_finish_retry_and_new_native_copy_use_production_receiver() {
+        use crate::protocol::composite::{AckResult, CompositeAck};
+        use rand::{RngCore, SeedableRng};
+        use tailsync_core::composite::*;
+        // The recording adapter is the healthy native provider for this fixture.
+        // Production handshake intentionally refuses unknown helper health (K8).
+        struct HelperHealthGuard(Option<bool>);
+        impl Drop for HelperHealthGuard {
+            fn drop(&mut self) {
+                match self.0 {
+                    Some(healthy) => tailsync_core::secure::set_helper_health(healthy),
+                    None => tailsync_core::secure::reset_helper_health_for_test(),
+                }
+            }
+        }
+        let _helper_health = HelperHealthGuard(tailsync_core::secure::helper_health());
+        tailsync_core::secure::set_helper_health(true);
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-composite-server-{:016x}",
+            rand::random::<u64>()
+        ));
+        let database = Arc::new(Mutex::new(
+            db::HistoryDB::open_isolated_for_test_composite(&root).unwrap(),
+        ));
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let mut trusted = crypto::Settings {
+            connection_mode: "auto".into(),
+            ..crypto::Settings::default()
+        };
+        trusted.trusted_peer_keys.insert(
+            "client".into(),
+            STANDARD.encode(client_identity.public_key()),
+        );
+        let settings = Arc::new(Mutex::new(trusted));
+        let platform = Arc::new(RecordingPlatform::default());
+        let mut engine = sync::SyncEngine::new();
+        engine.set_platform(platform.clone());
+        let engine = Arc::new(Mutex::new(engine));
+        let (client, server) = open_session(
+            server_identity,
+            &client_identity,
+            settings.clone(),
+            engine,
+            database.clone(),
+        )
+        .await;
+        let mut client = client.unwrap();
+        assert!(client.negotiated_capabilities().composite_clipboard);
+        let mut rgba = vec![0; 512 * 512 * 4];
+        rand::rngs::StdRng::seed_from_u64(101).fill_bytes(&mut rgba);
+        let bundle = PortableBundle {
+            representations: vec![
+                Representation {
+                    mime: Mime::Text,
+                    bytes: b"server fixture".to_vec(),
+                },
+                Representation {
+                    mime: Mime::Png,
+                    bytes: packed_to_png(512, 512, &rgba).unwrap(),
+                },
+            ],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        let event = crate::protocol::EventEnvelope::new(bundle.encode().unwrap());
+        let chunks = chunks::encode(&event).unwrap();
+        assert!(chunks.len() > 1);
+        // Initial delivery and loss/retry of the final ACK both traverse Noise,
+        // admission, assembler, durable effect journal, and the history commit.
+        for base in [10, 100] {
+            for (index, payload) in chunks.iter().enumerate() {
+                client
+                    .write_frame(
+                        &Frame::try_new(
+                            Command::CompositeChunk,
+                            0,
+                            base + index as u32,
+                            payload.clone(),
+                        )
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let frame = client.read_frame().await.unwrap();
+                assert_eq!(frame.command, Command::CompositeAck);
+                assert_eq!(frame.sequence, base + index as u32);
+                let ack = CompositeAck::decode(&frame.payload).unwrap();
+                assert_eq!(ack.message_id, event.message_id);
+                assert_eq!(
+                    ack.result,
+                    if index + 1 == chunks.len() {
+                        AckResult::Applied
+                    } else {
+                        AckResult::Chunk
+                    }
+                );
+            }
+        }
+        assert_eq!(platform.composite_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            database
+                .lock()
+                .await
+                .get_all(None, None, 10, 0)
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut slow = event.clone();
+        slow.message_id = crate::protocol::MessageId::random();
+        let chunks = chunks::encode(&slow).unwrap();
+        for (index, payload) in chunks.iter().enumerate() {
+            client
+                .write_frame(
+                    &Frame::try_new(
+                        Command::CompositeChunk,
+                        0,
+                        200 + index as u32,
+                        payload.clone(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let frame = client.read_frame().await.unwrap();
+            let ack = CompositeAck::decode(&frame.payload).unwrap();
+            if index == 0 {
+                platform.native_revision.fetch_add(1, Ordering::SeqCst);
+            }
+            assert_eq!(
+                ack.result,
+                if index + 1 == chunks.len() {
+                    AckResult::Superseded
+                } else {
+                    AckResult::Chunk
+                }
+            );
+        }
+        assert_eq!(platform.composite_writes.load(Ordering::SeqCst), 1);
+        // Mid-session revocation is checked before processing a new frame.
+        settings
+            .lock()
+            .await
+            .enabled_peers
+            .insert("client".into(), false);
+        client
+            .write_frame(
+                &Frame::try_new(Command::CompositeChunk, 0, 300, chunks[0].clone()).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            client.read_frame().await.unwrap().command,
+            Command::PeerError
+        );
+        drop(client);
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

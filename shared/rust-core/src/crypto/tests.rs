@@ -423,6 +423,84 @@ fn legacy_settings_default_to_an_empty_trust_store() {
 }
 
 #[test]
+fn auto_save_network_images_defaults_to_disabled() {
+    assert!(!Settings::default().auto_save_network_images);
+}
+
+#[test]
+fn legacy_settings_without_auto_save_default_to_disabled() {
+    let dir = temp_data_dir("legacy-no-auto-save");
+    let path = write_config(
+        &dir,
+        r#"{
+            "notifications_enabled": true,
+            "progress_bar_enabled": true,
+            "history_limit": 100,
+            "enabled_peers": {},
+            "language": "en"
+        }"#,
+    );
+
+    let loaded = Settings::load_from_path(&path).unwrap();
+    assert!(!loaded.auto_save_network_images);
+
+    let decoded: Settings = serde_json::from_str(
+        r#"{
+            "notifications_enabled": true,
+            "progress_bar_enabled": true,
+            "history_limit": 100,
+            "enabled_peers": {},
+            "language": "en"
+        }"#,
+    )
+    .unwrap();
+    assert!(!decoded.auto_save_network_images);
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn auto_save_network_images_round_trips_through_save_and_load() {
+    let dir = temp_data_dir("auto-save-round-trip");
+    for enabled in [true, false] {
+        let settings = Settings {
+            auto_save_network_images: enabled,
+            ..Settings::default()
+        };
+        let path = write_config(&dir, &serde_json::to_string_pretty(&settings).unwrap());
+
+        let loaded = Settings::load_from_path(&path).unwrap();
+        assert_eq!(loaded.auto_save_network_images, enabled);
+
+        let encoded = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(
+            encoded.get("auto_save_network_images"),
+            Some(&serde_json::Value::Bool(enabled))
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn auto_save_network_images_rejects_non_boolean_values() {
+    let error = serde_json::from_str::<Settings>(
+        r#"{
+            "notifications_enabled": true,
+            "progress_bar_enabled": true,
+            "history_limit": 100,
+            "enabled_peers": {},
+            "language": "en",
+            "auto_save_network_images": "yes"
+        }"#,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("boolean"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn paired_peer_address_is_persisted_and_removed_with_pairing() {
     let mut settings = Settings::default();
     settings
@@ -1009,6 +1087,19 @@ fn user_update_preserves_server_owned_settings() {
     assert_eq!(updated.paired_peer_endpoints, current.paired_peer_endpoints);
 }
 
+#[test]
+fn user_update_carries_auto_save_network_images() {
+    let current = Settings::default();
+    let requested = Settings {
+        auto_save_network_images: true,
+        ..Settings::default()
+    };
+
+    let updated = current.prepare_user_update(requested).unwrap();
+
+    assert!(updated.auto_save_network_images);
+}
+
 #[tokio::test]
 async fn settings_update_persists_and_applies_db_limits() {
     let root = std::env::temp_dir().join(format!(
@@ -1201,6 +1292,92 @@ async fn settings_update_does_not_commit_when_persistence_fails() {
     );
     drop(database);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_update_persists_auto_save_network_images() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-settings-auto-save-{:016x}",
+        rand::random::<u64>()
+    ));
+    let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+        db::HistoryDB::open_at(&root).unwrap(),
+    ));
+    let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+    let persisted = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let persisted_writer = persisted.clone();
+    let persist = move |seen: &Settings| -> Result<(), String> {
+        persisted_writer
+            .lock()
+            .unwrap()
+            .push(seen.auto_save_network_images);
+        Ok(())
+    };
+    let requested = Settings {
+        auto_save_network_images: true,
+        ..Settings::default()
+    };
+
+    apply_settings_update(&settings, &database, requested, &persist, None)
+        .await
+        .unwrap();
+
+    assert!(settings.lock().await.auto_save_network_images);
+    assert_eq!(persisted.lock().unwrap().as_slice(), &[true]);
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_update_keeps_auto_save_value_when_persistence_fails() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-settings-auto-save-failed-{:016x}",
+        rand::random::<u64>()
+    ));
+    let database = std::sync::Arc::new(tokio::sync::Mutex::new(
+        db::HistoryDB::open_at(&root).unwrap(),
+    ));
+    let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+    let fail_persist =
+        |_settings: &Settings| -> Result<(), String> { Err("simulated save failure".to_string()) };
+    let requested = Settings {
+        auto_save_network_images: true,
+        ..Settings::default()
+    };
+
+    let error = apply_settings_update(&settings, &database, requested, &fail_persist, None)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, SettingsUpdateError::Persist(ref message) if message == "simulated save failure")
+    );
+    assert!(!settings.lock().await.auto_save_network_images);
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn auto_save_toggle_does_not_wait_for_unrelated_history_limit_enforcement() {
+    let settings = tokio::sync::Mutex::new(Settings::default());
+    let database = tokio::sync::Mutex::new(db::HistoryDB::new_unavailable().unwrap());
+    let held = database.lock().await;
+    let requested = Settings {
+        auto_save_network_images: true,
+        ..Settings::default()
+    };
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        apply_settings_update(&settings, &database, requested, &|_| Ok(()), None),
+    )
+    .await;
+    drop(held);
+    assert!(
+        result.is_ok(),
+        "A persisted toggle waited for unrelated database work"
+    );
+    assert!(result.unwrap().is_ok());
+    assert!(settings.lock().await.auto_save_network_images);
 }
 
 #[tokio::test]

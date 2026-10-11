@@ -27,7 +27,11 @@ impl HistoryDB {
             .ok_or(PreviewError::EntryNotFound { entry_id: id })?;
 
         let (entry_type, description, declared_size, batch_id) = row;
-        let size_bytes = checked_preview_size(declared_size)?;
+        let size_bytes = checked_preview_size(if entry_type == "composite" {
+            0
+        } else {
+            declared_size
+        })?;
         let (kind, name) = preview_kind_and_name(&entry_type, &description)?;
         let batch = batch_id
             .as_deref()
@@ -96,6 +100,12 @@ impl HistoryDB {
     /// The typed error is part of the platform IPC contract; callers should
     /// never have to infer retryability from an error string.
     pub fn get_preview_payload(&self, id: i64) -> Result<PreviewPayload, PreviewError> {
+        if self.get_type(id).ok().as_deref() == Some("composite") {
+            return self
+                .prepare_preview(id, None)?
+                .read(&crate::cancellation::Cancellation::default())
+                .map(|(_, payload)| payload);
+        }
         let metadata = self.get_preview_metadata(id)?;
         let data = self
             .get_data(id)

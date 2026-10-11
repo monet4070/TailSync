@@ -98,6 +98,7 @@ export interface ImageThumbnail {
   thumbnail_b64: string;
   thumbnail_width: number;
   thumbnail_height: number;
+  cache_key?: string;
 }
 
 export type HistoryPageResult = Omit<Contract.HistoryQueryPage, "entries"> & { entries: HistoryEntry[] };
@@ -136,8 +137,8 @@ export type HistoryPageQuery = {
   collection?: HistoryCollection;
 };
 
-export function getImageData(id: number): Promise<ImageThumbnail> {
-  return invoke<ImageThumbnail>("get_image_data", { id });
+export function getImageData(id: number, cacheKey?: string): Promise<ImageThumbnail> {
+  return invoke<ImageThumbnail>("get_image_data", { id, ...(cacheKey ? { cacheKey } : {}) });
 }
 
 /**
@@ -154,6 +155,56 @@ export function getPreview(id: number, batchId?: string | null): Promise<Preview
   });
 }
 
+export async function getDocumentPreview(request: import("./types/localContracts.generated").DocumentRequest, signal?: AbortSignal): Promise<import("./utils/documentPreview").DecodedDocumentFrame> {
+  const decoder = await import("./utils/documentPreview");
+  const cancel = () => { void cancelDocumentPreview(request).catch(() => undefined); };
+  if (signal?.aborted) throw new Error("Document request cancelled");
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const response = await invoke<PreviewResponseInput>("get_document_preview", { request });
+    if (signal?.aborted) throw new Error("Document request cancelled");
+    const frame = decoder.decodeDocumentFrame(response, request);
+    for (const asset of frame.document.assets) {
+      if (signal?.aborted || await decoder.documentAssetBytes(frame, asset) === null) throw new Error("Document assets unavailable");
+    }
+    if (signal?.aborted) throw new Error("Document request cancelled");
+    const current = await validateDocumentPreview(request, frame.metadata.stamp);
+    if (signal?.aborted) throw new Error("Document request cancelled");
+    if (!current) throw new Error("Document request stale");
+    return frame;
+  } catch (error) { cancel(); throw error; }
+  finally { signal?.removeEventListener("abort", cancel); }
+}
+
+export function validateDocumentPreview(request: import("./types/localContracts.generated").DocumentRequest, stamp: string): Promise<boolean> {
+  return invoke<boolean>("validate_document_preview", { request, stamp });
+}
+
+const pendingDocumentCancels = new Map<string, Contract.DocumentRequest>();
+let runningDocumentCancel: Contract.DocumentRequest | null = null;
+let documentCancelWorker: Promise<void> | null = null;
+
+export function cancelDocumentPreview(request: Contract.DocumentRequest): Promise<void> {
+  if (request.owner !== "history" && request.owner !== "favorites") return Promise.resolve();
+  const pending = pendingDocumentCancels.get(request.owner);
+  if ((!pending || pending.generation < request.generation)
+    && (!runningDocumentCancel || runningDocumentCancel.owner !== request.owner || runningDocumentCancel.generation < request.generation)) {
+    pendingDocumentCancels.set(request.owner, request);
+  }
+  if (documentCancelWorker) return documentCancelWorker;
+  documentCancelWorker = (async () => {
+    while (pendingDocumentCancels.size > 0) {
+      const [owner, current] = pendingDocumentCancels.entries().next().value!;
+      pendingDocumentCancels.delete(owner);
+      runningDocumentCancel = current;
+      try { await invoke<void>("cancel_document_preview", { request: current }); }
+      catch { }
+      finally { runningDocumentCancel = null; }
+    }
+  })().finally(() => { documentCancelWorker = null; });
+  return documentCancelWorker;
+}
+
 export interface PreviewWindowRequest {
   entryId: number;
   batchId?: string | null;
@@ -165,6 +216,7 @@ export interface PreviewWindowSnapshot {
   batchId: string | null;
   owner: PreviewWindowOwner;
   takeFocus: boolean;
+  documentEligible?: boolean;
 }
 
 export function openPreviewWindow(
@@ -241,8 +293,16 @@ export function getHistoryCapabilities(): Promise<HistoryCapabilities> {
   return invoke<HistoryCapabilities>("get_history_capabilities");
 }
 
-export function getHistoryPage(query: HistoryPageQuery): Promise<HistoryPageResult> {
-  return invoke<unknown>("get_history_page", query).then(value => Contract.decodeHistoryQueryPage(value) as HistoryPageResult);
+export async function getHistoryPage(query: HistoryPageQuery, isCurrent: () => boolean = () => true): Promise<HistoryPageResult> {
+  for (let batch = 0; batch < 256; batch += 1) {
+    if (!isCurrent()) throw new DOMException("History query cancelled", "AbortError");
+    const value = await invoke<unknown>("get_history_page", query);
+    if (!isCurrent()) throw new DOMException("History query cancelled", "AbortError");
+    const result = Contract.decodeHistoryQueryPage(value) as HistoryPageResult;
+    if (!result.display_index_pending) return result;
+    await new Promise(resolve => window.setTimeout(resolve, 20));
+  }
+  throw new Error("History display index is still rebuilding; retry to continue");
 }
 
 export function getVersion(): Promise<{ version: number }> {
@@ -281,12 +341,39 @@ export function getFileProgress(): Promise<FileProgress> {
 // History — write side (T244)
 // ---------------------------------------------------------------------------
 
-export function restoreEntry(id: number): Promise<void> {
-  return invoke<void>("restore_entry", { id });
+export function restoreEntry(id: number, format?: string, identity?: Contract.HistoryIdentity | null, originalId?: number): Promise<Contract.HistoryRestoreReport | void> {
+  const args: Record<string, unknown> = format ? { id, restoreFormat: format } : { id };
+  if (identity) { args.restoreIdentity = identity; args.restoreOriginalId = originalId ?? id; }
+  return invoke<unknown>("restore_entry", args).then((value) => value == null ? undefined : Contract.decodeHistoryRestoreReport(value));
 }
 
 export function deleteEntry(id: number): Promise<void> {
   return invoke<void>("delete_entry", { id });
+}
+export type ArchiveEntryImagesReport = Contract.ArchiveEntryImagesReport;
+
+export function archiveEntryImages(id: number): Promise<ArchiveEntryImagesReport> {
+  return invoke<unknown>("archive_entry_images", { id }).then(Contract.decodeArchiveEntryImagesReport);
+}
+
+export type SourceContextGrantReport = Contract.SourceContextGrantReport;
+export type SourceContextImportReport = Contract.SourceContextImportReport;
+export type SourceContextRevokeReport = Contract.SourceContextRevokeReport;
+
+export function sourceContextGrantCreate(id: number): Promise<SourceContextGrantReport> {
+  return invoke<unknown>("source_context_grant_create", { id }).then(Contract.decodeSourceContextGrantReport);
+}
+
+export function sourceContextGrantRevoke(grantId: string): Promise<SourceContextRevokeReport> {
+  return invoke<unknown>("source_context_grant_revoke", { grantId }).then(Contract.decodeSourceContextRevokeReport);
+}
+
+export function sourceContextImport(id: number, path: string): Promise<SourceContextImportReport> {
+  return invoke<unknown>("source_context_import", { id, path }).then(Contract.decodeSourceContextImportReport);
+}
+
+export function sourceContextExportTicket(path: string, ticket: string): Promise<void> {
+  return invoke<void>("source_context_export_ticket", { path, ticket });
 }
 
 export function clearHistory(): Promise<void> {

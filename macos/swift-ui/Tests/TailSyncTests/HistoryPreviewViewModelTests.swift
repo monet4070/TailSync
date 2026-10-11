@@ -5,6 +5,71 @@ import XCTest
 
 @MainActor
 final class HistoryPreviewViewModelTests: XCTestCase {
+    func testImageClassifiedCompositeBinaryPayloadUsesTheImageRenderer() async throws {
+        let pixels = Data([255, 0, 0, 255])
+        let metadata = try JSONSerialization.data(withJSONObject: [
+            "entry_id": 7, "request_id": "composite-image", "kind": "image",
+            "name": "composite image", "size_bytes": pixels.count,
+            "width": 1, "height": 1,
+        ])
+        var frame = Data([0x54, 0x53, 0x50, 0x56, 1])
+        var metadataLength = UInt32(metadata.count).littleEndian
+        withUnsafeBytes(of: &metadataLength) { frame.append(contentsOf: $0) }
+        frame.append(metadata)
+        frame.append(pixels)
+        let payload = try ApiClient.decodeBinaryPreview(frame, expectedRequestID: "composite-image")
+        let model = HistoryPreviewViewModel(dependencies: HistoryPreviewDependencies(
+            load: { _, _ in payload },
+            restore: { _ in }
+        ))
+        defer { model.close() }
+        let item = HistoryPreviewItem(
+            id: 7, batchId: nil, batchIndex: nil, batchCount: nil,
+            category: "image", type: "composite", nameHint: "Rich clipboard content",
+            sizeBytes: 161_500, displayKind: "image"
+        )
+        model.present(HistoryPreviewRequest(items: [item], selectedIndex: 0))
+        try await waitUntil { model.isReady }
+
+        guard case .ready(let loaded, let material, let format) = model.state,
+              case .image(let image) = material else {
+            return XCTFail("A composite image payload must materialize as an image")
+        }
+        XCTAssertEqual(format, .image)
+        XCTAssertEqual(loaded.data, pixels)
+        XCTAssertEqual(image.image.size.width, 1)
+        XCTAssertEqual(image.image.size.height, 1)
+    }
+
+    func testTextOnlyCompositesKeepTheTextAndCodePreviewPath() async throws {
+        for (category, text, expected) in [("text", "just a normal note", HistoryPreviewFormat.text), ("code", "git status --short", .code), ("code", "{\"enabled\":true}", .code)] {
+            let calls = EventLog()
+            let model = HistoryPreviewViewModel(dependencies: HistoryPreviewDependencies(
+                load: { id, _ in
+                    calls.append("text")
+                    return Self.textPayload(id: id, text: text)
+                },
+                restore: { _ in },
+                loadDocument: { _, _, _, _ in
+                    calls.append("document")
+                    return nil
+                }
+            ))
+            model.present(HistoryPreviewRequest(items: [HistoryPreviewItem(
+                id: 7, batchId: nil, batchIndex: nil, batchCount: nil,
+                category: category, type: "composite", nameHint: text, sizeBytes: Int64(text.utf8.count), displayKind: "text"
+            )], selectedIndex: 0))
+            try await waitUntil { model.isReady }
+            guard case .ready(_, .text(let body), let format) = model.state else {
+                return XCTFail("Text-only clipboard records must use the text viewer with its tools")
+            }
+            XCTAssertEqual(body, text)
+            XCTAssertEqual(format, expected)
+            XCTAssertEqual(calls.snapshot(), ["text"])
+            model.close()
+        }
+    }
+
     func testRestorePublishesSuccessFeedback() async throws {
         let model = HistoryPreviewViewModel(
             dependencies: HistoryPreviewDependencies(

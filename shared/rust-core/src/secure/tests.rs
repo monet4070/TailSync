@@ -442,6 +442,8 @@ fn capability_advertisements_are_backward_compatible_and_fail_closed() {
         file_sliding_window: true,
         image_compressed_chunks: false,
         pairing_commit_proof: false,
+        composite_clipboard: false,
+        archive_resource_updates: false,
     };
     let encoded = encode_handshake_advertisement(identity, enabled).expect("encode capabilities");
     assert_eq!(
@@ -480,6 +482,7 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
         file_sliding_window: true,
         image_compressed_chunks: true,
         pairing_commit_proof: false,
+        composite_clipboard: false,
     }
     .advertised();
     assert_eq!(
@@ -495,6 +498,8 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
         file_sliding_window: true,
         image_compressed_chunks: true,
         pairing_commit_proof: false,
+        composite_clipboard: false,
+        archive_resource_updates: false,
     };
     assert_eq!(
         CapabilitySet::negotiate(both, CapabilitySet::disabled()),
@@ -507,12 +512,16 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
                 file_sliding_window: true,
                 image_compressed_chunks: false,
                 pairing_commit_proof: false,
+                composite_clipboard: false,
+                archive_resource_updates: false,
             }
         ),
         CapabilitySet {
             file_sliding_window: true,
             image_compressed_chunks: false,
             pairing_commit_proof: false,
+            composite_clipboard: false,
+            archive_resource_updates: false,
         }
     );
 }
@@ -523,6 +532,8 @@ async fn negotiated_capabilities_are_bound_to_each_authenticated_session() {
         file_sliding_window: true,
         image_compressed_chunks: true,
         pairing_commit_proof: false,
+        composite_clipboard: false,
+        archive_resource_updates: false,
     };
     let first = negotiate_capabilities_for_one_session(both, both).await;
     assert_eq!(first, (both, both));
@@ -531,6 +542,8 @@ async fn negotiated_capabilities_are_bound_to_each_authenticated_session() {
         file_sliding_window: false,
         image_compressed_chunks: true,
         pairing_commit_proof: false,
+        composite_clipboard: false,
+        archive_resource_updates: false,
     };
     let second = negotiate_capabilities_for_one_session(both, image_only).await;
     assert_eq!(second, (image_only, image_only));
@@ -911,6 +924,8 @@ fn oversized_image_chunk_is_rejected_from_decrypted_header_before_body_read() {
             file_sliding_window: false,
             image_compressed_chunks: true,
             pairing_commit_proof: false,
+            composite_clipboard: false,
+            archive_resource_updates: false,
         },
         wire_version: protocol::VERSION,
     };
@@ -1093,4 +1108,101 @@ async fn plaintext_commit_frame_cannot_create_an_authenticated_pairing() {
     )
     .await;
     assert!(result.is_err());
+}
+
+#[test]
+fn composite_capability_is_bilateral_v5_and_build_runtime_gated() {
+    let supported = CapabilitySet {
+        composite_clipboard: true,
+        ..CapabilitySet::disabled()
+    };
+    assert!(!CapabilitySet::negotiate(supported, CapabilitySet::disabled()).composite_clipboard);
+    assert!(CapabilitySet::negotiate(supported, supported).composite_clipboard);
+    assert!(!capabilities_for_wire(supported, protocol::LEGACY_VERSION).composite_clipboard);
+    assert!(capabilities_for_wire(supported, protocol::VERSION).composite_clipboard);
+    let legacy: CapabilitySet = serde_json::from_str("{}").unwrap();
+    assert!(!legacy.composite_clipboard);
+    let off = CapabilitySwitches {
+        composite_clipboard: false,
+        file_sliding_window: true,
+        image_compressed_chunks: true,
+        pairing_commit_proof: true,
+    };
+    assert!(!off.advertised().composite_clipboard);
+    let on = CapabilitySwitches {
+        composite_clipboard: true,
+        ..off
+    };
+    assert_eq!(
+        on.advertised().composite_clipboard,
+        cfg!(feature = "protocol-composite-clipboard")
+    );
+}
+
+#[test]
+fn unnegotiated_composite_is_rejected_from_header_without_allocating_a_body() {
+    for command in [
+        Command::CompositePayload,
+        Command::CompositeChunk,
+        Command::CompositeAck,
+        Command::ArchiveUpdatePayload,
+        Command::ArchiveUpdateChunk,
+        Command::ArchiveUpdateAck,
+    ] {
+        let (_, receiver_transport) = transport_pair();
+        let mut header = [0; protocol::HEADER_SIZE];
+        header[..4].copy_from_slice(&protocol::MAGIC);
+        header[4] = protocol::VERSION;
+        header[6..8].copy_from_slice(&(command as u16).to_be_bytes());
+        header[12..16].copy_from_slice(&(command.payload_limit() as u32).to_be_bytes());
+        let (_, reader) = tokio::io::duplex(64);
+        let secure = SecureConnection {
+            remote_public_key: vec![0; 32],
+            stream: Box::new(reader),
+            transport: receiver_transport,
+            read_buffer: header.to_vec(),
+            partial_header: [0; 2],
+            partial_header_len: 0,
+            partial_record: vec![],
+            partial_expected: None,
+            peer_identity: PeerIdentity {
+                hostname: "fixture".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+            session_id: "composite-header-fixture".into(),
+            negotiated_capabilities: CapabilitySet::disabled(),
+            wire_version: protocol::VERSION,
+        };
+        assert!(matches!(
+            secure.pending_frame_metadata(),
+            Err(ProtocolError::AdmissionRejected(_))
+        ));
+        assert_eq!(secure.read_buffer.len(), protocol::HEADER_SIZE);
+    }
+}
+
+#[test]
+fn archive_updates_require_bilateral_composite_and_v5_capabilities() {
+    let supported = CapabilitySet {
+        composite_clipboard: true,
+        archive_resource_updates: true,
+        ..CapabilitySet::disabled()
+    };
+    let legacy: CapabilitySet = serde_json::from_str(r#"{"composite_clipboard":true}"#).unwrap();
+    assert!(!legacy.archive_resource_updates);
+    assert!(!CapabilitySet::negotiate(supported, legacy).archive_resource_updates);
+    assert!(CapabilitySet::negotiate(supported, supported).archive_resource_updates);
+    let orphaned = CapabilitySet {
+        composite_clipboard: false,
+        ..supported
+    };
+    assert!(!CapabilitySet::negotiate(supported, orphaned).archive_resource_updates);
+    assert!(!capabilities_for_wire(supported, protocol::LEGACY_VERSION).archive_resource_updates);
+    assert!(capabilities_for_wire(supported, protocol::VERSION).archive_resource_updates);
+    let disabled = CapabilitySwitches {
+        composite_clipboard: false,
+        ..CapabilitySwitches::runtime_defaults()
+    };
+    assert!(!disabled.advertised().archive_resource_updates);
 }

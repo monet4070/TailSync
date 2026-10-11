@@ -192,6 +192,14 @@ jobs:
         run: node scripts/run-isolated-tests.mjs -- cargo test --locked -p tailsync-core --features test-support --test reliable_event_process -- --test-threads=1
       - name: Test macOS deployment guard
         run: python3 -m unittest discover -s macos/scripts -p 'test_macos_deployment.py'
+      - name: Run enabled composite core and receiver regressions
+        run: |
+          node scripts/run-isolated-tests.mjs -- cargo test --locked -p tailsync-core --features 'repair-regressions test-support protocol-composite-clipboard protocol-file-sliding-window protocol-image-compressed-chunks' --lib -- --test-threads=1
+          node scripts/run-isolated-tests.mjs -- cargo test --locked -p tailsync-core --features 'repair-regressions test-support protocol-composite-clipboard' --test composite_repair_followup -- --test-threads=1
+      - name: Check runtime-disabled filter executes three cases
+        run: |
+          cargo fetch --locked
+          python3 scripts/run-composite-r6.py ci-runtime-disabled --only runtime-disabled
       - name: Check macOS application formatting
         run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
       - name: Run shared core Clippy
@@ -280,6 +288,14 @@ jobs:
         run: cargo clippy --locked --manifest-path shared/rust-core/Cargo.toml --all-targets -- -D warnings
       - name: Run shared core unit tests
         run: node scripts/run-remediation-tests.mjs --job rust-macos -- cargo test --locked --manifest-path shared/rust-core/Cargo.toml
+      - name: Run enabled composite core and receiver regressions
+        run: |
+          node scripts/run-isolated-tests.mjs -- cargo test --locked -p tailsync-core --features 'repair-regressions test-support protocol-composite-clipboard protocol-file-sliding-window protocol-image-compressed-chunks' --lib -- --test-threads=1
+          node scripts/run-isolated-tests.mjs -- cargo test --locked -p tailsync-core --features 'repair-regressions test-support protocol-composite-clipboard' --test composite_repair_followup -- --test-threads=1
+      - name: Check runtime-disabled filter executes three cases
+        run: |
+          cargo fetch --locked
+          python3 scripts/run-composite-r6.py ci-runtime-disabled --only runtime-disabled
       - name: Check macOS application formatting
         run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
       - name: Run macOS application Clippy
@@ -368,10 +384,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: 1.91.0
+          components: rustfmt
       - name: Check shared dependency resolution
         run: node scripts/check-shared-resolution.mjs --root .
       - name: Check local UI contracts
         run: node scripts/check-local-contracts.mjs --root .
+      - name: Check native capture policy generation
+        run: node scripts/generate-native-capture-policy.mjs --check
+      - name: Check canonical platform includes and negative regressions
+        run: |
+          node scripts/check-canonical-includes.mjs --root .
+          node --test scripts/check-canonical-includes.test.mjs
+          python3 -m unittest discover -s scripts/tests -p test_composite_evidence.py
+          python3 -m unittest discover -s scripts/tests -p test_composite_r7.py
+          python3 -m unittest discover -s scripts/tests -p test_composite_r6.py
+          python3 -m unittest discover -s scripts/tests -p test_rich_text_r4_fixtures.py
+          python3 scripts/check-clippy-execution.py
 
   rustsec:
     name: RustSec advisories (${{ matrix.manifest }})

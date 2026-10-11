@@ -5,18 +5,46 @@ extension ApiClient {
     let width: Int
     let height: Int
     let rgba: Data
+    let cacheKey: String?
   }
 
-  func getImageData(id: Int64) async -> ImageData? {
-    guard let response = try? await request(["cmd": "get_image_data", "id": id]),
+  func getImageData(id: Int64, cacheKey: String? = nil) async -> ImageData? {
+    var command: [String: Any] = ["cmd": "get_image_data", "id": id]
+    if let cacheKey { command["cache_key"] = cacheKey }
+    var received: [String: Any]?
+    for attempt in 0..<16 {
+      guard !Task.isCancelled else { return nil }
+      guard let response = try? await request(command, timeoutSeconds: 30) else { return nil }
+      let retryable = response["error_code"] as? String == "temporarily_busy"
+        || ["content analysis busy", "content analysis is stale", "history image is stale"].contains(response["error"] as? String ?? "")
+      if response["ok"] as? Bool != true, retryable, attempt < 15 {
+        do { try await Task.sleep(nanoseconds: UInt64(min(400, 50 * (attempt + 1))) * 1_000_000) } catch { return nil }
+        continue
+      }
+      received = response
+      break
+    }
+    guard !Task.isCancelled, let response = received,
       response["ok"] as? Bool == true,
       let data = response["data"] as? [String: Any],
-      let width = (data["width"] as? NSNumber)?.intValue,
-      let height = (data["height"] as? NSNumber)?.intValue,
+      let widthNumber = data["width"] as? NSNumber,
+      let heightNumber = data["height"] as? NSNumber,
+      CFGetTypeID(widthNumber) != CFBooleanGetTypeID(),
+      CFGetTypeID(heightNumber) != CFBooleanGetTypeID(),
+      widthNumber.doubleValue.isFinite, heightNumber.doubleValue.isFinite,
+      widthNumber.doubleValue > 0, heightNumber.doubleValue > 0,
+      widthNumber.doubleValue <= 256, heightNumber.doubleValue <= 256,
+      widthNumber.doubleValue.rounded(.down) == widthNumber.doubleValue,
+      heightNumber.doubleValue.rounded(.down) == heightNumber.doubleValue,
       let encoded = data["rgba_b64"] as? String,
+      encoded.count <= 350_000,
       let rgba = Data(base64Encoded: encoded)
     else { return nil }
-    return ImageData(width: width, height: height, rgba: rgba)
+    let width = widthNumber.intValue
+    let height = heightNumber.intValue
+    let returnedKey = data["cache_key"] as? String
+    guard rgba.count == width * height * 4, cacheKey == nil || cacheKey == returnedKey else { return nil }
+    return ImageData(width: width, height: height, rgba: rgba, cacheKey: returnedKey)
   }
 
   /// Decrypted history bytes for Quick Look/text preview.
@@ -100,6 +128,48 @@ extension ApiClient {
       entryId: (data["entry_id"] as? NSNumber)?.int64Value,
       batch: Self.decodePreviewBatch(data["batch"])
     )
+  }
+
+  func getDocumentPreview(
+    id: Int64, owner: String, generation: UInt64, requestId: String? = nil
+  ) async throws -> HistoryDocumentPreview? {
+    guard let capabilities = try await getLocalCapabilities(), capabilities.supportsDocumentPreview
+    else { return nil }
+    let requestID = requestId ?? UUID().uuidString
+    let command: [String: Any] = [
+      "cmd": "get_document_preview",
+      "id": id,
+      "request_id": requestID,
+      "document_request": ["entry_id": id, "owner": owner, "generation": generation, "request_id": requestID],
+    ]
+    let binary = try await requestBytes(
+      command,
+      timeoutSeconds: 30,
+      maxResponseBytes: 16 * 1024 * 1024
+    )
+    if binary.first == 0x7B {
+      let line = binary.firstIndex(of: 0x0A).map { Data(binary[..<$0]) } ?? binary
+      guard let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+        throw ApiError.invalidJson
+      }
+      throw Self.previewError(from: response, fallback: "Could not load document preview")
+    }
+    try Task.checkCancellation()
+    return try Self.decodeDocumentPreview(binary, expectedRequestID: requestID, expectedEntryId: id, expectedOwner: owner, expectedGeneration: generation)
+  }
+
+  func validateDocumentPreview(_ preview: HistoryDocumentPreview) async throws -> Bool {
+    try await validateDocumentPreview(id: preview.entryId, owner: preview.owner, generation: preview.generation, requestId: preview.requestId, stamp: preview.stamp)
+  }
+
+  func validateDocumentPreview(id: Int64, owner: String, generation: UInt64, requestId: String, stamp: String) async throws -> Bool {
+    let response = try await request(["cmd": "validate_document_preview", "document_request": ["entry_id": id, "owner": owner, "generation": generation, "request_id": requestId], "document_stamp": stamp])
+    try Task.checkCancellation()
+    return response["ok"] as? Bool == true && (response["data"] as? [String: Any])?["valid"] as? Bool == true
+  }
+
+  func cancelDocumentPreview(id: Int64, owner: String, generation: UInt64, requestId: String) async {
+    _ = try? await request(["cmd": "cancel_document_preview", "document_request": ["entry_id": id, "owner": owner, "generation": generation, "request_id": requestId]])
   }
 
   private static func decodePreviewBatch(_ value: Any?) -> HistoryPreviewBatchNavigation? {
@@ -230,25 +300,36 @@ extension ApiClient {
     offset: Int = 0,
     collection: String = "all"
   ) async throws -> [HistoryEntry] {
-    var request: [String: Any] = ["cmd": "get_history", "limit": limit, "offset": offset]
+    let capabilities = try await getLocalCapabilities()
+    let paged = capabilities?.history_display_version == 1
+    var request: [String: Any] = ["cmd": paged ? "get_history_page" : "get_history", "limit": limit, "offset": offset]
     if collection != "all" { request["collection"] = collection }
     if let keyword { request["keyword"] = keyword }
     if let category { request["category"] = category }
     if let startTime { request["start_time"] = startTime }
     if let endTime { request["end_time"] = endTime }
-    let response = try await self.request(request)
-    guard response["ok"] as? Bool == true,
-      let data = response["data"] as? [[String: Any]]
-    else {
-      throw ApiError.serverError(response["error"] as? String ?? "unknown")
+    for _ in 0..<256 {
+      try Task.checkCancellation()
+      let response = try await self.request(request, timeoutSeconds: 30)
+      try Task.checkCancellation()
+      guard response["ok"] as? Bool == true, let payload = response["data"] else {
+        throw ApiError.serverError(response["error"] as? String ?? "unknown")
+      }
+      if paged {
+        let encoded = try JSONSerialization.data(withJSONObject: payload)
+        let page = try JSONDecoder().decode(ContractHistoryQueryPage.self, from: encoded)
+        if page.display_index_pending == true {
+          try await Task.sleep(nanoseconds: 20_000_000)
+          continue
+        }
+        guard let object = payload as? [String: Any], let rows = object["entries"] else { throw ApiError.invalidJson }
+        return try JSONDecoder().decode([HistoryEntry].self, from: JSONSerialization.data(withJSONObject: rows))
+      }
+      let encoded = try JSONSerialization.data(withJSONObject: payload)
+      if capabilities != nil { _ = try JSONDecoder().decode([ContractHistoryEntry].self, from: encoded) }
+      return try JSONDecoder().decode([HistoryEntry].self, from: encoded)
     }
-    let encoded = try JSONSerialization.data(withJSONObject: data)
-    if try await getLocalCapabilities() != nil {
-      _ = try JSONDecoder().decode([ContractHistoryEntry].self, from: encoded)
-    }
-    // The legacy presentation adapter supplies defaults only for old daemons.
-    // Decode atomically; a malformed row must not silently disappear.
-    return try JSONDecoder().decode([HistoryEntry].self, from: encoded)
+    throw ApiError.serverError("History display index is still rebuilding; retry to continue")
   }
 
   func deleteEntry(id: Int64) async throws {
@@ -258,10 +339,64 @@ extension ApiClient {
     }
   }
 
-  func restoreEntry(id: Int64) async throws {
-    let response = try await request(["cmd": "restore_entry", "id": id])
+  func restoreEntry(id: Int64, format: String? = nil, originalID: Int64? = nil, identity: ContractHistoryIdentity? = nil) async throws {
+    _ = try await restoreEntryWithReport(id: id, format: format, originalID: originalID, identity: identity)
+  }
+
+  func restoreEntryWithReport(id: Int64, format: String? = nil, originalID: Int64? = nil, identity: ContractHistoryIdentity? = nil) async throws -> ContractHistoryRestoreReport {
+    var command: [String: Any] = ["cmd": "restore_entry", "id": id]
+    if let format { command["restore_format"] = format }
+    if let identity {
+      command["restore_original_id"] = originalID ?? id
+      command["restore_identity"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(identity))
+    }
+    let response = try await request(command)
     guard response["ok"] as? Bool == true else {
       throw ApiError.serverError(response["error"] as? String ?? "unknown")
     }
+    guard let payload = response["data"], !(payload is NSNull) else {
+      return try JSONDecoder().decode(ContractHistoryRestoreReport.self, from: Data(#"{"complete":true,"missing_images":0}"#.utf8))
+    }
+    return try JSONDecoder().decode(ContractHistoryRestoreReport.self, from: JSONSerialization.data(withJSONObject: payload))
+  }
+
+  @discardableResult
+  func archiveEntryImages(id: Int64) async throws -> ContractArchiveEntryImagesReport {
+    let response = try await request(["cmd": "archive_entry_images", "id": id], timeoutSeconds: 60)
+    guard response["ok"] as? Bool == true else {
+      throw ApiError.serverError(response["error"] as? String ?? "unknown")
+    }
+    let data = try JSONSerialization.data(withJSONObject: response["data"] ?? [:])
+    return try JSONDecoder().decode(ContractArchiveEntryImagesReport.self, from: data)
+  }
+
+  @discardableResult
+  func sourceContextGrantCreate(id: Int64) async throws -> ContractSourceContextGrantReport {
+    let response = try await request(["cmd": "source_context_grant_create", "id": id])
+    guard response["ok"] as? Bool == true else {
+      throw ApiError.serverError(response["error"] as? String ?? "unknown")
+    }
+    let data = try JSONSerialization.data(withJSONObject: response["data"] ?? [:])
+    return try JSONDecoder().decode(ContractSourceContextGrantReport.self, from: data)
+  }
+
+  @discardableResult
+  func sourceContextGrantRevoke(grantId: String) async throws -> ContractSourceContextRevokeReport {
+    let response = try await request(["cmd": "source_context_grant_revoke", "grant_id": grantId])
+    guard response["ok"] as? Bool == true else {
+      throw ApiError.serverError(response["error"] as? String ?? "unknown")
+    }
+    let data = try JSONSerialization.data(withJSONObject: response["data"] ?? [:])
+    return try JSONDecoder().decode(ContractSourceContextRevokeReport.self, from: data)
+  }
+
+  @discardableResult
+  func sourceContextImport(id: Int64, path: String) async throws -> ContractSourceContextImportReport {
+    let response = try await request(["cmd": "source_context_import", "id": id, "path": path], timeoutSeconds: 60)
+    guard response["ok"] as? Bool == true else {
+      throw ApiError.serverError(response["error"] as? String ?? "unknown")
+    }
+    let data = try JSONSerialization.data(withJSONObject: response["data"] ?? [:])
+    return try JSONDecoder().decode(ContractSourceContextImportReport.self, from: data)
   }
 }

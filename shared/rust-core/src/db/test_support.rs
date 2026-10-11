@@ -3,6 +3,19 @@
 use super::*;
 
 impl HistoryDB {
+    pub fn reject_composite_inserts_for_test(
+        &mut self,
+        reject: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if reject {
+            self.conn.execute_batch("CREATE TRIGGER IF NOT EXISTS reject_composite_insert BEFORE INSERT ON history WHEN NEW.type='composite' BEGIN SELECT RAISE(ABORT,'injected composite write failure'); END;")?;
+        } else {
+            self.conn
+                .execute_batch("DROP TRIGGER IF EXISTS reject_composite_insert;")?;
+        }
+        Ok(())
+    }
+
     /// Observe the actual storage operations at platform call sites. Dev-only.
     pub fn observe_storage_work_for_test(
         &mut self,
@@ -33,7 +46,27 @@ impl HistoryDB {
         Ok(())
     }
 
+    /// Isolated fixture that stays at the **legacy** schema (v11, no composite
+    /// tables).
+    ///
+    /// Fixtures must ask for composite structures explicitly. A default fixture
+    /// that silently upgraded would hide the production policy this repair is
+    /// about: `MigrationPolicy::LegacyOnly` has to mean "no composite DDL".
     pub fn open_isolated_for_test(root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_isolated_for_test_with_policy(root, MigrationPolicy::LegacyOnly)
+    }
+
+    /// Isolated fixture that explicitly asks for the composite schema (v12).
+    pub fn open_isolated_for_test_composite(
+        root: &Path,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_isolated_for_test_with_policy(root, MigrationPolicy::CompositeAllowed)
+    }
+
+    pub fn open_isolated_for_test_with_policy(
+        root: &Path,
+        policy: MigrationPolicy,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         if root.exists() {
             return Err("isolated test store must not already exist".into());
         }
@@ -47,11 +80,17 @@ impl HistoryDB {
         let image_history_dir = root.join("image-history");
         crate::private_fs::create_private_dir_all(&file_history_dir)?;
         crate::private_fs::create_private_dir_all(&image_history_dir)?;
-        Self::migrate(&conn, &file_history_dir, &image_history_dir)?;
+        let target = policy.write_target();
+        if target >= COMPOSITE_SCHEMA_VERSION {
+            schema::initialize_composite(&conn)?;
+        }
+        Self::migrate_to(&conn, &file_history_dir, &image_history_dir, target)?;
+        let has_composite_schema = schema::composite_schema_present(&conn)?;
         // In particular, never inspect or migrate the user's legacy v1 store.
         Ok(Self {
             conn,
             read_identity: std::sync::Arc::new(()),
+            display_authority: rand::random(),
             #[cfg(any(test, feature = "test-support"))]
             storage_work_observer: None,
             deferred_checkpoint: false,
@@ -60,7 +99,38 @@ impl HistoryDB {
             storage_available: true,
             file_history_dir,
             image_history_dir,
+            has_composite_schema,
+            protected_history: std::collections::HashSet::new(),
         })
+    }
+
+    /// Open an existing store with an explicit migration policy (test/probe only).
+    pub fn open_with_policy_for_probe(
+        storage_dir: &Path,
+        policy: MigrationPolicy,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_at_with_policy(storage_dir, policy)
+    }
+
+    /// Last inserted rowid on the fixture connection (test/probe only).
+    pub fn conn_last_insert_rowid(&self) -> i64 {
+        self.conn.last_insert_rowid()
+    }
+
+    /// Drop the composite tables and the v12 version row, emulating an installed
+    /// v11 database (test/probe only).
+    pub fn strip_composite_schema_for_probe(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.conn.execute_batch(
+            "DROP TABLE IF EXISTS history_composite_identity; DROP TABLE IF EXISTS history_composite_events; DROP TABLE IF EXISTS history_parts;
+             DELETE FROM schema_version WHERE version >= 12;",
+        )?;
+        self.has_composite_schema = false;
+        Ok(())
+    }
+
+    /// Applied schema version (test/probe only).
+    pub fn schema_version_for_probe(&self) -> Result<i64, Box<dyn std::error::Error>> {
+        Ok(schema::schema_version(&self.conn)?)
     }
 
     /// Fixed plaintext dataset, production encryption and schema. Seeding is

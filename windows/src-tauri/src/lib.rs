@@ -1,6 +1,8 @@
 mod api;
+mod automatic_images;
 mod clipboard;
 mod clipboard_change;
+mod clipboard_composite;
 mod clipboard_file;
 mod commands;
 mod network;
@@ -26,6 +28,7 @@ type BackgroundTasks = Arc<StdMutex<Vec<tauri::async_runtime::JoinHandle<()>>>>;
 
 pub struct AppState {
     pub db: Arc<Mutex<db::HistoryDB>>,
+    pub image_archive: Arc<automatic_images::AutomaticImageArchive>,
     pub sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pub settings: Arc<Mutex<crypto::Settings>>,
     pub identity: Arc<identity::DeviceIdentity>,
@@ -321,6 +324,9 @@ fn start_storage_monitor(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> i32 {
+    if let Some(code) = clipboard_composite::helper_check_cli() {
+        return code;
+    }
     init_logging();
     match run_app() {
         Ok(()) => 0,
@@ -460,6 +466,22 @@ fn init_logging() {
 /// The message goes to the logger and stderr (visible in `tauri:dev`), and
 /// is appended to `{data dir}/startup-error.log` so release builds — which
 /// have no console — still leave a reliable, documented failure trace.
+/// Startup order for the composite clipboard (ADR-004 K8, repair plan R1-04):
+/// the no-body helper self-check runs **before** the migration policy is frozen and
+/// before the database is opened. A missing, non-executable or wrong-protocol
+/// sidecar keeps the database at v11 rather than advertising a capability this
+/// machine cannot service.
+fn probe_clipboard_helper() {
+    let health = crate::clipboard_composite::helper_health();
+    tailsync_core::secure::set_helper_health(health.is_healthy());
+    tailsync_core::secure::set_origin_health(crate::clipboard_composite::origin_health());
+    if health.is_healthy() {
+        log::info!("Clipboard helper ready ({})", health.reason());
+    } else {
+        log::warn!("Composite clipboard disabled: {}", health.reason());
+    }
+}
+
 fn report_startup_failure(data_dir: &std::path::Path, error: &dyn std::error::Error) -> i32 {
     let message = format!("TailSync failed to start: {error}");
     log::error!("{message}");
@@ -507,12 +529,21 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         false
     });
     sync::cleanup_expired_transfers();
+    probe_clipboard_helper();
 
     let mut history_db = if storage_available {
         db::HistoryDB::new()?
     } else {
         db::HistoryDB::new_unavailable()?
     };
+    if let Err(error) = tailsync_core::peer::effect_journal::recover_prepared_history(
+        &db::get_data_dir(),
+        &mut history_db,
+    ) {
+        tailsync_core::secure::set_journal_health(false);
+        tailsync_core::sync_warning::record_clipboard_unavailable();
+        log::error!("Clipboard journal recovery unavailable: {error}");
+    }
     history_db.set_storage_quota(loaded_settings.storage_quota_bytes);
     let db = Arc::new(Mutex::new(history_db));
     let db_for_classification = db.clone();
@@ -580,6 +611,14 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let pending_remote_pairing_link = Arc::new(StdMutex::new(None));
     let pending_storage_cleanup = Arc::new(Mutex::new(None));
     let settings_for_monitor = settings.clone();
+    let (image_archive, archive_task) = automatic_images::start(
+        db.clone(),
+        settings.blocking_lock().auto_save_network_images,
+        pool.clone(),
+        settings.clone(),
+        shutdown_rx.clone(),
+    );
+    track_task(&background_tasks, archive_task);
     #[cfg(target_os = "windows")]
     let settings_for_notifications = settings.clone();
     let settings_for_server = settings.clone();
@@ -598,6 +637,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     {
         let api_state = Arc::new(api::ApiState {
             db: db.clone(),
+            image_archive: image_archive.clone(),
             sync_engine: sync_engine.clone(),
             settings: settings.clone(),
             identity: identity.clone(),
@@ -685,6 +725,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             // use the shared Tauri tray implementation.
             let state = AppState {
                 db: db_for_setup.clone(),
+                image_archive: image_archive.clone(),
                 sync_engine: sync_for_setup.clone(),
                 settings,
                 identity,
@@ -697,6 +738,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             };
             let initial_shortcuts = state.settings.blocking_lock().clone();
             app.manage(state);
+            app.manage(tailsync_runtime::document_preview::DocumentSession::default());
             #[cfg(target_os = "windows")]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -769,6 +811,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 sync_for_setup.clone(),
                 pool_for_setup.clone(),
                 settings_for_monitor,
+                image_archive.clone(),
                 shutdown_for_setup.clone(),
             );
             track_task(&tasks_for_setup, clipboard_task);

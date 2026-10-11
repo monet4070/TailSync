@@ -8,6 +8,7 @@ param(
     [switch]$InstallDependencies,
     [switch]$SkipChecks,
     [switch]$SkipSmokeTest,
+    [switch]$CompositeClipboard,
     [switch]$Release,
     [ValidateSet('community', 'trusted')]
     [string]$ReleaseTier = 'community'
@@ -299,9 +300,9 @@ try {
         Invoke-Checked -FilePath 'npm' -Arguments @('run', 'build')
 
         Write-Host 'Running Windows Rust tests...'
-        Invoke-Checked -FilePath 'cargo' -Arguments @(
-            'test', '--locked', '--manifest-path', $manifestPath, '--lib'
-        )
+        $testArguments = @('test', '--locked', '--manifest-path', $manifestPath, '--lib')
+        if ($CompositeClipboard) { $testArguments += @('--features', 'protocol-composite-clipboard') }
+        Invoke-Checked -FilePath 'cargo' -Arguments $testArguments
     }
 
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
@@ -314,6 +315,14 @@ try {
         $env:CI = 'true'
         Write-Host 'Building the release binary and NSIS installer...'
         $buildArguments = @('build', '--target', $Target, '--bundles', 'nsis', '--ci')
+        if ($CompositeClipboard) {
+            & (Join-Path $scriptRoot 'build-composite-helper.ps1') -Target $Target
+            $buildArguments += @('--features', 'protocol-composite-clipboard')
+        }
+        $configuration = [ordered]@{ bundle = [ordered]@{} }
+        if ($CompositeClipboard) {
+            $configuration.bundle.externalBin = @('binaries/tailsync-clipboard-helper')
+        }
         if ($Release -and $ReleaseTier -eq 'trusted') {
             $releaseConfig = [ordered]@{
                 bundle = [ordered]@{
@@ -324,9 +333,12 @@ try {
                     }
                 }
             } | ConvertTo-Json -Depth 5 -Compress
-            $buildArguments += @('--config', $releaseConfig)
+            $configuration.bundle.windows = ($releaseConfig | ConvertFrom-Json).bundle.windows
         } else {
             $buildArguments += '--no-sign'
+        }
+        if ($configuration.bundle.Count -gt 0) {
+            $buildArguments += @('--config', ($configuration | ConvertTo-Json -Depth 5 -Compress))
         }
         Invoke-Checked -FilePath $tauriCli -Arguments $buildArguments
     }
@@ -376,6 +388,15 @@ try {
         (New-ArtifactRecord -Kind 'portable' -File $portableFile),
         (New-ArtifactRecord -Kind 'nsis-installer' -File $installerFile)
     )
+    if ($CompositeClipboard) {
+        $helperSource = Join-Path $targetRelease 'tailsync-clipboard-helper.exe'
+        if (!(Test-Path -LiteralPath $helperSource -PathType Leaf)) {
+            throw "Tauri did not produce the clipboard sidecar: $helperSource"
+        }
+        $helperPortablePath = Join-Path $releaseDirectory 'tailsync-clipboard-helper.exe'
+        Copy-Item -LiteralPath $helperSource -Destination $helperPortablePath -Force
+        $artifacts += (New-ArtifactRecord -Kind 'clipboard-helper' -File (Get-Item -LiteralPath $helperPortablePath))
+    }
     $updaterPath = $null
     $updaterSignaturePath = $null
     if ($Release) {
@@ -478,6 +499,7 @@ try {
         product = $productName
         version = $version
         target = $Target
+        compositeClipboard = [bool]$CompositeClipboard
         releaseTier = if ($Release) { $ReleaseTier } else { 'development' }
         builtAtUtc = [DateTime]::UtcNow.ToString('o')
         sourceCommit = $commit

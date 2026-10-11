@@ -12,6 +12,23 @@ impl HistoryDB {
         text: &str,
         source_peer: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.add_text_inner(text, source_peer, false).map(|_| ())
+    }
+
+    pub fn prepare_legacy_text(
+        &mut self,
+        text: &str,
+        source_peer: &str,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        self.add_text_inner(text, source_peer, true)
+    }
+
+    fn add_text_inner(
+        &mut self,
+        text: &str,
+        source_peer: &str,
+        protected: bool,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
         let data_hash = blake3::hash(text.as_bytes()).to_hex().to_string();
         // Replace the duplicate and insert the new row in one SQLite
         // transaction so a process exit cannot leave the history gap between
@@ -23,8 +40,10 @@ impl HistoryDB {
         let classification = history_classifier::classify_text(text);
         let categories = serde_json::to_string(&classification.categories())?;
 
+        // Read the capability before the transaction borrows `self.conn`.
+        let has_composite_schema = self.has_composite_schema();
         let tx = self.conn.transaction()?;
-        Self::delete_rows_in_transaction(&tx, &duplicate_ids)?;
+        Self::delete_rows_in_transaction(&tx, &duplicate_ids, has_composite_schema)?;
         tx.execute(
             "INSERT INTO history
                 (timestamp, type, description, data, size_bytes, source_peer, data_hash,
@@ -45,8 +64,12 @@ impl HistoryDB {
         )?;
         tx.commit()?;
 
+        let id = self.conn.last_insert_rowid();
+        if protected {
+            self.protect_history(id);
+        }
         self.trim("text")?;
-        Ok(())
+        Ok(id)
     }
 
     /// Add an image entry to history. Duplicate: delete old, insert new.
@@ -55,6 +78,24 @@ impl HistoryDB {
         image_data: &[u8],
         source_peer: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.add_image_inner(image_data, source_peer, false)
+            .map(|_| ())
+    }
+
+    pub fn prepare_legacy_image(
+        &mut self,
+        image_data: &[u8],
+        source_peer: &str,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        self.add_image_inner(image_data, source_peer, true)
+    }
+
+    fn add_image_inner(
+        &mut self,
+        image_data: &[u8],
+        source_peer: &str,
+        protected: bool,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
         crate::protocol::PackedImage::try_from(image_data)?;
         let data_hash = blake3::hash(image_data).to_hex().to_string();
         // Keep the payload outside SQLite, but make row replacement and row
@@ -69,8 +110,10 @@ impl HistoryDB {
         let timestamp = chrono::Utc::now().to_rfc3339();
         let description = format!("Image {} bytes", image_data.len());
 
+        // Read the capability before the transaction borrows `self.conn`.
+        let has_composite_schema = self.has_composite_schema();
         let tx = self.conn.transaction()?;
-        Self::delete_rows_in_transaction(&tx, &duplicate_ids)?;
+        Self::delete_rows_in_transaction(&tx, &duplicate_ids, has_composite_schema)?;
         let write_result = tx.execute(
             "INSERT INTO history
                 (timestamp, type, description, data, size_bytes, source_peer, data_hash,
@@ -103,8 +146,12 @@ impl HistoryDB {
         }
         self.cleanup_external_payloads(&old_payloads, Some(&new_path));
 
+        let id = self.conn.last_insert_rowid();
+        if protected {
+            self.protect_history(id);
+        }
         self.trim("image")?;
-        Ok(())
+        Ok(id)
     }
 
     /// Check if an entry with the given hash already exists
@@ -126,6 +173,12 @@ impl HistoryDB {
             params![id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        if entry_type == "composite" {
+            if let Some(archived) = self.get_composite_archived(id)? {
+                return Ok(archived.encode()?);
+            }
+            return Ok(self.get_composite(id)?.encode()?);
+        }
         if entry_type == "text" {
             return self.read_text_payload_compat(&stored);
         }
@@ -154,7 +207,7 @@ impl HistoryDB {
         &self,
         ids: &[i64],
     ) -> Result<Vec<ExternalHistoryPayload>, Box<dyn std::error::Error>> {
-        let mut payloads = Vec::new();
+        let mut payloads = self.composite_part_payloads(ids)?;
         for id in ids {
             let stored = self.conn.query_row(
                 "SELECT type, data FROM history WHERE id = ?1",
@@ -186,6 +239,7 @@ impl HistoryDB {
     pub(super) fn delete_rows_in_transaction(
         tx: &Transaction<'_>,
         ids: &[i64],
+        has_composite_schema: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if ids.is_empty() {
             return Ok(());
@@ -199,6 +253,13 @@ impl HistoryDB {
             )?;
             if let Some(batch_id) = batch_id {
                 affected_batches.insert(batch_id);
+            }
+            if has_composite_schema {
+                tx.execute(
+                    "UPDATE history_composite_events SET history_id=NULL WHERE history_id=?1",
+                    params![id],
+                )?;
+                tx.execute("DELETE FROM history_parts WHERE history_id=?1", params![id])?;
             }
             tx.execute("DELETE FROM history WHERE id = ?1", params![id])?;
         }

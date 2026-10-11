@@ -75,6 +75,7 @@ impl HistoryDB {
                 entries,
                 total: None,
                 has_more,
+                display_index_pending: None,
             });
         }
 
@@ -89,7 +90,7 @@ impl HistoryDB {
                         (SELECT COUNT(*) FROM history AS batch_entries
                          WHERE batch_entries.batch_id = history.batch_id)
                     END AS batch_count,
-                    CASE WHEN type = 'text' THEN data ELSE NULL END AS text_data
+                    CASE WHEN type IN ('text', 'composite') THEN data ELSE NULL END AS text_data
              FROM history",
         );
         sql.push_str(&filter_clause);
@@ -119,6 +120,7 @@ impl HistoryDB {
             entries,
             total: Some(total),
             has_more,
+            display_index_pending: None,
         })
     }
 
@@ -173,7 +175,7 @@ impl HistoryDB {
             Self::history_filter_clause(collection, category, start_time, end_time)?;
         let escaped = format!("%{}%", escape_like_literal(keyword));
         let candidate =
-            "(type = 'text' OR description LIKE ? ESCAPE '\\' OR source_peer LIKE ? ESCAPE '\\'
+            "(type IN ('text', 'composite') OR description LIKE ? ESCAPE '\\' OR source_peer LIKE ? ESCAPE '\\'
               OR type LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\'
               OR EXISTS (SELECT 1 FROM json_each(history.categories) AS label
                          WHERE label.value LIKE ? ESCAPE '\\'))";
@@ -193,7 +195,7 @@ impl HistoryDB {
                         (SELECT COUNT(*) FROM history AS batch_entries
                          WHERE batch_entries.batch_id = history.batch_id)
                     END AS batch_count,
-                    CASE WHEN type = 'text' THEN data ELSE NULL END AS text_data
+                    CASE WHEN type IN ('text', 'composite') THEN data ELSE NULL END AS text_data
              FROM history{where_clause} ORDER BY timestamp DESC, id DESC"
         );
         let mut statement = self.conn.prepare(&sql)?;
@@ -207,10 +209,23 @@ impl HistoryDB {
             let mut entry = Self::row_to_entry(row)?;
             let mut full_text_matches = false;
             if let Some(stored) = row.get::<_, Option<Vec<u8>>>(17)? {
-                match self
-                    .read_text_payload_compat(&stored)
-                    .and_then(|data| Ok(String::from_utf8(data)?))
-                {
+                match self.read_text_payload_compat(&stored).and_then(|data| {
+                    let data = if entry.entry_type == "composite" {
+                        entry.composite = super::composite::info_bytes(&data).ok();
+                        if let Some(info) = &mut entry.composite {
+                            super::composite::PreparedCompositeMenu::apply_prepared(
+                                self.prepare_composite_menu(entry.id, &data)
+                                    .map_err(|e| e.to_string()),
+                                info,
+                                &crate::cancellation::Cancellation::default(),
+                            );
+                        }
+                        super::composite::summary_bytes(&data)?
+                    } else {
+                        data
+                    };
+                    Ok(String::from_utf8(data)?)
+                }) {
                     Ok(text) => {
                         full_text_matches = text.to_lowercase().contains(&keyword.to_lowercase());
                         entry.description = text_preview(&text);
@@ -246,7 +261,9 @@ impl HistoryDB {
         start_time: Option<&str>,
         end_time: Option<&str>,
     ) -> Result<(String, Vec<Value>), Box<dyn std::error::Error>> {
-        let category = category.filter(|value| !value.is_empty() && *value != "all");
+        let category = category
+            .filter(|value| !value.is_empty() && *value != "all")
+            .map(history_classifier::canonical_category);
         if let Some(category) =
             category.filter(|value| !history_classifier::is_known_category(value))
         {
@@ -301,13 +318,26 @@ impl HistoryDB {
     }
 
     fn hydrate_text_description(&self, entry: &mut HistoryEntry, stored: &[u8]) {
-        if entry.entry_type != "text" {
+        if !matches!(entry.entry_type.as_str(), "text" | "composite") {
             return;
         }
-        match self
-            .read_text_payload_compat(stored)
-            .and_then(|data| Ok(text_preview(std::str::from_utf8(&data)?)))
-        {
+        match self.read_text_payload_compat(stored).and_then(|data| {
+            let data = if entry.entry_type == "composite" {
+                entry.composite = super::composite::info_bytes(&data).ok();
+                if let Some(info) = &mut entry.composite {
+                    super::composite::PreparedCompositeMenu::apply_prepared(
+                        self.prepare_composite_menu(entry.id, &data)
+                            .map_err(|e| e.to_string()),
+                        info,
+                        &crate::cancellation::Cancellation::default(),
+                    );
+                }
+                super::composite::summary_bytes(&data)?
+            } else {
+                data
+            };
+            Ok(text_preview(std::str::from_utf8(&data)?))
+        }) {
             Ok(description) => entry.description = description,
             Err(error) => warn!(
                 "Could not decrypt history text preview for entry {}: {error}",
@@ -330,19 +360,33 @@ impl HistoryDB {
     }
 
     pub(super) fn row_to_entry(row: &rusqlite::Row) -> Result<HistoryEntry, rusqlite::Error> {
-        let category = row.get::<_, String>(7)?;
+        let stored_category = row.get::<_, String>(7)?;
+        let category = history_classifier::canonical_category(&stored_category).to_string();
         let encoded_categories = row.get::<_, String>(10)?;
         let mut categories = serde_json::from_str::<Vec<String>>(&encoded_categories)
             .unwrap_or_else(|_| vec![category.clone()]);
-        categories.retain(|label| history_classifier::is_known_category(label));
-        categories.dedup();
-        if !categories.iter().any(|label| label == &category) {
+        categories = categories
+            .into_iter()
+            .map(|label| history_classifier::canonical_category(&label).to_string())
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        categories.retain(|label| {
+            history_classifier::is_known_category(label) && seen.insert(label.clone())
+        });
+        let entry_type: String = row.get(2)?;
+        let classifier_version: i64 = row.get(9)?;
+        // A composite's stored primary category is its retention bucket; current
+        // display labels come solely from the capture-bound derived index.
+        if (entry_type != "composite"
+            || classifier_version != crate::composite::display::DISPLAY_CLASSIFIER_VERSION)
+            && !categories.iter().any(|label| label == &category)
+        {
             categories.insert(0, category.clone());
         }
         Ok(HistoryEntry {
             id: row.get(0)?,
             timestamp: row.get(1)?,
-            entry_type: row.get(2)?,
+            entry_type,
             description: row.get(3)?,
             data_hash: row.get(4)?,
             size_bytes: row.get(5)?,
@@ -350,13 +394,15 @@ impl HistoryDB {
             category,
             categories,
             category_confidence: row.get(8)?,
-            classifier_version: row.get(9)?,
+            classifier_version,
             pinned: row.get::<_, i64>(11)? != 0,
             batch_id: row.get(12)?,
             batch_index: row.get(13)?,
             batch_total: row.get(14)?,
             batch_status: row.get(15)?,
             batch_count: row.get(16)?,
+            composite: None,
+            display: None,
         })
     }
 }

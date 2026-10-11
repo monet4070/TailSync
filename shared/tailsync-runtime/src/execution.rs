@@ -91,6 +91,7 @@ fn db_permits() -> Arc<Semaphore> {
 
 #[derive(Debug)]
 pub enum DbExecutionError<E> {
+    Cancelled,
     QueueClosed,
     Worker(String),
     Operation(E),
@@ -99,11 +100,44 @@ pub enum DbExecutionError<E> {
 impl<E: fmt::Display> fmt::Display for DbExecutionError<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => formatter.write_str("archive_cancelled"),
             Self::QueueClosed => formatter.write_str("database execution queue is closed"),
             Self::Worker(error) => write!(formatter, "database worker failed: {error}"),
             Self::Operation(error) => error.fmt(formatter),
         }
     }
+}
+
+pub async fn run_db_named_cancellable<T, E, F>(
+    operation_name: &'static str,
+    database: Arc<Mutex<HistoryDB>>,
+    cancellation: Cancellation,
+    operation: F,
+) -> Result<T, DbExecutionError<E>>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    F: FnOnce(&mut HistoryDB) -> Result<T, E> + Send + 'static,
+{
+    let queued = Instant::now();
+    let permit = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(DbExecutionError::Cancelled),
+        permit = db_permits().acquire_owned() => permit.map_err(|_| DbExecutionError::QueueClosed)?,
+    };
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut database = tokio::runtime::Handle::current().block_on(async {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => Err(DbExecutionError::Cancelled),
+                database = database.lock() => Ok(database),
+            }
+        })?;
+        if cancellation.is_cancelled() { return Err(DbExecutionError::Cancelled); }
+        tracing::debug!(target: "tailsync.runtime.execution", operation = operation_name, queue_wait_ms = queued.elapsed().as_secs_f64() * 1000.0, "cancellable database admission");
+        operation(&mut database).map_err(DbExecutionError::Operation)
+    }).await.map_err(|error| DbExecutionError::Worker(error.to_string()))?
 }
 
 /// Run one database operation away from the async executor.

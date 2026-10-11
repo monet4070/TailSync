@@ -139,6 +139,71 @@ impl Payload {
 /// optional completion callback for the caller that enqueued it. Fields are
 /// private: frames can only be built through the constructors, which keep
 /// command, payload, and acknowledgement internally consistent.
+type CompositeFallbackBody = (
+    Command,
+    Arc<[u8]>,
+    Arc<crate::composite::budgets::PipelineLease>,
+);
+type CompositeFallback = Arc<std::sync::Mutex<Option<Result<CompositeFallbackBody, String>>>>;
+
+/// Encoded composite chunks, computed once and reused.
+///
+/// R4-04: every delivery attempt used to re-run `chunks::encode`, which re-compresses
+/// the whole payload. An event's identity — and therefore its chosen encoding — is
+/// fixed for the life of the frame, so the compressed bytes are immutable and can be
+/// shared across retries instead of recomputed. The cache is released with the frame,
+/// which is also what bounds it: an expired, terminal or revoked event drops it.
+struct CachedChunks {
+    chunks: Vec<Vec<u8>>,
+    _memory: crate::composite::budgets::PipelineLease,
+}
+impl CachedChunks {
+    fn owner_bytes() -> usize {
+        std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()
+    }
+
+    /// Compression can fall back to the original body. Admit all chunk headers
+    /// and vector storage before the encoder allocates the retained cache.
+    fn memory_bound(content_bytes: usize) -> u64 {
+        let count = content_bytes.div_ceil(crate::composite::CHUNK_DATA_LIMIT);
+        (content_bytes
+            + count * (crate::composite::CHUNK_HEADER_SIZE + std::mem::size_of::<Vec<u8>>())
+            + Self::owner_bytes()) as u64
+    }
+
+    fn allocated_bytes(chunks: &[Vec<u8>], outer_capacity: usize) -> u64 {
+        (chunks.iter().map(Vec::capacity).sum::<usize>()
+            + outer_capacity * std::mem::size_of::<Vec<u8>>()
+            + Self::owner_bytes()) as u64
+    }
+}
+type CompositeChunks = Arc<std::sync::Mutex<Option<Result<Arc<CachedChunks>, String>>>>;
+fn admit_composite_wire(
+    command: Command,
+    bytes: usize,
+) -> Result<Option<Arc<crate::composite::budgets::PipelineLease>>, String> {
+    if !matches!(
+        command,
+        Command::CompositePayload | Command::ArchiveUpdatePayload
+    ) {
+        return Ok(None);
+    }
+    crate::composite::budgets::global()
+        .reserve_pipeline(bytes as u64)
+        .map(|lease| Some(Arc::new(lease)))
+        .map_err(|e| e.to_string())
+}
+
+enum CompositeSelection {
+    Portable,
+    Legacy {
+        command: Command,
+        message_id: MessageId,
+        timestamp_ms: i64,
+        content: Arc<[u8]>,
+    },
+}
+
 pub struct QueuedFrame {
     command: Command,
     payload: Payload,
@@ -146,11 +211,29 @@ pub struct QueuedFrame {
     completion: Option<oneshot::Sender<Result<DeliveryReceipt, DeliveryError>>>,
     enqueued_at: Instant,
     file_window: Option<Vec<Vec<u8>>>,
+    composite_fallback: CompositeFallback,
+    composite_chunks: CompositeChunks,
+    _composite_memory: Option<Arc<crate::composite::budgets::PipelineLease>>,
+    archive_authorization: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl QueuedFrame {
+    pub fn with_archive_authorization(
+        mut self,
+        authorized: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<Self, String> {
+        if self.command != Command::ArchiveUpdatePayload {
+            return Err("Only archive updates accept this authorization guard".into());
+        }
+        self.archive_authorization = Some(authorized);
+        Ok(self)
+    }
+
     pub fn sequence_span(&self) -> u32 {
-        if self.command == Command::ImagePayload {
+        if matches!(
+            self.command,
+            Command::ImagePayload | Command::CompositePayload | Command::ArchiveUpdatePayload
+        ) {
             64
         } else {
             self.file_window
@@ -178,31 +261,37 @@ impl QueuedFrame {
     /// (text and image payloads). Payloads are validated against the command
     /// limit at enqueue time so oversized frames never reach the wire.
     pub fn new(command: Command, content: Vec<u8>) -> Result<Self, String> {
-        let (payload, acknowledgement) =
-            if matches!(command, Command::TextPayload | Command::ImagePayload) {
-                let envelope = EventEnvelope::new(content);
-                if envelope.encoded_len() > command.payload_limit() {
-                    return Err(format!(
-                        "{:?} reliable payload exceeds the {} byte limit",
-                        command,
-                        command.payload_limit()
-                    ));
-                }
-                let message_id = envelope.message_id;
-                (
-                    Payload::Owned(envelope.encode()),
-                    AckExpectation::Event(message_id),
-                )
-            } else {
-                if content.len() > command.payload_limit() {
-                    return Err(format!(
-                        "{:?} payload exceeds the {} byte limit",
-                        command,
-                        command.payload_limit()
-                    ));
-                }
-                (Payload::Owned(content), AckExpectation::None)
-            };
+        let composite_memory = admit_composite_wire(command, content.len())?;
+        let (payload, acknowledgement) = if matches!(
+            command,
+            Command::TextPayload
+                | Command::ImagePayload
+                | Command::CompositePayload
+                | Command::ArchiveUpdatePayload
+        ) {
+            let envelope = EventEnvelope::new(content);
+            if envelope.encoded_len() > command.payload_limit() {
+                return Err(format!(
+                    "{:?} reliable payload exceeds the {} byte limit",
+                    command,
+                    command.payload_limit()
+                ));
+            }
+            let message_id = envelope.message_id;
+            (
+                Payload::Owned(envelope.encode()),
+                AckExpectation::Event(message_id),
+            )
+        } else {
+            if content.len() > command.payload_limit() {
+                return Err(format!(
+                    "{:?} payload exceeds the {} byte limit",
+                    command,
+                    command.payload_limit()
+                ));
+            }
+            (Payload::Owned(content), AckExpectation::None)
+        };
         Ok(Self {
             command,
             payload,
@@ -210,6 +299,10 @@ impl QueuedFrame {
             completion: None,
             enqueued_at: Instant::now(),
             file_window: None,
+            composite_fallback: Arc::new(std::sync::Mutex::new(None)),
+            composite_chunks: Arc::new(std::sync::Mutex::new(None)),
+            _composite_memory: composite_memory,
+            archive_authorization: None,
         })
     }
 
@@ -217,7 +310,14 @@ impl QueuedFrame {
     /// preserving its message ID and timestamp (needed for re-delivery of
     /// events with a specific age, e.g. the sleep/wake regression tests).
     pub fn new_with_envelope(command: Command, envelope: EventEnvelope) -> Result<Self, String> {
-        if !matches!(command, Command::TextPayload | Command::ImagePayload) {
+        let composite_memory = admit_composite_wire(command, envelope.content.len())?;
+        if !matches!(
+            command,
+            Command::TextPayload
+                | Command::ImagePayload
+                | Command::CompositePayload
+                | Command::ArchiveUpdatePayload
+        ) {
             return Err(format!("{command:?} is not an envelope-wrapped command"));
         }
         let payload = envelope.encode();
@@ -234,6 +334,10 @@ impl QueuedFrame {
             completion: None,
             enqueued_at: Instant::now(),
             file_window: None,
+            composite_fallback: Arc::new(std::sync::Mutex::new(None)),
+            composite_chunks: Arc::new(std::sync::Mutex::new(None)),
+            _composite_memory: composite_memory,
+            archive_authorization: None,
         })
     }
 
@@ -265,6 +369,10 @@ impl QueuedFrame {
             completion: Some(completion),
             enqueued_at: Instant::now(),
             file_window: None,
+            composite_fallback: Arc::new(std::sync::Mutex::new(None)),
+            composite_chunks: Arc::new(std::sync::Mutex::new(None)),
+            _composite_memory: None,
+            archive_authorization: None,
         })
     }
 
@@ -303,6 +411,10 @@ impl QueuedFrame {
             completion: Some(completion),
             enqueued_at: Instant::now(),
             file_window: Some(chunks),
+            composite_fallback: Arc::new(std::sync::Mutex::new(None)),
+            composite_chunks: Arc::new(std::sync::Mutex::new(None)),
+            _composite_memory: None,
+            archive_authorization: None,
         })
     }
 
@@ -330,6 +442,10 @@ impl QueuedFrame {
             completion: Some(completion),
             enqueued_at: Instant::now(),
             file_window: None,
+            composite_fallback: Arc::new(std::sync::Mutex::new(None)),
+            composite_chunks: Arc::new(std::sync::Mutex::new(None)),
+            _composite_memory: None,
+            archive_authorization: None,
         })
     }
 }
@@ -346,12 +462,27 @@ impl QueuedFrame {
 /// clipboard event carries one identity across the fan-out.
 #[derive(Clone)]
 pub struct SharedEvent {
+    composite_fallback: CompositeFallback,
+    /// Shared so a fan-out to N peers encodes the event once, not N times (R4-04).
+    composite_chunks: CompositeChunks,
+    _composite_memory: Option<Arc<crate::composite::budgets::PipelineLease>>,
     command: Command,
     payload: Arc<[u8]>,
     message_id: MessageId,
+    created_at: Instant,
 }
 
 impl SharedEvent {
+    pub fn envelope_identity(&self) -> (MessageId, i64) {
+        (
+            self.message_id,
+            i64::from_be_bytes(
+                self.payload[20..28]
+                    .try_into()
+                    .expect("Shared event contains a validated envelope"),
+            ),
+        )
+    }
     /// Encode a text/image payload once into a shared, reference-counted
     /// buffer, validated against the command limit exactly like
     /// [`QueuedFrame::new`] so a broadcast can never put an oversized frame on
@@ -364,7 +495,14 @@ impl SharedEvent {
     /// remains available to another consumer (for example, local history
     /// persistence) while the wire envelope is built once for fan-out.
     pub fn encode_shared(command: Command, content: Arc<[u8]>) -> Result<Self, String> {
-        if !matches!(command, Command::TextPayload | Command::ImagePayload) {
+        let composite_memory = admit_composite_wire(command, content.len())?;
+        if !matches!(
+            command,
+            Command::TextPayload
+                | Command::ImagePayload
+                | Command::CompositePayload
+                | Command::ArchiveUpdatePayload
+        ) {
             return Err(format!("{command:?} is not an envelope-wrapped command"));
         }
         if EVENT_ENVELOPE_HEADER_SIZE + content.len() > command.payload_limit() {
@@ -376,9 +514,13 @@ impl SharedEvent {
         }
         let (payload, message_id) = EventEnvelope::encode_shared(content);
         Ok(Self {
+            composite_fallback: Arc::new(std::sync::Mutex::new(None)),
+            composite_chunks: Arc::new(std::sync::Mutex::new(None)),
+            _composite_memory: composite_memory,
             command,
             payload,
             message_id,
+            created_at: Instant::now(),
         })
     }
 
@@ -395,8 +537,12 @@ impl SharedEvent {
             payload: Payload::Shared(self.payload.clone()),
             acknowledgement: AckExpectation::Event(self.message_id),
             completion: None,
-            enqueued_at: Instant::now(),
+            enqueued_at: self.created_at,
             file_window: None,
+            composite_fallback: self.composite_fallback.clone(),
+            composite_chunks: self.composite_chunks.clone(),
+            _composite_memory: self._composite_memory.clone(),
+            archive_authorization: None,
         }
     }
 }
@@ -406,6 +552,7 @@ pub struct PendingFrame {
     queued: QueuedFrame,
     sequence: u32,
     undelivered_peer: Option<String>,
+    selected_composite: std::sync::OnceLock<CompositeSelection>,
 }
 
 impl PendingFrame {
@@ -414,6 +561,7 @@ impl PendingFrame {
             queued,
             sequence,
             undelivered_peer: None,
+            selected_composite: std::sync::OnceLock::new(),
         }
     }
 
@@ -422,6 +570,7 @@ impl PendingFrame {
             queued,
             sequence,
             undelivered_peer: Some(hostname.to_string()),
+            selected_composite: std::sync::OnceLock::new(),
         }
     }
 
@@ -445,10 +594,25 @@ impl PendingFrame {
 /// Whether a queued frame carries clipboard content. Only these map to the
 /// user-facing "clipboard delivery was stopped" warning; file transfers report
 /// through their own progress/failure surface.
+/// Whether a peer's error text describes temporary pressure rather than a rejection
+/// of the content.
+///
+/// R4-03: a full assembly budget, a per-peer assembly already in flight, or an
+/// exhausted raw/decode/pipeline budget are all *temporary*. Classifying them as a
+/// permanent `Rejected` silently dropped the clipboard content for good; they are
+/// transport failures that the existing retry path already handles.
+pub fn peer_error_is_temporary(message: &str) -> bool {
+    message.contains(crate::protocol::TEMPORARY_PRESSURE_MARKER)
+}
+
 fn carries_clipboard_content(command: Command) -> bool {
     matches!(
         command,
-        Command::TextPayload | Command::ImagePayload | Command::ImageChunk
+        Command::TextPayload
+            | Command::ImagePayload
+            | Command::ImageChunk
+            | Command::CompositePayload
+            | Command::CompositeChunk
     )
 }
 
@@ -483,9 +647,18 @@ impl Drop for PendingFrame {
 
 /// Record a platform warning for permanent delivery failures that carry
 /// domain meaning (currently: expired event timestamps).
-pub fn record_permanent_delivery_warning(hostname: &str, error: &DeliveryError) {
+pub fn record_permanent_delivery_warning(hostname: &str, command: Command, error: &DeliveryError) {
+    if let DeliveryError::CompositeResult(result) = error {
+        crate::sync_warning::record_composite_result(hostname, *result);
+    }
     if matches!(error, DeliveryError::Expired(_)) {
         crate::sync_warning::record_expired_event(hostname);
+    }
+    // R4-04 / D-5: a permanent rejection is only worth a user-visible warning when
+    // it actually dropped clipboard content. A rejected file frame belongs to the
+    // file-transfer surface instead.
+    if matches!(error, DeliveryError::Rejected(_)) && carries_clipboard_content(command) {
+        crate::sync_warning::record_delivery_rejected(hostname);
     }
 }
 
@@ -503,6 +676,7 @@ fn complete_expired_frame(frame: PendingFrame, hostname: &str) {
 pub enum DeliveryError {
     /// The peer rejected the payload outright (permanent, do not retry).
     Rejected(String),
+    CompositeResult(crate::protocol::composite::AckResult),
     /// The event was validly signed but outside the protocol's freshness
     /// window (permanent, do not retry).
     Expired(String),
@@ -517,6 +691,9 @@ pub enum DeliveryError {
 impl std::fmt::Display for DeliveryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CompositeResult(result) => {
+                write!(formatter, "composite clipboard result: {result:?}")
+            }
             Self::Rejected(message) => write!(formatter, "peer rejected: {message}"),
             Self::Expired(message) => write!(formatter, "event expired: {message}"),
             Self::Timeout(message) => write!(formatter, "delivery timed out: {message}"),
@@ -531,7 +708,10 @@ impl DeliveryError {
     /// Peer rejections and expired events are permanent; transport, timeout,
     /// and protocol failures are retried while the frame remains fresh.
     pub fn is_retryable(&self) -> bool {
-        !matches!(self, Self::Rejected(_) | Self::Expired(_))
+        !matches!(
+            self,
+            Self::Rejected(_) | Self::Expired(_) | Self::CompositeResult(_)
+        )
     }
 
     fn rejected(message: impl Into<String>) -> Self {

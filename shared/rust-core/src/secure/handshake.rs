@@ -51,7 +51,7 @@ where
         local_info,
         expected_hostname,
         expected_public_key,
-        switches.advertised(),
+        switches.serviceable_advertisement(),
     )
     .await
 }
@@ -208,6 +208,7 @@ where
 {
     let local_capabilities = CapabilitySet {
         pairing_commit_proof: switches.pairing_commit_proof,
+        composite_clipboard: false,
         ..CapabilitySet::disabled()
     };
     let mut handshake = build_handshake(identity, true)?;
@@ -328,6 +329,7 @@ where
         Some(pairing_enabled),
         CapabilitySet {
             pairing_commit_proof: CapabilitySwitches::runtime_defaults().pairing_commit_proof,
+            composite_clipboard: false,
             ..CapabilitySet::disabled()
         },
     )
@@ -349,7 +351,7 @@ where
         identity,
         local_info,
         Some(pairing_enabled),
-        switches.advertised(),
+        switches.serviceable_advertisement(),
     )
     .await
 }

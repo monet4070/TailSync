@@ -1,6 +1,7 @@
 import { lazy, Suspense, useMemo } from "react";
 import { useTheme } from "../hooks/useTheme";
 import { previewRendererFor, type PreviewPayload } from "../utils/historyPreview";
+import type { PreparedDocumentAssets } from "./documentAssets";
 import { PreviewErrorBoundary } from "./ErrorBoundary";
 
 // Keep PDF, DOCX and syntax-highlighting code out of the history window's
@@ -11,23 +12,30 @@ const MarkdownPreview = lazy(async () => import("./renderers/MarkdownPreview").t
 const PdfPreview = lazy(async () => import("./renderers/PdfPreview").then((module) => ({ default: module.PdfPreview })));
 const DocxPreview = lazy(async () => import("./renderers/DocxPreview").then((module) => ({ default: module.DocxPreview })));
 const TextPreview = lazy(async () => import("./renderers/TextPreview").then((module) => ({ default: module.TextPreview })));
+const DocumentPreview = lazy(async () => import("./renderers/DocumentPreview").then((module) => ({ default: module.DocumentPreview })));
 
 export function PreviewContent({
-  payload,
+  payload = null,
+  documentPreview = null,
   t,
   onCorrupt,
   resetKey,
   onRetry,
 }: {
-  payload: PreviewPayload;
+  payload?: PreviewPayload | null;
+  documentPreview?: PreparedDocumentAssets | null;
   t: (key: string) => string;
   onCorrupt: () => void;
   resetKey?: string | number;
   onRetry?: () => void;
 }) {
   const { themeAssetSlots } = useTheme();
-  const renderer = useMemo(() => previewRendererFor(payload), [payload]);
+  const renderer = useMemo(() => (payload ? previewRendererFor(payload) : null), [payload]);
   const content = (() => {
+    if (documentPreview) {
+      return <DocumentPreview prepared={documentPreview} translate={t} />;
+    }
+    if (!payload) return null;
     switch (renderer) {
       case "image":
         return <ImagePreview payload={payload} t={t} onCorrupt={onCorrupt} />;
@@ -55,7 +63,7 @@ export function PreviewContent({
         );
     }
   })();
-  const boundaryKey = resetKey ?? `${payload.entry_id ?? 0}-${payload.name}`;
+  const boundaryKey = resetKey ?? `${payload?.entry_id ?? 0}-${payload?.name ?? "document"}`;
   return (
     <PreviewErrorBoundary
       key={boundaryKey}

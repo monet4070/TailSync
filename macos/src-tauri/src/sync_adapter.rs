@@ -53,7 +53,131 @@ impl TauriSyncPlatform {
 }
 
 impl SyncPlatform for TauriSyncPlatform {
+    fn prepare_restore_plan(
+        &self,
+        plan: tailsync_core::composite::restore::RestorePlan,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<tailsync_core::composite::restore::RestorePlan, String> {
+        crate::clipboard_composite::prepare_readable_restore(plan, &cancelled)
+    }
+    fn restore_target(&self) -> tailsync_core::composite::restore::RestoreTarget {
+        tailsync_core::composite::restore::RestoreTarget::Macos
+    }
+    fn write_restore_plan(
+        &self,
+        plan: &tailsync_core::composite::restore::RestorePlan,
+        expected: Option<i64>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<tailsync_core::composite::NativePublish, String> {
+        if plan.target() != self.restore_target() {
+            return Err("Restore plan target mismatch".into());
+        }
+        crate::clipboard_composite::write_native_cancellable(
+            plan.native().ok_or("Native restore output unavailable")?,
+            expected,
+            Some(cancelled),
+        )
+    }
+    fn clipboard_revision(&self) -> Option<i64> {
+        crate::clipboard_composite::revision()
+    }
+    fn write_native_cancellable(
+        &self,
+        snapshot: &tailsync_core::protocol::native_clipboard::NativeSnapshot,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<tailsync_core::composite::NativePublish, String> {
+        crate::clipboard_composite::write_native_cancellable(snapshot, None, Some(cancelled))
+    }
+    fn write_text_cancellable(
+        &self,
+        text: &str,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
+        if !crate::clipboard_composite::capture_enabled() {
+            return self.write_text(text);
+        }
+        let bundle = tailsync_core::composite::PortableBundle {
+            representations: vec![tailsync_core::composite::Representation {
+                mime: tailsync_core::composite::Mime::Text,
+                bytes: text.as_bytes().to_vec(),
+            }],
+            resources: vec![],
+            bindings: vec![],
+            completeness: tailsync_core::composite::Completeness::Complete,
+        };
+        require_composite_publish(crate::clipboard_composite::write_cancellable(
+            &bundle,
+            None,
+            Some(cancelled),
+        )?)
+    }
+    fn write_image_cancellable(
+        &self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
+        if !crate::clipboard_composite::capture_enabled() {
+            return self.write_image(width, height, rgba);
+        }
+        let png = tailsync_core::composite::packed_to_png(width, height, rgba)
+            .map_err(|e| e.to_string())?;
+        let bundle = tailsync_core::composite::PortableBundle {
+            representations: vec![tailsync_core::composite::Representation {
+                mime: tailsync_core::composite::Mime::Png,
+                bytes: png,
+            }],
+            resources: vec![],
+            bindings: vec![],
+            completeness: tailsync_core::composite::Completeness::Complete,
+        };
+        require_composite_publish(crate::clipboard_composite::write_cancellable(
+            &bundle,
+            None,
+            Some(cancelled),
+        )?)
+    }
+    fn write_composite_cancellable(
+        &self,
+        bundle: &tailsync_core::composite::PortableBundle,
+        expected: Option<i64>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<tailsync_core::composite::NativePublish, String> {
+        crate::clipboard_composite::write_cancellable(bundle, expected, Some(cancelled))
+    }
+    fn write_composite(
+        &self,
+        bundle: &tailsync_core::composite::PortableBundle,
+        expected: Option<i64>,
+    ) -> Result<tailsync_core::composite::NativePublish, String> {
+        crate::clipboard_composite::write(bundle, expected)
+    }
+    fn supports_native_snapshot(
+        &self,
+        snapshot: &tailsync_core::protocol::native_clipboard::NativeSnapshot,
+    ) -> bool {
+        crate::clipboard_composite::supports_native(snapshot)
+    }
+    fn write_native_snapshot(
+        &self,
+        snapshot: &tailsync_core::protocol::native_clipboard::NativeSnapshot,
+    ) -> Result<tailsync_core::composite::NativePublish, String> {
+        crate::clipboard_composite::write_native(snapshot, None)
+    }
     fn write_text(&self, text: &str) -> Result<(), String> {
+        if crate::clipboard_composite::capture_enabled() {
+            let bundle = tailsync_core::composite::PortableBundle {
+                representations: vec![tailsync_core::composite::Representation {
+                    mime: tailsync_core::composite::Mime::Text,
+                    bytes: text.as_bytes().to_vec(),
+                }],
+                resources: vec![],
+                bindings: vec![],
+                completeness: tailsync_core::composite::Completeness::Complete,
+            };
+            return require_composite_publish(crate::clipboard_composite::write(&bundle, None)?);
+        }
         clipboard::write_clipboard_text(&self.runtime, text)
             .map_err(|error| format!("write_text failed: {error}"))?;
         let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
@@ -66,6 +190,20 @@ impl SyncPlatform for TauriSyncPlatform {
     }
 
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+        if crate::clipboard_composite::capture_enabled() {
+            let bytes = tailsync_core::composite::packed_to_png(width, height, rgba)
+                .map_err(|e| e.to_string())?;
+            let bundle = tailsync_core::composite::PortableBundle {
+                representations: vec![tailsync_core::composite::Representation {
+                    mime: tailsync_core::composite::Mime::Png,
+                    bytes,
+                }],
+                resources: vec![],
+                bindings: vec![],
+                completeness: tailsync_core::composite::Completeness::Complete,
+            };
+            return require_composite_publish(crate::clipboard_composite::write(&bundle, None)?);
+        }
         clipboard::write_clipboard_image(&self.runtime, width, height, rgba)
             .map_err(|error| format!("write_image failed: {error}"))?;
         if let Ok(packed) = tailsync_core::protocol::pack_rgba_image(width, height, rgba) {
@@ -262,5 +400,20 @@ fn notify(runtime: &ClipboardRuntime, body: &str, is_error: bool) {
         log::warn!("TailSync notification: {body}");
     } else {
         log::info!("TailSync notification: {body}");
+    }
+}
+
+/// The legacy text/image activation paths still return `Result<(), String>`, but the
+/// reason now distinguishes the typed outcomes instead of collapsing them (K2).
+fn require_composite_publish(
+    outcome: tailsync_core::composite::NativePublish,
+) -> Result<(), String> {
+    use tailsync_core::composite::NativePublish;
+    match outcome {
+        NativePublish::Published(_) => Ok(()),
+        // The remaining outcomes keep the marker semantics: only a provable
+        // no-effect carries `NO_EFFECT_MARKER`, which is what lets the caller release
+        // an at-most-once claim and retry (R4-02).
+        other => Err(other.as_write_error()),
     }
 }

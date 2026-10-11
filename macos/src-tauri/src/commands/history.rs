@@ -18,11 +18,12 @@ pub async fn get_history(
     let collection = db::HistoryCollection::from_wire(collection.as_deref()).map_err(|_| {
         CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
     })?;
-    HistoryOperations::entries_async(
+    tailsync_runtime::history_display::entries_display_async(
         state.db.clone(),
         HistoryPageRequestOwned::new(
             collection, keyword, category, start_time, end_time, limit, offset, 50,
         ),
+        crate::clipboard_composite::native_analyzer(),
     )
     .await
     .map_err(Into::into)
@@ -43,17 +44,19 @@ pub async fn get_history_page(
     let collection = db::HistoryCollection::from_wire(collection.as_deref()).map_err(|_| {
         CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
     })?;
-    let page = HistoryOperations::page_async(
+    let page = tailsync_runtime::history_display::page_display_async(
         state.db.clone(),
         HistoryPageRequestOwned::new(
             collection, keyword, category, start_time, end_time, limit, offset, 50,
         ),
+        crate::clipboard_composite::native_analyzer(),
     )
     .await?;
     Ok(HistoryPage {
         entries: page.entries,
         total: page.total,
         has_more: page.has_more,
+        display_index_pending: page.display_index_pending,
     })
 }
 
@@ -77,7 +80,7 @@ pub async fn search_history(
     state: State<'_, AppState>,
     keyword: String,
 ) -> Result<Vec<db::HistoryEntry>, CommandError> {
-    HistoryOperations::entries_async(
+    tailsync_runtime::history_display::entries_display_async(
         state.db.clone(),
         HistoryPageRequestOwned::new(
             db::HistoryCollection::All,
@@ -89,6 +92,7 @@ pub async fn search_history(
             Some(0),
             100,
         ),
+        crate::clipboard_composite::native_analyzer(),
     )
     .await
     .map_err(Into::into)
@@ -97,11 +101,11 @@ pub async fn search_history(
 /// Delete a history entry
 #[command]
 pub async fn delete_entry(state: State<'_, AppState>, id: i64) -> Result<(), CommandError> {
-    HistoryOperations::delete_async_with_hook(
-        state.db.clone(),
-        id,
-        crate::api::bump_clipboard_version,
-    )
+    let image_archive = state.image_archive.clone();
+    HistoryOperations::delete_async_with_hook(state.db.clone(), id, move || {
+        image_archive.cancel_entry(id);
+        crate::api::bump_clipboard_version();
+    })
     .await?;
     Ok(())
 }
@@ -129,20 +133,25 @@ pub async fn delete_favorite_entry(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<db::FavoriteMutation, CommandError> {
-    let mutation = HistoryOperations::delete_favorite_async_with_hook(
-        state.db.clone(),
-        id,
-        crate::api::bump_clipboard_version,
-    )
-    .await?;
+    let image_archive = state.image_archive.clone();
+    let mutation =
+        HistoryOperations::delete_favorite_async_with_hook(state.db.clone(), id, move || {
+            image_archive.cancel_entry(id);
+            crate::api::bump_clipboard_version();
+        })
+        .await?;
     Ok(mutation)
 }
 
 /// Delete all clipboard history entries.
 #[command]
 pub async fn clear_history(state: State<'_, AppState>) -> Result<(), CommandError> {
-    HistoryOperations::clear_async_with_hook(state.db.clone(), crate::api::bump_clipboard_version)
-        .await?;
+    let image_archive = state.image_archive.clone();
+    HistoryOperations::clear_async_with_hook(state.db.clone(), move || {
+        image_archive.cancel_pending();
+        crate::api::bump_clipboard_version();
+    })
+    .await?;
     Ok(())
 }
 
@@ -153,8 +162,45 @@ pub async fn restore_entry(
     app: AppHandle,
     state: State<'_, AppState>,
     id: i64,
-) -> Result<(), CommandError> {
-    let payload = HistoryOperations::restore_payload_async(state.db.clone(), id).await?;
+    restore_format: Option<String>,
+    restore_original_id: Option<i64>,
+    restore_identity: Option<tailsync_core::composite::identity::HistoryIdentity>,
+) -> Result<tailsync_runtime::history::HistoryRestoreReport, CommandError> {
+    let payload = HistoryOperations::restore_payload_checked_async(
+        state.db.clone(),
+        id,
+        restore_original_id,
+        restore_identity,
+    )
+    .await?;
+    if payload.entry_type == "composite" {
+        let outcome = payload
+            .restore_composite_async(state.sync_engine.clone(), restore_format)
+            .await?;
+        // R5-03: only a fully published restore is a success. Anything else surfaces
+        // the stable code, so the UI explains "saved to history, publish incomplete"
+        // instead of showing a success the user would read as "copied".
+        if !outcome.is_published() {
+            return Err(CommandError::restore(&outcome));
+        }
+        crate::api::bump_clipboard_version();
+        return outcome
+            .report()
+            .ok_or_else(|| CommandError::restore(&outcome));
+    }
+    if payload.entry_type == "text" || payload.entry_type == "image" {
+        let bytes = payload.data.ok_or("History data unavailable")?;
+        if payload.entry_type == "text" {
+            let text = String::from_utf8(bytes).map_err(|_| "Invalid text history")?;
+            tailsync_core::sync::SyncEngine::restore_text_shared(state.sync_engine.clone(), text)
+                .await?;
+        } else {
+            tailsync_core::sync::SyncEngine::restore_image_shared(state.sync_engine.clone(), bytes)
+                .await?;
+        }
+        crate::api::bump_clipboard_version();
+        return Ok(tailsync_runtime::history::HistoryRestoreReport::default());
+    }
     let entry_type = payload.entry_type;
     let file_path = payload.file_path;
     let file_name = payload.file_name;
@@ -219,6 +265,7 @@ pub async fn restore_entry(
             }
         }
     } else if entry_type == "file" {
+        state.sync_engine.lock().await.supersede_file_clipboard();
         if let Some(path) = file_path {
             crate::api::restore_file_path_to_clipboard(
                 &path,
@@ -259,5 +306,59 @@ pub async fn restore_entry(
     }
 
     crate::api::bump_clipboard_version();
+    Ok(tailsync_runtime::history::HistoryRestoreReport::default())
+}
+
+pub struct DocumentIpcResponse(tailsync_runtime::document_preview::DocumentPreview);
+
+impl tauri::ipc::IpcResponse for DocumentIpcResponse {
+    fn body(self) -> tauri::Result<tauri::ipc::InvokeResponseBody> {
+        Ok(self.0.handoff(tauri::ipc::InvokeResponseBody::Raw))
+    }
+}
+
+#[command]
+pub async fn get_document_preview(
+    state: State<'_, AppState>,
+    session: State<'_, tailsync_runtime::document_preview::DocumentSession>,
+    request: tailsync_runtime::document_preview::DocumentRequest,
+) -> Result<DocumentIpcResponse, CommandError> {
+    let preview = tailsync_runtime::document_preview::load_document_preview(
+        state.db.clone(),
+        &session,
+        request,
+        crate::clipboard_composite::native_analyzer(),
+    )
+    .await
+    .map_err(CommandError::from)?;
+    Ok(DocumentIpcResponse(preview))
+}
+
+#[command]
+pub async fn validate_document_preview(
+    state: State<'_, AppState>,
+    session: State<'_, tailsync_runtime::document_preview::DocumentSession>,
+    request: tailsync_runtime::document_preview::DocumentRequest,
+    stamp: String,
+) -> Result<bool, CommandError> {
+    request.validate()?;
+    Ok(
+        tailsync_runtime::document_preview::validate_document_install(
+            state.db.clone(),
+            &session,
+            &request,
+            &stamp,
+        )
+        .await,
+    )
+}
+
+#[command]
+pub fn cancel_document_preview(
+    session: State<'_, tailsync_runtime::document_preview::DocumentSession>,
+    request: tailsync_runtime::document_preview::DocumentRequest,
+) -> Result<(), CommandError> {
+    request.validate()?;
+    session.cancel(&request);
     Ok(())
 }

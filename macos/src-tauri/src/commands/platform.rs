@@ -33,7 +33,12 @@ mod stable_capability_tests {
 #[command]
 pub async fn get_sync_warning(
 ) -> Result<Option<tailsync_core::sync_warning::SyncWarning>, CommandError> {
-    Ok(tailsync_core::sync_warning::take())
+    Ok(tailsync_core::sync_warning::peek())
+}
+
+#[command]
+pub async fn ack_sync_warning(id: u64) -> Result<bool, CommandError> {
+    Ok(tailsync_core::sync_warning::ack(id))
 }
 
 /// Convert RGBA to CF_DIB clipboard format (BITMAPINFOHEADER + bottom-up BGRA pixels).

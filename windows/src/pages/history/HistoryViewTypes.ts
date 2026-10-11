@@ -58,11 +58,16 @@ export interface HistoryListProps {
   selectedId: number | null;
   focusedId: number | null;
   pageAnimationRevision: number;
-  thumbnails: Map<number, ThumbnailData>;
-  loadThumbnail: (id: number) => void;
+  thumbnails: Map<string, ThumbnailData>;
+  loadThumbnail: (cacheKey: string, id: number) => void;
   setFocusedId: Dispatch<SetStateAction<number | null>>;
   setExpandedBatches: Dispatch<SetStateAction<Set<string>>>;
-  handleRestore: (id: number) => Promise<void>;
+  handleRestore: (id: number, format?: string) => Promise<void>;
+  handleArchiveImages: (id: number) => Promise<void>;
+  handleAuthorizeSource: (id: number) => Promise<void>;
+  handleImportSourcePacket: (id: number) => Promise<void>;
+  handleRevokeSource: () => Promise<void>;
+  canRevokeSource: boolean;
   handleRestoreBatch: (batchId: string) => Promise<void>;
   handleDelete: (id: number) => Promise<void>;
   handleFavoriteChange: (entry: HistoryEntry) => Promise<void>;
@@ -82,11 +87,16 @@ export interface HistoryMainContentProps {
   selectedId: number | null;
   focusedId: number | null;
   pageAnimationRevision: number;
-  thumbnails: Map<number, ThumbnailData>;
-  loadThumbnail: (id: number) => void;
+  thumbnails: Map<string, ThumbnailData>;
+  loadThumbnail: (cacheKey: string, id: number) => void;
   setFocusedId: Dispatch<SetStateAction<number | null>>;
   setExpandedBatches: Dispatch<SetStateAction<Set<string>>>;
-  handleRestore: (id: number) => Promise<void>;
+  handleRestore: (id: number, format?: string) => Promise<void>;
+  handleArchiveImages: (id: number) => Promise<void>;
+  handleAuthorizeSource: (id: number) => Promise<void>;
+  handleImportSourcePacket: (id: number) => Promise<void>;
+  handleRevokeSource: () => Promise<void>;
+  canRevokeSource: boolean;
   handleRestoreBatch: (batchId: string) => Promise<void>;
   handleDelete: (id: number) => Promise<void>;
   handleFavoriteChange: (entry: HistoryEntry) => Promise<void>;
@@ -115,4 +125,5 @@ export interface HistoryFooterProps {
   historyNotice: HistoryNotice | null;
   clearHistoryNotice: () => void;
   retryHistory: () => void;
+  retryRestore?: () => void;
 }

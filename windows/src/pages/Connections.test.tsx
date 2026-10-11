@@ -35,6 +35,7 @@ vi.mock("../tailsyncClient", async (importOriginal) => {
 });
 
 const mockSettings: SettingsData = {
+  auto_save_network_images: false,
   connection_mode: "auto",
   sync_enabled: true,
   history_limit: 100,

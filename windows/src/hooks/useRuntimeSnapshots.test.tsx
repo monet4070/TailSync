@@ -47,4 +47,21 @@ describe("useRuntimeSnapshots", () => {
     unmount();
     resolveSecond?.();
   });
+
+  it("does not poll a hidden preview and ignores the final result after disabling", async () => {
+    let finish!: (snapshot: unknown) => void;
+    waitRuntimeSnapshotMock.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const onSnapshot = vi.fn();
+    const hook = renderHook(({ enabled }: { enabled: boolean }) => useRuntimeSnapshots(onSnapshot, 2500, enabled), {
+      initialProps: { enabled: false },
+    });
+    expect(waitRuntimeSnapshotMock).not.toHaveBeenCalled();
+    hook.rerender({ enabled: true });
+    await waitFor(() => expect(waitRuntimeSnapshotMock).toHaveBeenCalledTimes(1));
+    hook.rerender({ enabled: false });
+    finish({ revision: 1, history_version: 1, notifications: [] });
+    await Promise.resolve();
+    expect(onSnapshot).not.toHaveBeenCalled();
+    hook.unmount();
+  });
 });

@@ -11,6 +11,14 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+pub mod bitmap;
+pub mod composite;
+pub mod content_analysis;
+pub mod image;
+pub mod native_archive;
+pub mod native_clipboard;
+pub mod native_policy;
+
 pub const MAGIC: [u8; 4] = *b"TSYN";
 /// The handshake and pairing remain on v4 so an existing peer can negotiate
 /// without first understanding the v5 data-frame header.
@@ -196,11 +204,14 @@ impl EventEnvelope {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut encoded = Vec::with_capacity(EVENT_ENVELOPE_HEADER_SIZE + self.content.len());
+        Self::encode_content(self.message_id, self.timestamp_ms, &self.content)
+    }
+    pub fn encode_content(message_id: MessageId, timestamp_ms: i64, content: &[u8]) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(EVENT_ENVELOPE_HEADER_SIZE + content.len());
         encoded.extend_from_slice(&EVENT_MAGIC);
-        encoded.extend_from_slice(&self.message_id.0);
-        encoded.extend_from_slice(&self.timestamp_ms.to_be_bytes());
-        encoded.extend_from_slice(&self.content);
+        encoded.extend_from_slice(&message_id.0);
+        encoded.extend_from_slice(&timestamp_ms.to_be_bytes());
+        encoded.extend_from_slice(content);
         encoded
     }
 
@@ -279,6 +290,12 @@ pub enum Command {
     TextPayload = 0x0101,
     ImagePayload = 0x0102,
     ImageChunk = 0x010d,
+    CompositePayload = 0x010e,
+    CompositeChunk = 0x010f,
+    CompositeAck = 0x0110,
+    ArchiveUpdatePayload = 0x0111,
+    ArchiveUpdateChunk = 0x0112,
+    ArchiveUpdateAck = 0x0113,
     FileMeta = 0x0103,
     FileChunk = 0x0104,
     FileAck = 0x0105,
@@ -316,6 +333,12 @@ impl Command {
             0x0101 => Some(Self::TextPayload),
             0x0102 => Some(Self::ImagePayload),
             0x010d => Some(Self::ImageChunk),
+            0x010e => Some(Self::CompositePayload),
+            0x010f => Some(Self::CompositeChunk),
+            0x0110 => Some(Self::CompositeAck),
+            0x0111 => Some(Self::ArchiveUpdatePayload),
+            0x0112 => Some(Self::ArchiveUpdateChunk),
+            0x0113 => Some(Self::ArchiveUpdateAck),
             0x0103 => Some(Self::FileMeta),
             0x0104 => Some(Self::FileChunk),
             0x0105 => Some(Self::FileAck),
@@ -344,6 +367,11 @@ impl Command {
             Self::TextPayload => MAX_TEXT_PAYLOAD_SIZE,
             Self::ImagePayload => MAX_IMAGE_PAYLOAD_SIZE,
             Self::ImageChunk => MAX_IMAGE_CHUNK_PAYLOAD_SIZE,
+            Self::CompositePayload | Self::ArchiveUpdatePayload => MAX_PAYLOAD_SIZE,
+            Self::CompositeChunk | Self::ArchiveUpdateChunk => {
+                composite::CHUNK_DATA_LIMIT + composite::CHUNK_HEADER_SIZE
+            }
+            Self::CompositeAck | Self::ArchiveUpdateAck => composite::ACK_SIZE,
             Self::FileMeta | Self::FileResume | Self::FileBatchStart => MAX_FILE_META_PAYLOAD_SIZE,
             Self::FileChunk => MAX_FILE_CHUNK_PAYLOAD_SIZE,
             Self::Heartbeat
@@ -387,6 +415,28 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 
+/// Marker prefixed to an admission rejection that describes **temporary pressure**
+/// rather than a rejection of the content itself.
+///
+/// The sender only ever sees the peer's error text, so a stable marker is what lets
+/// it keep such a failure retryable. Without it, "the assembly budget is full right
+/// now" is indistinguishable from "this payload is illegal", and the content is
+/// discarded permanently (repair plan §4 R4-03).
+pub const TEMPORARY_PRESSURE_MARKER: &str = "temporary-pressure: ";
+
+/// Marker prefixed to a failure that **provably** did not touch the platform.
+///
+/// This is the only case in which an at-most-once claim may be released so the
+/// effect can be retried. Anything else — a timeout, a lost receipt, a bare error —
+/// leaves the claim in place, because re-applying a system write that may already
+/// have happened is worse than skipping it (ADR-004 K2/K4, repair plan §4 R4-02).
+pub const NO_EFFECT_MARKER: &str = "no-effect: ";
+
+/// Whether a failure message proves the platform was not touched.
+pub fn failure_is_proven_no_effect(message: &str) -> bool {
+    message.contains(NO_EFFECT_MARKER)
+}
+
 #[derive(Error, Debug)]
 pub enum ProtocolError {
     #[error("invalid magic bytes: expected TSYN")]
@@ -417,6 +467,12 @@ pub enum ProtocolError {
     InvalidEventAck,
     #[error("invalid compressed image chunk")]
     InvalidImageChunk,
+    #[error("invalid composite clipboard payload")]
+    InvalidComposite,
+    #[error("UnsupportedFallback: no safe text or single image representation")]
+    UnsupportedCompositeFallback,
+    #[error("invalid native clipboard snapshot")]
+    InvalidNativeSnapshot,
     #[error("event timestamp is outside the accepted window")]
     EventTimestampOutsideWindow,
     #[error("file chunk exceeds the {FILE_CHUNK_SIZE} byte logical block size: {0}")]
@@ -593,7 +649,18 @@ impl Frame {
         let flags = data[5];
         let cmd = u16::from_be_bytes([data[6], data[7]]);
         let command = Command::from_u16(cmd).ok_or(ProtocolError::UnknownCommand(cmd))?;
-        if expected_version == LEGACY_VERSION && command == Command::ImageChunk {
+        if expected_version == LEGACY_VERSION
+            && matches!(
+                command,
+                Command::ImageChunk
+                    | Command::CompositePayload
+                    | Command::CompositeChunk
+                    | Command::CompositeAck
+                    | Command::ArchiveUpdatePayload
+                    | Command::ArchiveUpdateChunk
+                    | Command::ArchiveUpdateAck
+            )
+        {
             return Err(ProtocolError::UnsupportedVersion(LEGACY_VERSION));
         }
         let sequence = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);

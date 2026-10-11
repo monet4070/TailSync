@@ -1,6 +1,8 @@
 mod api;
+mod automatic_images;
 mod clipboard;
 mod clipboard_change;
+mod clipboard_composite;
 mod clipboard_file;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod commands;
@@ -25,6 +27,7 @@ const BACKGROUND_TASK_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duratio
 
 pub struct AppState {
     pub db: Arc<Mutex<db::HistoryDB>>,
+    pub image_archive: Arc<automatic_images::AutomaticImageArchive>,
     pub sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pub settings: Arc<Mutex<crypto::Settings>>,
     pub identity: Arc<identity::DeviceIdentity>,
@@ -272,6 +275,9 @@ fn start_storage_monitor(
 
 #[cfg(target_os = "macos")]
 pub fn run() -> i32 {
+    if let Some(code) = clipboard_composite::helper_check_cli() {
+        return code;
+    }
     if let Some(operation) = std::env::args()
         .skip(1)
         .collect::<Vec<_>>()
@@ -295,6 +301,9 @@ pub fn run() -> i32 {
 #[cfg(not(target_os = "macos"))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> i32 {
+    if let Some(code) = clipboard_composite::helper_check_cli() {
+        return code;
+    }
     init_logging();
     match run_app() {
         Ok(()) => 0,
@@ -324,6 +333,23 @@ fn init_logging() {
 /// The message goes to the logger and stderr, and is appended to
 /// `{data dir}/startup-error.log` so headless or release launches still
 /// leave a reliable, documented failure trace.
+/// Startup order for the composite clipboard (ADR-004 K8, repair plan R1-04):
+/// the no-body helper self-check runs **before** the migration policy is frozen and
+/// before the database is opened, so capability, schema policy and capture all see
+/// the same answer. A helper that is missing, not executable or the wrong protocol
+/// keeps the database at v11 instead of advertising a capability this machine
+/// cannot service.
+fn probe_clipboard_helper() {
+    let health = crate::clipboard_composite::helper_health();
+    tailsync_core::secure::set_helper_health(health.is_healthy());
+    tailsync_core::secure::set_origin_health(crate::clipboard_composite::origin_health());
+    if health.is_healthy() {
+        log::info!("Clipboard helper ready ({})", health.reason());
+    } else {
+        log::warn!("Composite clipboard disabled: {}", health.reason());
+    }
+}
+
 fn report_startup_failure(data_dir: &std::path::Path, error: &dyn std::error::Error) -> i32 {
     let message = format!("TailSync failed to start: {error}");
     log::error!("{message}");
@@ -368,12 +394,21 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
         false
     });
     sync::cleanup_expired_transfers();
+    probe_clipboard_helper();
 
     let mut history_db = if storage_available {
         db::HistoryDB::new()?
     } else {
         db::HistoryDB::new_unavailable()?
     };
+    if let Err(error) = tailsync_core::peer::effect_journal::recover_prepared_history(
+        &db::get_data_dir(),
+        &mut history_db,
+    ) {
+        tailsync_core::secure::set_journal_health(false);
+        tailsync_core::sync_warning::record_clipboard_unavailable();
+        log::error!("Clipboard journal recovery unavailable: {error}");
+    }
     history_db.set_storage_quota(loaded_settings.storage_quota_bytes);
     history_db.set_max_history(loaded_settings.history_limit as i64);
     let db = Arc::new(Mutex::new(history_db));
@@ -440,6 +475,14 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
     let pairing = pairing::PairingManager::new(settings.clone(), identity.clone());
     let remote_invites = Arc::new(pairing::RemotePairingInviteManager::new());
     let pending_storage_cleanup = Arc::new(Mutex::new(None));
+    let (image_archive, archive_task) = automatic_images::start(
+        db.clone(),
+        settings.lock().await.auto_save_network_images,
+        pool.clone(),
+        settings.clone(),
+        shutdown_rx.clone(),
+    );
+    track_task(&background_tasks, archive_task);
     let runtime = clipboard::ClipboardRuntime::Headless;
     sync_engine
         .lock()
@@ -451,7 +494,9 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
         )));
 
     let api_state = Arc::new(api::ApiState {
+        documents: Default::default(),
         db: db.clone(),
+        image_archive: image_archive.clone(),
         sync_engine: sync_engine.clone(),
         settings: settings.clone(),
         identity: identity.clone(),
@@ -483,6 +528,7 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
             sync_engine.clone(),
             pool.clone(),
             settings.clone(),
+            image_archive.clone(),
             shutdown_rx.clone(),
         ),
     );
@@ -588,12 +634,21 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         false
     });
     sync::cleanup_expired_transfers();
+    probe_clipboard_helper();
 
     let mut history_db = if storage_available {
         db::HistoryDB::new()?
     } else {
         db::HistoryDB::new_unavailable()?
     };
+    if let Err(error) = tailsync_core::peer::effect_journal::recover_prepared_history(
+        &db::get_data_dir(),
+        &mut history_db,
+    ) {
+        tailsync_core::secure::set_journal_health(false);
+        tailsync_core::sync_warning::record_clipboard_unavailable();
+        log::error!("Clipboard journal recovery unavailable: {error}");
+    }
     history_db.set_storage_quota(loaded_settings.storage_quota_bytes);
     let db = Arc::new(Mutex::new(history_db));
     let db_for_classification = db.clone();
@@ -659,6 +714,14 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let remote_invites = Arc::new(pairing::RemotePairingInviteManager::new());
     let pending_storage_cleanup = Arc::new(Mutex::new(None));
     let settings_for_monitor = settings.clone();
+    let (image_archive, archive_task) = automatic_images::start(
+        db.clone(),
+        settings.blocking_lock().auto_save_network_images,
+        pool.clone(),
+        settings.clone(),
+        shutdown_rx.clone(),
+    );
+    track_task(&background_tasks, archive_task);
     let settings_for_server = settings.clone();
     let settings_for_iroh = settings.clone();
     let settings_for_discovery = settings.clone();
@@ -668,7 +731,9 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start JSON API server
     let api_state = Arc::new(api::ApiState {
+        documents: Default::default(),
         db: db.clone(),
+        image_archive: image_archive.clone(),
         sync_engine: sync_engine.clone(),
         settings: settings.clone(),
         identity: identity.clone(),
@@ -723,6 +788,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
             let state = AppState {
                 db: db_for_setup.clone(),
+                image_archive: image_archive.clone(),
                 sync_engine: sync_for_setup.clone(),
                 settings,
                 identity,
@@ -733,6 +799,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 pending_storage_cleanup,
             };
             app.manage(state);
+            app.manage(tailsync_runtime::document_preview::DocumentSession::default());
 
             // Start clipboard monitor (file → text → image)
             let clipboard_task = clipboard::start_monitor(
@@ -741,6 +808,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 sync_for_setup.clone(),
                 pool_for_setup.clone(),
                 settings_for_monitor,
+                image_archive.clone(),
                 shutdown_for_setup.clone(),
             );
             track_task(&tasks_for_setup, clipboard_task);

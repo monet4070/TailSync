@@ -17,10 +17,12 @@ function validSnapshot(value: RuntimeSnapshot | null | undefined): value is Runt
 export function useRuntimeSnapshots(
   onSnapshot: (snapshot: RuntimeSnapshot) => void | Promise<void>,
   waitMs: number,
+  enabled = true,
 ): void {
   const handleSnapshot = useEffectEvent(onSnapshot);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     let disposed = false;
     let revision = 0;
     let notificationId = 0;
@@ -61,5 +63,5 @@ export function useRuntimeSnapshots(
       window.clearTimeout(retryTimer);
       finishRetry?.();
     };
-  }, [waitMs]);
+  }, [enabled, waitMs]);
 }

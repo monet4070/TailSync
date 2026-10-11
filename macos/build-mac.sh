@@ -13,6 +13,15 @@ SKIP_SWIFT_BUILD=false
 if [[ "${1:-}" == "--skip-swift-build" ]]; then
     SKIP_SWIFT_BUILD=true
 fi
+# The optional feature list is expanded with the `+` alternate-value form at every
+# use site (see the cargo invocations below). Expanding the array bare aborts under
+# `set -u` on the macOS system bash 3.2 when the array is empty — which is exactly
+# the default (feature-off) path this script must keep working. Regression:
+# scripts/check-build-mac-feature-args.sh.
+CARGO_FEATURE_ARGS=()
+if [[ "${TAILSYNC_COMPOSITE_CLIPBOARD:-0}" == "1" ]]; then
+    CARGO_FEATURE_ARGS=(--features protocol-composite-clipboard)
+fi
 RUST_TARGET_DIR="$PWD/src-tauri/target-macos"
 SWIFT_MODULE_CACHE_DIR="$PWD/swift-ui/.build/module-cache"
 export CARGO_TARGET_DIR="$RUST_TARGET_DIR"
@@ -43,15 +52,15 @@ echo "═══ Building $APP_NAME.app ═══"
 echo "[1/6] Building Rust daemon..."
 if [[ "$MACOS_TARGET" == "universal-apple-darwin" ]]; then
     rustup target add aarch64-apple-darwin x86_64-apple-darwin
-    cargo build --locked --release --target aarch64-apple-darwin --manifest-path src-tauri/Cargo.toml
-    cargo build --locked --release --target x86_64-apple-darwin --manifest-path src-tauri/Cargo.toml
+    cargo build --locked --release ${CARGO_FEATURE_ARGS[@]+"${CARGO_FEATURE_ARGS[@]}"} --target aarch64-apple-darwin --manifest-path src-tauri/Cargo.toml
+    cargo build --locked --release ${CARGO_FEATURE_ARGS[@]+"${CARGO_FEATURE_ARGS[@]}"} --target x86_64-apple-darwin --manifest-path src-tauri/Cargo.toml
     mkdir -p "$RUST_TARGET_DIR/release"
     lipo -create \
         "$RUST_TARGET_DIR/aarch64-apple-darwin/release/tailsync" \
         "$RUST_TARGET_DIR/x86_64-apple-darwin/release/tailsync" \
         -output "$RUST_TARGET_DIR/release/tailsync"
 elif [[ "$MACOS_TARGET" == "native" ]]; then
-    cargo build --locked --release --manifest-path src-tauri/Cargo.toml
+    cargo build --locked --release ${CARGO_FEATURE_ARGS[@]+"${CARGO_FEATURE_ARGS[@]}"} --manifest-path src-tauri/Cargo.toml
 else
     echo "Unsupported TAILSYNC_MACOS_TARGET: $MACOS_TARGET" >&2
     exit 2

@@ -677,6 +677,19 @@ mod tests {
         assert_eq!(registry.rtt_capable_endpoints.lock().unwrap().len(), 1024);
     }
 
+    // Protocol round trips retain real QUIC + Noise while excluding unrelated
+    // multi-interface routing. Network selection has its own device acceptance.
+    fn loopback_addr(endpoint: &IrohEndpoint) -> EndpointAddr {
+        let port = endpoint.endpoint.addr().ip_addrs().next().unwrap().port();
+        EndpointAddr::from_parts(
+            endpoint.endpoint.id(),
+            [iroh::TransportAddr::Ip(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                port,
+            )))],
+        )
+    }
+
     // Each accepted probe is drained before the next connection attempt. The
     // client must reuse its long-lived endpoint so repeated measurements do
     // not restart relay discovery or race a newly bound endpoint's teardown.
@@ -756,8 +769,8 @@ mod tests {
                 .await
                 .unwrap(),
         };
-        let mac_addr = mac.endpoint.addr();
-        let windows_addr = windows.endpoint.addr();
+        let mac_addr = loopback_addr(&mac);
+        let windows_addr = loopback_addr(&windows);
         let mac_endpoint_id = mac.endpoint_id();
         let mac_for_server = mac.clone();
         let (business_done_tx, business_done_rx) = tokio::sync::oneshot::channel();
@@ -804,19 +817,42 @@ mod tests {
 
     #[tokio::test]
     async fn pairing_completes_over_a_real_iroh_stream() {
+        tokio::time::timeout(Duration::from_secs(120), pairing_roundtrip(true))
+            .await
+            .unwrap();
+    }
+
+    // R6 retains naturally selected interface addresses, without a loopback override.
+    // Relay and two-device acceptance remain separate R7 requirements.
+    #[tokio::test]
+    async fn real_network_pairing_completes_over_a_real_iroh_stream() {
+        tokio::time::timeout(Duration::from_secs(120), pairing_roundtrip(false))
+            .await
+            .unwrap();
+    }
+
+    async fn pairing_roundtrip(use_loopback: bool) {
         let server = IrohEndpoint {
-            endpoint: Endpoint::builder(presets::Minimal)
-                .alpns(vec![ALPN.to_vec()])
-                .bind()
-                .await
-                .unwrap(),
+            endpoint: (if use_loopback {
+                Endpoint::builder(presets::Minimal)
+            } else {
+                Endpoint::builder(presets::N0)
+            })
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap(),
         };
         let client = IrohEndpoint {
-            endpoint: Endpoint::builder(presets::Minimal)
-                .alpns(vec![ALPN.to_vec()])
-                .bind()
-                .await
-                .unwrap(),
+            endpoint: (if use_loopback {
+                Endpoint::builder(presets::Minimal)
+            } else {
+                Endpoint::builder(presets::N0)
+            })
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap(),
         };
         let server_endpoint_id = server.endpoint_id();
         let client_endpoint_id = client.endpoint_id();
@@ -827,14 +863,14 @@ mod tests {
         let server_manager = PairingManager::with_policy(
             server_settings.clone(),
             server_identity.clone(),
-            Duration::from_secs(5),
+            Duration::from_secs(120),
             5,
             false,
         );
         let client_manager = PairingManager::with_policy(
             client_settings.clone(),
             client_identity.clone(),
-            Duration::from_secs(5),
+            Duration::from_secs(120),
             5,
             false,
         );
@@ -882,7 +918,12 @@ mod tests {
             })
         };
 
-        let stream = client.connect_addr(server.endpoint.addr()).await.unwrap();
+        let address = if use_loopback {
+            loopback_addr(&server)
+        } else {
+            server.endpoint.addr()
+        };
+        let stream = client.connect_addr(address).await.unwrap();
         let accepted = secure::connect_pairing(
             stream,
             &client_identity,
@@ -956,6 +997,21 @@ mod tests {
 
     #[tokio::test]
     async fn one_time_invite_completes_over_real_iroh_and_is_consumed() {
+        tokio::time::timeout(Duration::from_secs(120), invite_roundtrip(true))
+            .await
+            .unwrap();
+    }
+
+    // R6 retains naturally selected interface addresses, without a loopback override.
+    // Relay and two-device acceptance remain separate R7 requirements.
+    #[tokio::test]
+    async fn real_network_one_time_invite_completes_over_real_iroh_and_is_consumed() {
+        tokio::time::timeout(Duration::from_secs(120), invite_roundtrip(false))
+            .await
+            .unwrap();
+    }
+
+    async fn invite_roundtrip(use_loopback: bool) {
         use crate::pairing::{
             invite::{INVITE_ACK_ACCEPTED, INVITE_HELLO_LENGTH},
             RemoteInviteState, RemotePairingInvite, RemotePairingInviteManager,
@@ -963,14 +1019,25 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let server = IrohEndpoint {
-            endpoint: Endpoint::builder(presets::Minimal)
-                .alpns(vec![INVITE_ALPN.to_vec()])
-                .bind()
-                .await
-                .unwrap(),
+            endpoint: (if use_loopback {
+                Endpoint::builder(presets::Minimal)
+            } else {
+                Endpoint::builder(presets::N0)
+            })
+            .alpns(vec![INVITE_ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap(),
         };
         let client = IrohEndpoint {
-            endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
+            endpoint: (if use_loopback {
+                Endpoint::builder(presets::Minimal)
+            } else {
+                Endpoint::builder(presets::N0)
+            })
+            .bind()
+            .await
+            .unwrap(),
         };
         let server_endpoint_id = server.endpoint_id();
         let client_endpoint_id = client.endpoint_id();
@@ -985,14 +1052,14 @@ mod tests {
         let server_manager = PairingManager::with_policy(
             Arc::new(Mutex::new(Settings::default())),
             server_identity.clone(),
-            Duration::from_secs(5),
+            Duration::from_secs(120),
             5,
             false,
         );
         let client_manager = PairingManager::with_policy(
             Arc::new(Mutex::new(Settings::default())),
             client_identity.clone(),
-            Duration::from_secs(5),
+            Duration::from_secs(120),
             5,
             false,
         );
@@ -1052,8 +1119,13 @@ mod tests {
             })
         };
 
+        let address = if use_loopback {
+            loopback_addr(&server)
+        } else {
+            server.endpoint.addr()
+        };
         let mut stream = client
-            .connect_addr_with_alpn(server.endpoint.addr(), INVITE_ALPN)
+            .connect_addr_with_alpn(address, INVITE_ALPN)
             .await
             .unwrap();
         stream.write_all(&invite.hello().encode()).await.unwrap();
@@ -1142,7 +1214,7 @@ mod tests {
                 .await
                 .unwrap(),
         };
-        let server_addr = server.endpoint.addr();
+        let server_addr = loopback_addr(&server);
         let unsupported_client = Endpoint::builder(presets::Minimal).bind().await.unwrap();
         let unsupported_for_connect = unsupported_client.clone();
         let rejected_connect = tokio::spawn(async move {
@@ -1167,7 +1239,7 @@ mod tests {
             }
         };
         let (accepted, connected) =
-            tokio::join!(accept_business, client.connect_addr(server.endpoint.addr()));
+            tokio::join!(accept_business, client.connect_addr(loopback_addr(&server)));
         assert!(!accepted.is_rtt_probe());
         assert!(connected.is_ok());
     }

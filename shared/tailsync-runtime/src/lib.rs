@@ -4,8 +4,14 @@
 //! platform transport decodes its request, invokes one of these operations,
 //! and maps the typed result back to its own wire format.
 
+pub mod archive_sync;
+pub mod automatic_image_archive;
+pub mod content_analysis;
 pub mod contracts;
+pub mod document_preview;
 pub mod execution;
 pub mod history;
+pub mod history_display;
 pub mod peer_refresh;
 pub mod preview;
+pub mod source_context;

@@ -240,7 +240,15 @@ fn wait_for_child(mut child: Child, timeout: Duration) -> Result<(ExitStatus, Ve
     let mut output_reader = child.stdout.take().map(|mut stdout| {
         std::thread::spawn(move || {
             let mut output = Vec::new();
-            stdout.read_to_end(&mut output)?;
+            stdout
+                .by_ref()
+                .take(tailsync_core::protocol::native_clipboard::NATIVE_LIMIT as u64 + 1)
+                .read_to_end(&mut output)?;
+            if output.len() > tailsync_core::protocol::native_clipboard::NATIVE_LIMIT {
+                return Err(std::io::Error::other(
+                    "clipboard helper output exceeds limit",
+                ));
+            }
             Ok::<_, std::io::Error>(output)
         })
     });
@@ -332,28 +340,13 @@ fn collect_child_output(
 
 #[cfg(target_os = "macos")]
 fn resolve_clipboard_helper() -> Option<PathBuf> {
-    // Production bundles place the helper beside the daemon. Prefer that
-    // signed location so a writable working directory cannot shadow it.
-    if let Ok(exe) = std::env::current_exe() {
-        let p = exe.parent()?.join("clipboard-helper");
-        if p.is_file() {
-            return p.canonicalize().ok();
-        }
-    }
-    let candidates = [
-        "src-tauri/clipboard-helper",
-        "../src-tauri/clipboard-helper",
-        "clipboard-helper",
-    ];
-    for rel in &candidates {
-        let p = std::path::Path::new(rel);
-        if let Ok(path) = p.canonicalize() {
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
+    // One canonical resolver for both the legacy file helper and the composite
+    // helper (repair plan R1-04 / H-7): bundle-adjacent first, then the debug
+    // build-artifact locations. This replaces a bare relative working-directory
+    // search, so a writable CWD can no longer shadow the signed helper.
+    crate::clipboard_composite::resolve_helper()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
 }
 
 #[cfg(test)]

@@ -28,11 +28,8 @@ fn classifies_deterministic_formats() {
     assert_eq!(classify_text("www.example.com").confidence, 97);
     assert_eq!(classify_text("example.com/docs").confidence, 96);
     assert_eq!(classify_text("example.com").confidence, 93);
-    assert_eq!(
-        category(r#"{"name":"TailSync","enabled":true}"#),
-        "structured_data"
-    );
-    assert_eq!(category("[1, 2, 3]"), "structured_data");
+    assert_eq!(category(r#"{"name":"TailSync","enabled":true}"#), "code");
+    assert_eq!(category("[1, 2, 3]"), "code");
     assert_eq!(category(r#"C:\Users\tester\notes.txt"#), "path");
     assert_eq!(
         category(r#"C:\Program Files (x86)\TailSync\TailSync.exe"#),
@@ -43,37 +40,37 @@ fn classifies_deterministic_formats() {
 
 #[test]
 fn classifies_commands_and_code() {
-    assert_eq!(category("git status --short"), "command");
-    assert_eq!(category("Get-Content README.md"), "command");
-    assert_eq!(category("get-content README.md"), "command");
-    assert_eq!(category("docker compose up -d"), "command");
-    assert_eq!(category("go test ./..."), "command");
+    assert_eq!(category("git status --short"), "code");
+    assert_eq!(category("Get-Content README.md"), "code");
+    assert_eq!(category("get-content README.md"), "code");
+    assert_eq!(category("docker compose up -d"), "code");
+    assert_eq!(category("go test ./..."), "code");
     assert_eq!(
         category(r#"C:\Tools\formatter.exe --check source.rs"#),
-        "command"
+        "code"
     );
     assert_eq!(
         category(r#""C:\Program Files\TailSync\tailsync.exe" --version"#),
-        "command"
+        "code"
     );
-    assert_eq!(category("/usr/bin/git status --short"), "command");
+    assert_eq!(category("/usr/bin/git status --short"), "code");
     let nginx_deploy =
         "sudo tar -xzf /tmp/tailsync-site-theme-switch-20260728.tar.gz -C /var/www/tailsync\n\
 sudo chown -R www-data:www-data /var/www/tailsync\n\
 sudo nginx -t\n\
 sudo systemctl reload nginx";
     let deployment_classification = classify_text(nginx_deploy);
-    assert_eq!(deployment_classification.category, "command");
+    assert_eq!(deployment_classification.category, "code");
     assert_eq!(deployment_classification.confidence, 96);
-    assert_eq!(deployment_classification.categories(), vec!["command"]);
-    assert_eq!(category("git status --short\nnpm run build"), "command");
+    assert_eq!(deployment_classification.categories(), vec!["code"]);
+    assert_eq!(category("git status --short\nnpm run build"), "code");
     assert_eq!(
         category("sudo customctl restart\nsudo customctl status"),
-        "command"
+        "code"
     );
     assert_eq!(
         category("docker run --rm \\\n+  -v /tmp/source:/source \\\n+  alpine:latest"),
-        "command"
+        "code"
     );
     assert_eq!(
         category("const ids = items.map((item) => item.id);"),
@@ -166,4 +163,18 @@ fn exposes_only_supported_categories() {
         assert!(is_known_category(category));
     }
     assert!(!is_known_category("unknown"));
+}
+
+#[test]
+fn code_is_the_only_technical_category() {
+    for text in [
+        "git status --short",
+        "Get-Content README.md",
+        r#"{"enabled":true}"#,
+        "const x = 1;",
+    ] {
+        assert_eq!(classify_text(text).categories(), vec!["code"], "{text}");
+    }
+    assert!(!CATEGORIES.contains(&"command"));
+    assert!(!CATEGORIES.contains(&"structured_data"));
 }

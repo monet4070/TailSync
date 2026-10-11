@@ -5,6 +5,8 @@ export function SettingsHistorySection({
   historyLimitDraft,
   setHistoryLimitDraft,
   commitHistoryLimit,
+  autoSaveNetworkImages,
+  setAutoSaveNetworkImages,
 }: SettingsHistorySectionProps) {
   return (
     <section className="setting-group">
@@ -38,6 +40,22 @@ export function SettingsHistorySection({
           }}
         />
         <span className="range-value">{historyLimitDraft}</span>
+      </div>
+
+      <div className="setting-row setting-row--toggle">
+        <div className="setting-row-info">
+          <span>{t("settings.autoSaveNetworkImages")}</span>
+          <small>{t("settings.autoSaveNetworkImagesDescription")}</small>
+        </div>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            aria-label={t("settings.autoSaveNetworkImages")}
+            checked={autoSaveNetworkImages}
+            onChange={(event) => void setAutoSaveNetworkImages(event.target.checked)}
+          />
+          <div className="toggle-track" />
+        </label>
       </div>
     </section>
   );

@@ -140,7 +140,7 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 - 文本、图片和文件历史均使用系统保护的数据密钥加密存储。
 - 文件历史使用 1 MiB 分块 AES-256-GCM 容器；恢复时只在受控剪贴板目录生成临时明文。
 
-身份/基础兼容版本为 v4，认证握手按连接协商 v4/v5 数据帧和扩展能力，旧对端回退 v4；基础版本不兼容时提示更新两端。配对采用持久化同意、认证对账与可恢复最终确认，并非分布式原子提交。文件批次历史使用本地 SQLite 事务。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.3.2，数据库 schema 为 v11，这三个版本号彼此独立。
+身份/基础兼容版本为 v4，认证握手按连接协商 v4/v5 数据帧和扩展能力，旧对端回退 v4；基础版本不兼容时提示更新两端。配对采用持久化同意、认证对账与可恢复最终确认，并非分布式原子提交。文件批次历史使用本地 SQLite 事务。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.3.2。复合剪贴板的版本分别管理：identity/base **4**；data frame **5**（认证连接可协商回退到 4）；main history **条件 v11/v12/v13**；effect journal **1**；local contract **2**；helper protocol **macOS 4 / Windows 2**；origin fingerprint **便携 2 / macOS 原件独立域 1**。v11→v12/v13 受构建开关、运行时开关和 helper 健康控制；已有 v12/v13 在关闭态可读取，迁移目的库保持至少来源版本。v13 增加历史身份及 Manifest 2；旧 CNS1/helper protocol 2 只提供 LegacyProjection；macOS CNA1/protocol 4 分开原件与派生表示，完整枚举且依赖已知闭合的原件才提供安全去重键。pre-v12 与 pre-v13 回退包分别保留。版本变更须有独立决策，不能把这些编号统称为“协议版本”。
 
 旧版 TailSync v1 历史数据库会在首次启动时自动导入。迁移按内容哈希保持幂等，损坏条目会写入诊断报告但不会阻止启动；原 `history.db` 和 `.fernet_key` 会保留，不会被自动删除。
 
@@ -315,3 +315,5 @@ TailSync 核心代码采用 [MIT License](LICENSE)。
 存储降级时请保持 TailSync 运行，恢复原存储位置访问并等待历史恢复后再搬迁；后端会拒绝降级状态搬迁，保留已 ACK/收藏的内存历史。
 
 提交问题请提供版本、OS/架构、双方设备/配对状态、所选网络路线、方向与操作时间，按[诊断说明](docs/diagnostics.md)收集日志并移除敏感本地路径。真实 sleep/wake、Windows 原生安装/剪贴板、relay/NAT 和旧 macOS 执行仍是最终验收项目。
+
+复合剪贴板本地门禁：`python3 scripts/run-composite-r6.py <new-run-id>`（macOS 主机）。覆盖默认/开启/运行时关闭、Iroh 全量与真实网络组、前端 build/lint、双端 canonical include 正负向测试、故障探针和新 native/universal 包。见 [R6 证据](docs/COMPOSITE-CLIPBOARD-R6-VERIFICATION.md)、[macOS](macos/README.md)、[Windows](windows/README.md)。Windows 原生、目标应用、双设备仍 UNKNOWN，发布 NO-GO。

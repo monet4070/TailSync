@@ -26,6 +26,11 @@ export function HistoryList({
   setFocusedId,
   setExpandedBatches,
   handleRestore,
+  handleArchiveImages,
+  handleAuthorizeSource,
+  handleImportSourcePacket,
+  handleRevokeSource,
+  canRevokeSource,
   handleRestoreBatch,
   handleDelete,
   handleFavoriteChange,
@@ -135,6 +140,11 @@ export function HistoryList({
                     loadThumbnail={loadThumbnail}
                     setFocusedId={setFocusedId}
                     handleRestore={handleRestore}
+                    handleArchiveImages={handleArchiveImages}
+                    handleAuthorizeSource={handleAuthorizeSource}
+                    handleImportSourcePacket={handleImportSourcePacket}
+                    handleRevokeSource={handleRevokeSource}
+                    canRevokeSource={canRevokeSource}
                     handleDelete={handleDelete}
                     handleFavoriteChange={handleFavoriteChange}
                     handleFavoriteProtected={handleFavoriteProtected}

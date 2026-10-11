@@ -70,6 +70,14 @@ export interface BatchInfo {
 /// Batch bookkeeping for every entry, keyed by entry id. Positions continue
 /// across groups; the batch-start flag is group-local.
 export function computeBatchInfos(groups: GroupedEntries): Map<number, BatchInfo> {
+  const visibleCounts = new Map<string, number>();
+  for (const [, entries] of groups) {
+    for (const entry of entries) {
+      if (entry.batch_id) {
+        visibleCounts.set(entry.batch_id, (visibleCounts.get(entry.batch_id) ?? 0) + 1);
+      }
+    }
+  }
   const positions = new Map<string, number>();
   const infos = new Map<number, BatchInfo>();
   for (const [, groupEntries] of groups) {
@@ -78,12 +86,17 @@ export function computeBatchInfos(groups: GroupedEntries): Map<number, BatchInfo
       const batchPosition = batchId ? (positions.get(batchId) ?? 0) : 0;
       if (batchId) positions.set(batchId, batchPosition + 1);
       const batchTotal = entry.batch_total ?? 1;
+      const visibleCount = batchId ? (visibleCounts.get(batchId) ?? 0) : 0;
+      const batchCount = entry.batch_count ?? entry.batch_total ?? (visibleCount || 1);
+      const hasMultipleFiles = Math.max(batchCount, batchTotal, visibleCount) > 1;
+      const isIncomplete = entry.batch_status != null && entry.batch_status !== "complete";
       infos.set(entry.id, {
         batchId,
         batchPosition,
         batchTotal,
-        batchCount: entry.batch_count ?? batchTotal,
-        isBatchStart: Boolean(batchId && groupEntries[index - 1]?.batch_id !== batchId),
+        batchCount,
+        isBatchStart: Boolean(batchId && (hasMultipleFiles || isIncomplete)
+          && groupEntries[index - 1]?.batch_id !== batchId),
       });
     });
   }

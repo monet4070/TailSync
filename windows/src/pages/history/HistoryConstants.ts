@@ -28,8 +28,6 @@ export const HISTORY_CATEGORIES: HistoryCategory[] = [
   "text",
   "website",
   "code",
-  "command",
-  "structured_data",
   "path",
   "image",
   "file",

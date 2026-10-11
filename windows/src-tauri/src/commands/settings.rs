@@ -117,13 +117,19 @@ pub async fn update_settings(
             };
             apply_shortcut_change(previous, new_settings, register, || {
                 new_settings.save().map_err(|error| error.to_string())
-            })
+            })?;
+            state
+                .image_archive
+                .set_enabled(new_settings.auto_save_network_images);
+            Ok(())
         };
     let outcome = crate::crypto::apply_settings_update(
         &state.settings,
         &state.db,
         requested_settings,
-        &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
+        &|settings: &crate::crypto::Settings| {
+            crate::automatic_images::persist(settings, &state.image_archive)
+        },
         Some(&apply_shortcut_transaction),
     )
     .await

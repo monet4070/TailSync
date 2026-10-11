@@ -5,6 +5,19 @@ import XCTest
 
 @MainActor
 final class AppBehaviorTests: XCTestCase {
+    func testLocalCopiesAndUnknownHistoricalSourcesNeverNotifyArrival() {
+        for source in ["self", "", " \n\t", " self "] {
+            XCTAssertFalse(RuntimeNotificationPolicy.shouldNotifyArrival(sourcePeer: source),
+                "Local or unidentified history must not announce a remote arrival")
+        }
+    }
+
+    func testRealRemoteClipboardArrivalsStillNotify() {
+        for source in ["Windows laptop", "另一台 Mac", "local"] {
+            XCTAssertTrue(RuntimeNotificationPolicy.shouldNotifyArrival(sourcePeer: source))
+        }
+    }
+
     func testNotificationCursorRecoveryDetectsGapsAndRestarts() {
         // A cursor still inside the readable window is fine.
         XCTAssertEqual(

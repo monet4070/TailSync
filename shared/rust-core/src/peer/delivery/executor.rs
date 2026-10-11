@@ -83,6 +83,12 @@ pub async fn deliver_pending_frame<T: DeliveryConnection>(
                     "queued event ID does not match its acknowledgement",
                 ));
             }
+            if matches!(
+                pending.queued.command,
+                Command::CompositePayload | Command::ArchiveUpdatePayload
+            ) {
+                return deliver_composite(stream, pending, envelope, config).await;
+            }
             if pending.queued.command == Command::ImagePayload
                 && stream.negotiated_capabilities().image_compressed_chunks
             {
@@ -340,6 +346,14 @@ async fn deliver_event_frame<T: DeliveryConnection>(
             if message.contains("event timestamp is outside the accepted window") {
                 return Err(DeliveryError::expired(message));
             }
+            if super::peer_error_is_temporary(&message) {
+                // Temporary pressure is retryable through the existing transport
+                // path; discarding the content here is what made a full budget look
+                // like a permanent rejection (R4-03).
+                return Err(DeliveryError::transport(format!(
+                    "peer under temporary pressure: {message}"
+                )));
+            }
             Err(DeliveryError::rejected(format!("event: {message}")))
         }
         Ok(Ok(frame)) => Err(DeliveryError::protocol(format!(
@@ -448,4 +462,207 @@ async fn deliver_batch_frame<T: DeliveryConnection>(
             "file batch acknowledgement timed out; reconnecting on a fresh session".to_string(),
         )),
     }
+}
+
+async fn authorize_archive_update(pending: &PendingFrame) -> Result<(), DeliveryError> {
+    let Some(authorized) = pending.queued.archive_authorization.clone() else {
+        return Ok(());
+    };
+    if !tokio::task::spawn_blocking(move || authorized())
+        .await
+        .map_err(|_| DeliveryError::rejected("Archive authorization worker unavailable"))?
+    {
+        return Err(DeliveryError::rejected("Archive authorization revoked"));
+    }
+    Ok(())
+}
+
+async fn deliver_composite<T: DeliveryConnection>(
+    stream: &mut T,
+    pending: &PendingFrame,
+    envelope: EventEnvelope,
+    config: &DeliveryConfig,
+) -> Result<DeliveryReceipt, DeliveryError> {
+    use crate::protocol::composite::{AckResult, CompositeAck};
+    let is_archive_update = pending.queued.command == Command::ArchiveUpdatePayload;
+    if is_archive_update {
+        authorize_archive_update(pending).await?;
+    }
+    if is_archive_update
+        && (!stream.negotiated_capabilities().archive_resource_updates
+            || !stream.negotiated_capabilities().composite_clipboard)
+    {
+        return Err(DeliveryError::rejected(
+            "Archive resource updates were not negotiated; no clipboard fallback is allowed",
+        ));
+    }
+    // Per-peer envelope/model/scratch; the source wire is shared and admitted at
+    // enqueue. Reject pressure without changing this event's identity.
+    let scratch = Arc::new(
+        crate::composite::budgets::global()
+            .reserve_pipeline((envelope.content.len() as u64).saturating_mul(3))
+            .map_err(|e| DeliveryError::protocol(e.to_string()))?,
+    );
+    if pending.selected_composite.get().is_none() {
+        let choice = if is_archive_update || stream.negotiated_capabilities().composite_clipboard {
+            CompositeSelection::Portable
+        } else {
+            let cache = pending.queued.composite_fallback.clone();
+            let bytes = envelope.content.clone();
+            let held = scratch.clone();
+            let (command, content, _memory) = tokio::task::spawn_blocking(move || {
+                let _held = held;
+                let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(cached) = cache.as_ref() { return cached.clone(); }
+                let converted: Result<CompositeFallbackBody, String> = (|| {
+                    let bundle = crate::composite::PortableBundle::decode(&bytes).map_err(|e| e.to_string())?;
+                    let rgba_bytes = bundle.validate_with_metrics().map_err(|e| e.to_string())?.rgba_bytes as u64;
+                    let mut memory = crate::composite::budgets::global().reserve_pipeline(rgba_bytes.saturating_mul(4).saturating_add(32 * 1024 * 1024)).map_err(|e| e.to_string())?;
+                    let (command, bytes) = crate::composite::legacy_content(&bundle).map_err(|e| e.to_string())?;
+                    memory.shrink_to(bytes.len() as u64);
+                    Ok((command, Arc::from(bytes.into_boxed_slice()), Arc::new(memory)))
+                })();
+                if !matches!(&converted, Err(error) if error.contains(crate::protocol::TEMPORARY_PRESSURE_MARKER)) { *cache = Some(converted.clone()); }
+                converted
+            }).await.map_err(|_| DeliveryError::protocol("Composite fallback worker failed"))?
+                .map_err(|error| if error.contains(crate::protocol::TEMPORARY_PRESSURE_MARKER) { DeliveryError::protocol(error) } else { DeliveryError::rejected(error) })?;
+            CompositeSelection::Legacy {
+                command,
+                message_id: MessageId::random(),
+                timestamp_ms: envelope.timestamp_ms,
+                content,
+            }
+        };
+        let _ = pending.selected_composite.set(choice);
+    }
+    let selected = pending
+        .selected_composite
+        .get()
+        .ok_or_else(|| DeliveryError::protocol("Missing composite selection"))?;
+    if let CompositeSelection::Legacy {
+        command,
+        message_id,
+        timestamp_ms,
+        content,
+    } = selected
+    {
+        let frame = Frame::try_new(
+            *command,
+            0,
+            pending.sequence,
+            EventEnvelope::encode_content(*message_id, *timestamp_ms, content),
+        )
+        .map_err(|e| DeliveryError::protocol(e.to_string()))?;
+        deliver_event_frame(stream, pending, &frame, *message_id, config).await?;
+        if let Some(peer) = pending.undelivered_peer.as_deref() {
+            crate::sync_warning::record_composite_result(peer, AckResult::StoredIncomplete);
+        }
+        return Ok(DeliveryReceipt::default());
+    }
+    if !stream.negotiated_capabilities().composite_clipboard {
+        return Err(DeliveryError::rejected(
+            "Composite capability lost after selection; payload identity cannot change",
+        ));
+    }
+    // Always use bounded chunks; first implementation avoids the large-frame
+    // admission race. Compression has raw fallback and never changes identity.
+    let digest = *blake3::hash(&envelope.content).as_bytes();
+    let message_id = envelope.message_id;
+    // R4-04: encode and compress once. The event's identity — and therefore its
+    // chosen encoding — is fixed for the life of the frame, so a retry re-sends the
+    // same immutable bytes instead of re-compressing up to 32 MiB every attempt.
+    // The cache lives on the shared event, so a fan-out to N peers also encodes once.
+    let cache = pending.queued.composite_chunks.clone();
+    let held = scratch.clone();
+    let encoded = tokio::task::spawn_blocking(move || {
+        let _held = held;
+        let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(cached) = cache.as_ref() { return cached.clone(); }
+        let encoded = (|| {
+            let bound = CachedChunks::memory_bound(envelope.content.len());
+            let mut memory = crate::composite::budgets::global().reserve_pipeline(bound).map_err(|e| e.to_string())?;
+            let chunks = if is_archive_update {
+                crate::composite::chunks::encode_archive(&envelope)
+            } else {
+                crate::composite::chunks::encode(&envelope)
+            }.map_err(|e| e.to_string())?;
+            let allocated = CachedChunks::allocated_bytes(&chunks, chunks.capacity());
+            if allocated > bound {
+                return Err(format!("{}Composite chunk allocation exceeds admitted cache memory", crate::protocol::TEMPORARY_PRESSURE_MARKER));
+            }
+            memory.shrink_to(allocated);
+            Ok(Arc::new(CachedChunks { chunks, _memory: memory }))
+        })();
+        if !matches!(&encoded, Err(error) if error.contains(crate::protocol::TEMPORARY_PRESSURE_MARKER)) { *cache = Some(encoded.clone()); }
+        encoded
+    }).await.map_err(|_| DeliveryError::protocol("Composite encoding worker failed"))?;
+    let cached = encoded.map_err(DeliveryError::protocol)?;
+    let chunks = &cached.chunks;
+    let count = chunks.len();
+    let expires = pending.queued.enqueued_at
+        + Duration::from_millis(crate::protocol::EVENT_TIMESTAMP_WINDOW_MS as u64);
+    for (index, payload) in chunks.iter().cloned().enumerate() {
+        if is_archive_update {
+            authorize_archive_update(pending).await?;
+        }
+        let remaining = expires.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(DeliveryError::expired("Composite deadline reached"));
+        }
+        let sequence = pending.sequence.wrapping_add(index as u32);
+        let chunk_command = if is_archive_update {
+            Command::ArchiveUpdateChunk
+        } else {
+            Command::CompositeChunk
+        };
+        let frame = Frame::try_new(chunk_command, 0, sequence, payload)
+            .map_err(|e| DeliveryError::protocol(e.to_string()))?;
+        timeout(remaining, stream.write_frame(&frame))
+            .await
+            .map_err(|_| DeliveryError::expired("Composite deadline reached"))?
+            .map_err(DeliveryError::transport)?;
+        let remaining = expires.saturating_duration_since(Instant::now());
+        let ack = timeout(
+            config
+                .event_ack_timeout
+                .max(Duration::from_secs(10))
+                .min(remaining),
+            stream.read_frame(),
+        )
+        .await
+        .map_err(|_| DeliveryError::Timeout("Composite acknowledgement timed out".into()))?
+        .map_err(DeliveryError::transport)?;
+        if ack.command == Command::PeerError {
+            let message = String::from_utf8_lossy(&ack.payload).into_owned();
+            if is_archive_update && message.contains(crate::protocol::TEMPORARY_PRESSURE_MARKER) {
+                return Err(DeliveryError::protocol(message));
+            }
+            return Err(DeliveryError::rejected(message));
+        }
+        let ack_command = if is_archive_update {
+            Command::ArchiveUpdateAck
+        } else {
+            Command::CompositeAck
+        };
+        if ack.command != ack_command || ack.sequence != sequence {
+            return Err(DeliveryError::protocol(
+                "Composite ACK command or sequence mismatch",
+            ));
+        }
+        let ack = CompositeAck::decode(&ack.payload)
+            .map_err(|e| DeliveryError::protocol(e.to_string()))?;
+        if ack.message_id != message_id || ack.digest != digest || ack.chunk_index != index as u16 {
+            return Err(DeliveryError::protocol("Composite ACK identity mismatch"));
+        }
+        if index + 1 < count {
+            if ack.result != AckResult::Chunk {
+                return Err(DeliveryError::protocol("Premature composite terminal ACK"));
+            }
+        } else if ack.result != AckResult::Applied
+            && !(is_archive_update && ack.result == AckResult::Superseded)
+        {
+            return Err(DeliveryError::CompositeResult(ack.result));
+        }
+    }
+    Ok(DeliveryReceipt::default())
 }

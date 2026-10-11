@@ -6,11 +6,23 @@
     "capabilities": {
       "$ref": "#/$defs/LocalCapabilities"
     },
+    "document": {
+      "$ref": "#/$defs/DocumentFrameMetadata"
+    },
+    "document_model": {
+      "$ref": "#/$defs/DisplayDocument"
+    },
+    "document_request": {
+      "$ref": "#/$defs/DocumentRequest"
+    },
     "favorite": {
       "$ref": "#/$defs/FavoriteMutation"
     },
     "history": {
       "$ref": "#/$defs/HistoryQueryPage"
+    },
+    "history_restore": {
+      "$ref": "#/$defs/HistoryRestoreReport"
     },
     "mac_runtime": {
       "$ref": "#/$defs/MacRuntimeSnapshot"
@@ -27,6 +39,18 @@
     "preview_error": {
       "$ref": "#/$defs/PreviewErrorInfo"
     },
+    "resource_archive": {
+      "$ref": "#/$defs/ArchiveEntryImagesReport"
+    },
+    "source_context_grant": {
+      "$ref": "#/$defs/SourceContextGrantReport"
+    },
+    "source_context_import": {
+      "$ref": "#/$defs/SourceContextImportReport"
+    },
+    "source_context_revoke": {
+      "$ref": "#/$defs/SourceContextRevokeReport"
+    },
     "stable_error": {
       "$ref": "#/$defs/StableErrorEnvelope"
     },
@@ -40,11 +64,19 @@
     "stable_error",
     "history",
     "favorite",
+    "history_restore",
+    "resource_archive",
+    "source_context_grant",
+    "source_context_revoke",
+    "source_context_import",
     "mac_runtime",
     "windows_runtime",
     "peers",
     "preview_error",
-    "preview"
+    "preview",
+    "document",
+    "document_model",
+    "document_request"
   ],
   "$defs": {
     "ActiveRoute": {
@@ -67,6 +99,135 @@
         "interface",
         "address",
         "latency"
+      ]
+    },
+    "ArchiveEntryImagesReport": {
+      "type": "object",
+      "properties": {
+        "archived": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "deduplicated": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArchiveResourceFailure"
+          }
+        }
+      },
+      "required": [
+        "archived",
+        "deduplicated",
+        "complete",
+        "failures"
+      ]
+    },
+    "ArchiveResourceFailure": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "image_index": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "image_index",
+        "code"
+      ]
+    },
+    "CompositeInfo": {
+      "description": "Composite metadata for one history entry — **not** the entry itself (R5-05\ncorrected this comment, which previously described a `HistoryEntry`).\n\nThe counts are deliberately distinct, because the two UIs must not conflate them:\n`representation_count` is how many formats the item carries, while `image_count`\ncounts image resources *and* a PNG representation. A row that says \"3 formats\" and\na row that says \"2 images\" are answering different questions, and a `native_only`\nitem must not be labelled as several cross-platform formats at all.",
+      "type": "object",
+      "properties": {
+        "completeness": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "external_references",
+            "missing_formats"
+          ]
+        },
+        "formats": {
+          "description": "Format names present in the item, for display.\n\n**Present is not the same as restorable.** A menu built from this alone can offer\nan action the server will refuse, which is exactly what R5-04 forbids; build the\nmenu from [`Self::restorable_formats`] instead.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistoryIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "image_count": {
+          "description": "How many images the item carries: resources plus a PNG representation.",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "native_item_count": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "native_only": {
+          "description": "The item was captured as a platform-native shape and can only be replayed on\nthat platform; the UIs must not offer cross-platform formats for it.",
+          "type": "boolean"
+        },
+        "representation_count": {
+          "description": "How many representations (formats) the item carries.",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "restorable_formats": {
+          "description": "The single-format restore actions the server will actually accept, in a stable\norder. This is what a menu must be built from.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "withheld_formats": {
+          "description": "Formats that are present but deliberately not offered, with the stable code the\nUI localises instead of inventing its own explanation.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WithheldRestoreFormat"
+          }
+        }
+      },
+      "required": [
+        "native_only",
+        "native_item_count",
+        "formats",
+        "restorable_formats",
+        "withheld_formats",
+        "representation_count",
+        "image_count",
+        "completeness"
       ]
     },
     "ConnectionInterface": {
@@ -104,6 +265,542 @@
         "clipboard_monitor_healthy",
         "clipboard_monitor_failures",
         "active_routes"
+      ]
+    },
+    "DisplayDocument": {
+      "type": "object",
+      "properties": {
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentAsset"
+          }
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentBlock"
+          }
+        },
+        "first_image": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "partial": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentPartial"
+          }
+        },
+        "styles_partial": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 1,
+          "minimum": 1
+        }
+      },
+      "required": [
+        "version",
+        "blocks",
+        "assets",
+        "partial",
+        "styles_partial"
+      ]
+    },
+    "DocumentAsset": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "index": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "index",
+        "offset",
+        "length",
+        "width",
+        "height",
+        "sha256"
+      ]
+    },
+    "DocumentBlock": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentImage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/DocumentBlockKind"
+        },
+        "paragraph": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentParagraph"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "table": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentTable"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "DocumentBlockKind": {
+      "type": "string",
+      "enum": [
+        "paragraph",
+        "table",
+        "image"
+      ]
+    },
+    "DocumentColor": {
+      "type": "object",
+      "properties": {
+        "blue": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "green": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "red": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "red",
+        "green",
+        "blue"
+      ]
+    },
+    "DocumentFrameMetadata": {
+      "type": "object",
+      "properties": {
+        "batch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreviewBatchNavigation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entry_id": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 1
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "document"
+          ]
+        },
+        "model_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 4194304,
+          "minimum": 0
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "enum": [
+            "history",
+            "favorites"
+          ]
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 16777216,
+          "minimum": 0
+        },
+        "stamp": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "entry_id",
+        "kind",
+        "name",
+        "stamp",
+        "owner",
+        "generation",
+        "model_bytes",
+        "size_bytes"
+      ]
+    },
+    "DocumentImage": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "availability": {
+          "$ref": "#/$defs/DocumentImageAvailability"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "availability",
+        "ordinal"
+      ]
+    },
+    "DocumentImageAvailability": {
+      "type": "string",
+      "enum": [
+        "available",
+        "missing_resource",
+        "missing_source",
+        "external_reference",
+        "unsupported",
+        "pixel_budget"
+      ]
+    },
+    "DocumentListKind": {
+      "type": "string",
+      "enum": [
+        "bullet",
+        "ordered"
+      ]
+    },
+    "DocumentParagraph": {
+      "type": "object",
+      "properties": {
+        "code_block": {
+          "type": "boolean"
+        },
+        "heading": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 3,
+          "minimum": 1
+        },
+        "list": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentListKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "list_depth": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 8,
+          "minimum": 0
+        },
+        "quote_depth": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 8,
+          "minimum": 0
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentRun"
+          }
+        }
+      },
+      "required": [
+        "runs"
+      ]
+    },
+    "DocumentPartial": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/DocumentPartialCode"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ]
+    },
+    "DocumentPartialCode": {
+      "type": "string",
+      "enum": [
+        "text_limit",
+        "block_limit",
+        "run_limit",
+        "cell_limit",
+        "image_limit",
+        "pixel_budget",
+        "depth_limit",
+        "malformed_html",
+        "unsupported_markup",
+        "unsupported_dependency",
+        "missing_image_source",
+        "external_reference",
+        "native_analysis_unavailable",
+        "native_styles_unavailable",
+        "native_table_structure_unavailable",
+        "native_partial",
+        "unverified_provenance",
+        "other_native_items"
+      ]
+    },
+    "DocumentRequest": {
+      "type": "object",
+      "properties": {
+        "entry_id": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 1
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0
+        },
+        "owner": {
+          "type": "string",
+          "enum": [
+            "history",
+            "favorites"
+          ]
+        },
+        "request_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        }
+      },
+      "required": [
+        "entry_id",
+        "owner",
+        "generation",
+        "request_id"
+      ]
+    },
+    "DocumentRun": {
+      "type": "object",
+      "properties": {
+        "link": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "style": {
+          "$ref": "#/$defs/DocumentRunStyle"
+        },
+        "text": {
+          "type": "string"
+        },
+        "unsupported": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text",
+        "style",
+        "unsupported"
+      ]
+    },
+    "DocumentRunStyle": {
+      "type": "object",
+      "properties": {
+        "bold": {
+          "type": "boolean"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentColor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "highlight": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DocumentColor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "monospace": {
+          "type": "boolean"
+        },
+        "strikethrough": {
+          "type": "boolean"
+        },
+        "subscript": {
+          "type": "boolean"
+        },
+        "superscript": {
+          "type": "boolean"
+        },
+        "underline": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "subscript",
+        "superscript"
+      ]
+    },
+    "DocumentTable": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentTableRow"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rows",
+        "truncated"
+      ]
+    },
+    "DocumentTableCell": {
+      "type": "object",
+      "properties": {
+        "header": {
+          "type": "boolean"
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentRun"
+          }
+        }
+      },
+      "required": [
+        "header",
+        "runs"
+      ]
+    },
+    "DocumentTableRow": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocumentTableCell"
+          }
+        }
+      },
+      "required": [
+        "cells"
       ]
     },
     "FavoriteMutation": {
@@ -195,8 +892,40 @@
         "can_stop"
       ]
     },
+    "HistoryDisplayInfo": {
+      "type": "object",
+      "properties": {
+        "cache_key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "document",
+            "text",
+            "file",
+            "unknown"
+          ]
+        },
+        "thumbnail_eligible": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 1,
+          "minimum": 1
+        }
+      },
+      "required": [
+        "version",
+        "kind",
+        "thumbnail_eligible",
+        "cache_key"
+      ]
+    },
     "HistoryEntry": {
-      "description": "A clipboard history entry.",
       "type": "object",
       "properties": {
         "batch_count": {
@@ -260,11 +989,31 @@
           "type": "integer",
           "format": "int64"
         },
+        "composite": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompositeInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "data_hash": {
           "type": "string"
         },
         "description": {
           "type": "string"
+        },
+        "display": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistoryDisplayInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "id": {
           "type": "integer",
@@ -274,6 +1023,7 @@
           "type": "boolean"
         },
         "size_bytes": {
+          "description": "**Logical size**: the size of the captured content itself, independent of how\nit is stored. For a composite item this is the sum of its parts' logical sizes,\nso it stays meaningful even when the bytes live outside the database.\n\nNot to be confused with the two other sizes in this API: the **external\nphysical size** (what a part actually occupies on disk once externalised) and\nthe **preview binary size** (`PreviewMetadata::size_bytes`, which describes the\npreview artefact being transferred, not the stored item).",
           "type": "integer",
           "format": "int64"
         },
@@ -284,7 +1034,13 @@
           "type": "string"
         },
         "type": {
-          "$ref": "#/$defs/PreviewKind"
+          "type": "string",
+          "enum": [
+            "text",
+            "image",
+            "file",
+            "composite"
+          ]
         }
       },
       "required": [
@@ -307,9 +1063,55 @@
         "batch_status"
       ]
     },
+    "HistoryIdentity": {
+      "type": "object",
+      "properties": {
+        "archive_digest": {
+          "type": "string"
+        },
+        "archive_revision": {
+          "type": "integer",
+          "format": "int64",
+          "maximum": 9007199254740991,
+          "minimum": 1
+        },
+        "capture_id": {
+          "type": "string"
+        },
+        "content_id": {
+          "type": "string"
+        },
+        "dedupe_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 1,
+          "minimum": 1
+        }
+      },
+      "required": [
+        "version",
+        "capture_id",
+        "content_id",
+        "dedupe_key",
+        "archive_revision",
+        "archive_digest"
+      ]
+    },
     "HistoryQueryPage": {
       "type": "object",
       "properties": {
+        "display_index_pending": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "entries": {
           "type": "array",
           "items": {
@@ -334,9 +1136,45 @@
         "has_more"
       ]
     },
+    "HistoryRestoreReport": {
+      "type": "object",
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "missing_images": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 4096,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "complete",
+        "missing_images"
+      ]
+    },
     "LocalCapabilities": {
       "type": "object",
       "properties": {
+        "document_preview_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 1,
+          "minimum": 1
+        },
+        "history_display_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 1,
+          "minimum": 1
+        },
         "max_preview_bytes": {
           "type": "integer",
           "format": "uint64",
@@ -349,8 +1187,8 @@
         "schema_version": {
           "type": "integer",
           "format": "uint32",
-          "maximum": 1,
-          "minimum": 1
+          "maximum": 2,
+          "minimum": 2
         },
         "supports_binary_preview": {
           "type": "boolean"
@@ -1046,15 +1884,6 @@
         "batch"
       ]
     },
-    "PreviewKind": {
-      "description": "The storage-level kind of a history item that can be previewed.",
-      "type": "string",
-      "enum": [
-        "text",
-        "image",
-        "file"
-      ]
-    },
     "RuntimeNotification": {
       "type": "object",
       "properties": {
@@ -1076,6 +1905,87 @@
         "message"
       ]
     },
+    "SourceContextGrantReport": {
+      "type": "object",
+      "properties": {
+        "budget_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "expires_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "grant_id": {
+          "type": "string"
+        },
+        "node_count": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "origin": {
+          "type": "string"
+        },
+        "ticket": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "grant_id",
+        "origin",
+        "expires_at",
+        "node_count",
+        "budget_bytes",
+        "ticket"
+      ]
+    },
+    "SourceContextImportReport": {
+      "type": "object",
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "deduplicated": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArchiveResourceFailure"
+          }
+        },
+        "imported": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "imported",
+        "deduplicated",
+        "complete",
+        "failures"
+      ]
+    },
+    "SourceContextRevokeReport": {
+      "type": "object",
+      "properties": {
+        "revoked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "revoked"
+      ]
+    },
     "StableErrorCode": {
       "description": "Stable local-IPC error categories. Deserializers deliberately map future\ncategories to `internal_error` so an older UI never crashes or guesses a\nretry policy for an error it does not understand.",
       "type": "string",
@@ -1086,6 +1996,15 @@
         "storage_unavailable",
         "unauthorized",
         "protocol_incompatible",
+        "publish_partial",
+        "publish_unknown",
+        "publish_superseded",
+        "native_only",
+        "originals_incomplete",
+        "resources_incomplete",
+        "no_single_image",
+        "format_unavailable",
+        "unsupported_format",
         "internal_error"
       ]
     },
@@ -1240,6 +2159,24 @@
         "progress",
         "sync_warning",
         "notifications"
+      ]
+    },
+    "WithheldRestoreFormat": {
+      "description": "A restore format that is present on the item but that the server will refuse.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "Stable reason code (`native_only`, `no_single_image`), never prose.",
+          "type": "string"
+        },
+        "format": {
+          "description": "The format name, matching one entry of `CompositeInfo::formats`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "code"
       ]
     }
   }

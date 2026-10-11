@@ -4,6 +4,113 @@ import XCTest
 @testable import TailSync
 
 final class ApiClientCancellationTests: XCTestCase {
+  func testThumbnailRetriesStableBusyEnvelopeWithoutDependingOnDisplayLanguage() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let sent = expectation(description: "two thumbnail responses")
+    let closed = expectation(description: "two thumbnail connections")
+    sent.expectedFulfillmentCount = 2
+    closed.expectedFulfillmentCount = 2
+    let busy = Data(#"{"ok":false,"error":{"schema_version":1,"code":"temporarily_busy","retryable":true,"message_key":"untrusted","detail_class":"private"}}"#.utf8) + Data([10])
+    let success = try JSONSerialization.data(withJSONObject: ["ok": true, "data": [
+      "width": 1, "height": 1, "rgba_b64": Data([255, 0, 0, 255]).base64EncodedString(), "cache_key": "th1:test"
+    ]]) + Data([10])
+    DispatchQueue.global().async {
+      server.respond(with: busy, closeDelay: 0, responseSent: sent, connectionClosed: closed)
+      var descriptor = pollfd(fd: server.descriptor, events: Int16(POLLIN), revents: 0)
+      if poll(&descriptor, 1, 1000) > 0 {
+        server.respond(with: success, closeDelay: 0, responseSent: sent, connectionClosed: closed) { request in
+          XCTAssertEqual(request["cmd"] as? String, "get_image_data")
+          XCTAssertEqual(request["cache_key"] as? String, "th1:test")
+        }
+      }
+    }
+    let thumbnail = await client.getImageData(id: 7, cacheKey: "th1:test")
+    XCTAssertEqual(thumbnail?.rgba, Data([255, 0, 0, 255]))
+    await fulfillment(of: [sent, closed], timeout: 2)
+  }
+
+  func testRestoreDecodesSavedContentReportWithoutClaimingMissingImagesWereCopied() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let sent = expectation(description: "restore report sent")
+    let closed = expectation(description: "restore report closed")
+    let response = Data(#"{"ok":true,"data":{"complete":false,"missing_images":2}}"#.utf8) + Data([0x0A])
+    DispatchQueue.global().async {
+      server.respond(with: response, closeDelay: 0, responseSent: sent, connectionClosed: closed)
+    }
+    let report = try await client.restoreEntryWithReport(id: 7)
+    XCTAssertFalse(report.complete)
+    XCTAssertEqual(report.missing_images, 2)
+    await fulfillment(of: [sent, closed], timeout: 5)
+  }
+
+  func testSourcePacketImportKeepsTargetAndCancellationIdentityOnTheSocket() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let received = expectation(description: "source request received")
+    let disconnected = expectation(description: "source request cancelled")
+    DispatchQueue.global().async {
+      server.waitForRequestThenDisconnect(received: received, disconnected: disconnected) { request in
+        XCTAssertEqual(request["cmd"] as? String, "source_context_import")
+        XCTAssertEqual(request["id"] as? Int, 7)
+        XCTAssertEqual(request["path"] as? String, "/tmp/selected-packet.json")
+        XCTAssertNotNil(request["request_id"] as? String)
+        XCTAssertNil(request["entries"])
+      }
+    }
+    let task = Task { try await client.sourceContextImport(id: 7, path: "/tmp/selected-packet.json") }
+    await fulfillment(of: [received], timeout: 2)
+    task.cancel()
+    do {
+      _ = try await task.value
+      XCTFail("Cancelled import must throw")
+    } catch is CancellationError {
+    } catch {
+      XCTFail("Unexpected cancellation error: \(error)")
+    }
+    await fulfillment(of: [disconnected], timeout: 1)
+  }
+
+  func testSourcePacketImportDecodesAnHonestPartialReport() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let sent = expectation(description: "source partial response sent")
+    let closed = expectation(description: "source response closed")
+    let response = Data(#"{"ok":true,"data":{"imported":1,"deduplicated":0,"complete":false,"failures":[{"image_index":1,"code":"source_node_missing"}]}}"#.utf8) + Data([0x0A])
+    DispatchQueue.global().async {
+      server.respond(with: response, closeDelay: 0, responseSent: sent, connectionClosed: closed)
+    }
+    let report = try await client.sourceContextImport(id: 7, path: "/tmp/selected-packet.json")
+    XCTAssertFalse(report.complete)
+    XCTAssertEqual(report.imported, 1)
+    XCTAssertEqual(report.failures[0].image_index, 1)
+    await fulfillment(of: [sent, closed], timeout: 2)
+  }
+
+  func testResourceArchiveUsesTheLongTimeoutAndKeepsPartialResultsHonest() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let sent = expectation(description: "archive response sent after the default timeout")
+    let closed = expectation(description: "archive socket closed")
+    let response = Data(#"{"ok":true,"data":{"archived":1,"deduplicated":0,"complete":false,"failures":[{"image_index":1,"code":"archive_decode"}]}}"#.utf8) + Data([0x0A])
+    DispatchQueue.global().async {
+      Thread.sleep(forTimeInterval: 3.2)
+      server.respond(with: response, closeDelay: 0, responseSent: sent, connectionClosed: closed) { request in
+        XCTAssertEqual(request["cmd"] as? String, "archive_entry_images")
+        XCTAssertEqual(request["id"] as? Int, 7)
+        XCTAssertNotNil(request["request_id"] as? String)
+      }
+    }
+    let report = try await client.archiveEntryImages(id: 7)
+    XCTAssertFalse(report.complete)
+    XCTAssertEqual(report.failures[0].image_index, 1)
+    let feedback = HistoryResourceArchiveFeedback.message(report)
+    XCTAssertTrue(feedback.contains("#2"))
+    XCTAssertNotEqual(feedback, Loc.t("history.composite.archiveDone"))
+    await fulfillment(of: [sent, closed], timeout: 5)
+  }
+
   func testConnectionModeSaveDoesNotSendStaleSettingsAndUsesServerSnapshot() async throws {
     let server = try LocalTestSocket()
     let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
@@ -262,11 +369,30 @@ final class ApiClientCancellationTests: XCTestCase {
     await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
   }
 
-  private static func capabilitiesResponse(platform: String) throws -> Data {
+  func testLocalCapabilitiesRejectsOldSchema() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let response = try Self.capabilitiesResponse(platform: "macos", schemaVersion: 1)
+    let responseSent = expectation(description: "old capabilities sent")
+    let connectionClosed = expectation(description: "old capabilities socket closed")
+    DispatchQueue.global().async {
+      server.respond(with: response, closeDelay: 0, responseSent: responseSent, connectionClosed: connectionClosed)
+    }
+    do {
+      _ = try await client.getLocalCapabilities()
+      XCTFail("schema v1 cannot service versioned restore identities")
+    } catch let error as ApiError {
+      guard case .serverError(let message) = error else { return XCTFail("unexpected error: \(error)") }
+      XCTAssertEqual(message, "Invalid local capabilities response")
+    }
+    await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
+  }
+
+  private static func capabilitiesResponse(platform: String, schemaVersion: Int = 2) throws -> Data {
     let payload: [String: Any] = [
       "max_preview_bytes": 67108864,
       "platform": platform,
-      "schema_version": 1,
+      "schema_version": schemaVersion,
       "supports_binary_preview": true,
       "supports_runtime_snapshot": true,
       "supports_stable_errors": true,
@@ -300,7 +426,7 @@ private final class LocalTestSocket: @unchecked Sendable {
 
   deinit { close(descriptor); unlink(path) }
 
-  func waitForRequestThenDisconnect(received: XCTestExpectation, disconnected: XCTestExpectation) {
+  func waitForRequestThenDisconnect(received: XCTestExpectation, disconnected: XCTestExpectation, inspectRequest: (([String: Any]) -> Void)? = nil) {
     let connection = accept(descriptor, nil, nil)
     guard connection >= 0 else { return }
     defer { close(connection) }
@@ -313,6 +439,7 @@ private final class LocalTestSocket: @unchecked Sendable {
       guard count > 0 else { return }
       request.append(contentsOf: bytes.prefix(count))
     }
+    if let decoded = try? JSONSerialization.jsonObject(with: request) as? [String: Any] { inspectRequest?(decoded) }
     received.fulfill()
     if recv(connection, &bytes, bytes.count, 0) == 0 { disconnected.fulfill() }
   }

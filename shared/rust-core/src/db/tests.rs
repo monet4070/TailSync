@@ -346,9 +346,11 @@ fn test_database(root: &Path) -> HistoryDB {
         );",
     )
     .unwrap();
+    schema::initialize(&conn).unwrap();
     HistoryDB {
         conn,
         read_identity: std::sync::Arc::new(()),
+        display_authority: rand::random(),
         #[cfg(any(test, feature = "test-support"))]
         storage_work_observer: None,
         deferred_checkpoint: false,
@@ -357,6 +359,8 @@ fn test_database(root: &Path) -> HistoryDB {
         storage_available: true,
         file_history_dir: root.join("file-history"),
         image_history_dir: root.join("image-history"),
+        has_composite_schema: false,
+        protected_history: std::collections::HashSet::new(),
     }
 }
 
@@ -2254,6 +2258,7 @@ fn migration_v4_preserves_invalid_images_and_exposes_diagnostics() {
     let db = HistoryDB {
         conn,
         read_identity: std::sync::Arc::new(()),
+        display_authority: rand::random(),
         #[cfg(any(test, feature = "test-support"))]
         storage_work_observer: None,
         deferred_checkpoint: false,
@@ -2262,6 +2267,8 @@ fn migration_v4_preserves_invalid_images_and_exposes_diagnostics() {
         storage_available: true,
         file_history_dir: file_dir,
         image_history_dir: image_dir,
+        has_composite_schema: false,
+        protected_history: std::collections::HashSet::new(),
     };
     let diagnostics = db.migration_diagnostics(10).unwrap();
     assert_eq!(diagnostics.unresolved_count, 1);
@@ -2381,6 +2388,67 @@ fn migration_transaction_rolls_back_schema_and_version_together() {
 }
 
 #[test]
+fn v11_upgrade_keeps_a_private_readable_snapshot_and_legacy_history() {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-v12-backup-{:016x}",
+        rand::random::<u64>()
+    ));
+    // This test drops the composite tables to emulate a pre-v12 database, so the
+    // fixture has to create them first.
+    let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+    db.add_text("legacy backup fixture", "fixture").unwrap();
+    let id = db.get_all(None, None, 1, 0).unwrap()[0].id;
+    db.conn
+        .execute_batch(
+            "DROP TABLE history_composite_events; DROP TABLE history_parts;
+         DELETE FROM schema_version WHERE version >= 12;",
+        )
+        .unwrap();
+    drop(db);
+
+    let db = HistoryDB::open_at_with_policy(&root, MigrationPolicy::CompositeAllowed).unwrap();
+    assert_eq!(db.get_data(id).unwrap(), b"legacy backup fixture");
+    // R1-03: the pre-upgrade artefact is a *package*, not a bare database file.
+    let backup_path = crate::db::rollback_package_dir(&root).join("history-before-v12.db");
+    let backup = Connection::open(&backup_path).unwrap();
+    let version: i64 = backup
+        .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 11);
+    let count: i64 = backup
+        .query_row("SELECT COUNT(*) FROM history WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    let has_parts: bool = backup
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='history_parts')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!has_parts);
+    let manifest = crate::db::verify_rollback_package(&root).expect("the package verifies");
+    assert_eq!(manifest.source_schema_version, 11);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&backup_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    drop(backup);
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn migration_v5_repairs_a_partial_schema() {
     let root = std::env::temp_dir().join(format!(
         "tailsync-category-partial-migration-{}-{}",
@@ -2472,7 +2540,7 @@ fn opening_v7_database_adds_batch_columns_before_creating_batch_index() {
     .unwrap();
     drop(conn);
 
-    let db = HistoryDB::open_at(&root).unwrap();
+    let db = HistoryDB::open_at_with_policy(&root, MigrationPolicy::CompositeAllowed).unwrap();
     let columns = db
         .conn
         .prepare("PRAGMA table_info(history)")
@@ -3025,7 +3093,7 @@ fn backfill_repairs_legacy_text_references_and_marks_corrupt_rows() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(repaired.1, "command");
+    assert_eq!(repaired.1, "code");
     assert!(repaired.2 >= 90);
     assert_eq!(repaired.3, crate::history_classifier::CLASSIFIER_VERSION);
     assert_eq!(db.get_data(repaired.0).unwrap(), text);
@@ -3112,7 +3180,7 @@ fn v9_busy_migration_keeps_pending_state_and_completes_on_reopen() {
         "tailsync-v9-busy-migration-{}",
         rand::random::<u64>()
     ));
-    let mut db = HistoryDB::open_at(&root).unwrap();
+    let mut db = HistoryDB::open_at_with_policy(&root, MigrationPolicy::CompositeAllowed).unwrap();
     db.add_text("legacy preview", "self").unwrap();
     db.conn.execute_batch("DELETE FROM schema_version WHERE version >= 9; UPDATE history SET description='legacy plaintext';").unwrap();
     let reader = Connection::open(root.join("history-v2.db")).unwrap();
@@ -3151,7 +3219,8 @@ fn v9_busy_migration_keeps_pending_state_and_completes_on_reopen() {
     reader.execute_batch("ROLLBACK;").unwrap();
     drop(reader);
     drop(db);
-    let reopened = HistoryDB::open_at(&root).unwrap();
+    let reopened =
+        HistoryDB::open_at_with_policy(&root, MigrationPolicy::CompositeAllowed).unwrap();
     let pending: i64 = reopened
         .conn
         .query_row(
@@ -3167,7 +3236,7 @@ fn v9_busy_migration_keeps_pending_state_and_completes_on_reopen() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, SCHEMA_VERSION);
     let description: String = reopened
         .conn
         .query_row(
@@ -3508,11 +3577,13 @@ fn degraded_history_migration_is_idempotent_by_content_hash() {
 
     let persistent = HistoryDB::open_isolated_for_test(&root).unwrap();
     let migrated =
-        super::open::migrate_degraded_history_into(&degraded.conn, &persistent.conn).unwrap();
+        super::open::migrate_degraded_history_into(&degraded.conn, &persistent.conn, false, false)
+            .unwrap();
     assert_eq!(migrated, 1);
     // A second pass (partially completed migration retried) inserts nothing.
     let migrated_again =
-        super::open::migrate_degraded_history_into(&degraded.conn, &persistent.conn).unwrap();
+        super::open::migrate_degraded_history_into(&degraded.conn, &persistent.conn, false, false)
+            .unwrap();
     assert_eq!(migrated_again, 0);
     assert_eq!(
         persistent
@@ -3562,7 +3633,13 @@ fn degraded_merge_promotes_favorite_and_failure_rolls_back_all_rows() {
     let mut persistent = HistoryDB::open_isolated_for_test(&root).unwrap();
     persistent.add_text("same bytes", "self").unwrap();
     persistent.reject_text_inserts_for_test(true).unwrap();
-    assert!(super::open::migrate_degraded_history_into(&degraded.conn, &persistent.conn).is_err());
+    assert!(super::open::migrate_degraded_history_into(
+        &degraded.conn,
+        &persistent.conn,
+        false,
+        false
+    )
+    .is_err());
     assert_eq!(persistent.get_all(None, None, 10, 0).unwrap().len(), 1);
     assert!(!persistent.get_all(None, None, 10, 0).unwrap()[0].pinned);
     assert_eq!(degraded.get_all(None, None, 10, 0).unwrap().len(), 2);
@@ -3576,4 +3653,535 @@ fn degraded_merge_promotes_favorite_and_failure_rolls_back_all_rows() {
         .find(|e| e.pinned)
         .unwrap();
     assert_eq!(degraded.get_data(favorite.id).unwrap(), b"same bytes");
+}
+
+/// R0 seam regressions for the composite-clipboard repair.
+/// Plan §4 R0.2; ledger `artifacts/composite-repair/2026-10-04-r0/expected-failures.json`.
+/// Gated behind `repair-regressions` so the default gate stays meaningful while
+/// these are legitimately red; the gate is removed once the owning stage closes.
+#[cfg(feature = "repair-regressions")]
+mod repair_regressions {
+    use super::*;
+
+    /// Build a database at the pre-upgrade schema, emulating an installed v11
+    /// database, at `root`.
+    fn legacy_fixture_at(root: &std::path::Path) {
+        let mut db = HistoryDB::open_isolated_for_test_composite(root).unwrap();
+        db.add_text("v11 fixture", "fixture").unwrap();
+        db.conn
+            .execute_batch(
+                "DROP TABLE history_composite_events; DROP TABLE history_parts;
+                 DELETE FROM schema_version WHERE version >= 12;",
+            )
+            .unwrap();
+    }
+
+    fn schema_state(db: &HistoryDB) -> (i64, bool, bool) {
+        let version = schema::schema_version(&db.conn).unwrap();
+        let table = |name: &str| -> bool {
+            db.conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+                    [name],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        (
+            version,
+            table("history_parts"),
+            table("history_composite_events"),
+        )
+    }
+
+    /// R1-02 / B / T02 — the runtime switch must reach the *persistent* policy.
+    ///
+    /// The verification reproduced the defect with the real binary: with the build
+    /// feature off **and** the runtime switch set, a v11 database still advanced to
+    /// v12 and a `history-before-v12.db` snapshot was written. The switch gated
+    /// negotiation and automatic capture only, never the schema.
+    ///
+    /// This drives the production seam — `production_migration_policy()`, which is
+    /// what `HistoryDB::new` passes to the open — instead of the test-only
+    /// `open_at` default, so it cannot pass vacuously.
+    ///
+    /// Requires `--test-threads=1`: it mutates a process-global environment
+    /// variable (plan §6 already runs the gate matrices serially).
+    #[test]
+    fn rr02_disabled_runtime_keeps_v11_and_creates_no_composite_tables() {
+        let root =
+            std::env::temp_dir().join(format!("tailsync-rr02-{:016x}", rand::random::<u64>()));
+        legacy_fixture_at(&root);
+        let _ = std::fs::remove_dir_all(crate::db::rollback_package_dir(&root));
+
+        std::env::set_var("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD", "1");
+        let policy = production_migration_policy();
+        let opened = HistoryDB::open_at_with_policy(&root, policy);
+        std::env::remove_var("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD");
+
+        let db = opened.expect("a healthy v11 database must still open");
+        let (version, parts, events) = schema_state(&db);
+        let backup = crate::db::rollback_package_dir(&root).exists();
+        drop(db);
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(
+            policy,
+            MigrationPolicy::LegacyOnly,
+            "the runtime switch must select the legacy policy (B)"
+        );
+        assert_eq!(
+            version, 11,
+            "a disabled composite runtime must not advance the schema to v12 (B)"
+        );
+        assert!(
+            !parts && !events,
+            "a disabled composite runtime must not create the composite tables (B)"
+        );
+        assert!(
+            !backup,
+            "no v12 upgrade means no pre-upgrade snapshot is required (B)"
+        );
+    }
+
+    /// R1-02 / B / T02 — the policy follows the build feature, and an allowed
+    /// upgrade still produces the pre-upgrade snapshot.
+    ///
+    /// Meaningful in both feature states: with the feature compiled out the policy
+    /// stays legacy even without the switch; with it compiled in, an unswitched
+    /// runtime may upgrade.
+    #[test]
+    fn rr02b_policy_follows_the_build_feature_and_snapshots_before_upgrading() {
+        let root =
+            std::env::temp_dir().join(format!("tailsync-rr02b-{:016x}", rand::random::<u64>()));
+        legacy_fixture_at(&root);
+        let _ = std::fs::remove_dir_all(crate::db::rollback_package_dir(&root));
+
+        std::env::remove_var("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD");
+
+        // K8: an unreported helper probe is deliberately not serviceable, so the
+        // policy stays legacy even with the feature compiled in. This is the
+        // conservative half of the predicate — startup must probe before it opens.
+        crate::secure::reset_helper_health_for_test();
+        assert_eq!(
+            production_migration_policy(),
+            MigrationPolicy::LegacyOnly,
+            "without a helper health report the schema must not be upgraded (K8)"
+        );
+
+        // With a healthy helper the policy follows the compiled feature.
+        crate::secure::set_helper_health(true);
+        let policy = production_migration_policy();
+        let expected = if cfg!(feature = "protocol-composite-clipboard") {
+            MigrationPolicy::CompositeAllowed
+        } else {
+            MigrationPolicy::LegacyOnly
+        };
+        assert_eq!(
+            policy, expected,
+            "a healthy helper lets the policy follow the compiled feature"
+        );
+
+        let db = HistoryDB::open_at_with_policy(&root, policy).expect("fixture opens");
+        let (version, parts, events) = schema_state(&db);
+        let backup = crate::db::rollback_package_dir(&root)
+            .join("history-before-v12.db")
+            .exists();
+        drop(db);
+        std::fs::remove_dir_all(&root).ok();
+
+        match policy {
+            MigrationPolicy::CompositeAllowed => {
+                assert_eq!(
+                    version, 13,
+                    "an allowed upgrade reaches the identity schema"
+                );
+                assert!(
+                    parts && events,
+                    "an allowed upgrade creates the composite tables"
+                );
+                assert!(
+                    backup,
+                    "an allowed upgrade snapshots the pre-upgrade database"
+                );
+            }
+            MigrationPolicy::LegacyOnly => {
+                assert_eq!(version, 11, "a legacy open stays at v11");
+                assert!(
+                    !parts && !events,
+                    "a legacy open creates no composite tables"
+                );
+                assert!(!backup, "a legacy open needs no snapshot");
+            }
+        }
+        crate::secure::reset_helper_health_for_test();
+    }
+
+    /// R1-04 / D-1 / H-7 / H-8 — the health probe and resolver are shared by both
+    /// platforms and never search `PATH`; an unreported probe is not serviceable.
+    #[test]
+    fn rr12_helper_health_gates_the_composite_predicate() {
+        std::env::remove_var("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD");
+        crate::secure::reset_helper_health_for_test();
+        assert_eq!(
+            crate::secure::helper_health(),
+            None,
+            "probe starts unreported"
+        );
+        assert!(
+            !crate::secure::composite_serviceable(),
+            "an unreported helper probe must not enable composite clipboard (K8)"
+        );
+        crate::secure::set_helper_health(true);
+        assert_eq!(
+            crate::secure::composite_serviceable(),
+            cfg!(feature = "protocol-composite-clipboard"),
+            "a healthy helper enables composite only where the feature is compiled in"
+        );
+        crate::secure::set_helper_health(false);
+        assert!(
+            !crate::secure::composite_serviceable(),
+            "an unhealthy helper must disable composite clipboard (K8)"
+        );
+        crate::secure::reset_helper_health_for_test();
+    }
+
+    /// R1-03 / T03 — the pre-upgrade package must be *complete*, and the restored
+    /// copy must be readable through the legacy policy.
+    ///
+    /// The verification and the acceptance checklist both note that a database-only
+    /// snapshot is not a rollback artefact: the image and file payloads live outside
+    /// SQLite. This drives the real upgrade path, then restores into a fresh
+    /// directory and reads text, image bytes, file bytes and the favorite back at
+    /// v11 with no composite tables.
+    #[test]
+    fn rr13_upgrade_writes_a_complete_rollback_package_that_the_legacy_schema_still_reads() {
+        let root =
+            std::env::temp_dir().join(format!("tailsync-rr13-{:016x}", rand::random::<u64>()));
+        let restored = std::env::temp_dir().join(format!(
+            "tailsync-rr13-restored-{:016x}",
+            rand::random::<u64>()
+        ));
+        let image_bytes = packed_test_image(4, 4, 0x11);
+        let file_bytes = b"rollback file payload".to_vec();
+
+        // 1) A store with real external payloads, stripped back to a v11 shape.
+        let (text_id, image_id, file_id) = {
+            let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+            db.add_text("rollback text fixture", "self").unwrap();
+            let text_id = db.conn.last_insert_rowid();
+            db.add_image(&image_bytes, "self").unwrap();
+            let image_id = db.conn.last_insert_rowid();
+            db.add_file("rollback-file.bin", &file_bytes, "self")
+                .unwrap();
+            let file_id = db.conn.last_insert_rowid();
+            db.set_favorite(text_id, true).unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE history_composite_events; DROP TABLE history_parts;
+                     DELETE FROM schema_version WHERE version >= 12;",
+                )
+                .unwrap();
+            (text_id, image_id, file_id)
+        };
+
+        // 2) Upgrade. The package must exist and verify *before* the schema moves.
+        let db = HistoryDB::open_at_with_policy(&root, MigrationPolicy::CompositeAllowed)
+            .expect("the upgrade must succeed once the package is written");
+        assert_eq!(
+            schema::schema_version(&db.conn).unwrap(),
+            13,
+            "the upgrade itself still happens"
+        );
+        drop(db);
+
+        let manifest = crate::db::verify_rollback_package(&root).expect("package verifies");
+        assert_eq!(manifest.source_schema_version, 11);
+        assert!(
+            manifest.payloads.len() >= 2,
+            "both the image and the file payload must be captured, got {}",
+            manifest.payloads.len()
+        );
+        assert!(manifest.total_bytes > 0);
+        assert!(
+            manifest
+                .excludes
+                .iter()
+                .any(|entry| entry.contains("identity")),
+            "the manifest must record that identity/trust/receipts are NOT rolled back"
+        );
+
+        // The package must contain only the snapshot, the payloads and the manifest:
+        // no identity, trust or receipt material.
+        let package = crate::db::rollback_package_dir(&root);
+        let mut top: Vec<String> = std::fs::read_dir(&package)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        top.sort();
+        assert_eq!(
+            top,
+            vec![
+                "history-before-v12.db".to_string(),
+                "manifest.json".to_string(),
+                "payloads".to_string()
+            ],
+            "a rollback package must not carry identity, trust or receipt state"
+        );
+
+        // 3) Restore into a new directory and read it back through the legacy policy.
+        crate::db::restore_rollback_package(&root, &restored).expect("restore succeeds");
+        let legacy = HistoryDB::open_at_with_policy(&restored, MigrationPolicy::LegacyOnly)
+            .expect("the restored database must open at the legacy policy");
+        assert_eq!(schema::schema_version(&legacy.conn).unwrap(), 11);
+        assert!(
+            !legacy.has_composite_schema(),
+            "the restored database is a v11 database with no composite tables"
+        );
+        assert_eq!(
+            legacy.get_data(text_id).unwrap(),
+            b"rollback text fixture",
+            "text survived the round trip"
+        );
+        assert_eq!(
+            legacy.get_data(image_id).unwrap(),
+            image_bytes,
+            "the image payload bytes survived: a database-only snapshot would have lost them"
+        );
+        assert_eq!(
+            legacy.get_data(file_id).unwrap(),
+            file_bytes,
+            "the file payload bytes survived"
+        );
+        let entries = legacy.get_all(None, None, 10, 0).unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.id == text_id && entry.pinned),
+            "the favorite survived"
+        );
+        drop(legacy);
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&restored).ok();
+    }
+
+    /// R1-03 — a package that does not verify must stop the upgrade instead of
+    /// being silently replaced (it holds the only pre-upgrade state).
+    #[test]
+    fn rr13b_tampered_rollback_package_stops_the_upgrade() {
+        let root =
+            std::env::temp_dir().join(format!("tailsync-rr13b-{:016x}", rand::random::<u64>()));
+        {
+            let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+            db.add_text("tamper fixture", "self").unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE history_composite_events; DROP TABLE history_parts;
+                     DELETE FROM schema_version WHERE version >= 12;",
+                )
+                .unwrap();
+        }
+        let db = HistoryDB::open_at_with_policy(&root, MigrationPolicy::CompositeAllowed).unwrap();
+        drop(db);
+        // Corrupt one byte of the snapshot, leaving the manifest's digest stale.
+        let snapshot = crate::db::rollback_package_dir(&root).join("history-before-v12.db");
+        let mut bytes = std::fs::read(&snapshot).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(&snapshot, &bytes).unwrap();
+
+        assert!(
+            crate::db::verify_rollback_package(&root).is_err(),
+            "a tampered package must not verify"
+        );
+        assert!(
+            crate::db::restore_rollback_package(&root, &root.join("restore-target")).is_err(),
+            "a tampered package must not be restorable"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[test]
+fn pending_history_survives_dedupe_and_quota_without_evicting_latest_copy() {
+    let root = std::env::temp_dir().join(format!(
+        "pending-history-quota-{:016x}",
+        rand::random::<u64>()
+    ));
+    crate::private_fs::create_private_dir_all(&root).unwrap();
+    let mut db = test_database(&root);
+    db.max_history = 1;
+    let pending = db.prepare_legacy_text("same content", "remote").unwrap();
+    db.add_text("same content", "local").unwrap();
+    assert_eq!(db.get_all(None, None, 100, 0).unwrap().len(), 2);
+    db.add_text("latest user copy", "local").unwrap();
+    let entries = db.get_all(None, None, 100, 0).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().any(|e| e.id == pending));
+    assert!(entries
+        .iter()
+        .any(|e| e.description.contains("latest user copy")));
+    db.release_history(pending);
+    db.trim("text").unwrap();
+    assert_eq!(db.get_all(None, None, 100, 0).unwrap().len(), 1);
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// R6 / T02: these names are the executable §6 runtime-disabled filter.
+// The guard restores an operator-supplied value even when an assertion panics.
+#[cfg(feature = "protocol-composite-clipboard")]
+mod runtime_disabled {
+    use super::*;
+    struct DisableGuard {
+        env: Option<std::ffi::OsString>,
+        helper: Option<bool>,
+    }
+    impl DisableGuard {
+        fn new() -> Self {
+            let old = std::env::var_os("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD");
+            std::env::set_var("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD", "1");
+            let helper = crate::secure::helper_health();
+            crate::secure::set_helper_health(true);
+            Self { env: old, helper }
+        }
+    }
+    impl Drop for DisableGuard {
+        fn drop(&mut self) {
+            match &self.env {
+                Some(value) => std::env::set_var("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD", value),
+                None => std::env::remove_var("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD"),
+            }
+            match self.helper {
+                Some(healthy) => crate::secure::set_helper_health(healthy),
+                None => crate::secure::reset_helper_health_for_test(),
+            }
+        }
+    }
+    #[test]
+    fn runtime_disabled_removes_advertisement_and_serviceability() {
+        let _guard = DisableGuard::new();
+        assert_eq!(crate::secure::helper_health(), Some(true));
+        let switches = crate::secure::CapabilitySwitches::runtime_defaults();
+        assert!(!switches.advertised().composite_clipboard);
+        assert!(!switches.serviceable_advertisement().composite_clipboard);
+        assert!(!crate::secure::composite_capture_serviceable());
+        assert!(!crate::secure::composite_serviceable());
+        assert_eq!(production_migration_policy(), MigrationPolicy::LegacyOnly);
+    }
+    #[test]
+    fn runtime_disabled_keeps_v11_without_composite_tables_or_backup() {
+        let _guard = DisableGuard::new();
+        let root = isolated_root("runtime-disabled-v11");
+        {
+            let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+            db.add_text("disabled fixture", "fixture").unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE history_composite_events; DROP TABLE history_parts;
+                DELETE FROM schema_version WHERE version >= 12;",
+                )
+                .unwrap();
+        }
+        let db = HistoryDB::open_at_with_policy(&root, production_migration_policy()).unwrap();
+        assert_eq!(schema::schema_version(&db.conn).unwrap(), 11);
+        let tables: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+            WHERE name IN ('history_parts','history_composite_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0);
+        assert_eq!(db.get_all(None, None, 10, 0).unwrap().len(), 1);
+        assert!(!crate::db::rollback_package_dir(&root).exists());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn runtime_disabled_preserves_existing_v12_data_and_favorites() {
+        let _guard = DisableGuard::new();
+        let root = isolated_root("runtime-disabled-v12");
+        let bundle = crate::composite::PortableBundle {
+            representations: vec![
+                crate::composite::Representation {
+                    mime: crate::composite::Mime::Text,
+                    bytes: b"v12 retained fixture".to_vec(),
+                },
+                crate::composite::Representation {
+                    mime: crate::composite::Mime::Html,
+                    bytes: b"<p>v12 retained fixture</p>".to_vec(),
+                },
+            ],
+            resources: vec![],
+            bindings: vec![],
+            completeness: crate::composite::Completeness::Complete,
+        };
+        let id = {
+            let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+            db.conn.execute_batch("DROP TABLE history_composite_identity; DELETE FROM schema_version WHERE version >= 13;").unwrap();
+            let id = db.add_composite(&bundle, None, "fixture").unwrap();
+            db.set_favorite(id, true).unwrap();
+            id
+        };
+        let db = HistoryDB::open_at_with_policy(&root, production_migration_policy()).unwrap();
+        assert_eq!(schema::schema_version(&db.conn).unwrap(), 12);
+        assert_eq!(db.get_data(id).unwrap(), bundle.encode().unwrap());
+        assert_eq!(db.get_composite(id).unwrap().representations.len(), 2);
+        assert!(db
+            .get_all(None, None, 10, 0)
+            .unwrap()
+            .iter()
+            .any(|e| e.id == id && e.pinned));
+        assert!(db.conn.prepare("SELECT * FROM history_parts").is_ok());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn old_command_and_json_labels_backfill_into_one_code_group_without_data_changes() {
+    let root =
+        std::env::temp_dir().join(format!("tailsync-code-backfill-{}", rand::random::<u64>()));
+    let mut db = test_database(&root);
+    for (text, old) in [
+        ("git status --short", "command"),
+        (r#"{"enabled":true}"#, "structured_data"),
+    ] {
+        db.add_text(text, "fixture").unwrap();
+        let id = db.get_all(Some(text), None, 10, 0).unwrap()[0].id;
+        db.set_favorite(id, true).unwrap();
+        db.conn.execute("UPDATE history SET category=?1,categories=json_array(?1,'text'),classifier_version=4 WHERE id=?2", params![old, id]).unwrap();
+    }
+    let before: Vec<(i64, Vec<u8>, String)> = db
+        .conn
+        .prepare("SELECT id,data,data_hash FROM history ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(db.backfill_classifications(10).unwrap(), 2);
+    assert_eq!(db.backfill_classifications(10).unwrap(), 0);
+    for filter in ["code", "command", "structured_data"] {
+        let entries = db.get_all(None, Some(filter), 10, 0).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| entry.category == "code"
+            && entry.categories == vec!["code"]
+            && entry.pinned));
+    }
+    let after: Vec<(i64, Vec<u8>, String)> = db
+        .conn
+        .prepare("SELECT id,data,data_hash FROM history ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(before, after);
+    drop(db);
+    let _ = std::fs::remove_dir_all(root);
 }

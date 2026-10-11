@@ -35,6 +35,7 @@ pub struct PreviewWindowSnapshot {
     pub batch_id: Option<String>,
     pub owner: PreviewWindowOwner,
     pub take_focus: bool,
+    pub document_eligible: bool,
 }
 
 #[derive(Default)]
@@ -117,6 +118,7 @@ impl PreviewWindowController {
             batch_id: request.batch_id,
             owner: request.owner,
             take_focus: request.take_focus,
+            document_eligible: false,
         };
         inner.minimized_with_owner = false;
         inner.pending_owner = Some(snapshot.owner);
@@ -187,19 +189,22 @@ pub async fn open_preview_window(
         }
         controller.reserve(request.owner, restore.epoch)
     };
-    if let Some(batch_id) = request.batch_id.as_deref() {
-        let navigation = app_state
-            .db
-            .lock()
-            .await
-            .get_preview_batch_navigation(batch_id, request.entry_id)
-            .map_err(|error| error.to_string())?;
-        request.entry_id = navigation.first_entry_id;
-    }
+    let document_eligible = {
+        let database = app_state.db.lock().await;
+        if let Some(batch_id) = request.batch_id.as_deref() {
+            let navigation = database
+                .get_preview_batch_navigation(batch_id, request.entry_id)
+                .map_err(|error| error.to_string())?;
+            request.entry_id = navigation.first_entry_id;
+        }
+        database
+            .display_kind(request.entry_id)
+            .is_ok_and(|kind| kind == "document")
+    };
     let (send, receive) = tokio::sync::oneshot::channel();
     let ui_app = app.clone();
     app.run_on_main_thread(move || {
-        let result = finish_open_preview(ui_app, request, revision);
+        let result = finish_open_preview(ui_app, request, revision, document_eligible);
         let _ = send.send(result);
     })
     .map_err(|error| error.to_string())?;
@@ -210,6 +215,7 @@ fn finish_open_preview(
     app: AppHandle,
     request: PreviewWindowRequest,
     revision: u64,
+    document_eligible: bool,
 ) -> Result<PreviewWindowSnapshot, crate::commands::CommandError> {
     // UI work is serialized on the main thread with close/presentation.
     // No worker holds this lock while waiting for main-thread window creation.
@@ -228,6 +234,7 @@ fn finish_open_preview(
         batch_id: request.batch_id,
         owner: request.owner,
         take_focus: request.take_focus,
+        document_eligible,
     };
     inner.current = Some(snapshot.clone());
     inner.minimized_with_owner = false;
@@ -416,6 +423,16 @@ mod tests {
         assert_eq!(first.revision, 1);
         assert_eq!(second.revision, 2);
         assert_eq!(controller.current(), Some(second));
+    }
+
+    #[test]
+    fn snapshot_exposes_the_document_eligibility_flag_to_the_renderer() {
+        let controller = PreviewWindowController::default();
+        let snapshot = controller.replace(request(1));
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["documentEligible"], serde_json::json!(false));
+        assert_eq!(json["entryId"], serde_json::json!(1));
+        assert_eq!(json["takeFocus"], serde_json::json!(false));
     }
 
     #[test]

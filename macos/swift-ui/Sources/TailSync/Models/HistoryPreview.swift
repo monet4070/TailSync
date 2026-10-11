@@ -5,6 +5,7 @@ enum HistoryPreviewFormat: String, CaseIterable, Equatable, Sendable {
     case text
     case code
     case markdown
+    case document
     case svg
     case image
     case pdf
@@ -15,7 +16,7 @@ enum HistoryPreviewFormat: String, CaseIterable, Equatable, Sendable {
     var windowKind: HistoryPreviewWindowKind {
         switch self {
         case .text, .code: return .text
-        case .markdown, .docx, .presentation: return .document
+        case .markdown, .document, .docx, .presentation: return .document
         case .svg, .image: return .image
         case .pdf: return .pdf
         case .unsupported: return .text
@@ -24,8 +25,12 @@ enum HistoryPreviewFormat: String, CaseIterable, Equatable, Sendable {
 
     static func detect(
         payload: HistoryPreviewData,
-        categoryHint: String? = nil
+        categoryHint: String? = nil,
+        displayKind: String? = nil
     ) -> HistoryPreviewFormat {
+        if displayKind == "document" {
+            return .document
+        }
         let fileExtension = HistoryPreviewFileTypes.fileExtension(for: payload.name)
         if payload.kind == "image" || HistoryPreviewFileTypes.imageExtensions.contains(fileExtension) {
             return .image
@@ -113,6 +118,7 @@ struct HistoryPreviewItem: Identifiable, Equatable, Sendable {
     let nameHint: String
     let sizeBytes: Int64
     let resolvesBatchFirst: Bool
+    let displayKind: String?
 
     init(entry: HistoryEntry, resolvesBatchFirst: Bool = false) {
         id = entry.id
@@ -123,6 +129,7 @@ struct HistoryPreviewItem: Identifiable, Equatable, Sendable {
         type = entry.type
         nameHint = entry.description
         sizeBytes = entry.size_bytes
+        displayKind = entry.display?.kind
         self.resolvesBatchFirst = resolvesBatchFirst
     }
 
@@ -135,7 +142,8 @@ struct HistoryPreviewItem: Identifiable, Equatable, Sendable {
         type: String,
         nameHint: String,
         sizeBytes: Int64,
-        resolvesBatchFirst: Bool = false
+        resolvesBatchFirst: Bool = false,
+        displayKind: String? = nil
     ) {
         self.id = id
         self.batchId = batchId
@@ -146,6 +154,7 @@ struct HistoryPreviewItem: Identifiable, Equatable, Sendable {
         self.nameHint = nameHint
         self.sizeBytes = sizeBytes
         self.resolvesBatchFirst = resolvesBatchFirst
+        self.displayKind = displayKind
     }
 
     var estimatedFormat: HistoryPreviewFormat {
@@ -155,7 +164,11 @@ struct HistoryPreviewItem: Identifiable, Equatable, Sendable {
             sizeBytes: max(0, sizeBytes),
             data: Data()
         )
-        return HistoryPreviewFormat.detect(payload: placeholder, categoryHint: category)
+        return HistoryPreviewFormat.detect(
+            payload: placeholder,
+            categoryHint: category,
+            displayKind: displayKind
+        )
     }
 }
 

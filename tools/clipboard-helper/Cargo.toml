@@ -1,0 +1,17 @@
+[package]
+name = "tailsync-clipboard-helper"
+version = "2.3.2"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+tailsync-protocol = { path = "../../shared/tailsync-protocol" }
+png = "0.18"
+blake3 = { version = "1", optional = true }
+
+[features]
+# Allows checking Windows Rust APIs on hosts without MSVC assembly tools.
+portable-check = ["dep:blake3", "blake3/pure"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging"] }

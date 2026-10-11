@@ -309,13 +309,31 @@ pub async fn enqueue_queued_frame(
     target: ResolvedTarget,
     queued: QueuedFrame,
 ) -> Result<(), String> {
-    let command = queued.command();
-    timeout(SEND_TIMEOUT, sender.channel_for(command).send(queued))
+    enqueue_queued_frame_checked(sender, target, queued, std::future::ready(Some(())))
+        .await
+        .map(|_| ())
+}
+
+/// A capture gate may hold its engine guard through the final queue handoff.
+pub async fn enqueue_queued_frame_checked<G>(
+    sender: PoolSender,
+    target: ResolvedTarget,
+    queued: QueuedFrame,
+    current: impl std::future::Future<Output = Option<G>>,
+) -> Result<bool, String> {
+    // Reserve capacity before consulting the capture. Discovery, locks and
+    // backpressure may all have outlived it. No engine guard spans this wait.
+    let permit = timeout(SEND_TIMEOUT, sender.channel_for(queued.command()).reserve())
         .await
         .map_err(|_| format!("Timed out queueing frame for {target}"))?
         .map_err(|_| format!("Connection to {target} closed"))?;
+    let Some(_guard) = current.await else {
+        return Ok(false);
+    };
+    // The guard and the reserved slot survive through this synchronous send.
+    permit.send(queued);
     sender.retry_wakeup.notify_one();
-    Ok(())
+    Ok(true)
 }
 
 pub async fn await_delivery(
@@ -334,6 +352,53 @@ pub async fn await_delivery(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn review_capture_gate_runs_after_queue_backpressure_without_holding_engine() {
+        use std::{future::Future, task::Poll};
+        for remains_current in [false, true] {
+            let (priority, mut rx) = mpsc::channel(1);
+            let (bulk, _bulk_rx) = mpsc::channel(1);
+            let (shutdown, _shutdown_rx) = watch::channel(false);
+            priority
+                .send(QueuedFrame::new(Command::Heartbeat, vec![]).unwrap())
+                .await
+                .unwrap();
+            let sender = PoolSender::new(priority, bulk, shutdown);
+            let engine = Arc::new(Mutex::new(true));
+            let check_engine = engine.clone();
+            let handoff = enqueue_queued_frame_checked(
+                sender,
+                candidate().target,
+                QueuedFrame::new(Command::HeartbeatAck, vec![]).unwrap(),
+                async move {
+                    let guard = check_engine.lock_owned().await;
+                    (*guard).then_some(guard)
+                },
+            );
+            tokio::pin!(handoff);
+            // Poll exactly once while the real bounded queue is full. No sleeps
+            // or task scheduling assumptions determine whether the gate ran.
+            std::future::poll_fn(|cx| {
+                assert!(handoff.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            *timeout(Duration::from_millis(50), engine.lock())
+                .await
+                .expect("queue pressure must not hold the engine") = remains_current;
+            rx.recv().await.unwrap();
+            assert_eq!(handoff.await.unwrap(), remains_current);
+            if remains_current {
+                assert_eq!(rx.recv().await.unwrap().command(), Command::HeartbeatAck);
+            } else {
+                assert!(
+                    rx.try_recv().is_err(),
+                    "superseded capture must never enter the worker queue"
+                );
+            }
+        }
+    }
 
     fn candidate() -> ResolvedCandidate {
         ResolvedCandidate {

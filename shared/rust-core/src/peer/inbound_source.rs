@@ -11,6 +11,7 @@ use crate::peer::types::{ConnectionInterface, ConnectionMode};
 use std::net::SocketAddr;
 
 /// Where an inbound peer connection came from.
+#[derive(Clone)]
 pub enum InboundSource {
     Tcp(SocketAddr),
     Iroh(String),

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Favorites, History } from "./History";
+import type { SyncWarning, HistoryEntry } from "../tailsyncClient";
 import {
   LONG_PRESS_CHARGE_MS,
   LONG_PRESS_GRACE_MS,
@@ -12,12 +13,16 @@ const {
   onCloseRequestedMock,
   isAlwaysOnTopMock,
   setAlwaysOnTopMock,
+  saveMock,
+  openMock,
 } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   stopListening: vi.fn(),
   onCloseRequestedMock: vi.fn(),
   isAlwaysOnTopMock: vi.fn(),
   setAlwaysOnTopMock: vi.fn(),
+  saveMock: vi.fn(),
+  openMock: vi.fn(),
 }));
 
 const historyListeners = new Map<string, (event: { payload: unknown }) => void>();
@@ -28,6 +33,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openMock, save: saveMock }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     isMinimized: vi.fn(() => Promise.resolve(false)),
@@ -42,10 +48,11 @@ vi.mock("../hooks/useTheme", () => ({
   useTheme: () => ({ theme: "light", colorTheme: "tailsync", resolvedColorTheme: "tailsync" }),
 }));
 vi.mock("../hooks/useI18n", () => ({
-  useI18n: () => ({ t: (key: string) => key === "history.syncExpired" ? key + ":{peer}" : key }),
+  useI18n: () => ({ t: (key: string) => key === "history.syncExpired" ? key + ":{peer}"
+    : key === "history.restore.availableContent" ? "Copied saved content; {count} images not saved" : key }),
 }));
 
-const entry = {
+const entry: HistoryEntry = {
   id: 7,
   timestamp: "2026-08-02T12:00:00Z",
   type: "text",
@@ -129,6 +136,30 @@ describe("History item actions", () => {
           return defaultInvoke(command);
       }
     });
+  });
+
+  it("keeps readonly detail keyboard interaction out of whole-row restore and preview", async () => {
+    const detailed = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 0, formats: ["text"],
+      restorable_formats: ["text"], withheld_formats: [],
+      representation_count: 1, image_count: 0, completeness: "complete",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: [detailed], total: 1, has_more: false }) : original(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    const toggle = screen.getByRole("button", { name: "history.composite.details" });
+    fireEvent.click(toggle);
+    const panel = document.querySelector<HTMLElement>(".item-diagnostics")!;
+    panel.focus();
+    fireEvent.keyDown(panel, { key: "Enter" });
+    fireEvent.keyDown(panel, { key: " ", code: "Space" });
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_entry")).toBe(false);
+    expect(invokeMock.mock.calls.some(([command]) => command === "open_preview_window")).toBe(false);
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(document.querySelector(".item-diagnostics")).toBeNull();
+    expect(document.activeElement).toBe(toggle);
   });
 
   it("toggles the history window's always-on-top state and persists it", async () => {
@@ -224,6 +255,281 @@ describe("History item actions", () => {
     expect(pin).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("keeps a composite item in one row and restores whole content or an explicit format", async () => {
+    // R5-04: `png` is present but withheld, because this item carries two images and
+    // no standalone PNG — the server refuses an explicit PNG restore for it.
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["text", "html", "png"],
+      restorable_formats: ["text", "html"],
+      withheld_formats: [{ format: "png", code: "no_single_image" }],
+      representation_count: 3, image_count: 2, completeness: "external_references",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: [rich], total: 1, has_more: false }) : original(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    expect(document.querySelectorAll(".history-item")).toHaveLength(1);
+    expect(screen.getByText(/history.composite.resourcesMissing/)).toBeInTheDocument();
+    expect(screen.queryByText(/history\.composite\.formats/)).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "history.composite.copy.text" })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "history.composite.copy.png" })
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "history.composite.archiveImages" })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "history.composite.authorizeSource" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
+    expect(
+      screen.getByRole("button", { name: "history.composite.authorizeSource" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "history.composite.importSourcePacket" })
+    ).toBeInTheDocument();
+    fireEvent.doubleClick(document.querySelector(".history-item")!);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: entry.id }));
+  });
+
+  it("restores a server-accepted image format without offering the text entry", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["png"],
+      restorable_formats: ["png"], withheld_formats: [],
+      representation_count: 1, image_count: 1, completeness: "complete",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: [rich], total: 1, has_more: false }) : original(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    expect(screen.queryByRole("button", { name: "history.composite.copy.text" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.copy.png" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: entry.id, restoreFormat: "png" }));
+  });
+
+  it("offers no conversion entry for a text-only composite item", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["text"],
+      restorable_formats: ["text"], withheld_formats: [],
+      representation_count: 1, image_count: 0, completeness: "complete",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: [rich], total: 1, has_more: false }) : original(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    expect(screen.queryByRole("button", { name: "history.composite.copy.text" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "history.composite.copy.png" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "history.composite.archiveImages" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "history.composite.details" })
+    ).toBeInTheDocument();
+    fireEvent.doubleClick(document.querySelector(".history-item")!);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: entry.id }));
+  });
+
+  it("opens read-only diagnostics without restoring, deleting or favoring the entry", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["text", "html", "png"],
+      restorable_formats: ["text", "html"],
+      withheld_formats: [{ format: "png", code: "no_single_image" }],
+      representation_count: 3, image_count: 2, completeness: "external_references",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: [rich], total: 1, has_more: false }) : original(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    const details = screen.getByRole("button", { name: "history.composite.details" });
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    invokeMock.mockClear();
+    fireEvent.click(details);
+    expect(
+      screen.getByRole("button", { name: "history.composite.details" })
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("history.composite.diag.formats")).toBeInTheDocument();
+    expect(screen.getByText("text, html, png")).toBeInTheDocument();
+    expect(screen.getByText("history.composite.diag.completeness")).toBeInTheDocument();
+    expect(screen.getByText("history.composite.diag.withheld")).toBeInTheDocument();
+    expect(screen.getByText("png: history.composite.diag.unavailable")).toBeInTheDocument();
+    expect(invokeMock).not.toHaveBeenCalledWith("restore_entry", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_entry", expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith("set_history_favorite", expect.anything());
+  });
+
+  it("keeps the native-only risk label and withholds its conversions", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: true, native_item_count: 1, formats: ["text", "png"],
+      restorable_formats: [],
+      withheld_formats: [{ format: "text", code: "native_only" }, { format: "png", code: "native_only" }],
+      representation_count: 2, image_count: 1, completeness: "complete",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: [rich], total: 1, has_more: false }) : original(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    expect(screen.getByText(/history.composite.localOnly/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "history.composite.copy.png" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "history.composite.copy.text" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.details" }));
+    expect(screen.getByText("history.composite.diag.nativeOnly")).toBeInTheDocument();
+    expect(screen.getByText("history.composite.diag.yes")).toBeInTheDocument();
+  });
+
+  it("archives images only on an explicit action and reports which image failed", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["html"], restorable_formats: [],
+      withheld_formats: [{ format: "html", code: "resources_incomplete" }],
+      representation_count: 1, image_count: 0, completeness: "external_references",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => {
+      if (command === "get_history_page") return Promise.resolve({ entries: [rich], total: 1, has_more: false });
+      if (command === "archive_entry_images") return Promise.resolve({ archived: 1, deduplicated: 0, complete: false, failures: [{ image_index: 1, code: "archive_decode" }] });
+      return original(command, args);
+    });
+    render(<History />);
+    await screen.findByText(entry.description);
+    expect(invokeMock.mock.calls.some(([command]) => command === "archive_entry_images")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.archiveImages" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("archive_entry_images", { id: entry.id }));
+    expect(await screen.findByText(/#2: history.composite.archiveInvalid/)).toBeInTheDocument();
+    expect(screen.queryByText("history.composite.archiveDone")).toBeNull();
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_entry")).toBe(false);
+  });
+
+  it("discards archive feedback after the history session closes and reopens", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["html"], restorable_formats: [],
+      withheld_formats: [{ format: "html", code: "resources_incomplete" }],
+      representation_count: 1, image_count: 0, completeness: "external_references",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    invokeMock.mockImplementation((command: string, args: unknown) => {
+      if (command === "get_history_page") return Promise.resolve({ entries: [rich], total: 1, has_more: false });
+      if (command === "archive_entry_images") return new Promise(resolve => { finish = resolve; });
+      return original(command, args);
+    });
+    render(<History />);
+    await screen.findByText(entry.description);
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.archiveImages" }));
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    await act(async () => onCloseRequestedMock.mock.calls[0][0]({ preventDefault: vi.fn() }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("close_history_window"));
+    await act(async () => historyListeners.get("tailsync://history-open")?.({ payload: {} }));
+    const pagesBefore = invokeMock.mock.calls.filter(([command]) => command === "get_history_page").length;
+    await act(async () => finish({ archived: 1, deduplicated: 0, complete: true, failures: [] }));
+    expect(screen.queryByText("history.composite.archiveDone")).toBeNull();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "get_history_page")).toHaveLength(pagesBefore);
+  });
+
+  it("authorizes a browser source only on an explicit action and saves the ticket", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["html"], restorable_formats: [],
+      withheld_formats: [{ format: "html", code: "resources_incomplete" }],
+      representation_count: 1, image_count: 0, completeness: "external_references",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => {
+      if (command === "get_history_page") return Promise.resolve({ entries: [rich], total: 1, has_more: false });
+      if (command === "source_context_grant_create") return Promise.resolve({
+        grant_id: "ab".repeat(32), origin: "https://example.com", expires_at: 1_760_000_000,
+        node_count: 1, budget_bytes: 16, ticket: "{\"kind\":\"tailsync-source-ticket\"}",
+      });
+      if (command === "source_context_export_ticket") return Promise.resolve(undefined);
+      return original(command, args);
+    });
+    saveMock.mockResolvedValue("/tmp/ticket.json");
+    render(<History />);
+    await screen.findByText(entry.description);
+    expect(invokeMock.mock.calls.some(([command]) => command === "source_context_grant_create")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.authorizeSource" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("source_context_grant_create", { id: entry.id }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("source_context_export_ticket", {
+      path: "/tmp/ticket.json", ticket: "{\"kind\":\"tailsync-source-ticket\"}",
+    }));
+    expect(await screen.findByText("history.composite.sourceAuthorized")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "history.composite.revokeSource" })).toBeInTheDocument();
+  });
+
+  it.each(["save", "open"])("ignores a %s source dialog from a closed history session", async (dialog) => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["html"], restorable_formats: [],
+      withheld_formats: [{ format: "html", code: "resources_incomplete" }],
+      representation_count: 1, image_count: 0, completeness: "external_references",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: [rich], total: 1, has_more: false }) : original(command, args));
+    let finish!: (path: string) => void;
+    const pending = new Promise<string>(resolve => { finish = resolve; });
+    (dialog === "save" ? saveMock : openMock).mockReturnValue(pending);
+    render(<History />);
+    await screen.findByText(entry.description);
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
+    fireEvent.click(screen.getByRole("button", { name: dialog === "save" ? "history.composite.authorizeSource" : "history.composite.importSourcePacket" }));
+    await act(async () => onCloseRequestedMock.mock.calls[0][0]({ preventDefault: vi.fn() }));
+    await act(async () => historyListeners.get("tailsync://history-open")?.({ payload: {} }));
+    await act(async () => finish("/tmp/stale.json"));
+    expect(invokeMock.mock.calls.some(([command]) => command === "source_context_grant_create" || command === "source_context_import")).toBe(false);
+  });
+
+  it("revokes a late-created grant instead of exporting it into a new session", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["html"], restorable_formats: [],
+      withheld_formats: [{ format: "html", code: "resources_incomplete" }],
+      representation_count: 1, image_count: 0, completeness: "external_references",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    invokeMock.mockImplementation((command: string, args: unknown) => {
+      if (command === "get_history_page") return Promise.resolve({ entries: [rich], total: 1, has_more: false });
+      if (command === "source_context_grant_create") return new Promise(resolve => { finish = resolve; });
+      if (command === "source_context_grant_revoke") return Promise.resolve({ revoked: true });
+      return original(command, args);
+    });
+    saveMock.mockResolvedValue("/tmp/ticket.json");
+    render(<History />);
+    await screen.findByText(entry.description);
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.authorizeSource" }));
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    await act(async () => onCloseRequestedMock.mock.calls[0][0]({ preventDefault: vi.fn() }));
+    await act(async () => historyListeners.get("tailsync://history-open")?.({ payload: {} }));
+    await act(async () => finish({ grant_id: "ab".repeat(32), origin: "https://example.com", expires_at: 1_760_000_000, node_count: 1, budget_bytes: 1024, ticket: "{}" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("source_context_grant_revoke", { grantId: "ab".repeat(32) }));
+    expect(invokeMock.mock.calls.some(([command]) => command === "source_context_export_ticket")).toBe(false);
+    expect(screen.queryByText("history.composite.sourceAuthorized")).toBeNull();
+  });
+
+  it("imports a source packet from a chosen file and reports partial results", async () => {
+    const rich = { ...entry, type: "composite", composite: {
+      native_only: false, native_item_count: 1, formats: ["html"], restorable_formats: [],
+      withheld_formats: [{ format: "html", code: "resources_incomplete" }],
+      representation_count: 1, image_count: 0, completeness: "external_references",
+    } };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => {
+      if (command === "get_history_page") return Promise.resolve({ entries: [rich], total: 1, has_more: false });
+      if (command === "source_context_import") return Promise.resolve({
+        imported: 1, deduplicated: 0, complete: false,
+        failures: [{ image_index: 1, code: "source_node_missing" }],
+      });
+      return original(command, args);
+    });
+    openMock.mockResolvedValue("/tmp/packet.json");
+    render(<History />);
+    await screen.findByText(entry.description);
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.advanced" }));
+    fireEvent.click(screen.getByRole("button", { name: "history.composite.importSourcePacket" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("source_context_import", { id: entry.id, path: "/tmp/packet.json" }));
+    expect(await screen.findByText("history.composite.sourcePartial")).toBeInTheDocument();
+  });
   it("keeps row actions gesture-only without rendering action buttons", async () => {
     render(<History />);
 
@@ -265,6 +571,150 @@ describe("History item actions", () => {
     expect(notice.previousElementSibling).toBe(pagination);
     expect(historyList!.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING)
       .not.toBe(0);
+  });
+
+  it("localises an unknown restore outcome and retries only after an explicit click", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    let attempts = 0;
+    invokeMock.mockImplementation((command: string, args: unknown) => {
+      if (command === "restore_entry" && ++attempts === 1) return Promise.reject({
+        schema_version: 1, code: "publish_unknown", retryable: true,
+        message_key: "history.restore.code.publish_unknown", detail_class: "internal",
+      });
+      return original(command, args);
+    });
+    render(<History />);
+    const row = (await screen.findByText(entry.description)).closest<HTMLElement>(".history-item")!;
+    fireEvent.doubleClick(row);
+    await screen.findByText("history.restore.code.publish_unknown");
+    expect(screen.queryByText("history.restored")).toBeNull();
+    expect(attempts).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "history.restore.recopy" }));
+    await screen.findByText("history.restored");
+    expect(attempts).toBe(2);
+  });
+
+  it("reports saved-content copying without claiming the missing images were copied", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "restore_entry"
+      ? Promise.resolve({ complete: false, missing_images: 2 }) : original(command, args));
+    render(<History />);
+    const row = (await screen.findByText(entry.description)).closest<HTMLElement>(".history-item")!;
+    fireEvent.doubleClick(row);
+    await screen.findByText("Copied saved content; 2 images not saved");
+    expect(screen.queryByText("history.restored")).toBeNull();
+    expect(screen.queryByRole("button", { name: "history.restore.recopy" })).toBeNull();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "restore_entry")).toHaveLength(1);
+    expect(invokeMock).not.toHaveBeenCalledWith("close_history_window");
+  });
+
+  async function prepareUnknownRestore(initialEntry: HistoryEntry = entry as HistoryEntry) {
+    const original = invokeMock.getMockImplementation()!;
+    let rows: HistoryEntry[] = [{ ...initialEntry }];
+    let release: ((value: unknown) => void) | undefined;
+    let revision = 0;
+    const attemptedIds: number[] = [];
+    invokeMock.mockImplementation((command: string, args: unknown) => {
+      if (command === "get_history_page") return Promise.resolve({ entries: rows, total: rows.length, has_more: false });
+      if (command === "wait_runtime_snapshot") return new Promise(resolve => { release = resolve; });
+      if (command === "restore_entry") {
+        attemptedIds.push((args as { id: number }).id);
+        if (attemptedIds.length === 1) return Promise.reject({
+          schema_version: 1, code: "publish_unknown", retryable: true,
+          message_key: "history.restore.code.publish_unknown", detail_class: "resource",
+        });
+      }
+      return original(command, args);
+    });
+    render(<History />);
+    const row = (await screen.findByText(entry.description)).closest<HTMLElement>(".history-item")!;
+    fireEvent.doubleClick(row);
+    await screen.findByText("history.restore.code.publish_unknown");
+    return {
+      attemptedIds,
+      replace: async (nextRows: typeof rows, syncWarning: SyncWarning | null = null) => {
+        rows = nextRows;
+        await waitFor(() => expect(release).toBeDefined());
+        const send = release!; release = undefined;
+        await act(async () => {
+          send({ revision: ++revision, history_version: revision, progress: null, notifications: [], sync_warning: syncWarning });
+          await Promise.resolve();
+        });
+        await waitFor(() => expect(screen.queryByText(entry.description)).toBeNull());
+      },
+    };
+  }
+
+  function identifiedEntry(id: number, capture: string, content = "hcp1:complete", key: string | null = "hpd1:closed"): HistoryEntry {
+    return { ...entry, id, type: "composite", composite: {
+      native_only: false, native_item_count: 0, formats: ["text"], restorable_formats: ["text"], withheld_formats: [],
+      representation_count: 1, image_count: 0, completeness: "complete", identity: {
+        version: 1, capture_id: capture, content_id: content, dedupe_key: key, archive_revision: 1, archive_digest: "archive",
+      },
+    }} as HistoryEntry;
+  }
+  it("rebinds a closed content identity and sends the held identity to the daemon", async () => {
+    const original = identifiedEntry(entry.id, "first");
+    const recovery = await prepareUnknownRestore(original);
+    await recovery.replace([{ ...identifiedEntry(8, "second"), description: "Safe replacement" }]);
+    fireEvent.click(screen.getByRole("button", { name: "history.restore.recopy" }));
+    await screen.findByText("history.restored");
+    expect(recovery.attemptedIds).toEqual([entry.id, 8]);
+    expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: 8, restoreOriginalId: entry.id, restoreIdentity: original.composite!.identity });
+  });
+  it("refuses distinct originals sharing the portable hash", async () => {
+    const recovery = await prepareUnknownRestore(identifiedEntry(entry.id, "first", "hcl1:1:a", null));
+    await recovery.replace([{ ...identifiedEntry(8, "second", "hcl1:1:b", null), description: "Different original" }]);
+    fireEvent.click(screen.getByRole("button", { name: "history.restore.recopy" }));
+    await screen.findByText("error.not_found");
+    expect(recovery.attemptedIds).toEqual([entry.id]);
+  });
+
+  it("refuses legacy recovery across rows even when the portable hash matches", async () => {
+    const recovery = await prepareUnknownRestore();
+    await recovery.replace([{ ...entry, id: 8, description: "Replacement with identical complete content" }]);
+    await screen.findByText("Replacement with identical complete content");
+    fireEvent.click(screen.getByRole("button", { name: "history.restore.recopy" }));
+    await screen.findByText("error.not_found");
+    expect(recovery.attemptedIds).toEqual([entry.id]);
+  });
+
+  it("refuses recovery when the saved content was deleted", async () => {
+    const recovery = await prepareUnknownRestore();
+    await recovery.replace([]);
+    fireEvent.click(screen.getByRole("button", { name: "history.restore.recopy" }));
+    await screen.findByText("error.not_found");
+    expect(recovery.attemptedIds).toEqual([entry.id]);
+  });
+
+  it("does not guess a replacement from matching descriptions with different content", async () => {
+    const recovery = await prepareUnknownRestore();
+    await recovery.replace([{ ...entry, id: 8, description: "Replacement has different content", data_hash: "different" }]);
+    fireEvent.click(screen.getByRole("button", { name: "history.restore.recopy" }));
+    await screen.findByText("error.not_found");
+    expect(recovery.attemptedIds).toEqual([entry.id]);
+  });
+
+  it("keeps deliberate Unknown recovery visible after the ordinary notice expires", async () => {
+    const recovery = await prepareUnknownRestore();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 6100)); });
+    expect(screen.getByRole("button", { name: "history.restore.recopy" })).toBeInTheDocument();
+    expect(screen.getByText("history.restore.code.publish_unknown")).toBeInTheDocument();
+    expect(recovery.attemptedIds).toEqual([entry.id]);
+  }, 10_000);
+
+  it("does not acknowledge a warning hidden behind deliberate restore recovery", async () => {
+    const recovery = await prepareUnknownRestore();
+    await recovery.replace([{ ...entry, id: 8, description: "Same content after capture" }], {
+      id: 91, kind: "expired_event", peer: "test-peer", occurred_at_ms: 1,
+    });
+    expect(screen.getByText("history.restore.code.publish_unknown")).toBeInTheDocument();
+    expect(screen.queryByText("history.syncExpired:test-peer")).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith("ack_sync_warning", { id: 91 });
+    fireEvent.click(screen.getByRole("button", { name: "history.dismissNotice" }));
+    await screen.findByText("history.syncExpired:test-peer");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", { id: 91 }));
+    expect(recovery.attemptedIds).toEqual([entry.id]);
   });
 
   it("uses one footer stamp for favorite state and long-press feedback", async () => {
@@ -596,13 +1046,19 @@ describe("History item actions", () => {
     });
   }
 
-  it("acknowledges a visible sync warning by its own id", async () => {
+  it.each([
+    ["expired_event", "history.syncExpired:peer-a"],
+    ["capture_origin_unknown", "history.captureOriginUnknown"],
+    ["capture_not_shared", "history.captureNotShared"],
+    ["receive_not_saved", "history.receiveNotSaved"],
+  ])("presents and acknowledges the visible %s warning by its own id", async (kind, messageKey) => {
     setVisibility("visible");
     deliverWarningSnapshots([
-      { id: 7, kind: "expired_event", peer: "peer-a", occurred_at_ms: 1 },
+      { id: 7, kind, peer: "peer-a", occurred_at_ms: 1 },
     ]);
 
     render(<History />);
+    await screen.findByText(messageKey);
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("ack_sync_warning", { id: 7 });
     });
@@ -730,7 +1186,9 @@ describe("History item actions", () => {
     expect(searchSpace.defaultPrevented).toBe(false);
     expect(invokeMock).not.toHaveBeenCalledWith("open_preview_window", expect.anything());
 
-    fireEvent.click(row!);
+    // Capability arrival may reload already visible rows. Flush the click and
+    // pending load effects before sending the single keyboard action.
+    await act(async () => { fireEvent.click(row!); });
     expect(row).toHaveClass("focused");
     expect(row).toHaveAttribute("data-focused", "true");
     expect(document.querySelector(".app")).toHaveAttribute("data-focused-entry-id", String(entry.id));
@@ -940,6 +1398,28 @@ describe("History item actions", () => {
       .toBe(retainedRow);
     expect(screen.getByText("delete-page-4").closest(".history-item"))
       .not.toHaveClass("is-new");
+  });
+
+  it.each(["all", "favorites"] as const)("shows a single file without batch controls in %s", async (collection) => {
+    const single = {
+      ...entry, id: 2809, type: "file", description: "single-file.md",
+      category: "file", categories: ["file"], batch_id: "single-file-batch",
+      batch_index: 0, batch_count: 1, batch_total: 1, batch_status: "complete",
+    };
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_history_page") {
+        return Promise.resolve({ entries: [single], total: 1, has_more: false });
+      }
+      return defaultInvoke(command);
+    });
+    render(<History collection={collection} />);
+    const row = (await screen.findByText("single-file.md")).closest<HTMLElement>(".history-item");
+    expect(screen.queryByRole("button", { name: "history.copyAll" })).toBeNull();
+    expect(screen.queryByText("1 history.files")).toBeNull();
+    invokeMock.mockClear();
+    fireEvent.doubleClick(row!);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: 2809 }));
+    expect(invokeMock).not.toHaveBeenCalledWith("restore_file_batch", expect.anything());
   });
 
   it("offers copy-all for complete batches and updates every favorite batch row", async () => {
@@ -1247,6 +1727,83 @@ describe("History item actions", () => {
     expect(invokeMock.mock.calls.filter(([command]) => ["restore_entry", "close_history_window"].includes(command))).toEqual([]);
     fireEvent.keyDown(search, { key: "ArrowDown" });
     expect(document.querySelector(".history-list")).toHaveFocus();
+  });
+
+  it("Delete removes the focused row once and keeps the adjacent row focused", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    let rows = [entry, { ...entry, id: 8, description: "second" }, { ...entry, id: 9, description: "third" }];
+    let finish!: () => void;
+    invokeMock.mockImplementation((command: string, args: { id?: number }) => {
+      if (command === "get_history_page") return Promise.resolve({ entries: rows, total: rows.length, has_more: false });
+      if (command === "delete_entry") return new Promise<void>((resolve) => { finish = () => {
+        rows = rows.filter((row) => row.id !== args.id); resolve();
+      }; });
+      return base(command, args);
+    });
+    render(<History />);
+    await screen.findByText("third");
+    fireEvent.keyDown(screen.getByPlaceholderText("history.searchPlaceholder"), { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement!, { key: "Delete" });
+    fireEvent.keyDown(document.activeElement!, { key: "Delete" });
+    fireEvent.keyDown(document.activeElement!, { key: "Delete", repeat: true });
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(invokeMock.mock.calls.filter(([command]) => command === "delete_entry")).toEqual([["delete_entry", { id: 8 }]]);
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_entry")).toBe(false);
+    await act(async () => finish());
+    await waitFor(() => expect(screen.queryByText("second")).not.toBeInTheDocument());
+    expect(screen.getByText("third").closest(".history-item")).toHaveAttribute("aria-selected", "true");
+    expect(document.querySelector(".history-list")).toHaveFocus();
+    expect(invokeMock.mock.calls.some(([command]) => command === "clear_history")).toBe(false);
+  });
+
+  it("Delete leaves search/editable controls, modifiers, repeats, IME and stale rows alone", async () => {
+    render(<History />);
+    await screen.findByText(entry.description);
+    const search = screen.getByPlaceholderText("history.searchPlaceholder");
+    fireEvent.keyDown(search, { key: "Delete" });
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    const list = document.activeElement!;
+    for (const flags of [{ repeat: true }, { ctrlKey: true }, { shiftKey: true }, { metaKey: true }, { altKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      fireEvent.keyDown(list, { key: "Delete", ...flags });
+    }
+    const button = screen.getByRole("button", { name: "history.categoryFilter: history.category.all" });
+    fireEvent.keyDown(button, { key: "Delete" });
+    fireEvent.change(search, { target: { value: "pending-query" } });
+    fireEvent.keyDown(list, { key: "Delete" });
+    expect(invokeMock.mock.calls.some(([command]) => command === "delete_entry")).toBe(false);
+  });
+
+  it("keyboard Delete protects favorites in history and deletes through the favorites API", async () => {
+    defaultEntryPinned = true;
+    const history = render(<History />);
+    await screen.findByText(entry.description);
+    fireEvent.keyDown(screen.getByPlaceholderText("history.searchPlaceholder"), { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement!, { key: "Delete" });
+    expect(await screen.findByText("history.favoriteProtected")).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "delete_entry")).toBe(false);
+    history.unmount();
+    render(<Favorites />);
+    await screen.findByText(entry.description);
+    fireEvent.keyDown(screen.getByPlaceholderText("history.searchPlaceholder"), { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement!, { key: "Delete" });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("delete_favorite_entry", { id: entry.id }));
+  });
+
+  it("failed keyboard deletion keeps the selection and can be retried", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    let fail = true;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "delete_entry"
+      ? (fail ? Promise.reject(new Error("delete failed")) : Promise.resolve()) : base(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    fireEvent.keyDown(screen.getByPlaceholderText("history.searchPlaceholder"), { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement!, { key: "Delete" });
+    await screen.findByText("history.actionFailed");
+    expect(document.querySelector(".app")).toHaveAttribute("data-focused-entry-id", String(entry.id));
+    fail = false;
+    fireEvent.keyDown(document.activeElement!, { key: "Delete" });
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([command]) => command === "delete_entry")).toHaveLength(2));
   });
 
   it("restores once on Enter and only closes history/preview after success", async () => {

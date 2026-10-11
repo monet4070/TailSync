@@ -10,7 +10,8 @@ import {
 } from "lucide-react";
 import { PreviewContent } from "./PreviewContent";
 import type { PreviewFailure } from "./usePreviewPayload";
-import type { PreviewPayload } from "../utils/historyPreview";
+import type { PreviewBatchNavigation, PreviewPayload } from "../utils/historyPreview";
+import type { PreparedDocumentAssets } from "./documentAssets";
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, bytes)} B`;
@@ -39,6 +40,8 @@ function failureCopy(failure: PreviewFailure, t: (key: string) => string): strin
 
 export function PreviewShell({
   payload,
+  documentPreview = null,
+  restoreAvailable = false,
   restoringExternally = false,
   loading,
   failure,
@@ -50,7 +53,9 @@ export function PreviewShell({
   onNext,
   t,
 }: {
-  payload: PreviewPayload | null;
+  payload?: PreviewPayload | null;
+  documentPreview?: PreparedDocumentAssets | null;
+  restoreAvailable?: boolean;
   restoringExternally?: boolean;
   loading: boolean;
   failure: PreviewFailure | null;
@@ -64,11 +69,36 @@ export function PreviewShell({
 }) {
   const [restoreState, setRestoreState] = useState<"idle" | "restoring" | "restored" | "failed">("idle");
   const [rendererAttempt, setRendererAttempt] = useState(0);
-  const title = payload?.name ?? t("history.preview.title");
-  const position = payload?.batch
-    ? `${payload.batch.item_index + 1} / ${payload.batch.item_count}`
+  const source = useMemo<{
+    entryId: number | null;
+    title: string;
+    sizeBytes: number;
+    batch: PreviewBatchNavigation | null;
+  } | null>(() => {
+    if (documentPreview) {
+      const metadata = documentPreview.frame.metadata;
+      return {
+        entryId: metadata.entry_id,
+        title: t("history.preview.documentTitle"),
+        sizeBytes: metadata.size_bytes,
+        batch: null,
+      };
+    }
+    if (payload) {
+      return {
+        entryId: payload.entry_id ?? null,
+        title: payload.name,
+        sizeBytes: payload.size_bytes,
+        batch: payload.batch,
+      };
+    }
+    return null;
+  }, [documentPreview, payload, t]);
+  const title = source?.title ?? t("history.preview.title");
+  const position = source?.batch
+    ? `${source.batch.item_index + 1} / ${source.batch.item_count}`
     : null;
-  const headingId = useMemo(() => `preview-heading-${payload?.entry_id ?? "empty"}`, [payload?.entry_id]);
+  const headingId = useMemo(() => `preview-heading-${source?.entryId ?? "empty"}`, [source?.entryId]);
   const bodyRef = useRef<HTMLElement>(null);
   const restoring = useRef(false);
 
@@ -79,7 +109,7 @@ export function PreviewShell({
   useEffect(() => {
     setRestoreState("idle");
     setRendererAttempt(0);
-  }, [payload?.entry_id]);
+  }, [source?.entryId]);
 
   useEffect(() => {
     if (restoreState !== "restored") return undefined;
@@ -107,7 +137,7 @@ export function PreviewShell({
         <div className="preview-titlebar-copy">
           <FileWarning size={15} aria-hidden="true" />
           <h1 id={headingId}>{title}</h1>
-          {payload && <span>{formatBytes(payload.size_bytes)}</span>}
+          {source && <span>{formatBytes(source.sizeBytes)}</span>}
           {position && <span className="preview-position">{position}</span>}
         </div>
         <div className="preview-titlebar-actions" data-tauri-drag-region="false">
@@ -133,24 +163,25 @@ export function PreviewShell({
             {failure.retryable && <button type="button" className="preview-primary-button" onClick={onRetry}><RefreshCw size={14} aria-hidden="true" />{t("history.preview.retry")}</button>}
           </div>
         )}
-        {!loading && !failure && payload && (
+        {!loading && !failure && (payload || documentPreview) && (
           <PreviewContent
             payload={payload}
+            documentPreview={documentPreview}
             t={t}
             onCorrupt={onCorrupt}
-            resetKey={`${payload.entry_id ?? 0}-${payload.name}-${rendererAttempt}`}
+            resetKey={`${source?.entryId ?? 0}-${documentPreview ? documentPreview.frame.metadata.request_id : payload?.name ?? ""}-${rendererAttempt}`}
             onRetry={() => {
               setRendererAttempt((value) => value + 1);
               onRetry();
             }}
           />
         )}
-        {!loading && !failure && !payload && <div className="preview-state">{t("history.preview.loading")}</div>}
+        {!loading && !failure && !payload && !documentPreview && <div className="preview-state">{t("history.preview.loading")}</div>}
       </section>
 
       <footer className="preview-footer">
         <span className="preview-footer-meta">
-          {payload?.batch ? `${t("history.preview.batch")} ${position}` : ""}
+          {source?.batch ? `${t("history.preview.batch")} ${position}` : ""}
           {restoreState === "restored" && (
             <span className="preview-footer-success" role="status">
               <Check size={14} aria-hidden="true" />
@@ -160,7 +191,7 @@ export function PreviewShell({
           {restoreState === "failed" && <span className="preview-footer-error" role="alert">{t("history.preview.restoreError")}</span>}
         </span>
         <div className="preview-footer-actions">
-          {payload && (
+          {(source || restoreAvailable) && (
             <button type="button" className="preview-secondary-button" disabled={restoringExternally || restoreState === "restoring"} onClick={() => void restore()}>
               <Download size={14} aria-hidden="true" />
               {restoreState === "restoring" ? t("history.preview.restoring") : t("history.restoreEntry")}

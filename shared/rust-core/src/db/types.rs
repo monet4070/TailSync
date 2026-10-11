@@ -46,16 +46,77 @@ pub struct FavoriteMutation {
     pub favorite: bool,
 }
 
-/// A clipboard history entry.
+/// A restore format that is present on the item but that the server will refuse.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct WithheldRestoreFormat {
+    /// The format name, matching one entry of `CompositeInfo::formats`.
+    pub format: String,
+    /// Stable reason code (`native_only`, `no_single_image`), never prose.
+    pub code: String,
+}
+
+/// Composite metadata for one history entry — **not** the entry itself (R5-05
+/// corrected this comment, which previously described a `HistoryEntry`).
+///
+/// The counts are deliberately distinct, because the two UIs must not conflate them:
+/// `representation_count` is how many formats the item carries, while `image_count`
+/// counts image resources *and* a PNG representation. A row that says "3 formats" and
+/// a row that says "2 images" are answering different questions, and a `native_only`
+/// item must not be labelled as several cross-platform formats at all.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct CompositeInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<crate::composite::identity::HistoryIdentity>,
+    /// The item was captured as a platform-native shape and can only be replayed on
+    /// that platform; the UIs must not offer cross-platform formats for it.
+    pub native_only: bool,
+    pub native_item_count: u16,
+    /// Format names present in the item, for display.
+    ///
+    /// **Present is not the same as restorable.** A menu built from this alone can offer
+    /// an action the server will refuse, which is exactly what R5-04 forbids; build the
+    /// menu from [`Self::restorable_formats`] instead.
+    pub formats: Vec<String>,
+    /// The single-format restore actions the server will actually accept, in a stable
+    /// order. This is what a menu must be built from.
+    pub restorable_formats: Vec<String>,
+    /// Formats that are present but deliberately not offered, with the stable code the
+    /// UI localises instead of inventing its own explanation.
+    pub withheld_formats: Vec<WithheldRestoreFormat>,
+    /// How many representations (formats) the item carries.
+    pub representation_count: u16,
+    /// How many images the item carries: resources plus a PNG representation.
+    pub image_count: u16,
+    #[schemars(extend("enum" = ["complete","external_references","missing_formats"]))]
+    pub completeness: String,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct HistoryDisplayInfo {
+    #[schemars(range(min = 1, max = 1))]
+    pub version: u16,
+    #[schemars(extend("enum" = ["image", "document", "text", "file", "unknown"]))]
+    pub kind: String,
+    pub thumbnail_eligible: bool,
+    pub cache_key: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct HistoryEntry {
     pub id: i64,
     pub timestamp: String,
     #[serde(rename = "type")]
-    #[schemars(with = "PreviewKind")]
+    #[schemars(extend("enum" = ["text", "image", "file", "composite"]))]
     pub entry_type: String,
     pub description: String,
     pub data_hash: String,
+    /// **Logical size**: the size of the captured content itself, independent of how
+    /// it is stored. For a composite item this is the sum of its parts' logical sizes,
+    /// so it stays meaningful even when the bytes live outside the database.
+    ///
+    /// Not to be confused with the two other sizes in this API: the **external
+    /// physical size** (what a part actually occupies on disk once externalised) and
+    /// the **preview binary size** (`PreviewMetadata::size_bytes`, which describes the
+    /// preview artefact being transferred, not the stored item).
     pub size_bytes: i64,
     pub source_peer: String,
     #[schemars(extend("enum" = ["text", "website", "code", "command", "structured_data", "path", "image", "file"]))]
@@ -70,6 +131,10 @@ pub struct HistoryEntry {
     pub batch_count: Option<i64>,
     #[schemars(extend("enum" = ["complete", "incomplete"]))]
     pub batch_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composite: Option<CompositeInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<HistoryDisplayInfo>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -77,6 +142,8 @@ pub struct HistoryQueryPage {
     pub entries: Vec<HistoryEntry>,
     pub total: Option<usize>,
     pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_index_pending: Option<bool>,
 }
 
 /// Inputs for a paged history collection query.
@@ -171,6 +238,8 @@ pub struct PreviewMetadata {
     pub entry_id: i64,
     pub kind: PreviewKind,
     pub name: String,
+    /// **Preview binary size**: the size of the preview artefact that will be
+    /// transferred, which is not the stored item's logical or physical size.
     pub size_bytes: u64,
     pub batch: Option<PreviewBatchNavigation>,
 }

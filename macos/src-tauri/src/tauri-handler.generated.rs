@@ -23,6 +23,9 @@ tauri::generate_handler![
     commands::get_settings,
     commands::update_settings,
     commands::get_image_data,
+    commands::get_document_preview,
+    commands::validate_document_preview,
+    commands::cancel_document_preview,
     commands::validate_theme,
     commands::install_theme,
     commands::update_theme,
@@ -45,4 +48,5 @@ tauri::generate_handler![
     commands::get_version,
     commands::get_local_capabilities,
     commands::get_sync_warning,
+    commands::ack_sync_warning,
 ]

@@ -126,6 +126,10 @@ impl HistoryDB {
 
     /// Trim entries of a given type beyond the configured count and byte limits.
     pub(super) fn trim(&mut self, entry_type: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if entry_type == "composite" {
+            self.trim("text")?;
+            return self.trim("image");
+        }
         let max = match entry_type {
             "text" => self.max_history,
             "image" => (self.max_history / 10).max(10),
@@ -134,11 +138,12 @@ impl HistoryDB {
         };
 
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM history WHERE type = ?1",
+            "SELECT COUNT(*) FROM history WHERE type = ?1 OR (type = 'composite' AND category = ?1)",
             params![entry_type],
             |row| row.get(0),
         )?;
 
+        let count = count.saturating_sub(self.protected_count(Some(entry_type))?);
         if count > max {
             let excess = count - max;
             let ids = self.expand_batch_groups(self.oldest_entry_ids(Some(entry_type), excess)?)?;
@@ -149,6 +154,7 @@ impl HistoryDB {
         let total: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))?;
+        let total = total.saturating_sub(self.protected_count(None)?);
         if total > self.max_history {
             let excess = total - self.max_history;
             let ids = self.expand_batch_groups(self.oldest_entry_ids(None, excess)?)?;
@@ -156,7 +162,7 @@ impl HistoryDB {
             info!("Trimmed {} entries (total cap)", excess);
         }
 
-        if matches!(entry_type, "file" | "image") {
+        if matches!(entry_type, "file" | "image" | "composite") {
             let quota = i64::try_from(self.storage_quota_bytes).unwrap_or(i64::MAX);
             let ids = self.expand_batch_groups(self.file_ids_over_byte_limit(quota)?)?;
             if !ids.is_empty() {
@@ -197,11 +203,33 @@ impl HistoryDB {
         for row in rows {
             let (id, size, pinned) = row?;
             total = total.saturating_add(size);
-            if total > limit && !pinned {
+            if total > limit && !pinned && !self.protected_history.contains(&id) {
                 remove.push(id);
             }
         }
         Ok(remove)
+    }
+
+    fn protected_count(&self, entry_type: Option<&str>) -> Result<i64, Box<dyn std::error::Error>> {
+        let mut count = 0;
+        let mut statement = self
+            .conn
+            .prepare("SELECT type, category FROM history WHERE id = ?1")?;
+        for id in &self.protected_history {
+            if let Some((kind, category)) = statement
+                .query_row([id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .optional()?
+            {
+                if entry_type.is_none_or(|wanted| {
+                    kind == wanted || (kind == "composite" && category == wanted)
+                }) {
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
     }
 
     fn oldest_entry_ids(
@@ -211,16 +239,20 @@ impl HistoryDB {
     ) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
         let ids = if let Some(entry_type) = entry_type {
             self.conn
-                .prepare("SELECT id FROM history WHERE type = ?1 AND pinned = 0 ORDER BY timestamp ASC LIMIT ?2")?
-                .query_map(params![entry_type, limit], |row| row.get(0))?
+                .prepare("SELECT id FROM history WHERE (type = ?1 OR (type = 'composite' AND category = ?1)) AND pinned = 0 ORDER BY timestamp ASC, id ASC")?
+                .query_map(params![entry_type], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             self.conn
-                .prepare("SELECT id FROM history WHERE pinned = 0 ORDER BY timestamp ASC LIMIT ?1")?
-                .query_map(params![limit], |row| row.get(0))?
+                .prepare("SELECT id FROM history WHERE pinned = 0 ORDER BY timestamp ASC")?
+                .query_map([], |row| row.get(0))?
                 .collect::<Result<Vec<_>, _>>()?
         };
-        Ok(ids)
+        Ok(ids
+            .into_iter()
+            .filter(|id| !self.protected_history.contains(id))
+            .take(limit.max(0) as usize)
+            .collect())
     }
 
     pub(super) fn expand_batch_groups(
@@ -312,6 +344,7 @@ impl HistoryDB {
         if ids.is_empty() {
             return Ok(0);
         }
+        let composite_payloads = self.composite_part_payloads(ids)?;
         let mut references = Vec::new();
         let mut affected_batches = std::collections::BTreeMap::<String, bool>::new();
         for id in ids {
@@ -348,8 +381,16 @@ impl HistoryDB {
             }
         }
 
+        let has_composite_schema = self.has_composite_schema();
         let tx = self.conn.transaction()?;
         for id in ids {
+            if has_composite_schema {
+                tx.execute(
+                    "UPDATE history_composite_events SET history_id=NULL WHERE history_id=?1",
+                    params![id],
+                )?;
+                tx.execute("DELETE FROM history_parts WHERE history_id=?1", params![id])?;
+            }
             tx.execute("DELETE FROM history WHERE id = ?1", params![id])?;
         }
         for (batch_id, was_complete) in affected_batches {
@@ -384,7 +425,7 @@ impl HistoryDB {
         }
         tx.commit()?;
 
-        let paths: Vec<_> = references
+        let mut paths: Vec<_> = references
             .into_iter()
             .filter_map(|(directory, reference)| {
                 match resolve_file_reference_at(&directory, &reference) {
@@ -396,6 +437,7 @@ impl HistoryDB {
                 }
             })
             .collect();
+        paths.extend(composite_payloads.into_iter().map(|p| p.path));
         let freed_bytes = self.remove_unreferenced_payload_paths(&paths, preserve_path);
         // Every deletion path, including quota trimming and duplicate
         // replacement, must remove deleted rows from the WAL as well. Perform
@@ -486,6 +528,25 @@ impl HistoryDB {
     /// The common unlink policy for deletion, eviction and duplicate replacement.
     /// Resolve the live set once, after the row transaction committed. Path or
     /// serialized-reference equality cannot establish file identity on APFS/NTFS.
+    /// Arm a guard that owns the payload files written for one history entry until
+    /// its transaction commits (repair plan §4 R5-02).
+    ///
+    /// Cleanup used to depend on an explicit call at each exit, so any `?` between
+    /// writing a payload and committing the transaction leaked the file. The manifest
+    /// encryption in `add_composite_event` did exactly that.
+    ///
+    /// The guard removes only payloads that no live row referenced **before** the
+    /// transaction started. The transaction either commits (disarming the guard) or
+    /// rolls back (leaving the live set unchanged), so the snapshot is exact — and a
+    /// payload shared with another entry is never deleted. If the live set cannot be
+    /// read, the guard removes nothing rather than guessing.
+    pub(super) fn arm_pending_payloads(
+        &self,
+        written: &[super::entries::ExternalHistoryPayload],
+    ) -> PendingPayloads {
+        PendingPayloads::arm(self, written)
+    }
+
     pub(super) fn remove_unreferenced_payload_paths(
         &self,
         paths: &[PathBuf],
@@ -649,46 +710,35 @@ impl HistoryDB {
         self.referenced_payload_identities().map(|_| ())
     }
 
+    /// Visit every live external payload path, failing closed on an invalid or
+    /// unreadable reference.
+    fn for_each_live_payload_path<F>(&self, visit: F) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: FnMut(&std::path::Path) -> Result<(), Box<dyn std::error::Error>>,
+    {
+        for_each_live_payload_path(
+            &self.conn,
+            &self.file_history_dir,
+            &self.image_history_dir,
+            self.has_composite_schema(),
+            visit,
+        )
+    }
+
     fn referenced_payload_identities(
         &self,
     ) -> Result<std::collections::HashSet<PayloadFileIdentity>, Box<dyn std::error::Error>> {
-        let mut statement = self.conn.prepare("SELECT type, data FROM history")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?;
         let mut live = std::collections::HashSet::new();
-        for row in rows {
-            let (entry_type, stored) = row?;
-            let (directory, reference) = match entry_type.as_str() {
-                "file" => (
-                    self.file_history_dir.clone(),
-                    decode_file_reference(&stored),
-                ),
-                "image" | "text" => (
-                    self.image_history_dir.clone(),
-                    decode_image_reference(&stored),
-                ),
-                _ => continue,
-            };
-            let Some(reference) = reference else {
-                if entry_type == "file"
-                    || stored.starts_with(super::file_storage::IMAGE_REFERENCE_MAGIC)
-                {
-                    return Err(
-                        "Cannot safely sweep payloads: a live external reference is invalid".into(),
-                    );
-                }
-                continue; // Inline text/image data is not an external reference.
-            };
-            let path = resolve_file_reference_at(&directory, &reference)?;
-            match payload_file_identity(&path) {
+        self.for_each_live_payload_path(|path| {
+            match payload_file_identity(path) {
                 Ok(identity) => {
                     live.insert(identity);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
-        }
+            Ok(())
+        })?;
         Ok(live)
     }
 }
@@ -699,7 +749,146 @@ struct PayloadFileIdentity {
     file_id: [u8; 16],
 }
 
+/// Owns freshly written payload files until their transaction commits.
+///
+/// See [`HistoryDB::arm_pending_payloads`] for why the live set is snapshotted rather
+/// than read at drop time: the drop happens while the caller still holds `&mut self`
+/// for the transaction, and the snapshot is exact because a rolled-back transaction
+/// cannot have changed which payloads are live.
+pub(super) struct PendingPayloads {
+    written: Vec<PathBuf>,
+    /// `None` when the live set could not be read; then nothing is removed.
+    live: Option<std::collections::HashSet<PayloadFileIdentity>>,
+    committed: bool,
+}
+
+impl PendingPayloads {
+    fn arm(db: &HistoryDB, written: &[super::entries::ExternalHistoryPayload]) -> Self {
+        let live = match db.referenced_payload_identities() {
+            Ok(live) => Some(live),
+            Err(error) => {
+                warn!("Cannot safely remove history payloads after a failed write: {error}");
+                None
+            }
+        };
+        Self {
+            written: written.iter().map(|payload| payload.path.clone()).collect(),
+            live,
+            committed: false,
+        }
+    }
+
+    /// Disarm: the transaction committed, so the payloads are live.
+    pub(super) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PendingPayloads {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let Some(live) = self.live.as_ref() else {
+            return;
+        };
+        for path in &self.written {
+            match payload_file_identity(path) {
+                Ok(identity) if live.contains(&identity) => continue,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    warn!(
+                        "Cannot identify history payload {}: {error}",
+                        path.display()
+                    );
+                    continue;
+                }
+            }
+            if let Err(error) = std::fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    warn!("Cannot remove history payload {}: {error}", path.display());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
+/// Visit every live external payload path for a raw connection.
+///
+/// Free-function form so the pre-upgrade rollback package can enumerate payloads
+/// *before* a `HistoryDB` exists (repair plan §4 R1-03). A legacy database has no
+/// `history_parts`, so the live set is then just the history table.
+pub(super) fn for_each_live_payload_path<F>(
+    conn: &Connection,
+    file_history_dir: &Path,
+    image_history_dir: &Path,
+    has_composite_schema: bool,
+    mut visit: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FnMut(&std::path::Path) -> Result<(), Box<dyn std::error::Error>>,
+{
+    let sql = if has_composite_schema {
+        "SELECT type, data FROM history UNION ALL SELECT 'image', stored FROM history_parts"
+    } else {
+        "SELECT type, data FROM history"
+    };
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+    for row in rows {
+        let (entry_type, stored) = row?;
+        let (directory, reference) = match entry_type.as_str() {
+            "file" => (
+                file_history_dir.to_path_buf(),
+                decode_file_reference(&stored),
+            ),
+            "image" | "text" => (
+                image_history_dir.to_path_buf(),
+                decode_image_reference(&stored),
+            ),
+            _ => continue,
+        };
+        let Some(reference) = reference else {
+            if entry_type == "file"
+                || stored.starts_with(super::file_storage::IMAGE_REFERENCE_MAGIC)
+            {
+                return Err(
+                    "Cannot safely sweep payloads: a live external reference is invalid".into(),
+                );
+            }
+            continue; // Inline text/image data is not an external reference.
+        };
+        let path = resolve_file_reference_at(&directory, &reference)?;
+        visit(&path)?;
+    }
+    Ok(())
+}
+
+/// Absolute paths of every live external payload for a raw connection.
+pub(super) fn live_payload_paths(
+    conn: &Connection,
+    file_history_dir: &Path,
+    image_history_dir: &Path,
+    has_composite_schema: bool,
+) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    let mut paths = std::collections::BTreeSet::new();
+    for_each_live_payload_path(
+        conn,
+        file_history_dir,
+        image_history_dir,
+        has_composite_schema,
+        |path| {
+            paths.insert(path.to_path_buf());
+            Ok(())
+        },
+    )?;
+    Ok(paths.into_iter().collect())
+}
+
 fn payload_file_identity(path: &std::path::Path) -> std::io::Result<PayloadFileIdentity> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::metadata(path)?;

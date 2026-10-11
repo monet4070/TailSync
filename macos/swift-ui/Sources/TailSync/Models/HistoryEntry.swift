@@ -18,11 +18,13 @@ struct HistoryEntry: Codable, Identifiable {
     let batch_total: Int?
     let batch_count: Int?
     let batch_status: String
+    let composite: ContractCompositeInfo?
+    let display: ContractHistoryDisplayInfo?
 
     enum CodingKeys: String, CodingKey {
         case id, timestamp, type, description, data_hash, size_bytes, source_peer
         case category, categories, category_confidence, classifier_version
-        case pinned, batch_id, batch_index, batch_total, batch_count, batch_status
+        case pinned, batch_id, batch_index, batch_total, batch_count, batch_status, composite, display
     }
 
     init(from decoder: Decoder) throws {
@@ -34,14 +36,14 @@ struct HistoryEntry: Codable, Identifiable {
         data_hash = try values.decode(String.self, forKey: .data_hash)
         size_bytes = try values.decode(Int64.self, forKey: .size_bytes)
         source_peer = try values.decode(String.self, forKey: .source_peer)
-        let decodedCategory = try values.decodeIfPresent(String.self, forKey: .category) ?? type
+        let decodedCategory = Self.canonicalCategory(try values.decodeIfPresent(String.self, forKey: .category) ?? type)
         switch decodedCategory {
         case "text", "website", "code", "command", "structured_data", "path", "image", "file":
             category = decodedCategory
         default:
             category = type
         }
-        let decodedCategories = try values.decodeIfPresent([String].self, forKey: .categories) ?? []
+        let decodedCategories = (try values.decodeIfPresent([String].self, forKey: .categories) ?? []).map(Self.canonicalCategory)
         var resolvedCategories = [category]
         for label in decodedCategories where Self.isKnownCategory(label) && !resolvedCategories.contains(label) {
             resolvedCategories.append(label)
@@ -55,6 +57,12 @@ struct HistoryEntry: Codable, Identifiable {
         batch_total = try values.decodeIfPresent(Int.self, forKey: .batch_total)
         batch_count = try values.decodeIfPresent(Int.self, forKey: .batch_count)
         batch_status = try values.decodeIfPresent(String.self, forKey: .batch_status) ?? "complete"
+        composite = try values.decodeIfPresent(ContractCompositeInfo.self, forKey: .composite)
+        display = try values.decodeIfPresent(ContractHistoryDisplayInfo.self, forKey: .display)
+    }
+
+    private static func canonicalCategory(_ category: String) -> String {
+        category == "command" || category == "structured_data" ? "code" : category
     }
 
     private static func isKnownCategory(_ category: String) -> Bool {
@@ -66,6 +74,11 @@ struct HistoryEntry: Codable, Identifiable {
         }
     }
 
+    var hasThumbnail: Bool { display?.thumbnail_eligible ?? (type == "image" || (composite?.image_count ?? 0) > 0 || composite?.native_only == true) }
+    var listDescription: String {
+        type == "composite" ? description.trimmingCharacters(in: .whitespacesAndNewlines) : description
+    }
+
     var formattedTime: String {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -75,6 +88,10 @@ struct HistoryEntry: Codable, Identifiable {
             return f.string(from: date)
         }
         return String(timestamp.prefix(19))
+    }
+
+    var sourceDisplayName: String {
+        source_peer == "self" ? Loc.t("history.sourceLocal") : source_peer
     }
 
     var formattedSize: String {
@@ -92,6 +109,8 @@ struct HistoryEntry: Codable, Identifiable {
     }
 
     var icon: String {
+        if display?.kind == "document" { return "doc.richtext" }
+        if display?.kind == "unknown" || (type == "composite" && display == nil) { return "doc.questionmark" }
         switch category {
         case "website": return "globe"
         case "code": return "chevron.left.forwardslash.chevron.right"
@@ -106,10 +125,13 @@ struct HistoryEntry: Codable, Identifiable {
     }
 
     var categoryLabel: String {
-        Loc.t("history.category.\(category)")
+        if display?.kind == "document" { return Loc.t("history.display.document") }
+        if display?.kind == "unknown" || (type == "composite" && display == nil) { return Loc.t("history.display.unknown") }
+        return Loc.t("history.category.\(category)")
     }
 
     var categoryLabels: [String] {
-        categories.map { Loc.t("history.category.\($0)") }
+        if display?.kind == "document" || display?.kind == "unknown" || (type == "composite" && display == nil) { return [categoryLabel] }
+        return categories.map { Loc.t("history.category.\($0)") }
     }
 }

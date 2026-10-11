@@ -43,13 +43,15 @@ export function ThumbnailCanvas({ data }: { data: ThumbnailData }) {
 
 export function LazyThumbnail({
   id,
+  cacheKey,
   data,
   onVisible,
   fallback,
 }: {
   id: number;
+  cacheKey: string;
   data?: ThumbnailData;
-  onVisible: (id: number) => void;
+  onVisible: (cacheKey: string, id: number) => void;
   fallback: ReactNode;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -58,13 +60,13 @@ export function LazyThumbnail({
     if (data) return;
     const element = rootRef.current;
     if (!element || typeof IntersectionObserver === "undefined") {
-      onVisible(id);
+      onVisible(cacheKey, id);
       return;
     }
     const observer = new IntersectionObserver(
       (records) => {
         if (records.some((record) => record.isIntersecting)) {
-          onVisible(id);
+          onVisible(cacheKey, id);
           observer.disconnect();
         }
       },
@@ -72,7 +74,7 @@ export function LazyThumbnail({
     );
     observer.observe(element);
     return () => observer.disconnect();
-  }, [data, id, onVisible]);
+  }, [cacheKey, data, id, onVisible]);
 
   return (
     <div className="item-preview" ref={rootRef}>

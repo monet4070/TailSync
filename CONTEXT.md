@@ -5,7 +5,7 @@
 TailSync 是端到端加密的跨平台剪贴板同步工具：macOS（SwiftUI 菜单栏外壳 + Rust 守护进程）与
 Windows（React + Tauri）之间同步文本、图片和文件，优先局域网，必要时经 Tailscale 或 Iroh。
 
-身份/基础线协议 v4；产品版本 2.3.2；数据库 schema v11。数据帧按认证连接协商 v4/v5。详见 `README.md`。
+产品版本 2.3.2。复合剪贴板的版本分别管理：identity/base **4**；data frame **5**（认证连接可协商回退到 4）；main history **条件 v11/v12/v13**；effect journal **1**；local contract **2**；helper protocol **macOS 4 / Windows 2**；origin fingerprint **便携 2 / macOS 原件独立域 1**。v11→v12/v13 受构建开关、运行时开关和 helper 健康控制；已有 v12/v13 在关闭态可读取，迁移目的库保持至少来源版本。v13 增加历史身份及 Manifest 2；旧 CNS1/helper protocol 2 只提供 LegacyProjection；macOS CNA1/protocol 4 分开原件与派生表示，完整枚举且依赖已知闭合的原件才提供安全去重键。pre-v12 与 pre-v13 回退包分别保留。版本变更须有独立决策，不能把这些编号统称为“协议版本”。 详见 `README.md`。
 
 ## 分层与契约面
 
@@ -154,3 +154,16 @@ test --no-run），Windows 原生编译/打包/运行由 CI 负责。注意 host
   用户重新复制，而不是继续发送与原 manifest 不一致的数据。
 - Iroh 远程邀请只保存在创建端内存中，默认 120 秒有效；应用退出、取消、过期或成功配对后失效。
 - Android 客户端不在 v4 协议兼容范围。
+
+## Composite R6 verification
+
+`python3 scripts/run-composite-r6.py <new-run-id>` 运行本地正式矩阵。关闭态过滤器命中 3 个 `runtime_disabled` 用例；Iroh 回环与使用 N0/本机接口地址的真实网络组均执行。canonical include 正向及删除任一端的负向检查进入 CI。结果从真实日志/JSON diagnostics 解析，缓存 lint 另由独立 scratch 负向 probe 验证。
+
+源码指纹覆盖产品、测试、工具、构建配置和锁文件，文档及包单独封存 hash。历史阶段证据只对应原指纹。R6 当前证据入口为 `artifacts/composite-repair/2026-10-05-single-mac-r6-retry-identity-final/`；R7 本机原生观察另见 `docs/COMPOSITE-CLIPBOARD-SINGLE-MAC-ACCEPTANCE-2026-10-05.md`。Windows 原生、完整目标应用组、双设备仍为 UNKNOWN，发布 NO-GO。完整 R6 结论见 `docs/COMPOSITE-CLIPBOARD-R6-VERIFICATION.md`。
+
+
+R6 正式矩阵现为 44 项：增加 R7 harness 与 R6 只读证据校验的回归。源码指纹还纳入
+`artifacts/composite-repair/2026-10-04-r0/expected-failures.json`，因为它是测试预期配置。
+`composite-evidence.py <run-path> --verify` 校验封存、当前源码、当前 runner 的正式矩阵与包文件；
+封存 run 不得继续写入或重新封存。R7 PASS 须逐场景观察 JSON，绑定完整封存 R6、候选源码和
+测试包/原始证据；本机故障与回退支持项不关闭设备门禁。执行说明见 `docs/COMPOSITE-CLIPBOARD-R7-ACCEPTANCE.md`。

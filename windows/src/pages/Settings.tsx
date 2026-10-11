@@ -226,6 +226,10 @@ export function Settings() {
     }
   };
 
+  const setAutoSaveNetworkImages = async (enabled: boolean) => {
+    await update({ auto_save_network_images: enabled });
+  };
+
   const commitStorageQuota = async () => {
     const current = settingsRef.current;
     if (!current) return;
@@ -451,6 +455,8 @@ export function Settings() {
           historyLimitDraft={historyLimitDraft}
           setHistoryLimitDraft={setHistoryLimitDraft}
           commitHistoryLimit={commitHistoryLimit}
+          autoSaveNetworkImages={settings.auto_save_network_images ?? false}
+          setAutoSaveNetworkImages={setAutoSaveNetworkImages}
         />
         <SettingsStorageSection
           settings={settings}

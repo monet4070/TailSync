@@ -7,14 +7,21 @@
 //! steps of the maintainability refactor.
 
 pub mod admission;
+pub mod archive_receiver;
+#[cfg(test)]
+mod archive_sync_tests;
+mod composite_receipts;
+pub mod composite_receiver;
 pub mod connection_limiter;
 pub mod delivery;
 pub mod directory;
 pub mod discovery_admission;
+pub mod effect_journal;
 mod event_receipts;
 pub mod event_receiver;
 pub mod health;
 pub mod inbound_source;
+pub mod operation_lock;
 pub mod pool;
 pub mod rate_limit;
 pub mod types;

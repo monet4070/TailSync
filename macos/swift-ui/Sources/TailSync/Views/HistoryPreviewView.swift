@@ -312,6 +312,9 @@ struct HistoryPreviewView: View {
         case .ready(let payload, let material, let format):
             readyView(payload: payload, material: material, format: format)
                 .id(model.currentEntryId)
+        case .document(let material):
+            HistoryPreviewDocumentView(material: material)
+                .id(model.currentEntryId)
         }
     }
 

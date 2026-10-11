@@ -184,12 +184,21 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
 
         BuiltinCommand::RestoreFileBatch => {
             let result = match req.batch_id.as_deref() {
-                Some(batch_id) => crate::commands::materialize_file_batch_paths(
-                    state.db.clone(),
-                    batch_id.to_string(),
-                )
-                .await
-                .and_then(|paths| crate::clipboard_file::write_clipboard_files(&paths)),
+                Some(batch_id) => {
+                    match crate::commands::materialize_file_batch_paths(
+                        state.db.clone(),
+                        batch_id.to_string(),
+                    )
+                    .await
+                    {
+                        Ok(paths) => {
+                            let mut engine = state.sync_engine.lock().await;
+                            engine.supersede_file_clipboard();
+                            crate::clipboard_file::write_clipboard_files(&paths)
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
                 None => Err("missing batch_id".to_string()),
             };
             if result.is_ok() {
@@ -449,14 +458,17 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     error: Some("missing id".into()),
                 };
             };
-            let result = tailsync_runtime::history::HistoryOperations::image_payload_async(
+            let result = tailsync_runtime::history_display::image_payload_checked_async(
                 state.db.clone(),
                 id,
+                req.cache_key,
+                crate::clipboard_composite::native_analyzer(),
+                tailsync_core::cancellation::Cancellation::default(),
             )
             .await;
             match result {
-                Ok(data) => {
-                    let image = match crate::protocol::PackedImage::try_from(data.as_slice()) {
+                Ok(mut data) => {
+                    let image = match crate::protocol::PackedImage::try_from(data.data.as_slice()) {
                         Ok(image) => image,
                         Err(error) => {
                             return Response {
@@ -471,7 +483,8 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     // The full-size RGBA (up to 32 MiB) is now dead; release it
                     // before base64-encoding the ~100 KB thumbnail so the large
                     // buffer and the encoded copy never coexist.
-                    drop(data);
+                    let cache_key = data.cache_key.clone();
+                    data.data = Vec::new();
                     use base64::Engine;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&thumb);
                     Response {
@@ -480,6 +493,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                             "width": tw,
                             "height": th,
                             "rgba_b64": b64,
+                            "cache_key": cache_key,
                         })),
                         error: None,
                     }

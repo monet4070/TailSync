@@ -3,13 +3,20 @@
     "json": {
       "history": [
         "get_history",
+        "get_history_page",
         "get_preview_data",
+        "validate_document_preview",
+        "cancel_document_preview",
         "delete_entry",
         "set_history_favorite",
         "delete_favorite_entry",
         "clear_history",
         "clear_all",
-        "restore_entry"
+        "restore_entry",
+        "archive_entry_images",
+        "source_context_grant_create",
+        "source_context_grant_revoke",
+        "source_context_import"
       ],
       "peers": [
         "get_peers",
@@ -58,6 +65,7 @@
         "get_storage_status",
         "get_version",
         "get_sync_warning",
+        "ack_sync_warning",
         "get_history_capabilities",
         "get_migration_diagnostics",
         "get_status",
@@ -80,7 +88,8 @@
       ]
     },
     "binary": [
-      "get_preview_binary"
+      "get_preview_binary",
+      "get_document_preview"
     ],
     "tauri": [
       "commands::get_history",
@@ -106,6 +115,9 @@
       "commands::get_settings",
       "commands::update_settings",
       "commands::get_image_data",
+      "commands::get_document_preview",
+      "commands::validate_document_preview",
+      "commands::cancel_document_preview",
       "commands::validate_theme",
       "commands::install_theme",
       "commands::update_theme",
@@ -127,19 +139,25 @@
       "commands::restore_file_batch",
       "commands::get_version",
       "commands::get_local_capabilities",
-      "commands::get_sync_warning"
+      "commands::get_sync_warning",
+      "commands::ack_sync_warning"
     ]
   },
   "windows": {
     "json": {
       "history": [
         "get_history",
+        "get_history_page",
         "delete_entry",
         "set_history_favorite",
         "delete_favorite_entry",
         "clear_history",
         "clear_all",
-        "restore_entry"
+        "restore_entry",
+        "archive_entry_images",
+        "source_context_grant_create",
+        "source_context_grant_revoke",
+        "source_context_import"
       ],
       "peers": [
         "get_peers",
@@ -207,6 +225,11 @@
       "commands::delete_favorite_entry",
       "commands::clear_history",
       "commands::restore_entry",
+      "commands::archive_entry_images",
+      "commands::source_context_grant_create",
+      "commands::source_context_grant_revoke",
+      "commands::source_context_import",
+      "commands::source_context_export_ticket",
       "commands::get_peers",
       "commands::refresh_peers",
       "commands::test_connection",
@@ -247,6 +270,9 @@
       "preview_window::sync_preview_window_minimized",
       "commands::get_image_data",
       "commands::get_preview",
+      "commands::get_document_preview",
+      "commands::validate_document_preview",
+      "commands::cancel_document_preview",
       "commands::validate_theme",
       "commands::install_theme",
       "commands::update_theme",

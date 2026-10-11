@@ -120,8 +120,10 @@ impl HistoryDB {
         let duplicate_ids = self.unfavorited_duplicate_ids(&self.entry_ids_by_hash(&data_hash)?)?;
         let old_payloads = self.external_payloads_for_ids(&duplicate_ids)?;
         let timestamp = chrono::Utc::now().to_rfc3339();
+        // Read the capability before the transaction borrows `self.conn`.
+        let has_composite_schema = self.has_composite_schema();
         let tx = self.conn.transaction()?;
-        Self::delete_rows_in_transaction(&tx, &duplicate_ids)?;
+        Self::delete_rows_in_transaction(&tx, &duplicate_ids, has_composite_schema)?;
         let write_result = tx.execute(
             "INSERT INTO history
                 (timestamp, type, description, data, size_bytes, source_peer, data_hash,
@@ -202,8 +204,10 @@ impl HistoryDB {
         let duplicate_ids = self.unfavorited_duplicate_ids(&self.entry_ids_by_hash(data_hash)?)?;
         let old_payloads = self.external_payloads_for_ids(&duplicate_ids)?;
         let timestamp = chrono::Utc::now().to_rfc3339();
+        // Read the capability before the transaction borrows `self.conn`.
+        let has_composite_schema = self.has_composite_schema();
         let tx = self.conn.transaction()?;
-        Self::delete_rows_in_transaction(&tx, &duplicate_ids)?;
+        Self::delete_rows_in_transaction(&tx, &duplicate_ids, has_composite_schema)?;
         let write_result = tx.execute(
             "INSERT INTO history
                 (timestamp, type, description, data, size_bytes, source_peer, data_hash,

@@ -55,6 +55,24 @@ describe("groupEntriesByDate", () => {
 });
 
 describe("computeBatchInfos", () => {
+  it("does not give a complete single-file batch a group header", () => {
+    const single: HistoryEntry = {
+      ...entry(1, NOW.toISOString(), "single-file", 1),
+      type: "file" as const, batch_total: 1, batch_status: "complete",
+    };
+    const infos = computeBatchInfos(groupEntriesByDate([single], NOW));
+    expect(infos.get(1)?.isBatchStart).toBe(false);
+    expect(infos.get(1)?.batchId).toBe("single-file");
+  });
+
+  it("keeps the header when one received file belongs to an incomplete multi-file batch", () => {
+    const single: HistoryEntry = {
+      ...entry(1, NOW.toISOString(), "partial", 1),
+      type: "file" as const, batch_total: 3, batch_status: "incomplete",
+    };
+    expect(computeBatchInfos(groupEntriesByDate([single], NOW)).get(1)?.isBatchStart).toBe(true);
+  });
+
   it("assigns positions and flags within a group", () => {
     const groups = groupEntriesByDate(
       [

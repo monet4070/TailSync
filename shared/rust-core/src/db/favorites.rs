@@ -117,7 +117,11 @@ impl HistoryDB {
         let mut deletable = Vec::with_capacity(ids.len());
         for id in ids {
             let logical_ids = self.logical_item_ids(*id)?;
-            if !self.is_logical_item_favorite(&logical_ids)? {
+            if !logical_ids
+                .iter()
+                .any(|id| self.protected_history.contains(id))
+                && !self.is_logical_item_favorite(&logical_ids)?
+            {
                 deletable.push(*id);
             }
         }

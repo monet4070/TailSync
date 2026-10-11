@@ -7,6 +7,7 @@ members = [
     "shared/tailsync-protocol",
     "shared/tailsync-themes",
     "tools/updater-verify",
+    "tools/clipboard-helper",
 ]
 exclude = ["windows/src-tauri", "macos/src-tauri"]
 

@@ -23,7 +23,9 @@ pub async fn update_settings(
         &state.settings,
         &state.db,
         requested_settings,
-        &|settings: &crate::crypto::Settings| settings.save().map_err(|error| error.to_string()),
+        &|settings: &crate::crypto::Settings| {
+            crate::automatic_images::persist(settings, &state.image_archive)
+        },
         None,
     )
     .await
@@ -41,17 +43,23 @@ pub async fn update_settings(
 pub async fn get_image_data(
     state: State<'_, AppState>,
     id: i64,
+    cache_key: Option<String>,
 ) -> Result<serde_json::Value, CommandError> {
-    let data =
-        tailsync_runtime::history::HistoryOperations::image_payload_async(state.db.clone(), id)
-            .await?;
-    let image = crate::protocol::PackedImage::try_from(data.as_slice())
+    let mut data = tailsync_runtime::history_display::image_payload_checked_async(
+        state.db.clone(),
+        id,
+        cache_key,
+        crate::clipboard_composite::native_analyzer(),
+        tailsync_core::cancellation::Cancellation::default(),
+    )
+    .await?;
+    let image = crate::protocol::PackedImage::try_from(data.data.as_slice())
         .map_err(|error| error.to_string())?;
     let (tw, th, thumb) = crate::api::thumbnail_rgba(image, crate::api::THUMBNAIL_MAX_SIDE);
     // The thumbnail is built; the full-size RGBA (up to 32 MiB) is now dead.
     // Release it before base64-encoding the ~100 KB thumbnail and building the
     // response, so the large buffer and the encoded copy never coexist.
-    drop(data);
+    data.data = Vec::new();
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&thumb);
     Ok(serde_json::json!({
@@ -59,5 +67,6 @@ pub async fn get_image_data(
         "thumbnail_b64": b64,
         "thumbnail_width": tw,
         "thumbnail_height": th,
+        "cache_key": data.cache_key,
     }))
 }

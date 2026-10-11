@@ -14,6 +14,62 @@ extension SettingsView {
                 Spacer()
                 historyLimitControl
             }
+            themedDivider.padding(.leading, 16)
+            settingRow {
+                settingTitle(
+                    "settings.autoSaveNetworkImages",
+                    descriptionKey: "settings.autoSaveNetworkImagesDescription"
+                )
+                Spacer()
+                Toggle("", isOn: $settings.auto_save_network_images)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .accessibilityLabel(Loc.t("settings.autoSaveNetworkImages"))
+                    .onChange(of: settings.auto_save_network_images) { _ in save() }
+            }
+            themedDivider.padding(.leading, 16)
+            settingRow {
+                settingTitle("settings.qqImageAccess", descriptionKey: "settings.qqImageAccessDescription")
+                Spacer()
+                Button(Loc.t(qqImageAccessAuthorized ? "settings.qqImageAccessChange" : "settings.qqImageAccessChoose")) {
+                    chooseQQImageCache()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(qqImageAccessBusy)
+                .accessibilityLabel(Loc.t("settings.qqImageAccessChoose"))
+            }
+            if let key = qqImageAccessMessageKey {
+                Text(Loc.t(key))
+                    .font(.caption)
+                    .foregroundColor(palette.secondaryColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
+        }
+        .task {
+            qqImageAccessAuthorized = await QQImageCacheAccessController.status() == .authorized
+            if qqImageAccessAuthorized { qqImageAccessMessageKey = "settings.qqImageAccessReady" }
+        }
+    }
+
+    func chooseQQImageCache() {
+        qqImageAccessBusy = true
+        Task { @MainActor in
+            defer { qqImageAccessBusy = false }
+            switch await QQImageCacheAccessController.chooseDirectory(language: loc.lang) {
+            case .granted:
+                qqImageAccessAuthorized = true
+                qqImageAccessMessageKey = "settings.qqImageAccessReady"
+            case .cancelled:
+                break
+            case .invalidDirectory:
+                qqImageAccessMessageKey = "settings.qqImageAccessInvalid"
+            default:
+                qqImageAccessMessageKey = "settings.qqImageAccessFailed"
+            }
         }
     }
 

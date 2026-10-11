@@ -19,12 +19,20 @@ enum ApiError: LocalizedError {
     case .invalidJson:
       return Loc.t("error.localServiceInvalidResponse")
     case .serverError(let message):
+      if Self.restoreCodes.contains(message) {
+        return Loc.t("history.restore.code.\(message)")
+      }
       return message
     case .themeError(let diagnostic):
       let pointer = diagnostic.jsonPointer.isEmpty ? "" : " (\(diagnostic.jsonPointer))"
       return "\(diagnostic.code): \(diagnostic.message)\(pointer)"
     }
   }
+
+  static let restoreCodes: Set<String> = [
+    "publish_partial", "publish_unknown", "publish_superseded", "native_only",
+    "originals_incomplete", "resources_incomplete", "no_single_image", "format_unavailable", "unsupported_format",
+  ]
 
   var pairingErrorDescription: String {
     guard case .serverError(let message) = self else { return localizedDescription }

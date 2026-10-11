@@ -163,7 +163,7 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                         &state.db,
                         requested_settings,
                         &|settings: &crate::crypto::Settings| {
-                            settings.save().map_err(|error| error.to_string())
+                            crate::automatic_images::persist(settings, &state.image_archive)
                         },
                         None,
                     )
@@ -320,8 +320,16 @@ mod tests {
     fn state(settings: crypto::Settings) -> ApiState {
         let settings = Arc::new(Mutex::new(settings));
         let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let database = Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap()));
         ApiState {
-            db: Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap())),
+            documents: Default::default(),
+            db: database.clone(),
+            image_archive: Arc::new(crate::automatic_images::AutomaticImageArchive::new(
+                database,
+                false,
+                Arc::new(tailsync_core::composite::resource_archive::ReqwestTransport::new()),
+                Arc::new(crate::api::bump_clipboard_version),
+            )),
             sync_engine: Arc::new(Mutex::new(sync::SyncEngine::new())),
             pool: Arc::new(Mutex::new(network::ConnectionPool::new(
                 identity.clone(),

@@ -99,7 +99,7 @@ final class ApiClient: @unchecked Sendable {
     authenticated["token"] = capabilityToken
     // Opt-in cancellation for long-running reads: the daemon cancels the
     // request when this connection drops, returning its permit immediately.
-    if ["get_history", "get_preview_data", "wait_runtime_snapshot"].contains(json["cmd"] as? String ?? "")
+    if ["get_history", "get_preview_data", "wait_runtime_snapshot", "archive_entry_images", "source_context_import"].contains(json["cmd"] as? String ?? "")
     {
       authenticated["request_id"] = UUID().uuidString
     }
@@ -194,6 +194,16 @@ final class ApiClient: @unchecked Sendable {
               // Binary-preview failures retain the legacy JSON-line envelope.
               // Do not keep a completed error waiting for the peer to close.
               if responseData.contains(0x0A) { break }
+            } else if responseData.count >= 4, responseData.prefix(4) == Data("TSDC".utf8) {
+              if expectedFrameBytes == nil,
+                let (end, metadata) = try Self.documentFrameHeader(responseData)
+              {
+                expectedFrameBytes = end + Int(metadata.size_bytes)
+              }
+              if let expectedFrameBytes, responseData.count > expectedFrameBytes {
+                throw ApiError.serverError("Trailing document frame bytes")
+              }
+              if let expectedFrameBytes, responseData.count == expectedFrameBytes { break }
             } else {
               if expectedFrameBytes == nil, let (end, metadata) = try Self.previewFrameHeader(responseData) {
                 expectedFrameBytes = end + Int(metadata.size_bytes)
@@ -263,9 +273,16 @@ final class ApiClient: @unchecked Sendable {
       ContractStableErrorEnvelope.self,
       from: JSONSerialization.data(withJSONObject: error)
     )
+    normalized["error_code"] = envelope?.code.rawValue ?? "internal_error"
     // The generated decoder derives the display key from the code. Never use
     // untrusted server message_key or detail fields as visible text.
-    normalized["error"] = Loc.t(envelope?.message_key ?? "error.internal")
+    if let code = envelope?.code.rawValue, ApiError.restoreCodes.contains(code) {
+      // Keep the state available to HistoryView's explicit retry action.
+      // ApiError localizes this fixed code when presenting it to the user.
+      normalized["error"] = code
+    } else {
+      normalized["error"] = Loc.t(envelope?.message_key ?? "error.internal")
+    }
     return normalized
   }
 

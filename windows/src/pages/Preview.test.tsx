@@ -28,6 +28,7 @@ vi.mock("../tailsyncClient", () => ({
 }));
 vi.mock("../hooks/useTheme", () => ({ useTheme: () => ({ theme: "light" }) }));
 vi.mock("../hooks/useI18n", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
+vi.mock("../hooks/useRuntimeSnapshots", () => ({ useRuntimeSnapshots: vi.fn() }));
 vi.mock("../preview/usePreviewWindowFrame", () => ({ usePreviewWindowFrame: () => true }));
 vi.mock("../preview/usePreviewPayload", () => ({ usePreviewPayload: (target: { entryId: number } | null) => ({
   state: target ? { status: "ready", payload: {

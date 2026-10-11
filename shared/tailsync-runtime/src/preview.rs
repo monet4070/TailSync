@@ -106,6 +106,59 @@ mod tests {
     use super::*;
     use tailsync_core::db::{PreviewKind, PreviewMetadata};
 
+    #[tokio::test]
+    async fn image_classified_composite_binary_preview_contains_pixels_not_summary() {
+        use std::sync::Arc;
+        use tailsync_core::composite::{Completeness, Mime, PortableBundle, Representation};
+        use tailsync_core::db::HistoryDB;
+        use tokio::sync::Mutex;
+
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-composite-preview-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut database = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let pixels = [255, 0, 0, 255, 0, 0, 255, 255];
+        let image = tailsync_core::composite::packed_to_png(2, 1, &pixels).unwrap();
+        let bundle = PortableBundle {
+            representations: vec![Representation {
+                mime: Mime::Png,
+                bytes: image,
+            }],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        let id = database.add_composite(&bundle, None, "fixture").unwrap();
+        let database = Arc::new(Mutex::new(database));
+        let frame = crate::history::HistoryOperations::preview_binary_async(
+            database.clone(),
+            id,
+            None,
+            Some("composite-image-fixture".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(&frame[..4], PREVIEW_RESPONSE_MAGIC);
+        let metadata_len = u32::from_le_bytes(frame[5..9].try_into().unwrap()) as usize;
+        let payload_start = PREVIEW_HEADER_BYTES + metadata_len;
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&frame[PREVIEW_HEADER_BYTES..payload_start]).unwrap();
+        assert_eq!(metadata["entry_id"], id);
+        assert_eq!(metadata["kind"], "image");
+        assert_eq!(metadata["width"], 2);
+        assert_eq!(metadata["height"], 1);
+        assert_eq!(metadata["size_bytes"], pixels.len() as u64);
+        assert_eq!(metadata["request_id"], "composite-image-fixture");
+        assert_eq!(&frame[payload_start..], pixels.as_slice());
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn frame_contains_versioned_header_and_exact_payload() {
         let frame = encode_preview_response(

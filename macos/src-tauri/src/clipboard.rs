@@ -128,6 +128,7 @@ pub fn start_monitor(
     sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pool: Arc<Mutex<network::ConnectionPool>>,
     settings: Arc<Mutex<crypto::Settings>>,
+    image_archive: Arc<crate::automatic_images::AutomaticImageArchive>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
@@ -158,6 +159,7 @@ pub fn start_monitor(
                 sync_engine.clone(),
                 pool.clone(),
                 settings.clone(),
+                image_archive.clone(),
                 shutdown.clone(),
             ));
             let result = tokio::select! {
@@ -199,8 +201,12 @@ async fn clipboard_loop(
     sync_engine: Arc<Mutex<sync::SyncEngine>>,
     pool: Arc<Mutex<network::ConnectionPool>>,
     settings: Arc<Mutex<crypto::Settings>>,
+    image_archive: Arc<crate::automatic_images::AutomaticImageArchive>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut snapshot_retry = tailsync_core::composite::capture_retry::CaptureRetry::default();
+    let mut archive_observation =
+        tailsync_runtime::automatic_image_archive::CaptureTicketTracker::default();
     let mut change_detector = ClipboardChangeDetector::new();
     let active_poll_interval = change_detector.poll_interval_ms();
     let mut poll_interval = active_poll_interval;
@@ -234,6 +240,11 @@ async fn clipboard_loop(
             text_event_gate = ClipboardEventGate::default();
             image_event_gate = ClipboardEventGate::default();
             file_event_gate = ClipboardEventGate::default();
+            // A wake/reset must return to the responsive cadence: the board may
+            // have changed while the process was suspended, and the detector was
+            // rebuilt without acknowledging anything.
+            poll_interval = active_poll_interval;
+            archive_observation.reset();
             info!("Clipboard monitor reset after system wake");
             continue;
         }
@@ -243,6 +254,305 @@ async fn clipboard_loop(
             info!("Clipboard monitor alive (tick={tick})");
         }
 
+        if cfg!(feature = "protocol-composite-clipboard")
+            && std::env::var_os("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD").is_none()
+            && !tailsync_core::secure::composite_capture_serviceable()
+        {
+            if tick == 1 {
+                crate::clipboard_composite::capture_fault(-1, "clipboard_unavailable").await;
+            }
+            // The helper is unavailable: keep the slow cadence instead of busy
+            // polling. A later tick re-checks serviceability before capturing.
+            poll_interval = change_detector.idle_poll_interval_ms();
+            continue;
+        }
+        if crate::clipboard_composite::capture_enabled() {
+            if let Some(observed) = change_detector.observed_revision() {
+                // A revision is visible: stay responsive while the capture (or its
+                // bounded retry) is in progress. `observed_revision()` is a pure
+                // read, so nothing is acknowledged here.
+                poll_interval = active_poll_interval;
+                if !snapshot_retry.ready(observed, std::time::Instant::now()) {
+                    continue;
+                }
+                let archive_ticket = archive_observation.observe(&image_archive, observed);
+                let captured = tokio::task::spawn_blocking(move || {
+                    // Covers helper output/snapshot copies, model/history copies,
+                    // PNG pixels/decoder, archive roles and HTML workspace. The shared
+                    // 256 MiB limit stays fixed; CNA1 reserves more of it.
+                    let memory = std::sync::Arc::new(
+                        tailsync_core::composite::budgets::global()
+                            .reserve_pipeline(240 * 1024 * 1024)
+                            .map_err(|e| e.to_string())?,
+                    );
+                    let archive = crate::clipboard_composite::read_archive()?;
+                    let snapshot = archive.original.clone();
+                    if !tailsync_core::composite::capture_retry::CaptureRetry::matches_snapshot(
+                        observed, &snapshot,
+                    ) {
+                        return Err("Clipboard changed during capture".to_string());
+                    }
+                    let captured = tailsync_core::composite::from_archive(&archive);
+                    Ok::<_, String>((snapshot, captured, memory, archive))
+                })
+                .await;
+                if !snapshot_retry.is_current(observed, crate::clipboard_composite::revision())
+                    || CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire) != recovery_generation
+                {
+                    // Discard late provider/conversion results without acknowledging
+                    // the new clipboard or spending its retry allowance.
+                    snapshot_retry.clear();
+                    continue;
+                }
+                match captured {
+                    Ok(Ok((snapshot, Ok(bundle), memory, archive))) => {
+                        use tailsync_core::composite::{origin::Origin, Completeness};
+                        let origin = if archive.derived.is_empty() {
+                            crate::clipboard_composite::classify(&snapshot, &bundle)
+                        } else {
+                            crate::clipboard_composite::classify_native(&snapshot)
+                        };
+                        if origin == Origin::SelfWrite {
+                            change_detector.acknowledge(snapshot.after);
+                            snapshot_retry.clear();
+                            continue;
+                        }
+                        let capture_generation =
+                            sync_engine.lock().await.supersede_file_clipboard();
+                        if bundle.completeness == Completeness::MissingFormats
+                            && !snapshot_retry.exhausted()
+                        {
+                            snapshot_retry.retry(observed, std::time::Instant::now());
+                            continue;
+                        }
+
+                        let archive_candidate = origin == Origin::External
+                            && bundle.representations.iter().any(|representation| {
+                                representation.mime == tailsync_core::composite::Mime::Html
+                            });
+                        let db = database.clone();
+                        let held = memory.clone();
+                        let saved = tokio::task::spawn_blocking(move || {
+                            let _held = held;
+                            let mut db = db.blocking_lock();
+                            if !db.is_storage_available() {
+                                return Err("History storage unavailable".to_string());
+                            }
+                            let id = db
+                                .add_native_archive(&archive, "self")
+                                .map_err(|e| e.to_string())?;
+                            let guard = archive_candidate
+                                .then(|| {
+                                    tailsync_runtime::history::ArchiveEntryGuard::capture(&db, id)
+                                        .ok()
+                                })
+                                .flatten();
+                            Ok::<_, String>((id, guard))
+                        })
+                        .await;
+                        if !matches!(saved, Ok(Ok(_))) {
+                            tailsync_core::sync_warning::record_capture_not_saved();
+                            if !snapshot_retry
+                                .is_current(observed, crate::clipboard_composite::revision())
+                            {
+                                snapshot_retry.clear();
+                                continue;
+                            }
+                            if !snapshot_retry.retry(observed, std::time::Instant::now())
+                                && crate::clipboard_composite::capture_fault(
+                                    observed,
+                                    "capture_not_saved",
+                                )
+                                .await
+                            {
+                                change_detector.acknowledge(observed);
+                                snapshot_retry.clear();
+                            }
+                            continue;
+                        }
+                        change_detector.acknowledge(snapshot.after);
+                        snapshot_retry.clear();
+                        crate::api::bump_clipboard_version();
+                        let mut archive_binding = match &saved {
+                            Ok(Ok((id, Some(guard)))) => {
+                                Some(tailsync_runtime::history::ArchiveCommit {
+                                    id: *id,
+                                    guard: guard.clone(),
+                                })
+                            }
+                            _ => None,
+                        };
+                        tailsync_core::sync_warning::record_saved_capture(
+                            &snapshot,
+                            Some(&bundle),
+                            origin,
+                            crate::clipboard_composite::supports_native(&snapshot),
+                        );
+                        // Saving this event does not authorize sending it after a
+                        // newer copy or user restore superseded it during storage.
+                        if matches!(origin, Origin::UnknownMismatch | Origin::Unknown)
+                            || crate::clipboard_composite::revision() != Some(snapshot.after)
+                            || sync_engine.lock().await.clipboard_generation() != capture_generation
+                        {
+                            if let (Some(ticket), Some(commit)) = (archive_ticket, archive_binding)
+                            {
+                                enqueue_automatic_archive(&image_archive, ticket, origin, commit);
+                            }
+                            continue;
+                        }
+                        if bundle.completeness == Completeness::MissingFormats {
+                            crate::clipboard_composite::capture_fault(
+                                snapshot.after,
+                                "capture_incomplete",
+                            )
+                            .await;
+                        }
+                        tracing::debug!(provenance = ?tailsync_core::composite::CaptureProvenance::from_bundle(&bundle), "composite capture provenance");
+                        match tailsync_core::composite::capture::prepare_broadcast(
+                            snapshot, bundle, memory,
+                        ) {
+                            Ok(captured) => {
+                                let bound = broadcast_composite_to_peers(
+                                    CaptureBroadcastGate {
+                                        engine: sync_engine.clone(),
+                                        generation: capture_generation,
+                                        revision: captured.revision(),
+                                        recovery_generation,
+                                    },
+                                    &pool,
+                                    &settings,
+                                    database.clone(),
+                                    archive_binding.clone(),
+                                    &image_archive,
+                                    captured.payload().clone(),
+                                )
+                                .await;
+                                if bound.is_some() {
+                                    archive_binding = bound;
+                                }
+                            }
+                            Err(error) => {
+                                warn!("Composite broadcast preparation failed: {error}");
+                                tailsync_core::sync_warning::record_capture_not_shared();
+                            }
+                        }
+                        if let (Some(ticket), Some(commit)) = (archive_ticket, archive_binding) {
+                            enqueue_automatic_archive(&image_archive, ticket, origin, commit);
+                        }
+                        continue;
+                    }
+                    Ok(Ok((
+                        snapshot,
+                        Err(
+                            tailsync_core::composite::CaptureError::UnsupportedItems
+                            | tailsync_core::composite::CaptureError::NativeOnly,
+                        ),
+                        memory,
+                        archive,
+                    ))) => {
+                        use tailsync_core::composite::origin::Origin;
+                        let origin = crate::clipboard_composite::classify_native(&snapshot);
+                        if origin == Origin::SelfWrite {
+                            change_detector.acknowledge(snapshot.after);
+                            snapshot_retry.clear();
+                            continue;
+                        }
+                        sync_engine.lock().await.supersede_file_clipboard();
+                        let db = database.clone();
+                        let held = memory.clone();
+                        let saved = tokio::task::spawn_blocking(move || {
+                            let _held = held;
+                            let mut db = db.blocking_lock();
+                            if !db.is_storage_available() {
+                                return Err("History storage unavailable".to_string());
+                            }
+                            db.add_native_archive(&archive, "self")
+                                .map_err(|e| e.to_string())
+                        })
+                        .await;
+                        if matches!(saved, Ok(Ok(_))) {
+                            change_detector.acknowledge(snapshot.after);
+                            snapshot_retry.clear();
+                            tailsync_core::sync_warning::record_saved_capture(
+                                &snapshot,
+                                None,
+                                origin,
+                                crate::clipboard_composite::supports_native(&snapshot),
+                            );
+                            crate::api::bump_clipboard_version();
+                        } else {
+                            tailsync_core::sync_warning::record_capture_not_saved();
+                            if !snapshot_retry
+                                .is_current(observed, crate::clipboard_composite::revision())
+                            {
+                                snapshot_retry.clear();
+                                continue;
+                            }
+                            if !snapshot_retry.retry(observed, std::time::Instant::now())
+                                && crate::clipboard_composite::capture_fault(
+                                    observed,
+                                    "capture_not_saved",
+                                )
+                                .await
+                            {
+                                change_detector.acknowledge(observed);
+                                snapshot_retry.clear();
+                            }
+                        }
+                        continue;
+                    }
+                    Ok(Ok((
+                        _,
+                        Err(tailsync_core::composite::CaptureError::Files),
+                        _memory,
+                        _archive,
+                    ))) => {
+                        snapshot_retry.clear();
+                    }
+                    Ok(Ok((
+                        snapshot,
+                        Err(tailsync_core::composite::CaptureError::Empty),
+                        _memory,
+                        _archive,
+                    ))) => {
+                        crate::clipboard_composite::classify_native(&snapshot);
+                        sync_engine.lock().await.supersede_file_clipboard();
+                        change_detector.acknowledge(snapshot.after);
+                        snapshot_retry.clear();
+                        continue;
+                    }
+                    Ok(Ok((
+                        snapshot,
+                        Err(tailsync_core::composite::CaptureError::Suppressed),
+                        _memory,
+                        _archive,
+                    ))) => {
+                        // Metadata suppression is a completed decision with no
+                        // history, broadcast, fault body or fallback reader.
+                        sync_engine.lock().await.supersede_file_clipboard();
+                        change_detector.acknowledge(snapshot.after);
+                        snapshot_retry.clear();
+                        continue;
+                    }
+                    _ => {
+                        if !snapshot_retry.retry(observed, std::time::Instant::now())
+                            && crate::clipboard_composite::capture_fault(observed, "capture_failed")
+                                .await
+                        {
+                            change_detector.acknowledge(observed);
+                            snapshot_retry.clear();
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                // The board is stable and no revision is pending: fall back to the
+                // idle cadence. Nothing is acknowledged here, so a later copy is
+                // still observed and captured.
+                poll_interval = change_detector.idle_poll_interval_ms();
+                continue;
+            }
+        }
         let clipboard_changed = change_detector.changed();
         poll_interval = if clipboard_changed {
             active_poll_interval
@@ -371,6 +681,7 @@ async fn clipboard_loop(
                     let broadcast_payload = payload.clone();
                     tokio::spawn(async move {
                         broadcast_to_peers(
+                            None,
                             &broadcast_pool,
                             &broadcast_settings,
                             Command::TextPayload,
@@ -440,6 +751,7 @@ async fn clipboard_loop(
                 let broadcast_payload = packed.clone();
                 tokio::spawn(async move {
                     broadcast_to_peers(
+                        None,
                         &broadcast_pool,
                         &broadcast_settings,
                         Command::ImagePayload,
@@ -600,7 +912,16 @@ fn spawn_save_image(database: Arc<Mutex<db::HistoryDB>>, data: Arc<[u8]>) {
     });
 }
 
+#[derive(Clone)]
+struct CaptureBroadcastGate {
+    engine: Arc<Mutex<sync::SyncEngine>>,
+    generation: u64,
+    revision: i64,
+    recovery_generation: u64,
+}
+
 async fn broadcast_to_peers(
+    capture: Option<CaptureBroadcastGate>,
     pool: &Arc<Mutex<network::ConnectionPool>>,
     settings: &Arc<Mutex<crypto::Settings>>,
     cmd: Command,
@@ -610,8 +931,6 @@ async fn broadcast_to_peers(
         debug!("Sync is paused; skipping clipboard broadcast");
         return;
     }
-    let peers = configured_peers(settings).await;
-
     // Encode the event exactly once and share the reference-counted buffer
     // across every peer, so broadcasting a large image holds a single payload
     // instead of one copy per peer. Every peer acknowledges the same message
@@ -621,10 +940,28 @@ async fn broadcast_to_peers(
         Ok(event) => event,
         Err(error) => {
             warn!("Skipping clipboard broadcast: {error}");
+            if cmd == Command::CompositePayload {
+                tailsync_core::sync_warning::record_capture_not_shared();
+            }
             return;
         }
     };
+    broadcast_shared_to_peers(capture, pool, settings, event, false).await;
+}
 
+include!("../../../shared/platform-clipboard-archive-sync.rs");
+
+async fn broadcast_shared_to_peers(
+    capture: Option<CaptureBroadcastGate>,
+    pool: &Arc<Mutex<network::ConnectionPool>>,
+    settings: &Arc<Mutex<crypto::Settings>>,
+    event: network::SharedEvent,
+    ordered: bool,
+) {
+    if !settings.lock().await.sync_enabled {
+        return;
+    }
+    let peers = configured_peers(settings).await;
     for peer in &peers {
         if !peer_is_transfer_eligible(peer) {
             continue;
@@ -632,11 +969,30 @@ async fn broadcast_to_peers(
         let pool = pool.clone();
         let event = event.clone();
         let peer = peer.clone();
-        tokio::spawn(async move {
-            if let Err(error) = network::queue_peer_shared_event(&pool, &peer, &event).await {
+        let capture = capture.clone();
+        let send = async move {
+            let current = async move {
+                let Some(capture) = capture else {
+                    return Some(None);
+                };
+                let engine = capture.engine.lock_owned().await;
+                (engine.clipboard_generation() == capture.generation
+                    && engine.clipboard_revision() == Some(capture.revision)
+                    && CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire)
+                        == capture.recovery_generation)
+                    .then_some(Some(engine))
+            };
+            if let Err(error) =
+                network::queue_peer_shared_event(&pool, &peer, &event, current).await
+            {
                 warn!("Broadcast to {} failed: {}", peer.hostname, error);
             }
-        });
+        };
+        if ordered {
+            send.await;
+        } else {
+            tokio::spawn(send);
+        }
     }
 }
 

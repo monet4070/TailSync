@@ -6,7 +6,7 @@
 
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
-pub const LOCAL_CONTRACT_SCHEMA_VERSION: u32 = 1;
+pub const LOCAL_CONTRACT_SCHEMA_VERSION: u32 = 2;
 pub const LOCAL_PREVIEW_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const STABLE_ERROR_SCHEMA_VERSION: u32 = 1;
 
@@ -22,6 +22,15 @@ pub enum StableErrorCode {
     StorageUnavailable,
     Unauthorized,
     ProtocolIncompatible,
+    PublishPartial,
+    PublishUnknown,
+    PublishSuperseded,
+    NativeOnly,
+    OriginalsIncomplete,
+    ResourcesIncomplete,
+    NoSingleImage,
+    FormatUnavailable,
+    UnsupportedFormat,
     #[serde(other)]
     InternalError,
 }
@@ -75,6 +84,15 @@ impl<'de> Deserialize<'de> for StableErrorEnvelope {
             "storage_unavailable" => StableErrorCode::StorageUnavailable,
             "unauthorized" => StableErrorCode::Unauthorized,
             "protocol_incompatible" => StableErrorCode::ProtocolIncompatible,
+            "publish_partial" => StableErrorCode::PublishPartial,
+            "publish_unknown" => StableErrorCode::PublishUnknown,
+            "publish_superseded" => StableErrorCode::PublishSuperseded,
+            "native_only" => StableErrorCode::NativeOnly,
+            "originals_incomplete" => StableErrorCode::OriginalsIncomplete,
+            "resources_incomplete" => StableErrorCode::ResourcesIncomplete,
+            "no_single_image" => StableErrorCode::NoSingleImage,
+            "format_unavailable" => StableErrorCode::FormatUnavailable,
+            "unsupported_format" => StableErrorCode::UnsupportedFormat,
             "internal_error" => StableErrorCode::InternalError,
             _ => return Ok(Self::new(StableErrorCode::InternalError)),
         };
@@ -114,6 +132,51 @@ impl StableErrorEnvelope {
                 "error.protocol_incompatible",
                 StableErrorDetailClass::Protocol,
             ),
+            StableErrorCode::PublishPartial => (
+                true,
+                "history.restore.code.publish_partial",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::PublishUnknown => (
+                true,
+                "history.restore.code.publish_unknown",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::PublishSuperseded => (
+                false,
+                "history.restore.code.publish_superseded",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::NativeOnly => (
+                false,
+                "history.restore.code.native_only",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::OriginalsIncomplete => (
+                false,
+                "history.restore.code.originals_incomplete",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::ResourcesIncomplete => (
+                false,
+                "history.restore.code.resources_incomplete",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::NoSingleImage => (
+                false,
+                "history.restore.code.no_single_image",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::FormatUnavailable => (
+                false,
+                "history.restore.code.format_unavailable",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::UnsupportedFormat => (
+                false,
+                "history.restore.code.unsupported_format",
+                StableErrorDetailClass::Resource,
+            ),
             StableErrorCode::InternalError => {
                 (false, "error.internal", StableErrorDetailClass::Internal)
             }
@@ -132,12 +195,34 @@ impl StableErrorEnvelope {
     /// category; the original message is intentionally discarded.
     pub fn from_legacy_message(command: &str, message: &str) -> Self {
         let message = message.trim().to_ascii_lowercase();
+        // Restore outcomes are fixed machine codes. Preserve their identity
+        // so clients can offer an explicit retry without replaying the write.
+        let restore_code = match message.as_str() {
+            "publish_partial" => Some(StableErrorCode::PublishPartial),
+            "publish_unknown" => Some(StableErrorCode::PublishUnknown),
+            "publish_superseded" => Some(StableErrorCode::PublishSuperseded),
+            "native_only" => Some(StableErrorCode::NativeOnly),
+            "originals_incomplete" => Some(StableErrorCode::OriginalsIncomplete),
+            "resources_incomplete" => Some(StableErrorCode::ResourcesIncomplete),
+            "no_single_image" => Some(StableErrorCode::NoSingleImage),
+            "format_unavailable" => Some(StableErrorCode::FormatUnavailable),
+            "unsupported_format" => Some(StableErrorCode::UnsupportedFormat),
+            _ => None,
+        };
+        if let Some(code) = restore_code {
+            return Self::new(code);
+        }
         let starts_with_any =
             |prefixes: &[&str]| prefixes.iter().any(|prefix| message.starts_with(prefix));
         // Only recognize fixed route messages or unambiguous leading error
         // categories. A private path or database detail containing words such
         // as "missing" must never turn a storage failure into a request error.
-        let code = if message == "unauthorized" || message.starts_with("unauthorized:") {
+        let code = if matches!(
+            message.as_str(),
+            "content analysis busy" | "content analysis is stale" | "history image is stale"
+        ) {
+            StableErrorCode::TemporarilyBusy
+        } else if message == "unauthorized" || message.starts_with("unauthorized:") {
             StableErrorCode::Unauthorized
         } else if starts_with_any(&[
             "incompatible protocol",
@@ -221,7 +306,7 @@ impl StableErrorEnvelope {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct LocalCapabilities {
-    #[schemars(range(min = 1, max = 1))]
+    #[schemars(range(min = 2, max = 2))]
     pub schema_version: u32,
     #[schemars(range(min = 4, max = 5))]
     pub wire_version: u32,
@@ -231,6 +316,12 @@ pub struct LocalCapabilities {
     pub supports_binary_preview: bool,
     pub supports_runtime_snapshot: bool,
     pub supports_stable_errors: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 1))]
+    pub history_display_version: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 1))]
+    pub document_preview_version: Option<u16>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -354,6 +445,8 @@ impl LocalCapabilities {
             supports_binary_preview,
             supports_runtime_snapshot,
             supports_stable_errors: false,
+            history_display_version: Some(1),
+            document_preview_version: supports_binary_preview.then_some(1),
         }
     }
 }
@@ -361,6 +454,28 @@ impl LocalCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumbnail_contention_and_changed_snapshot_keep_the_fixed_retry_policy() {
+        for message in [
+            "content analysis busy",
+            "content analysis is stale",
+            "history image is stale",
+        ] {
+            let error = StableErrorEnvelope::from_legacy_message("get_image_data", message);
+            assert_eq!(error.code, StableErrorCode::TemporarilyBusy);
+            assert!(error.retryable);
+            assert_eq!(error.message_key, "error.temporarily_busy");
+            assert_eq!(
+                StableErrorEnvelope::from_legacy_message(
+                    "get_image_data",
+                    &format!("{message} /private/path")
+                )
+                .code,
+                StableErrorCode::InternalError
+            );
+        }
+    }
 
     #[test]
     fn current_capabilities_are_stable_and_json_safe() {

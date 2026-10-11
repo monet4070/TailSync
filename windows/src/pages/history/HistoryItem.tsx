@@ -1,6 +1,9 @@
+import { useId, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   ArrowLeftRight,
+  FileText,
+  HelpCircle,
   Star,
 } from "lucide-react";
 import { useLongPressFavorite } from "../../hooks/useLongPressFavorite";
@@ -12,9 +15,16 @@ import {
   formatSize,
   formatTime,
 } from "./HistoryEntryHelpers";
+import {
+  explicitRestoreFormats,
+  rowDiagnostics,
+  rowStatusLabel,
+  showsAdvancedActions,
+  showsMaintenanceActions,
+} from "./historyRowActions";
 import { LazyThumbnail } from "./HistoryThumbnail";
 import type { HistoryCategory, HistoryEntry } from "../../tailsyncClient";
-import type { ThumbnailData } from "../../hooks/useThumbnailCache";
+import { thumbnailKeyForEntry, type ThumbnailData } from "../../hooks/useThumbnailCache";
 import type { Translate } from "./HistoryViewTypes";
 
 interface HistoryItemProps {
@@ -29,10 +39,15 @@ interface HistoryItemProps {
   isPageEnterItem: boolean;
   enterIndex: number;
   batchPosition: number;
-  thumbnails: Map<number, ThumbnailData>;
-  loadThumbnail: (id: number) => void;
+  thumbnails: Map<string, ThumbnailData>;
+  loadThumbnail: (cacheKey: string, id: number) => void;
   setFocusedId: (id: number) => void;
-  handleRestore: (id: number) => Promise<void>;
+  handleRestore: (id: number, format?: string) => Promise<void>;
+  handleArchiveImages: (id: number) => Promise<void>;
+  handleAuthorizeSource: (id: number) => Promise<void>;
+  handleImportSourcePacket: (id: number) => Promise<void>;
+  handleRevokeSource: () => Promise<void>;
+  canRevokeSource: boolean;
   handleDelete: (id: number) => Promise<void>;
   handleFavoriteChange: (entry: HistoryEntry) => Promise<void>;
   handleFavoriteProtected: () => void;
@@ -57,12 +72,25 @@ export function HistoryItem({
   loadThumbnail,
   setFocusedId,
   handleRestore,
+  handleArchiveImages,
+  handleAuthorizeSource,
+  handleImportSourcePacket,
+  handleRevokeSource,
+  canRevokeSource,
   handleDelete,
   handleFavoriteChange,
   handleFavoriteProtected,
   isFavoritesCollection,
 }: HistoryItemProps) {
-  const CategoryIcon = CATEGORY_ICONS[category];
+  const displayKind = entry.display?.kind ?? (entry.type === "composite" ? "unknown" : entry.type);
+  const CategoryIcon = displayKind === "document" ? FileText : displayKind === "unknown" ? HelpCircle : CATEGORY_ICONS[category];
+  const thumbnailKey = thumbnailKeyForEntry(entry, isFavoritesCollection ? "favorites" : "all");
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const diagnosticsId = useId();
+  const diagnosticsToggle = useRef<HTMLButtonElement>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedId = useId();
+  const advancedToggle = useRef<HTMLButtonElement>(null);
   const longPress = useLongPressFavorite(
     () => void handleFavoriteChange(entry),
     true,
@@ -76,6 +104,16 @@ export function HistoryItem({
         : undefined,
     "--favorite-progress": longPress.progress,
   };
+  const statusLabel = rowStatusLabel(entry.composite, t);
+  const restoreFormats = entry.composite ? explicitRestoreFormats(entry.composite) : [];
+  const maintenanceActions = entry.composite ? showsMaintenanceActions(entry.composite) : false;
+  const advancedActions = entry.composite
+    ? showsAdvancedActions(entry.composite, {
+        authorize: Boolean(handleAuthorizeSource),
+        importPacket: Boolean(handleImportSourcePacket),
+        revoke: canRevokeSource,
+      })
+    : false;
 
   return (
     <article
@@ -125,10 +163,11 @@ export function HistoryItem({
       }}
     >
       <span className="favorite-press-progress" aria-hidden="true" />
-      {entry.type === "image" ? (
+      {(entry.display?.thumbnail_eligible ?? (entry.type === "image" || (entry.composite?.image_count ?? 0) > 0 || entry.composite?.native_only)) ? (
         <LazyThumbnail
           id={entry.id}
-          data={thumbnails.get(entry.id)}
+          cacheKey={thumbnailKey}
+          data={thumbnails.get(thumbnailKey)}
           onVisible={loadThumbnail}
           fallback={(
             <div className={`item-icon ${category}`}>
@@ -147,7 +186,9 @@ export function HistoryItem({
       <div className="item-content">
         <div className="item-meta">
           <span className="item-categories">
-            {categories.map((label) => (
+            {displayKind === "document" || displayKind === "unknown" ? (
+              <span className="item-type">{t(`history.display.${displayKind}`)}</span>
+            ) : categories.map((label) => (
               <span className={`item-type ${label}`} key={label}>
                 {t(`history.category.${label}`)}
               </span>
@@ -160,14 +201,122 @@ export function HistoryItem({
           </span>
         </div>
         <div className="item-desc" title={entry.description}>
-          {entry.description}
+          {entry.type === "composite" ? entry.description.trim() : entry.description}
         </div>
         <div className="item-footer">
           <span className="item-size">{formatSize(entry.size_bytes)}</span>
+          {statusLabel && <span className="item-composite-status">{statusLabel}</span>}
+          {restoreFormats.map(format => (
+            <button key={format} type="button" className="item-copy-format"
+              onClick={() => void handleRestore(entry.id, format)}
+              aria-label={t(`history.composite.copy.${format}`)}>
+              {t(`history.composite.copy.${format}`)}
+            </button>
+          ))}
+          {maintenanceActions && (
+            <button type="button" className="item-copy-format"
+              onClick={() => void handleArchiveImages(entry.id)}
+              aria-label={t("history.composite.archiveImages")}
+              title={t("history.composite.archiveImagesHint")}>
+              {t("history.composite.archiveImages")}
+            </button>
+          )}
+          {advancedActions && (
+            <button type="button" className="item-copy-format item-advanced-toggle"
+              ref={advancedToggle}
+              id={`${advancedId}-toggle`}
+              aria-expanded={advancedOpen}
+              aria-controls={advancedOpen ? advancedId : undefined}
+              aria-label={t("history.composite.advanced")}
+              onContextMenu={(event) => event.stopPropagation()}
+              onClick={() => setAdvancedOpen(open => !open)}>
+              {t("history.composite.advanced")}
+            </button>
+          )}
+          {entry.composite && (
+            <button type="button" className="item-copy-format item-details-toggle"
+              ref={diagnosticsToggle}
+              id={`${diagnosticsId}-toggle`}
+              aria-expanded={diagnosticsOpen}
+              aria-controls={diagnosticsOpen ? diagnosticsId : undefined}
+              aria-label={t("history.composite.details")}
+              onContextMenu={(event) => event.stopPropagation()}
+              onClick={() => setDiagnosticsOpen(open => !open)}>
+              {t("history.composite.details")}
+            </button>
+          )}
           <span className="favorite-stamp" aria-hidden="true">
             <Star size={13} fill="currentColor" />
           </span>
         </div>
+        {advancedActions && advancedOpen && (
+          <div className="item-advanced-actions"
+            id={advancedId}
+            tabIndex={-1}
+            role="group"
+            aria-label={t("history.composite.advanced")}
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.stopPropagation()}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              event.currentTarget.focus({ preventScroll: true });
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setAdvancedOpen(false);
+                advancedToggle.current?.focus({ preventScroll: true });
+              }
+            }}>
+            {maintenanceActions && <button type="button" className="item-copy-format"
+              onClick={() => void handleAuthorizeSource(entry.id)}
+              aria-label={t("history.composite.authorizeSource")}>
+              {t("history.composite.authorizeSource")}
+            </button>}
+            {maintenanceActions && <button type="button" className="item-copy-format"
+              onClick={() => void handleImportSourcePacket(entry.id)}
+              aria-label={t("history.composite.importSourcePacket")}>
+              {t("history.composite.importSourcePacket")}
+            </button>}
+            {canRevokeSource && (
+              <button type="button" className="item-copy-format"
+                onClick={() => void handleRevokeSource()}
+                aria-label={t("history.composite.revokeSource")}>
+                {t("history.composite.revokeSource")}
+              </button>
+            )}
+          </div>
+        )}
+        {entry.composite && diagnosticsOpen && (
+          <dl className="item-diagnostics"
+            id={diagnosticsId}
+            aria-labelledby={`${diagnosticsId}-toggle`}
+            tabIndex={0}
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.stopPropagation()}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              event.currentTarget.focus({ preventScroll: true });
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setDiagnosticsOpen(false);
+                diagnosticsToggle.current?.focus({ preventScroll: true });
+              }
+            }}>
+            {rowDiagnostics(entry.composite, t).map(row => (
+              <div className="item-diagnostics-row" key={row.label}>
+                <dt>{row.label}</dt>
+                <dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
       </div>
     </article>
   );

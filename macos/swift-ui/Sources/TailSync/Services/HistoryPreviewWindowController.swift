@@ -10,6 +10,10 @@ enum HistoryPreviewOwner: Hashable {
     init(collection: String) {
         self = collection == "favorites" ? .favorites : .history
     }
+
+    var wireValue: String {
+        self == .favorites ? "favorites" : "history"
+    }
 }
 
 /// Sole owner of the independent preview window and its sensitive content.
@@ -96,6 +100,11 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
         window?.level = registeredWindow(for: owner)?.level ?? .normal
     }
 
+    func refreshSavedDocument(for owner: HistoryPreviewOwner) async {
+        guard activeOwner == owner, isPreviewVisible else { return }
+        await viewModel.refreshSavedDocument()
+    }
+
     func focus(for owner: HistoryPreviewOwner) {
         guard activeOwner == owner, let window else { return }
         deepFocusTask?.cancel()
@@ -161,7 +170,7 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
         } else {
             viewModel.onHostedRestore = nil
         }
-        viewModel.present(request)
+        viewModel.present(request, owner: owner)
         window.level = activeHostWindow?.level ?? .normal
         window.title = Loc.t("history.preview.title")
         if window.isMiniaturized { window.deminiaturize(nil) }
