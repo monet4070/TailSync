@@ -1,6 +1,5 @@
 use super::content_analysis::{
-    attribute_span, find_tag_end, AnalysisError, ImageAvailability, ImagePlacement,
-    NativeAnalysisFacts, PartialReason, TextFacts,
+    AnalysisError, ImageAvailability, ImagePlacement, NativeAnalysisFacts, PartialReason, TextFacts,
 };
 use super::display_document::{
     DisplayDocument, DocumentAsset, DocumentBlock, DocumentBlockKind, DocumentColor, DocumentImage,
@@ -9,6 +8,7 @@ use super::display_document::{
     DocumentTableRow, DOCUMENT_BLOCK_LIMIT, DOCUMENT_CELL_LIMIT, DOCUMENT_DETAIL_LIMIT,
     DOCUMENT_LINK_LIMIT, DOCUMENT_RUN_LIMIT, DOCUMENT_TEXT_LIMIT, DOCUMENT_VERSION,
 };
+use super::html_lex::{attribute_span, decode_entity, find_tag_end};
 use crate::cancellation::Cancellation;
 use crate::protocol::content_analysis::AttachmentState;
 use std::time::{Duration, Instant};
@@ -277,37 +277,6 @@ impl PendingRuns {
     fn into_runs(mut self) -> Vec<DocumentRun> {
         self.flush();
         self.runs
-    }
-}
-
-fn decode_entity(entity: &str) -> Option<char> {
-    match entity {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" | "#39" => Some('\''),
-        "nbsp" => Some('\u{a0}'),
-        "copy" => Some('©'),
-        "reg" => Some('®'),
-        "trade" => Some('™'),
-        "hellip" => Some('…'),
-        "mdash" => Some('—'),
-        "ndash" => Some('–'),
-        "lsquo" => Some('‘'),
-        "rsquo" => Some('’'),
-        "ldquo" => Some('“'),
-        "rdquo" => Some('”'),
-        _ => entity
-            .strip_prefix("#x")
-            .or_else(|| entity.strip_prefix("#X"))
-            .and_then(|digits| u32::from_str_radix(digits, 16).ok())
-            .or_else(|| {
-                entity
-                    .strip_prefix('#')
-                    .and_then(|digits| digits.parse().ok())
-            })
-            .and_then(char::from_u32),
     }
 }
 

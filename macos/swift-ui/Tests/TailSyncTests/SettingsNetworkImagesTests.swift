@@ -78,7 +78,7 @@ final class SettingsNetworkImagesTests: XCTestCase {
             }
         }
 
-        let outcome = await coordinator.save(value, fallback: AppSettings())
+        let outcome = await coordinator.save(.autoSaveNetworkImages(true), fallback: AppSettings())
 
         XCTAssertNil(outcome.error)
         XCTAssertTrue(outcome.persisted.auto_save_network_images)
@@ -119,15 +119,19 @@ final class SettingsNetworkImagesTests: XCTestCase {
 
         let responseSent = expectation(description: "failure response sent")
         let connectionClosed = expectation(description: "failure socket closed")
+        responseSent.expectedFulfillmentCount = 2
+        connectionClosed.expectedFulfillmentCount = 2
+        let snapshot = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(AppSettings())]) + Data([10])
         DispatchQueue.global().async {
             server.respond(
                 with: Data(#"{"ok":false,"error":"save failed"}"#.utf8) + Data([0x0A]),
                 responseSent: responseSent,
                 connectionClosed: connectionClosed
             )
+            server.respond(with: snapshot, responseSent: responseSent, connectionClosed: connectionClosed)
         }
 
-        let outcome = await coordinator.save(value, fallback: AppSettings())
+        let outcome = await coordinator.save(.autoSaveNetworkImages(true), fallback: AppSettings())
 
         XCTAssertNotNil(outcome.error)
         XCTAssertFalse(outcome.persisted.auto_save_network_images)

@@ -180,14 +180,10 @@ struct SettingsView: View {
                 persistedSettings.connection_mode = mode
             }
         }
-        .onReceive(
-            NotificationCenter.default.publisher(for: .tailSyncSettingsChanged)
-        ) { notification in
-            if let updated = notification.object as? AppSettings {
-                applyPersistedSettings(updated)
-                persistedSettings = updated
-            }
-        }
+        .modifier(SettingsSnapshotObserver(
+            settings: $settings, persisted: $persistedSettings,
+            apply: applyPersistedSettings
+        ))
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
         ) { _ in

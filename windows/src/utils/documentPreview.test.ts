@@ -148,6 +148,9 @@ describe("decodeDocumentFrame", () => {
     const oversized = frame.slice();
     new DataView(oversized.buffer).setUint32(5, DOCUMENT_MAX_METADATA_BYTES + 1, true);
     expectParseError(oversized, "invalid_metadata_length");
+    const atLimit = frame.slice(0, DOCUMENT_HEADER_BYTES);
+    new DataView(atLimit.buffer).setUint32(5, DOCUMENT_MAX_METADATA_BYTES, true);
+    expectParseError(atLimit, "truncated_header");
     const truncated = frame.slice(0, DOCUMENT_HEADER_BYTES + 2);
     new DataView(truncated.buffer).setUint32(5, 512, true);
     expectParseError(truncated, "truncated_header");
@@ -203,6 +206,25 @@ describe("documentAssetBytes", () => {
     expect(await documentAssetBytes(decoded, decoded.document.assets[0])).toEqual(payload);
     const tampered = { ...decoded.document.assets[0], sha256: "00".repeat(32) };
     expect(await documentAssetBytes(decoded, tampered)).toBeNull();
+  });
+
+  it("rejects an uppercase metadata digest at the asset payload boundary", async () => {
+    const payload = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1]);
+    const digest = await crypto.subtle.digest("SHA-256", payload);
+    const sha256 = Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    const uppercase = sha256.toUpperCase();
+    const frame = encodeDocument(
+      metadata({
+        size_bytes: payload.length,
+        document: paragraphDocument([asset({ sha256: uppercase, length: payload.length })]),
+      }),
+      payload,
+    );
+    const decoded = decodeDocumentFrame(frame);
+    expect(decoded.document.assets[0].sha256).toBe(uppercase);
+    expect(await documentAssetBytes(decoded, decoded.document.assets[0])).toBeNull();
   });
 });
 

@@ -186,6 +186,154 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
         XCTAssertEqual(editor.string, "fast")
     }
 
+    /// F5: a keystroke must cancel the in-flight page read immediately. Waiting
+    /// for the 180 ms debounce to issue the replacement query leaves the old
+    /// daemon read (and its connection permit) running.
+    func testTypingCancelsTheInFlightReadBeforeTheDebounceReplacement() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        let editor = try fixture.searchEditor()
+        editor.insertText("slow", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await wait { await service.slowQueryCount == 1 }
+
+        let typedAt = ContinuousClock.now
+        editor.insertText("fast", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        try await wait { await service.cancelledSlowQueryCount == 1 }
+        let cancelledAfter = typedAt.duration(to: ContinuousClock.now)
+        let issuedReplacement = await service.fastQueryCount
+
+        XCTAssertLessThan(
+            cancelledAfter, .milliseconds(150),
+            "the typed query must cancel the read instead of waiting out the debounce"
+        )
+        XCTAssertEqual(issuedReplacement, 0, "the read was cancelled before the replacement query was issued")
+        try await wait { fixture.session.selectedID == 200 }
+    }
+
+    /// F5: an occluded or miniaturized window keeps its SwiftUI view alive, so
+    /// the visibility notification - not only `onDisappear` - must cancel the
+    /// in-flight read.
+    func testHiddenWindowCancelsTheInFlightRead() async throws {
+        let service = HistoryKeyboardTestService()
+        let window = HistoryOcclusionTestWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 450, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let fixture = Fixture(service: service, hostWindow: window)
+        let controller = TailSyncTransientWindowController(
+            window: window,
+            onVisibilityChange: { visible in
+                NotificationCenter.default.post(
+                    name: .tailSyncHistoryCollectionVisibilityChanged(for: "all"),
+                    object: nil, userInfo: ["visible": visible]
+                )
+            },
+            onClose: {}
+        )
+        defer {
+            fixture.close()
+            withExtendedLifetime(controller) {}
+        }
+        window.alphaValue = 0
+        window.orderFront(nil)
+        try await wait { fixture.session.selectedID == 1 }
+        let editor = try fixture.searchEditor()
+        editor.insertText("slow", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await wait { await service.slowQueryCount == 1 }
+
+        window.orderOut(nil)
+        controller.windowDidChangeOcclusionState(Notification(
+            name: NSWindow.didChangeOcclusionStateNotification, object: window
+        ))
+        try await wait { await service.cancelledSlowQueryCount == 1 }
+    }
+
+    func testHiddenDebounceDoesNotStartAReadAndReopensAtPageZero() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        fixture.session.focusList()
+        for _ in 0..<30 { fixture.window.sendEvent(event(125, window: fixture.window)) }
+        try await wait { fixture.session.selectedID == 31 }
+        let editor = try fixture.searchEditor()
+        editor.insertText("fast", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await Task.sleep(for: .milliseconds(50))
+        NotificationCenter.default.post(
+            name: .tailSyncHistoryCollectionVisibilityChanged(for: "all"),
+            object: nil, userInfo: ["visible": false]
+        )
+        try await Task.sleep(for: .milliseconds(300))
+        let hiddenQueries = await service.loadQueries.filter { $0.keyword == "fast" }
+        XCTAssertTrue(hiddenQueries.isEmpty, "the debounce must not start a daemon read in a hidden window")
+
+        NotificationCenter.default.post(
+            name: .tailSyncHistoryCollectionVisibilityChanged(for: "all"),
+            object: nil, userInfo: ["visible": true]
+        )
+        try await wait { fixture.session.selectedID == 200 }
+        let resumedQueries = await service.loadQueries.filter { $0.keyword == "fast" }
+        XCTAssertEqual(resumedQueries.map(\.offset), [0], "the new search must retain its page-zero intent")
+    }
+
+    func testHiddenPagingReadResumesTheRequestedPage() async throws {
+        let service = HistoryKeyboardTestService(holdPageTurns: true)
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        fixture.session.focusList()
+        for _ in 0..<30 { fixture.window.sendEvent(event(125, window: fixture.window)) }
+        try await wait { await service.pendingPageQueryCount == 1 }
+        NotificationCenter.default.post(
+            name: .tailSyncHistoryCollectionVisibilityChanged(for: "all"),
+            object: nil, userInfo: ["visible": false]
+        )
+        try await wait { await service.cancelledPageQueryCount == 1 }
+        await service.allowPageTurns()
+        NotificationCenter.default.post(
+            name: .tailSyncHistoryCollectionVisibilityChanged(for: "all"),
+            object: nil, userInfo: ["visible": true]
+        )
+        try await wait { fixture.session.selectedID == 31 }
+        let offsets = await service.loadQueries.filter { $0.keyword == nil }.map(\.offset)
+        XCTAssertEqual(offsets, [0, 30, 30], "reopening must resume the cancelled page, not the old displayed page")
+    }
+
+    /// F5: tearing the hosting view down must cancel the in-flight read instead
+    /// of letting it finish into a discarded generation.
+    func testDisappearingViewCancelsTheInFlightRead() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        let editor = try fixture.searchEditor()
+        editor.insertText("slow", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await wait { await service.slowQueryCount == 1 }
+
+        fixture.close()
+        try await wait { await service.cancelledSlowQueryCount == 1 }
+    }
+
+    /// The generation guard must keep rejecting a late answer from a dependency
+    /// that ignores cancellation.
+    func testLateNonCooperativeQueryCannotInstallResults() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        let editor = try fixture.searchEditor()
+        editor.insertText("stubborn", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await wait { await service.stubbornQueryCount == 1 }
+        editor.insertText("fast", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        try await wait { fixture.session.selectedID == 200 }
+
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(fixture.session.selectedID, 200)
+        XCTAssertEqual(editor.string, "fast")
+    }
+
     /// Space opens the preview for the selected row without taking the responder
     /// from the history list, the preview follows a later selection change after
     /// its follow debounce, and Escape closes the preview first.
@@ -373,6 +521,13 @@ private actor HistoryKeyboardTestService {
     private(set) var restoreCount = 0
     private(set) var failedQueryCount = 0
     private(set) var slowQueryCount = 0
+    private(set) var cancelledSlowQueryCount = 0
+    private(set) var fastQueryCount = 0
+    private(set) var stubbornQueryCount = 0
+    private(set) var loadQueries: [HistoryQuery] = []
+    private(set) var pendingPageQueryCount = 0
+    private(set) var cancelledPageQueryCount = 0
+    private var holdPageTurns: Bool
     let failRestore: Bool
     let pinned: Bool
     var failDelete: Bool
@@ -380,11 +535,13 @@ private actor HistoryKeyboardTestService {
     private(set) var deletedCollections: [String] = []
     private(set) var deleteFinishedCount = 0
     private var removedIDs: Set<Int64> = []
-    init(failRestore: Bool = false, pinned: Bool = false, failDelete: Bool = false) {
+    init(failRestore: Bool = false, pinned: Bool = false, failDelete: Bool = false, holdPageTurns: Bool = false) {
         self.failRestore = failRestore
         self.pinned = pinned
         self.failDelete = failDelete
+        self.holdPageTurns = holdPageTurns
     }
+    func allowPageTurns() { holdPageTurns = false }
     func allowDelete() { failDelete = false }
     func delete(_ id: Int64, collection: String) async throws {
         deletedIDs.append(id)
@@ -395,12 +552,37 @@ private actor HistoryKeyboardTestService {
         removedIDs.insert(id)
     }
     func load(_ query: HistoryQuery) async throws -> [HistoryEntry] {
+        loadQueries.append(query)
+        if query.keyword == nil && query.offset > 0 && holdPageTurns {
+            pendingPageQueryCount += 1
+            do { try await Task.sleep(for: .seconds(10)) }
+            catch { cancelledPageQueryCount += 1; throw error }
+        }
         if query.keyword == "slow" {
             slowQueryCount += 1
-            try await Task.sleep(for: .milliseconds(600))
+            do {
+                try await Task.sleep(for: .milliseconds(600))
+            } catch {
+                cancelledSlowQueryCount += 1
+                throw error
+            }
             return try [entry(100)]
         }
-        if query.keyword == "fast" { return try [entry(200)] }
+        if query.keyword == "stubborn" {
+            stubbornQueryCount += 1
+            // Ignores cancellation and answers late, like a dependency that
+            // does not cooperate with task cancellation.
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.6) {
+                    continuation.resume()
+                }
+            }
+            return try [entry(300)]
+        }
+        if query.keyword == "fast" {
+            fastQueryCount += 1
+            return try [entry(200)]
+        }
         if query.keyword != nil {
             failedQueryCount += 1
             throw ApiError.serverError("test query failed")

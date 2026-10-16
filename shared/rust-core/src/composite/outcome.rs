@@ -25,8 +25,8 @@ pub enum NativePublish {
 }
 
 impl NativePublish {
-    /// The error text a simple `Result<(), String>` seam should carry, so the caller
-    /// can tell a provable no-effect from an unknown outcome.
+    /// Legacy error text for logs and string façades. Effect decisions must use
+    /// this enum or the typed write failure; text cannot prove a no-effect.
     pub fn as_write_error(&self) -> String {
         match self {
             Self::NoEffect { detail } => {

@@ -14731,6 +14731,128 @@
     }
   },
   {
+    "name": "PairingStatus: classified failure",
+    "contract": "PairingStatus",
+    "valid": true,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": "Pairing connection failed: IO error: early eof",
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false,
+      "failure_kind": "connection_closed"
+    }
+  },
+  {
+    "name": "PairingStatus: future failure kind normalizes to unknown",
+    "contract": "PairingStatus",
+    "valid": true,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": "Pairing window timed out",
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false,
+      "failure_kind": "future_failure_kind"
+    }
+  },
+  {
+    "name": "PairingStatus: null failure kind stays null",
+    "contract": "PairingStatus",
+    "valid": true,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false,
+      "failure_kind": null
+    }
+  },
+  {
+    "name": "PairingStatus: non-string failure kind is rejected",
+    "contract": "PairingStatus",
+    "valid": false,
+    "value": {
+      "pairing_enabled": false,
+      "phase": "disabled",
+      "expires_at": null,
+      "remaining_seconds": 0,
+      "failed_attempts": 0,
+      "max_failures": 5,
+      "peer": null,
+      "error": null,
+      "pending": [
+        {
+          "hostname": "fixture-peer",
+          "address": "192.168.1.2",
+          "interface": "lan",
+          "fingerprint": "fixture-only",
+          "locally_trusted": false
+        }
+      ],
+      "pending_store_unavailable": false,
+      "failure_kind": 7
+    }
+  },
+  {
+    "name": "PairingFailureKind: known member is preserved",
+    "contract": "PairingFailureKind",
+    "valid": true,
+    "value": "window_closed"
+  },
+  {
+    "name": "PairingFailureKind: future member normalizes to unknown",
+    "contract": "PairingFailureKind",
+    "valid": true,
+    "value": "future_failure_kind"
+  },
+  {
+    "name": "PairingFailureKind: non-string member is rejected",
+    "contract": "PairingFailureKind",
+    "valid": false,
+    "value": 7
+  },
+  {
     "name": "StableErrorEnvelope: unknown code maps to internal_error",
     "contract": "StableErrorEnvelope",
     "valid": true,

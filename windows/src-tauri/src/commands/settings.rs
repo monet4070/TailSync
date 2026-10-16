@@ -1,7 +1,13 @@
 use super::*;
 
-fn parse_settings_json(settings_json: &str) -> Result<crate::crypto::Settings, CommandError> {
-    serde_json::from_str(settings_json).map_err(|_| {
+/// Parse a window's field intents. Whole `get_settings` snapshots and
+/// server-owned fields are rejected with the fixed request-error envelope, so a
+/// window can only change the fields it names.
+fn parse_settings_patch(settings_json: &str) -> Result<crate::crypto::SettingsPatch, CommandError> {
+    let value: serde_json::Value = serde_json::from_str(settings_json).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })?;
+    crate::crypto::SettingsPatch::from_json_value(value).map_err(|_| {
         CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
     })
 }
@@ -98,39 +104,24 @@ pub async fn get_settings(
     Ok(settings.clone())
 }
 
-/// Update settings
+/// Update the editable settings fields and return the committed snapshot.
+///
+/// Shortcuts stay on their dedicated commands: the patch cannot name them, so
+/// an ordinary save never re-registers a global shortcut.
 #[command]
 pub async fn update_settings(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     settings_json: String,
-) -> Result<(), CommandError> {
-    let requested_settings = parse_settings_json(&settings_json)?;
-    let apply_shortcut_transaction =
-        |previous: &crate::crypto::Settings, new_settings: &crate::crypto::Settings| {
-            let register = |candidate: &crate::crypto::Settings| {
-                install_global_shortcuts(
-                    &app,
-                    &candidate.sync_shortcut,
-                    &candidate.history_shortcut,
-                )
-            };
-            apply_shortcut_change(previous, new_settings, register, || {
-                new_settings.save().map_err(|error| error.to_string())
-            })?;
-            state
-                .image_archive
-                .set_enabled(new_settings.auto_save_network_images);
-            Ok(())
-        };
-    let outcome = crate::crypto::apply_settings_update(
+) -> Result<crate::crypto::Settings, CommandError> {
+    let patch = parse_settings_patch(&settings_json)?;
+    let outcome = crate::crypto::apply_settings_patch(
         &state.settings,
         &state.db,
-        requested_settings,
+        patch,
         &|settings: &crate::crypto::Settings| {
             crate::automatic_images::persist(settings, &state.image_archive)
         },
-        Some(&apply_shortcut_transaction),
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -139,7 +130,10 @@ pub async fn update_settings(
         network::clear_peer_cache().await;
         network::refresh_iroh_for_mode(&outcome.connection_mode).await;
     }
-    Ok(())
+    if let Err(error) = app.emit("settings-changed", ()) {
+        log::warn!("Could not notify settings windows: {error}");
+    }
+    Ok(outcome.persisted)
 }
 
 /// Open the history window
@@ -376,10 +370,42 @@ pub fn close_connections_window(app: tauri::AppHandle) -> Result<(), CommandErro
 mod stable_input_error_tests {
     #[test]
     fn malformed_settings_are_invalid_arguments() {
-        let error = super::parse_settings_json("{").unwrap_err();
+        let error = super::parse_settings_patch("{").unwrap_err();
         assert_eq!(
             error.envelope().code,
             tailsync_runtime::contracts::StableErrorCode::InvalidArgument
         );
+    }
+
+    #[test]
+    fn window_patches_reject_whole_snapshots_and_owned_fields() {
+        for input in [
+            r#"{"enabled_peers":{"peer":false}}"#,
+            r#"{"sync_enabled":true}"#,
+            r#"{"sync_shortcut":"Control+Shift+Z"}"#,
+            r#"{"history_shortcut":"Control+Shift+Z"}"#,
+            r#"{"storage_root":"/tmp"}"#,
+            r#"{"trusted_peer_keys":{"peer":"key"}}"#,
+            r#"{"paired_peer_endpoints":{"peer":"1.2.3.4"}}"#,
+            r#"{"trusted_peer_addresses":{"peer":{"lan":"1.2.3.4"}}}"#,
+        ] {
+            let error = super::parse_settings_patch(input).unwrap_err();
+            assert_eq!(
+                error.envelope().code,
+                tailsync_runtime::contracts::StableErrorCode::InvalidArgument,
+                "{input} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn window_patches_accept_only_the_editable_fields() {
+        let patch = super::parse_settings_patch(
+            r#"{"history_limit":250,"connection_mode":"lan_only","auto_save_network_images":true}"#,
+        )
+        .unwrap();
+        assert_eq!(patch.history_limit, Some(250));
+        assert_eq!(patch.connection_mode.as_deref(), Some("lan_only"));
+        assert_eq!(patch.auto_save_network_images, Some(true));
     }
 }

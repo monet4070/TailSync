@@ -14,8 +14,9 @@ import type { useShortcutRecorder } from "../../hooks/useShortcutRecorder";
 import type { useLaunchAtLogin } from "../../hooks/useLaunchAtLogin";
 import type { ThemePreference } from "../../hooks/useTheme";
 import type { UpdatePhase } from "../../hooks/useUpdater";
-import type { SettingsData } from "../../types/settings.generated";
+import type { SettingsData, SettingsPatch } from "../../types/settings.generated";
 import type { PendingThemePackage } from "../../utils/themePackageWorkflow";
+import type { PairingIssue } from "../../utils/pairingFailure";
 
 export type Translate = (key: string) => string;
 
@@ -45,7 +46,7 @@ export interface SettingsConnectionsSectionProps {
     linkDraft: string;
     linkPreview: import("../../tailsyncClient").RemotePairingInvitePreview | null;
     remotePairingBusy: boolean;
-    remotePairingError: string;
+    remotePairingError: PairingIssue | null;
     copied: boolean;
     handleCreateInvite: () => Promise<void>;
     handleLinkChange: (value: string) => void;
@@ -63,7 +64,7 @@ export interface SettingsGeneralSectionProps {
   syncShortcutRecorder: ShortcutRecorder;
   historyShortcutRecorder: ShortcutRecorder;
   setGlobalSync: (enabled: boolean) => Promise<void>;
-  update: (patch: Partial<SettingsData>) => Promise<boolean>;
+  update: (patch: SettingsPatch) => Promise<boolean>;
 }
 
 export interface SettingsHistorySectionProps {
@@ -122,7 +123,7 @@ export interface PairingDialogProps {
   pairingOpen: boolean;
   pairingStatus: PairingStatus | null;
   pairingTarget: PeerDevice | null;
-  pairingError: string;
+  pairingError: PairingIssue | null;
   pairingBusy: boolean;
   pairDialogRef: RefObject<HTMLDivElement | null>;
   closePairing: () => Promise<void>;

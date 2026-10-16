@@ -881,6 +881,7 @@ mod tests {
 
     #[tokio::test]
     async fn waiting_import_refuses_revoke_expiry_cancellation_and_reopened_authority() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         for mode in ["revoke", "expire", "cancel", "reopen"] {
             let root = temp_path(mode);
             let mut raw = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
@@ -984,6 +985,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_refuses_a_different_selected_history_row() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let root = temp_path("wrong-row");
         let mut raw = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let id = raw
@@ -1063,6 +1065,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_context_import_binds_packet_once_and_reports_complete() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let root = temp_path("import");
         let mut raw = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let base = blob_bundle(&["blob:https://example.com/one"]);
@@ -1114,6 +1117,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_context_import_is_partial_and_rejects_tampering() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let root = temp_path("partial");
         let mut raw = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let base = blob_bundle(&[
@@ -1185,6 +1189,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_context_import_is_blocked_by_revoke_supersede_and_unknown_fields() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let root = temp_path("blocked");
         let mut raw = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let base = blob_bundle(&["blob:https://example.com/one"]);

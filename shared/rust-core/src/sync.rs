@@ -14,7 +14,8 @@ use thiserror::Error;
 
 mod port;
 pub use port::{
-    publication_permit, AdmissionHold, BlockingPlatformPort, ClipboardPort, PortFuture,
+    publication_permit, run_cancellable_write, AdmissionHold, BlockingPlatformPort, ClipboardPort,
+    PortFuture, WriteEffect, WriteFailure, WriteOutcome,
 };
 mod resume;
 pub use resume::cleanup_expired_transfers;
@@ -278,6 +279,53 @@ pub trait SyncPlatform: Send + Sync {
             ));
         }
         self.write_image(width, height, rgba)
+    }
+    /// Typed form of [`Self::write_text_cancellable`], and the shape the
+    /// claim/receipt rules need.
+    ///
+    /// Pre-write cancellation is provably no-effect and is decided here, not by any
+    /// message text. A platform that can prove more (the composite helper reporting
+    /// `NoEffect`, for example) overrides this method; whatever the legacy string
+    /// seam reports is classified conservatively, because a string cannot prove that
+    /// the platform was untouched.
+    fn write_text_cancellable_typed(
+        &self,
+        text: &str,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), crate::sync::WriteFailure> {
+        run_cancellable_write(cancelled, |cancelled| {
+            self.write_text_cancellable(text, cancelled)
+                .map_err(crate::sync::WriteFailure::from)
+        })
+    }
+    /// Typed form of [`Self::write_image_cancellable`]. See
+    /// [`Self::write_text_cancellable_typed`].
+    fn write_image_cancellable_typed(
+        &self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), crate::sync::WriteFailure> {
+        run_cancellable_write(cancelled, |cancelled| {
+            self.write_image_cancellable(width, height, rgba, cancelled)
+                .map_err(crate::sync::WriteFailure::from)
+        })
+    }
+    /// Typed form of [`Self::write_text`] for the synchronous restore path.
+    fn write_text_typed(&self, text: &str) -> Result<(), crate::sync::WriteFailure> {
+        self.write_text(text)
+            .map_err(crate::sync::WriteFailure::from)
+    }
+    /// Typed form of [`Self::write_image`] for the synchronous restore path.
+    fn write_image_typed(
+        &self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> Result<(), crate::sync::WriteFailure> {
+        self.write_image(width, height, rgba)
+            .map_err(crate::sync::WriteFailure::from)
     }
     fn write_native_cancellable(
         &self,

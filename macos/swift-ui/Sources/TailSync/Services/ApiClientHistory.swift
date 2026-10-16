@@ -145,7 +145,7 @@ extension ApiClient {
     let binary = try await requestBytes(
       command,
       timeoutSeconds: 30,
-      maxResponseBytes: 16 * 1024 * 1024
+      maxResponseBytes: Int(ContractDocumentPolicies.maxBytes)
     )
     if binary.first == 0x7B {
       let line = binary.firstIndex(of: 0x0A).map { Data(binary[..<$0]) } ?? binary

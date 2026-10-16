@@ -320,6 +320,11 @@ jobs:
         run: bash macos/build-mac.sh --skip-swift-build
       - name: Verify packaged macOS bundle and daemon
         run: bash macos/scripts/verify_macos_bundle.sh
+      - name: Verify packaged Finder routing and QQ capture
+        run: |
+          export TAILSYNC_FILE_HELPER="$GITHUB_WORKSPACE/macos/TailSync.app/Contents/MacOS/clipboard-helper"
+          export TAILSYNC_QQ_HELPER="$TAILSYNC_FILE_HELPER"
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/tests/test_finder_file_capture.py scripts/tests/test_qq_clipboard_conversion.py
 
       - name: Verify remediation gate execution
         run: node scripts/check-remediation-ledger.mjs --job rust-macos --results-dir .remediation-test-results

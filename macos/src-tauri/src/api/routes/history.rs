@@ -90,7 +90,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                     return Response {
                         ok: false,
                         data: None,
-                        error: Some(error.to_string()),
+                        error: Some(error.to_string().into()),
                     };
                 }
             };
@@ -127,7 +127,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                 Err(e) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e),
+                    error: Some(e.into()),
                 },
             }
         }
@@ -172,7 +172,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                     Response {
                         ok: false,
                         data: None,
-                        error: Some(encoded),
+                        error: Some(encoded.into()),
                     }
                 }
             }
@@ -201,7 +201,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                 Err(e) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e.to_string()),
+                    error: Some(e.to_string().into()),
                 },
             }
         }
@@ -230,7 +230,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -262,7 +262,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -283,7 +283,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                 Err(e) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e.to_string()),
+                    error: Some(e.to_string().into()),
                 },
             }
         }
@@ -309,7 +309,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                     return Response {
                         ok: false,
                         data: None,
-                        error: Some(error),
+                        error: Some(error.into()),
                     };
                 }
             };
@@ -328,13 +328,14 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                         Response {
                             ok: outcome.is_published(),
                             data: outcome.report().map(|report| serde_json::json!(report)),
-                            error: (!outcome.is_published()).then(|| outcome.code().to_string()),
+                            error: (!outcome.is_published())
+                                .then(|| outcome.code().to_string().into()),
                         }
                     }
                     Err(error) => Response {
                         ok: false,
                         data: None,
-                        error: Some(error),
+                        error: Some(error.into()),
                     },
                 };
             }
@@ -358,7 +359,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                     return Response {
                         ok: false,
                         data: None,
-                        error: Some(error),
+                        error: Some(error.into()),
                     };
                 }
             } else if entry_type == "file" {
@@ -368,7 +369,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                         return Response {
                             ok: false,
                             data: None,
-                            error: Some(error),
+                            error: Some(error.into()),
                         };
                     }
                 } else if let Some(data) = data.as_deref() {
@@ -376,7 +377,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                         return Response {
                             ok: false,
                             data: None,
-                            error: Some(error),
+                            error: Some(error.into()),
                         };
                     }
                 } else {
@@ -394,7 +395,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                     return Response {
                         ok: false,
                         data: None,
-                        error: Some(error),
+                        error: Some(error.into()),
                     };
                 }
             }
@@ -444,7 +445,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(error.into()),
                 },
             }
         }
@@ -471,7 +472,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(error.into()),
                 },
             }
         }
@@ -527,7 +528,7 @@ pub(super) async fn handle(command: HistoryCommand, req: Request, state: &ApiSta
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(error.into()),
                 },
             }
         }

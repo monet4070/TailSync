@@ -55,7 +55,7 @@ struct ConnectionsView: View {
 
     @State var remotePairing = RemotePairingInputState()
     @State var remoteInvite: ApiClient.RemotePairingInvite?
-    @State var remotePairingInProgress = false
+    var remotePairingInProgress: Bool { remotePairing.operationInProgress }
     @State var remoteInviteCopied = false
 
     @State var testingPeers: Set<String> = []
@@ -209,14 +209,10 @@ struct ConnectionsView: View {
                 persistedSettings.sync_enabled = enabled
             }
         }
-        .onReceive(
-            NotificationCenter.default.publisher(for: .tailSyncSettingsChanged)
-        ) { notification in
-            if let updated = notification.object as? AppSettings {
-                applyPersistedSettings(updated)
-                persistedSettings = updated
-            }
-        }
+        .modifier(SettingsSnapshotObserver(
+            settings: $settings, persisted: $persistedSettings,
+            apply: applyPersistedSettings
+        ))
         .onAppear {
             if let link = AppDelegate.takePendingRemotePairingLink() {
                 handleRemotePairingLink(link)
@@ -402,9 +398,7 @@ struct ConnectionsView: View {
                 }
             }
 
-            if let message = pairingMessage
-                ?? pairingStatus?.error.map(ApiError.pairingErrorDescription)
-            {
+            if let message = pairingFailureMessage {
                 Text(message)
                     .font(.caption2)
                     .foregroundColor(.red)
@@ -914,6 +908,7 @@ struct ConnectionsView: View {
 
     func cancelPairing() {
         pairingInProgress = true
+        pairingMessage = nil
         Task { @MainActor in
             do {
                 pairingStatus = try await ApiClient.shared.cancelPairing()
@@ -925,8 +920,16 @@ struct ConnectionsView: View {
         }
     }
 
+    /// Message shown for a direct pairing request failure. Typed stable codes
+    /// take precedence over the legacy text scan.
     func pairingErrorDescription(_ error: Error) -> String {
-        (error as? ApiError)?.pairingErrorDescription ?? error.localizedDescription
+        PairingFailurePresentation.message(for: error)
+    }
+
+    /// Message the pairing sheet shows: a direct request error wins over the
+    /// polled status, and a typed status kind wins over the legacy status text.
+    var pairingFailureMessage: String? {
+        PairingFailurePresentation.message(directError: pairingMessage, status: pairingStatus)
     }
 
     @MainActor
@@ -938,6 +941,7 @@ struct ConnectionsView: View {
         }
         if status.phase == "paired", previousPairingPhase != "paired" {
             showPairingSheet = false
+            pairingMessage = nil
             loadPeers()
         }
         previousPairingPhase = status.phase

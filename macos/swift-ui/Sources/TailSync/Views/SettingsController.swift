@@ -22,22 +22,27 @@ extension SettingsView {
         }
     }
 
-    func save() {
+    func save(_ change: SettingsFieldChange) {
         guard !isLoading, !applyingPersistedSettings else { return }
         let value = settings
         actionErrorMessage = nil
         saveGeneration += 1
         let generation = saveGeneration
         Task { @MainActor in
-            let outcome = await saveCoordinator.save(value, fallback: persistedSettings)
+            let outcome = await saveCoordinator.save(change, fallback: persistedSettings)
             guard generation == saveGeneration else { return }
             if let error = outcome.error {
                 persistedSettings = outcome.persisted
-                applyPersistedSettings(outcome.persisted)
+                applyPersistedSettings(SettingsDraftReconciliation.merge(
+                    current: settings, submitted: value, canonical: outcome.persisted
+                ))
                 actionErrorMessage = error
                 return
             }
             persistedSettings = outcome.persisted
+            applyPersistedSettings(SettingsDraftReconciliation.merge(
+                current: settings, submitted: value, canonical: outcome.persisted
+            ))
             NotificationCenter.default.post(name: .tailSyncSettingsChanged, object: outcome.persisted)
             saved = true
             do {

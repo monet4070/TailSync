@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getImageData } from "../tailsyncClient";
 import { decodeStableErrorEnvelope } from "../types/localContracts.generated";
+import { StableIpcError } from "../utils/stableIpcError";
 
 export interface ThumbnailData {
   b64: string;
@@ -102,7 +103,11 @@ function validThumbnail(thumbnail: ThumbnailData): boolean {
   try { return atob(thumbnail.b64).length === pixels * 4; } catch { return false; }
 }
 
+// The IPC boundary normalizes versioned envelopes to `StableIpcError`, so the
+// normalized code is the production shape; raw envelopes and legacy busy text
+// stay accepted for the un-normalized callers.
 function temporaryPressure(error: unknown): boolean {
+  if (error instanceof StableIpcError) return error.code === "temporarily_busy";
   try { return decodeStableErrorEnvelope(error).code === "temporarily_busy"; } catch {
     return String(error) === "content analysis busy" || String(error).endsWith(": content analysis busy");
   }

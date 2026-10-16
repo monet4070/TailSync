@@ -185,7 +185,7 @@ async fn serve_connection<S>(
                 &mut writer,
                 false,
                 None,
-                &error,
+                error,
                 "request",
                 false,
                 API_WRITE_TIMEOUT,
@@ -252,7 +252,7 @@ async fn serve_connection<S>(
                     &mut writer,
                     false,
                     None,
-                    &error,
+                    error,
                     &command,
                     stable_errors,
                     response_timeout_for_command(&req.cmd),
@@ -286,7 +286,7 @@ async fn serve_connection<S>(
                     &mut writer,
                     false,
                     None,
-                    &error,
+                    error,
                     &command,
                     stable_errors,
                     response_timeout_for_command(&req.cmd),
@@ -309,6 +309,7 @@ async fn serve_connection<S>(
         && matches!(
             req.cmd.as_str(),
             "get_history"
+                | "get_history_page"
                 | "get_preview_data"
                 | "wait_runtime_snapshot"
                 | "archive_entry_images"
@@ -326,7 +327,7 @@ async fn serve_connection<S>(
         &mut writer,
         response.ok,
         response.data,
-        &response.error.unwrap_or_default(),
+        response.error.unwrap_or_default(),
         &command,
         stable_errors,
         response_timeout,
@@ -356,7 +357,7 @@ async fn until_disconnect<R: AsyncRead + Unpin, F: std::future::Future>(
 mod cancellation_tests {
     use super::*;
 
-    fn test_state() -> Arc<ApiState> {
+    pub(super) fn test_state() -> Arc<ApiState> {
         let settings = Arc::new(Mutex::new(crypto::Settings::default()));
         let identity = Arc::new(DeviceIdentity::generate_for_test());
         let database = Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap()));
@@ -500,6 +501,143 @@ mod cancellation_tests {
             .unwrap()
             .is_none());
         assert!(observed.is_cancelled());
+    }
+
+    /// The paged history read is a long database read. A client that
+    /// disconnects while it is parked on the database lock must end the route
+    /// and return the connection permit instead of waiting for the read.
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paged_history_disconnect_ends_the_route_and_returns_the_permit() {
+        use tokio::io::AsyncReadExt;
+        let state = test_state();
+        let permits = Arc::new(Semaphore::new(1));
+        let permit = permits.clone().acquire_owned().await.unwrap();
+        let (server, mut client) = tokio::net::UnixStream::pair().unwrap();
+        // Holding the database keeps the real paged route inside its read.
+        let held = state.db.lock().await;
+        let task = tokio::spawn(serve_connection(server, state.clone(), permit));
+        let request = serde_json::json!({"cmd": "get_history_page", "token": "a".repeat(64),
+            "request_id": "paged-read", "limit": 30, "offset": 0});
+        let mut encoded = serde_json::to_vec(&request).unwrap();
+        encoded.push(b'\n');
+        client.write_all(&encoded).await.unwrap();
+        // A rejected or finished request would already have answered, so
+        // silence here proves the route consumed the request and is parked on
+        // the database instead of failing before it.
+        let mut probe = [0_u8; 1];
+        assert!(
+            timeout(Duration::from_millis(250), client.read(&mut probe))
+                .await
+                .is_err(),
+            "the paged route answered while the database lock was held"
+        );
+        assert_eq!(permits.available_permits(), 0);
+        drop(client);
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("disconnect left the paged route waiting on its database read")
+            .unwrap();
+        assert!(
+            permits.try_acquire().is_ok(),
+            "API connection permit was leaked"
+        );
+        drop(held);
+    }
+
+    /// Legacy clients half-close the write side after sending a request and
+    /// never send `request_id`. Their read must still finish and answer.
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn legacy_paged_history_half_close_still_answers() {
+        use tokio::io::AsyncReadExt;
+        let state = test_state();
+        let permits = Arc::new(Semaphore::new(1));
+        let permit = permits.clone().acquire_owned().await.unwrap();
+        let (server, mut client) = tokio::net::UnixStream::pair().unwrap();
+        let held = state.db.lock().await;
+        let task = tokio::spawn(serve_connection(server, state.clone(), permit));
+        let request = serde_json::json!({"cmd": "get_history_page", "token": "a".repeat(64),
+            "limit": 30, "offset": 0});
+        let mut encoded = serde_json::to_vec(&request).unwrap();
+        encoded.push(b'\n');
+        client.write_all(&encoded).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut probe = [0_u8; 1];
+        assert!(
+            timeout(Duration::from_millis(250), client.read(&mut probe))
+                .await
+                .is_err(),
+            "the half-close cancelled a read that had not finished yet"
+        );
+        drop(held);
+        let mut line = String::new();
+        timeout(
+            Duration::from_secs(2),
+            BufReader::new(client).read_line(&mut line),
+        )
+        .await
+        .expect("a legacy half-close never received the paged response")
+        .unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert!(
+            response.get("ok").is_some(),
+            "unexpected paged response: {response}"
+        );
+        task.await.unwrap();
+        assert!(permits.try_acquire().is_ok());
+    }
+
+    /// Mutations are never opted into disconnect cancellation: a favorite
+    /// commit with `request_id` must still reach the database after the client
+    /// is gone.
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mutation_with_request_id_commits_after_the_client_disconnects() {
+        use tokio::io::AsyncReadExt;
+        let state = test_state();
+        let id = {
+            let mut database = state.db.lock().await;
+            database
+                .add_text("mutation survives disconnect", "local")
+                .unwrap();
+            database.get_all(None, None, 1, 0).unwrap()[0].id
+        };
+        let permits = Arc::new(Semaphore::new(1));
+        let permit = permits.clone().acquire_owned().await.unwrap();
+        let (server, mut client) = tokio::net::UnixStream::pair().unwrap();
+        let held = state.db.lock().await;
+        let task = tokio::spawn(serve_connection(server, state.clone(), permit));
+        let request = serde_json::json!({"cmd": "set_history_favorite", "token": "a".repeat(64),
+            "request_id": "favorite-mutation", "id": id, "favorite": true});
+        let mut encoded = serde_json::to_vec(&request).unwrap();
+        encoded.push(b'\n');
+        client.write_all(&encoded).await.unwrap();
+        let mut probe = [0_u8; 1];
+        assert!(
+            timeout(Duration::from_millis(250), client.read(&mut probe))
+                .await
+                .is_err(),
+            "the mutation answered while the database lock was held"
+        );
+        drop(client);
+        drop(held);
+        let mut pinned = false;
+        timeout(Duration::from_secs(2), async {
+            while !pinned {
+                pinned = state.db.lock().await.get_all(None, None, 1, 0).unwrap()[0].pinned;
+                if !pinned {
+                    tokio::task::yield_now().await;
+                }
+            }
+        })
+        .await
+        .expect("disconnect cancelled a mutation that must still commit");
+        assert!(pinned, "the favorite commit did not reach the database");
+        timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
 
@@ -666,7 +804,7 @@ async fn write_response(
     writer: &mut (impl AsyncWriteExt + Unpin),
     ok: bool,
     data: Option<Value>,
-    error: &str,
+    error: impl Into<ResponseError>,
     command: &str,
     stable_errors: bool,
     timeout_duration: Duration,
@@ -718,21 +856,29 @@ async fn send_json(
     w: &mut (impl AsyncWriteExt + Unpin),
     ok: bool,
     data: Option<Value>,
-    error: &str,
+    error: impl Into<ResponseError>,
     command: &str,
     stable_errors: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let error = error.into();
     let resp = if ok {
         serde_json::json!({ "ok": true, "data": data })
     } else if stable_errors {
+        // A typed producer's category is authoritative; the historical text
+        // classifier is only the fallback for routes that never had a kind.
+        let envelope = match error.code() {
+            Some(code) => tailsync_runtime::contracts::StableErrorEnvelope::new(code),
+            None => tailsync_runtime::contracts::StableErrorEnvelope::from_legacy_message(
+                command,
+                error.message(),
+            ),
+        };
         serde_json::json!({
             "ok": false,
-            "error": tailsync_runtime::contracts::StableErrorEnvelope::from_legacy_message(
-                command, error,
-            )
+            "error": envelope
         })
     } else {
-        serde_json::json!({ "ok": false, "error": error })
+        serde_json::json!({ "ok": false, "error": error.message() })
     };
     let mut bytes = serde_json::to_vec(&resp)?;
     bytes.push(b'\n');
@@ -772,6 +918,66 @@ mod tests {
         assert_eq!(stable["error"]["code"], "storage_unavailable");
         assert_eq!(stable["error"]["retryable"], true);
         assert!(!stable.to_string().contains("private"));
+    }
+
+    #[tokio::test]
+    async fn typed_category_survives_contradictory_text_and_redacts_the_entire_failure_response() {
+        use tailsync_core::pairing::{PairingFailure, PairingFailureKind};
+        for (kind, code) in [
+            (
+                PairingFailureKind::IdentityMismatch,
+                "pairing_identity_mismatch",
+            ),
+            (
+                PairingFailureKind::ProtocolIncompatible,
+                "protocol_incompatible",
+            ),
+            (PairingFailureKind::WindowClosed, "pairing_window_closed"),
+            (PairingFailureKind::TimedOut, "pairing_timed_out"),
+            (
+                PairingFailureKind::ConnectionClosed,
+                "pairing_connection_closed",
+            ),
+            (PairingFailureKind::Busy, "pairing_busy"),
+            (PairingFailureKind::Cancelled, "pairing_cancelled"),
+            (PairingFailureKind::InvalidArgument, "invalid_argument"),
+            (PairingFailureKind::InvalidAdvertisement, "internal_error"),
+            (PairingFailureKind::Transport, "internal_error"),
+            (PairingFailureKind::Unknown, "internal_error"),
+        ] {
+            for message in [
+                "database failed at /private/peer; token=secret",
+                "not found; Pairing handshake timed out; Peer identity mismatch",
+            ] {
+                for stable in [true, false] {
+                    let error = ResponseError::pairing_failure(&PairingFailure::new(kind, message));
+                    assert_eq!(serde_json::to_value(&error).unwrap(), message);
+                    let (mut writer, reader) = tokio::io::duplex(4096);
+                    send_json(
+                        &mut writer,
+                        false,
+                        Some(serde_json::json!({"error": "/private/data", "token": "secret"})),
+                        error,
+                        "start_pairing",
+                        stable,
+                    )
+                    .await
+                    .unwrap();
+                    let mut line = String::new();
+                    BufReader::new(reader).read_line(&mut line).await.unwrap();
+                    let response: Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(response.as_object().unwrap().len(), 2);
+                    assert!(response.get("data").is_none());
+                    if stable {
+                        assert_eq!(response["error"]["code"], code);
+                        assert_eq!(response["error"]["retryable"], false);
+                        assert!(!line.contains("private") && !line.contains("secret"));
+                    } else {
+                        assert_eq!(response["error"], message);
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -842,5 +1048,189 @@ mod tests {
             API_WRITE_TIMEOUT
         );
         assert_eq!(response_timeout_for_command("quit"), API_WRITE_TIMEOUT);
+    }
+
+    /// The socket-level answer to one request, through the production
+    /// `serve_connection` loop: token check, route dispatch and the real
+    /// `write_response`/`send_json` encoding core.
+    #[cfg(target_os = "macos")]
+    async fn socket_response(state: Arc<ApiState>, request: Value) -> Value {
+        let permits = Arc::new(Semaphore::new(1));
+        let permit = permits.clone().acquire_owned().await.unwrap();
+        let (server, mut client) = tokio::net::UnixStream::pair().unwrap();
+        let task = tokio::spawn(serve_connection(server, state, permit));
+        let mut encoded = serde_json::to_vec(&request).unwrap();
+        encoded.push(b'\n');
+        client.write_all(&encoded).await.unwrap();
+        let mut line = String::new();
+        timeout(
+            Duration::from_secs(5),
+            BufReader::new(client).read_line(&mut line),
+        )
+        .await
+        .expect("pairing response timed out")
+        .expect("pairing response line");
+        task.await.unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn authenticated(cmd: &str, stable: bool) -> Value {
+        let mut request = serde_json::json!({ "cmd": cmd, "token": "a".repeat(64) });
+        if stable {
+            request["error_schema_version"] = serde_json::json!(1);
+        }
+        request
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn typed_pairing_routes_keep_their_category_through_the_real_connection() {
+        let state = super::cancellation_tests::test_state();
+        // The pairing window has to be open for a failure to be recorded.
+        let enabled = socket_response(state.clone(), authenticated("enable_pairing", false)).await;
+        assert_eq!(enabled["ok"], true);
+
+        // `start_pairing` fails structurally before any socket work: the target
+        // is a valid IP that the selected mode rejects, so the failure is a
+        // typed `InvalidArgument`.
+        let mut request = authenticated("start_pairing", true);
+        request["address"] = serde_json::json!("203.0.113.5");
+        let response = socket_response(state.clone(), request).await;
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["schema_version"], 1);
+        assert_eq!(response["error"]["code"], "invalid_argument");
+        assert_eq!(response["error"]["message_key"], "error.invalid_argument");
+        assert_eq!(response["error"]["retryable"], false);
+        // The fixed envelope has no field that could carry the source message.
+        assert!(response["error"].get("message").is_none());
+        assert_eq!(response["error"].as_object().unwrap().len(), 5);
+
+        // An expired invite is a closed pairing window. The historical text
+        // classifier has no rule for it, so this code can only come from the
+        // typed invite mapping on the production route.
+        const ENDPOINT_ID: &str =
+            "5866666666666666666666666666666666666666666666666666666666666666";
+        let expired = Arc::new(crate::pairing::RemotePairingInviteManager::new())
+            .create_from_endpoint_id(ENDPOINT_ID, Duration::ZERO)
+            .expect("create an immediately expired invite")
+            .as_link();
+        let mut request = authenticated("inspect_remote_pairing_link", true);
+        request["invite_link"] = serde_json::json!(expired);
+        let response = socket_response(state.clone(), request).await;
+        assert_eq!(response["error"]["code"], "pairing_window_closed");
+        assert_eq!(
+            response["error"]["message_key"],
+            "error.pairing_window_closed"
+        );
+        assert_eq!(response["error"]["retryable"], false);
+
+        // A malformed link is the same finite mapping, not a second classifier.
+        let mut request = authenticated("inspect_remote_pairing_link", true);
+        request["invite_link"] = serde_json::json!("tailsync://settings");
+        let response = socket_response(state.clone(), request).await;
+        assert_eq!(response["error"]["code"], "invalid_argument");
+        assert_eq!(response["error"]["message_key"], "error.invalid_argument");
+
+        // The same failure without the opt-in keeps the historical text verbatim
+        // and adds no new wire field.
+        let mut request = authenticated("inspect_remote_pairing_link", false);
+        request["invite_link"] = serde_json::json!(expired);
+        let response = socket_response(state.clone(), request).await;
+        assert_eq!(response["error"], "TailSync pairing invite has expired");
+        assert_eq!(response.as_object().unwrap().len(), 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_direct_pairing_command_carries_its_category_without_a_status_kind() {
+        // A fresh manager has recorded nothing, so the status built alongside
+        // the failure carries neither an error text nor a kind. The direct
+        // command failure must still reach the fixed category on its own.
+        let state = super::cancellation_tests::test_state();
+        let request: Request =
+            serde_json::from_value(serde_json::json!({ "cmd": "confirm_pairing" })).unwrap();
+        let response = crate::api::routes::handle_cmd(request, &state).await;
+        assert!(!response.ok);
+        let error = response.error.as_ref().expect("classified pairing error");
+        assert_eq!(
+            error.code(),
+            Some(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+        );
+        assert_eq!(
+            error.message(),
+            "No pairing verification is awaiting confirmation"
+        );
+        let status = response.data.expect("pairing status alongside the failure");
+        assert!(status["error"].is_null());
+        assert!(status.get("failure_kind").is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_pairing_routes_keep_their_category() {
+        use tailsync_runtime::contracts::StableErrorCode;
+
+        let state = super::cancellation_tests::test_state();
+        // A mode without Iroh rejects invite creation structurally, before any
+        // endpoint or listener work happens.
+        state.settings.lock().await.connection_mode = "lan_only".into();
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "create_remote_pairing_invite",
+        }))
+        .unwrap();
+        let response = crate::api::routes::handle_cmd(request, &state).await;
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_ref().expect("classified error").code(),
+            Some(StableErrorCode::InvalidArgument)
+        );
+
+        // An expired invite is a closed window on the start route as well.
+        const ENDPOINT_ID: &str =
+            "5866666666666666666666666666666666666666666666666666666666666666";
+        let expired = Arc::new(crate::pairing::RemotePairingInviteManager::new())
+            .create_from_endpoint_id(ENDPOINT_ID, Duration::ZERO)
+            .expect("create an immediately expired invite")
+            .as_link();
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "cmd": "start_remote_pairing",
+            "invite_link": expired,
+        }))
+        .unwrap();
+        let response = crate::api::routes::handle_cmd(request, &state).await;
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_ref().expect("classified error").code(),
+            Some(StableErrorCode::PairingWindowClosed)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_pairing_routes_keep_the_legacy_classifier_and_wire_shape() {
+        let state = super::cancellation_tests::test_state();
+
+        // A route with no typed source still classifies from its fixed text.
+        let response = socket_response(
+            state.clone(),
+            authenticated("definitely_not_a_command", true),
+        )
+        .await;
+        assert_eq!(response["error"]["code"], "not_found");
+        assert_eq!(response["error"]["message_key"], "error.not_found");
+
+        let legacy = socket_response(
+            state.clone(),
+            authenticated("definitely_not_a_command", false),
+        )
+        .await;
+        assert_eq!(legacy["error"], "unknown command: definitely_not_a_command");
+        assert_eq!(legacy.as_object().unwrap().len(), 2);
+
+        // A successful non-pairing response keeps its exact shape.
+        let success = socket_response(state.clone(), authenticated("get_status", true)).await;
+        assert_eq!(success["ok"], true);
+        assert!(success.get("error").is_none());
     }
 }

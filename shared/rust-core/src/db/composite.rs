@@ -4090,6 +4090,7 @@ mod tests {
     }
     #[test]
     fn o04_archive_commit_preserves_base_and_exposes_derived_layer() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
         let root = root();
         let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let base = archive_base(0);
@@ -5146,6 +5147,7 @@ mod lifecycle_tests {
     }
     #[test]
     fn preview_uses_safe_summary_and_decodes_only_the_selected_image() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
         let root = root();
         let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let png = png();
@@ -5315,6 +5317,7 @@ mod lifecycle_tests {
 
     #[test]
     fn image_classified_composite_preview_reads_pixels_instead_of_summary() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
         let root = root();
         let mut database = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let image = solid_png(255, 0, 0);
@@ -5390,6 +5393,7 @@ mod lifecycle_tests {
 
     #[test]
     fn composite_image_uses_body_order_not_storage_or_standalone_png() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
         let root = root();
         let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let red = solid_png(255, 0, 0);
@@ -5414,6 +5418,7 @@ mod lifecycle_tests {
 
     #[test]
     fn composite_image_missing_first_does_not_substitute_the_second() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
         let root = root();
         let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let blue = solid_png(0, 0, 255);

@@ -1,4 +1,5 @@
 use super::display_document::DisplayDocument;
+use super::html_lex::{attribute_span, decode_entity, find_tag_end};
 use crate::cancellation::Cancellation;
 use crate::protocol::composite::{Mime, PortableBundle};
 use crate::protocol::content_analysis::{
@@ -1000,84 +1001,6 @@ fn scan_html(
     Ok(scan)
 }
 
-pub(crate) fn find_tag_end(bytes: &[u8], mut cursor: usize) -> Option<usize> {
-    while cursor < bytes.len() {
-        match bytes[cursor] {
-            b'>' => return Some(cursor),
-            b'\'' | b'"' => {
-                let quote = bytes[cursor];
-                cursor += 1;
-                while cursor < bytes.len() && bytes[cursor] != quote {
-                    cursor += 1;
-                }
-                if cursor >= bytes.len() {
-                    return None;
-                }
-            }
-            _ => {}
-        }
-        cursor += 1;
-    }
-    None
-}
-
-pub(crate) fn attribute_span(
-    bytes: &[u8],
-    mut cursor: usize,
-    end: usize,
-    name: &[u8],
-) -> Option<(usize, usize)> {
-    while cursor < end {
-        while cursor < end && (bytes[cursor].is_ascii_whitespace() || bytes[cursor] == b'/') {
-            cursor += 1;
-        }
-        let start = cursor;
-        while cursor < end
-            && !bytes[cursor].is_ascii_whitespace()
-            && !matches!(bytes[cursor], b'=' | b'/' | b'>')
-        {
-            cursor += 1;
-        }
-        let source = bytes[start..cursor].eq_ignore_ascii_case(name);
-        while cursor < end && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if bytes.get(cursor) != Some(&b'=') {
-            if cursor == start {
-                cursor += 1;
-            }
-            continue;
-        }
-        cursor += 1;
-        while cursor < end && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let quote = bytes
-            .get(cursor)
-            .copied()
-            .filter(|value| matches!(value, b'\'' | b'"'));
-        if quote.is_some() {
-            cursor += 1;
-        }
-        let value_start = cursor;
-        while cursor < end
-            && match quote {
-                Some(quote) => bytes[cursor] != quote,
-                None => !bytes[cursor].is_ascii_whitespace(),
-            }
-        {
-            cursor += 1;
-        }
-        if source {
-            return Some((value_start, cursor));
-        }
-        if quote.is_some() {
-            cursor += 1;
-        }
-    }
-    None
-}
-
 pub(super) fn append_break(text: &mut TextFacts, pending_space: &mut bool) {
     *pending_space = false;
     if !text.text.is_empty() && !text.text.ends_with('\n') && text.text.len() < TEXT_LIMIT {
@@ -1104,34 +1027,7 @@ pub(super) fn append_html_text(
                 .position(|byte| *byte == b';')
             {
                 let entity = &tail[..end];
-                let decoded = match entity {
-                    "amp" => Some('&'),
-                    "lt" => Some('<'),
-                    "gt" => Some('>'),
-                    "quot" => Some('"'),
-                    "apos" | "#39" => Some('\''),
-                    "nbsp" => Some('\u{a0}'),
-                    "copy" => Some('©'),
-                    "reg" => Some('®'),
-                    "trade" => Some('™'),
-                    "hellip" => Some('…'),
-                    "mdash" => Some('—'),
-                    "ndash" => Some('–'),
-                    "lsquo" => Some('‘'),
-                    "rsquo" => Some('’'),
-                    "ldquo" => Some('“'),
-                    "rdquo" => Some('”'),
-                    _ => entity
-                        .strip_prefix("#x")
-                        .or_else(|| entity.strip_prefix("#X"))
-                        .and_then(|digits| u32::from_str_radix(digits, 16).ok())
-                        .or_else(|| {
-                            entity
-                                .strip_prefix('#')
-                                .and_then(|digits| digits.parse().ok())
-                        })
-                        .and_then(char::from_u32),
-                };
+                let decoded = decode_entity(entity);
                 if let Some(decoded) = decoded {
                     character = decoded;
                     consumed = end + 2;

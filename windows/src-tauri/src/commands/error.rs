@@ -14,14 +14,10 @@ impl CommandError {
         Self(StableErrorEnvelope::new(code))
     }
 
-    pub(crate) fn from_pairing_failure(message: &str) -> Self {
-        let code =
-            if message.starts_with("Pairing handshake failed: Incompatible TailSync protocol:") {
-                StableErrorCode::ProtocolIncompatible
-            } else {
-                StableErrorCode::InternalError
-            };
-        Self::code(code)
+    /// Fixed category for a typed pairing failure. The failure's display text
+    /// is discarded: it can carry a peer address, a private path or a token.
+    pub(crate) fn pairing_failure(failure: &tailsync_core::pairing::PairingFailure) -> Self {
+        Self(StableErrorEnvelope::from_pairing_failure(failure))
     }
 
     #[cfg(test)]
@@ -33,6 +29,18 @@ impl CommandError {
 impl From<String> for CommandError {
     fn from(message: String) -> Self {
         Self::from(message.as_str())
+    }
+}
+
+impl From<tailsync_core::pairing::PairingFailure> for CommandError {
+    fn from(failure: tailsync_core::pairing::PairingFailure) -> Self {
+        Self::pairing_failure(&failure)
+    }
+}
+
+impl From<tailsync_core::pairing::PairingError> for CommandError {
+    fn from(error: tailsync_core::pairing::PairingError) -> Self {
+        Self::from(tailsync_core::pairing::PairingFailure::from(error))
     }
 }
 
@@ -136,13 +144,58 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_pairing_error_uses_fixed_code_without_peer_details() {
-        let error = CommandError::from_pairing_failure(
+    fn typed_pairing_failures_use_fixed_codes_without_peer_details() {
+        use tailsync_core::pairing::{PairingError, PairingFailure, PairingFailureKind};
+
+        let error = CommandError::from(PairingFailure::new(
+            PairingFailureKind::ProtocolIncompatible,
             "Pairing handshake failed: Incompatible TailSync protocol: peer at /private/peer uses v2",
-        );
+        ));
         let encoded = serde_json::to_string(&error).unwrap();
         assert_eq!(error.envelope().code, StableErrorCode::ProtocolIncompatible);
         assert_eq!(error.envelope().message_key, "error.protocol_incompatible");
         assert!(!encoded.contains("/private/peer"));
+
+        // A rewritten display text that contradicts the kind, and carries a
+        // private path plus a token, must not move the category or leak.
+        let contradictory = CommandError::from(PairingFailure::new(
+            PairingFailureKind::WindowClosed,
+            "database locked at /private/history.db; token=secret; not found",
+        ));
+        assert_eq!(
+            contradictory.envelope().code,
+            StableErrorCode::PairingWindowClosed
+        );
+        let encoded = serde_json::to_string(&contradictory).unwrap();
+        assert!(!encoded.contains("/private"));
+        assert!(!encoded.contains("secret"));
+
+        // A finite PairingError keeps its structural classification too.
+        assert_eq!(
+            CommandError::from(PairingError::WindowClosed)
+                .envelope()
+                .code,
+            StableErrorCode::PairingWindowClosed
+        );
+        assert_eq!(
+            CommandError::from(PairingError::AlreadyInProgress)
+                .envelope()
+                .code,
+            StableErrorCode::PairingBusy
+        );
+        assert_eq!(
+            CommandError::from(PairingError::NoVerification)
+                .envelope()
+                .code,
+            StableErrorCode::InvalidArgument
+        );
+        // `Transport(String)` carries no finer structural source, so a text
+        // that says "network failed" must not become a network category.
+        assert_eq!(
+            CommandError::from(PairingError::Transport("network failed".into()))
+                .envelope()
+                .code,
+            StableErrorCode::InternalError
+        );
     }
 }

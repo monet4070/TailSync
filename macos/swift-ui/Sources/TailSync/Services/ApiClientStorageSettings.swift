@@ -81,12 +81,18 @@ extension ApiClient {
       AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
   }
 
-  func updateSettings(_ settings: AppSettings) async throws {
-    let object = try jsonDictionary(settings)
+  /// Send only the changed fields and return the canonical snapshot the daemon
+  /// committed, so a window cannot roll back another window's edit.
+  func updateSettings(_ patch: AppSettingsPatch) async throws -> AppSettings {
+    let object = try jsonDictionary(patch)
     let response = try await request(["cmd": "update_settings", "settings": object])
-    guard response["ok"] as? Bool == true else {
+    guard response["ok"] as? Bool == true,
+      let data = response["data"] as? [String: Any]
+    else {
       throw ApiError.serverError(response["error"] as? String ?? "unknown")
     }
+    return try JSONDecoder().decode(
+      AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
   }
 
   func setSyncEnabled(_ enabled: Bool) async -> Bool {
@@ -94,6 +100,26 @@ extension ApiClient {
       return false
     }
     return response["ok"] as? Bool == true
+  }
+
+  /// Settings editing needs the snapshot committed by the dedicated command;
+  /// the Bool-only shortcut/menu API above remains compatible.
+  func setSyncEnabledWithSettings(_ enabled: Bool, fallback: AppSettings) async throws -> AppSettings {
+    let response = try await request(["cmd": "set_sync_enabled", "enabled": enabled])
+    guard response["ok"] as? Bool == true else {
+      throw ApiError.serverError(Loc.t("settings.saveFailed"))
+    }
+    if let data = response["data"] as? [String: Any] {
+      return try JSONDecoder().decode(
+        AppSettings.self, from: JSONSerialization.data(withJSONObject: data))
+    }
+    // Older daemons acknowledged the write without returning settings.
+    if let canonical = try? await getSettings() { return canonical }
+    // The legacy daemon already committed this field. A readback outage must
+    // not turn its successful acknowledgement into a rolled-back toggle.
+    var acknowledged = fallback
+    acknowledged.sync_enabled = enabled
+    return acknowledged
   }
 
   func setSyncShortcut(_ shortcut: String) async -> Bool {

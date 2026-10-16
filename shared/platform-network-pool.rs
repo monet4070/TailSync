@@ -11,6 +11,8 @@ pub struct ConnectionPool {
     core: ConnectionPoolState,
     identity: Arc<DeviceIdentity>,
     settings: Arc<Mutex<crypto::Settings>>,
+    #[cfg(test)]
+    capture_queue_attempts: usize,
 }
 
 pub(super) use tailsync_core::peer::types::{ResolvedCandidate, ResolvedTarget};
@@ -21,6 +23,8 @@ impl ConnectionPool {
             core: ConnectionPoolState::new(),
             identity,
             settings,
+            #[cfg(test)]
+            capture_queue_attempts: 0,
         }
     }
 
@@ -144,6 +148,13 @@ impl ConnectionPool {
         self.core.sender_count()
     }
 
+    /// Records entry into the real capture enqueue, after peer resolution.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn capture_queue_attempts_for_test(&self) -> usize {
+        self.capture_queue_attempts
+    }
+
     #[cfg(test)]
     pub(crate) fn insert_file_sender(
         &mut self,
@@ -162,6 +173,24 @@ impl ConnectionPool {
         sender: PoolSender,
     ) {
         self.core.insert_sender(target, hostname, sender);
+    }
+    /// Install a real `PoolSender` for the clipboard capture lane (the
+    /// event lane `Command::CompositePayload` uses), so a broadcast test can
+    /// exercise the production gate against a bounded queue instead of a
+    /// real socket. Sibling modules cannot reach the `pub(super)`
+    /// `insert_sender`, and `insert_file_sender` would land in the file lane.
+    // Only the macOS capture-seam tests call this; the Windows crate shares
+    // the file but has no caller, so keep its dead-code lint quiet.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn insert_capture_sender(
+        &mut self,
+        target: ResolvedTarget,
+        hostname: String,
+        sender: PoolSender,
+    ) {
+        self.core
+            .insert_sender_for_command(target, hostname, Command::CompositePayload, sender);
     }
 }
 
@@ -258,6 +287,10 @@ pub async fn queue_peer_shared_event<G>(
         .first()
         .map(|candidate| candidate.target.clone())
         .ok_or_else(|| format!("Peer {} has no connection candidates", peer.hostname))?;
+    #[cfg(test)]
+    if queued.command() == Command::CompositePayload {
+        pool.lock().await.capture_queue_attempts += 1;
+    }
     tailsync_core::peer::pool::enqueue_queued_frame_checked(tx, preferred, queued, current)
         .await
         .inspect_err(|error| {
@@ -470,9 +503,23 @@ impl tailsync_core::peer::delivery::ConnectionAdapter for PoolAdapter {
         hostname: &str,
         candidates: &[ResolvedCandidate],
     ) -> Result<(secure::SecureConnection, ResolvedCandidate), String> {
-        let (conn, candidate) =
-            race_connect_and_handshake(candidates, hostname, &self.identity, &self.settings)
-                .await?;
+        self.connect_classified(hostname, candidates)
+            .await
+            .map_err(|failure| failure.message().to_string())
+    }
+
+    async fn connect_classified(
+        &self,
+        hostname: &str,
+        candidates: &[ResolvedCandidate],
+    ) -> Result<(secure::SecureConnection, ResolvedCandidate), secure::ConnectionFailure> {
+        let (conn, candidate) = race_connect_and_handshake_classified(
+            candidates,
+            hostname,
+            &self.identity,
+            &self.settings,
+        )
+        .await?;
         if candidate.candidate.interface == ConnectionInterface::Iroh {
             super::iroh::remember_rtt_capability(&candidate.candidate.address);
         }
@@ -596,16 +643,35 @@ pub(super) async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
         }
     }
 }
+/// Retained string-compat entry: the production worker uses
+/// [`race_connect_and_handshake_classified`] so the failure kind survives;
+/// this wrapper keeps the historical `String` signature for callers that only
+/// need the joined text.
+#[allow(dead_code)]
 pub(super) async fn race_connect_and_handshake(
     candidates: &[ResolvedCandidate],
     hostname: &str,
     identity: &Arc<DeviceIdentity>,
     settings: &Arc<Mutex<crypto::Settings>>,
 ) -> Result<(secure::SecureConnection, ResolvedCandidate), String> {
+    race_connect_and_handshake_classified(candidates, hostname, identity, settings)
+        .await
+        .map_err(|failure| failure.message().to_string())
+}
+
+/// Typed race used by the pooled worker: keeps the handshake failure kind
+/// (protocol mismatch, identity mismatch, timeout, ...) intact from
+/// `connect_and_handshake` all the way to `ConnectionAdapter`.
+pub(super) async fn race_connect_and_handshake_classified(
+    candidates: &[ResolvedCandidate],
+    hostname: &str,
+    identity: &Arc<DeviceIdentity>,
+    settings: &Arc<Mutex<crypto::Settings>>,
+) -> Result<(secure::SecureConnection, ResolvedCandidate), secure::ConnectionFailure> {
     let identity = identity.clone();
     let settings = settings.clone();
     let hostname = hostname.to_string();
-    tailsync_core::peer::delivery::race_connections(
+    tailsync_core::peer::delivery::race_connections_classified(
         candidates,
         HANDSHAKE_TIMEOUT,
         move |target, _candidate| {
@@ -615,7 +681,7 @@ pub(super) async fn race_connect_and_handshake(
             async move {
                 connect_and_handshake(&target, &hostname, &identity, &settings)
                     .await
-                    .map_err(|error| error.to_string())
+                    .map_err(secure::ConnectionFailure::from_boxed)
             }
         },
     )
@@ -693,12 +759,21 @@ async fn connect_and_handshake(
             .iroh_endpoint_id
             .as_deref()
             .ok_or_else(|| {
-                std::io::Error::other("Peer did not bind its Noise identity to an Iroh endpoint")
+                secure::ConnectionFailure::new(
+                    secure::ConnectionFailureKind::IdentityMismatch,
+                    "Peer did not bind its Noise identity to an Iroh endpoint",
+                )
             })?;
-        let claimed = tailsync_core::iroh_transport::canonical_endpoint_id(claimed)
-            .map_err(std::io::Error::other)?;
+        let claimed =
+            tailsync_core::iroh_transport::canonical_endpoint_id(claimed).map_err(|error| {
+                secure::ConnectionFailure::new(
+                    secure::ConnectionFailureKind::InvalidAdvertisement,
+                    error,
+                )
+            })?;
         if &claimed != endpoint_id {
-            return Err(std::io::Error::other(
+            return Err(secure::ConnectionFailure::new(
+                secure::ConnectionFailureKind::IdentityMismatch,
                 "Peer Iroh endpoint does not match its Noise identity",
             )
             .into());

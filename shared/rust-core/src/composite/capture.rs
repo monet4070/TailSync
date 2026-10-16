@@ -52,6 +52,7 @@ mod tests {
 
     #[test]
     fn review_large_capture_hands_off_scratch_before_shared_event_admission() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
         let ledger = budgets::global();
         let before = ledger.snapshot().pipeline_reserved;
         let memory = Arc::new(ledger.reserve_pipeline(240 * 1024 * 1024).unwrap());

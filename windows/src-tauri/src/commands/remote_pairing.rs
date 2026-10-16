@@ -39,8 +39,28 @@ pub struct RemotePairingInvitePreview {
 }
 
 fn parse_invite_for_ipc(link: &str) -> Result<RemotePairingInvite, CommandError> {
-    RemotePairingInvite::parse(link).map_err(|_| {
-        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    // The invite parser's finite error is classified through the same mapping
+    // the pairing entry points use, so an expired invite stays a closed window
+    // instead of collapsing into a generic invalid argument.
+    RemotePairingInvite::parse(link)
+        .map_err(|error| CommandError::from(network::invite_failure(error)))
+}
+
+/// The real body of [`create_remote_pairing_invite`]: the command wrapper below
+/// calls exactly this function, so the boundary keeps its production
+/// classification path.
+pub(crate) async fn create_remote_pairing_invite_command(
+    pairing: std::sync::Arc<crate::pairing::PairingManager>,
+    settings: std::sync::Arc<tokio::sync::Mutex<crate::crypto::Settings>>,
+    invites: std::sync::Arc<crate::pairing::RemotePairingInviteManager>,
+) -> Result<RemotePairingInviteResponse, CommandError> {
+    let invite = network::create_remote_pairing_invite_classified(pairing, settings, invites)
+        .await
+        .map_err(CommandError::from)?;
+    Ok(RemotePairingInviteResponse {
+        link: invite.as_link(),
+        expires_at: invite.expires_at(),
+        remaining_seconds: invite.remaining_seconds(),
     })
 }
 
@@ -48,17 +68,12 @@ fn parse_invite_for_ipc(link: &str) -> Result<RemotePairingInvite, CommandError>
 pub async fn create_remote_pairing_invite(
     state: State<'_, AppState>,
 ) -> Result<RemotePairingInviteResponse, CommandError> {
-    let invite = network::create_remote_pairing_invite(
+    create_remote_pairing_invite_command(
         state.pairing.clone(),
         state.settings.clone(),
         state.remote_invites.clone(),
     )
-    .await?;
-    Ok(RemotePairingInviteResponse {
-        link: invite.as_link(),
-        expires_at: invite.expires_at(),
-        remaining_seconds: invite.remaining_seconds(),
-    })
+    .await
 }
 
 #[command]
@@ -73,20 +88,33 @@ pub fn inspect_remote_pairing_link(
     })
 }
 
+/// The real body of [`start_remote_pairing`]; see
+/// [`create_remote_pairing_invite_command`].
+pub(crate) async fn start_remote_pairing_command(
+    pairing: std::sync::Arc<crate::pairing::PairingManager>,
+    identity: std::sync::Arc<crate::identity::DeviceIdentity>,
+    settings: std::sync::Arc<tokio::sync::Mutex<crate::crypto::Settings>>,
+    link: &str,
+) -> Result<crate::pairing::PairingStatus, CommandError> {
+    parse_invite_for_ipc(link)?;
+    network::start_remote_pairing_classified(pairing.clone(), identity, settings, link)
+        .await
+        .map_err(CommandError::from)?;
+    Ok(pairing.status().await)
+}
+
 #[command]
 pub async fn start_remote_pairing(
     state: State<'_, AppState>,
     link: String,
 ) -> Result<crate::pairing::PairingStatus, CommandError> {
-    parse_invite_for_ipc(&link)?;
-    network::start_remote_pairing(
+    start_remote_pairing_command(
         state.pairing.clone(),
         state.identity.clone(),
         state.settings.clone(),
         &link,
     )
-    .await?;
-    Ok(state.pairing.status().await)
+    .await
 }
 
 #[command]
@@ -189,5 +217,64 @@ mod tests {
             error.envelope().code,
             tailsync_runtime::contracts::StableErrorCode::InvalidArgument
         );
+    }
+
+    type PairingFixture = (
+        std::sync::Arc<crate::pairing::PairingManager>,
+        std::sync::Arc<crate::identity::DeviceIdentity>,
+        std::sync::Arc<tokio::sync::Mutex<crate::crypto::Settings>>,
+    );
+
+    fn pairing_fixture(mode: &str) -> PairingFixture {
+        let settings = crate::crypto::Settings {
+            connection_mode: mode.to_string(),
+            ..crate::crypto::Settings::default()
+        };
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(settings));
+        let identity = std::sync::Arc::new(crate::identity::DeviceIdentity::generate_for_test());
+        let pairing = crate::pairing::PairingManager::new(settings.clone(), identity.clone());
+        (pairing, identity, settings)
+    }
+
+    fn expired_invite_link() -> String {
+        Arc::new(crate::pairing::RemotePairingInviteManager::new())
+            .create_from_endpoint_id(ENDPOINT_ID, Duration::ZERO)
+            .unwrap()
+            .as_link()
+    }
+
+    #[test]
+    fn expired_invite_is_a_closed_window_at_ipc_boundary() {
+        let error = parse_invite_for_ipc(&expired_invite_link()).unwrap_err();
+        let encoded = serde_json::to_value(&error).unwrap();
+        assert_eq!(encoded["code"], "pairing_window_closed");
+        assert_eq!(encoded["message_key"], "error.pairing_window_closed");
+        assert_eq!(encoded["retryable"], false);
+    }
+
+    #[tokio::test]
+    async fn create_remote_pairing_invite_command_serializes_the_typed_category() {
+        // A mode without Iroh rejects the request structurally, before any
+        // endpoint or network work happens.
+        let (pairing, _identity, settings) = pairing_fixture("lan_only");
+        let invites = Arc::new(crate::pairing::RemotePairingInviteManager::new());
+        let error = create_remote_pairing_invite_command(pairing, settings, invites)
+            .await
+            .expect_err("lan_only has no remote invite transport");
+        let encoded = serde_json::to_value(&error).unwrap();
+        assert_eq!(encoded["code"], "invalid_argument");
+        assert_eq!(encoded["message_key"], "error.invalid_argument");
+    }
+
+    #[tokio::test]
+    async fn start_remote_pairing_command_serializes_a_finite_invite_error() {
+        let (pairing, identity, settings) = pairing_fixture("lan_only");
+        let error =
+            start_remote_pairing_command(pairing, identity, settings, &expired_invite_link())
+                .await
+                .expect_err("an expired invite must be rejected");
+        let encoded = serde_json::to_value(&error).unwrap();
+        assert_eq!(encoded["code"], "pairing_window_closed");
+        assert_eq!(encoded["message_key"], "error.pairing_window_closed");
     }
 }

@@ -130,6 +130,11 @@ pub struct PairingStatus {
     pub max_failures: u8,
     pub peer: Option<PairingPeerStatus>,
     pub error: Option<String>,
+    /// Finite classification of the failure that produced `error`, when the
+    /// producer knew one. Omitted entirely when there is no classification, so
+    /// an older shell model that never heard of the field still decodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<PairingFailureKind>,
     pub pending: Vec<PendingPairingSummary>,
     pub pending_store_unavailable: bool,
 }
@@ -166,6 +171,9 @@ struct PairingState {
     failed_attempts: u8,
     peer: Option<PairingPeerStatus>,
     error: Option<String>,
+    /// Same-source classification of `error`. `None` means either the producer
+    /// had no structural source or the current state has no failure.
+    failure_kind: Option<PairingFailureKind>,
     generation: u64,
     session_id: u64,
     control: Option<mpsc::Sender<PairingAction>>,
@@ -198,9 +206,12 @@ pub(crate) struct PromotionGate {
 }
 
 mod commit;
+mod failure;
 pub mod invite;
 mod manager;
 mod pending;
+
+pub use failure::{PairingFailure, PairingFailureKind};
 
 pub use invite::{
     InviteClaim, InviteError, InviteHello, RemoteInviteState, RemoteInviteStatus,

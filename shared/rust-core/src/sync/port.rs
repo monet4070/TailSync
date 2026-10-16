@@ -43,6 +43,115 @@ impl Drop for CancelOnDrop {
 /// A boxed future returned by the port.
 pub type PortFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// What a failed clipboard write proves about the platform.
+///
+/// Only a provable no-effect may release an at-most-once claim so the effect can be
+/// retried (ADR-004 K2/K4). The previous `Result<(), String>` seam could not say
+/// which of the two cases a failure was, so the decision was recovered by scanning
+/// the message for a marker — which meant any future message that happened to
+/// contain the marker could change a safety decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteEffect {
+    /// The platform was provably not touched: the write never started, or the
+    /// helper reported no effect before touching the pasteboard.
+    NoEffect,
+    /// The write may already have changed the platform. The claim must stay.
+    MayHaveEffect,
+}
+
+/// A failed clipboard write: the classification the claim and receipt rules need,
+/// plus the text that logs and legacy façades still show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteFailure {
+    effect: WriteEffect,
+    detail: String,
+}
+
+impl WriteFailure {
+    /// The platform is provably untouched, so a caller may release the claim.
+    pub fn no_effect(detail: impl Into<String>) -> Self {
+        Self {
+            effect: WriteEffect::NoEffect,
+            detail: detail.into(),
+        }
+    }
+
+    /// The conservative classification: an unknown legacy string, a worker that
+    /// died, or a receipt that was lost. Never releases a claim.
+    pub fn may_have_effect(detail: impl Into<String>) -> Self {
+        Self {
+            effect: WriteEffect::MayHaveEffect,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn effect(&self) -> WriteEffect {
+        self.effect
+    }
+
+    /// Whether the platform was provably untouched. This is the only case in which
+    /// an at-most-once claim may be released and the effect retried.
+    pub fn is_proven_no_effect(&self) -> bool {
+        self.effect == WriteEffect::NoEffect
+    }
+
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// Text for logs, user-visible errors, and the legacy `Result<(), String>`
+    /// façades. Only a provable no-effect adds the marker; opaque detail may itself
+    /// contain it. Nothing on the
+    /// decision path reads it back.
+    pub fn message(&self) -> String {
+        match self.effect {
+            WriteEffect::NoEffect => {
+                format!("{}{}", crate::protocol::NO_EFFECT_MARKER, self.detail)
+            }
+            WriteEffect::MayHaveEffect => self.detail.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for WriteFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message())
+    }
+}
+
+/// A legacy error string proves nothing about the platform, so it is classified
+/// conservatively. A caller that can prove a no-effect says so with
+/// [`WriteFailure::no_effect`].
+impl From<String> for WriteFailure {
+    fn from(message: String) -> Self {
+        Self::may_have_effect(message)
+    }
+}
+
+/// The legacy façade at an external boundary: logs, UI text, and the remaining
+/// `Result<_, String>` seams.
+impl From<WriteFailure> for String {
+    fn from(failure: WriteFailure) -> Self {
+        failure.message()
+    }
+}
+
+/// Result of a clipboard write on the async port.
+pub type WriteOutcome = Result<(), WriteFailure>;
+
+/// Check cancellation before choosing either a native or a legacy writer.
+/// Once the body starts, its typed outcome owns the effect classification: a
+/// later cancellation cannot prove that an effect did not already happen.
+pub fn run_cancellable_write(
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    write: impl FnOnce(Arc<std::sync::atomic::AtomicBool>) -> WriteOutcome,
+) -> WriteOutcome {
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(WriteFailure::no_effect("cancelled before write"));
+    }
+    write(cancelled)
+}
+
 /// Object-safe asynchronous clipboard port.
 ///
 /// Every method takes owned data: the future must not borrow from the caller, so it
@@ -68,13 +177,13 @@ pub trait ClipboardPort: Send + Sync {
         expected: Option<i64>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
         admission: Vec<AdmissionHold>,
-    ) -> PortFuture<'a, Result<NativePublish, String>>;
-    fn write_text<'a>(&'a self, text: String) -> PortFuture<'a, Result<(), String>>;
+    ) -> PortFuture<'a, Result<NativePublish, WriteFailure>>;
+    fn write_text<'a>(&'a self, text: String) -> PortFuture<'a, WriteOutcome>;
     fn write_text_admitted<'a>(
         &'a self,
         text: String,
         admission: Vec<AdmissionHold>,
-    ) -> PortFuture<'a, Result<(), String>> {
+    ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let _admission = admission;
             self.write_text(text).await
@@ -85,14 +194,14 @@ pub trait ClipboardPort: Send + Sync {
         width: u32,
         height: u32,
         rgba: Vec<u8>,
-    ) -> PortFuture<'a, Result<(), String>>;
+    ) -> PortFuture<'a, WriteOutcome>;
     fn write_image_admitted<'a>(
         &'a self,
         width: u32,
         height: u32,
         rgba: Vec<u8>,
         admission: Vec<AdmissionHold>,
-    ) -> PortFuture<'a, Result<(), String>> {
+    ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let _admission = admission;
             self.write_image(width, height, rgba).await
@@ -120,10 +229,10 @@ impl BlockingPlatformPort {
     /// Run a blocking platform call on the blocking pool and flatten the two error
     /// layers: the outer one is "the worker died", the inner one is the platform's own
     /// `Result`.
-    async fn offload<T, F>(work: F) -> Result<T, String>
+    async fn offload<T, F>(work: F) -> Result<T, WriteFailure>
     where
         T: Send + 'static,
-        F: FnOnce() -> Result<T, String> + Send + 'static,
+        F: FnOnce() -> Result<T, WriteFailure> + Send + 'static,
     {
         // Move the owned permit into the worker: cancellation of the waiter must
         // not let a second publisher overlap a worker that is still running.
@@ -135,7 +244,9 @@ impl BlockingPlatformPort {
             work()
         })
         .await
-        .map_err(|_| "clipboard worker failed".to_string())?
+        // A worker that died leaves the platform's state unknown: never a
+        // no-effect, so a claim stays and the write is not retried automatically.
+        .map_err(|_| WriteFailure::may_have_effect("clipboard worker failed"))?
     }
 }
 
@@ -163,23 +274,27 @@ impl ClipboardPort for BlockingPlatformPort {
         expected: Option<i64>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
         admission: Vec<AdmissionHold>,
-    ) -> PortFuture<'a, Result<NativePublish, String>> {
+    ) -> PortFuture<'a, Result<NativePublish, WriteFailure>> {
         Box::pin(async move {
             let platform = self.platform.clone();
             let _cancel = CancelOnDrop(cancelled.clone());
             Self::offload(move || {
                 let _admission = admission;
-                platform.write_restore_plan(&plan, expected, cancelled)
+                // The platform reports the five native outcomes itself; only a
+                // transport-level failure becomes a typed write failure here.
+                platform
+                    .write_restore_plan(&plan, expected, cancelled)
+                    .map_err(WriteFailure::from)
             })
             .await
         })
     }
-    fn write_text<'a>(&'a self, text: String) -> PortFuture<'a, Result<(), String>> {
+    fn write_text<'a>(&'a self, text: String) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let platform = self.platform.clone();
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _cancel = CancelOnDrop(flag.clone());
-            Self::offload(move || platform.write_text_cancellable(&text, flag)).await
+            Self::offload(move || platform.write_text_cancellable_typed(&text, flag)).await
         })
     }
 
@@ -188,13 +303,15 @@ impl ClipboardPort for BlockingPlatformPort {
         width: u32,
         height: u32,
         rgba: Vec<u8>,
-    ) -> PortFuture<'a, Result<(), String>> {
+    ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let platform = self.platform.clone();
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _cancel = CancelOnDrop(flag.clone());
-            Self::offload(move || platform.write_image_cancellable(width, height, &rgba, flag))
-                .await
+            Self::offload(move || {
+                platform.write_image_cancellable_typed(width, height, &rgba, flag)
+            })
+            .await
         })
     }
 
@@ -202,14 +319,14 @@ impl ClipboardPort for BlockingPlatformPort {
         &'a self,
         text: String,
         admission: Vec<AdmissionHold>,
-    ) -> PortFuture<'a, Result<(), String>> {
+    ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let platform = self.platform.clone();
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _cancel = CancelOnDrop(flag.clone());
             Self::offload(move || {
                 let _admission = admission;
-                platform.write_text_cancellable(&text, flag)
+                platform.write_text_cancellable_typed(&text, flag)
             })
             .await
         })
@@ -220,14 +337,14 @@ impl ClipboardPort for BlockingPlatformPort {
         height: u32,
         rgba: Vec<u8>,
         admission: Vec<AdmissionHold>,
-    ) -> PortFuture<'a, Result<(), String>> {
+    ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let platform = self.platform.clone();
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _cancel = CancelOnDrop(flag.clone());
             Self::offload(move || {
                 let _admission = admission;
-                platform.write_image_cancellable(width, height, &rgba, flag)
+                platform.write_image_cancellable_typed(width, height, &rgba, flag)
             })
             .await
         })
@@ -472,5 +589,176 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ledger.snapshot().pipeline_reserved, 0);
+    }
+
+    /// A platform that reports its own typed classification.
+    struct TypedPlatform {
+        text: crate::sync::WriteFailure,
+        panic: bool,
+    }
+
+    impl SyncPlatform for TypedPlatform {
+        fn write_text(&self, _: &str) -> Result<(), String> {
+            Err(self.text.message())
+        }
+        fn write_text_typed(&self, _: &str) -> Result<(), crate::sync::WriteFailure> {
+            if self.panic {
+                panic!("fixture worker panic");
+            }
+            Err(self.text.clone())
+        }
+        fn write_text_cancellable_typed(
+            &self,
+            text: &str,
+            cancelled: Arc<std::sync::atomic::AtomicBool>,
+        ) -> Result<(), crate::sync::WriteFailure> {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(crate::sync::WriteFailure::no_effect(
+                    "cancelled before write",
+                ));
+            }
+            self.write_text_typed(text)
+        }
+        fn write_image(&self, _: u32, _: u32, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_file_progress(&self, _: &str, _: u64, _: u64) {}
+        fn clear_file_progress(&self, _: Option<TransferId>, _: Option<&str>) {}
+        fn set_file_batch_progress(&self, _: FileBatchProgress) {}
+        fn file_batch_failed(&self, _: Option<TransferId>, _: &str) {}
+        fn files_received(&self, _: FileReceiveCommit) -> PlatformResultFuture {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A platform that only implements the legacy string seam.
+    struct LegacyStringPlatform {
+        message: String,
+    }
+
+    impl SyncPlatform for LegacyStringPlatform {
+        fn write_text(&self, _: &str) -> Result<(), String> {
+            Err(self.message.clone())
+        }
+        fn write_image(&self, _: u32, _: u32, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_file_progress(&self, _: &str, _: u64, _: u64) {}
+        fn clear_file_progress(&self, _: Option<TransferId>, _: Option<&str>) {}
+        fn set_file_batch_progress(&self, _: FileBatchProgress) {}
+        fn file_batch_failed(&self, _: Option<TransferId>, _: &str) {}
+        fn files_received(&self, _: FileReceiveCommit) -> PlatformResultFuture {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// F2 — the port carries the platform's typed classification through unchanged,
+    /// and the detail text never decides it.
+    #[tokio::test]
+    async fn the_port_preserves_the_typed_write_classification() {
+        let no_effect = BlockingPlatformPort::new(Arc::new(TypedPlatform {
+            text: crate::sync::WriteFailure::no_effect("helper never started"),
+            panic: false,
+        }));
+        let failure = no_effect.write_text("text".into()).await.unwrap_err();
+        assert!(failure.is_proven_no_effect());
+        assert!(failure
+            .message()
+            .contains(crate::protocol::NO_EFFECT_MARKER));
+
+        let unknown = BlockingPlatformPort::new(Arc::new(TypedPlatform {
+            text: crate::sync::WriteFailure::may_have_effect("clipboard helper timed out"),
+            panic: false,
+        }));
+        let failure = unknown.write_text("text".into()).await.unwrap_err();
+        assert!(!failure.is_proven_no_effect());
+        assert!(!failure
+            .message()
+            .contains(crate::protocol::NO_EFFECT_MARKER));
+
+        // A detail that mentions the marker must not change the kind.
+        let misleading = BlockingPlatformPort::new(Arc::new(TypedPlatform {
+            text: crate::sync::WriteFailure::may_have_effect(format!(
+                "{}worker died after writing",
+                crate::protocol::NO_EFFECT_MARKER
+            )),
+            panic: false,
+        }));
+        let failure = misleading.write_text("text".into()).await.unwrap_err();
+        assert!(!failure.is_proven_no_effect());
+    }
+
+    /// F2 — a worker that dies cannot prove the platform was untouched.
+    #[tokio::test]
+    async fn a_worker_panic_is_a_may_have_effect_failure() {
+        let port = BlockingPlatformPort::new(Arc::new(TypedPlatform {
+            text: crate::sync::WriteFailure::no_effect("unused"),
+            panic: true,
+        }));
+        let failure = port.write_text("text".into()).await.unwrap_err();
+        assert!(!failure.is_proven_no_effect());
+        assert_eq!(failure.effect(), WriteEffect::MayHaveEffect);
+    }
+
+    /// F2 — the legacy string bridge cannot prove a no-effect: a message that carries
+    /// the marker is still classified conservatively, because a string is not
+    /// evidence. (Boundary simulation of the old seam, not a historical incident.)
+    #[tokio::test]
+    async fn a_legacy_string_failure_stays_conservative() {
+        let port = BlockingPlatformPort::new(Arc::new(LegacyStringPlatform {
+            message: format!(
+                "{}worker died after writing",
+                crate::protocol::NO_EFFECT_MARKER
+            ),
+        }));
+        let failure = port.write_text("text".into()).await.unwrap_err();
+        assert!(!failure.is_proven_no_effect());
+        assert_eq!(failure.effect(), WriteEffect::MayHaveEffect);
+    }
+
+    /// F2 — a write that never started is provably no-effect, and the default bridge
+    /// decides that from the cancellation flag rather than from any message.
+    #[tokio::test]
+    async fn a_pre_write_cancellation_is_a_no_effect() {
+        let platform = LegacyStringPlatform {
+            message: format!("{}must not be consulted", crate::protocol::NO_EFFECT_MARKER),
+        };
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let failure = platform
+            .write_text_cancellable_typed("text", cancelled)
+            .unwrap_err();
+        assert!(failure.is_proven_no_effect());
+        assert_eq!(failure.detail(), "cancelled before write");
+    }
+
+    #[test]
+    fn a_pre_cancelled_writer_cannot_start_an_effect() {
+        let calls = AtomicUsize::new(0);
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let failure = run_cancellable_write(flag, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(failure.is_proven_no_effect());
+    }
+
+    #[test]
+    fn cancellation_after_the_body_started_does_not_reclassify_its_effect() {
+        let calls = AtomicUsize::new(0);
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let expected = flag.clone();
+        let failure = run_cancellable_write(flag, |observed| {
+            assert!(Arc::ptr_eq(&observed, &expected));
+            calls.fetch_add(1, Ordering::SeqCst); // The native effect has started.
+            observed.store(true, Ordering::Release);
+            Err(WriteFailure::may_have_effect(
+                "no-effect: receipt lost after writing",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!failure.is_proven_no_effect());
     }
 }

@@ -9,8 +9,9 @@ use crate::protocol::{self, Command, Frame, ProtocolError};
 
 use super::{
     capabilities_for_wire, decode_handshake_advertisement, encode_handshake_advertisement,
-    AcceptedConnection, CapabilitySet, CapabilitySwitches, HandshakePurpose, PeerIdentity,
-    SecureConnection, SessionIo, TRANSPORT_WRITE_IDLE_TIMEOUT,
+    AcceptedConnection, CapabilitySet, CapabilitySwitches, ConnectionFailure,
+    ConnectionFailureKind, HandshakePurpose, PeerIdentity, SecureConnection, SessionIo,
+    TRANSPORT_WRITE_IDLE_TIMEOUT,
 };
 
 pub async fn connect<S>(
@@ -79,10 +80,16 @@ where
             "secure handshake rejected: {}",
             String::from_utf8_lossy(&ack.payload)
         );
-        return Err(String::from_utf8_lossy(&ack.payload).to_string().into());
+        return Err(
+            ConnectionFailure::from_peer_error(&String::from_utf8_lossy(&ack.payload)).into(),
+        );
     }
     if ack.command != Command::HandshakeAck {
-        return Err("Handshake rejected".into());
+        return Err(ConnectionFailure::new(
+            ConnectionFailureKind::InvalidAdvertisement,
+            "Handshake rejected",
+        )
+        .into());
     }
     let length = handshake.read_message(&ack.payload, &mut output)?;
     let (peer_info, peer_capabilities, wire_version) =
@@ -90,7 +97,12 @@ where
     validate_peer_identity(&peer_info)?;
     let remote_key = handshake
         .get_remote_static()
-        .ok_or("Responder did not provide a static identity")?
+        .ok_or_else(|| {
+            ConnectionFailure::new(
+                ConnectionFailureKind::InvalidAdvertisement,
+                "Responder did not provide a static identity",
+            )
+        })?
         .to_vec();
     if peer_info.hostname != expected_hostname || remote_key != expected_public_key {
         tracing::warn!(
@@ -99,7 +111,11 @@ where
             peer_id = %crate::observability::peer_id(&remote_key),
             "secure handshake identity mismatch"
         );
-        return Err(format!("Peer identity mismatch for {expected_hostname}").into());
+        return Err(ConnectionFailure::new(
+            ConnectionFailureKind::IdentityMismatch,
+            format!("Peer identity mismatch for {expected_hostname}"),
+        )
+        .into());
     }
 
     output.fill(0);
@@ -151,9 +167,13 @@ where
                 "secure handshake confirmation rejected: {}",
                 String::from_utf8_lossy(&ready.payload)
             );
-            Err(String::from_utf8_lossy(&ready.payload).to_string().into())
+            Err(ConnectionFailure::from_peer_error(&String::from_utf8_lossy(&ready.payload)).into())
         }
-        _ => Err("Secure handshake confirmation missing".into()),
+        _ => Err(ConnectionFailure::new(
+            ConnectionFailureKind::InvalidAdvertisement,
+            "Secure handshake confirmation missing",
+        )
+        .into()),
     }
 }
 
@@ -223,17 +243,28 @@ where
             "secure pairing rejected: {}",
             String::from_utf8_lossy(&ack.payload)
         );
-        return Err(String::from_utf8_lossy(&ack.payload).to_string().into());
+        return Err(
+            ConnectionFailure::from_peer_error(&String::from_utf8_lossy(&ack.payload)).into(),
+        );
     }
     if ack.command != Command::PairingHandshakeAck {
-        return Err("Pairing handshake rejected".into());
+        return Err(ConnectionFailure::new(
+            ConnectionFailureKind::InvalidAdvertisement,
+            "Pairing handshake rejected",
+        )
+        .into());
     }
     let length = handshake.read_message(&ack.payload, &mut output)?;
     let (peer_identity, peer_capabilities, _) = decode_handshake_advertisement(&output[..length])?;
     validate_peer_identity(&peer_identity)?;
     let remote_public_key = handshake
         .get_remote_static()
-        .ok_or("Responder did not provide a static identity")?
+        .ok_or_else(|| {
+            ConnectionFailure::new(
+                ConnectionFailureKind::InvalidAdvertisement,
+                "Responder did not provide a static identity",
+            )
+        })?
         .to_vec();
 
     output.fill(0);
@@ -287,9 +318,13 @@ where
                 "secure pairing confirmation rejected: {}",
                 String::from_utf8_lossy(&ready.payload)
             );
-            Err(String::from_utf8_lossy(&ready.payload).to_string().into())
+            Err(ConnectionFailure::from_peer_error(&String::from_utf8_lossy(&ready.payload)).into())
         }
-        _ => Err("Secure pairing confirmation missing".into()),
+        _ => Err(ConnectionFailure::new(
+            ConnectionFailureKind::InvalidAdvertisement,
+            "Secure pairing confirmation missing",
+        )
+        .into()),
     }
 }
 
@@ -387,35 +422,56 @@ where
         read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE),
     )
     .await
-    .map_err(|_| "secure handshake request timed out")?;
+    .map_err(|_| {
+        ConnectionFailure::new(
+            ConnectionFailureKind::TimedOut,
+            "secure handshake request timed out",
+        )
+    })?;
     let request = match request_result {
         Ok(request) => request,
         Err(ProtocolError::UnsupportedVersion(peer_version)) => {
-            let message = ProtocolError::UnsupportedVersion(peer_version).to_string();
+            let failure = ConnectionFailure::from_protocol_error(
+                ProtocolError::UnsupportedVersion(peer_version),
+            );
             let _ = write_plain_frame_with_version(
                 &mut stream,
                 Command::PeerError,
-                message.as_bytes(),
+                failure.message().as_bytes(),
                 peer_version,
             )
             .await;
-            return Err(message.into());
+            return Err(failure.into());
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(ConnectionFailure::from_protocol_error(error).into()),
     };
     let purpose = match request.command {
         Command::HandshakeReq => HandshakePurpose::Connection,
         Command::PairingHandshakeReq => HandshakePurpose::Pairing,
-        _ => return Err("Expected handshake request".into()),
+        _ => {
+            return Err(ConnectionFailure::new(
+                ConnectionFailureKind::InvalidAdvertisement,
+                "Expected handshake request",
+            )
+            .into())
+        }
     };
     if purpose == HandshakePurpose::Pairing
         && pairing_enabled
             .as_ref()
             .is_some_and(|enabled| !*enabled.borrow())
     {
-        let message = "Pairing window is closed";
-        write_plain_frame(&mut stream, Command::PeerError, message.as_bytes()).await?;
-        return Err(message.into());
+        let failure = ConnectionFailure::new(
+            ConnectionFailureKind::WindowClosed,
+            "Pairing window is closed",
+        );
+        write_plain_frame(
+            &mut stream,
+            Command::PeerError,
+            failure.message().as_bytes(),
+        )
+        .await?;
+        return Err(failure.into());
     }
     handshake.read_message(&request.payload, &mut output)?;
 
@@ -437,21 +493,35 @@ where
             ),
         )
         .await
-        .map_err(|_| "secure pairing handshake timed out")??
+        .map_err(|_| {
+            ConnectionFailure::new(
+                ConnectionFailureKind::TimedOut,
+                "secure pairing handshake timed out",
+            )
+        })??
     } else {
         timeout(
             ACCEPT_HANDSHAKE_TIMEOUT,
             read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE),
         )
         .await
-        .map_err(|_| "secure handshake finish timed out")??
+        .map_err(|_| {
+            ConnectionFailure::new(
+                ConnectionFailureKind::TimedOut,
+                "secure handshake finish timed out",
+            )
+        })??
     };
     let expected_finish = match purpose {
         HandshakePurpose::Connection => Command::HandshakeFinish,
         HandshakePurpose::Pairing => Command::PairingHandshakeFinish,
     };
     if finish.command != expected_finish {
-        return Err("Expected handshake finish".into());
+        return Err(ConnectionFailure::new(
+            ConnectionFailureKind::InvalidAdvertisement,
+            "Expected handshake finish",
+        )
+        .into());
     }
     let length = handshake.read_message(&finish.payload, &mut output)?;
     let (peer_info, peer_capabilities, remote_wire_version) =
@@ -459,7 +529,12 @@ where
     validate_peer_identity(&peer_info)?;
     let remote_key = handshake
         .get_remote_static()
-        .ok_or("Initiator did not provide a static identity")?
+        .ok_or_else(|| {
+            ConnectionFailure::new(
+                ConnectionFailureKind::InvalidAdvertisement,
+                "Initiator did not provide a static identity",
+            )
+        })?
         .to_vec();
     let handshake_hash = handshake.get_handshake_hash().to_vec();
     let session_id = crate::observability::session_id(&handshake_hash);
@@ -513,15 +588,20 @@ async fn read_pairing_frame<S>(
     stream: &mut S,
     max_payload: usize,
     pairing_enabled: Option<&mut watch::Receiver<bool>>,
-) -> Result<Frame, Box<dyn std::error::Error + Send + Sync>>
+) -> Result<Frame, ConnectionFailure>
 where
     S: SessionIo,
 {
     let Some(pairing_enabled) = pairing_enabled else {
-        return Ok(read_plain_frame(stream, max_payload).await?);
+        return read_plain_frame(stream, max_payload)
+            .await
+            .map_err(ConnectionFailure::from_protocol_error);
     };
     if !*pairing_enabled.borrow() {
-        return Err("Pairing window is closed".into());
+        return Err(ConnectionFailure::new(
+            ConnectionFailureKind::WindowClosed,
+            "Pairing window is closed",
+        ));
     }
     // `read_plain_frame` drives `read_exact`, which is not cancel-safe: a
     // future dropped mid-frame loses the bytes already consumed and desyncs
@@ -531,14 +611,24 @@ where
     tokio::pin!(read);
     loop {
         tokio::select! {
-            result = &mut read => return Ok(result?),
+            result = &mut read => {
+                return result.map_err(ConnectionFailure::from_protocol_error);
+            }
             changed = pairing_enabled.changed() => {
                 match changed {
                     Ok(()) if !*pairing_enabled.borrow() => {
-                        return Err("Pairing window was closed".into());
+                        return Err(ConnectionFailure::new(
+                            ConnectionFailureKind::WindowClosed,
+                            "Pairing window was closed",
+                        ));
                     }
                     Ok(()) => continue,
-                    Err(_) => return Err("Pairing window was closed".into()),
+                    Err(_) => {
+                        return Err(ConnectionFailure::new(
+                            ConnectionFailureKind::WindowClosed,
+                            "Pairing window was closed",
+                        ))
+                    }
                 }
             }
         }
@@ -586,17 +676,23 @@ pub(super) fn build_handshake(
     }
 }
 
-fn validate_peer_identity(
-    identity: &PeerIdentity,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn validate_peer_identity(identity: &PeerIdentity) -> Result<(), ConnectionFailure> {
     if identity.hostname.is_empty() || identity.hostname.len() > 255 {
-        return Err("Invalid peer hostname".into());
+        return Err(ConnectionFailure::new(
+            ConnectionFailureKind::InvalidAdvertisement,
+            "Invalid peer hostname",
+        ));
     }
     if identity.tailscale_ip.len() > 64 {
-        return Err("Invalid peer address metadata".into());
+        return Err(ConnectionFailure::new(
+            ConnectionFailureKind::InvalidAdvertisement,
+            "Invalid peer address metadata",
+        ));
     }
     if let Some(endpoint_id) = &identity.iroh_endpoint_id {
-        crate::iroh_transport::canonical_endpoint_id(endpoint_id)?;
+        crate::iroh_transport::canonical_endpoint_id(endpoint_id).map_err(|error| {
+            ConnectionFailure::new(ConnectionFailureKind::InvalidAdvertisement, error)
+        })?;
     }
     Ok(())
 }
@@ -623,15 +719,13 @@ where
     Ok(())
 }
 
-async fn read_handshake_response<S>(
-    stream: &mut S,
-) -> Result<Frame, Box<dyn std::error::Error + Send + Sync>>
+async fn read_handshake_response<S>(stream: &mut S) -> Result<Frame, ConnectionFailure>
 where
     S: AsyncRead + Unpin + Send,
 {
     read_plain_frame(stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
         .await
-        .map_err(Into::into)
+        .map_err(ConnectionFailure::from_protocol_error)
 }
 
 async fn write_plain_frame_with_version<S>(

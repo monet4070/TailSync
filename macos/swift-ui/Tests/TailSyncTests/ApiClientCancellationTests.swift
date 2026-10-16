@@ -151,10 +151,13 @@ final class ApiClientCancellationTests: XCTestCase {
     actual.connection_mode = "lan_only"
     let success = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(actual)]) + Data([0x0A])
     let done = expectation(description: "two save responses")
-    done.expectedFulfillmentCount = 4
+    done.expectedFulfillmentCount = 6
     DispatchQueue.global().async {
       server.respond(with: success, closeDelay: 0, responseSent: done, connectionClosed: done)
       server.respond(with: Data("{\"ok\":false,\"error\":\"save failed\"}\n".utf8), closeDelay: 0, responseSent: done, connectionClosed: done)
+      server.respond(with: success, closeDelay: 0, responseSent: done, connectionClosed: done) {
+        XCTAssertEqual($0["cmd"] as? String, "get_settings")
+      }
     }
     _ = await coordinator.saveConnectionMode("lan_only", fallback: AppSettings())
     let failed = await coordinator.saveConnectionMode("iroh_only", fallback: AppSettings())
@@ -388,8 +391,381 @@ final class ApiClientCancellationTests: XCTestCase {
     await fulfillment(of: [responseSent, connectionClosed], timeout: 4)
   }
 
-  private static func capabilitiesResponse(platform: String, schemaVersion: Int = 2) throws -> Data {
-    let payload: [String: Any] = [
+  // F5: a daemon that negotiates `history_display_version = 1` is read through
+  // the paged command, which is the long-running history read the window starts
+  // on every page and query change. It must carry `request_id` so the daemon
+  // cancels the read (and returns its connection permit) when the window
+  // cancels and the socket closes.
+  func testPagedHistoryReadCarriesRequestIdAndCancelsToRealEOF() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let capabilitiesSent = expectation(description: "capabilities sent")
+    let capabilitiesClosed = expectation(description: "capabilities socket closed")
+    let pagedReceived = expectation(description: "paged history request received")
+    let pagedDisconnected = expectation(description: "cancelled paged socket disconnected")
+    let captured = CapturedRequest()
+    let capabilities = try Self.capabilitiesResponse(
+      platform: "macos", schemaVersion: 2, historyDisplayVersion: 1
+    )
+    DispatchQueue.global().async {
+      server.respond(
+        with: capabilities, closeDelay: 0,
+        responseSent: capabilitiesSent, connectionClosed: capabilitiesClosed
+      ) { request in
+        XCTAssertEqual(request["cmd"] as? String, "get_local_capabilities")
+      }
+      server.waitForRequestThenDisconnect(received: pagedReceived, disconnected: pagedDisconnected) { request in
+        captured.store(request)
+      }
+    }
+    let task = Task { try await client.getHistory(limit: 30, offset: 0) }
+    await fulfillment(of: [pagedReceived], timeout: 5)
+    let request = try XCTUnwrap(captured.request)
+    XCTAssertEqual(request["cmd"] as? String, "get_history_page")
+    XCTAssertEqual(request["limit"] as? Int, 30)
+    XCTAssertEqual(request["offset"] as? Int, 0)
+    XCTAssertNotNil(
+      request["request_id"] as? String,
+      "a paged history read must opt into disconnect cancellation"
+    )
+    task.cancel()
+    do {
+      _ = try await task.value
+      XCTFail("A cancelled paged history read must throw")
+    } catch is CancellationError {
+    } catch {
+      XCTFail("Unexpected cancellation error: \(error)")
+    }
+    await fulfillment(of: [pagedDisconnected], timeout: 2)
+    await fulfillment(of: [capabilitiesSent, capabilitiesClosed], timeout: 5)
+  }
+
+  // F1: the settings window sends field intents, never a whole snapshot, so a
+  // second window cannot roll back an unrelated edit.
+  func testSettingsPatchCarriesOnlyTheChangedEditableFields() throws {
+    let current = AppSettings()
+    var updated = current
+    updated.history_limit = 250
+    updated.auto_save_network_images = true
+    // Values owned by other commands must never travel through a patch.
+    updated.sync_enabled = false
+    updated.sync_shortcut = "Alt+Z"
+    updated.history_shortcut = "Alt+H"
+    updated.storage_root = "/tmp/elsewhere"
+    updated.trusted_peer_keys = ["peer": "key"]
+    updated.enabled_peers = ["peer": false]
+
+    let patch = AppSettingsPatch(changing: current, to: updated)
+    let encoded = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: JSONEncoder().encode(patch)) as? [String: Any]
+    )
+    XCTAssertEqual(Set(encoded.keys), ["history_limit", "auto_save_network_images"])
+    XCTAssertEqual(encoded["history_limit"] as? Int, 250)
+    XCTAssertEqual(encoded["auto_save_network_images"] as? Bool, true)
+    XCTAssertTrue(AppSettingsPatch(changing: current, to: current).isEmpty)
+  }
+
+  func testSettingsPatchSendsOnlyIntentsAndReturnsTheCanonicalSnapshot() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let sent = expectation(description: "settings patch sent")
+    let closed = expectation(description: "settings patch socket closed")
+    let captured = CapturedRequest()
+    // The daemon answers with what it committed: it clamped the limit the
+    // window asked for, and it still reports the fields the window never sent.
+    let canonical: [String: Any] = [
+      "history_limit": 200,
+      "connection_mode": "lan_only",
+      "sync_enabled": false,
+      "sync_shortcut": "Alt+S",
+      "history_shortcut": "Alt+H",
+      "language": "en",
+      "notifications_enabled": true,
+      "progress_bar_enabled": true,
+      "auto_save_network_images": true,
+      "storage_quota_bytes": 10737418240,
+      "enabled_peers": [:] as [String: Bool],
+      "trusted_peer_keys": [:] as [String: String],
+      "trusted_peer_addresses": [:] as [String: [String: String]],
+      "paired_peer_endpoints": [:] as [String: String],
+    ]
+    let response = try JSONSerialization.data(withJSONObject: ["ok": true, "data": canonical]) + Data([0x0A])
+    DispatchQueue.global().async {
+      server.respond(
+        with: response, closeDelay: 0,
+        responseSent: sent, connectionClosed: closed
+      ) { request in
+        captured.store(request)
+      }
+    }
+
+    var draft = AppSettings()
+    draft.history_limit = 250
+    draft.auto_save_network_images = true
+    let committed = try await client.updateSettings(
+      AppSettingsPatch(changing: AppSettings(), to: draft)
+    )
+
+    await fulfillment(of: [sent, closed], timeout: 3)
+    let request = try XCTUnwrap(captured.request)
+    XCTAssertEqual(request["cmd"] as? String, "update_settings")
+    let settings = try XCTUnwrap(request["settings"] as? [String: Any])
+    XCTAssertEqual(Set(settings.keys), ["history_limit", "auto_save_network_images"])
+    XCTAssertEqual(settings["history_limit"] as? Int, 250)
+    XCTAssertNil(settings["sync_enabled"])
+    XCTAssertNil(settings["sync_shortcut"])
+    XCTAssertNil(settings["trusted_peer_keys"])
+    XCTAssertNil(settings["storage_root"])
+    XCTAssertEqual(committed.history_limit, 200, "the server canonical value must win")
+    XCTAssertEqual(committed.connection_mode, "lan_only")
+    XCTAssertFalse(committed.sync_enabled)
+  }
+
+  func testRepeatedSettingsSavesPreserveAnUneditedExternalField() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let coordinator = SettingsSaveCoordinator(client: client)
+    var draft = AppSettings()
+    draft.progress_bar_enabled = false
+    var canonical = draft
+    canonical.history_limit = 250 // Another window's edit before the first commit.
+    let first = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(canonical)]) + Data([0x0A])
+    canonical.notifications_enabled = false
+    let second = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(canonical)]) + Data([0x0A])
+    let done = expectation(description: "two field intent saves")
+    done.expectedFulfillmentCount = 4
+    let captured = CapturedRequest()
+    DispatchQueue.global().async {
+      server.respond(with: first, closeDelay: 0, responseSent: done, connectionClosed: done)
+      server.respond(with: second, closeDelay: 0, responseSent: done, connectionClosed: done) { captured.store($0) }
+    }
+    let initial = await coordinator.save(.progressBarEnabled(false), fallback: AppSettings())
+    XCTAssertNil(initial.error)
+    draft.notifications_enabled = false // The form still has the stale history value.
+    let next = await coordinator.save(.notificationsEnabled(false), fallback: initial.persisted)
+    XCTAssertNil(next.error)
+    await fulfillment(of: [done], timeout: 4)
+    let request = try XCTUnwrap(captured.request)
+    let patch = try XCTUnwrap(request["settings"] as? [String: Any])
+    XCTAssertEqual(Set(patch.keys), ["notifications_enabled"])
+    XCTAssertNil(patch["history_limit"], "a stale unedited form field is not user intent")
+    XCTAssertEqual(next.persisted.history_limit, 250)
+  }
+
+  func testSyncToggleKeepsUsingTheDedicatedCommand() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let sent = expectation(description: "sync state sent")
+    let closed = expectation(description: "sync state socket closed")
+    let captured = CapturedRequest()
+    sent.expectedFulfillmentCount = 2
+    closed.expectedFulfillmentCount = 2
+    var canonical = AppSettings()
+    canonical.sync_enabled = false
+    canonical.sync_shortcut = "Alt+X"
+    let snapshot = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(canonical)]) + Data([10])
+    DispatchQueue.global().async {
+      server.respond(
+        with: Data(#"{"ok":true}"#.utf8) + Data([0x0A]), closeDelay: 0,
+        responseSent: sent, connectionClosed: closed
+      ) { request in
+        captured.store(request)
+      }
+      // Compatibility: an older daemon acknowledges without a snapshot.
+      server.respond(with: snapshot, closeDelay: 0, responseSent: sent, connectionClosed: closed) {
+        XCTAssertEqual($0["cmd"] as? String, "get_settings")
+      }
+    }
+
+    let coordinator = SettingsSaveCoordinator(client: client)
+    let changed = await coordinator.save(.syncEnabled(false), fallback: AppSettings())
+
+    XCTAssertNil(changed.error)
+    XCTAssertFalse(changed.persisted.sync_enabled)
+    XCTAssertEqual(changed.persisted.sync_shortcut, "Alt+X")
+    await fulfillment(of: [sent, closed], timeout: 3)
+    let request = try XCTUnwrap(captured.request)
+    XCTAssertEqual(request["cmd"] as? String, "set_sync_enabled")
+    XCTAssertEqual(request["enabled"] as? Bool, false)
+    XCTAssertNil(request["settings"], "sync state must not travel through the generic patch")
+  }
+
+  func testFailedSyncIntentKeepsPersistedStateAndReportsBothLocales() async throws {
+    let loc = Loc.shared
+    let previous = loc.lang
+    defer { loc.lang = previous }
+    for language in ["en", "zh-CN"] {
+      loc.lang = language
+      let server = try LocalTestSocket()
+      let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+      let coordinator = SettingsSaveCoordinator(client: client)
+      let done = expectation(description: "failed sync intent \(language)")
+      done.expectedFulfillmentCount = 4
+      let snapshot = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(AppSettings())]) + Data([10])
+      DispatchQueue.global().async {
+        server.respond(with: Data(#"{"ok":false,"error":"save failed"}"#.utf8) + Data([0x0A]), closeDelay: 0, responseSent: done, connectionClosed: done) { request in
+          XCTAssertEqual(request["cmd"] as? String, "set_sync_enabled")
+          XCTAssertNil(request["settings"])
+        }
+        server.respond(with: snapshot, closeDelay: 0, responseSent: done, connectionClosed: done)
+      }
+      let outcome = await coordinator.save(.syncEnabled(false), fallback: AppSettings())
+      XCTAssertEqual(outcome.persisted, AppSettings())
+      XCTAssertEqual(outcome.error, language == "en" ? "Could not save settings" : "未能保存设置")
+      await fulfillment(of: [done], timeout: 3)
+    }
+  }
+
+  func testCanonicalSavePreservesAnUnsubmittedSliderAndDedicatedShortcutEdit() {
+    let initial = AppSettings()
+    var submitted = initial
+    submitted.progress_bar_enabled = false
+    var current = submitted
+    current.history_limit = 300 // The user is still dragging; no new save exists yet.
+    current.sync_shortcut = "Alt+Z" // A dedicated command completed in the meantime.
+    var canonical = submitted
+    canonical.notifications_enabled = false // Another window's completed edit.
+    canonical.history_limit = 250
+    canonical.sync_shortcut = "Alt+S"
+    let merged = SettingsDraftReconciliation.merge(current: current, submitted: submitted, canonical: canonical)
+    XCTAssertEqual(merged.history_limit, 300)
+    XCTAssertEqual(merged.sync_shortcut, "Alt+Z")
+    XCTAssertFalse(merged.notifications_enabled)
+    XCTAssertFalse(merged.progress_bar_enabled)
+  }
+
+  func testSettingsFieldIntentCanRestoreAValueEqualToTheOldFallback() async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let coordinator = SettingsSaveCoordinator(client: client)
+    var canonical = AppSettings()
+    canonical.history_limit = 250
+    let first = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(canonical)]) + Data([0x0A])
+    canonical.history_limit = 100
+    let second = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(canonical)]) + Data([0x0A])
+    let done = expectation(description: "intent restored")
+    done.expectedFulfillmentCount = 4
+    let captured = CapturedRequest()
+    DispatchQueue.global().async {
+      server.respond(with: first, closeDelay: 0, responseSent: done, connectionClosed: done)
+      server.respond(with: second, closeDelay: 0, responseSent: done, connectionClosed: done) { captured.store($0) }
+    }
+    let saved = await coordinator.save(.historyLimit(250), fallback: AppSettings())
+    let restored = await coordinator.save(.historyLimit(100), fallback: AppSettings())
+    XCTAssertNil(saved.error)
+    XCTAssertNil(restored.error)
+    await fulfillment(of: [done], timeout: 4)
+    let patch = try XCTUnwrap(captured.request?["settings"] as? [String: Any])
+    XCTAssertEqual(Set(patch.keys), ["history_limit"])
+    XCTAssertEqual(patch["history_limit"] as? Int, 100)
+    XCTAssertEqual(restored.persisted.history_limit, 100)
+  }
+
+  func testSyncSaveReturnsFreshSettingsAfterDedicatedShortcutChange() async throws {
+    try await verifySyncSnapshotAfterShortcutChange(failing: false)
+  }
+
+  func testFailedSyncSaveRefreshesSettingsAfterDedicatedShortcutChange() async throws {
+    try await verifySyncSnapshotAfterShortcutChange(failing: true)
+  }
+
+  func testFailedSyncSaveRebasesKnownSettingsWhenReadbackFails() async throws {
+    try await verifyUnavailableSyncReadback(acknowledged: false)
+  }
+
+  func testLegacyAcknowledgedSyncIsNotRolledBackWhenReadbackFails() async throws {
+    try await verifyUnavailableSyncReadback(acknowledged: true)
+  }
+
+  private func verifyUnavailableSyncReadback(acknowledged: Bool) async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let coordinator = SettingsSaveCoordinator(client: client)
+    var committed = AppSettings()
+    committed.history_limit = 250
+    let firstResponse = try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(committed)]) + Data([10])
+    let syncResponse = try JSONSerialization.data(withJSONObject: ["ok": acknowledged]) + Data([10])
+    let done = expectation(description: "queued commit, shortcut, sync and unavailable readback")
+    done.expectedFulfillmentCount = 8
+    DispatchQueue.global().async {
+      server.respond(with: firstResponse, closeDelay: 0, responseSent: done, connectionClosed: done)
+      server.respond(with: Data(#"{"ok":true}"#.utf8) + Data([10]), closeDelay: 0, responseSent: done, connectionClosed: done) {
+        XCTAssertEqual($0["cmd"] as? String, "set_sync_shortcut")
+      }
+      server.respond(with: syncResponse, closeDelay: 0, responseSent: done, connectionClosed: done) {
+        XCTAssertEqual($0["cmd"] as? String, "set_sync_enabled")
+      }
+      server.respond(with: Data(#"{"ok":false,"error":"unavailable"}"#.utf8) + Data([10]), closeDelay: 0, responseSent: done, connectionClosed: done) {
+        XCTAssertEqual($0["cmd"] as? String, "get_settings")
+      }
+    }
+    let initial = await coordinator.save(.historyLimit(250), fallback: AppSettings())
+    XCTAssertNil(initial.error)
+    let shortcutSaved = await client.setSyncShortcut("Alt+X")
+    XCTAssertTrue(shortcutSaved)
+    var latestKnown = AppSettings() // The preceding queue response has not reached this draft yet.
+    latestKnown.sync_shortcut = "Alt+X"
+    let result = await coordinator.save(.syncEnabled(false), fallback: latestKnown)
+    XCTAssertEqual(result.error == nil, acknowledged)
+    XCTAssertEqual(result.persisted.history_limit, 250)
+    XCTAssertEqual(result.persisted.sync_shortcut, "Alt+X")
+    XCTAssertEqual(result.persisted.sync_enabled, !acknowledged)
+    await fulfillment(of: [done], timeout: 2)
+  }
+
+  private func verifySyncSnapshotAfterShortcutChange(failing: Bool) async throws {
+    let server = try LocalTestSocket()
+    let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+    let coordinator = SettingsSaveCoordinator(client: client)
+    var first = AppSettings()
+    first.notifications_enabled = false
+    var actual = first
+    actual.sync_shortcut = "Alt+X"
+    actual.sync_enabled = failing
+    func snapshot(_ settings: AppSettings) throws -> Data {
+      try JSONSerialization.data(withJSONObject: ["ok": true, "data": client.jsonDictionary(settings)]) + Data([10])
+    }
+    let firstResponse = try snapshot(first)
+    let canonical = try snapshot(actual)
+    let syncResponse = failing ? Data(#"{"ok":false,"error":"save failed"}"#.utf8) + Data([10]) : canonical
+    let done = expectation(description: "save, dedicated shortcut, sync, optional refresh")
+    done.expectedFulfillmentCount = failing ? 8 : 6
+    DispatchQueue.global().async {
+      server.respond(with: firstResponse, closeDelay: 0, responseSent: done, connectionClosed: done)
+      server.respond(with: Data(#"{"ok":true}"#.utf8) + Data([10]), closeDelay: 0, responseSent: done, connectionClosed: done) {
+        XCTAssertEqual($0["cmd"] as? String, "set_sync_shortcut")
+      }
+      server.respond(with: syncResponse, closeDelay: 0, responseSent: done, connectionClosed: done) {
+        XCTAssertEqual($0["cmd"] as? String, "set_sync_enabled")
+        XCTAssertNil($0["settings"])
+      }
+      if failing {
+        var pending = pollfd(fd: server.descriptor, events: Int16(POLLIN), revents: 0)
+        if poll(&pending, 1, 1000) > 0 {
+          server.respond(with: canonical, closeDelay: 0, responseSent: done, connectionClosed: done) {
+            XCTAssertEqual($0["cmd"] as? String, "get_settings")
+          }
+        }
+      }
+    }
+    let initial = await coordinator.save(.notificationsEnabled(false), fallback: AppSettings())
+    XCTAssertNil(initial.error)
+    let shortcutSaved = await client.setSyncShortcut("Alt+X")
+    XCTAssertTrue(shortcutSaved)
+    var latestKnown = initial.persisted
+    latestKnown.sync_shortcut = "Alt+X"
+    let result = await coordinator.save(.syncEnabled(false), fallback: latestKnown)
+    XCTAssertEqual(result.error == nil, !failing)
+    XCTAssertEqual(result.persisted, actual, "must return canonical settings, not the previous queue snapshot")
+    await fulfillment(of: [done], timeout: 2)
+  }
+
+  private static func capabilitiesResponse(
+    platform: String,
+    schemaVersion: Int = 2,
+    historyDisplayVersion: UInt64? = nil
+  ) throws -> Data {
+    var payload: [String: Any] = [
       "max_preview_bytes": 67108864,
       "platform": platform,
       "schema_version": schemaVersion,
@@ -398,7 +774,29 @@ final class ApiClientCancellationTests: XCTestCase {
       "supports_stable_errors": true,
       "wire_version": 5,
     ]
+    if let historyDisplayVersion {
+      payload["history_display_version"] = historyDisplayVersion
+    }
     return try JSONSerialization.data(withJSONObject: ["ok": true, "data": payload]) + Data([0x0A])
+  }
+}
+
+/// Captures the request a test socket observed so assertions can run on the
+/// test's own thread with its own failure message.
+private final class CapturedRequest: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [String: Any]?
+
+  func store(_ request: [String: Any]) {
+    lock.lock()
+    stored = request
+    lock.unlock()
+  }
+
+  var request: [String: Any]? {
+    lock.lock()
+    defer { lock.unlock() }
+    return stored
   }
 }
 

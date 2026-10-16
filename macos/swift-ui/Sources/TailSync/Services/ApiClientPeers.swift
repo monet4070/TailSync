@@ -242,6 +242,7 @@ extension ApiClient {
     let max_failures: Int
     let peer: PairingPeerStatus?
     let error: String?
+    let failure_kind: ContractPairingFailureKind?
     let pending: [ContractPendingPairingSummary]?
     let pending_store_unavailable: Bool?
   }
@@ -271,7 +272,7 @@ extension ApiClient {
     guard response["ok"] as? Bool == true,
       let value = response["data"] as? [String: Any]
     else {
-      throw ApiError.serverError(response["error"] as? String ?? "Pairing failed")
+      throw ApiError.responseError(response, fallback: "Pairing failed")
     }
     return try JSONDecoder().decode(
       PairingStatus.self,

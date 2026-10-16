@@ -24,7 +24,86 @@ async fn connections(
     local_proof: bool,
     remote_proof: bool,
 ) -> (secure::AcceptedConnection, secure::AcceptedConnection) {
+    connections_with_write_fault(
+        local,
+        remote,
+        local_proof,
+        remote_proof,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::new(tokio::sync::Notify::new()),
+    )
+    .await
+}
+
+const PARENT_WRITE_FAILURE: &str =
+    "fixture IO mentions Incompatible TailSync protocol: but remains a broken pipe";
+
+struct PairingWriteFaultIo {
+    inner: tokio::io::DuplexStream,
+    fail: Arc<std::sync::atomic::AtomicBool>,
+    released: Arc<tokio::sync::Notify>,
+}
+
+impl tokio::io::AsyncRead for PairingWriteFaultIo {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.inner), cx, buffer)
+    }
+}
+
+impl tokio::io::AsyncWrite for PairingWriteFaultIo {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if self.fail.load(std::sync::atomic::Ordering::Acquire) {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                PARENT_WRITE_FAILURE,
+            )));
+        }
+        tokio::io::AsyncWrite::poll_write(std::pin::Pin::new(&mut self.inner), cx, bytes)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(&mut self.inner), cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncWrite::poll_shutdown(std::pin::Pin::new(&mut self.inner), cx)
+    }
+}
+
+impl Drop for PairingWriteFaultIo {
+    fn drop(&mut self) {
+        self.released.notify_one();
+    }
+}
+
+async fn connections_with_write_fault(
+    local: &Arc<DeviceIdentity>,
+    remote: &DeviceIdentity,
+    local_proof: bool,
+    remote_proof: bool,
+    fail: Arc<std::sync::atomic::AtomicBool>,
+    released: Arc<tokio::sync::Notify>,
+) -> (secure::AcceptedConnection, secure::AcceptedConnection) {
     let (a, b) = tokio::io::duplex(256 * 1024);
+    let b = PairingWriteFaultIo {
+        inner: b,
+        fail,
+        released,
+    };
     let local = local.clone();
     let task = tokio::spawn(async move {
         let (_window, enabled) = watch::channel(true);
@@ -600,4 +679,172 @@ async fn failed_receipt_cleanup_cannot_resurrect_forgotten_pending_trust() {
             .get("client")
             .is_none());
     }
+}
+
+/// F10-B: the commit session's transport failures must keep their structural
+/// kind instead of being flattened into `Transport(String)`.
+#[tokio::test]
+async fn a_commit_session_connection_loss_keeps_its_structural_kind() {
+    let f = Fixture::new();
+    let a = f.manager();
+    let client = f.install(&a).await;
+
+    // The peer disappears before the proof exchange completes.
+    drop(client);
+    let status = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = a.status().await;
+            if status.failure_kind.is_some() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the commit session never recorded a classified failure");
+
+    assert_eq!(
+        status.failure_kind,
+        Some(PairingFailureKind::ConnectionClosed)
+    );
+    assert_eq!(
+        status.error.as_deref(),
+        Some("IO error: early eof while reading encrypted record length"),
+        "the pre-typing text must survive verbatim"
+    );
+    assert!(status.pairing_enabled);
+    assert_eq!(status.failed_attempts, 0);
+    assert_eq!(status.phase, PairingPhase::Waiting);
+}
+
+#[tokio::test]
+async fn a_completed_commit_promotion_leaves_no_classification() {
+    let f = Fixture::new();
+    let a = f.manager();
+    let mut client = f.install(&a).await;
+    let nonce = bootstrap(&a, &mut client).await;
+    complete(&a, &mut client, nonce).await;
+
+    let status = a.status().await;
+    assert_eq!(status.phase, PairingPhase::Paired);
+    assert_eq!(status.error, None);
+    assert_eq!(status.failure_kind, None);
+}
+
+async fn parent_wait_for_pairing_failure(manager: &Arc<PairingManager>) -> PairingStatus {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = manager.status().await;
+            if status.failure_kind.is_some() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the real session did not report its failure")
+}
+
+#[tokio::test]
+async fn parent_real_write_failure_keeps_kind_text_and_releases_both_session_variants() {
+    for proof in [false, true] {
+        let f = Fixture::new();
+        let manager = f.manager();
+        let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let released = Arc::new(tokio::sync::Notify::new());
+        let (client, server) = connections_with_write_fault(
+            &f.local,
+            &f.remote,
+            proof,
+            proof,
+            fail.clone(),
+            released.clone(),
+        )
+        .await;
+        manager.enable().await;
+        manager
+            .install_session(PendingPairing {
+                connection: server.connection,
+                hostname: "client".into(),
+                remote_public_key: server.remote_public_key,
+                handshake_hash: server.handshake_hash,
+                address: "127.0.0.1".into(),
+                interface: "lan".into(),
+                remote_invite: None,
+                direction: PairingDirection::Inbound,
+            })
+            .await
+            .unwrap();
+        // The peer stays connected and the Noise handshake already succeeded.
+        // Only the server write fails, so read-side EOF cannot satisfy this test.
+        fail.store(true, std::sync::atomic::Ordering::Release);
+        manager.confirm().await.unwrap();
+        let status = parent_wait_for_pairing_failure(&manager).await;
+        assert_eq!(
+            status.failure_kind,
+            Some(PairingFailureKind::ConnectionClosed)
+        );
+        let expected = if proof {
+            PARENT_WRITE_FAILURE.to_string()
+        } else {
+            format!("Could not confirm pairing: {PARENT_WRITE_FAILURE}")
+        };
+        assert_eq!(status.error.as_deref(), Some(expected.as_str()));
+        assert_eq!(status.phase, PairingPhase::Waiting);
+        assert!(status.pairing_enabled);
+        assert_eq!(status.failed_attempts, 0);
+        assert!(manager.pending_trust().await.is_empty());
+        tokio::time::timeout(Duration::from_secs(1), released.notified())
+            .await
+            .expect("failed session retained its transport");
+        drop(client);
+    }
+}
+
+#[tokio::test]
+async fn parent_real_commit_peer_error_uses_only_the_fixed_wire_categories() {
+    let f = Fixture::new();
+    let manager = f.manager();
+    for (message, kind) in [
+        (
+            "Incompatible TailSync protocol: rewritten peer display",
+            PairingFailureKind::ProtocolIncompatible,
+        ),
+        (
+            "Pairing window was closed",
+            PairingFailureKind::WindowClosed,
+        ),
+        (
+            "fixture path/Incompatible TailSync protocol: unrelated marker",
+            PairingFailureKind::Unknown,
+        ),
+        (
+            "example says Pairing window was closed",
+            PairingFailureKind::Unknown,
+        ),
+    ] {
+        let mut client = f.install(&manager).await;
+        send(&mut client, Command::PeerError, message.as_bytes().to_vec()).await;
+        let status = parent_wait_for_pairing_failure(&manager).await;
+        assert_eq!(status.failure_kind, Some(kind));
+        assert_eq!(status.error.as_deref(), Some(message));
+        assert!(status.pairing_enabled);
+        assert_eq!(status.failed_attempts, 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn parent_real_commit_session_deadline_keeps_the_window_open_and_records_timeout() {
+    let f = Fixture::new();
+    let manager = f.manager();
+    let _client = f.install(&manager).await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(PAIRING_SESSION_TIMEOUT + Duration::from_secs(1)).await;
+    let status = parent_wait_for_pairing_failure(&manager).await;
+    assert_eq!(status.failure_kind, Some(PairingFailureKind::TimedOut));
+    assert_eq!(status.error.as_deref(), Some("Pairing session timed out"));
+    assert_eq!(status.phase, PairingPhase::Waiting);
+    assert!(status.pairing_enabled);
+    assert_eq!(status.failed_attempts, 0);
+    assert!(manager.pending_trust().await.is_empty());
 }

@@ -242,6 +242,40 @@ impl BudgetLedger {
     }
 }
 
+/// The pipeline budget is global to the process, exactly as the product
+/// behaves, so two tests that reserve from it at the same time reject each
+/// other's legitimate reservations. Tests that consume this budget take this
+/// permit first; each test still runs its own real concurrency, and only the
+/// budget *users* are serialized against each other.
+#[cfg(test)]
+static PIPELINE_TEST_PERMIT: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn pipeline_test_permit() -> Arc<tokio::sync::Semaphore> {
+    PIPELINE_TEST_PERMIT
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+        .clone()
+}
+
+/// Blocking form for `#[test]` cases, mirroring `sync_warning::test_lock`.
+/// Take it before any other test lock so lock ordering stays consistent.
+#[cfg(test)]
+pub(crate) fn pipeline_budget_test_lock() -> tokio::sync::OwnedSemaphorePermit {
+    loop {
+        if let Ok(permit) = pipeline_test_permit().try_acquire_owned() {
+            return permit;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Async form for `#[tokio::test]` cases.
+#[cfg(test)]
+pub(crate) async fn pipeline_budget_test_lock_async() -> tokio::sync::OwnedSemaphorePermit {
+    pipeline_test_permit().acquire_owned().await.unwrap()
+}
+
 /// Holds an assembly slot, its raw CPU charge and its pipeline reservation.
 #[derive(Debug)]
 pub struct AssemblyLease {

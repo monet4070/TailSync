@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTheme, type ThemePreference } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
-import { LatestRequest, SerialTaskQueue } from "../utils/asyncControl";
+import { useSettingsEditor } from "../hooks/useSettingsEditor";
 import type { SettingsData } from "../types/settings.generated";
 import {
   changeStorageLocation,
@@ -22,7 +22,6 @@ import {
   rollbackThemeV2,
   setSyncEnabled,
   setSyncShortcut,
-  updateSettings,
   type StorageMigrationResult,
   type StorageStatus,
   type ThemeV2Descriptor,
@@ -58,14 +57,11 @@ export function Settings() {
   const [v2Active, setV2Active] = useState("builtin:canvas@1");
   const [v2HighContrast, setV2HighContrast] = useState(false);
   const [pendingThemeImport, setPendingThemeImport] = useState<PendingThemePackage | null>(null);
-  const [settings, setSettings] = useState<SettingsData | null>(null);
   const [historyLimitDraft, setHistoryLimitDraft] = useState(100);
   const [storageQuotaDraft, setStorageQuotaDraft] = useState("10");
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [storageBusy, setStorageBusy] = useState(false);
   const [oldStorage, setOldStorage] = useState<StorageMigrationResult | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
   const {
     theme,
     setTheme,
@@ -73,13 +69,19 @@ export function Settings() {
   } = useTheme();
   const { t, setLocale, locale } = useI18n();
   const launchAtLogin = useLaunchAtLogin();
-  const toastTimer = useRef<number>(0);
-  const settingsRef = useRef<SettingsData | null>(null);
-  const saveQueue = useRef(new SerialTaskQueue());
-  const settingsUpdates = useRef(new LatestRequest());
+  const {
+    settings,
+    settingsRef,
+    saved,
+    errorMessage,
+    setErrorMessage,
+    showSavedToast,
+    update,
+    installLocal,
+  } = useSettingsEditor({ onLocale: setLocale, translate: t });
   const currentShortcut = useCallback(
     () => settingsRef.current?.sync_shortcut ?? null,
-    [],
+    [settingsRef],
   );
   const refreshV2Themes = useCallback(async () => {
     try {
@@ -92,26 +94,19 @@ export function Settings() {
   useEffect(() => { void refreshV2Themes(); }, [refreshV2Themes]);
   const currentHistoryShortcut = useCallback(
     () => settingsRef.current?.history_shortcut ?? null,
-    [],
+    [settingsRef],
   );
-  const applyShortcut = useCallback((shortcut: string) => {
-    const current = settingsRef.current;
-    if (!current) return;
-    settingsRef.current = { ...current, sync_shortcut: shortcut };
-    setSettings(settingsRef.current);
-  }, []);
-  const applyHistoryShortcut = useCallback((shortcut: string) => {
-    const current = settingsRef.current;
-    if (!current) return;
-    settingsRef.current = { ...current, history_shortcut: shortcut };
-    setSettings(settingsRef.current);
-  }, []);
-  const showSavedToast = useCallback(() => {
-    setSaved(true);
-    window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setSaved(false), 1500);
-  }, []);
-  const showError = useCallback((message: string) => setErrorMessage(message), []);
+  // Dedicated commands own these fields; the local draft records them so an
+  // older generic response cannot roll them back.
+  const applyShortcut = useCallback(
+    (shortcut: string) => installLocal({ sync_shortcut: shortcut }),
+    [installLocal],
+  );
+  const applyHistoryShortcut = useCallback(
+    (shortcut: string) => installLocal({ history_shortcut: shortcut }),
+    [installLocal],
+  );
+  const showError = useCallback((message: string) => setErrorMessage(message), [setErrorMessage]);
   const syncShortcutRecorder = useShortcutRecorder({
     defaultShortcut: DEFAULT_SYNC_SHORTCUT,
     currentShortcut,
@@ -140,28 +135,25 @@ export function Settings() {
     handleInstallUpdate,
   } = useUpdater();
 
+  // Follow refreshed settings where the input is still unchanged. Keep edits
+  // made independently of the last settings snapshot, including an ongoing drag.
+  const numericSettingsSnapshot = useRef<{ history: number; quota: string } | null>(null);
   useEffect(() => {
-    getSettings()
-      .then((s) => {
-        settingsRef.current = s;
-        setSettings(s);
-        setHistoryLimitDraft(s.history_limit);
-        setStorageQuotaDraft(String(Math.round(s.storage_quota_bytes / GIB)));
-        setSyncShortcutDraft(s.sync_shortcut);
-        setHistoryShortcutDraft(s.history_shortcut);
-        // Theme selection is intentionally not hydrated from synchronised
-        // AppSettings. useTheme reads Core local-settings.json instead.
-        setLocale(s.language);
-      })
-      .catch(console.error);
-    getStorageStatus().then(setStorageStatus).catch(console.error);
-  }, [
-    setLocale,
-    setSyncShortcutDraft,
-    setHistoryShortcutDraft,
-  ]);
+    if (!settings) return;
+    const previous = numericSettingsSnapshot.current;
+    const quota = String(Math.round(settings.storage_quota_bytes / GIB));
+    numericSettingsSnapshot.current = { history: settings.history_limit, quota };
+    setHistoryLimitDraft((draft) => !previous || draft === previous.history ? settings.history_limit : draft);
+    setStorageQuotaDraft((draft) => !previous || draft === previous.quota ? quota : draft);
+    if (!previous) {
+      setSyncShortcutDraft(settings.sync_shortcut);
+      setHistoryShortcutDraft(settings.history_shortcut);
+    }
+  }, [settings, setSyncShortcutDraft, setHistoryShortcutDraft]);
 
-  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  useEffect(() => {
+    getStorageStatus().then(setStorageStatus).catch(console.error);
+  }, []);
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
@@ -169,9 +161,7 @@ export function Settings() {
       if (!active) return;
       const current = settingsRef.current;
       if (!current || current.sync_enabled === payload.enabled) return;
-      const next = { ...current, sync_enabled: payload.enabled };
-      settingsRef.current = next;
-      setSettings(next);
+      installLocal({ sync_enabled: payload.enabled });
     }).then((stop) => {
       if (active) unlisten = stop;
       else stop();
@@ -180,49 +170,13 @@ export function Settings() {
       active = false;
       unlisten?.();
     };
-  }, []);
-  const update = async (patch: Partial<SettingsData>) => {
-    const previous = settingsRef.current;
-    if (!previous) return false;
-    const next = { ...previous, ...patch };
-    setErrorMessage("");
-    settingsRef.current = next;
-    setSettings(next);
-    const generation = settingsUpdates.current.begin();
-    const save = saveQueue.current.enqueue(() =>
-      updateSettings(next),
-    );
-    try {
-      await save;
-      if (settingsUpdates.current.isCurrent(generation)) {
-        setSaved(true);
-        window.clearTimeout(toastTimer.current);
-        toastTimer.current = window.setTimeout(() => setSaved(false), 1500);
-      }
-      return true;
-    } catch (e) {
-      if (settingsUpdates.current.isCurrent(generation)) {
-        try {
-          const canonical = await getSettings();
-          settingsRef.current = canonical;
-          setSettings(canonical);
-          setHistoryLimitDraft(canonical.history_limit);
-        } catch {
-          settingsRef.current = previous;
-          setSettings(previous);
-          setHistoryLimitDraft(previous.history_limit);
-        }
-      }
-      console.error("Save settings failed:", e);
-      setErrorMessage(t("settings.saveFailed"));
-      return false;
-    }
-  };
+  }, [installLocal, settingsRef]);
 
   const commitHistoryLimit = async () => {
     if (historyLimitDraft === settingsRef.current?.history_limit) return;
     if (!(await update({ history_limit: historyLimitDraft }))) {
-      setHistoryLimitDraft(settingsRef.current?.history_limit ?? historyLimitDraft);
+      const persisted = settingsRef.current?.history_limit ?? historyLimitDraft;
+      setHistoryLimitDraft((draft) => draft === historyLimitDraft ? persisted : draft);
     }
   };
 
@@ -239,9 +193,10 @@ export function Settings() {
     setStorageQuotaDraft(String(gib));
     if (gib === currentGib) return;
     if (!(await update({ storage_quota_bytes: gib * GIB }))) {
-      setStorageQuotaDraft(
-        String(Math.round((settingsRef.current?.storage_quota_bytes ?? current.storage_quota_bytes) / GIB)),
-      );
+      const persisted = String(Math.round(
+        (settingsRef.current?.storage_quota_bytes ?? current.storage_quota_bytes) / GIB,
+      ));
+      setStorageQuotaDraft((draft) => draft === String(gib) ? persisted : draft);
     }
   };
 
@@ -261,8 +216,7 @@ export function Settings() {
         getSettings(),
         getStorageStatus(),
       ]);
-      settingsRef.current = canonical;
-      setSettings(canonical);
+      installLocal(canonical);
       setStorageQuotaDraft(String(Math.round(canonical.storage_quota_bytes / GIB)));
       setStorageStatus(status);
     } catch (error) {
@@ -364,15 +318,12 @@ export function Settings() {
   const setGlobalSync = async (enabled: boolean) => {
     const current = settingsRef.current;
     if (!current) return;
-    const next = { ...current, sync_enabled: enabled };
-    settingsRef.current = next;
-    setSettings(next);
+    installLocal({ sync_enabled: enabled });
     try {
       await setSyncEnabled(enabled);
     } catch (error) {
       console.error("Could not change sync state:", error);
-      settingsRef.current = current;
-      setSettings(current);
+      installLocal({ sync_enabled: current.sync_enabled });
       setErrorMessage(t("settings.saveFailed"));
     }
   };

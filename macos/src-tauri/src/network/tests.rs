@@ -1,3 +1,4 @@
+use super::pool::race_connect_and_handshake_classified;
 use super::{
     acquire_peer_file_batch, bind_tcp_listener, cached_discover_peers, clear_peer_cache,
     connection_task, merge_paired_peers, merge_tailscale_heartbeat, prewarm_connections,
@@ -739,3 +740,49 @@ async fn fifteen_minute_old_event_is_not_revived_after_reconnect() {
 
     assert_eq!(delivered, b"after-wake");
 }
+
+/// F10-A: the real platform seam (`PoolAdapter` -> `race_connect_and_handshake_classified`
+/// -> `secure::connect_with_capabilities`) must surface an incompatible peer
+/// protocol as a typed `ProtocolIncompatible` failure, not just as text.
+#[tokio::test]
+async fn connection_race_surfaces_typed_protocol_incompatibility() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let settings = race_settings(&server_identity);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // Answer with a plain frame whose header advertises an unsupported
+        // wire version, before any Noise handshake can complete.
+        let frame = Frame::try_new(Command::HandshakeAck, 0, 0, b"legacy".to_vec()).unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &frame.encode_with_version(5))
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::flush(&mut stream).await.unwrap();
+    });
+
+    let failure = match race_connect_and_handshake_classified(
+        &[resolved_candidate(ConnectionInterface::Lan, address)],
+        "server",
+        &client_identity,
+        &settings,
+    )
+    .await
+    {
+        Ok(_) => panic!("an incompatible peer unexpectedly completed the handshake"),
+        Err(failure) => failure,
+    };
+    assert_eq!(
+        failure.kind(),
+        secure::ConnectionFailureKind::ProtocolIncompatible
+    );
+    assert!(
+        failure.message().contains("peer uses v5"),
+        "{}",
+        failure.message()
+    );
+    server.await.unwrap();
+}
+
+include!("../../../../shared/platform-pairing-tests.rs");

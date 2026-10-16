@@ -18,6 +18,12 @@ pub(super) fn import_size_limit(entry_type: &str) -> Result<u64, String> {
     core_import_size_limit(entry_type).map_err(|error| error.to_string())
 }
 
+/// Builds the local API response for an import route. On macOS the error field
+/// carries the typed descriptor, so the legacy message is converted into it; on
+/// Windows the field is still the plain message and the conversion is a
+/// deliberate no-op. The conversion is written once so this file stays
+/// byte-identical on both platforms.
+#[allow(clippy::useless_conversion)]
 pub(super) fn import_response(result: Result<Value, String>) -> Response {
     match result {
         Ok(data) => Response {
@@ -28,7 +34,7 @@ pub(super) fn import_response(result: Result<Value, String>) -> Response {
         Err(error) => Response {
             ok: false,
             data: None,
-            error: Some(error),
+            error: Some(error.into()),
         },
     }
 }

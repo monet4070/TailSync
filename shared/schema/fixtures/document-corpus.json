@@ -1,0 +1,3615 @@
+[
+  {
+    "name": "paragraph unicode text",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "中文😀 reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "paragraph empty text",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "legacy reading fields omitted",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "hi",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "paragraph reading semantics at limit",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ],
+            "list": "ordered",
+            "list_depth": 8,
+            "heading": 3,
+            "quote_depth": 8,
+            "code_block": true
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "paragraph depth without list",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ],
+            "list_depth": 1
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "paragraph quote depth over limit",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ],
+            "quote_depth": 9
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "paragraph heading zero",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ],
+            "heading": 0
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "paragraph heading over limit",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ],
+            "heading": 4
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "paragraph block carrying a table",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          },
+          "table": {
+            "rows": [],
+            "truncated": false
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "table block carrying a paragraph",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "table",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          },
+          "table": {
+            "rows": [
+              {
+                "cells": [
+                  {
+                    "header": false,
+                    "runs": [
+                      {
+                        "text": "x",
+                        "style": {
+                          "bold": false,
+                          "italic": false,
+                          "underline": false,
+                          "strikethrough": false,
+                          "subscript": false,
+                          "superscript": false
+                        },
+                        "unsupported": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "image block carrying a table",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": null,
+            "availability": "external_reference",
+            "ordinal": 0
+          },
+          "table": {
+            "rows": [],
+            "truncated": false
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "paragraph block without payload",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph"
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "unknown block kind",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "future",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "table block",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "table",
+          "table": {
+            "rows": [
+              {
+                "cells": [
+                  {
+                    "header": true,
+                    "runs": [
+                      {
+                        "text": "x",
+                        "style": {
+                          "bold": false,
+                          "italic": false,
+                          "underline": false,
+                          "strikethrough": false,
+                          "subscript": false,
+                          "superscript": false
+                        },
+                        "unsupported": false
+                      }
+                    ]
+                  },
+                  {
+                    "header": false,
+                    "runs": [
+                      {
+                        "text": "y",
+                        "style": {
+                          "bold": false,
+                          "italic": false,
+                          "underline": false,
+                          "strikethrough": false,
+                          "subscript": false,
+                          "superscript": false
+                        },
+                        "unsupported": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "truncated": true
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "table row without cells",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "table",
+          "table": {
+            "rows": [
+              {
+                "cells": []
+              }
+            ],
+            "truncated": false
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "unsupported version",
+    "valid": false,
+    "value": {
+      "version": 2,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "image available with asset",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "image available without asset",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": null,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "image missing source with asset",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "missing_source",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "image external reference without asset",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": null,
+            "availability": "external_reference",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "image ordinal out of order",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 1
+          }
+        },
+        {
+          "kind": "image",
+          "image": {
+            "asset": 1,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+          "index": 1,
+          "offset": 24,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "image asset out of range",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 1,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "unreferenced asset",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "first image mismatch",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 1
+    }
+  },
+  {
+    "name": "first image without assets",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset index mismatch",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        },
+        {
+          "kind": "image",
+          "image": {
+            "asset": 1,
+            "availability": "available",
+            "ordinal": 1
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+          "index": 0,
+          "offset": 24,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset offset not contiguous",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        },
+        {
+          "kind": "image",
+          "image": {
+            "asset": 1,
+            "availability": "available",
+            "ordinal": 1
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+          "index": 1,
+          "offset": 25,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset zero length",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 0,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset zero width",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 0,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset zero height",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 0,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset digest non hex",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset digest short",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset digest uppercase",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "asset digest mixed case",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "partial detail at limit",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [
+        {
+          "code": "other_native_items",
+          "detail": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "partial detail over limit",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [
+        {
+          "code": "other_native_items",
+          "detail": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "partial detail with nul",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "x",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [
+        {
+          "code": "other_native_items",
+          "detail": "a\u0000b"
+        }
+      ],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link https path",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/path?q=1&r=2#frag"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link http host",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "http://example.com"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link uppercase scheme",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "HTTP://example.com/reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link unicode path",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/中文😀"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link percent nul path",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/%00x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link at sign in path",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/@reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link zero width space",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/​reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link byte order mark",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/﻿reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link mongolian vowel separator",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/᠎x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link word joiner",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/⁠x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link nbsp",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/ reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link ideographic space",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/　reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link line separator",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/ reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link next line",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link c0 control",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/\u0007reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link c1 control",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link backslash",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/a\\b"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link space",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/a b"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link tab",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/a\tb"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link empty",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": ""
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link relative",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "/relative/path"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link javascript scheme",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "javascript:alert(1)"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link data scheme",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "data:text/html,x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link file scheme",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "file:///etc/passwd"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link userinfo",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://user:pass@example.com/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link empty authority user",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://@example.com/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link empty authority",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https:///example.com/x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link scheme only",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "link protocol relative",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "//example.com/reading"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url port 65535",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com:65535/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url port 65536",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com:65536/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url port 999999",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com:999999/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url port negative",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com:-1/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url port non numeric",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com:abc/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url port empty",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com:/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url ipv6 loopback",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://[::1]/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url ipv6 literal invalid",
+    "valid": false,
+    "expect": {
+      "swift": true
+    },
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://[invalid]/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url trailing dot host",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com./"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url host percent invalid",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://exa%mple.com/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url host percent space",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://exa%20mple.com/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url host percent nul",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://exa%00mple.com/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url host underscore",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://a_b.example/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url host leading dot",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://.example/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url host dots only",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://../"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url ipv4 out of range",
+    "valid": false,
+    "expect": {
+      "swift": true
+    },
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://127.0.0.256/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url ipv4 short form",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://1.2.3/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url ipv4 hex form",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://0x7f000001/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url fragment at sign",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com#@user"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url query at sign",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com?@user"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url idn host",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "HTTPS://例子.测试/x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url path percent space",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/%20x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url host percent credential",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://user%40example.com/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url literal credential",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://user%3Apass@example.com/"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url path emoji",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/😀"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url path word joiner",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/⁠x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "url path vowel separator",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/᠎x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "raw text lone high surrogate",
+    "valid": false,
+    "json": "{\"version\":1,\"blocks\":[{\"kind\":\"paragraph\",\"paragraph\":{\"runs\":[{\"text\":\"\\ud800\",\"style\":{\"bold\":false,\"italic\":false,\"underline\":false,\"strikethrough\":false,\"subscript\":false,\"superscript\":false},\"unsupported\":false}]}}],\"assets\":[],\"partial\":[],\"styles_partial\":false}"
+  },
+  {
+    "name": "raw text lone low surrogate",
+    "valid": false,
+    "json": "{\"version\":1,\"blocks\":[{\"kind\":\"paragraph\",\"paragraph\":{\"runs\":[{\"text\":\"\\udfff\",\"style\":{\"bold\":false,\"italic\":false,\"underline\":false,\"strikethrough\":false,\"subscript\":false,\"superscript\":false},\"unsupported\":false}]}}],\"assets\":[],\"partial\":[],\"styles_partial\":false}"
+  },
+  {
+    "name": "raw text valid surrogate pair",
+    "valid": true,
+    "json": "{\"version\":1,\"blocks\":[{\"kind\":\"paragraph\",\"paragraph\":{\"runs\":[{\"text\":\"😀\",\"style\":{\"bold\":false,\"italic\":false,\"underline\":false,\"strikethrough\":false,\"subscript\":false,\"superscript\":false},\"unsupported\":false}]}}],\"assets\":[],\"partial\":[],\"styles_partial\":false}"
+  },
+  {
+    "name": "raw escaped valid surrogate pair",
+    "valid": true,
+    "json": "{\"version\":1,\"blocks\":[{\"kind\":\"paragraph\",\"paragraph\":{\"runs\":[{\"text\":\"\\ud83d\\ude00\",\"style\":{\"bold\":false,\"italic\":false,\"underline\":false,\"strikethrough\":false,\"subscript\":false,\"superscript\":false},\"unsupported\":false}]}}],\"assets\":[],\"partial\":[],\"styles_partial\":false}"
+  },
+  {
+    "name": "raw link lone high surrogate",
+    "valid": false,
+    "json": "{\"version\":1,\"blocks\":[{\"kind\":\"paragraph\",\"paragraph\":{\"runs\":[{\"text\":\"reading\",\"style\":{\"bold\":false,\"italic\":false,\"underline\":false,\"strikethrough\":false,\"subscript\":false,\"superscript\":false},\"unsupported\":false,\"link\":\"https://example.com/\\ud800\"}]}}],\"assets\":[],\"partial\":[],\"styles_partial\":false}"
+  },
+  {
+    "name": "raw detail lone low surrogate",
+    "valid": false,
+    "json": "{\"version\":1,\"blocks\":[{\"kind\":\"paragraph\",\"paragraph\":{\"runs\":[{\"text\":\"x\",\"style\":{\"bold\":false,\"italic\":false,\"underline\":false,\"strikethrough\":false,\"subscript\":false,\"superscript\":false},\"unsupported\":false}]}}],\"assets\":[],\"partial\":[{\"code\":\"other_native_items\",\"detail\":\"a\\udfffb\"}],\"styles_partial\":false}"
+  },
+  {
+    "name": "asset byte offset overflow",
+    "valid": false,
+    "json": "{\"version\":1,\"blocks\":[{\"kind\":\"image\",\"image\":{\"asset\":0,\"availability\":\"available\",\"ordinal\":0}},{\"kind\":\"image\",\"image\":{\"asset\":1,\"availability\":\"available\",\"ordinal\":1}}],\"assets\":[{\"index\":0,\"offset\":0,\"length\":9223372036854775808,\"width\":1,\"height\":1,\"sha256\":\"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\"},{\"index\":1,\"offset\":9223372036854775808,\"length\":9223372036854775808,\"width\":1,\"height\":1,\"sha256\":\"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\"}],\"first_image\":0,\"partial\":[],\"styles_partial\":false}"
+  },
+  {
+    "name": "blocks at limit",
+    "valid": true,
+    "expand": {
+      "kind": "paragraphs",
+      "count": 8192
+    }
+  },
+  {
+    "name": "blocks over limit",
+    "valid": false,
+    "expand": {
+      "kind": "paragraphs",
+      "count": 8193
+    }
+  },
+  {
+    "name": "aggregate runs at limit",
+    "valid": true,
+    "expand": {
+      "kind": "runs",
+      "count": 8192
+    }
+  },
+  {
+    "name": "aggregate runs over limit",
+    "valid": false,
+    "expand": {
+      "kind": "runs",
+      "count": 8193
+    }
+  },
+  {
+    "name": "aggregate cells at limit",
+    "valid": true,
+    "expand": {
+      "kind": "cells",
+      "count": 2048
+    }
+  },
+  {
+    "name": "aggregate cells over limit",
+    "valid": false,
+    "expand": {
+      "kind": "cells",
+      "count": 2049
+    }
+  },
+  {
+    "name": "utf8 text at limit",
+    "valid": true,
+    "expand": {
+      "kind": "text",
+      "bytes": 1048576
+    }
+  },
+  {
+    "name": "utf8 text over limit",
+    "valid": false,
+    "expand": {
+      "kind": "text",
+      "bytes": 1048577
+    }
+  },
+  {
+    "name": "text and link within budget",
+    "valid": true,
+    "expand": {
+      "kind": "text",
+      "bytes": 1048000,
+      "linkBytes": 576
+    }
+  },
+  {
+    "name": "text and link over budget",
+    "valid": false,
+    "expand": {
+      "kind": "text",
+      "bytes": 1048576,
+      "linkBytes": 576
+    }
+  },
+  {
+    "name": "link at limit",
+    "valid": true,
+    "expand": {
+      "kind": "text",
+      "bytes": 0,
+      "linkBytes": 2048
+    }
+  },
+  {
+    "name": "link over limit",
+    "valid": false,
+    "expand": {
+      "kind": "text",
+      "bytes": 0,
+      "linkBytes": 2049
+    }
+  },
+  {
+    "name": "assets at limit",
+    "valid": true,
+    "expand": {
+      "kind": "assets",
+      "count": 64,
+      "length": 24,
+      "width": 1,
+      "height": 1
+    }
+  },
+  {
+    "name": "assets over limit",
+    "valid": false,
+    "expand": {
+      "kind": "assets",
+      "count": 65,
+      "length": 24,
+      "width": 1,
+      "height": 1
+    }
+  },
+  {
+    "name": "aggregate bytes at limit",
+    "valid": true,
+    "expand": {
+      "kind": "assets",
+      "count": 1,
+      "length": 16777216,
+      "width": 1,
+      "height": 1
+    }
+  },
+  {
+    "name": "aggregate bytes over limit",
+    "valid": false,
+    "expand": {
+      "kind": "assets",
+      "count": 1,
+      "length": 16777217,
+      "width": 1,
+      "height": 1
+    }
+  },
+  {
+    "name": "aggregate pixels at limit",
+    "valid": true,
+    "expand": {
+      "kind": "assets",
+      "count": 1,
+      "length": 24,
+      "width": 4000,
+      "height": 4000
+    }
+  },
+  {
+    "name": "aggregate pixels over limit",
+    "valid": false,
+    "expand": {
+      "kind": "assets",
+      "count": 1,
+      "length": 24,
+      "width": 4001,
+      "height": 4000
+    }
+  },
+  {
+    "name": "partial count at limit",
+    "valid": true,
+    "expand": {
+      "kind": "partials",
+      "count": 8192,
+      "detailBytes": 1
+    }
+  },
+  {
+    "name": "partial count over limit",
+    "valid": false,
+    "expand": {
+      "kind": "partials",
+      "count": 8193,
+      "detailBytes": 1
+    }
+  },
+  {
+    "name": "runs across paragraphs at limit",
+    "valid": true,
+    "expand": {
+      "kind": "runs",
+      "count": 8192,
+      "groups": 2
+    }
+  },
+  {
+    "name": "runs across paragraphs plus one",
+    "valid": false,
+    "expand": {
+      "kind": "runs",
+      "count": 8193,
+      "groups": 2
+    }
+  },
+  {
+    "name": "cells across rows at limit",
+    "valid": true,
+    "expand": {
+      "kind": "cells",
+      "count": 2048,
+      "groups": 2
+    }
+  },
+  {
+    "name": "cells across rows plus one",
+    "valid": false,
+    "expand": {
+      "kind": "cells",
+      "count": 2049,
+      "groups": 2
+    }
+  },
+  {
+    "name": "unicode text across runs at limit",
+    "valid": true,
+    "expand": {
+      "kind": "text",
+      "bytes": 1048576,
+      "groups": 2,
+      "character": "中"
+    }
+  },
+  {
+    "name": "unicode text across runs plus one",
+    "valid": false,
+    "expand": {
+      "kind": "text",
+      "bytes": 1048577,
+      "groups": 2,
+      "character": "中"
+    }
+  },
+  {
+    "name": "unicode text and link aggregate at limit",
+    "valid": true,
+    "expand": {
+      "kind": "text",
+      "bytes": 1048000,
+      "linkBytes": 576,
+      "groups": 2,
+      "character": "😀"
+    }
+  },
+  {
+    "name": "unicode text and link aggregate plus one",
+    "valid": false,
+    "expand": {
+      "kind": "text",
+      "bytes": 1048001,
+      "linkBytes": 576,
+      "groups": 2,
+      "character": "😀"
+    }
+  },
+  {
+    "name": "bytes across assets at limit",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        },
+        {
+          "kind": "image",
+          "image": {
+            "asset": 1,
+            "availability": "available",
+            "ordinal": 1
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 8388608,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+          "index": 1,
+          "offset": 8388608,
+          "length": 8388608,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "bytes across assets plus one",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        },
+        {
+          "kind": "image",
+          "image": {
+            "asset": 1,
+            "availability": "available",
+            "ordinal": 1
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 8388608,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+          "index": 1,
+          "offset": 8388608,
+          "length": 8388609,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "pixels across assets at limit",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        },
+        {
+          "kind": "image",
+          "image": {
+            "asset": 1,
+            "availability": "available",
+            "ordinal": 1
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 2000,
+          "height": 4000,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+          "index": 1,
+          "offset": 24,
+          "length": 24,
+          "width": 2000,
+          "height": 4000,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "pixels across assets plus one",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "image",
+          "image": {
+            "asset": 0,
+            "availability": "available",
+            "ordinal": 0
+          }
+        },
+        {
+          "kind": "image",
+          "image": {
+            "asset": 1,
+            "availability": "available",
+            "ordinal": 1
+          }
+        },
+        {
+          "kind": "image",
+          "image": {
+            "asset": 2,
+            "availability": "available",
+            "ordinal": 2
+          }
+        }
+      ],
+      "assets": [
+        {
+          "index": 0,
+          "offset": 0,
+          "length": 24,
+          "width": 2000,
+          "height": 4000,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+          "index": 1,
+          "offset": 24,
+          "length": 24,
+          "width": 2000,
+          "height": 4000,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+          "index": 2,
+          "offset": 48,
+          "length": 24,
+          "width": 1,
+          "height": 1,
+          "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+      ],
+      "partial": [],
+      "styles_partial": false,
+      "first_image": 0
+    }
+  },
+  {
+    "name": "unicode link at byte limit",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "unicode link byte limit plus one",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [
+        {
+          "kind": "paragraph",
+          "paragraph": {
+            "runs": [
+              {
+                "text": "reading",
+                "style": {
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strikethrough": false,
+                  "subscript": false,
+                  "superscript": false
+                },
+                "unsupported": false,
+                "link": "https://example.com/中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中x"
+              }
+            ]
+          }
+        }
+      ],
+      "assets": [],
+      "partial": [],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "unicode partial detail at byte limit",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "blocks": [],
+      "assets": [],
+      "partial": [
+        {
+          "code": "other_native_items",
+          "detail": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+        }
+      ],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "unicode partial detail byte limit plus one",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "blocks": [],
+      "assets": [],
+      "partial": [
+        {
+          "code": "other_native_items",
+          "detail": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀x"
+        }
+      ],
+      "styles_partial": false
+    }
+  },
+  {
+    "name": "malformed model JSON",
+    "valid": false,
+    "json": "{\"version\":1,"
+  }
+]

@@ -2,12 +2,20 @@
 import Foundation
 
 
+enum ContractDocumentPolicies {
+  static let maxMetadataBytes: UInt64 = 1048576
+  static let maxModelBytes: UInt64 = 4194304
+  static let maxBytes: UInt64 = 16777216
+}
+
 private func documentContractFailure() -> DecodingError { .dataCorrupted(.init(codingPath: [], debugDescription: "Invalid document contract")) }
 private func validContractDocumentLink(_ value: String) -> Bool {
   guard !value.isEmpty, value.utf8.count <= 2048,
-        !value.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) || $0.value <= 31 || (127...159).contains($0.value) || $0.value == 92 }),
+        !value.unicodeScalars.contains(where: { $0.properties.isWhitespace || $0.value <= 31 || (127...159).contains($0.value) || $0.value == 92 }),
         let components = URLComponents(string: value), let scheme = components.scheme?.lowercased(),
         ["http", "https"].contains(scheme), let host = components.host, !host.isEmpty,
+        components.port.map({ (0...65535).contains($0) }) ?? true,
+        !host.unicodeScalars.contains(where: { $0.properties.isWhitespace || $0.value == 64 || $0.value <= 31 || (127...159).contains($0.value) }),
         components.user == nil, components.password == nil,
         value.range(of: "^https?://[^/?#]+", options: [.regularExpression, .caseInsensitive]) != nil else { return false }
   return true
@@ -41,14 +49,14 @@ private func validateContractDocument(_ value: ContractDisplayDocument) throws {
   }
   guard images <= 64, value.first_image == first, used.count == value.assets.count else { throw documentContractFailure() }
   for (index, asset) in value.assets.enumerated() {
-    guard asset.index == UInt64(index), asset.offset == offset, asset.length > 0, asset.length <= 16777216, asset.width > 0, asset.height > 0, asset.width <= 16000000, asset.height <= 16000000, asset.sha256.count == 64, asset.sha256.allSatisfy({ "0123456789abcdef".contains($0) }) else { throw documentContractFailure() }
+    guard asset.index == UInt64(index), asset.offset == offset, asset.length > 0, asset.length <= 16777216, asset.width > 0, asset.height > 0, asset.width <= 16000000, asset.height <= 16000000, asset.sha256.count == 64, asset.sha256.allSatisfy({ "0123456789abcdefABCDEF".contains($0) }) else { throw documentContractFailure() }
     offset += asset.length; pixels += UInt64(asset.width) * UInt64(asset.height)
     guard offset <= 16777216, pixels <= 16000000 else { throw documentContractFailure() }
   }
   for reason in value.partial { guard !reason.detail.contains("\0"), reason.detail.utf8.count <= 512 else { throw documentContractFailure() } }
 }
 private func validateContractDocumentFrame(_ value: ContractDocumentFrameMetadata) throws {
-  guard let request = value.request_id, !request.isEmpty, request.utf8.count <= 128, !value.name.isEmpty, value.name.utf8.count <= 256, value.stamp.hasPrefix("dc1:"), value.stamp.count == 68, value.stamp.dropFirst(4).allSatisfy({ "0123456789abcdef".contains($0) }), value.model_bytes > 0, value.model_bytes <= value.size_bytes, value.batch == nil else { throw documentContractFailure() }
+  guard let request = value.request_id, !request.isEmpty, request.utf8.count <= 128, !value.name.isEmpty, value.name.utf8.count <= 256, value.stamp.hasPrefix("dc1:"), value.stamp.count == 68, value.stamp.dropFirst(4).allSatisfy({ "0123456789abcdefABCDEF".contains($0) }), value.model_bytes > 0, value.model_bytes <= value.size_bytes, value.batch == nil else { throw documentContractFailure() }
 }
 struct ContractActiveRoute: Codable, Sendable {
   let `address`: String
@@ -669,6 +677,28 @@ struct ContractMacRuntimeSnapshot: Codable, Sendable {
   }
 }
 
+enum ContractPairingFailureKind: String, Codable, Sendable {
+  case `protocol_incompatible` = "protocol_incompatible"
+  case `identity_mismatch` = "identity_mismatch"
+  case `window_closed` = "window_closed"
+  case `timed_out` = "timed_out"
+  case `connection_closed` = "connection_closed"
+  case `invalid_advertisement` = "invalid_advertisement"
+  case `invalid_argument` = "invalid_argument"
+  case `busy` = "busy"
+  case `cancelled` = "cancelled"
+  case `transport` = "transport"
+  case `unknown` = "unknown"
+  init(from decoder: Decoder) throws {
+    let value = try decoder.singleValueContainer().decode(String.self)
+    self = Self(rawValue: value) ?? .unknown
+  }
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+}
+
 struct ContractPairingPeerStatus: Codable, Sendable {
   let `address`: String
   let `fingerprint`: String
@@ -705,6 +735,7 @@ struct ContractPairingStatus: Codable, Sendable {
   let `error`: String?
   let `expires_at`: UInt64?
   let `failed_attempts`: UInt8
+  let `failure_kind`: ContractPairingFailureKind?
   let `max_failures`: UInt8
   let `pairing_enabled`: Bool
   let `peer`: ContractPairingPeerStatus?
@@ -712,7 +743,7 @@ struct ContractPairingStatus: Codable, Sendable {
   let `pending_store_unavailable`: Bool
   let `phase`: ContractPairingPhase
   let `remaining_seconds`: UInt64
-  private enum CodingKeys: String, CodingKey { case `error`, `expires_at`, `failed_attempts`, `max_failures`, `pairing_enabled`, `peer`, `pending`, `pending_store_unavailable`, `phase`, `remaining_seconds` }
+  private enum CodingKeys: String, CodingKey { case `error`, `expires_at`, `failed_attempts`, `failure_kind`, `max_failures`, `pairing_enabled`, `peer`, `pending`, `pending_store_unavailable`, `phase`, `remaining_seconds` }
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     guard container.contains(.`error`) else { throw DecodingError.keyNotFound(CodingKeys.`error`, .init(codingPath: decoder.codingPath, debugDescription: "Required nullable field is missing")) }
@@ -720,6 +751,7 @@ struct ContractPairingStatus: Codable, Sendable {
     guard container.contains(.`expires_at`) else { throw DecodingError.keyNotFound(CodingKeys.`expires_at`, .init(codingPath: decoder.codingPath, debugDescription: "Required nullable field is missing")) }
     self.`expires_at` = try container.decodeIfPresent(UInt64.self, forKey: .`expires_at`)
     self.`failed_attempts` = try container.decode(UInt8.self, forKey: .`failed_attempts`)
+    self.`failure_kind` = try container.decodeIfPresent(ContractPairingFailureKind.self, forKey: .`failure_kind`)
     self.`max_failures` = try container.decode(UInt8.self, forKey: .`max_failures`)
     self.`pairing_enabled` = try container.decode(Bool.self, forKey: .`pairing_enabled`)
     guard container.contains(.`peer`) else { throw DecodingError.keyNotFound(CodingKeys.`peer`, .init(codingPath: decoder.codingPath, debugDescription: "Required nullable field is missing")) }
@@ -1017,6 +1049,12 @@ enum ContractStableErrorCode: String, Codable, Sendable {
   case `no_single_image` = "no_single_image"
   case `format_unavailable` = "format_unavailable"
   case `unsupported_format` = "unsupported_format"
+  case `pairing_identity_mismatch` = "pairing_identity_mismatch"
+  case `pairing_window_closed` = "pairing_window_closed"
+  case `pairing_timed_out` = "pairing_timed_out"
+  case `pairing_connection_closed` = "pairing_connection_closed"
+  case `pairing_busy` = "pairing_busy"
+  case `pairing_cancelled` = "pairing_cancelled"
   case `internal_error` = "internal_error"
   init(from decoder: Decoder) throws {
     let value = try decoder.singleValueContainer().decode(String.self)
@@ -1116,6 +1154,30 @@ struct ContractStableErrorEnvelope: Codable, Sendable {
       self.retryable = false
       self.message_key = "history.restore.code.unsupported_format"
       self.detail_class = .resource
+    case .pairing_identity_mismatch:
+      self.retryable = false
+      self.message_key = "error.pairing_identity_mismatch"
+      self.detail_class = .authorization
+    case .pairing_window_closed:
+      self.retryable = false
+      self.message_key = "error.pairing_window_closed"
+      self.detail_class = .resource
+    case .pairing_timed_out:
+      self.retryable = false
+      self.message_key = "error.pairing_timed_out"
+      self.detail_class = .contention
+    case .pairing_connection_closed:
+      self.retryable = false
+      self.message_key = "error.pairing_connection_closed"
+      self.detail_class = .protocol
+    case .pairing_busy:
+      self.retryable = false
+      self.message_key = "error.pairing_busy"
+      self.detail_class = .contention
+    case .pairing_cancelled:
+      self.retryable = false
+      self.message_key = "error.pairing_cancelled"
+      self.detail_class = .request
     case .internal_error:
       self.retryable = false
       self.message_key = "error.internal"

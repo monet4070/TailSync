@@ -285,9 +285,8 @@ async fn process_event_content(
                     port.write_text_admitted(text, vec![publication.clone(), protection.clone()])
                         .await
                 }
-                None => Err(format!(
-                    "{}clipboard unavailable",
-                    crate::protocol::NO_EFFECT_MARKER
+                None => Err(crate::sync::WriteFailure::no_effect(
+                    "clipboard unavailable",
                 )),
             };
             sync_engine
@@ -311,9 +310,8 @@ async fn process_event_content(
                     )
                     .await
                 }
-                None => Err(format!(
-                    "{}clipboard unavailable",
-                    crate::protocol::NO_EFFECT_MARKER
+                None => Err(crate::sync::WriteFailure::no_effect(
+                    "clipboard unavailable",
                 )),
             };
             sync_engine
@@ -322,8 +320,8 @@ async fn process_event_content(
                 .finish_incoming_image(prepared, result)
                 .err()
         };
-        if let Some(error) = error {
-            if crate::protocol::failure_is_proven_no_effect(&error) {
+        if let Some(failure) = error {
+            if failure.is_proven_no_effect() {
                 event_receipts::update(receipt.clone(), Operation::Remove)
                     .await
                     .map_err(receipt_error)?;
@@ -334,7 +332,9 @@ async fn process_event_content(
                 );
             }
             database.lock().await.release_history(history_ref);
-            return Err(ReliableEventError::retryable(error));
+            // The peer-visible text is the legacy façade: only a provable no-effect
+            // adds the marker, and nothing on this path reads it back.
+            return Err(ReliableEventError::retryable(failure.message()));
         }
         sync_engine
             .lock()
@@ -369,7 +369,7 @@ mod tests {
     use crate::protocol::TransferId;
     use crate::secure::{self, PeerIdentity};
     use crate::sync::{FileBatchProgress, FileReceiveCommit, SyncPlatform};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn history_fixture() -> HistoryDB {
         let root = crate::db::get_data_dir()
@@ -379,41 +379,114 @@ mod tests {
 
     struct TestPlatform {
         writes: std::sync::Mutex<Vec<String>>,
-        fail_text: AtomicBool,
-        /// When set, the text failure carries the no-effect marker, i.e. the platform
-        /// *proves* it did not touch the clipboard.
-        fail_text_provably: AtomicBool,
+        /// The typed failure the next text write reports, if any.
+        text_failure: std::sync::Mutex<Option<crate::sync::WriteFailure>>,
+        /// The typed failure the next image write reports, if any.
+        image_failure: std::sync::Mutex<Option<crate::sync::WriteFailure>>,
     }
 
     impl Default for TestPlatform {
         fn default() -> Self {
             Self {
                 writes: std::sync::Mutex::new(Vec::new()),
-                fail_text: AtomicBool::new(false),
-                fail_text_provably: AtomicBool::new(false),
+                text_failure: std::sync::Mutex::new(None),
+                image_failure: std::sync::Mutex::new(None),
             }
         }
     }
 
-    impl SyncPlatform for TestPlatform {
-        fn write_text(&self, text: &str) -> Result<(), String> {
-            if self.fail_text.load(Ordering::Relaxed) {
-                return Err(if self.fail_text_provably.load(Ordering::Relaxed) {
-                    format!("{}clipboard unavailable", crate::protocol::NO_EFFECT_MARKER)
-                } else {
-                    "clipboard unavailable".to_string()
-                });
+    impl TestPlatform {
+        fn fail_text_with(&self, failure: crate::sync::WriteFailure) {
+            *self.text_failure.lock().unwrap() = Some(failure);
+        }
+
+        fn clear_text_failure(&self) {
+            *self.text_failure.lock().unwrap() = None;
+        }
+
+        fn fail_image_with(&self, failure: crate::sync::WriteFailure) {
+            *self.image_failure.lock().unwrap() = Some(failure);
+        }
+
+        fn clear_image_failure(&self) {
+            *self.image_failure.lock().unwrap() = None;
+        }
+
+        /// The typed projection a platform owns: only a platform that can prove the
+        /// write never reached the pasteboard reports a no-effect.
+        fn classified_text_write(&self, text: &str) -> Result<(), crate::sync::WriteFailure> {
+            if let Some(failure) = self.text_failure.lock().unwrap().clone() {
+                return Err(failure);
             }
             self.writes.lock().unwrap().push(text.to_string());
             Ok(())
         }
 
-        fn write_image(&self, width: u32, height: u32, _rgba: &[u8]) -> Result<(), String> {
+        fn classified_image_write(
+            &self,
+            width: u32,
+            height: u32,
+        ) -> Result<(), crate::sync::WriteFailure> {
+            if let Some(failure) = self.image_failure.lock().unwrap().clone() {
+                return Err(failure);
+            }
             self.writes
                 .lock()
                 .unwrap()
                 .push(format!("image:{width}x{height}"));
             Ok(())
+        }
+    }
+
+    impl SyncPlatform for TestPlatform {
+        fn write_text(&self, text: &str) -> Result<(), String> {
+            self.classified_text_write(text).map_err(String::from)
+        }
+
+        fn write_text_typed(&self, text: &str) -> Result<(), crate::sync::WriteFailure> {
+            self.classified_text_write(text)
+        }
+
+        fn write_text_cancellable_typed(
+            &self,
+            text: &str,
+            cancelled: Arc<std::sync::atomic::AtomicBool>,
+        ) -> Result<(), crate::sync::WriteFailure> {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(crate::sync::WriteFailure::no_effect(
+                    "cancelled before write",
+                ));
+            }
+            self.classified_text_write(text)
+        }
+
+        fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+            self.write_image_typed(width, height, rgba)
+                .map_err(String::from)
+        }
+
+        fn write_image_typed(
+            &self,
+            width: u32,
+            height: u32,
+            _rgba: &[u8],
+        ) -> Result<(), crate::sync::WriteFailure> {
+            self.classified_image_write(width, height)
+        }
+
+        fn write_image_cancellable_typed(
+            &self,
+            width: u32,
+            height: u32,
+            _rgba: &[u8],
+            cancelled: Arc<std::sync::atomic::AtomicBool>,
+        ) -> Result<(), crate::sync::WriteFailure> {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(crate::sync::WriteFailure::no_effect(
+                    "cancelled before write",
+                ));
+            }
+            self.classified_image_write(width, height)
         }
 
         fn set_file_progress(&self, _name: &str, _received: u64, _total: u64) {}
@@ -578,6 +651,10 @@ mod tests {
         Frame::try_new(Command::TextPayload, 0, sequence, envelope.encode()).unwrap()
     }
 
+    fn image_frame(sequence: u32, envelope: &EventEnvelope) -> Frame {
+        Frame::try_new(Command::ImagePayload, 0, sequence, envelope.encode()).unwrap()
+    }
+
     #[tokio::test]
     async fn text_event_is_applied_and_acknowledged() {
         let _warnings = crate::sync_warning::test_lock_async().await;
@@ -637,7 +714,9 @@ mod tests {
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
         let db = Arc::new(Mutex::new(history_fixture()));
         let (engine, platform) = test_engine().await;
-        platform.fail_text.store(true, Ordering::Relaxed);
+        platform.fail_text_with(crate::sync::WriteFailure::may_have_effect(
+            "clipboard unavailable",
+        ));
 
         let envelope = EventEnvelope::new(b"retry me".to_vec());
         let frame = text_frame(1, &envelope);
@@ -666,7 +745,7 @@ mod tests {
 
         // The platform recovers, but the first failure proved nothing, so the native
         // effect is not applied a second time.
-        platform.fail_text.store(false, Ordering::Relaxed);
+        platform.clear_text_failure();
         let outcome = process_reliable_event(
             &mut server,
             &frame,
@@ -705,8 +784,9 @@ mod tests {
         let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
         let db = Arc::new(Mutex::new(history_fixture()));
         let (engine, platform) = test_engine().await;
-        platform.fail_text.store(true, Ordering::Relaxed);
-        platform.fail_text_provably.store(true, Ordering::Relaxed);
+        platform.fail_text_with(crate::sync::WriteFailure::no_effect(
+            "clipboard unavailable",
+        ));
 
         let envelope = EventEnvelope::new(b"retry me".to_vec());
         let frame = text_frame(1, &envelope);
@@ -726,7 +806,7 @@ mod tests {
         .unwrap_err();
         assert!(error.is_retryable());
 
-        platform.fail_text.store(false, Ordering::Relaxed);
+        platform.clear_text_failure();
         let outcome = process_reliable_event(
             &mut server,
             &frame,
@@ -744,6 +824,166 @@ mod tests {
             platform.writes.lock().unwrap().as_slice(),
             ["retry me"],
             "a proven no-effect releases the claim, so the effect is applied on retry"
+        );
+    }
+
+    /// F2 — the same release rule on the image seam: only a platform that proves it
+    /// did not touch the pasteboard may release the claim.
+    #[tokio::test]
+    async fn an_image_no_effect_failure_releases_the_claim_and_retries() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let db = Arc::new(Mutex::new(history_fixture()));
+        let (engine, platform) = test_engine().await;
+        platform.fail_image_with(crate::sync::WriteFailure::no_effect(
+            "clipboard unavailable",
+        ));
+
+        let envelope = EventEnvelope::new(crate::protocol::pack_rgba_image(1, 1, &[2; 4]).unwrap());
+        let frame = image_frame(1, &envelope);
+        client.write_frame(&frame).await.unwrap();
+
+        let mut last_sequence = None;
+        let error = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is_retryable());
+
+        platform.clear_image_failure();
+        let outcome = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReliableEventOutcome::Applied);
+        let _ = client.read_frame().await.unwrap();
+        assert_eq!(
+            platform.writes.lock().unwrap().as_slice(),
+            ["image:1x1"],
+            "a proven no-effect releases the image claim, so the effect is applied on retry"
+        );
+    }
+
+    /// F2 — an image failure that proves nothing keeps the claim.
+    #[tokio::test]
+    async fn an_unproven_image_failure_keeps_the_claim() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let db = Arc::new(Mutex::new(history_fixture()));
+        let (engine, platform) = test_engine().await;
+        platform.fail_image_with(crate::sync::WriteFailure::may_have_effect(
+            "clipboard helper returned no usable receipt",
+        ));
+
+        let envelope = EventEnvelope::new(crate::protocol::pack_rgba_image(1, 1, &[2; 4]).unwrap());
+        let frame = image_frame(1, &envelope);
+        client.write_frame(&frame).await.unwrap();
+
+        let mut last_sequence = None;
+        let error = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is_retryable());
+
+        platform.clear_image_failure();
+        let outcome = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReliableEventOutcome::Applied);
+        let _ = client.read_frame().await.unwrap();
+        assert!(
+            platform.writes.lock().unwrap().is_empty(),
+            "an unproven image failure must not be re-applied"
+        );
+    }
+
+    /// F2 — the decision reads the typed kind, never the message. A `MayHaveEffect`
+    /// detail that happens to contain the legacy marker must still keep the claim.
+    #[tokio::test]
+    async fn a_no_effect_detail_that_mentions_the_marker_still_keeps_the_claim() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let db = Arc::new(Mutex::new(history_fixture()));
+        let (engine, platform) = test_engine().await;
+        platform.fail_text_with(crate::sync::WriteFailure::may_have_effect(format!(
+            "{}worker died after writing",
+            crate::protocol::NO_EFFECT_MARKER
+        )));
+
+        let envelope = EventEnvelope::new(b"marker text".to_vec());
+        let frame = text_frame(1, &envelope);
+        client.write_frame(&frame).await.unwrap();
+
+        let mut last_sequence = None;
+        let error = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is_retryable());
+
+        platform.clear_text_failure();
+        let outcome = process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReliableEventOutcome::Applied);
+        let _ = client.read_frame().await.unwrap();
+        assert!(
+            platform.writes.lock().unwrap().is_empty(),
+            "the message text must not be able to release the claim"
         );
     }
 

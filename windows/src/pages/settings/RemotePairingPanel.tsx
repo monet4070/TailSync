@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronRight, Clipboard, Globe, Link2, RefreshCw, X } from "lucide-react";
 import type { RemotePairingInvite, RemotePairingInvitePreview } from "../../tailsyncClient";
+import { pairingIssueText, type PairingIssue } from "../../utils/pairingFailure";
 import type { Translate } from "./SettingsSectionTypes";
 
 interface RemotePairingPanelProps {
@@ -9,7 +10,7 @@ interface RemotePairingPanelProps {
   linkDraft: string;
   linkPreview: RemotePairingInvitePreview | null;
   busy: boolean;
-  error: string;
+  error: PairingIssue | null;
   copied: boolean;
   defaultExpanded?: boolean;
   onCreateInvite: () => Promise<void>;
@@ -37,6 +38,7 @@ export function RemotePairingPanel({
   onCopyInvite,
 }: RemotePairingPanelProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const visibleError = pairingIssueText(error, t);
 
   return (
     <div className={`remote-pairing-panel remote-pairing-drawer${expanded ? " is-expanded" : ""}`}>
@@ -153,7 +155,7 @@ export function RemotePairingPanel({
             </div>
           </div>
 
-          {error && <p className="remote-pairing-error" role="alert">{error}</p>}
+          {visibleError && <p className="remote-pairing-error" role="alert">{visibleError}</p>}
         </div>
       )}
     </div>

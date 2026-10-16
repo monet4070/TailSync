@@ -1087,3 +1087,424 @@ async fn revoke_peer_closes_window_before_a_late_session_is_installed() {
         .unwrap();
     manager.cancel().await;
 }
+
+/// Wait until the manager has recorded a classified failure, then return that
+/// status. Real duplex sessions fail asynchronously, so the assertion must
+/// observe the status the session task produced rather than a constructed one.
+async fn wait_for_classified_failure(manager: &Arc<PairingManager>) -> PairingStatus {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = manager.status().await;
+            if status.failure_kind.is_some() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the pairing session never recorded a classified failure")
+}
+
+async fn install_real_session(
+    manager: &Arc<PairingManager>,
+    server_identity: &Arc<DeviceIdentity>,
+    client_identity: &DeviceIdentity,
+) -> crate::secure::SecureConnection {
+    let (client, server) = establish_in_memory_pair(server_identity, client_identity).await;
+    manager
+        .install_session(PendingPairing {
+            connection: server,
+            hostname: "client".into(),
+            remote_public_key: client_identity.public_key().to_vec(),
+            handshake_hash: vec![11; 32],
+            address: "192.168.1.5".into(),
+            interface: "lan".into(),
+            remote_invite: None,
+            direction: PairingDirection::Inbound,
+        })
+        .await
+        .unwrap();
+    client
+}
+
+#[tokio::test]
+async fn typed_failure_kind_survives_a_message_rewrite_and_legacy_strings_stay_unclassified() {
+    let manager = default_manager();
+    manager.enable().await;
+
+    // The legacy `String` entry keeps the old text and claims no classification.
+    manager.record_non_ban_failure("network unavailable").await;
+    let legacy = manager.status().await;
+    assert_eq!(legacy.error.as_deref(), Some("network unavailable"));
+    assert_eq!(legacy.failure_kind, None);
+
+    manager
+        .record_non_ban_failure_classified(PairingFailure::new(
+            PairingFailureKind::ConnectionClosed,
+            "first wording",
+        ))
+        .await;
+    let first = manager.status().await;
+    assert_eq!(first.error.as_deref(), Some("first wording"));
+    assert_eq!(
+        first.failure_kind,
+        Some(PairingFailureKind::ConnectionClosed)
+    );
+
+    // Rewriting the text cannot move the kind.
+    manager
+        .record_non_ban_failure_classified(PairingFailure::new(
+            PairingFailureKind::ConnectionClosed,
+            "completely different wording",
+        ))
+        .await;
+    let rewritten = manager.status().await;
+    assert_eq!(
+        rewritten.error.as_deref(),
+        Some("completely different wording")
+    );
+    assert_eq!(
+        rewritten.failure_kind,
+        Some(PairingFailureKind::ConnectionClosed)
+    );
+    assert_eq!(
+        rewritten.failed_attempts, 0,
+        "a non-ban failure must not charge the lockout budget"
+    );
+    assert!(rewritten.pairing_enabled);
+}
+
+#[tokio::test]
+async fn typed_charged_failures_keep_the_lockout_budget_and_their_kind() {
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        Arc::new(DeviceIdentity::generate_for_test()),
+        Duration::from_secs(1),
+        3,
+        false,
+    );
+    manager.enable().await;
+    for attempt in 1..=3 {
+        manager
+            .record_failure_classified(PairingFailure::new(
+                PairingFailureKind::ProtocolIncompatible,
+                format!("peer uses v{attempt}"),
+            ))
+            .await;
+    }
+
+    let status = manager.status().await;
+    assert!(!status.pairing_enabled);
+    assert_eq!(status.failed_attempts, 3);
+    assert_eq!(status.phase, PairingPhase::Locked);
+    assert_eq!(status.error.as_deref(), Some("peer uses v3"));
+    assert_eq!(
+        status.failure_kind,
+        Some(PairingFailureKind::ProtocolIncompatible)
+    );
+}
+
+#[tokio::test]
+async fn pairing_lifecycle_clears_and_sets_the_failure_kind() {
+    let settings = Arc::new(Mutex::new(Settings::default()));
+    let local = Arc::new(DeviceIdentity::generate_for_test());
+    let peer = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        settings.clone(),
+        local.clone(),
+        Duration::from_secs(120),
+        5,
+        false,
+    );
+
+    let opened = manager.enable().await;
+    assert_eq!(opened.error, None);
+    assert_eq!(opened.failure_kind, None);
+
+    manager
+        .record_non_ban_failure_classified(PairingFailure::new(PairingFailureKind::Busy, "busy"))
+        .await;
+    assert_eq!(
+        manager.status().await.failure_kind,
+        Some(PairingFailureKind::Busy)
+    );
+
+    // A new window is a new generation.
+    let reopened = manager.enable().await;
+    assert_eq!(reopened.error, None);
+    assert_eq!(reopened.failure_kind, None);
+
+    // begin_handshake starts a fresh handshake attempt.
+    manager
+        .record_non_ban_failure_classified(PairingFailure::new(
+            PairingFailureKind::Transport,
+            "transport",
+        ))
+        .await;
+    manager.begin_handshake().await.unwrap();
+    let handshaking = manager.status().await;
+    assert_eq!(handshaking.error, None);
+    assert_eq!(handshaking.failure_kind, None);
+
+    // Installing a session clears whatever the previous attempt left behind.
+    manager
+        .record_non_ban_failure_classified(PairingFailure::new(
+            PairingFailureKind::Transport,
+            "transport",
+        ))
+        .await;
+    manager.enable().await;
+    manager
+        .record_non_ban_failure_classified(PairingFailure::new(
+            PairingFailureKind::Transport,
+            "transport",
+        ))
+        .await;
+    let _client = install_real_session(&manager, &local, &peer).await;
+    let installed = manager.status().await;
+    assert_eq!(installed.error, None);
+    assert_eq!(installed.failure_kind, None);
+
+    // A cancel is a classified failure of its own.
+    let cancelled = manager.cancel().await;
+    assert_eq!(cancelled.phase, PairingPhase::Cancelled);
+    assert_eq!(cancelled.error.as_deref(), Some("Pairing was cancelled"));
+    assert_eq!(cancelled.failure_kind, Some(PairingFailureKind::Cancelled));
+
+    // Revocation is not a failure: it clears the classification.
+    manager.enable().await;
+    manager
+        .record_non_ban_failure_classified(PairingFailure::new(PairingFailureKind::Busy, "busy"))
+        .await;
+    manager.revoke_peer("client").await.unwrap();
+    let revoked = manager.status().await;
+    assert_eq!(revoked.error, None);
+    assert_eq!(revoked.failure_kind, None);
+}
+
+#[tokio::test]
+async fn an_expired_window_records_the_timed_out_kind() {
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        Arc::new(DeviceIdentity::generate_for_test()),
+        Duration::from_millis(25),
+        5,
+        false,
+    );
+    manager.enable().await;
+    let mut window = manager.subscribe_window();
+    tokio::time::timeout(Duration::from_secs(2), window.changed())
+        .await
+        .expect("pairing window did not expire")
+        .expect("pairing window signal closed");
+
+    let expired = manager.status().await;
+    assert_eq!(expired.phase, PairingPhase::TimedOut);
+    assert_eq!(expired.error.as_deref(), Some("Pairing window timed out"));
+    assert_eq!(expired.failure_kind, Some(PairingFailureKind::TimedOut));
+}
+
+#[test]
+fn committing_a_pairing_clears_the_classification() {
+    let mut state = PairingState {
+        enabled: true,
+        phase: PairingPhase::Finalizing,
+        deadline: None,
+        expires_at: None,
+        failed_attempts: 2,
+        peer: None,
+        error: Some("Pairing transport failed".to_string()),
+        failure_kind: Some(PairingFailureKind::Transport),
+        generation: 7,
+        session_id: 3,
+        control: None,
+        session_direction: None,
+    };
+    PairingManager::commit_pairing_state(&mut state);
+    assert!(!state.enabled);
+    assert_eq!(state.phase, PairingPhase::Paired);
+    assert_eq!(state.error, None);
+    assert_eq!(state.failure_kind, None);
+}
+
+#[tokio::test]
+async fn a_stale_session_cannot_overwrite_the_current_classification() {
+    let manager = default_manager();
+    manager.enable().await;
+    let stale_session = manager.state.lock().await.session_id;
+
+    manager
+        .record_non_ban_failure_classified(PairingFailure::new(
+            PairingFailureKind::TimedOut,
+            "current",
+        ))
+        .await;
+    manager
+        .fail_session_non_ban_classified(
+            stale_session,
+            PairingFailure::new(PairingFailureKind::Busy, "stale"),
+        )
+        .await;
+
+    let status = manager.status().await;
+    assert_eq!(status.error.as_deref(), Some("current"));
+    assert_eq!(status.failure_kind, Some(PairingFailureKind::TimedOut));
+}
+
+#[tokio::test]
+async fn a_real_session_eof_records_the_connection_closed_kind() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_secs(120),
+        5,
+        false,
+    );
+    manager.enable().await;
+    let client = install_real_session(&manager, &server_identity, &client_identity).await;
+
+    // The peer disappears without confirming anything.
+    drop(client);
+    let status = wait_for_classified_failure(&manager).await;
+    assert_eq!(
+        status.failure_kind,
+        Some(PairingFailureKind::ConnectionClosed)
+    );
+    assert!(
+        status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Pairing connection failed: ")),
+        "unexpected text {:?}",
+        status.error
+    );
+    assert!(status.pairing_enabled);
+    assert_eq!(status.failed_attempts, 0);
+    assert_eq!(status.phase, PairingPhase::Waiting);
+}
+
+#[tokio::test]
+async fn a_real_session_window_expiry_records_the_timed_out_kind() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_millis(300),
+        5,
+        false,
+    );
+    manager.enable().await;
+    let _client = install_real_session(&manager, &server_identity, &client_identity).await;
+
+    let status = wait_for_classified_failure(&manager).await;
+    assert_eq!(status.phase, PairingPhase::TimedOut);
+    assert_eq!(status.failure_kind, Some(PairingFailureKind::TimedOut));
+    // The window expired while a session was installed, which is the
+    // "session timed out" wording; the kind is the same either way.
+    assert_eq!(status.error.as_deref(), Some("Pairing session timed out"));
+    assert_eq!(status.failed_attempts, 0);
+}
+
+#[tokio::test]
+async fn a_real_peer_cancel_records_the_cancelled_kind() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_secs(120),
+        5,
+        false,
+    );
+    manager.enable().await;
+    let mut client = install_real_session(&manager, &server_identity, &client_identity).await;
+
+    client
+        .write_frame(&Frame::try_new(Command::PairingCancel, 0, 0, Vec::new()).unwrap())
+        .await
+        .unwrap();
+
+    let status = wait_for_classified_failure(&manager).await;
+    assert_eq!(status.failure_kind, Some(PairingFailureKind::Cancelled));
+    assert_eq!(
+        status.error.as_deref(),
+        Some("The other device cancelled pairing")
+    );
+    assert!(status.pairing_enabled);
+    assert_eq!(status.failed_attempts, 0);
+}
+
+#[tokio::test]
+async fn a_real_peer_error_frame_is_classified_only_by_the_wire_boundary_helper() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_secs(120),
+        5,
+        false,
+    );
+    manager.enable().await;
+
+    let rejection = "Incompatible TailSync protocol: peer uses v5, this version requires v4. Update TailSync on both devices.";
+    let mut client = install_real_session(&manager, &server_identity, &client_identity).await;
+    client
+        .write_frame(
+            &Frame::try_new(Command::PeerError, 0, 0, rejection.as_bytes().to_vec()).unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = wait_for_classified_failure(&manager).await;
+    assert_eq!(
+        status.failure_kind,
+        Some(PairingFailureKind::ProtocolIncompatible)
+    );
+    assert_eq!(status.error.as_deref(), Some(rejection));
+
+    // Peer text outside the fixed categories stays conservative.
+    let mut client = install_real_session(&manager, &server_identity, &client_identity).await;
+    client
+        .write_frame(
+            &Frame::try_new(Command::PeerError, 0, 0, b"Peer refused pairing".to_vec()).unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = wait_for_classified_failure(&manager).await;
+    assert_eq!(status.failure_kind, Some(PairingFailureKind::Unknown));
+    assert_eq!(status.error.as_deref(), Some("Peer refused pairing"));
+}
+
+#[tokio::test]
+async fn an_anonymous_protocol_anomaly_is_recorded_as_a_coarse_unknown_kind() {
+    let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+    let client_identity = DeviceIdentity::generate_for_test();
+    // max_failures = 1: a charged anomaly would lock the window immediately.
+    let manager = PairingManager::with_policy(
+        Arc::new(Mutex::new(Settings::default())),
+        server_identity.clone(),
+        Duration::from_secs(120),
+        1,
+        false,
+    );
+    manager.enable().await;
+    let mut client = install_real_session(&manager, &server_identity, &client_identity).await;
+
+    client
+        .write_frame(&Frame::try_new(Command::HandshakeReady, 0, 0, Vec::new()).unwrap())
+        .await
+        .unwrap();
+
+    let status = wait_for_classified_failure(&manager).await;
+    assert_eq!(status.failure_kind, Some(PairingFailureKind::Unknown));
+    assert_eq!(
+        status.error.as_deref(),
+        Some("Unexpected message during pairing")
+    );
+    assert!(status.pairing_enabled, "an anonymous anomaly must not lock");
+    assert_eq!(status.failed_attempts, 0);
+    assert_eq!(status.phase, PairingPhase::Waiting);
+}

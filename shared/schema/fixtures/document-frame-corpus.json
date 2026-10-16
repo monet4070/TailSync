@@ -1,0 +1,270 @@
+{
+  "model_json": "{\"version\":1,\"blocks\":[],\"assets\":[],\"partial\":[],\"styles_partial\":false}",
+  "cases": [
+    {
+      "name": "lowercase stamp",
+      "valid": true,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "uppercase stamp",
+      "valid": true,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "mixed case stamp",
+      "valid": true,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "nonhex stamp",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "short stamp",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "uppercase stamp prefix",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "DC1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "request UTF8 exact limit",
+      "valid": true,
+      "value": {
+        "request_id": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "request UTF8 plus one",
+      "valid": false,
+      "value": {
+        "request_id": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀x",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "name UTF8 exact limit",
+      "valid": true,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中x",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "name UTF8 plus one",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中xx",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "missing request id",
+      "valid": false,
+      "value": {
+        "request_id": null,
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "empty name",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "safe generation exact limit",
+      "valid": true,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 9007199254740991,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "generation plus one",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 9007199254740992,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "unknown owner",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "future",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "unknown kind",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "image",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 73,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "zero model bytes",
+      "valid": false,
+      "value": {
+        "request_id": "fixture-frame",
+        "entry_id": 7,
+        "kind": "document",
+        "name": "document",
+        "stamp": "dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "owner": "history",
+        "generation": 0,
+        "model_bytes": 0,
+        "size_bytes": 73
+      }
+    },
+    {
+      "name": "request lone surrogate",
+      "valid": false,
+      "json": "{\"request_id\":\"\\ud800\",\"entry_id\":7,\"kind\":\"document\",\"name\":\"document\",\"stamp\":\"dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\",\"owner\":\"history\",\"generation\":0,\"model_bytes\":73,\"size_bytes\":73}"
+    },
+    {
+      "name": "name lone surrogate",
+      "valid": false,
+      "json": "{\"request_id\":\"fixture-frame\",\"entry_id\":7,\"kind\":\"document\",\"name\":\"\\udfff\",\"stamp\":\"dc1:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\",\"owner\":\"history\",\"generation\":0,\"model_bytes\":73,\"size_bytes\":73}"
+    }
+  ]
+}

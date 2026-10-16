@@ -72,6 +72,7 @@ impl PairingManager {
                 failed_attempts: 0,
                 peer: None,
                 error: None,
+                failure_kind: None,
                 generation: 0,
                 session_id: 0,
                 control: None,
@@ -105,6 +106,7 @@ impl PairingManager {
             state.failed_attempts = 0;
             state.peer = None;
             state.error = None;
+            state.failure_kind = None;
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
             state.session_direction = None;
@@ -154,6 +156,7 @@ impl PairingManager {
             max_failures: self.max_failures,
             peer: state.peer.clone(),
             error: state.error.clone(),
+            failure_kind: state.failure_kind,
             pending: pending
                 .records()
                 .iter()
@@ -192,6 +195,7 @@ impl PairingManager {
         }
         state.phase = PairingPhase::Handshaking;
         state.error = None;
+        state.failure_kind = None;
         if crate::diagnostics::is_collected() {
             crate::diagnostics::record(crate::diagnostics::Record {
                 event: crate::diagnostics::Event::PairingHandshakeStarted,
@@ -265,6 +269,7 @@ impl PairingManager {
                 remote_confirmed: false,
             });
             state.error = None;
+            state.failure_kind = None;
             state.control = Some(control);
             state.session_direction = Some(pending.direction);
             Ok((old_control, state.session_id))
@@ -329,6 +334,7 @@ impl PairingManager {
             state.deadline = None;
             state.expires_at = None;
             state.error = Some("Pairing was cancelled".to_string());
+            state.failure_kind = Some(PairingFailureKind::Cancelled);
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
             state.session_direction = None;
@@ -350,10 +356,24 @@ impl PairingManager {
     }
 
     pub async fn record_failure(&self, error: impl Into<String>) {
-        self.record_failure_for_session(None, error.into()).await;
+        self.record_failure_for_session(None, None, error.into())
+            .await;
     }
 
-    async fn record_failure_for_session(&self, session_id: Option<u64>, error: String) {
+    /// Record a charged (lockout-counting) failure with an explicit kind. The
+    /// message is stored verbatim next to the kind, so a shell that only reads
+    /// `error` sees exactly what it saw before the classification existed.
+    pub async fn record_failure_classified(&self, failure: PairingFailure) {
+        self.record_failure_for_session(None, Some(failure.kind()), failure.into_message())
+            .await;
+    }
+
+    async fn record_failure_for_session(
+        &self,
+        session_id: Option<u64>,
+        failure_kind: Option<PairingFailureKind>,
+        error: String,
+    ) {
         let mut close_window = false;
         {
             let mut state = self.state.lock().await;
@@ -366,6 +386,7 @@ impl PairingManager {
             state.session_direction = None;
             let message = error;
             state.error = Some(message.clone());
+            state.failure_kind = failure_kind;
             if crate::diagnostics::is_collected() {
                 crate::diagnostics::record(crate::diagnostics::Record {
                     event: crate::diagnostics::Event::PairingFailed,
@@ -394,11 +415,23 @@ impl PairingManager {
     /// budget. Network unavailability, local cancellation, and a competing
     /// connection are not evidence of an invalid credential.
     pub async fn record_non_ban_failure(&self, error: impl Into<String>) {
-        self.record_non_ban_failure_for_session(None, error.into())
+        self.record_non_ban_failure_for_session(None, None, error.into())
             .await;
     }
 
-    async fn record_non_ban_failure_for_session(&self, session_id: Option<u64>, message: String) {
+    /// Recoverable-failure counterpart of [`Self::record_failure_classified`]:
+    /// the lockout budget is untouched, only the kind is added.
+    pub async fn record_non_ban_failure_classified(&self, failure: PairingFailure) {
+        self.record_non_ban_failure_for_session(None, Some(failure.kind()), failure.into_message())
+            .await;
+    }
+
+    async fn record_non_ban_failure_for_session(
+        &self,
+        session_id: Option<u64>,
+        failure_kind: Option<PairingFailureKind>,
+        message: String,
+    ) {
         let mut state = self.state.lock().await;
         if !state.enabled || session_id.is_some_and(|id| state.session_id != id) {
             return;
@@ -408,6 +441,7 @@ impl PairingManager {
         state.session_direction = None;
         state.phase = PairingPhase::Waiting;
         state.error = Some(message.clone());
+        state.failure_kind = failure_kind;
         state.session_id = state.session_id.wrapping_add(1);
         if crate::diagnostics::is_collected() {
             crate::diagnostics::record(crate::diagnostics::Record {
@@ -442,6 +476,7 @@ impl PairingManager {
                 }
                 .to_string(),
             );
+            state.failure_kind = Some(PairingFailureKind::TimedOut);
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
             state.session_direction = None;
@@ -500,11 +535,17 @@ impl PairingManager {
                 action = receiver.recv() => match action {
                     Some(PairingAction::Confirm) if !local_confirmed => {
                         let Ok(frame) = Frame::try_new(Command::PairingConfirm, 0, 0, Vec::new()) else {
-                            self.fail_session_non_ban(session_id, "Could not construct pairing confirmation".to_string()).await;
+                            self.fail_session_non_ban_classified(
+                                session_id,
+                                PairingFailure::new(PairingFailureKind::Unknown, "Could not construct pairing confirmation"),
+                            ).await;
                             return;
                         };
                         if let Err(error) = connection.write_frame(&frame).await {
-                            self.fail_session_non_ban(session_id, format!("Could not confirm pairing: {error}")).await;
+                            self.fail_session_non_ban_classified(
+                                session_id,
+                                PairingFailure::from_boxed(error).with_context("Could not confirm pairing: "),
+                            ).await;
                             return;
                         }
                         local_confirmed = true;
@@ -537,13 +578,18 @@ impl PairingManager {
                         remote_persisted = true;
                     }
                     Ok(frame) if frame.command == Command::PairingCancel => {
-                        self.fail_session_non_ban(session_id, "The other device cancelled pairing".to_string()).await;
+                        self.fail_session_non_ban_classified(
+                            session_id,
+                            PairingFailure::new(PairingFailureKind::Cancelled, "The other device cancelled pairing"),
+                        ).await;
                         return;
                     }
                     Ok(frame) if frame.command == Command::PeerError => {
-                        self.fail_session_non_ban(
+                        // Peer-supplied bytes are classified only by the handshake
+                        // layer's wire-boundary helper, never by scanning local text.
+                        self.fail_session_non_ban_classified(
                             session_id,
-                            String::from_utf8_lossy(&frame.payload).to_string(),
+                            PairingFailure::from_peer_error(&String::from_utf8_lossy(&frame.payload)),
                         ).await;
                         return;
                     }
@@ -557,7 +603,10 @@ impl PairingManager {
                         return;
                     }
                     Err(error) => {
-                        self.fail_session_non_ban(session_id, format!("Pairing connection failed: {error}")).await;
+                        self.fail_session_non_ban_classified(
+                            session_id,
+                            PairingFailure::from_protocol_error(error).with_context("Pairing connection failed: "),
+                        ).await;
                         return;
                     }
                 },
@@ -583,22 +632,26 @@ impl PairingManager {
                     )
                     .await
                 {
-                    self.fail_session_non_ban(session_id, error.to_string())
+                    self.fail_session_non_ban_classified(session_id, PairingFailure::from(error))
                         .await;
                     return;
                 }
                 let Ok(frame) = Frame::try_new(Command::PairingPersisted, 0, 0, Vec::new()) else {
-                    self.fail_session_non_ban(
+                    self.fail_session_non_ban_classified(
                         session_id,
-                        "Could not construct pairing completion".to_string(),
+                        PairingFailure::new(
+                            PairingFailureKind::Unknown,
+                            "Could not construct pairing completion",
+                        ),
                     )
                     .await;
                     return;
                 };
                 if let Err(error) = connection.write_frame(&frame).await {
-                    self.fail_session_non_ban(
+                    self.fail_session_non_ban_classified(
                         session_id,
-                        format!("Could not confirm saved pairing: {error}"),
+                        PairingFailure::from_boxed(error)
+                            .with_context("Could not confirm saved pairing: "),
                     )
                     .await;
                     return;
@@ -621,7 +674,7 @@ impl PairingManager {
                     )
                     .await
                 {
-                    self.fail_session_non_ban(session_id, error.to_string())
+                    self.fail_session_non_ban_classified(session_id, PairingFailure::from(error))
                         .await;
                     return;
                 }
@@ -832,6 +885,7 @@ impl PairingManager {
         state.deadline = None;
         state.expires_at = None;
         state.error = None;
+        state.failure_kind = None;
         state.generation = state.generation.wrapping_add(1);
         state.session_id = state.session_id.wrapping_add(1);
         state.session_direction = None;
@@ -896,19 +950,34 @@ impl PairingManager {
         state.deadline = None;
         state.expires_at = None;
         state.error = None;
+        state.failure_kind = None;
         state.control = None;
         state.session_direction = None;
         state.generation = state.generation.wrapping_add(1);
     }
 
-    async fn fail_session(&self, session_id: u64, error: String) {
-        self.record_failure_for_session(Some(session_id), error)
-            .await;
+    /// Charged (lockout-counting) failure for one session, with its kind.
+    pub(super) async fn fail_session_classified(&self, session_id: u64, failure: PairingFailure) {
+        self.record_failure_for_session(
+            Some(session_id),
+            Some(failure.kind()),
+            failure.into_message(),
+        )
+        .await;
     }
 
-    pub(super) async fn fail_session_non_ban(&self, session_id: u64, error: String) {
-        self.record_non_ban_failure_for_session(Some(session_id), error)
-            .await;
+    /// Non-ban failure for one session, with its kind.
+    pub(super) async fn fail_session_non_ban_classified(
+        &self,
+        session_id: u64,
+        failure: PairingFailure,
+    ) {
+        self.record_non_ban_failure_for_session(
+            Some(session_id),
+            Some(failure.kind()),
+            failure.into_message(),
+        )
+        .await;
     }
 
     /// Record a protocol anomaly from the peer. Before the local user confirms
@@ -922,10 +991,15 @@ impl PairingManager {
         local_confirmed: bool,
         error: String,
     ) {
+        // A peer command/proof anomaly has no finer structural source than the
+        // session state itself, so it stays coarse. Whether it charges the
+        // lockout budget is unchanged.
+        let failure = PairingFailure::new(PairingFailureKind::Unknown, error);
         if local_confirmed {
-            self.fail_session(session_id, error).await;
+            self.fail_session_classified(session_id, failure).await;
         } else {
-            self.fail_session_non_ban(session_id, error).await;
+            self.fail_session_non_ban_classified(session_id, failure)
+                .await;
         }
     }
 
@@ -958,6 +1032,7 @@ impl PairingManager {
             let message = "Pairing session timed out".to_string();
             state.peer = None;
             state.error = Some(message.clone());
+            state.failure_kind = Some(PairingFailureKind::TimedOut);
             if crate::diagnostics::is_collected() {
                 crate::diagnostics::record(crate::diagnostics::Record {
                     event: crate::diagnostics::Event::PairingFailed,

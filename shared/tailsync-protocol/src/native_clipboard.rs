@@ -53,7 +53,12 @@ fn invalid() -> ProtocolError {
     ProtocolError::InvalidNativeSnapshot
 }
 impl NativeSnapshot {
-    pub fn validate(&self) -> Result<(), ProtocolError> {
+    /// The exact byte length [`Self::encode`] produces, after the same checks.
+    ///
+    /// The size budget needs the encoded length, and measuring it by encoding the
+    /// snapshot would copy the whole payload only to drop it again. Every caller
+    /// that needs the length asks here; `encode` stays the only writer.
+    pub(crate) fn validated_encoded_len(&self) -> Result<usize, ProtocolError> {
         // A file selection carries no payload, so it is not subject to the composite
         // item limit; the file pipeline handles however many paths were copied.
         let over_item_limit =
@@ -92,8 +97,13 @@ impl NativeSnapshot {
         if size > NATIVE_LIMIT {
             return Err(invalid());
         }
-        Ok(())
+        Ok(size)
     }
+
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.validated_encoded_len().map(|_| ())
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
         self.validate()?;
         let mut b = Vec::new();

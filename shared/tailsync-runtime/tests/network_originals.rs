@@ -45,13 +45,17 @@ impl ResourceTransport for Transport {
 }
 
 fn root() -> std::path::PathBuf {
+    // Clock resolution alone cannot distinguish concurrently starting fixtures.
+    // Keep each scenario's database and cleanup path unique without serializing it.
+    static NEXT_ROOT: AtomicUsize = AtomicUsize::new(0);
     std::env::temp_dir().join(format!(
-        "tailsync-runtime-network-originals-{}-{}",
+        "tailsync-runtime-network-originals-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
     ))
 }
 

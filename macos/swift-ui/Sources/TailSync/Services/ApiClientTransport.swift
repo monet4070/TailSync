@@ -99,7 +99,7 @@ final class ApiClient: @unchecked Sendable {
     authenticated["token"] = capabilityToken
     // Opt-in cancellation for long-running reads: the daemon cancels the
     // request when this connection drops, returning its permit immediately.
-    if ["get_history", "get_preview_data", "wait_runtime_snapshot", "archive_entry_images", "source_context_import"].contains(json["cmd"] as? String ?? "")
+    if ["get_history", "get_history_page", "get_preview_data", "wait_runtime_snapshot", "archive_entry_images", "source_context_import"].contains(json["cmd"] as? String ?? "")
     {
       authenticated["request_id"] = UUID().uuidString
     }
@@ -267,8 +267,11 @@ final class ApiClient: @unchecked Sendable {
   }
 
   static func normalizedStableErrorResponse(_ response: [String: Any]) -> [String: Any] {
-    guard let error = response["error"] as? [String: Any] else { return response }
     var normalized = response
+    // This carrier is produced locally only after the fixed envelope decoder.
+    // A legacy wire response cannot attach its own authoritative category.
+    normalized.removeValue(forKey: "error_code")
+    guard let error = response["error"] as? [String: Any] else { return normalized }
     let envelope = try? JSONDecoder().decode(
       ContractStableErrorEnvelope.self,
       from: JSONSerialization.data(withJSONObject: error)

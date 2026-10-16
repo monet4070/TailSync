@@ -185,10 +185,63 @@ impl CapabilitySwitches {
     }
 }
 
+/// Private wire projection of [`PeerIdentity`] plus the version fields. The
+/// public [`PeerIdentity`] deserializer and the private handshake advertisement
+/// decoder share one version gate ([`check_protocol_version`]) so the
+/// accept/reject rules cannot drift apart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WireIdentity {
+    hostname: String,
+    tailscale_ip: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iroh_endpoint_id: Option<String>,
+    #[serde(default)]
+    protocol_version: Option<u8>,
+    #[serde(default)]
+    app_version: Option<String>,
+}
+
+impl WireIdentity {
+    fn from_local(identity: PeerIdentity) -> Self {
+        Self {
+            hostname: identity.hostname,
+            tailscale_ip: identity.tailscale_ip,
+            iroh_endpoint_id: identity.iroh_endpoint_id,
+            protocol_version: Some(protocol::LEGACY_VERSION),
+            app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        }
+    }
+
+    fn into_identity(self) -> PeerIdentity {
+        PeerIdentity {
+            hostname: self.hostname,
+            tailscale_ip: self.tailscale_ip,
+            iroh_endpoint_id: self.iroh_endpoint_id,
+        }
+    }
+}
+
+/// Shared protocol-version gate. Returns a typed
+/// [`ConnectionFailure`] carrying the historical identity-check message.
+fn check_protocol_version(
+    protocol_version: Option<u8>,
+    app_version: Option<&str>,
+) -> Result<(), ConnectionFailure> {
+    if let Some(version) = protocol_version {
+        if version != protocol::LEGACY_VERSION {
+            return Err(ConnectionFailure::protocol_incompatible(
+                version,
+                app_version,
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 struct HandshakeAdvertisement {
     #[serde(flatten)]
-    identity: PeerIdentity,
+    identity: WireIdentity,
     #[serde(default, skip_serializing_if = "CapabilitySet::is_empty")]
     capabilities: CapabilitySet,
     #[serde(default = "legacy_wire_version")]
@@ -225,7 +278,7 @@ fn encode_handshake_advertisement(
     capabilities: CapabilitySet,
 ) -> Result<Vec<u8>, serde_json::Error> {
     serde_json::to_vec(&HandshakeAdvertisement {
-        identity,
+        identity: WireIdentity::from_local(identity),
         capabilities,
         max_wire_version: protocol::VERSION,
     })
@@ -233,10 +286,42 @@ fn encode_handshake_advertisement(
 
 fn decode_handshake_advertisement(
     bytes: &[u8],
-) -> Result<(PeerIdentity, CapabilitySet, u8), serde_json::Error> {
-    let advertisement: HandshakeAdvertisement = serde_json::from_slice(bytes)?;
+) -> Result<(PeerIdentity, CapabilitySet, u8), ConnectionFailure> {
+    let malformed = |error: serde_json::Error| {
+        ConnectionFailure::new(
+            ConnectionFailureKind::InvalidAdvertisement,
+            error.to_string(),
+        )
+    };
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let advertisement =
+        HandshakeAdvertisement::deserialize(&mut deserializer).map_err(malformed)?;
+    if let Err(failure) = check_protocol_version(
+        advertisement.identity.protocol_version,
+        advertisement.identity.app_version.as_deref(),
+    ) {
+        // The old flattened identity rejected here, before the trailing-JSON
+        // check, and serde attached the position after the object. Preserve
+        // that full Display while the numeric version remains the kind source.
+        // Creating this iterator reads the existing offset; it parses no bytes.
+        let offset = deserializer
+            .into_iter::<serde::de::IgnoredAny>()
+            .byte_offset();
+        let consumed = &bytes[..offset];
+        let line = 1 + consumed.iter().filter(|byte| **byte == b'\n').count();
+        let column = consumed
+            .iter()
+            .rev()
+            .take_while(|byte| **byte != b'\n')
+            .count();
+        return Err(ConnectionFailure::new(
+            failure.kind(),
+            format!("{failure} at line {line} column {column}"),
+        ));
+    }
+    deserializer.end().map_err(malformed)?;
     Ok((
-        advertisement.identity,
+        advertisement.identity.into_identity(),
         advertisement.capabilities,
         negotiated_wire_version(advertisement.max_wire_version),
     ))
@@ -271,37 +356,10 @@ impl<'de> Deserialize<'de> for PeerIdentity {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct WireIdentity {
-            hostname: String,
-            tailscale_ip: String,
-            #[serde(default)]
-            iroh_endpoint_id: Option<String>,
-            #[serde(default)]
-            protocol_version: Option<u8>,
-            #[serde(default)]
-            app_version: Option<String>,
-        }
-
         let identity = WireIdentity::deserialize(deserializer)?;
-        if let Some(version) = identity.protocol_version {
-            if version != protocol::LEGACY_VERSION {
-                let app = identity
-                    .app_version
-                    .as_deref()
-                    .map(|version| format!(" ({version})"))
-                    .unwrap_or_default();
-                return Err(D::Error::custom(format!(
-                    "Incompatible TailSync protocol: peer{app} uses v{version}, this version requires v{}. Update TailSync on both devices.",
-                    protocol::LEGACY_VERSION
-                )));
-            }
-        }
-        Ok(Self {
-            hostname: identity.hostname,
-            tailscale_ip: identity.tailscale_ip,
-            iroh_endpoint_id: identity.iroh_endpoint_id,
-        })
+        check_protocol_version(identity.protocol_version, identity.app_version.as_deref())
+            .map_err(|error| D::Error::custom(error.message()))?;
+        Ok(identity.into_identity())
     }
 }
 
@@ -604,6 +662,10 @@ impl SecureConnection {
         Ok(())
     }
 }
+
+mod failure;
+
+pub use failure::{classify_boxed, ConnectionFailure, ConnectionFailureKind};
 
 mod handshake;
 

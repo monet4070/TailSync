@@ -94,6 +94,23 @@ pub fn encode_calls() -> usize {
     ENCODE_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Event-scoped observer for concurrent unit tests. A process total cannot
+/// tell whether this event's retry encoded again while other events were sent.
+#[cfg(all(test, feature = "repair-regressions"))]
+static ENCODE_CALLS_BY_MESSAGE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<MessageId, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(all(test, feature = "repair-regressions"))]
+pub(crate) fn encode_calls_for(message_id: MessageId) -> usize {
+    ENCODE_CALLS_BY_MESSAGE
+        .lock()
+        .unwrap()
+        .get(&message_id)
+        .copied()
+        .unwrap_or(0)
+}
+
 pub fn encode(envelope: &EventEnvelope) -> Result<Vec<Vec<u8>>, ProtocolError> {
     encode_kind(envelope, ChunkKind::Clipboard)
 }
@@ -103,6 +120,14 @@ pub fn encode_archive(envelope: &EventEnvelope) -> Result<Vec<Vec<u8>>, Protocol
 fn encode_kind(envelope: &EventEnvelope, kind: ChunkKind) -> Result<Vec<Vec<u8>>, ProtocolError> {
     #[cfg(any(test, feature = "test-support"))]
     ENCODE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    #[cfg(all(test, feature = "repair-regressions"))]
+    {
+        *ENCODE_CALLS_BY_MESSAGE
+            .lock()
+            .unwrap()
+            .entry(envelope.message_id)
+            .or_default() += 1;
+    }
     envelope.validate_timestamp(unix_timestamp_ms())?;
     match kind {
         ChunkKind::Clipboard => {

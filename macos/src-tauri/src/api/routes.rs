@@ -175,7 +175,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             return Response {
                 ok: false,
                 data: None,
-                error: Some(format!("unknown command: {}", req.cmd)),
+                error: Some(format!("unknown command: {}", req.cmd).into()),
             }
         }
     };
@@ -216,7 +216,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     Err(error) => Response {
                         ok: false,
                         data: None,
-                        error: Some(error),
+                        error: Some(error.into()),
                     },
                 }
             }
@@ -225,7 +225,11 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 Response {
                     ok: false,
                     data: None,
-                    error: Some("Headless updates are only available on macOS".to_string()),
+                    error: Some(
+                        "Headless updates are only available on macOS"
+                            .to_string()
+                            .into(),
+                    ),
                 }
             }
         }
@@ -243,7 +247,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     Err(error) => Response {
                         ok: false,
                         data: None,
-                        error: Some(error),
+                        error: Some(error.into()),
                     },
                 }
             }
@@ -252,7 +256,11 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 Response {
                     ok: false,
                     data: None,
-                    error: Some("Headless updates are only available on macOS".to_string()),
+                    error: Some(
+                        "Headless updates are only available on macOS"
+                            .to_string()
+                            .into(),
+                    ),
                 }
             }
         }
@@ -286,7 +294,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             Response {
                 ok: result.is_ok(),
                 data: None,
-                error: result.err(),
+                error: result.err().map(Into::into),
             }
         }
 
@@ -315,7 +323,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             Response {
                 ok: result.is_ok(),
                 data: None,
-                error: result.err(),
+                error: result.err().map(Into::into),
             }
         }
 
@@ -371,7 +379,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(error.into()),
                 },
             }
         }
@@ -405,7 +413,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     error: Some("missing peer address".into()),
                 };
             }
-            match network::start_pairing(
+            match network::start_pairing_classified(
                 state.pairing.clone(),
                 state.identity.clone(),
                 state.settings.clone(),
@@ -425,7 +433,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     data: Some(
                         serde_json::to_value(state.pairing.status().await).unwrap_or_default(),
                     ),
-                    error: Some(error),
+                    error: Some(ResponseError::pairing_failure(&error)),
                 },
             }
         }
@@ -434,7 +442,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             .pairing
             .confirm()
             .await
-            .map_err(|error| error.to_string())
+            .map_err(crate::pairing::PairingFailure::from)
         {
             Ok(status) => Response {
                 ok: true,
@@ -444,7 +452,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             Err(error) => Response {
                 ok: false,
                 data: Some(serde_json::to_value(state.pairing.status().await).unwrap_or_default()),
-                error: Some(error),
+                error: Some(ResponseError::pairing_failure(&error)),
             },
         },
 
@@ -454,28 +462,30 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
             error: None,
         },
 
-        BuiltinCommand::CreateRemotePairingInvite => match network::create_remote_pairing_invite(
-            state.pairing.clone(),
-            state.settings.clone(),
-            state.remote_invites.clone(),
-        )
-        .await
-        {
-            Ok(invite) => Response {
-                ok: true,
-                data: Some(serde_json::json!({
-                    "link": invite.as_link(),
-                    "expires_at": invite.expires_at(),
-                    "remaining_seconds": invite.remaining_seconds(),
-                })),
-                error: None,
-            },
-            Err(error) => Response {
-                ok: false,
-                data: None,
-                error: Some(error),
-            },
-        },
+        BuiltinCommand::CreateRemotePairingInvite => {
+            match network::create_remote_pairing_invite_classified(
+                state.pairing.clone(),
+                state.settings.clone(),
+                state.remote_invites.clone(),
+            )
+            .await
+            {
+                Ok(invite) => Response {
+                    ok: true,
+                    data: Some(serde_json::json!({
+                        "link": invite.as_link(),
+                        "expires_at": invite.expires_at(),
+                        "remaining_seconds": invite.remaining_seconds(),
+                    })),
+                    error: None,
+                },
+                Err(error) => Response {
+                    ok: false,
+                    data: None,
+                    error: Some(ResponseError::pairing_failure(&error)),
+                },
+            }
+        }
 
         BuiltinCommand::InspectRemotePairingLink => {
             let link = req
@@ -496,7 +506,9 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error.to_string()),
+                    error: Some(ResponseError::pairing_failure(&network::invite_failure(
+                        error,
+                    ))),
                 },
             }
         }
@@ -515,7 +527,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     error: Some("missing invite_link".into()),
                 };
             }
-            match network::start_remote_pairing(
+            match network::start_remote_pairing_classified(
                 state.pairing.clone(),
                 state.identity.clone(),
                 state.settings.clone(),
@@ -535,7 +547,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     data: Some(
                         serde_json::to_value(state.pairing.status().await).unwrap_or_default(),
                     ),
-                    error: Some(error),
+                    error: Some(ResponseError::pairing_failure(&error)),
                 },
             }
         }
@@ -579,7 +591,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                             return Response {
                                 ok: false,
                                 data: None,
-                                error: Some(error.to_string()),
+                                error: Some(error.to_string().into()),
                             }
                         }
                     };
@@ -606,7 +618,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 Err(e) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e),
+                    error: Some(e.into()),
                 },
             }
         }
@@ -634,7 +646,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     return Response {
                         ok: false,
                         data: None,
-                        error: Some(e.to_string()),
+                        error: Some(e.to_string().into()),
                     }
                 }
             };
@@ -651,7 +663,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                     return Response {
                         ok: false,
                         data: None,
-                        error: Some(error),
+                        error: Some(error.into()),
                     }
                 }
             };
@@ -659,7 +671,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 return Response {
                     ok: false,
                     data: None,
-                    error: Some(format!("{etype} import exceeds the {limit} byte limit")),
+                    error: Some(format!("{etype} import exceeds the {limit} byte limit").into()),
                 };
             }
             let time = time.clone();
@@ -694,7 +706,7 @@ pub(super) async fn handle_cmd(req: Request, state: &ApiState) -> Response {
                 Err(e) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e.to_string()),
+                    error: Some(e.to_string().into()),
                 },
             }
         }

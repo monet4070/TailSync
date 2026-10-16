@@ -37,9 +37,10 @@ enum SettingsPollingPolicy {
 }
 
 actor SettingsSaveCoordinator {
-    private enum SaveResult: Sendable {
-        case success(AppSettings)
-        case failure(String, AppSettings)
+    private struct SaveResult: Sendable {
+        let error: String?
+        let persisted: AppSettings
+        let baseline: AppSettings
     }
 
     private var tail: Task<SaveResult, Never>?
@@ -53,47 +54,52 @@ actor SettingsSaveCoordinator {
         _ mode: String,
         fallback: AppSettings
     ) async -> (error: String?, persisted: AppSettings) {
-        await enqueue(fallback: fallback) {
+        await enqueue(fallback: fallback) { _ in
             try await self.client.setConnectionMode(mode)
         }
     }
 
+    /// The queue serializes field intents; canonical changes never create
+    /// additional edits on behalf of the window.
     func save(
-        _ settings: AppSettings,
+        _ change: SettingsFieldChange,
         fallback: AppSettings
     ) async -> (error: String?, persisted: AppSettings) {
-        await enqueue(fallback: fallback) {
-            try await self.client.updateSettings(settings)
-            return settings
+        await enqueue(fallback: fallback) { lastPersisted in
+            if case .syncEnabled(let enabled) = change {
+                return try await self.client.setSyncEnabledWithSettings(enabled, fallback: lastPersisted)
+            }
+            return try await self.client.updateSettings(change.patch)
         }
     }
 
     private func enqueue(
         fallback: AppSettings,
-        operation: @escaping @Sendable () async throws -> AppSettings
+        operation: @escaping @Sendable (AppSettings) async throws -> AppSettings
     ) async -> (error: String?, persisted: AppSettings) {
         let predecessor = tail
         let job = Task<SaveResult, Never> {
             let lastPersisted: AppSettings
             if let result = await predecessor?.value {
-                switch result {
-                case .success(let settings): lastPersisted = settings
-                case .failure(_, let settings): lastPersisted = settings
-                }
+                // Carry preceding queued commits forward, while retaining a
+                // newer known value from a dedicated command or another window.
+                lastPersisted = SettingsDraftReconciliation.merge(
+                    current: fallback, submitted: result.baseline, canonical: result.persisted
+                )
             } else {
                 lastPersisted = fallback
             }
             do {
-                return .success(try await operation())
+                return SaveResult(error: nil, persisted: try await operation(lastPersisted), baseline: fallback)
             } catch {
-                return .failure(error.localizedDescription, lastPersisted)
+                let message = error.localizedDescription
+                let canonical = (try? await self.client.getSettings()) ?? lastPersisted
+                return SaveResult(error: message, persisted: canonical, baseline: fallback)
             }
         }
         tail = job
-        switch await job.value {
-        case .success(let settings): return (nil, settings)
-        case .failure(let message, let settings): return (message, settings)
-        }
+        let result = await job.value
+        return (result.error, result.persisted)
     }
 }
 

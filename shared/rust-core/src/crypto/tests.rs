@@ -1,6 +1,7 @@
 use super::{
-    apply_settings_update, decode_hex_key, validate_key_bytes, CreateOutcome, DataKey, DekCache,
-    KeyStore, KeyStoreError, Settings, SettingsUpdateError, SettingsValidationError, DEK_SIZE,
+    apply_settings_patch, apply_settings_update, decode_hex_key, validate_key_bytes, CreateOutcome,
+    DataKey, DekCache, KeyStore, KeyStoreError, Settings, SettingsPatch, SettingsUpdateError,
+    SettingsValidationError, DEK_SIZE,
 };
 use crate::db;
 use std::sync::{
@@ -1371,6 +1372,308 @@ async fn settings_update_reports_connection_mode_changes() {
         !outcome.mode_changed,
         "requesting the current mode again must not report a change"
     );
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn patch_database(label: &str) -> (std::path::PathBuf, Arc<tokio::sync::Mutex<db::HistoryDB>>) {
+    let root = std::env::temp_dir().join(format!(
+        "tailsync-settings-patch-{label}-{:016x}",
+        rand::random::<u64>()
+    ));
+    let database = Arc::new(tokio::sync::Mutex::new(
+        db::HistoryDB::open_at(&root).unwrap(),
+    ));
+    (root, database)
+}
+
+fn patch_from(json: serde_json::Value) -> SettingsPatch {
+    SettingsPatch::from_json_value(json).expect("valid settings patch")
+}
+
+#[test]
+fn settings_patch_fields_match_the_derived_schema() {
+    let schema = serde_json::to_value(schemars::schema_for!(SettingsPatch)).unwrap();
+    let mut properties = schema["properties"]
+        .as_object()
+        .expect("patch schema properties")
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    properties.sort();
+    let mut declared = SettingsPatch::FIELDS
+        .iter()
+        .map(|field| (*field).to_string())
+        .collect::<Vec<_>>();
+    declared.sort();
+    assert_eq!(declared, properties);
+    assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn settings_patch_merges_two_stale_windows_in_either_order() {
+    for reverse in [false, true] {
+        let (root, database) = patch_database(if reverse { "reverse" } else { "forward" });
+        let settings = Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        // Both windows read the same snapshot before either of them saves.
+        let stale = settings.lock().await.clone();
+        assert_eq!(stale.history_limit, 100);
+        assert_eq!(stale.connection_mode, "auto");
+        let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+
+        let limit = patch_from(serde_json::json!({ "history_limit": 250 }));
+        let mode = patch_from(serde_json::json!({ "connection_mode": "lan_only" }));
+        let mut outcome = None;
+        for patch in if reverse {
+            [mode, limit]
+        } else {
+            [limit, mode]
+        } {
+            outcome = Some(
+                apply_settings_patch(&settings, &database, patch, &persist)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let outcome = outcome.unwrap();
+
+        let committed = settings.lock().await.clone();
+        assert_eq!(committed.history_limit, 250);
+        assert_eq!(committed.connection_mode, "lan_only");
+        assert_eq!(
+            outcome.persisted, committed,
+            "canonical snapshot must match"
+        );
+        assert_eq!(
+            outcome.mode_changed, !reverse,
+            "only the patch that names the mode may report a mode change"
+        );
+        assert_eq!(outcome.connection_mode, "lan_only");
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn settings_patch_rejects_fields_owned_by_other_commands() {
+    let (root, database) = patch_database("protected");
+    let mut original = Settings::default();
+    original
+        .trusted_peer_keys
+        .insert("paired-device".into(), "pinned-key".into());
+    original.enabled_peers.insert("paired-device".into(), true);
+    original.storage_root = Some("/tmp/tailsync-storage".into());
+    original.sync_shortcut = "Control+Shift+Z".into();
+    let settings = Arc::new(tokio::sync::Mutex::new(original.clone()));
+
+    for rejected in [
+        serde_json::json!({ "sync_enabled": false }),
+        serde_json::json!({ "sync_shortcut": "Control+Shift+Q" }),
+        serde_json::json!({ "history_shortcut": "Control+Shift+Q" }),
+        serde_json::json!({ "enabled_peers": { "peer": false } }),
+        serde_json::json!({ "storage_root": "/tmp/elsewhere" }),
+        serde_json::json!({ "trusted_peer_keys": { "peer": "key" } }),
+        serde_json::json!({ "trusted_peer_addresses": { "peer": { "lan": "1.2.3.4" } } }),
+        serde_json::json!({ "paired_peer_endpoints": { "peer": "1.2.3.4" } }),
+        serde_json::json!({ "unexpected_field": "private-value" }),
+    ] {
+        let error = SettingsPatch::from_json_value(rejected.clone()).unwrap_err();
+        assert!(
+            error.starts_with("invalid request json: update_settings expects a patch"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("private-value"),
+            "the rejection must not echo values: {error}"
+        );
+        assert!(
+            !error.contains("pinned-key") && !error.contains("/tmp/"),
+            "the rejection must not echo values: {error}"
+        );
+    }
+    assert_eq!(*settings.lock().await, original, "state must not move");
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_patch_rejects_invalid_values_without_persisting() {
+    let (root, database) = patch_database("invalid");
+    let settings = Arc::new(tokio::sync::Mutex::new(Settings::default()));
+    let persisted = Arc::new(AtomicUsize::new(0));
+    let counter = persisted.clone();
+    let persist = move |_settings: &Settings| -> Result<(), String> {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    };
+
+    for invalid in [
+        serde_json::json!({ "history_limit": 5 }),
+        serde_json::json!({ "history_limit": 501 }),
+        serde_json::json!({ "storage_quota_bytes": 1024u64 }),
+        serde_json::json!({ "language": "fr" }),
+        serde_json::json!({ "connection_mode": "bogus" }),
+    ] {
+        let patch = patch_from(invalid.clone());
+        let error = apply_settings_patch(&settings, &database, patch, &persist)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, SettingsUpdateError::Validation(_)),
+            "{invalid} must be rejected: {error}"
+        );
+    }
+    assert_eq!(persisted.load(Ordering::SeqCst), 0);
+    assert_eq!(*settings.lock().await, Settings::default());
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_patch_does_not_commit_when_persistence_fails() {
+    let (root, database) = patch_database("persist-failure");
+    let original = Settings::default();
+    let settings = Arc::new(tokio::sync::Mutex::new(original.clone()));
+    let persist = |_settings: &Settings| -> Result<(), String> { Err("disk full".into()) };
+
+    let patch = patch_from(serde_json::json!({
+        "notifications_enabled": false,
+        "auto_save_network_images": true,
+    }));
+    let error = apply_settings_patch(&settings, &database, patch, &persist)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, SettingsUpdateError::Persist(_)));
+    assert_eq!(*settings.lock().await, original);
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_patch_persists_auto_save_network_images_and_keeps_it_on_failure() {
+    let (root, database) = patch_database("auto-save");
+    let settings = Arc::new(tokio::sync::Mutex::new(Settings::default()));
+    let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+
+    let patch = patch_from(serde_json::json!({ "auto_save_network_images": true }));
+    let outcome = apply_settings_patch(&settings, &database, patch, &persist)
+        .await
+        .unwrap();
+    assert!(outcome.persisted.auto_save_network_images);
+    assert!(settings.lock().await.auto_save_network_images);
+
+    let failing = |_settings: &Settings| -> Result<(), String> { Err("read-only".into()) };
+    let patch = patch_from(serde_json::json!({ "auto_save_network_images": false }));
+    apply_settings_patch(&settings, &database, patch, &failing)
+        .await
+        .unwrap_err();
+    assert!(
+        settings.lock().await.auto_save_network_images,
+        "a failed save must keep the committed auto-save value"
+    );
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_patch_never_changes_shortcuts_or_sync_state() {
+    let (root, database) = patch_database("no-shortcuts");
+    let original = Settings {
+        sync_shortcut: "Control+Shift+Z".into(),
+        history_shortcut: "Control+Shift+Y".into(),
+        sync_enabled: false,
+        ..Settings::default()
+    };
+    let settings = Arc::new(tokio::sync::Mutex::new(original.clone()));
+    let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+
+    let patch = patch_from(serde_json::json!({
+        "notifications_enabled": false,
+        "progress_bar_enabled": false,
+    }));
+    let outcome = apply_settings_patch(&settings, &database, patch, &persist)
+        .await
+        .unwrap();
+    assert!(!outcome.mode_changed);
+    assert!(!outcome.persisted.notifications_enabled);
+    assert!(!outcome.persisted.progress_bar_enabled);
+    assert_eq!(outcome.persisted.sync_shortcut, "Control+Shift+Z");
+    assert_eq!(outcome.persisted.history_shortcut, "Control+Shift+Y");
+    assert!(!outcome.persisted.sync_enabled);
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_patch_keeps_server_owned_state_while_applying_user_fields() {
+    let (root, database) = patch_database("server-owned");
+    let mut original = Settings::default();
+    original
+        .trusted_peer_keys
+        .insert("paired-device".into(), "pinned-key".into());
+    original.enabled_peers.insert("paired-device".into(), true);
+    original.storage_root = Some("/tmp/tailsync-storage".into());
+    let settings = Arc::new(tokio::sync::Mutex::new(original.clone()));
+    let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+
+    let patch = patch_from(serde_json::json!({ "language": "zh-CN" }));
+    let outcome = apply_settings_patch(&settings, &database, patch, &persist)
+        .await
+        .unwrap();
+    assert_eq!(outcome.persisted.language, "zh-CN");
+    assert_eq!(
+        outcome.persisted.trusted_peer_keys,
+        original.trusted_peer_keys
+    );
+    assert_eq!(outcome.persisted.enabled_peers, original.enabled_peers);
+    assert_eq!(outcome.persisted.storage_root, original.storage_root);
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Compatibility pin for the retained whole-snapshot helper, and the reason the
+/// window surfaces must send finite patches: two windows that each send the
+/// snapshot they read will roll back fields the other one changed. Here the
+/// second (stale) snapshot restores `history_limit` to 100 after the first
+/// window set it to 250.
+#[tokio::test]
+async fn legacy_full_snapshot_helper_still_replaces_whole_snapshots() {
+    let (root, database) = patch_database("legacy-snapshot");
+    let settings = Arc::new(tokio::sync::Mutex::new(Settings::default()));
+    let stale = settings.lock().await.clone();
+    let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+
+    apply_settings_update(
+        &settings,
+        &database,
+        Settings {
+            history_limit: 250,
+            ..stale.clone()
+        },
+        &persist,
+        None,
+    )
+    .await
+    .unwrap();
+    apply_settings_update(
+        &settings,
+        &database,
+        Settings {
+            connection_mode: "lan_only".into(),
+            ..stale
+        },
+        &persist,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let committed = settings.lock().await.clone();
+    assert_eq!(
+        committed.history_limit, 100,
+        "a stale whole snapshot still overwrites an unrelated field"
+    );
+    assert_eq!(committed.connection_mode, "lan_only");
     drop(database);
     std::fs::remove_dir_all(root).unwrap();
 }

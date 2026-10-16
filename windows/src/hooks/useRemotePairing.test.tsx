@@ -112,7 +112,7 @@ describe("useRemotePairing", () => {
 
     expect(mockedInspect).toHaveBeenCalledWith(LINK);
     expect(mockedStart).toHaveBeenCalledWith(LINK);
-    expect(result.current.remotePairingError).toBe("");
+    expect(result.current.remotePairingError).toBeNull();
     expect(result.current.remotePairingBusy).toBe(false);
 
     unmount();

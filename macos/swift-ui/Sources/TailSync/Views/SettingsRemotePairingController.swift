@@ -8,17 +8,21 @@ extension ConnectionsView {
     }
 
     func createRemotePairingInvite() {
-        remotePairingInProgress = true
-        remotePairing.beginOperation()
+        let operation = remotePairing.beginOperation()
         Task { @MainActor in
+            defer { remotePairing.finishOperation(operation) }
             do {
-                remoteInvite = try await ApiClient.shared.createRemotePairingInvite()
+                let invite = try await ApiClient.shared.createRemotePairingInvite()
+                guard remotePairing.isCurrentOperation(operation) else { return }
+                remoteInvite = invite
                 remoteInviteCopied = false
-                pairingStatus = try? await ApiClient.shared.getPairingStatus()
+                let status = try? await ApiClient.shared.getPairingStatus()
+                guard remotePairing.isCurrentOperation(operation) else { return }
+                pairingStatus = status
             } catch {
-                remotePairing.fail(error.localizedDescription)
+                guard remotePairing.isCurrentOperation(operation) else { return }
+                remotePairing.fail(error, for: operation)
             }
-            remotePairingInProgress = false
         }
     }
 
@@ -28,47 +32,54 @@ extension ConnectionsView {
             remotePairing.preview = nil
             return
         }
-        remotePairingInProgress = true
-        remotePairing.beginOperation()
+        let operation = remotePairing.beginOperation()
         Task { @MainActor in
+            defer { remotePairing.finishOperation(operation) }
             do {
-                remotePairing.preview = try await ApiClient.shared.inspectRemotePairingLink(link)
+                let preview = try await ApiClient.shared.inspectRemotePairingLink(link)
+                guard remotePairing.isCurrentOperation(operation) else { return }
+                remotePairing.preview = preview
             } catch {
+                guard remotePairing.isCurrentOperation(operation) else { return }
                 remotePairing.preview = nil
-                remotePairing.fail(error.localizedDescription)
+                remotePairing.fail(error, for: operation)
             }
-            remotePairingInProgress = false
         }
     }
 
     func startRemotePairing() {
         let link = remotePairing.link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.isEmpty else { return }
-        remotePairingInProgress = true
-        remotePairing.beginOperation()
+        let operation = remotePairing.beginOperation()
         Task { @MainActor in
+            defer { remotePairing.finishOperation(operation) }
             do {
-                pairingStatus = try await ApiClient.shared.startRemotePairing(inviteLink: link)
+                let status = try await ApiClient.shared.startRemotePairing(inviteLink: link)
+                guard remotePairing.isCurrentOperation(operation) else { return }
+                pairingStatus = status
                 showPairingSheet = true
             } catch {
-                remotePairing.fail(pairingErrorDescription(error))
-                pairingStatus = try? await ApiClient.shared.getPairingStatus()
+                guard remotePairing.isCurrentOperation(operation) else { return }
+                remotePairing.fail(error, for: operation)
+                let status = try? await ApiClient.shared.getPairingStatus()
+                guard remotePairing.isCurrentOperation(operation) else { return }
+                pairingStatus = status
             }
-            remotePairingInProgress = false
         }
     }
 
     func cancelRemotePairingInvite() {
-        remotePairingInProgress = true
-        remotePairing.beginOperation()
+        let operation = remotePairing.beginOperation()
         Task { @MainActor in
+            defer { remotePairing.finishOperation(operation) }
             do {
                 _ = try await ApiClient.shared.cancelRemotePairingInvite()
+                guard remotePairing.isCurrentOperation(operation) else { return }
                 remoteInvite = nil
             } catch {
-                remotePairing.fail(error.localizedDescription)
+                guard remotePairing.isCurrentOperation(operation) else { return }
+                remotePairing.fail(error, for: operation)
             }
-            remotePairingInProgress = false
         }
     }
 

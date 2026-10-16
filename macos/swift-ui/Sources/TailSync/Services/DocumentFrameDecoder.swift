@@ -35,14 +35,14 @@ extension ApiClient {
     }
     let length = UInt32(bytes[5]) | UInt32(bytes[6]) << 8
       | UInt32(bytes[7]) << 16 | UInt32(bytes[8]) << 24
-    guard length > 0, length <= 1024 * 1024 else {
+    guard length > 0, UInt64(length) <= ContractDocumentPolicies.maxMetadataBytes else {
       throw ApiError.serverError("Invalid document frame metadata length")
     }
     let end = 9 + Int(length)
     guard bytes.count >= end else { return nil }
     let metadata = try JSONDecoder().decode(
       ContractDocumentFrameMetadata.self, from: bytes[9..<end])
-    guard metadata.size_bytes <= UInt64(16 * 1024 * 1024 - end) else {
+    guard metadata.size_bytes <= ContractDocumentPolicies.maxBytes - UInt64(end) else {
       throw ApiError.serverError("Invalid document frame payload length")
     }
     return (end, metadata)
@@ -53,7 +53,7 @@ extension ApiClient {
   ) throws -> HistoryDocumentPreview {
     guard let (metadataEnd, metadata) = try documentFrameHeader(frame),
       frame.count - metadataEnd == Int(metadata.size_bytes),
-      frame.count <= 16 * 1024 * 1024,
+      frame.count <= Int(ContractDocumentPolicies.maxBytes),
       expectedRequestID == nil || metadata.request_id == expectedRequestID,
       expectedEntryId == nil || metadata.entry_id == expectedEntryId,
       expectedOwner == nil || metadata.owner == expectedOwner,

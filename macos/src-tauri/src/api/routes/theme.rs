@@ -51,7 +51,7 @@ pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -101,7 +101,7 @@ pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
                         })
                         .unwrap_or(Value::Null),
                     ),
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -165,7 +165,7 @@ pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -193,7 +193,7 @@ pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -226,7 +226,7 @@ pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -251,7 +251,7 @@ pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -311,7 +311,7 @@ pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }
@@ -370,7 +370,7 @@ pub(super) async fn handle(command: ThemeCommand, req: Request) -> Response {
                 Err(error) => Response {
                     ok: false,
                     data: Some(serde_json::to_value(&error).unwrap_or(Value::Null)),
-                    error: Some(error.to_string()),
+                    error: Some(error.to_string().into()),
                 },
             }
         }

@@ -6,6 +6,7 @@ use tokio::time::{timeout, Duration};
 use tracing::Instrument;
 
 use crate::peer::types::{ActiveRoute, ConnectionInterface, ResolvedCandidate};
+use crate::secure::{ConnectionFailure, ConnectionFailureKind};
 
 use super::*;
 
@@ -69,6 +70,21 @@ pub trait ConnectionAdapter: Send + Sync {
         hostname: &str,
         candidates: &[ResolvedCandidate],
     ) -> Result<(Self::Connection, ResolvedCandidate), String>;
+
+    /// Typed connect used by the worker so protocol diagnostics are driven by
+    /// the failure *kind* instead of the flattened text. The default bridges
+    /// the legacy string `connect` conservatively as
+    /// [`ConnectionFailureKind::Unknown`] without scanning the message; real
+    /// adapters override it to preserve the structural classification.
+    async fn connect_classified(
+        &self,
+        hostname: &str,
+        candidates: &[ResolvedCandidate],
+    ) -> Result<(Self::Connection, ResolvedCandidate), ConnectionFailure> {
+        self.connect(hostname, candidates)
+            .await
+            .map_err(ConnectionFailure::unknown)
+    }
 
     /// Record an authenticated session for the route (forces `connected`).
     fn register_session(
@@ -272,7 +288,9 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 peer = %hostname,
                 attempt = connection_attempt,
             );
-            let connection = adapter.connect(&hostname, &candidates).instrument(span);
+            let connection = adapter
+                .connect_classified(&hostname, &candidates)
+                .instrument(span);
             tokio::pin!(connection);
             let result = tokio::select! {
                 biased;
@@ -289,8 +307,8 @@ pub async fn run_connection_worker<A: ConnectionAdapter>(
                 result
             }
             Err(error) => {
-                if error.contains("Incompatible TailSync protocol:") {
-                    adapter.record_protocol_error(&hostname, &error);
+                if error.kind() == ConnectionFailureKind::ProtocolIncompatible {
+                    adapter.record_protocol_error(&hostname, error.message());
                 }
                 log::warn!(
                     "Pool connect to {} ({}) failed connection_id={}: {} — retrying in {:?}",

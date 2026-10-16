@@ -23,6 +23,22 @@ struct LocalContractExports {
     document_request: tailsync_runtime::document_preview::DocumentRequest,
 }
 
+#[derive(Serialize)]
+struct DocumentPolicies {
+    version: u16,
+    max_bytes: usize,
+    max_metadata_bytes: usize,
+    max_model_bytes: usize,
+    text_limit: usize,
+    block_limit: usize,
+    run_limit: usize,
+    cell_limit: usize,
+    asset_limit: usize,
+    pixel_limit: u64,
+    detail_limit: usize,
+    link_limit: usize,
+}
+
 fn main() {
     if std::env::args().any(|arg| arg == "--stable-error-policies") {
         let codes = [
@@ -41,9 +57,34 @@ fn main() {
             StableErrorCode::NoSingleImage,
             StableErrorCode::FormatUnavailable,
             StableErrorCode::UnsupportedFormat,
+            StableErrorCode::PairingIdentityMismatch,
+            StableErrorCode::PairingWindowClosed,
+            StableErrorCode::PairingTimedOut,
+            StableErrorCode::PairingConnectionClosed,
+            StableErrorCode::PairingBusy,
+            StableErrorCode::PairingCancelled,
             StableErrorCode::InternalError,
         ];
         let policies = codes.map(StableErrorEnvelope::new);
+        println!("{}", serde_json::to_string(&policies).unwrap());
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--document-policies") {
+        use tailsync_core::composite::display_document as document;
+        let policies = DocumentPolicies {
+            version: document::DOCUMENT_VERSION,
+            max_bytes: document::DOCUMENT_MAX_BYTES,
+            max_metadata_bytes: document::DOCUMENT_MAX_METADATA_BYTES,
+            max_model_bytes: document::DOCUMENT_MAX_MODEL_BYTES,
+            text_limit: document::DOCUMENT_TEXT_LIMIT,
+            block_limit: document::DOCUMENT_BLOCK_LIMIT,
+            run_limit: document::DOCUMENT_RUN_LIMIT,
+            cell_limit: document::DOCUMENT_CELL_LIMIT,
+            asset_limit: document::DOCUMENT_ASSET_LIMIT,
+            pixel_limit: document::DOCUMENT_PIXEL_LIMIT,
+            detail_limit: document::DOCUMENT_DETAIL_LIMIT,
+            link_limit: document::DOCUMENT_LINK_LIMIT,
+        };
         println!("{}", serde_json::to_string(&policies).unwrap());
         return;
     }
@@ -125,6 +166,7 @@ fn fixtures() -> LocalContractExports {
             max_failures: 5,
             peer: None,
             error: None,
+            failure_kind: None,
             pending_store_unavailable: false,
             pending: vec![tailsync_core::pairing::PendingPairingSummary {
                 hostname: "fixture-peer".into(),
