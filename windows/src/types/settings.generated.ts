@@ -17,3 +17,6 @@ export interface SettingsData {
   trusted_peer_addresses: Record<string, Record<string, string>>;
   trusted_peer_keys: Record<string, string>;
 }
+
+/** Editable settings fields accepted by update_settings. */
+export type SettingsPatch = Partial<Pick<SettingsData, "auto_save_network_images" | "connection_mode" | "history_limit" | "language" | "notifications_enabled" | "progress_bar_enabled" | "storage_quota_bytes">>;

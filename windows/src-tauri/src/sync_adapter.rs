@@ -92,23 +92,34 @@ impl SyncPlatform for TauriSyncPlatform {
         text: &str,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), String> {
-        if !crate::clipboard_composite::capture_enabled() {
-            return self.write_text(text);
-        }
-        let bundle = tailsync_core::composite::PortableBundle {
-            representations: vec![tailsync_core::composite::Representation {
-                mime: tailsync_core::composite::Mime::Text,
-                bytes: text.as_bytes().to_vec(),
-            }],
-            resources: vec![],
-            bindings: vec![],
-            completeness: tailsync_core::composite::Completeness::Complete,
-        };
-        require_composite_publish(crate::clipboard_composite::write_cancellable(
-            &bundle,
-            None,
-            Some(cancelled),
-        )?)
+        self.write_text_cancellable_typed(text, cancelled)
+            .map_err(String::from)
+    }
+
+    fn write_text_cancellable_typed(
+        &self,
+        text: &str,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), tailsync_core::sync::WriteFailure> {
+        tailsync_core::sync::run_cancellable_write(cancelled, |cancelled| {
+            if !crate::clipboard_composite::capture_enabled() {
+                return self.write_text_typed(text);
+            }
+            let bundle = tailsync_core::composite::PortableBundle {
+                representations: vec![tailsync_core::composite::Representation {
+                    mime: tailsync_core::composite::Mime::Text,
+                    bytes: text.as_bytes().to_vec(),
+                }],
+                resources: vec![],
+                bindings: vec![],
+                completeness: tailsync_core::composite::Completeness::Complete,
+            };
+            require_composite_publish_typed(crate::clipboard_composite::write_cancellable(
+                &bundle,
+                None,
+                Some(cancelled),
+            )?)
+        })
     }
     fn write_image_cancellable(
         &self,
@@ -117,25 +128,38 @@ impl SyncPlatform for TauriSyncPlatform {
         rgba: &[u8],
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), String> {
-        if !crate::clipboard_composite::capture_enabled() {
-            return self.write_image(width, height, rgba);
-        }
-        let png = tailsync_core::composite::packed_to_png(width, height, rgba)
-            .map_err(|e| e.to_string())?;
-        let bundle = tailsync_core::composite::PortableBundle {
-            representations: vec![tailsync_core::composite::Representation {
-                mime: tailsync_core::composite::Mime::Png,
-                bytes: png,
-            }],
-            resources: vec![],
-            bindings: vec![],
-            completeness: tailsync_core::composite::Completeness::Complete,
-        };
-        require_composite_publish(crate::clipboard_composite::write_cancellable(
-            &bundle,
-            None,
-            Some(cancelled),
-        )?)
+        self.write_image_cancellable_typed(width, height, rgba, cancelled)
+            .map_err(String::from)
+    }
+
+    fn write_image_cancellable_typed(
+        &self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), tailsync_core::sync::WriteFailure> {
+        tailsync_core::sync::run_cancellable_write(cancelled, |cancelled| {
+            if !crate::clipboard_composite::capture_enabled() {
+                return self.write_image_typed(width, height, rgba);
+            }
+            let png = tailsync_core::composite::packed_to_png(width, height, rgba)
+                .map_err(|e| e.to_string())?;
+            let bundle = tailsync_core::composite::PortableBundle {
+                representations: vec![tailsync_core::composite::Representation {
+                    mime: tailsync_core::composite::Mime::Png,
+                    bytes: png,
+                }],
+                resources: vec![],
+                bindings: vec![],
+                completeness: tailsync_core::composite::Completeness::Complete,
+            };
+            require_composite_publish_typed(crate::clipboard_composite::write_cancellable(
+                &bundle,
+                None,
+                Some(cancelled),
+            )?)
+        })
     }
     fn write_composite_cancellable(
         &self,
@@ -165,6 +189,10 @@ impl SyncPlatform for TauriSyncPlatform {
         crate::clipboard_composite::write_native(snapshot, None)
     }
     fn write_text(&self, text: &str) -> Result<(), String> {
+        self.write_text_typed(text).map_err(String::from)
+    }
+
+    fn write_text_typed(&self, text: &str) -> Result<(), tailsync_core::sync::WriteFailure> {
         if crate::clipboard_composite::capture_enabled() {
             let bundle = tailsync_core::composite::PortableBundle {
                 representations: vec![tailsync_core::composite::Representation {
@@ -175,7 +203,9 @@ impl SyncPlatform for TauriSyncPlatform {
                 bindings: vec![],
                 completeness: tailsync_core::composite::Completeness::Complete,
             };
-            return require_composite_publish(crate::clipboard_composite::write(&bundle, None)?);
+            return require_composite_publish_typed(crate::clipboard_composite::write(
+                &bundle, None,
+            )?);
         }
         self.clipboard()?
             .write_text(text.to_string())
@@ -190,6 +220,16 @@ impl SyncPlatform for TauriSyncPlatform {
     }
 
     fn write_image(&self, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+        self.write_image_typed(width, height, rgba)
+            .map_err(String::from)
+    }
+
+    fn write_image_typed(
+        &self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> Result<(), tailsync_core::sync::WriteFailure> {
         if crate::clipboard_composite::capture_enabled() {
             let bytes = tailsync_core::composite::packed_to_png(width, height, rgba)
                 .map_err(|e| e.to_string())?;
@@ -202,7 +242,9 @@ impl SyncPlatform for TauriSyncPlatform {
                 bindings: vec![],
                 completeness: tailsync_core::composite::Completeness::Complete,
             };
-            return require_composite_publish(crate::clipboard_composite::write(&bundle, None)?);
+            return require_composite_publish_typed(crate::clipboard_composite::write(
+                &bundle, None,
+            )?);
         }
         let image = tauri::image::Image::new(rgba, width, height);
         match self.clipboard()?.write_image(&image) {
@@ -238,7 +280,8 @@ impl SyncPlatform for TauriSyncPlatform {
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
-                    Err(format!("write_image failed: {primary}"))
+                    // A primary write failure that is not a proven no-effect.
+                    Err(format!("write_image failed: {primary}").into())
                 }
             }
         }
@@ -430,17 +473,75 @@ impl SyncPlatform for TauriSyncPlatform {
     }
 }
 
-/// The legacy text/image activation paths still return `Result<(), String>`, but the
-/// reason now distinguishes the typed outcomes instead of collapsing them (K2).
-fn require_composite_publish(
+/// Project the five native publish outcomes onto the typed write result the claim
+/// and receipt rules need (K2). `Published` succeeded; `NoEffect` is provable and
+/// may release an at-most-once claim; `Partial`, `Superseded` and `Unknown` all
+/// keep the claim, because the platform may already have been touched.
+fn require_composite_publish_typed(
     outcome: tailsync_core::composite::NativePublish,
-) -> Result<(), String> {
+) -> Result<(), tailsync_core::sync::WriteFailure> {
     use tailsync_core::composite::NativePublish;
+    use tailsync_core::sync::WriteFailure;
     match outcome {
         NativePublish::Published(_) => Ok(()),
-        // The remaining outcomes keep the marker semantics: only a provable
-        // no-effect carries `NO_EFFECT_MARKER`, which is what lets the caller release
-        // an at-most-once claim and retry (R4-02).
-        other => Err(other.as_write_error()),
+        NativePublish::NoEffect { detail } => Err(WriteFailure::no_effect(detail)),
+        other => Err(WriteFailure::may_have_effect(other.as_write_error())),
+    }
+}
+
+#[cfg(test)]
+mod composite_publish_projection_tests {
+    use tailsync_core::composite::NativePublish;
+    use tailsync_core::protocol::native_clipboard::{PublishReceipt, PublishState};
+
+    fn receipt(state: PublishState) -> PublishReceipt {
+        PublishReceipt {
+            state,
+            revision: 7,
+            token: [3; 16],
+        }
+    }
+
+    /// F2 — the five native outcomes keep their meaning across the projection onto
+    /// the typed write result: only a provable no-effect may release an at-most-once
+    /// claim, and `Partial` / `Superseded` / `Unknown` all keep it.
+    #[test]
+    fn the_five_native_outcomes_keep_their_claim_semantics() {
+        assert!(
+            super::require_composite_publish_typed(NativePublish::Published(receipt(
+                PublishState::Published
+            )))
+            .is_ok(),
+            "a published write is a success"
+        );
+
+        let no_effect = super::require_composite_publish_typed(NativePublish::NoEffect {
+            detail: "clipboard helper never started".into(),
+        })
+        .unwrap_err();
+        assert!(no_effect.is_proven_no_effect());
+
+        for (label, outcome) in [
+            (
+                "partial",
+                NativePublish::Partial(receipt(PublishState::Partial)),
+            ),
+            (
+                "superseded",
+                NativePublish::Superseded(receipt(PublishState::Superseded)),
+            ),
+            (
+                "unknown",
+                NativePublish::Unknown {
+                    detail: "no-effect: clipboard helper returned no usable receipt".into(),
+                },
+            ),
+        ] {
+            let failure = super::require_composite_publish_typed(outcome).unwrap_err();
+            assert!(
+                !failure.is_proven_no_effect(),
+                "{label} may already have touched the platform, so the claim stays"
+            );
+        }
     }
 }

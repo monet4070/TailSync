@@ -3,9 +3,9 @@ import * as Contract from "../types/localContracts.generated";
 export const DOCUMENT_RESPONSE_MAGIC = "TSDC";
 export const DOCUMENT_RESPONSE_VERSION = 1;
 export const DOCUMENT_HEADER_BYTES = 9;
-export const DOCUMENT_MAX_METADATA_BYTES = 1024 * 1024;
-export const DOCUMENT_MAX_MODEL_BYTES = 4 * 1024 * 1024;
-export const DOCUMENT_MAX_BYTES = 16 * 1024 * 1024;
+export const DOCUMENT_MAX_METADATA_BYTES = Contract.DOCUMENT_MAX_METADATA_BYTES;
+export const DOCUMENT_MAX_MODEL_BYTES = Contract.DOCUMENT_MAX_MODEL_BYTES;
+export const DOCUMENT_MAX_BYTES = Contract.DOCUMENT_MAX_BYTES;
 
 export type DocumentResponseInput =
   | ArrayBufferLike

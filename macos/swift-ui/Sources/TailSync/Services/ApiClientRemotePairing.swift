@@ -56,7 +56,7 @@ extension ApiClient {
     guard response["ok"] as? Bool == true,
           let value = response["data"] as? [String: Any]
     else {
-      throw ApiError.serverError(response["error"] as? String ?? "Remote pairing failed")
+      throw ApiError.responseError(response, fallback: "Remote pairing failed")
     }
     do {
       return try JSONDecoder().decode(

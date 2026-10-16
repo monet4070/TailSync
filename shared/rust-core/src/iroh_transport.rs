@@ -854,6 +854,12 @@ mod tests {
             .await
             .unwrap(),
         };
+        // N0 bind only establishes the sockets. Wait for both endpoints to
+        // register with a relay before exporting their naturally selected
+        // addresses; the surrounding roundtrip timeout bounds this wait.
+        if !use_loopback {
+            tokio::join!(server.endpoint.online(), client.endpoint.online());
+        }
         let server_endpoint_id = server.endpoint_id();
         let client_endpoint_id = client.endpoint_id();
         let server_identity = Arc::new(DeviceIdentity::generate_for_test());
@@ -1039,6 +1045,12 @@ mod tests {
             .await
             .unwrap(),
         };
+        // N0 bind only establishes the sockets. Wait for both endpoints to
+        // register with a relay before exporting their naturally selected
+        // addresses; the surrounding roundtrip timeout bounds this wait.
+        if !use_loopback {
+            tokio::join!(server.endpoint.online(), client.endpoint.online());
+        }
         let server_endpoint_id = server.endpoint_id();
         let client_endpoint_id = client.endpoint_id();
         let invite_manager = Arc::new(RemotePairingInviteManager::new());

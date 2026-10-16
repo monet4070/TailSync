@@ -78,7 +78,7 @@ final class SettingsNetworkImagesTests: XCTestCase {
             }
         }
 
-        let outcome = await coordinator.save(value, fallback: AppSettings())
+        let outcome = await coordinator.save(.autoSaveNetworkImages(true), fallback: AppSettings())
 
         XCTAssertNil(outcome.error)
         XCTAssertTrue(outcome.persisted.auto_save_network_images)
@@ -127,7 +127,7 @@ final class SettingsNetworkImagesTests: XCTestCase {
             )
         }
 
-        let outcome = await coordinator.save(value, fallback: AppSettings())
+        let outcome = await coordinator.save(.autoSaveNetworkImages(true), fallback: AppSettings())
 
         XCTAssertNotNil(outcome.error)
         XCTAssertFalse(outcome.persisted.auto_save_network_images)

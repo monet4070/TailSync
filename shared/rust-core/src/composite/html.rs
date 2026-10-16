@@ -938,9 +938,9 @@ pub fn materialize(bundle: &super::PortableBundle, index: usize) -> Result<Vec<u
 /// including text that happens to mention image sizes. Never decode images.
 pub fn history_text_summary(bytes: &[u8]) -> String {
     use super::content_analysis::{
-        append_break, append_html_text, attribute_span, find_tag_end, TextFacts, DEPTH_LIMIT,
-        RUN_LIMIT,
+        append_break, append_html_text, TextFacts, DEPTH_LIMIT, RUN_LIMIT,
     };
+    use super::html_lex::{attribute_span, find_tag_end};
     if bytes.len() > super::Mime::Html.limit() {
         return String::new();
     }

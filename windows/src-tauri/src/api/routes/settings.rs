@@ -97,23 +97,17 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                     error: Some("missing settings".into()),
                 };
             };
-            match serde_json::from_value::<crate::crypto::Settings>(settings_json) {
-                Ok(mut requested_settings) => {
-                    // The shortcut is registered through the dedicated
-                    // set_sync_shortcut command; ignore any value arriving via
-                    // generic settings so runtime and persisted state stay aligned.
-                    requested_settings.sync_shortcut =
-                        state.settings.lock().await.sync_shortcut.clone();
-                    requested_settings.history_shortcut =
-                        state.settings.lock().await.history_shortcut.clone();
-                    match crate::crypto::apply_settings_update(
+            // Clients send field intents, never a whole `get_settings`
+            // snapshot, so one window cannot roll back another window's edit.
+            match crate::crypto::SettingsPatch::from_json_value(settings_json) {
+                Ok(patch) => {
+                    match crate::crypto::apply_settings_patch(
                         &state.settings,
                         &state.db,
-                        requested_settings,
+                        patch,
                         &|settings: &crate::crypto::Settings| {
                             crate::automatic_images::persist(settings, &state.image_archive)
                         },
-                        None,
                     )
                     .await
                     {
@@ -125,7 +119,9 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                             }
                             Response {
                                 ok: true,
-                                data: None,
+                                data: Some(
+                                    serde_json::to_value(outcome.persisted).unwrap_or_default(),
+                                ),
                                 error: None,
                             }
                         }
@@ -136,10 +132,10 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                         },
                     }
                 }
-                Err(e) => Response {
+                Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(e.to_string()),
+                    error: Some(error),
                 },
             }
         }
@@ -249,6 +245,112 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                 data: None,
                 error: result.err(),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(settings: crypto::Settings) -> ApiState {
+        let settings = Arc::new(Mutex::new(settings));
+        let identity = Arc::new(DeviceIdentity::generate_for_test());
+        let database = Arc::new(Mutex::new(db::HistoryDB::new_unavailable().unwrap()));
+        ApiState {
+            db: database.clone(),
+            image_archive: Arc::new(crate::automatic_images::AutomaticImageArchive::new(
+                database,
+                false,
+                Arc::new(tailsync_core::composite::resource_archive::ReqwestTransport::new()),
+                Arc::new(crate::api::bump_clipboard_version),
+            )),
+            sync_engine: Arc::new(Mutex::new(sync::SyncEngine::new())),
+            pool: Arc::new(Mutex::new(network::ConnectionPool::new(
+                identity.clone(),
+                settings.clone(),
+            ))),
+            pairing: crate::pairing::PairingManager::new(settings.clone(), identity.clone()),
+            remote_invites: Arc::new(crate::pairing::RemotePairingInviteManager::default()),
+            identity,
+            settings,
+            token: ApiToken::parse(&"a".repeat(64)).unwrap(),
+            shutdown: watch::channel(false).0,
+            pending_storage_cleanup: Arc::new(Mutex::new(None)),
+            imports: Mutex::new(ImportRegistry::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_settings_merges_two_stale_windows_without_rollback() {
+        let state = state(crypto::Settings::default());
+        // Both windows read the same snapshot before either of them saves.
+        let stale = state.settings.lock().await.clone();
+        assert_eq!(stale.history_limit, 100);
+        assert_eq!(stale.connection_mode, "auto");
+
+        let first = super::super::handle_cmd(
+            serde_json::from_value(serde_json::json!({
+                "cmd": "update_settings", "settings": {"history_limit": 250}
+            }))
+            .unwrap(),
+            &state,
+        )
+        .await;
+        assert!(first.ok, "{:?}", first.error);
+        let canonical: crypto::Settings =
+            serde_json::from_value(first.data.clone().unwrap()).unwrap();
+        assert_eq!(canonical.history_limit, 250);
+        assert_eq!(canonical.connection_mode, "auto");
+
+        let second = super::super::handle_cmd(
+            serde_json::from_value(serde_json::json!({
+                "cmd": "update_settings", "settings": {"connection_mode": "lan_only"}
+            }))
+            .unwrap(),
+            &state,
+        )
+        .await;
+        assert!(second.ok, "{:?}", second.error);
+        let canonical: crypto::Settings = serde_json::from_value(second.data.unwrap()).unwrap();
+        assert_eq!(
+            canonical.history_limit, 250,
+            "the second window must not roll back the first window's edit"
+        );
+        assert_eq!(canonical.connection_mode, "lan_only");
+        assert_eq!(*state.settings.lock().await, canonical);
+    }
+
+    #[tokio::test]
+    async fn update_settings_route_rejects_whole_snapshots_and_owned_fields() {
+        let original = crypto::Settings::default();
+        let state = state(original.clone());
+        for settings in [
+            serde_json::json!({ "sync_enabled": false }),
+            serde_json::json!({ "sync_shortcut": "Control+Shift+Z" }),
+            serde_json::json!({ "history_shortcut": "Control+Shift+Z" }),
+            serde_json::json!({ "enabled_peers": { "peer": false } }),
+            serde_json::json!({ "storage_root": "/tmp/elsewhere" }),
+            serde_json::to_value(&original).unwrap(),
+        ] {
+            let response = super::super::handle_cmd(
+                serde_json::from_value(serde_json::json!({
+                    "cmd": "update_settings", "settings": settings
+                }))
+                .unwrap(),
+                &state,
+            )
+            .await;
+            assert!(!response.ok, "{settings} must be rejected");
+            let envelope = tailsync_runtime::contracts::StableErrorEnvelope::from_legacy_message(
+                "update_settings",
+                response.error.as_deref().unwrap(),
+            );
+            assert_eq!(
+                envelope.code,
+                tailsync_runtime::contracts::StableErrorCode::InvalidArgument
+            );
+            assert_eq!(*state.settings.lock().await, original);
         }
     }
 }

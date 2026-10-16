@@ -53,24 +53,33 @@ actor SettingsSaveCoordinator {
         _ mode: String,
         fallback: AppSettings
     ) async -> (error: String?, persisted: AppSettings) {
-        await enqueue(fallback: fallback) {
+        await enqueue(fallback: fallback) { _ in
             try await self.client.setConnectionMode(mode)
         }
     }
 
+    /// The queue serializes field intents; canonical changes never create
+    /// additional edits on behalf of the window.
     func save(
-        _ settings: AppSettings,
+        _ change: SettingsFieldChange,
         fallback: AppSettings
     ) async -> (error: String?, persisted: AppSettings) {
-        await enqueue(fallback: fallback) {
-            try await self.client.updateSettings(settings)
-            return settings
+        await enqueue(fallback: fallback) { lastPersisted in
+            if case .syncEnabled(let enabled) = change {
+                guard await self.client.setSyncEnabled(enabled) else {
+                    throw ApiError.serverError(Loc.t("settings.saveFailed"))
+                }
+                var persisted = lastPersisted
+                persisted.sync_enabled = enabled
+                return persisted
+            }
+            return try await self.client.updateSettings(change.patch)
         }
     }
 
     private func enqueue(
         fallback: AppSettings,
-        operation: @escaping @Sendable () async throws -> AppSettings
+        operation: @escaping @Sendable (AppSettings) async throws -> AppSettings
     ) async -> (error: String?, persisted: AppSettings) {
         let predecessor = tail
         let job = Task<SaveResult, Never> {
@@ -84,7 +93,7 @@ actor SettingsSaveCoordinator {
                 lastPersisted = fallback
             }
             do {
-                return .success(try await operation())
+                return .success(try await operation(lastPersisted))
             } catch {
                 return .failure(error.localizedDescription, lastPersisted)
             }

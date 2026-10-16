@@ -17,6 +17,11 @@ import {
   type PeerDevice,
 } from "../tailsyncClient";
 import { pairingAddressForPeer } from "../utils/pairingAddress";
+import {
+  pairingIssueForError,
+  pairingIssueForStatus,
+  type PairingIssue,
+} from "../utils/pairingFailure";
 
 export interface PairingOptions {
   refreshDevices: () => Promise<void>;
@@ -27,83 +32,116 @@ export function usePairing(options: PairingOptions) {
   const [pairingTarget, setPairingTarget] = useState<PeerDevice | null>(null);
   const [pairingStatus, setPairingStatus] = useState<PairingStatus | null>(null);
   const [pairingOpen, setPairingOpen] = useState(false);
-  const [pairingError, setPairingError] = useState("");
+  const [directError, setDirectError] = useState<PairingIssue | null>(null);
+  const [statusError, setStatusError] = useState<PairingIssue | null>(null);
   const [pairingBusy, setPairingBusy] = useState(false);
   const previousPairingPhase = useRef<PairingStatus["phase"] | null>(null);
   const pairingBusyRef = useRef(pairingBusy);
   const pairDialogRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
+  // Bumped whenever a direct command starts, so an in-flight poll cannot
+  // overwrite the status that command just produced.
+  const operationGeneration = useRef(0);
   const refreshDeviceList = useEffectEvent(refreshDevices);
 
-  useEffect(() => {
-    pairingBusyRef.current = pairingBusy;
-  }, [pairingBusy]);
+  const setBusy = (value: boolean) => {
+    pairingBusyRef.current = value;
+    setPairingBusy(value);
+  };
+
+  /** Applies a status returned by a command or poll, refreshing its issue. */
+  const applyStatus = (status: PairingStatus) => {
+    setPairingStatus(status);
+    setStatusError(pairingIssueForStatus(status));
+  };
+
+  /** Starts a direct operation: supersedes in-flight polls and older errors. */
+  const beginOperation = () => {
+    operationGeneration.current += 1;
+    setDirectError(null);
+    return operationGeneration.current;
+  };
+
+  const superseded = (generation: number) => operationGeneration.current !== generation;
 
   const handleEnablePairing = async () => {
-    setPairingBusy(true);
-    setPairingError("");
+    const generation = beginOperation();
+    setBusy(true);
     try {
       const status = await enablePairing();
-      setPairingStatus(status);
+      if (superseded(generation)) return;
+      applyStatus(status);
       setPairingOpen(true);
     } catch (error) {
-      setPairingError(String(error));
+      if (superseded(generation)) return;
+      setDirectError(pairingIssueForError(error));
     } finally {
-      setPairingBusy(false);
+      if (!superseded(generation)) setBusy(false);
     }
   };
 
   const openPairing = async (peer: PeerDevice) => {
     const address = pairingAddressForPeer(peer);
     if (!address) return;
+    const generation = beginOperation();
     setPairingTarget(peer);
     setPairingOpen(true);
-    setPairingBusy(true);
-    setPairingError("");
+    setBusy(true);
     try {
       if (!pairingStatus?.pairing_enabled) {
-        setPairingStatus(await enablePairing());
+        const enabled = await enablePairing();
+        if (superseded(generation)) return;
+        applyStatus(enabled);
       }
       const status = await startPairing(address);
-      setPairingStatus(status);
+      if (superseded(generation)) return;
+      applyStatus(status);
     } catch (error) {
-      setPairingError(String(error));
+      if (superseded(generation)) return;
+      setDirectError(pairingIssueForError(error));
       try {
-        setPairingStatus(await getPairingStatus());
+        const status = await getPairingStatus();
+        if (superseded(generation)) return;
+        applyStatus(status);
       } catch {
         // Preserve the original pairing error.
       }
     } finally {
-      setPairingBusy(false);
+      if (!superseded(generation)) setBusy(false);
     }
   };
 
   const closePairing = async () => {
     if (pairingBusyRef.current) return;
-    pairingBusyRef.current = true;
-    setPairingBusy(true);
+    const generation = beginOperation();
+    setBusy(true);
     try {
-      setPairingStatus(await cancelPairing());
+      const status = await cancelPairing();
+      if (superseded(generation)) return;
+      applyStatus(status);
       setPairingOpen(false);
       setPairingTarget(null);
     } catch (error) {
-      setPairingError(String(error));
+      if (superseded(generation)) return;
+      setDirectError(pairingIssueForError(error));
     } finally {
-      pairingBusyRef.current = false;
-      setPairingBusy(false);
+      if (!superseded(generation)) setBusy(false);
     }
   };
 
   const handlePair = async () => {
     if (!pairingStatus?.peer) return;
-    setPairingBusy(true);
-    setPairingError("");
+    const generation = beginOperation();
+    setBusy(true);
     try {
-      setPairingStatus(await confirmPairing());
+      const status = await confirmPairing();
+      if (superseded(generation)) return;
+      applyStatus(status);
     } catch (error) {
-      setPairingError(String(error));
+      if (superseded(generation)) return;
+      setDirectError(pairingIssueForError(error));
     } finally {
-      setPairingBusy(false);
+      if (!superseded(generation)) setBusy(false);
     }
   };
 
@@ -163,21 +201,28 @@ export function usePairing(options: PairingOptions) {
   useEffect(() => {
     let active = true;
     const poll = async () => {
+      // A direct command owns the pairing state while it runs; polling it
+      // would race the command's own response.
+      if (pairingBusyRef.current) return;
+      const generation = operationGeneration.current;
       try {
         const status = await getPairingStatus();
         if (!active) return;
-        setPairingStatus(status);
+        if (superseded(generation) || pairingBusyRef.current) return;
+        applyStatus(status);
         if (status.peer && ["verification", "waiting_for_peer", "finalizing"].includes(status.phase)) {
           setPairingOpen(true);
         }
         if (status.phase === "paired" && previousPairingPhase.current !== "paired") {
           setPairingOpen(false);
           setPairingTarget(null);
+          setDirectError(null);
           void refreshDeviceList();
         }
         previousPairingPhase.current = status.phase;
       } catch (error) {
-        if (active) setPairingError(String(error));
+        if (!active || superseded(generation) || pairingBusyRef.current) return;
+        setStatusError(pairingIssueForError(error));
       }
     };
     void poll();
@@ -192,7 +237,7 @@ export function usePairing(options: PairingOptions) {
     pairingTarget,
     pairingStatus,
     pairingOpen,
-    pairingError,
+    pairingError: directError ?? statusError,
     pairingBusy,
     pairDialogRef,
     handleEnablePairing,

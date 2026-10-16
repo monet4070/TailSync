@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { listen } from "@tauri-apps/api/event";
 import { ThemePackagePreview } from "../components/ThemePackagePreview";
 import {
   applyThemePackageOperation,
@@ -311,7 +312,7 @@ describe("Settings Theme V2 workflow", () => {
   });
 });
 
-describe("Settings auto-save network images", () => {
+describe("Settings editing", () => {
   beforeEach(() => {
     clientMocks.getSettings.mockResolvedValue(baseSettings);
     clientMocks.getStorageStatus.mockResolvedValue({
@@ -328,7 +329,11 @@ describe("Settings auto-save network images", () => {
       highContrast: false,
     });
     clientMocks.getUpdateStatus.mockResolvedValue({ updates_enabled: true });
-    clientMocks.updateSettings.mockResolvedValue(undefined);
+    // The daemon answers a patch with the committed canonical snapshot.
+    clientMocks.updateSettings.mockImplementation(async (patch) => ({
+      ...baseSettings,
+      ...patch,
+    }));
   });
 
   it("defaults to disabled when the generated type omits the field", async () => {
@@ -379,4 +384,50 @@ describe("Settings auto-save network images", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("settings.saveFailed");
     expect(clientMocks.getSettings).toHaveBeenCalledTimes(2);
   });
+  it("preserves a newer unsubmitted history slider draft after an older save fails", async () => {
+    render(<Settings />);
+    const slider = await screen.findByRole("slider", { name: "settings.historyLimit" });
+    let releaseRead: (value: SettingsData) => void = () => undefined;
+    clientMocks.getSettings.mockImplementationOnce(() => new Promise(resolve => { releaseRead = resolve; }));
+    clientMocks.updateSettings.mockRejectedValueOnce(new Error("save failed"));
+    fireEvent.change(slider, { target: { value: "250" } });
+    fireEvent.pointerUp(slider);
+    await waitFor(() => expect(clientMocks.getSettings).toHaveBeenCalledTimes(2));
+    fireEvent.change(slider, { target: { value: "300" } });
+    await act(async () => { releaseRead(baseSettings); });
+    await screen.findByRole("alert");
+    expect(slider).toHaveValue("300");
+    expect(clientMocks.updateSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a newer unsubmitted quota draft after an older save fails", async () => {
+    render(<Settings />);
+    const quota = await screen.findByRole("textbox", { name: "settings.storageQuota" });
+    let releaseRead: (value: SettingsData) => void = () => undefined;
+    clientMocks.getSettings.mockImplementationOnce(() => new Promise(resolve => { releaseRead = resolve; }));
+    clientMocks.updateSettings.mockRejectedValueOnce(new Error("save failed"));
+    fireEvent.change(quota, { target: { value: "12" } });
+    fireEvent.blur(quota);
+    await waitFor(() => expect(clientMocks.getSettings).toHaveBeenCalledTimes(2));
+    fireEvent.change(quota, { target: { value: "16" } });
+    await act(async () => { releaseRead(baseSettings); });
+    await screen.findByRole("alert");
+    expect(quota).toHaveValue("16");
+    expect(clientMocks.updateSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes an untouched quota input while preserving an unsubmitted slider edit", async () => {
+    render(<Settings />);
+    const slider = await screen.findByRole("slider", { name: "settings.historyLimit" });
+    const quota = screen.getByRole("textbox", { name: "settings.storageQuota" });
+    fireEvent.change(slider, { target: { value: "300" } });
+    clientMocks.getSettings.mockResolvedValue({ ...baseSettings, history_limit: 250, storage_quota_bytes: 12 * 1024 ** 3 });
+    const handler = vi.mocked(listen).mock.calls.find(([event]) => event === "settings-changed")?.[1];
+    expect(handler).toBeDefined();
+    await act(async () => { handler?.({ event: "settings-changed", id: 0, payload: null }); });
+    expect(slider).toHaveValue("300");
+    expect(quota).toHaveValue("12");
+    expect(clientMocks.updateSettings).not.toHaveBeenCalled();
+  });
+
 });

@@ -1,13 +1,11 @@
-import { useCallback, useState, useEffect, useRef } from "react";
+import { useCallback } from "react";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
-import { LatestRequest, SerialTaskQueue } from "../utils/asyncControl";
+import { useSettingsEditor } from "../hooks/useSettingsEditor";
 import type { SettingsData } from "../types/settings.generated";
 import {
   closeConnectionsWindow,
   forgetPeer,
-  getSettings,
-  updateSettings,
   type PeerDevice,
 } from "../tailsyncClient";
 import { useConnectionTests } from "../hooks/useConnectionTests";
@@ -20,26 +18,28 @@ import { SettingsConnectionsSection } from "./settings/SettingsConnectionsSectio
 import { PairingDialog } from "./settings/SettingsDialogs";
 
 export function Connections() {
-  const [settings, setSettings] = useState<SettingsData | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
   const { theme } = useTheme();
   const { t, setLocale } = useI18n();
-  const toastTimer = useRef<number>(0);
-  const settingsRef = useRef<SettingsData | null>(null);
-  const saveQueue = useRef(new SerialTaskQueue());
-  const settingsUpdates = useRef(new LatestRequest());
+  const {
+    settings,
+    settingsRef,
+    saved,
+    errorMessage,
+    setErrorMessage,
+    update,
+    installLocal,
+  } = useSettingsEditor({ onLocale: setLocale, translate: t });
 
-  const applyPeerEnabled = useCallback((hostname: string, enabled: boolean) => {
-    setSettings((current) =>
-      current
-        ? {
-            ...current,
-            enabled_peers: { ...current.enabled_peers, [hostname]: enabled },
-          }
-        : current,
-    );
-  }, []);
+  // The peer toggle is a dedicated command; only the local draft reflects it
+  // here, so a stale settings response can never revert the toggle.
+  const applyPeerEnabled = useCallback(
+    (hostname: string, enabled: boolean) => {
+      const current = settingsRef.current;
+      if (!current) return;
+      installLocal({ enabled_peers: { ...current.enabled_peers, [hostname]: enabled } });
+    },
+    [installLocal, settingsRef],
+  );
 
   const {
     devices,
@@ -55,52 +55,6 @@ export function Connections() {
   });
 
   const { connectionTests, handleTestConnection } = useConnectionTests(onDevicesRefreshed);
-
-  useEffect(() => {
-    getSettings()
-      .then((s) => {
-        settingsRef.current = s;
-        setSettings(s);
-        setLocale(s.language);
-      })
-      .catch(console.error);
-  }, [setLocale]);
-
-  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
-
-  const update = async (patch: Partial<SettingsData>) => {
-    const previous = settingsRef.current;
-    if (!previous) return false;
-    const next = { ...previous, ...patch };
-    setErrorMessage("");
-    settingsRef.current = next;
-    setSettings(next);
-    const generation = settingsUpdates.current.begin();
-    const save = saveQueue.current.enqueue(() => updateSettings(next));
-    try {
-      await save;
-      if (settingsUpdates.current.isCurrent(generation)) {
-        setSaved(true);
-        window.clearTimeout(toastTimer.current);
-        toastTimer.current = window.setTimeout(() => setSaved(false), 1500);
-      }
-      return true;
-    } catch (e) {
-      if (settingsUpdates.current.isCurrent(generation)) {
-        try {
-          const canonical = await getSettings();
-          settingsRef.current = canonical;
-          setSettings(canonical);
-        } catch {
-          settingsRef.current = previous;
-          setSettings(previous);
-        }
-      }
-      console.error("Save settings failed:", e);
-      setErrorMessage(t("settings.saveFailed"));
-      return false;
-    }
-  };
 
   const {
     pairingTarget,

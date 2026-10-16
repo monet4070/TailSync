@@ -36,17 +36,19 @@ fn active_key(settings: &Settings, hostname: &str, key: &str) -> bool {
             .unwrap_or(true)
 }
 
+/// Send one commit-proof frame. The failure stays typed so a closed transport
+/// keeps its structural kind instead of being flattened into `Transport(String)`.
 async fn send_nonce(
     connection: &mut SecureConnection,
     command: Command,
     nonce: [u8; 16],
-) -> Result<(), PairingError> {
+) -> Result<(), PairingFailure> {
     let frame = Frame::try_new(command, 0, 0, nonce.to_vec())
-        .map_err(|error| PairingError::Transport(error.to_string()))?;
+        .map_err(|error| PairingFailure::new(PairingFailureKind::Unknown, error.to_string()))?;
     connection
         .write_frame(&frame)
         .await
-        .map_err(|error| PairingError::Transport(error.to_string()))
+        .map_err(PairingFailure::from_boxed)
 }
 
 impl PairingManager {
@@ -217,8 +219,11 @@ impl PairingManager {
                 match $operation {
                     Ok(value) => value,
                     Err(error) => {
-                        self.fail_session_non_ban(session_id, error.to_string())
-                            .await;
+                        self.fail_session_non_ban_classified(
+                            session_id,
+                            PairingFailure::from(error),
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -278,7 +283,7 @@ impl PairingManager {
                                 return;
                             }
                             if received != nonce && local_committed {
-                                self.fail_session_non_ban(session_id, "Pairing commit transaction changed".into()).await;
+                                self.fail_session_non_ban_classified(session_id, PairingFailure::new(PairingFailureKind::Unknown, "Pairing commit transaction changed")).await;
                                 return;
                             }
                             nonce = received;
@@ -298,8 +303,16 @@ impl PairingManager {
                             let received = attempt!(frame_nonce(&frame));
                             if local_committed && received == nonce { acknowledged = true; }
                         }
-                        Command::PairingCancel => { self.fail_session_non_ban(session_id, "The other device cancelled pairing".into()).await; return; }
-                        Command::PeerError => { self.fail_session_non_ban(session_id, String::from_utf8_lossy(&frame.payload).into()).await; return; }
+                        Command::PairingCancel => {
+                            self.fail_session_non_ban_classified(session_id, PairingFailure::new(PairingFailureKind::Cancelled, "The other device cancelled pairing")).await;
+                            return;
+                        }
+                        Command::PeerError => {
+                            // Peer-supplied bytes: classified only by the handshake
+                            // layer's wire-boundary helper.
+                            self.fail_session_non_ban_classified(session_id, PairingFailure::from_peer_error(&String::from_utf8_lossy(&frame.payload))).await;
+                            return;
+                        }
                         _ => { self.fail_session_on_protocol_error(session_id, local_confirmed, "Unexpected message during pairing".into()).await; return; }
                     }
                 }

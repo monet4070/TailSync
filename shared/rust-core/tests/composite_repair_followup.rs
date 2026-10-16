@@ -19,6 +19,11 @@ use tailsync_core::{
 };
 use tokio::sync::Mutex;
 
+// Pipeline scenarios observe the process-wide ledger, including asserting that
+// worker memory is fully released. Keep scenarios isolated while retaining the
+// concurrent tasks, connections and native worker inside each scenario.
+static MEMORY_FIXTURE: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
+
 fn bundle(text: &str) -> PortableBundle {
     PortableBundle {
         representations: vec![Representation {
@@ -42,6 +47,7 @@ struct Platform {
 
 #[tokio::test]
 async fn maximum_legal_rgba_image_reaches_history_and_native_publish() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     let (root, db, engine, platform, source) = fixture().await;
     let rgba = vec![0x7f; tailsync_core::composite::RGBA_LIMIT];
     let image = PortableBundle {
@@ -250,6 +256,7 @@ fn successful_receipt_closes_intent_and_preserves_new_user_copies() {
 
 #[tokio::test]
 async fn completed_event_rejects_a_different_digest_without_an_ack() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     let (root, db, engine, platform, source) = fixture().await;
     let mut e = EventEnvelope::new(bundle("A").encode().unwrap());
     run(e.clone(), &source, db.clone(), engine.clone())
@@ -273,6 +280,7 @@ async fn completed_event_rejects_a_different_digest_without_an_ack() {
 
 #[tokio::test]
 async fn recoverable_history_exists_before_the_native_effect() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     let (root, db, engine, platform, source) = fixture().await;
     let e = EventEnvelope::new(bundle("durable before native").encode().unwrap());
     let id = e.message_id.as_hex();
@@ -300,6 +308,7 @@ async fn recoverable_history_exists_before_the_native_effect() {
 
 #[tokio::test]
 async fn failed_history_preparation_never_starts_native_io() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     let (root, db, engine, platform, source) = fixture().await;
     db.lock()
         .await
@@ -323,6 +332,7 @@ async fn failed_history_preparation_never_starts_native_io() {
 
 #[tokio::test]
 async fn startup_recovers_prepared_history_without_sender_or_native_io() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     let (root, db, engine, platform, source) = fixture().await;
     let e = EventEnvelope::new(bundle("interrupted claim").encode().unwrap());
     let id = db
@@ -381,6 +391,7 @@ async fn startup_recovers_prepared_history_without_sender_or_native_io() {
 
 #[tokio::test]
 async fn real_handshake_disables_unhealthy_composite_and_retains_capture() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     use tailsync_core::{
         identity::DeviceIdentity,
         secure::{self, CapabilitySwitches, PeerIdentity},
@@ -454,6 +465,7 @@ async fn real_handshake_disables_unhealthy_composite_and_retains_capture() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn revoke_cancels_running_native_work_and_retry_never_republishes() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     let (root, db, engine, platform, source) = fixture().await;
     platform.hold_for_cancel.store(true, Ordering::Release);
     let authorized = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -529,6 +541,7 @@ impl tailsync_core::peer::delivery::DeliveryConnection for AckConnection {
 }
 #[tokio::test]
 async fn temporary_fallback_pressure_is_retryable_and_does_not_poison_shared_cache() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     use tailsync_core::{
         composite::budgets,
         peer::delivery::{deliver_pending_frame, DeliveryConfig, PendingFrame, SharedEvent},
@@ -561,6 +574,7 @@ async fn temporary_fallback_pressure_is_retryable_and_does_not_poison_shared_cac
 
 #[tokio::test]
 async fn cancelled_receiver_releases_pending_history_after_native_worker_exits() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     let (root, db, engine, platform, source) = fixture().await;
     platform.hold_for_cancel.store(true, Ordering::Release);
     let event = EventEnvelope::new(bundle("cancelled receiver history").encode().unwrap());
@@ -614,6 +628,7 @@ async fn cancelled_receiver_releases_pending_history_after_native_worker_exits()
 
 #[tokio::test]
 async fn startup_recovers_legacy_claim_as_history_received_with_unknown_native_result() {
+    let _memory_fixture = MEMORY_FIXTURE.lock().await;
     let (root, db, engine, platform, source) = fixture().await;
     let id = db
         .lock()

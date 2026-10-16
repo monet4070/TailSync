@@ -38,6 +38,7 @@ func validateGeneratedFixture(_ contract: String, data: Data) throws {
   case "LocalCapabilities": _ = try JSONDecoder().decode(ContractLocalCapabilities.self, from: data)
   case "LocalDeviceSnapshot": _ = try JSONDecoder().decode(ContractLocalDeviceSnapshot.self, from: data)
   case "MacRuntimeSnapshot": _ = try JSONDecoder().decode(ContractMacRuntimeSnapshot.self, from: data)
+  case "PairingFailureKind": _ = try JSONDecoder().decode(ContractPairingFailureKind.self, from: data)
   case "PairingPeerStatus": _ = try JSONDecoder().decode(ContractPairingPeerStatus.self, from: data)
   case "PairingPhase": _ = try JSONDecoder().decode(ContractPairingPhase.self, from: data)
   case "PairingStatus": _ = try JSONDecoder().decode(ContractPairingStatus.self, from: data)

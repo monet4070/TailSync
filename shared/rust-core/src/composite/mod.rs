@@ -12,6 +12,7 @@ pub mod document_build;
 mod document_native_styles;
 pub mod fingerprint;
 pub mod html;
+mod html_lex;
 pub mod identity;
 pub mod network_image;
 pub mod network_originals;

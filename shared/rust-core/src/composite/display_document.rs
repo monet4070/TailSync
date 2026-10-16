@@ -181,7 +181,7 @@ pub struct DocumentPartial {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DisplayDocument {
-    #[schemars(range(min = 1, max = 1))]
+    #[schemars(range(min = DOCUMENT_VERSION, max = DOCUMENT_VERSION))]
     pub version: u16,
     pub blocks: Vec<DocumentBlock>,
     pub assets: Vec<DocumentAsset>,

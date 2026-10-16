@@ -60,6 +60,7 @@ impl DeliveryConnection for RevokingConnection {
 
 #[tokio::test]
 async fn archive_authorization_is_rechecked_before_sending_and_between_chunks() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     let base = base();
     let mut update = update(&base, MessageId::random());
     let mut pixels = vec![0; 600 * 600 * 4];
@@ -209,6 +210,7 @@ impl DeliveryConnection for MemoryConnection {
 
 #[tokio::test]
 async fn archive_delivery_populates_the_original_remote_row_without_native_publication() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     let base = base();
     let event = MessageId::random();
     let (root, id, database) = store(&base, event);
@@ -342,6 +344,7 @@ async fn archive_delivery_populates_the_original_remote_row_without_native_publi
 
 #[tokio::test]
 async fn archive_delivery_without_capability_has_no_legacy_or_native_fallback() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     let base = base();
     let update = update(&base, MessageId::random());
     let event =
@@ -366,6 +369,7 @@ async fn archive_delivery_without_capability_has_no_legacy_or_native_fallback() 
 
 #[tokio::test]
 async fn archive_receiver_rejects_wrong_source_and_revocation_and_never_resurrects_deletion() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     let base = base();
     let event = MessageId::random();
     let (root, id, database) = store(&base, event);

@@ -1,5 +1,6 @@
 import { Settings2 } from "lucide-react";
 import { ThemePackagePreview } from "../../components/ThemePackagePreview";
+import { pairingIssueForStatus, pairingIssueText } from "../../utils/pairingFailure";
 import type {
   PairingDialogProps,
   ThemeImportDialogProps,
@@ -17,10 +18,10 @@ export function PairingDialog({
   handlePair,
 }: PairingDialogProps) {
   if (!pairingOpen) return null;
-  const rawPairingError = pairingError || pairingStatus?.error || "";
-  const visiblePairingError = /identity\s+mismatch/i.test(rawPairingError)
-    ? t("settings.identityMismatch")
-    : rawPairingError;
+  // The hook already folds the status failure into `pairingError` with the
+  // direct request failure taking precedence; the status fallback keeps this
+  // dialog correct when it is rendered with a status but no hook error.
+  const visiblePairingError = pairingIssueText(pairingError ?? pairingIssueForStatus(pairingStatus), t);
 
   return (
     <div className="dialog-backdrop" onMouseDown={() => void closePairing()}>

@@ -7,7 +7,7 @@
 import * as Contract from "./types/localContracts.generated";
 import { invoke } from "./diagnostics/localIpcMetrics";
 import type { PreviewResponseInput } from "./utils/historyPreview";
-import type { SettingsData } from "./types/settings.generated";
+import type { SettingsData, SettingsPatch } from "./types/settings.generated";
 
 // ---------------------------------------------------------------------------
 // Updater (T241 pilot)
@@ -422,6 +422,16 @@ export type PendingPairingSummary = Contract.PendingPairingSummary;
 export type PairingStatus = Omit<Contract.PairingStatus, "pending" | "pending_store_unavailable" | "expires_at" | "peer" | "error"> &
   Partial<Pick<Contract.PairingStatus, "pending" | "pending_store_unavailable" | "expires_at" | "peer" | "error">>;
 
+// Pairing status is decoded through the generated contract so an unknown
+// `failure_kind` is normalized to `unknown` (and a malformed one is rejected)
+// before the UI classifies the failure.
+function invokePairingStatus(
+  command: string,
+  args?: Parameters<typeof invoke>[1],
+): Promise<PairingStatus> {
+  return invoke<unknown>(command, args).then(value => Contract.decodePairingStatus(value) as PairingStatus);
+}
+
 export interface ConnectionTestResult {
   latency_ms: number;
   path?: "tcp" | "direct" | "relay";
@@ -448,23 +458,23 @@ export function testConnection(address: string): Promise<ConnectionTestResult> {
 }
 
 export function enablePairing(): Promise<PairingStatus> {
-  return invoke<PairingStatus>("enable_pairing");
+  return invokePairingStatus("enable_pairing");
 }
 
 export function getPairingStatus(): Promise<PairingStatus> {
-  return invoke<PairingStatus>("get_pairing_status");
+  return invokePairingStatus("get_pairing_status");
 }
 
 export function startPairing(address: string): Promise<PairingStatus> {
-  return invoke<PairingStatus>("start_pairing", { address });
+  return invokePairingStatus("start_pairing", { address });
 }
 
 export function cancelPairing(): Promise<PairingStatus> {
-  return invoke<PairingStatus>("cancel_pairing");
+  return invokePairingStatus("cancel_pairing");
 }
 
 export function confirmPairing(): Promise<PairingStatus> {
-  return invoke<PairingStatus>("confirm_pairing");
+  return invokePairingStatus("confirm_pairing");
 }
 
 export interface RemotePairingInvite {
@@ -497,7 +507,7 @@ export function inspectRemotePairingLink(link: string): Promise<RemotePairingInv
 }
 
 export function startRemotePairing(link: string): Promise<PairingStatus> {
-  return invoke<PairingStatus>("start_remote_pairing", { link });
+  return invokePairingStatus("start_remote_pairing", { link });
 }
 
 export function getRemotePairingInviteStatus(): Promise<RemoteInviteStatus> {
@@ -505,7 +515,7 @@ export function getRemotePairingInviteStatus(): Promise<RemoteInviteStatus> {
 }
 
 export function cancelRemotePairingInvite(): Promise<PairingStatus> {
-  return invoke<PairingStatus>("cancel_remote_pairing_invite");
+  return invokePairingStatus("cancel_remote_pairing_invite");
 }
 
 export function takePendingRemotePairingLink(): Promise<string | null> {
@@ -516,8 +526,9 @@ export function takePendingRemotePairingLink(): Promise<string | null> {
 // Settings — write side (T246)
 // ---------------------------------------------------------------------------
 
-export function updateSettings(next: Partial<SettingsData>): Promise<void> {
-  return invoke<void>("update_settings", { settingsJson: JSON.stringify(next) });
+/// Send only the fields this window changed and receive the canonical snapshot.
+export function updateSettings(patch: SettingsPatch): Promise<SettingsData> {
+  return invoke<SettingsData>("update_settings", { settingsJson: JSON.stringify(patch) });
 }
 
 export function setSyncEnabled(enabled: boolean): Promise<void> {

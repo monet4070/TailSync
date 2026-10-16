@@ -77,7 +77,7 @@ function renderConnections(mode: "auto" | "lan_only" | "iroh_only" | "tailscale_
     linkDraft: "",
     linkPreview: null,
     remotePairingBusy: false,
-    remotePairingError: "",
+    remotePairingError: null,
     copied: false,
     handleCreateInvite: vi.fn(),
     handleLinkChange: vi.fn(),

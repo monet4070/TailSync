@@ -133,6 +133,8 @@ struct HistoryView: View {
     @State private var previewFollowTask: Task<Void, Never>? = nil
     @State private var interactionGeneration = 0
     @State private var queryTask: Task<Void, Never>? = nil
+    @State private var loadTask: Task<Void, Never>? = nil
+    @State private var pendingLoadPage: Int? = nil
     @State private var queryGeneration = 0
     @State private var pendingPageSelection: HistoryPendingSelection? = nil
     @State private var errorMsg: String? = nil
@@ -539,11 +541,17 @@ struct HistoryView: View {
             for: visibilityNotification
         )) { notification in
             guard let isVisible = notification.userInfo?["visible"] as? Bool else { return }
+            let wasVisible = windowIsVisible
             windowIsVisible = isVisible
             if !isVisible {
                 interactionGeneration &+= 1
                 previewFollowTask?.cancel()
+                // An occluded or miniaturized window keeps this view alive, so
+                // hiding it - not only `onDisappear` - must release the read.
+                cancelPendingQueries()
                 HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+            } else if !wasVisible, let requestedPage = pendingLoadPage {
+                load(targetPage: requestedPage)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
@@ -561,10 +569,7 @@ struct HistoryView: View {
             keyboard.onCommand = nil
             if !isFavoritesCollection { HistoryWindowController.shared.onKeyboardActivation = nil }
             interactionGeneration &+= 1
-            loadGeneration &+= 1
-            isLoading = false
-            queryTask?.cancel()
-            queryTask = nil
+            cancelPendingQueries()
             previewFollowTask?.cancel()
             HistoryPreviewWindowController.shared.registerKeyboardHandlers(
                 for: previewOwner, onRestore: nil, onReturn: nil
@@ -655,19 +660,45 @@ struct HistoryView: View {
         .tailSyncThemed()
     }
 
+    /// Cancels the in-flight page read and invalidates its result. Only the read
+    /// that is still current may clear the loading flag or the task handle.
+    private func cancelPendingLoad() {
+        loadTask?.cancel()
+        loadTask = nil
+        loadGeneration &+= 1
+        isLoading = false
+    }
+
+    private func cancelPendingQueries() {
+        queryTask?.cancel()
+        queryTask = nil
+        queryGeneration &+= 1
+        cancelPendingLoad()
+    }
+
     private func load(targetPage: Int? = nil, clearExisting: Bool = true) {
         // Runtime refreshes must not supersede a typed query or keyboard page turn.
         if !clearExisting && (queryTask != nil || isLoading || isRestoring) { return }
+        let requestedPage = targetPage ?? pendingLoadPage ?? page
+        pendingLoadPage = requestedPage
+        guard windowIsVisible else { return }
+        // A replaced read must not keep the daemon working on a page nobody wants.
+        loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
-        let requestedPage = targetPage ?? page
         let requestedQuery = historyQuery(page: requestedPage)
         isLoading = true
         errorMsg = nil
-        Task {
+        let task = Task { @MainActor in
+            defer {
+                if generation == loadGeneration {
+                    loadTask = nil
+                    pendingLoadPage = nil
+                }
+            }
             do {
                 let result = try await dependencies.load(requestedQuery)
-                guard generation == loadGeneration else { return }
+                guard generation == loadGeneration, !Task.isCancelled, windowIsVisible else { return }
                 entries = HistoryFavoriteMutationPolicy.reconcile(
                     Array(result.prefix(pageSize)),
                     pendingFavorites: favoriteMutations
@@ -683,6 +714,9 @@ struct HistoryView: View {
                 } else {
                     pruneSelection()
                 }
+            } catch is CancellationError {
+                // A superseded, hidden, or closed read is not a load failure.
+                guard generation == loadGeneration else { return }
             } catch {
                 guard generation == loadGeneration else { return }
                 pendingPageSelection = nil
@@ -693,6 +727,7 @@ struct HistoryView: View {
                 followPreviewSelection()
             }
         }
+        loadTask = task
     }
 
     private func loadHistoryCapabilities() {
@@ -891,14 +926,16 @@ struct HistoryView: View {
         restoredId = nil
         interactionGeneration &+= 1
         queryTask?.cancel()
+        queryTask = nil
         queryGeneration &+= 1
         let generation = queryGeneration
-        // Invalidate the previous request immediately, not after the debounce.
-        loadGeneration += 1
-        isLoading = false
+        // Cancel and invalidate the previous request immediately, not after the debounce.
+        cancelPendingLoad()
+        pendingLoadPage = 0
         pendingPageSelection = nil
         previewFollowTask?.cancel()
         HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+        guard windowIsVisible else { return }
         queryTask = Task { @MainActor in
             // `queryTask != nil` is read as "a search is still pending" by
             // `resultsAreCurrent` and by the runtime-refresh early return, so

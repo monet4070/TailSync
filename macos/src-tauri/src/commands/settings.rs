@@ -9,24 +9,31 @@ pub async fn get_settings(
     Ok(settings.clone())
 }
 
-/// Update settings
+/// Parse a window's field intents, rejecting whole snapshots and server-owned
+/// fields with the fixed request-error envelope.
+fn parse_settings_patch(settings_json: &str) -> Result<crate::crypto::SettingsPatch, CommandError> {
+    let value: serde_json::Value = serde_json::from_str(settings_json).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })?;
+    crate::crypto::SettingsPatch::from_json_value(value).map_err(|_| {
+        CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
+    })
+}
+
+/// Update the editable settings fields and return the committed snapshot.
 #[command]
 pub async fn update_settings(
     state: State<'_, AppState>,
     settings_json: String,
-) -> Result<(), CommandError> {
-    let requested_settings: crate::crypto::Settings = serde_json::from_str(&settings_json)
-        .map_err(|_| {
-            CommandError::code(tailsync_runtime::contracts::StableErrorCode::InvalidArgument)
-        })?;
-    let outcome = crate::crypto::apply_settings_update(
+) -> Result<crate::crypto::Settings, CommandError> {
+    let patch = parse_settings_patch(&settings_json)?;
+    let outcome = crate::crypto::apply_settings_patch(
         &state.settings,
         &state.db,
-        requested_settings,
+        patch,
         &|settings: &crate::crypto::Settings| {
             crate::automatic_images::persist(settings, &state.image_archive)
         },
-        None,
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -35,7 +42,7 @@ pub async fn update_settings(
         network::clear_peer_cache().await;
         network::refresh_iroh_for_mode(&outcome.connection_mode).await;
     }
-    Ok(())
+    Ok(outcome.persisted)
 }
 
 /// Get image data as base64 thumbnail for frontend display

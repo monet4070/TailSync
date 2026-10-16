@@ -3,6 +3,7 @@ use crate::identity::DeviceIdentity;
 use crate::peer::pool::CHANNEL_SIZE;
 use crate::peer::types::{ConnectionInterface, PeerCandidate, ResolvedCandidate, ResolvedTarget};
 use crate::protocol::FileOffset;
+use crate::secure::{ConnectionFailure, ConnectionFailureKind};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
@@ -2516,6 +2517,7 @@ fn composite_event() -> SharedEvent {
 /// Incompressible chunks retain their headers as well as the source body.
 #[tokio::test]
 async fn composite_cache_reserves_allocated_chunks_and_releases_after_last_owner() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     use crate::composite::{Completeness, Mime, PortableBundle, Representation};
     use crate::protocol::composite::{AckResult, CompositeAck};
     let compressible = PortableBundle {
@@ -2617,6 +2619,7 @@ async fn composite_cache_reserves_allocated_chunks_and_releases_after_last_owner
 }
 #[tokio::test]
 async fn composite_chunks_require_matching_final_ack_and_preserve_native_revision() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     use crate::protocol::composite::{AckResult, CompositeAck};
     let event = composite_event();
     let queued = event.queued();
@@ -2678,6 +2681,7 @@ async fn composite_chunks_require_matching_final_ack_and_preserve_native_revisio
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn composite_old_peer_gets_one_image_and_a_stable_selected_identity() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     let _warning_guard = crate::sync_warning::test_lock_async().await;
     let event = composite_event();
     let queued = event.queued();
@@ -2724,6 +2728,7 @@ async fn composite_old_peer_gets_one_image_and_a_stable_selected_identity() {
 }
 #[tokio::test]
 async fn composite_partial_terminal_ack_never_counts_as_success() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     use crate::protocol::composite::{AckResult, CompositeAck};
     let pending = PendingFrame::new_for_peer(composite_event().queued(), 61, "fixture");
     let (a, b) = tokio::io::duplex(8192);
@@ -2765,6 +2770,7 @@ async fn composite_partial_terminal_ack_never_counts_as_success() {
 
 #[tokio::test]
 async fn large_legacy_deliverable_rgba_image_uses_byte_budget() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     use crate::composite::{Completeness, Mime, PortableBundle, Representation};
     // The old image frame needs 8 dimension bytes and 28 event bytes too.
     let rgba = vec![0x7f; 2048 * 4095 * 4];
@@ -2810,6 +2816,7 @@ async fn large_legacy_deliverable_rgba_image_uses_byte_budget() {
 
 #[tokio::test]
 async fn maximum_legal_rgba_image_legacy_refusal_is_permanent_and_has_no_write() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
     use crate::composite::{Completeness, Mime, PortableBundle, Representation};
     let rgba = vec![0x7f; crate::composite::RGBA_LIMIT];
     let mut bundle = PortableBundle {
@@ -2878,6 +2885,7 @@ mod repair_regressions {
         let event = composite_event();
         let queued = event.queued();
         let expected = EventEnvelope::decode(queued.payload()).unwrap();
+        let message_id = expected.message_id;
         let pending = PendingFrame::new_for_peer(queued, 77, "fixture");
 
         async fn serve(mut server: MemoryConnection, expected: EventEnvelope) {
@@ -2911,7 +2919,7 @@ mod repair_regressions {
         }
 
         // First delivery.
-        let before = crate::composite::chunks::encode_calls();
+        let before = crate::composite::chunks::encode_calls_for(message_id);
         let (a, b) = tokio::io::duplex(64 * 1024);
         let mut client = CompositeConnection(MemoryConnection { io: a }, true);
         let task = tokio::spawn(serve(MemoryConnection { io: b }, expected.clone()));
@@ -2919,7 +2927,11 @@ mod repair_regressions {
             .await
             .unwrap();
         task.await.unwrap();
-        let after_first = crate::composite::chunks::encode_calls();
+        // A different event can be encoded concurrently. It must not change the
+        // observer for this retry, while an extra encode of this ID still fails.
+        let unrelated = EventEnvelope::new(expected.content.clone());
+        crate::composite::chunks::encode(&unrelated).unwrap();
+        let after_first = crate::composite::chunks::encode_calls_for(message_id);
         assert_eq!(
             after_first - before,
             1,
@@ -2935,7 +2947,7 @@ mod repair_regressions {
             .unwrap();
         task.await.unwrap();
         assert_eq!(
-            crate::composite::chunks::encode_calls() - after_first,
+            crate::composite::chunks::encode_calls_for(message_id) - after_first,
             0,
             "a retry must not re-encode the payload"
         );
@@ -3019,6 +3031,7 @@ mod repair_regressions {
 
 #[test]
 fn fanout_shares_the_original_deadline_and_cache() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
     let mut event = composite_event();
     event.created_at -= Duration::from_secs(10);
     let first = event.queued();
@@ -3032,4 +3045,403 @@ fn fanout_shares_the_original_deadline_and_cache() {
         &first.composite_fallback,
         &later.composite_fallback
     ));
+}
+
+// ------------------------------------------------------------------
+// F10-A: typed connection-failure classification through the race and the
+// worker. The kind must survive without scanning display text, while the
+// legacy string API stays byte-for-byte identical.
+// ------------------------------------------------------------------
+
+fn protocol_failure(message: &str) -> ConnectionFailure {
+    ConnectionFailure::new(ConnectionFailureKind::ProtocolIncompatible, message)
+}
+
+#[tokio::test]
+async fn race_classified_keeps_protocol_kind_and_matches_string_text() {
+    let candidates = vec![
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.2"),
+        resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2"),
+    ];
+    let typed = race_connections_classified(
+        &candidates,
+        Duration::from_secs(1),
+        |target, _candidate| async move {
+            if target.to_string().contains("192.168") {
+                Err::<(), _>(protocol_failure(
+                    "Incompatible TailSync protocol: peer uses v2",
+                ))
+            } else {
+                Err(ConnectionFailure::new(
+                    ConnectionFailureKind::Transport,
+                    "connection refused",
+                ))
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(typed.kind(), ConnectionFailureKind::ProtocolIncompatible);
+    assert!(typed.message().contains("lan 192.168.1.2:"));
+    assert!(typed.message().contains("connection refused"));
+
+    // The legacy string API routes through the same core and produces the
+    // exact same joined text.
+    let text = race_connections(
+        &candidates,
+        Duration::from_secs(1),
+        |target, _candidate| async move {
+            if target.to_string().contains("192.168") {
+                Err::<(), String>("Incompatible TailSync protocol: peer uses v2".to_string())
+            } else {
+                Err("connection refused".to_string())
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(text, typed.message());
+}
+
+#[tokio::test]
+async fn race_classified_without_protocol_stays_conservative() {
+    let candidates = vec![
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.2"),
+        resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2"),
+    ];
+    // A mixed bag of unrelated kinds is not guessed at.
+    let mixed = race_connections_classified(
+        &candidates,
+        Duration::from_secs(1),
+        |target, _candidate| async move {
+            if target.to_string().contains("192.168") {
+                Err::<(), _>(ConnectionFailure::new(
+                    ConnectionFailureKind::Transport,
+                    "connection refused",
+                ))
+            } else {
+                Err(ConnectionFailure::new(
+                    ConnectionFailureKind::TimedOut,
+                    "handshake timed out",
+                ))
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(mixed.kind(), ConnectionFailureKind::Unknown);
+
+    // A unanimous non-protocol kind is preserved.
+    let unanimous = race_connections_classified(
+        &candidates,
+        Duration::from_secs(1),
+        |_target, _candidate| async move {
+            Err::<(), _>(ConnectionFailure::new(
+                ConnectionFailureKind::Transport,
+                "connection refused",
+            ))
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(unanimous.kind(), ConnectionFailureKind::Transport);
+}
+
+#[tokio::test]
+async fn race_classified_applies_handshake_timeout() {
+    let candidates = vec![resolved_candidate(ConnectionInterface::Lan, "192.168.1.2")];
+    let err = race_connections_classified(
+        &candidates,
+        Duration::from_millis(20),
+        |_target, _candidate| async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok::<&str, ConnectionFailure>("late")
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.kind(), ConnectionFailureKind::TimedOut);
+    assert!(err.message().contains("handshake timed out"));
+}
+
+#[tokio::test]
+async fn race_classified_without_candidates_fails() {
+    let err = race_connections_classified::<(), _, _>(
+        &[],
+        Duration::from_secs(1),
+        |_target, _candidate| async move { Ok(()) },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.kind(), ConnectionFailureKind::Unknown);
+    assert_eq!(err.message(), "no connection candidates to race");
+}
+
+#[tokio::test]
+async fn race_classified_falls_back_to_a_reachable_route_after_a_protocol_rejection() {
+    let candidates = vec![
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.2"),
+        resolved_candidate(ConnectionInterface::Tailscale, "100.64.0.2"),
+    ];
+    let (stream, winner) = race_connections_classified(
+        &candidates,
+        Duration::from_secs(2),
+        |target, _candidate| async move {
+            if target.to_string().contains("192.168") {
+                Err(protocol_failure(
+                    "Incompatible TailSync protocol: peer uses v2",
+                ))
+            } else {
+                Ok("tailnet-stream")
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stream, "tailnet-stream");
+    assert_eq!(winner.candidate.interface, ConnectionInterface::Tailscale);
+}
+
+#[tokio::test]
+async fn race_classified_releases_unfinished_attempts_on_success() {
+    struct DropCounter(
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<tokio::sync::Notify>,
+    );
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.1.notify_one();
+        }
+    }
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let done = std::sync::Arc::new(tokio::sync::Notify::new());
+    let dropped_for_assert = dropped.clone();
+    let done_for_assert = done.clone();
+    let candidates = vec![
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.2"),
+        resolved_candidate(ConnectionInterface::Lan, "192.168.1.3"),
+    ];
+    let (stream, winner) = race_connections_classified(
+        &candidates,
+        Duration::from_secs(2),
+        move |target, _candidate| {
+            let entered = entered.clone();
+            let dropped = dropped.clone();
+            let done = done.clone();
+            async move {
+                if target.to_string().starts_with("192.168.1.2:") {
+                    entered.notified().await;
+                    Ok("lan-stream")
+                } else {
+                    let _guard = DropCounter(dropped, done);
+                    entered.notify_one();
+                    std::future::pending::<Result<&str, ConnectionFailure>>().await
+                }
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stream, "lan-stream");
+    assert_eq!(winner.candidate.interface, ConnectionInterface::Lan);
+    timeout(Duration::from_secs(2), done_for_assert.notified())
+        .await
+        .expect("losing attempt must be cancelled");
+    assert_eq!(
+        dropped_for_assert.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test]
+async fn aborting_classified_race_releases_all_started_attempts() {
+    struct Attempt(
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<tokio::sync::Notify>,
+    );
+    impl Drop for Attempt {
+        fn drop(&mut self) {
+            if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == 2 {
+                self.1.notify_one();
+            }
+        }
+    }
+    let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let all_started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let all_dropped = std::sync::Arc::new(tokio::sync::Notify::new());
+    let starts = started.clone();
+    let starts_signal = all_started.clone();
+    let drops = dropped.clone();
+    let drops_signal = all_dropped.clone();
+    let race = tokio::spawn(async move {
+        let candidates = vec![
+            resolved_candidate(ConnectionInterface::Lan, "192.168.1.2"),
+            resolved_candidate(ConnectionInterface::Lan, "192.168.1.3"),
+        ];
+        race_connections_classified(
+            &candidates,
+            Duration::from_secs(30),
+            move |_target, _candidate| {
+                let started = starts.clone();
+                let all_started = starts_signal.clone();
+                let dropped = drops.clone();
+                let all_dropped = drops_signal.clone();
+                async move {
+                    let _guard = Attempt(dropped, all_dropped);
+                    if started.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == 2 {
+                        all_started.notify_one();
+                    }
+                    std::future::pending::<Result<(), ConnectionFailure>>().await
+                }
+            },
+        )
+        .await
+    });
+    timeout(Duration::from_secs(2), all_started.notified())
+        .await
+        .expect("both attempts must start before abort");
+    race.abort();
+    assert!(race.await.unwrap_err().is_cancelled());
+    timeout(Duration::from_secs(2), all_dropped.notified())
+        .await
+        .expect("outer cancellation must release both attempts");
+    assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// Adapter that serves scripted *typed* failures and records the protocol
+/// diagnostics the worker raises, so a test can prove the worker reacts to the
+/// failure kind rather than to the flattened message.
+struct RecordingAdapter {
+    connects: tokio::sync::Mutex<
+        std::collections::VecDeque<
+            Result<(MemoryConnection, ResolvedCandidate), ConnectionFailure>,
+        >,
+    >,
+    protocol_errors: std::sync::Mutex<Vec<String>>,
+    connect_calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ConnectionAdapter for RecordingAdapter {
+    type Connection = MemoryConnection;
+    type SessionLease = ();
+
+    async fn connect(
+        &self,
+        hostname: &str,
+        candidates: &[ResolvedCandidate],
+    ) -> Result<(MemoryConnection, ResolvedCandidate), String> {
+        self.connect_classified(hostname, candidates)
+            .await
+            .map_err(|failure| failure.message().to_string())
+    }
+
+    async fn connect_classified(
+        &self,
+        _hostname: &str,
+        _candidates: &[ResolvedCandidate],
+    ) -> Result<(MemoryConnection, ResolvedCandidate), ConnectionFailure> {
+        self.connect_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.connects
+            .lock()
+            .await
+            .pop_front()
+            .unwrap_or_else(|| Err(ConnectionFailure::unknown("no more connections scripted")))
+    }
+
+    fn register_session(
+        &self,
+        _hostname: &str,
+        _interface: ConnectionInterface,
+        _address: &str,
+        _latency_ms: u64,
+    ) {
+    }
+
+    fn record_protocol_error(&self, _hostname: &str, error: &str) {
+        self.protocol_errors.lock().unwrap().push(error.to_string());
+    }
+
+    fn clear_protocol_error(&self, _hostname: &str) {}
+
+    async fn refresh_candidates(
+        &self,
+        _hostname: &str,
+        _candidates: &mut Vec<ResolvedCandidate>,
+    ) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn worker_records_protocol_diagnostics_by_kind_not_text() {
+    let candidate = resolved_candidate(ConnectionInterface::Lan, "192.168.1.2");
+    // A transport failure whose *text* contains the legacy protocol marker
+    // must not be recorded as a protocol rejection; the following genuine
+    // typed protocol mismatch must be.
+    let adapter = std::sync::Arc::new(RecordingAdapter {
+        connects: tokio::sync::Mutex::new(
+            vec![
+                Err(ConnectionFailure::new(
+                    ConnectionFailureKind::Transport,
+                    "Incompatible TailSync protocol: peer uses v9 (transport noise)",
+                )),
+                Err(protocol_failure(
+                    "fixture protocol rejection with rewritten display",
+                )),
+            ]
+            .into(),
+        ),
+        protocol_errors: std::sync::Mutex::new(Vec::new()),
+        connect_calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+
+    let (priority_tx, priority_rx) = mpsc::channel(4);
+    let (_bulk_tx, bulk_rx) = mpsc::channel(4);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let adapter_for_worker = adapter.clone();
+    let worker = tokio::spawn(async move {
+        run_connection_worker(
+            adapter_for_worker.as_ref(),
+            &fast_worker_config(),
+            vec![candidate],
+            "peer".into(),
+            priority_rx,
+            bulk_rx,
+            shutdown_rx,
+        )
+        .await
+    });
+
+    // Let the worker consume both scripted failures (and a few unknown
+    // follow-ups) before shutting it down.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while adapter
+        .connect_calls
+        .load(std::sync::atomic::Ordering::SeqCst)
+        < 3
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "worker did not reach the scripted connects in time"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    shutdown_tx.send(true).unwrap();
+    timeout(Duration::from_secs(2), worker)
+        .await
+        .expect("worker must exit on shutdown")
+        .unwrap();
+    drop(priority_tx);
+
+    let recorded = adapter.protocol_errors.lock().unwrap().clone();
+    assert_eq!(
+        recorded,
+        vec!["fixture protocol rejection with rewritten display".to_string()],
+        "only the typed protocol mismatch may be recorded"
+    );
 }

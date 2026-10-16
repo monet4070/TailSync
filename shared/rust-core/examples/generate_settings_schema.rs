@@ -1,8 +1,25 @@
 use std::collections::BTreeSet;
 
-use tailsync_core::crypto::Settings;
+use tailsync_core::crypto::{Settings, SettingsPatch};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The desktop generators derive the TypeScript patch type from the Rust
+    // patch schema, so the editable-field allowlist has one source of truth.
+    if std::env::args().any(|argument| argument == "--patch-fields") {
+        let schema = schemars::generate::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<SettingsPatch>();
+        let document = serde_json::to_value(schema)?;
+        let fields = document
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("SettingsPatch schema has no properties")?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string(&fields)?);
+        return Ok(());
+    }
     // Keep the public Settings contract on JSON Schema Draft 7. Schemars 1.x
     // defaults to Draft 2020-12, which would rename `definitions` to `$defs`
     // and silently change the schema consumed by the desktop generators.

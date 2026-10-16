@@ -20,6 +20,11 @@ use tailsync_runtime::history_display::{
 };
 use tokio::sync::Mutex;
 
+// These scenarios reserve process-wide analysis permits and assert ledger
+// totals. Give each fixture exclusive ownership of that shared test resource;
+// its own two-worker runtime still exercises concurrent reads and cancellation.
+static DISPLAY_SCENARIO: Mutex<()> = Mutex::const_new(());
+
 struct Store {
     path: std::path::PathBuf,
     database: Arc<Mutex<HistoryDB>>,
@@ -86,6 +91,7 @@ fn document(body: &str) -> PortableBundle {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_rebuild_preserves_originals_and_unifies_filters_search_favorites_counts() {
+    let _scenario = DISPLAY_SCENARIO.lock().await;
     let store = Store::new();
     let mut originals = Vec::new();
     for index in 0..9 {
@@ -214,6 +220,7 @@ async fn bounded_rebuild_preserves_originals_and_unifies_filters_search_favorite
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reopen_and_deleted_rows_reject_old_thumbnail_authority_and_release_memory() {
+    let _scenario = DISPLAY_SCENARIO.lock().await;
     let store = Store::new();
     let id = store
         .database
@@ -304,6 +311,7 @@ impl NativeAnalyzer for AttachmentAnalyzer {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn saved_native_only_attachment_is_a_document_and_thumbnail_without_portable_images() {
+    let _scenario = DISPLAY_SCENARIO.lock().await;
     let store = Store::new();
     let archive = NativeArchive {
         platform: 1,
@@ -370,6 +378,7 @@ async fn saved_native_only_attachment_is_a_document_and_thumbnail_without_portab
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_rebuild_and_stale_analysis_cannot_commit() {
+    let _scenario = DISPLAY_SCENARIO.lock().await;
     let store = Store::new();
     let id = store
         .database
@@ -410,6 +419,7 @@ async fn cancelled_rebuild_and_stale_analysis_cannot_commit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_and_aborting_lock_waiters_never_pollute_another_callers_token() {
+    let _scenario = DISPLAY_SCENARIO.lock().await;
     let store = Store::new();
     let held = store.database.lock().await;
     let caller = Cancellation::default();
@@ -454,6 +464,7 @@ async fn cancelling_and_aborting_lock_waiters_never_pollute_another_callers_toke
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn text_only_composites_keep_text_preview_and_share_one_code_filter() {
+    let _scenario = DISPLAY_SCENARIO.lock().await;
     use tailsync_core::db::PreviewKind;
     use tailsync_runtime::history::HistoryOperations;
     let store = Store::new();

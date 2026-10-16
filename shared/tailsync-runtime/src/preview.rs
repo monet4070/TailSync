@@ -108,6 +108,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_classified_composite_binary_preview_contains_pixels_not_summary() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         use std::sync::Arc;
         use tailsync_core::composite::{Completeness, Mime, PortableBundle, Representation};
         use tailsync_core::db::HistoryDB;

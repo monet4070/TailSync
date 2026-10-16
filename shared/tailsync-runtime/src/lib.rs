@@ -15,3 +15,10 @@ pub mod history_display;
 pub mod peer_refresh;
 pub mod preview;
 pub mod source_context;
+
+#[cfg(test)]
+mod test_fixtures {
+    // These scenarios share process-wide preview admission and pipeline budgets.
+    // Keep each scenario's worker/task concurrency; isolate unrelated fixtures.
+    pub(crate) static PIPELINE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+}

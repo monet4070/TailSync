@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
 use crate::peer::types::{ConnectionInterface, ResolvedCandidate, ResolvedTarget};
+use crate::secure::{ConnectionFailure, ConnectionFailureKind};
 
 /// Delay before a candidate attempt starts, biased toward preferred
 /// interfaces so LAN wins when available without serializing the race:
@@ -56,6 +57,10 @@ pub fn measured_candidate_delay(
 /// is cancelled; if all attempts fail, the collected errors are joined.
 /// `connect` performs the actual connection and handshake for one route;
 /// it receives owned route values so its future can be `'static`.
+///
+/// This is the legacy string API: it delegates to
+/// [`race_connections_classified`] and flattens the aggregate failure back to
+/// the exact historical `String`, so callers that only need text are unchanged.
 pub async fn race_connections<T, F, Fut>(
     candidates: &[ResolvedCandidate],
     handshake_timeout: Duration,
@@ -66,8 +71,37 @@ where
     F: Fn(ResolvedTarget, ResolvedCandidate) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<T, String>> + Send + 'static,
 {
+    let connect = std::sync::Arc::new(connect);
+    race_connections_classified(candidates, handshake_timeout, move |target, candidate| {
+        let connect = connect.clone();
+        async move {
+            connect(target, candidate)
+                .await
+                .map_err(ConnectionFailure::unknown)
+        }
+    })
+    .await
+    .map_err(ConnectionFailure::into_message)
+}
+
+/// Typed variant of [`race_connections`]: the same scheduling core, but the
+/// per-candidate failures keep their [`ConnectionFailureKind`] so the caller
+/// can react to a protocol mismatch instead of re-parsing the joined text.
+/// The joined error text and arrival order are identical to the string API.
+pub async fn race_connections_classified<T, F, Fut>(
+    candidates: &[ResolvedCandidate],
+    handshake_timeout: Duration,
+    connect: F,
+) -> Result<(T, ResolvedCandidate), ConnectionFailure>
+where
+    T: Send + 'static,
+    F: Fn(ResolvedTarget, ResolvedCandidate) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<T, ConnectionFailure>> + Send + 'static,
+{
     if candidates.is_empty() {
-        return Err("no connection candidates to race".to_string());
+        return Err(ConnectionFailure::unknown(
+            "no connection candidates to race",
+        ));
     }
     let (tx, mut rx) = mpsc::channel(candidates.len().max(1));
     // A JoinSet owns its tasks: dropping it (including early returns and
@@ -98,7 +132,9 @@ where
                 connect(candidate.target.clone(), candidate.clone()),
             )
             .await
-            .map_err(|_| "handshake timed out".to_string())
+            .map_err(|_| {
+                ConnectionFailure::new(ConnectionFailureKind::TimedOut, "handshake timed out")
+            })
             .and_then(|result| result);
             let mut candidate = candidate;
             candidate.candidate.latency = Some(started.elapsed().as_millis() as u64);
@@ -107,7 +143,7 @@ where
     }
     drop(tx);
 
-    let mut errors = Vec::new();
+    let mut errors: Vec<(String, ConnectionFailureKind)> = Vec::new();
     let mut immediate_remaining = candidates
         .iter()
         .filter(|candidate| measured_candidate_delay(candidate, candidates).is_zero())
@@ -118,20 +154,47 @@ where
                 tasks.abort_all();
                 return Ok((stream, candidate));
             }
-            Err(error) => {
+            Err(failure) => {
                 if measured_candidate_delay(&candidate, candidates).is_zero() {
                     immediate_remaining = immediate_remaining.saturating_sub(1);
                     if immediate_remaining == 0 {
                         let _ = fast_fail.send(true);
                     }
                 }
-                errors.push(format!(
-                    "{} {}: {error}",
-                    candidate.candidate.interface.as_str(),
-                    candidate.target
+                errors.push((
+                    format!(
+                        "{} {}: {}",
+                        candidate.candidate.interface.as_str(),
+                        candidate.target,
+                        failure.message()
+                    ),
+                    failure.kind(),
                 ))
             }
         }
     }
-    Err(errors.join("; "))
+    let kind = aggregate_failure_kind(&errors);
+    let message = errors
+        .into_iter()
+        .map(|(message, _)| message)
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(ConnectionFailure::new(kind, message))
+}
+
+/// A protocol-incompatible candidate wins the aggregate so the caller can act
+/// on it even when other routes failed for unrelated reasons. Otherwise a
+/// unanimous kind is kept; a mixed bag stays conservative.
+fn aggregate_failure_kind(errors: &[(String, ConnectionFailureKind)]) -> ConnectionFailureKind {
+    if errors
+        .iter()
+        .any(|(_, kind)| *kind == ConnectionFailureKind::ProtocolIncompatible)
+    {
+        return ConnectionFailureKind::ProtocolIncompatible;
+    }
+    let mut kinds = errors.iter().map(|(_, kind)| *kind);
+    match kinds.next() {
+        Some(first) if kinds.all(|kind| kind == first) => first,
+        _ => ConnectionFailureKind::Unknown,
+    }
 }

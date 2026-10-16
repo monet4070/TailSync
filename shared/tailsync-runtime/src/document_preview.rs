@@ -32,9 +32,9 @@ pub struct DocumentFrameMetadata {
     pub owner: String,
     #[schemars(range(max = 9007199254740991u64))]
     pub generation: u64,
-    #[schemars(range(max = 4194304))]
+    #[schemars(range(max = DOCUMENT_MAX_MODEL_BYTES))]
     pub model_bytes: u64,
-    #[schemars(range(max = 16777216))]
+    #[schemars(range(max = DOCUMENT_MAX_BYTES))]
     pub size_bytes: u64,
     #[serde(skip)]
     #[schemars(skip)]
@@ -776,6 +776,7 @@ mod tests {
 
     #[tokio::test]
     async fn document_preview_returns_a_decodable_frame_for_a_composite() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("composite");
         let mut database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         let id = database
@@ -800,6 +801,7 @@ mod tests {
     #[tokio::test]
     async fn reading_semantics_survive_preview_frames_and_database_reopen_without_rewriting_originals(
     ) {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("reading-semantics");
         let html = "<h1>标题</h1><blockquote><p><a href=\"https://example.com/reading\">链接</a><mark>高亮</mark></p></blockquote><pre>  first\n\tsecond  </pre><p>end</p>";
         let bundle = html_bundle(html);
@@ -855,6 +857,7 @@ mod tests {
 
     #[tokio::test]
     async fn rtf_reading_styles_use_original_bytes_without_an_available_native_helper() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("rtf-reading");
         let bundle = PortableBundle {
             representations: vec![Representation {
@@ -886,6 +889,7 @@ mod tests {
 
     #[tokio::test]
     async fn document_preview_rejects_a_non_composite_entry() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("text");
         let mut database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         database.add_text("plain", "self").unwrap();
@@ -900,13 +904,14 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(error.code, PreviewErrorCode::UnsupportedType);
+        assert_eq!(error.code, PreviewErrorCode::UnsupportedType, "{error:?}");
         drop(database);
         std::fs::remove_dir_all(&path).unwrap();
     }
 
     #[tokio::test]
     async fn document_preview_stamp_survives_favorite_and_changes_on_archive_update() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("stamp");
         let mut database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         let id = database
@@ -944,6 +949,7 @@ mod tests {
 
     #[tokio::test]
     async fn document_preview_stamp_is_bound_to_the_database_instance() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let first_path = root("instance-a");
         let second_path = root("instance-b");
         let mut first = HistoryDB::open_isolated_for_test_composite(&first_path).unwrap();
@@ -962,6 +968,7 @@ mod tests {
 
     #[tokio::test]
     async fn document_preview_cancellation_returns_an_error() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("cancel");
         let mut database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         let id = database
@@ -980,6 +987,7 @@ mod tests {
 
     #[tokio::test]
     async fn document_preview_stamp_is_invalidated_by_deletion() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("deleted");
         let mut database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         let id = database
@@ -1001,6 +1009,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_the_preview_future_cancels_the_analysis_worker() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("cancel-worker");
         let mut database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         let bundle = PortableBundle {
@@ -1065,6 +1074,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn document_preview_waits_on_the_database_lock_cancellably() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("lock");
         let mut database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         let id = database
@@ -1092,6 +1102,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn document_preview_rejects_a_mutation_that_lands_after_prepare() {
+        let _fixture = crate::test_fixtures::PIPELINE.lock().await;
         let path = root("generation");
         let mut database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         let bundle = PortableBundle {
@@ -1152,5 +1163,33 @@ mod tests {
         }
         drop(database);
         std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn shared_frame_metadata_corpus_uses_the_real_codec() {
+        let corpus: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../shared/schema/fixtures/document-frame-corpus.json"
+        ))
+        .unwrap();
+        let model = corpus["model_json"].as_str().unwrap().as_bytes();
+        let mut mismatches = Vec::new();
+        for case in corpus["cases"].as_array().unwrap() {
+            let metadata = case
+                .get("json")
+                .map(|raw| raw.as_str().unwrap().as_bytes().to_vec())
+                .unwrap_or_else(|| serde_json::to_vec(&case["value"]).unwrap());
+            let mut frame = DOCUMENT_RESPONSE_MAGIC.to_vec();
+            frame.push(DOCUMENT_RESPONSE_VERSION);
+            frame.extend_from_slice(&(metadata.len() as u32).to_le_bytes());
+            frame.extend_from_slice(&metadata);
+            frame.extend_from_slice(model);
+            if decode_document_response(&frame).is_ok() != case["valid"].as_bool().unwrap() {
+                mismatches.push(case["name"].as_str().unwrap());
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "frame corpus mismatches: {mismatches:?}"
+        );
     }
 }

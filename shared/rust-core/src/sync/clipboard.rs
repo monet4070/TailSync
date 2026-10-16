@@ -95,7 +95,11 @@ impl SyncEngine {
             .ok_or("Clipboard unavailable")?
             .write_text_admitted(text, vec![publication])
             .await;
-        engine.lock().await.finish_incoming_text(prepared, result)
+        engine
+            .lock()
+            .await
+            .finish_incoming_text(prepared, result)
+            .map_err(String::from)
     }
     pub async fn restore_image_shared(
         engine: std::sync::Arc<tokio::sync::Mutex<Self>>,
@@ -130,6 +134,7 @@ impl SyncEngine {
             .await
             .finish_incoming_image(prepared, result)
             .map(|_| ())
+            .map_err(String::from)
     }
 
     pub fn supports_native_snapshot(
@@ -303,8 +308,9 @@ impl SyncEngine {
 
     pub fn restore_text(&mut self, text: &str) -> Result<(), String> {
         let prepared = self.prepare_incoming_text(text)?;
-        let outcome = self.platform()?.write_text(text);
+        let outcome = self.platform()?.write_text_typed(text);
         self.finish_incoming_text(prepared, outcome)
+            .map_err(String::from)
     }
 
     /// Phase 1 of an inbound text activation: everything that must happen under the
@@ -343,14 +349,17 @@ impl SyncEngine {
     pub fn finish_incoming_text(
         &mut self,
         prepared: PreparedText,
-        outcome: Result<(), String>,
-    ) -> Result<(), String> {
-        if let Err(error) = outcome {
+        outcome: crate::sync::WriteOutcome,
+    ) -> Result<(), crate::sync::WriteFailure> {
+        if let Err(failure) = outcome {
             self.shadow_filter.remove(&prepared.hash);
-            if !crate::protocol::failure_is_proven_no_effect(&error) {
+            // Only a provable no-effect may leave the rest of the engine free to
+            // keep publishing; anything else may already have reached the
+            // platform, so the file clipboard is superseded.
+            if !failure.is_proven_no_effect() {
                 self.supersede_file_clipboard();
             }
-            return Err(error);
+            return Err(failure);
         }
         self.supersede_file_clipboard();
         Ok(())
@@ -380,10 +389,13 @@ impl SyncEngine {
 
     pub fn restore_image(&mut self, image_data: &[u8]) -> Result<(u32, u32), String> {
         let prepared = self.prepare_incoming_image(image_data)?;
-        let outcome =
-            self.platform()?
-                .write_image(prepared.width, prepared.height, prepared.rgba.as_slice());
+        let outcome = self.platform()?.write_image_typed(
+            prepared.width,
+            prepared.height,
+            prepared.rgba.as_slice(),
+        );
         self.finish_incoming_image(prepared, outcome)
+            .map_err(String::from)
     }
 
     /// Phase 1 of an inbound image activation: validate, register the echo guard, and
@@ -405,14 +417,14 @@ impl SyncEngine {
     pub fn finish_incoming_image(
         &mut self,
         prepared: PreparedImage,
-        outcome: Result<(), String>,
-    ) -> Result<(u32, u32), String> {
-        if let Err(error) = outcome {
+        outcome: crate::sync::WriteOutcome,
+    ) -> Result<(u32, u32), crate::sync::WriteFailure> {
+        if let Err(failure) = outcome {
             self.image_shadow_filter.remove(&prepared.hash);
-            if !crate::protocol::failure_is_proven_no_effect(&error) {
+            if !failure.is_proven_no_effect() {
                 self.supersede_file_clipboard();
             }
-            return Err(error);
+            return Err(failure);
         }
         self.supersede_file_clipboard();
         Ok((prepared.width, prepared.height))

@@ -763,13 +763,85 @@ struct Request {
     grant_id: Option<String>,
 }
 
+/// Internal carrier for one local API error.
+///
+/// Its wire form is the historical error `String`, so every existing route keeps
+/// byte-identical output. A typed producer may additionally attach the fixed
+/// stable category it derived from a structural source; only the transport
+/// encoder reads it. The category is never derived from the message, and the
+/// message is never copied into the fixed envelope.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ResponseError {
+    message: String,
+    code: Option<tailsync_runtime::contracts::StableErrorCode>,
+}
+
+impl ResponseError {
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn code(&self) -> Option<tailsync_runtime::contracts::StableErrorCode> {
+        self.code
+    }
+
+    /// Attach the fixed category a typed producer derived from a finite kind.
+    pub(crate) fn with_code(
+        message: impl Into<String>,
+        code: tailsync_runtime::contracts::StableErrorCode,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            code: Some(code),
+        }
+    }
+
+    /// Carry a typed pairing failure: the legacy message stays verbatim for
+    /// clients that did not opt in, the fixed category comes from the kind.
+    pub(crate) fn pairing_failure(failure: &tailsync_core::pairing::PairingFailure) -> Self {
+        Self::with_code(
+            failure.to_string(),
+            tailsync_runtime::contracts::StableErrorCode::from_pairing_failure_kind(failure.kind()),
+        )
+    }
+}
+
+impl From<String> for ResponseError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            code: None,
+        }
+    }
+}
+
+impl From<&str> for ResponseError {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_string())
+    }
+}
+
+impl std::ops::Deref for ResponseError {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.message
+    }
+}
+
+impl Serialize for ResponseError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.message)
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct Response {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    error: Option<ResponseError>,
 }
 
 #[cfg(test)]

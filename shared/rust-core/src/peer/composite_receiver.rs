@@ -370,7 +370,9 @@ pub async fn receive_assembled(
                             )
                             .await
                         }
-                        None => Err("clipboard platform is unavailable".to_string()),
+                        None => Err(crate::sync::WriteFailure::may_have_effect(
+                            "clipboard platform is unavailable",
+                        )),
                     };
                     let settled = match outcome {
                         Ok(outcome) => {
@@ -379,7 +381,7 @@ pub async fn receive_assembled(
                             engine.finish_composite_publish(outcome)
                         }
                         Err(error) => {
-                            tracing::warn!("Composite publish failed: {error}");
+                            tracing::warn!("Composite publish failed: {}", error.message());
                             break 'publish AckResult::ApplyUnknown;
                         }
                     };
@@ -599,6 +601,7 @@ mod tests {
     }
     #[tokio::test]
     async fn revocation_after_validation_prevents_both_native_effect_and_history() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let _warnings = crate::sync_warning::test_lock_async().await;
         while crate::sync_warning::take().is_some() {}
         let (root, db, engine, platform, source) = setup().await;
@@ -631,6 +634,7 @@ mod tests {
     }
     #[tokio::test]
     async fn o10_revoked_or_superseded_events_skip_busy_native_preparation() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let _warnings = crate::sync_warning::test_lock_async().await;
         while crate::sync_warning::take().is_some() {}
         for authorized in [false, true] {
@@ -675,6 +679,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_history_prevents_effect_and_deleted_history_stays_deleted() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let _warnings = crate::sync_warning::test_lock_async().await;
         while crate::sync_warning::take().is_some() {}
         let (root, db, engine, platform, source) = setup().await;
@@ -710,6 +715,7 @@ mod tests {
     }
     #[tokio::test]
     async fn crash_after_claim_saves_history_as_unknown_without_a_native_effect() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let _warnings = crate::sync_warning::test_lock_async().await;
         while crate::sync_warning::take().is_some() {}
         let (root, db, engine, platform, source) = setup().await;
@@ -732,6 +738,7 @@ mod tests {
     }
     #[tokio::test]
     async fn newer_native_revision_and_partial_effect_have_distinct_durable_results() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let _warnings = crate::sync_warning::test_lock_async().await;
         while crate::sync_warning::take().is_some() {}
         let (root, db, engine, platform, source) = setup().await;
@@ -766,6 +773,7 @@ mod tests {
     /// stored as incomplete with no native effect at all.
     #[tokio::test]
     async fn native_preparation_failure_stores_incomplete_without_a_native_effect() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let _warnings = crate::sync_warning::test_lock_async().await;
         while crate::sync_warning::take().is_some() {}
         let (root, db, engine, platform, source) = setup().await;
@@ -838,6 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn o06_unbound_html_is_stored_without_write_even_when_wire_claims_complete() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let (root, db, engine, platform, source) = setup().await;
         let mut e = event();
         let mut b = PortableBundle::decode(&e.content).unwrap();
@@ -864,6 +873,7 @@ mod tests {
 
     #[tokio::test]
     async fn incomplete_and_superseded_generation_only_store_history() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let _warnings = crate::sync_warning::test_lock_async().await;
         while crate::sync_warning::take().is_some() {}
         let (root, db, engine, platform, source) = setup().await;

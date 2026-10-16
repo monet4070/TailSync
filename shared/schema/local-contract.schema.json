@@ -1327,6 +1327,23 @@
         "service_instance"
       ]
     },
+    "PairingFailureKind": {
+      "description": "Finite classification of a pairing failure.\n\nThe set is deliberately small: a failure that cannot be attributed to one\nof these buckets stays [`PairingFailureKind::Unknown`] rather than being\nguessed from text.",
+      "type": "string",
+      "enum": [
+        "protocol_incompatible",
+        "identity_mismatch",
+        "window_closed",
+        "timed_out",
+        "connection_closed",
+        "invalid_advertisement",
+        "invalid_argument",
+        "busy",
+        "cancelled",
+        "transport",
+        "unknown"
+      ]
+    },
     "PairingPeerStatus": {
       "type": "object",
       "properties": {
@@ -1395,6 +1412,17 @@
           "format": "uint8",
           "maximum": 255,
           "minimum": 0
+        },
+        "failure_kind": {
+          "description": "Finite classification of the failure that produced `error`, when the\nproducer knew one. Omitted entirely when there is no classification, so\nan older shell model that never heard of the field still decodes.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairingFailureKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "max_failures": {
           "type": "integer",
@@ -2005,6 +2033,12 @@
         "no_single_image",
         "format_unavailable",
         "unsupported_format",
+        "pairing_identity_mismatch",
+        "pairing_window_closed",
+        "pairing_timed_out",
+        "pairing_connection_closed",
+        "pairing_busy",
+        "pairing_cancelled",
         "internal_error"
       ]
     },

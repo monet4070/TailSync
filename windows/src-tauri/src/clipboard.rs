@@ -15,6 +15,10 @@ use crate::network;
 use crate::protocol::{Command, FileChunkPayload, TransferId, FILE_CHUNK_SIZE};
 use crate::sync;
 
+use composite_capture::{
+    process_composite_capture, CaptureEnvironment, CompositeCapture, CompositeCaptureContext,
+};
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub enum ClipboardRuntime {
@@ -221,6 +225,7 @@ async fn clipboard_loop(
     let mut file_event_gate = ClipboardEventGate::default();
     let mut tick: u64 = 0;
     let mut recovery_generation = CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire);
+    let capture_env = CaptureEnvironment::platform();
 
     loop {
         let sleep_started_ms = crate::protocol::unix_timestamp_ms().max(0) as u64;
@@ -260,265 +265,24 @@ async fn clipboard_loop(
 
         if crate::clipboard_composite::capture_enabled() {
             if let Some(observed) = change_detector.observed_revision() {
-                if !snapshot_retry.ready(observed, std::time::Instant::now()) {
-                    continue;
-                }
-                let archive_ticket = archive_observation.observe(&image_archive, observed);
-                let captured = tokio::task::spawn_blocking(move || {
-                    // Covers helper output/snapshot copies, model/history copies,
-                    // PNG pixels/decoder and HTML workspace before any allocation.
-                    let memory = std::sync::Arc::new(
-                        tailsync_core::composite::budgets::global()
-                            .reserve_pipeline(204 * 1024 * 1024)
-                            .map_err(|e| e.to_string())?,
-                    );
-                    let snapshot = crate::clipboard_composite::read()?;
-                    if !tailsync_core::composite::capture_retry::CaptureRetry::matches_snapshot(
-                        observed, &snapshot,
-                    ) {
-                        return Err("Clipboard changed during capture".to_string());
-                    }
-                    let captured = tailsync_core::composite::from_native_capture(&snapshot);
-                    Ok::<_, String>((snapshot, captured, memory))
-                })
+                let outcome = process_composite_capture(
+                    observed,
+                    CompositeCaptureContext {
+                        database: &database,
+                        sync_engine: &sync_engine,
+                        pool: &pool,
+                        settings: &settings,
+                        image_archive: &image_archive,
+                        retry: &mut snapshot_retry,
+                        archive_observation: &mut archive_observation,
+                        ack: &mut change_detector,
+                        recovery_generation,
+                        env: &capture_env,
+                    },
+                )
                 .await;
-                if !snapshot_retry.is_current(observed, crate::clipboard_composite::revision())
-                    || CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire) != recovery_generation
-                {
-                    // Discard late provider/conversion results without acknowledging
-                    // the new clipboard or spending its retry allowance.
-                    snapshot_retry.clear();
+                if matches!(outcome, CompositeCapture::Handled) {
                     continue;
-                }
-                match captured {
-                    Ok(Ok((snapshot, Ok(bundle), memory))) => {
-                        use tailsync_core::composite::{origin::Origin, Completeness};
-                        let origin = crate::clipboard_composite::classify(&snapshot, &bundle);
-                        if origin == Origin::SelfWrite {
-                            change_detector.acknowledge(snapshot.after);
-                            snapshot_retry.clear();
-                            continue;
-                        }
-                        let capture_generation =
-                            sync_engine.lock().await.supersede_file_clipboard();
-                        if bundle.completeness == Completeness::MissingFormats
-                            && !snapshot_retry.exhausted()
-                        {
-                            snapshot_retry.retry(observed, std::time::Instant::now());
-                            continue;
-                        }
-
-                        let archive_candidate = origin == Origin::External
-                            && bundle.representations.iter().any(|representation| {
-                                representation.mime == tailsync_core::composite::Mime::Html
-                            });
-                        let db = database.clone();
-                        let stored = bundle.clone();
-                        let native = snapshot.clone();
-                        let held = memory.clone();
-                        let saved = tokio::task::spawn_blocking(move || {
-                            let _held = held;
-                            let mut db = db.blocking_lock();
-                            if !db.is_storage_available() {
-                                return Err("History storage unavailable".to_string());
-                            }
-                            let id = db
-                                .add_composite(&stored, Some(&native), "self")
-                                .map_err(|e| e.to_string())?;
-                            let guard = archive_candidate
-                                .then(|| {
-                                    tailsync_runtime::history::ArchiveEntryGuard::capture(&db, id)
-                                        .ok()
-                                })
-                                .flatten();
-                            Ok::<_, String>((id, guard))
-                        })
-                        .await;
-                        if !matches!(saved, Ok(Ok(_))) {
-                            tailsync_core::sync_warning::record_capture_not_saved();
-                            if !snapshot_retry
-                                .is_current(observed, crate::clipboard_composite::revision())
-                            {
-                                snapshot_retry.clear();
-                                continue;
-                            }
-                            if !snapshot_retry.retry(observed, std::time::Instant::now())
-                                && crate::clipboard_composite::capture_fault(
-                                    observed,
-                                    "capture_not_saved",
-                                )
-                                .await
-                            {
-                                change_detector.acknowledge(observed);
-                                snapshot_retry.clear();
-                            }
-                            continue;
-                        }
-                        change_detector.acknowledge(snapshot.after);
-                        snapshot_retry.clear();
-                        crate::api::bump_clipboard_version();
-                        let mut archive_binding = match &saved {
-                            Ok(Ok((id, Some(guard)))) => {
-                                Some(tailsync_runtime::history::ArchiveCommit {
-                                    id: *id,
-                                    guard: guard.clone(),
-                                })
-                            }
-                            _ => None,
-                        };
-                        tailsync_core::sync_warning::record_saved_capture(
-                            &snapshot,
-                            Some(&bundle),
-                            origin,
-                            crate::clipboard_composite::supports_native(&snapshot),
-                        );
-                        // Saving this event does not authorize sending it after a
-                        // newer copy or user restore superseded it during storage.
-                        if matches!(origin, Origin::UnknownMismatch | Origin::Unknown)
-                            || crate::clipboard_composite::revision() != Some(snapshot.after)
-                            || sync_engine.lock().await.clipboard_generation() != capture_generation
-                        {
-                            if let (Some(ticket), Some(commit)) = (archive_ticket, archive_binding)
-                            {
-                                enqueue_automatic_archive(&image_archive, ticket, origin, commit);
-                            }
-                            continue;
-                        }
-                        if bundle.completeness == Completeness::MissingFormats {
-                            crate::clipboard_composite::capture_fault(
-                                snapshot.after,
-                                "capture_incomplete",
-                            )
-                            .await;
-                        }
-                        tracing::debug!(provenance = ?tailsync_core::composite::CaptureProvenance::from_bundle(&bundle), "composite capture provenance");
-                        match tailsync_core::composite::capture::prepare_broadcast(
-                            snapshot, bundle, memory,
-                        ) {
-                            Ok(captured) => {
-                                let bound = broadcast_composite_to_peers(
-                                    CaptureBroadcastGate {
-                                        engine: sync_engine.clone(),
-                                        generation: capture_generation,
-                                        revision: captured.revision(),
-                                        recovery_generation,
-                                    },
-                                    &pool,
-                                    &settings,
-                                    database.clone(),
-                                    archive_binding.clone(),
-                                    &image_archive,
-                                    captured.payload().clone(),
-                                )
-                                .await;
-                                if bound.is_some() {
-                                    archive_binding = bound;
-                                }
-                            }
-                            Err(error) => {
-                                warn!("Composite broadcast preparation failed: {error}");
-                                tailsync_core::sync_warning::record_capture_not_shared();
-                            }
-                        }
-                        if let (Some(ticket), Some(commit)) = (archive_ticket, archive_binding) {
-                            enqueue_automatic_archive(&image_archive, ticket, origin, commit);
-                        }
-                        continue;
-                    }
-                    Ok(Ok((
-                        snapshot,
-                        Err(
-                            tailsync_core::composite::CaptureError::UnsupportedItems
-                            | tailsync_core::composite::CaptureError::NativeOnly,
-                        ),
-                        memory,
-                    ))) => {
-                        use tailsync_core::composite::origin::Origin;
-                        let origin = crate::clipboard_composite::classify_native(&snapshot);
-                        if origin == Origin::SelfWrite {
-                            change_detector.acknowledge(snapshot.after);
-                            snapshot_retry.clear();
-                            continue;
-                        }
-                        sync_engine.lock().await.supersede_file_clipboard();
-                        let db = database.clone();
-                        let native = snapshot.clone();
-                        let held = memory.clone();
-                        let saved = tokio::task::spawn_blocking(move || {
-                            let _held = held;
-                            let mut db = db.blocking_lock();
-                            if !db.is_storage_available() {
-                                return Err("History storage unavailable".to_string());
-                            }
-                            db.add_native_snapshot(&native, "self")
-                                .map_err(|e| e.to_string())
-                        })
-                        .await;
-                        if matches!(saved, Ok(Ok(_))) {
-                            change_detector.acknowledge(snapshot.after);
-                            snapshot_retry.clear();
-                            tailsync_core::sync_warning::record_saved_capture(
-                                &snapshot,
-                                None,
-                                origin,
-                                crate::clipboard_composite::supports_native(&snapshot),
-                            );
-                            crate::api::bump_clipboard_version();
-                        } else {
-                            tailsync_core::sync_warning::record_capture_not_saved();
-                            if !snapshot_retry
-                                .is_current(observed, crate::clipboard_composite::revision())
-                            {
-                                snapshot_retry.clear();
-                                continue;
-                            }
-                            if !snapshot_retry.retry(observed, std::time::Instant::now())
-                                && crate::clipboard_composite::capture_fault(
-                                    observed,
-                                    "capture_not_saved",
-                                )
-                                .await
-                            {
-                                change_detector.acknowledge(observed);
-                                snapshot_retry.clear();
-                            }
-                        }
-                        continue;
-                    }
-                    Ok(Ok((_, Err(tailsync_core::composite::CaptureError::Files), _memory))) => {
-                        snapshot_retry.clear();
-                    }
-                    Ok(Ok((
-                        snapshot,
-                        Err(tailsync_core::composite::CaptureError::Empty),
-                        _memory,
-                    ))) => {
-                        crate::clipboard_composite::classify_native(&snapshot);
-                        sync_engine.lock().await.supersede_file_clipboard();
-                        change_detector.acknowledge(snapshot.after);
-                        snapshot_retry.clear();
-                        continue;
-                    }
-                    Ok(Ok((
-                        snapshot,
-                        Err(tailsync_core::composite::CaptureError::Suppressed),
-                        _memory,
-                    ))) => {
-                        sync_engine.lock().await.supersede_file_clipboard();
-                        change_detector.acknowledge(snapshot.after);
-                        snapshot_retry.clear();
-                        continue;
-                    }
-                    _ => {
-                        if !snapshot_retry.retry(observed, std::time::Instant::now())
-                            && crate::clipboard_composite::capture_fault(observed, "capture_failed")
-                                .await
-                        {
-                            change_detector.acknowledge(observed);
-                            snapshot_retry.clear();
-                        }
-                        continue;
-                    }
                 }
             } else {
                 continue;
@@ -897,6 +661,1720 @@ async fn configured_peers(
         }
     };
     network::merge_paired_peers(&snapshot, &mode, discovered)
+}
+
+mod composite_capture {
+    //! The Windows single-observed composite-capture transaction.
+    //!
+    //! `clipboard_loop` used to inline this transaction: read the native
+    //! snapshot, reserve the CNS1 pipeline budget, convert it, classify its
+    //! origin, save it, retry bounded failures, then re-check the clipboard
+    //! generation before the final broadcast gate. It is now one private
+    //! function the monitor really calls, so the production ordering can be
+    //! exercised by behaviour tests.
+    //!
+    //! Only the OS/provider edge and the clock are replaceable (see
+    //! [`CaptureEnvironment`]); the memory reserve, `from_native_capture`
+    //! conversion, storage write, retry schedule, archive binding and the
+    //! broadcast gate all run in the real transaction below.
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    use log::warn;
+    use tokio::sync::Mutex;
+
+    use tailsync_core::composite::origin::Origin;
+    use tailsync_core::composite::PortableBundle;
+    use tailsync_core::protocol::native_clipboard::NativeSnapshot;
+
+    use crate::clipboard_change::ClipboardChangeDetector;
+    use crate::{crypto, db, network, sync};
+
+    use super::{
+        broadcast_composite_to_peers, enqueue_automatic_archive, CaptureBroadcastGate,
+        CLIPBOARD_RECOVERY_GENERATION,
+    };
+
+    include!("../../../shared/platform-clipboard-capture-terminal.rs");
+    include!("../../../shared/platform-clipboard-capture-publish.rs");
+
+    /// The outcome of one composite-capture tick. The monitor keeps the legacy
+    /// files/text/image flow for [`CompositeCapture::FilesFallback`] and treats
+    /// every other outcome as fully owned by the composite path.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum CompositeCapture {
+        Handled,
+        FilesFallback,
+    }
+
+    /// Acknowledgment boundary for the capture seam. Production advances the
+    /// platform change detector; tests record the acknowledged revision so an
+    /// acknowledgment of a superseded copy is observable.
+    pub(super) trait CaptureAcknowledger: Send {
+        fn acknowledge(&mut self, revision: i64);
+    }
+
+    impl CaptureAcknowledger for ClipboardChangeDetector {
+        fn acknowledge(&mut self, revision: i64) {
+            ClipboardChangeDetector::acknowledge(self, revision);
+        }
+    }
+
+    type CaptureFaultFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
+
+    /// Injectable side-effect boundary for the composite capture seam.
+    ///
+    /// The production adapter calls the real platform helpers; tests supply a
+    /// validated fixture snapshot, a controllable revision, a real
+    /// `OriginTracker` fingerprint projection and a controllable clock/fault
+    /// sink.
+    #[derive(Clone)]
+    #[allow(clippy::type_complexity)]
+    pub(super) struct CaptureEnvironment {
+        revision: Arc<dyn Fn() -> Option<i64> + Send + Sync>,
+        read: Arc<dyn Fn() -> Result<NativeSnapshot, String> + Send + Sync>,
+        classify: Arc<dyn Fn(&NativeSnapshot, &PortableBundle) -> Origin + Send + Sync>,
+        classify_native: Arc<dyn Fn(&NativeSnapshot) -> Origin + Send + Sync>,
+        clock: Arc<dyn Fn() -> std::time::Instant + Send + Sync>,
+        capture_fault: Arc<dyn Fn(i64, &'static str) -> CaptureFaultFuture + Send + Sync>,
+        #[cfg(test)]
+        pipeline_lease: Arc<
+            std::sync::Mutex<
+                Option<std::sync::Weak<tailsync_core::composite::budgets::PipelineLease>>,
+            >,
+        >,
+    }
+
+    impl CaptureEnvironment {
+        /// The production adapter: every seam calls the real platform helper.
+        pub(super) fn platform() -> Self {
+            Self {
+                revision: Arc::new(crate::clipboard_composite::revision),
+                read: Arc::new(crate::clipboard_composite::read),
+                classify: Arc::new(crate::clipboard_composite::classify),
+                classify_native: Arc::new(crate::clipboard_composite::classify_native),
+                clock: Arc::new(std::time::Instant::now),
+                capture_fault: Arc::new(|revision, kind| {
+                    Box::pin(crate::clipboard_composite::capture_fault(revision, kind))
+                }),
+                #[cfg(test)]
+                pipeline_lease: Arc::default(),
+            }
+        }
+
+        fn revision(&self) -> Option<i64> {
+            (self.revision)()
+        }
+
+        fn read(&self) -> Result<NativeSnapshot, String> {
+            (self.read)()
+        }
+
+        fn classify(&self, snapshot: &NativeSnapshot, bundle: &PortableBundle) -> Origin {
+            (self.classify)(snapshot, bundle)
+        }
+
+        fn classify_native(&self, snapshot: &NativeSnapshot) -> Origin {
+            (self.classify_native)(snapshot)
+        }
+
+        fn now(&self) -> std::time::Instant {
+            (self.clock)()
+        }
+
+        async fn capture_fault(&self, revision: i64, kind: &'static str) -> bool {
+            (self.capture_fault)(revision, kind).await
+        }
+    }
+
+    /// Everything one composite-capture tick reads or mutates. Borrowing the
+    /// per-loop state mutably keeps a single transaction implementation in the
+    /// source instead of a second copy inside the tests.
+    pub(super) struct CompositeCaptureContext<'a> {
+        pub database: &'a Arc<Mutex<db::HistoryDB>>,
+        pub sync_engine: &'a Arc<Mutex<sync::SyncEngine>>,
+        pub pool: &'a Arc<Mutex<network::ConnectionPool>>,
+        pub settings: &'a Arc<Mutex<crypto::Settings>>,
+        pub image_archive: &'a Arc<crate::automatic_images::AutomaticImageArchive>,
+        pub retry: &'a mut tailsync_core::composite::capture_retry::CaptureRetry,
+        pub archive_observation:
+            &'a mut tailsync_runtime::automatic_image_archive::CaptureTicketTracker,
+        pub ack: &'a mut dyn CaptureAcknowledger,
+        pub recovery_generation: u64,
+        pub env: &'a CaptureEnvironment,
+    }
+
+    /// One observed composite capture. The monitor calls this from the real
+    /// clipboard loop; tests call the same function so the transaction below is
+    /// the one under test.
+    pub(super) async fn process_composite_capture(
+        observed: i64,
+        context: CompositeCaptureContext<'_>,
+    ) -> CompositeCapture {
+        let CompositeCaptureContext {
+            database,
+            sync_engine,
+            pool,
+            settings,
+            image_archive,
+            retry: snapshot_retry,
+            archive_observation,
+            ack,
+            recovery_generation,
+            env,
+        } = context;
+
+        if !snapshot_retry.ready(observed, env.now()) {
+            return CompositeCapture::Handled;
+        }
+        let archive_ticket = archive_observation.observe(image_archive, observed);
+        let provider = env.clone();
+        let captured = tokio::task::spawn_blocking(move || {
+            // Covers helper output/snapshot copies, model/history copies,
+            // PNG pixels/decoder and HTML workspace before any allocation.
+            let memory = Arc::new(
+                tailsync_core::composite::budgets::global()
+                    .reserve_pipeline(204 * 1024 * 1024)
+                    .map_err(|e| e.to_string())?,
+            );
+            #[cfg(test)]
+            {
+                *provider.pipeline_lease.lock().unwrap() = Some(Arc::downgrade(&memory));
+            }
+            let snapshot = provider.read()?;
+            if !tailsync_core::composite::capture_retry::CaptureRetry::matches_snapshot(
+                observed, &snapshot,
+            ) {
+                return Err("Clipboard changed during capture".to_string());
+            }
+            let captured = tailsync_core::composite::from_native_capture(&snapshot);
+            Ok::<_, String>((snapshot, captured, memory))
+        })
+        .await;
+        if !snapshot_retry.is_current(observed, env.revision())
+            || CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire) != recovery_generation
+        {
+            // Discard late provider/conversion results without acknowledging
+            // the new clipboard or spending its retry allowance.
+            snapshot_retry.clear();
+            return CompositeCapture::Handled;
+        }
+        match captured {
+            Ok(Ok((snapshot, Ok(bundle), memory))) => {
+                use tailsync_core::composite::Completeness;
+                let origin = env.classify(&snapshot, &bundle);
+                if origin == Origin::SelfWrite {
+                    acknowledge_capture(snapshot_retry, ack, snapshot.after);
+                    return CompositeCapture::Handled;
+                }
+                let capture_generation = sync_engine.lock().await.supersede_file_clipboard();
+                if bundle.completeness == Completeness::MissingFormats
+                    && !snapshot_retry.exhausted()
+                {
+                    snapshot_retry.retry(observed, env.now());
+                    return CompositeCapture::Handled;
+                }
+
+                let archive_candidate = origin == Origin::External
+                    && bundle.representations.iter().any(|representation| {
+                        representation.mime == tailsync_core::composite::Mime::Html
+                    });
+                let db = database.clone();
+                let stored = bundle.clone();
+                let native = snapshot.clone();
+                let held = memory.clone();
+                let saved = tokio::task::spawn_blocking(move || {
+                    let _held = held;
+                    let mut db = db.blocking_lock();
+                    if !db.is_storage_available() {
+                        return Err("History storage unavailable".to_string());
+                    }
+                    let id = db
+                        .add_composite(&stored, Some(&native), "self")
+                        .map_err(|e| e.to_string())?;
+                    let guard = archive_candidate
+                        .then(|| {
+                            tailsync_runtime::history::ArchiveEntryGuard::capture(&db, id).ok()
+                        })
+                        .flatten();
+                    Ok::<_, String>((id, guard))
+                })
+                .await;
+                if !matches!(saved, Ok(Ok(_))) {
+                    finish_failed_capture(
+                        observed,
+                        CaptureFailure::NotSaved,
+                        snapshot_retry,
+                        ack,
+                        env,
+                    )
+                    .await;
+                    return CompositeCapture::Handled;
+                }
+                acknowledge_capture(snapshot_retry, ack, snapshot.after);
+                crate::api::bump_clipboard_version();
+                let archive_binding = match &saved {
+                    Ok(Ok((id, Some(guard)))) => Some(tailsync_runtime::history::ArchiveCommit {
+                        id: *id,
+                        guard: guard.clone(),
+                    }),
+                    _ => None,
+                };
+                publish_saved_portable_capture(
+                    SavedPortableCapture {
+                        snapshot,
+                        bundle,
+                        memory,
+                        origin,
+                        capture_generation,
+                        archive_ticket,
+                        archive_binding,
+                    },
+                    PortablePublishContext {
+                        database,
+                        sync_engine,
+                        pool,
+                        settings,
+                        image_archive,
+                        recovery_generation,
+                        env,
+                    },
+                )
+                .await;
+                CompositeCapture::Handled
+            }
+            Ok(Ok((
+                snapshot,
+                Err(
+                    tailsync_core::composite::CaptureError::UnsupportedItems
+                    | tailsync_core::composite::CaptureError::NativeOnly,
+                ),
+                memory,
+            ))) => {
+                let origin = env.classify_native(&snapshot);
+                if origin == Origin::SelfWrite {
+                    acknowledge_capture(snapshot_retry, ack, snapshot.after);
+                    return CompositeCapture::Handled;
+                }
+                sync_engine.lock().await.supersede_file_clipboard();
+                let db = database.clone();
+                let native = snapshot.clone();
+                let held = memory.clone();
+                let saved = tokio::task::spawn_blocking(move || {
+                    let _held = held;
+                    let mut db = db.blocking_lock();
+                    if !db.is_storage_available() {
+                        return Err("History storage unavailable".to_string());
+                    }
+                    db.add_native_snapshot(&native, "self")
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+                if matches!(saved, Ok(Ok(_))) {
+                    acknowledge_capture(snapshot_retry, ack, snapshot.after);
+                    tailsync_core::sync_warning::record_saved_capture(
+                        &snapshot,
+                        None,
+                        origin,
+                        crate::clipboard_composite::supports_native(&snapshot),
+                    );
+                    crate::api::bump_clipboard_version();
+                } else {
+                    finish_failed_capture(
+                        observed,
+                        CaptureFailure::NotSaved,
+                        snapshot_retry,
+                        ack,
+                        env,
+                    )
+                    .await;
+                }
+                CompositeCapture::Handled
+            }
+            Ok(Ok((_, Err(tailsync_core::composite::CaptureError::Files), _memory))) => {
+                snapshot_retry.clear();
+                CompositeCapture::FilesFallback
+            }
+            Ok(Ok((snapshot, Err(tailsync_core::composite::CaptureError::Empty), _memory))) => {
+                env.classify_native(&snapshot);
+                sync_engine.lock().await.supersede_file_clipboard();
+                acknowledge_capture(snapshot_retry, ack, snapshot.after);
+                CompositeCapture::Handled
+            }
+            Ok(Ok((
+                snapshot,
+                Err(tailsync_core::composite::CaptureError::Suppressed),
+                _memory,
+            ))) => {
+                // Metadata suppression is a completed decision with no
+                // history, broadcast, fault body or fallback reader.
+                sync_engine.lock().await.supersede_file_clipboard();
+                acknowledge_capture(snapshot_retry, ack, snapshot.after);
+                CompositeCapture::Handled
+            }
+            _ => {
+                finish_failed_capture(observed, CaptureFailure::Failed, snapshot_retry, ack, env)
+                    .await;
+                CompositeCapture::Handled
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        //! Behaviour tests for the production composite-capture seam.
+        //!
+        //! Every test drives [`process_composite_capture`] — the function the real
+        //! `clipboard_loop` calls — with a validated `NativeSnapshot`, the real
+        //! `from_native_capture` conversion, the real CNS1 204 MiB reserve, an
+        //! isolated SQLite store, a real `SyncEngine`/`ConnectionPool` and the real
+        //! broadcast gate. Only the OS/provider edge, the clock, the origin tracker
+        //! instance and the fault sink are injected.
+        use super::*;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
+        use std::sync::{Condvar, Mutex as StdMutex};
+        use std::time::Duration;
+
+        use tailsync_core::cancellation::Cancellation;
+        use tailsync_core::composite::fingerprint::{
+            origin_fingerprint, origin_fingerprint_from_native, requires_original_domain,
+        };
+        use tailsync_core::composite::origin::OriginTracker;
+        use tailsync_core::composite::resource_archive::{
+            ArchiveError, ArchiveUrl, FetchFuture, FetchLimits, ResourceTransport,
+        };
+        use tailsync_core::peer::delivery::QueuedFrame;
+        use tailsync_core::peer::pool::PoolSender;
+        use tailsync_core::peer::types::ResolvedTarget;
+        use tailsync_core::protocol::native_clipboard::{
+            FormatState, NativeFormat, NativeSnapshot, SnapshotState,
+        };
+
+        use crate::automatic_images::AutomaticImageArchive;
+        use crate::crypto::Settings;
+        use crate::db::HistoryDB;
+        use crate::identity::DeviceIdentity;
+        use crate::network::ConnectionPool;
+        use crate::protocol::{Command, TransferId};
+        use crate::sync::{
+            FileBatchProgress, FileReceiveCommit, PlatformResultFuture, SyncEngine, SyncPlatform,
+        };
+
+        include!("../../../shared/platform-clipboard-capture-tests.rs");
+
+        const PEER_HOST: &str = "peer-f3a2";
+        const PEER_ADDRESS: &str = "100.64.0.2";
+        const SELF_TOKEN: [u8; 16] = [7; 16];
+
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Shape {
+            Portable,
+            Html,
+            HtmlImage,
+            MissingFormats,
+            NativeOnly,
+            Files,
+            Suppressed,
+            Empty,
+            Failed,
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum OriginMode {
+            External,
+            SelfWrite,
+            Mismatch,
+        }
+
+        /// A real Windows text format: UTF-16LE code units with a terminating NUL,
+        /// exactly as the clipboard helper emits CF_UNICODETEXT.
+        fn text_format() -> NativeFormat {
+            NativeFormat {
+                item: 0,
+                name: "CF_UNICODETEXT".into(),
+                state: FormatState::Captured,
+                bytes: "hello f3a2\0"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+            }
+        }
+
+        fn snapshot(shape: Shape, rev: i64) -> NativeSnapshot {
+            let base = |state, items| NativeSnapshot {
+                before: rev,
+                after: rev,
+                items,
+                state,
+                formats: vec![],
+            };
+            match shape {
+                Shape::Portable => NativeSnapshot {
+                    before: rev,
+                    after: rev,
+                    items: 1,
+                    state: SnapshotState::Stable,
+                    formats: vec![text_format()],
+                },
+                Shape::Html | Shape::HtmlImage => NativeSnapshot {
+                    before: rev,
+                    after: rev,
+                    items: 1,
+                    state: SnapshotState::Stable,
+                    formats: vec![
+                        text_format(),
+                        NativeFormat {
+                            item: 0,
+                            name: "HTML Format".into(),
+                            state: FormatState::Captured,
+                            bytes: tailsync_core::composite::html::encode_cf_html(
+                                if shape == Shape::HtmlImage {
+                                    "<html><body>f3 image<img src=\"https://fixture.example/capture-image.png\"></body></html>"
+                                } else {
+                                    "<html><body>f3a2</body></html>"
+                                },
+                            )
+                            .unwrap(),
+                        },
+                    ],
+                },
+                Shape::MissingFormats => NativeSnapshot {
+                    before: rev,
+                    after: rev,
+                    items: 1,
+                    state: SnapshotState::Stable,
+                    formats: vec![
+                        text_format(),
+                        NativeFormat {
+                            item: 0,
+                            name: "Rich Text Format".into(),
+                            state: FormatState::Failed,
+                            bytes: vec![],
+                        },
+                    ],
+                },
+                Shape::NativeOnly => NativeSnapshot {
+                    before: rev,
+                    after: rev,
+                    items: 1,
+                    state: SnapshotState::Stable,
+                    formats: vec![NativeFormat {
+                        item: 0,
+                        name: "CF_DIB".into(),
+                        state: FormatState::Captured,
+                        bytes: b"opaque original".to_vec(),
+                    }],
+                },
+                Shape::Files => base(SnapshotState::FileSelection, 1),
+                Shape::Suppressed => base(SnapshotState::Suppressed, 0),
+                Shape::Empty => base(SnapshotState::Empty, 0),
+                Shape::Failed => base(SnapshotState::Failed, 0),
+            }
+        }
+
+        /// A complete, protocol-valid native snapshot, exactly like the helper emits.
+        fn fixture_snapshot(shape: Shape, rev: i64) -> NativeSnapshot {
+            let snapshot = snapshot(shape, rev);
+            snapshot
+                .validate()
+                .expect("fixture must be a valid native snapshot");
+            snapshot
+        }
+
+        /// Blocks the provider thread until the test releases it, so a late result
+        /// can be raced against a new clipboard revision.
+        #[derive(Clone)]
+        struct ProviderGate {
+            state: Arc<(StdMutex<bool>, Condvar)>,
+        }
+
+        impl Default for ProviderGate {
+            fn default() -> Self {
+                // Open by default: a test closes it only to hold the provider.
+                Self {
+                    state: Arc::new((StdMutex::new(true), Condvar::new())),
+                }
+            }
+        }
+
+        /// Releases the provider gate even if the test unwinds, so a failed
+        /// assertion cannot leave a blocking worker parked forever.
+        struct GateRelease(ProviderGate);
+        impl Drop for GateRelease {
+            fn drop(&mut self) {
+                self.0.open();
+            }
+        }
+
+        impl ProviderGate {
+            fn open_on_drop(&self) -> GateRelease {
+                GateRelease(self.clone())
+            }
+            fn close(&self) {
+                *self.state.0.lock().unwrap() = false;
+            }
+            fn open(&self) {
+                let (lock, cv) = &*self.state;
+                *lock.lock().unwrap() = true;
+                cv.notify_all();
+            }
+            fn wait(&self) {
+                let (lock, cv) = &*self.state;
+                let mut open = lock.lock().unwrap();
+                while !*open {
+                    open = cv.wait(open).unwrap();
+                }
+            }
+        }
+
+        struct NoFetch;
+        impl ResourceTransport for NoFetch {
+            fn fetch_once<'a>(
+                &'a self,
+                _url: &'a ArchiveUrl,
+                _limits: &'a FetchLimits,
+                _cancellation: &'a Cancellation,
+            ) -> FetchFuture<'a> {
+                Box::pin(async { Err(ArchiveError::Transport) })
+            }
+        }
+
+        struct RecordingAck {
+            acks: Arc<StdMutex<Vec<i64>>>,
+        }
+        impl CaptureAcknowledger for RecordingAck {
+            fn acknowledge(&mut self, revision: i64) {
+                self.acks.lock().unwrap().push(revision);
+            }
+        }
+
+        struct TestPlatform {
+            revision: Arc<AtomicI64>,
+        }
+        impl SyncPlatform for TestPlatform {
+            fn write_text(&self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn write_image(&self, _: u32, _: u32, _: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+            fn clipboard_revision(&self) -> Option<i64> {
+                let value = self.revision.load(Ordering::SeqCst);
+                (value >= 0).then_some(value)
+            }
+            fn set_file_progress(&self, _: &str, _: u64, _: u64) {}
+            fn clear_file_progress(&self, _: Option<TransferId>, _: Option<&str>) {}
+            fn set_file_batch_progress(&self, _: FileBatchProgress) {}
+            fn files_received(&self, _: FileReceiveCommit) -> PlatformResultFuture {
+                Box::pin(async { Ok(()) })
+            }
+            fn file_batch_failed(&self, _: Option<TransferId>, _: &str) {}
+        }
+
+        struct Fixture {
+            root: PathBuf,
+            database: Arc<Mutex<HistoryDB>>,
+            engine: Arc<Mutex<SyncEngine>>,
+            pool: Arc<Mutex<ConnectionPool>>,
+            settings: Arc<Mutex<Settings>>,
+            archive: Arc<AutomaticImageArchive>,
+            revision: Arc<AtomicI64>,
+            classify_notify: Arc<tokio::sync::Notify>,
+            clock_offset_ms: Arc<AtomicU64>,
+            faults: Arc<StdMutex<Vec<(i64, &'static str)>>>,
+            fault_ok: Arc<AtomicBool>,
+            provider_entered: Arc<tokio::sync::Notify>,
+            gate: ProviderGate,
+            fixture_snapshot: NativeSnapshot,
+            retry: StdMutex<tailsync_core::composite::capture_retry::CaptureRetry>,
+            tickets: StdMutex<tailsync_runtime::automatic_image_archive::CaptureTicketTracker>,
+            ack: StdMutex<RecordingAck>,
+            env: CaptureEnvironment,
+        }
+
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+
+        async fn fixture(
+            shape: Shape,
+            origin_mode: OriginMode,
+            archive_enabled: bool,
+            with_peer: bool,
+        ) -> Fixture {
+            // A real isolated store with the composite schema. The production
+            // policy would only create it when the capture helper is serviceable,
+            // which it is not inside a unit test, so the fixture asks for the
+            // composite schema explicitly (the same shape production runs with).
+            let root =
+                std::env::temp_dir().join(format!("tailsync-f3a2-{:016x}", rand::random::<u64>()));
+
+            let revision = 100_i64;
+            let fixture_snapshot = fixture_snapshot(shape, revision);
+
+            let database = Arc::new(Mutex::new(
+                HistoryDB::open_isolated_for_test_composite(&root).unwrap(),
+            ));
+            let settings = Arc::new(Mutex::new(Settings {
+                notifications_enabled: false,
+                sync_enabled: true,
+                ..Settings::default()
+            }));
+            let identity = Arc::new(DeviceIdentity::generate_for_test());
+
+            if with_peer {
+                // The peer is resolved through the production `merge_paired_peers`
+                // path from the pinned key plus a remembered LAN address. The
+                // process-global peer cache is deliberately not seeded: it holds a
+                // single (mode, cache) state, so seeding it would race every other
+                // `store_peer_cache`/`clear_peer_cache` case in this binary. The
+                // cost is the cold-cache discovery timeout inside `configured_peers`.
+                let mut s = settings.lock().await;
+                s.trusted_peer_keys
+                    .insert(PEER_HOST.into(), identity.public_key_base64());
+                s.trusted_peer_addresses
+                    .entry(PEER_HOST.into())
+                    .or_default()
+                    .insert("lan".into(), PEER_ADDRESS.into());
+                s.enabled_peers.insert(PEER_HOST.into(), true);
+            }
+
+            let pool = Arc::new(Mutex::new(ConnectionPool::new(
+                identity.clone(),
+                settings.clone(),
+            )));
+            let rev_atomic = Arc::new(AtomicI64::new(revision));
+            let engine = Arc::new(Mutex::new(SyncEngine::new()));
+            engine.lock().await.set_platform(Arc::new(TestPlatform {
+                revision: rev_atomic.clone(),
+            }));
+
+            let archive = Arc::new(AutomaticImageArchive::new(
+                database.clone(),
+                archive_enabled,
+                Arc::new(NoFetch),
+                Arc::new(|| {}),
+            ));
+
+            // Seed a real origin tracker with the *real* fingerprint of the bundle
+            // this fixture converts to, so SelfWrite/Mismatch are genuine tracker
+            // outcomes rather than a fabricated `Origin` value.
+            let tracker = Arc::new(StdMutex::new(OriginTracker::default()));
+            if origin_mode != OriginMode::External {
+                let bundle = tailsync_core::composite::from_native_capture(&fixture_snapshot)
+                    .expect("fixture must convert to a portable bundle");
+                let digest = origin_fingerprint(&bundle).expect("fixture fingerprint");
+                let seeded = if origin_mode == OriginMode::SelfWrite {
+                    digest
+                } else {
+                    let mut flipped = digest;
+                    flipped[0] ^= 0xff;
+                    flipped
+                };
+                tracker.lock().unwrap().record(revision, seeded, SELF_TOKEN);
+            }
+
+            let classify_notify = Arc::new(tokio::sync::Notify::new());
+            let clock_base = std::time::Instant::now();
+            let clock_offset_ms = Arc::new(AtomicU64::new(0));
+            let faults: Arc<StdMutex<Vec<(i64, &'static str)>>> =
+                Arc::new(StdMutex::new(Vec::new()));
+            let fault_ok = Arc::new(AtomicBool::new(false));
+            let provider_entered = Arc::new(tokio::sync::Notify::new());
+            let gate = ProviderGate::default();
+            let acks = Arc::new(StdMutex::new(Vec::new()));
+
+            let env = {
+                let rev = rev_atomic.clone();
+                let snapshot_for_read = fixture_snapshot.clone();
+                let gate = gate.clone();
+                let entered = provider_entered.clone();
+                let tracker_classify = tracker.clone();
+                let tracker_native = tracker.clone();
+                let classify_signal = classify_notify.clone();
+                let classify_signal_native = classify_notify.clone();
+                let clock = clock_offset_ms.clone();
+                let faults_sink = faults.clone();
+                let fault_ok_sink = fault_ok.clone();
+                CaptureEnvironment {
+                    revision: Arc::new(move || {
+                        let value = rev.load(Ordering::SeqCst);
+                        (value >= 0).then_some(value)
+                    }),
+                    read: Arc::new(move || {
+                        entered.notify_one();
+                        gate.wait();
+                        Ok(snapshot_for_read.clone())
+                    }),
+                    classify: Arc::new(
+                        move |snapshot: &NativeSnapshot, bundle: &PortableBundle| {
+                            classify_signal.notify_one();
+                            let mut tracker = tracker_classify.lock().unwrap();
+                            // Production `classify` routes to the original domain
+                            // whenever `requires_original_domain` holds; mirror that
+                            // with the real predicate, fingerprint and tracker.
+                            let digest = if requires_original_domain(snapshot) {
+                                origin_fingerprint_from_native(snapshot).ok()
+                            } else {
+                                origin_fingerprint(bundle).ok()
+                            };
+                            let token = snapshot
+                                .formats
+                                .iter()
+                                .find(|f| f.name == "org.tailsync.clipboard-source")
+                                .and_then(|f| f.bytes.as_slice().try_into().ok());
+                            match digest {
+                                Some(digest) => {
+                                    tracker.classify(Some(snapshot.after), digest, token)
+                                }
+                                None => Origin::UnknownMismatch,
+                            }
+                        },
+                    ),
+                    classify_native: Arc::new(move |snapshot: &NativeSnapshot| {
+                        classify_signal_native.notify_one();
+                        let mut tracker = tracker_native.lock().unwrap();
+                        let digest = origin_fingerprint_from_native(snapshot).ok();
+                        match digest {
+                            Some(digest) => tracker.classify(Some(snapshot.after), digest, None),
+                            None => Origin::UnknownMismatch,
+                        }
+                    }),
+                    clock: Arc::new(move || {
+                        clock_base + Duration::from_millis(clock.load(Ordering::SeqCst))
+                    }),
+                    capture_fault: Arc::new(move |revision, kind| {
+                        faults_sink.lock().unwrap().push((revision, kind));
+                        let ok = fault_ok_sink.load(Ordering::SeqCst);
+                        Box::pin(async move { ok })
+                    }),
+                    pipeline_lease: Arc::default(),
+                }
+            };
+
+            Fixture {
+                root,
+                database,
+                engine,
+                pool,
+                settings,
+                archive,
+                revision: rev_atomic,
+                classify_notify,
+                clock_offset_ms,
+                faults,
+                fault_ok,
+                provider_entered,
+                gate,
+                fixture_snapshot,
+                retry: StdMutex::new(Default::default()),
+                tickets: StdMutex::new(Default::default()),
+                ack: StdMutex::new(RecordingAck { acks }),
+                env,
+            }
+        }
+
+        impl Fixture {
+            fn set_revision(&self, revision: i64) {
+                self.revision.store(revision, Ordering::SeqCst);
+            }
+
+            fn advance_clock_ms(&self, ms: u64) {
+                self.clock_offset_ms.fetch_add(ms, Ordering::SeqCst);
+            }
+
+            fn acks(&self) -> Vec<i64> {
+                self.ack.lock().unwrap().acks.lock().unwrap().clone()
+            }
+
+            fn faults(&self) -> Vec<(i64, &'static str)> {
+                self.faults.lock().unwrap().clone()
+            }
+
+            fn observe_ticket(
+                &self,
+                revision: i64,
+            ) -> Option<tailsync_runtime::automatic_image_archive::CaptureTicket> {
+                self.tickets
+                    .lock()
+                    .unwrap()
+                    .observe(&self.archive, revision)
+            }
+
+            // The per-loop state is a real `&mut` in production; the fixture keeps
+            // it behind a std mutex so one test can drive several ticks. Nothing
+            // contends these guards, so holding them across the seam's awaits is
+            // exactly the production shape.
+            #[allow(clippy::await_holding_lock)]
+            async fn tick(&self, observed: i64) -> CompositeCapture {
+                let recovery_generation = CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire);
+                let mut retry = self.retry.lock().unwrap();
+                let mut tickets = self.tickets.lock().unwrap();
+                let mut ack = self.ack.lock().unwrap();
+                let result = tokio::time::timeout(
+                    TEST_WAIT,
+                    process_composite_capture(
+                        observed,
+                        CompositeCaptureContext {
+                            database: &self.database,
+                            sync_engine: &self.engine,
+                            pool: &self.pool,
+                            settings: &self.settings,
+                            image_archive: &self.archive,
+                            retry: &mut retry,
+                            archive_observation: &mut tickets,
+                            ack: &mut *ack,
+                            recovery_generation,
+                            env: &self.env,
+                        },
+                    ),
+                )
+                .await
+                .expect("capture transaction timed out");
+                let lease = self.env.pipeline_lease.lock().unwrap().clone();
+                if let Some(lease) = lease {
+                    assert!(
+                        lease.upgrade().is_none(),
+                        "finished capture retained an original pipeline admission clone"
+                    );
+                }
+                result
+            }
+
+            async fn history_len(&self) -> usize {
+                self.database
+                    .lock()
+                    .await
+                    .get_all(None, None, 50, 0)
+                    .unwrap()
+                    .len()
+            }
+
+            async fn history_id(&self) -> i64 {
+                self.database
+                    .lock()
+                    .await
+                    .get_all(None, None, 50, 0)
+                    .unwrap()[0]
+                    .id
+            }
+        }
+
+        /// Install a real `PoolSender` for the capture lane so the production
+        /// broadcast reaches a bounded queue instead of a real socket.
+        struct CaptureQueue {
+            filler: tokio::sync::mpsc::Sender<QueuedFrame>,
+            priority: tokio::sync::mpsc::Receiver<QueuedFrame>,
+            // Both receivers must stay alive: a dropped receiver makes the pooled
+            // sender look dead and the pool would spawn a fresh worker instead of
+            // reusing the queue under test.
+            _bulk: tokio::sync::mpsc::Receiver<QueuedFrame>,
+            _shutdown: tokio::sync::watch::Receiver<bool>,
+        }
+
+        async fn install_capture_sender(pool: &Arc<Mutex<ConnectionPool>>) -> CaptureQueue {
+            let (priority, priority_rx) = tokio::sync::mpsc::channel(1);
+            let filler = priority.clone();
+            let (bulk, bulk_rx) = tokio::sync::mpsc::channel(1);
+            let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
+            let sender = PoolSender::new(priority, bulk, shutdown);
+            pool.lock().await.insert_capture_sender(
+                ResolvedTarget::Tcp(format!("{PEER_ADDRESS}:19890").parse().unwrap()),
+                PEER_HOST.into(),
+                sender,
+            );
+            CaptureQueue {
+                filler,
+                priority: priority_rx,
+                _bulk: bulk_rx,
+                _shutdown: shutdown_rx,
+            }
+        }
+
+        /// A single capture reserves 204 MiB of the process-global 256 MiB pipeline
+        /// budget, so two capture ticks in this binary cannot overlap: the second
+        /// reservation would fail and every assertion would see a spurious capture
+        /// fault. The recovery counter is a second process-global, and the warning
+        /// queue a third. This lock serialises only this module's tests — each test
+        /// still runs its own workers and races internally.
+        fn capture_serial() -> &'static tokio::sync::Mutex<()> {
+            static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+            LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        enum Supersede {
+            Nothing,
+            Revision,
+            Generation,
+            Recovery,
+        }
+
+        /// Every rendezvous in these tests is bounded, so a future regression can
+        /// only fail a test, never park the whole suite on a leaked wait.
+        const TEST_WAIT: Duration = Duration::from_secs(15);
+
+        async fn wait_for_signal(signal: &tokio::sync::Notify, what: &str) {
+            tokio::time::timeout(TEST_WAIT, signal.notified())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+        }
+
+        async fn wait_for_capture_queue(pool: &Arc<Mutex<ConnectionPool>>) {
+            tokio::time::timeout(TEST_WAIT, async {
+                loop {
+                    if pool.lock().await.capture_queue_attempts_for_test() > 0 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("capture never reached the actual enqueue");
+        }
+
+        async fn recv_bounded(
+            receiver: &mut tokio::sync::mpsc::Receiver<QueuedFrame>,
+            what: &str,
+        ) -> QueuedFrame {
+            tokio::time::timeout(TEST_WAIT, receiver.recv())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+                .unwrap_or_else(|| panic!("the capture queue closed before {what}"))
+        }
+
+        fn drain_warnings() -> Vec<&'static str> {
+            let mut kinds = Vec::new();
+            while let Some(warning) = tailsync_core::sync_warning::take() {
+                kinds.push(warning.kind);
+            }
+            kinds
+        }
+
+        #[tokio::test]
+        async fn external_portable_is_saved_before_it_is_broadcast() {
+            let _serial = capture_serial().lock().await;
+            let fx = fixture(Shape::Portable, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+
+            // Hold the store while the capture reaches its save, then prove nothing
+            // has been queued yet. The injected classifier runs after the provider,
+            // the first revision check and the origin decision, and immediately
+            // before the generation supersede and the save. Waiting there (not on a
+            // later revision read, which the held store would block) is the exact
+            // pre-save rendezvous.
+            let hold = fx.database.lock().await;
+            let mut task = Box::pin(fx.tick(100));
+            tokio::select! {
+                _ = wait_for_signal(&fx.classify_notify, "the storage rendezvous before the save") => {}
+                _ = &mut task => panic!("capture finished while storage was held"),
+            }
+            assert!(
+                queue.priority.try_recv().is_err(),
+                "no payload may be queued before the save"
+            );
+            drop(hold);
+
+            assert_eq!(task.await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 1);
+            assert_eq!(fx.acks(), vec![100]);
+            assert!(fx.faults().is_empty());
+            let queued = queue
+                .priority
+                .try_recv()
+                .expect("external capture must be broadcast");
+            assert_eq!(queued.command(), Command::CompositePayload);
+            assert!(
+                queue.priority.try_recv().is_err(),
+                "exactly one payload per capture"
+            );
+            fx.set_revision(100);
+        }
+
+        #[tokio::test]
+        async fn self_write_is_acknowledged_without_saving_or_broadcasting() {
+            let _serial = capture_serial().lock().await;
+            let fx = fixture(Shape::Portable, OriginMode::SelfWrite, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 0, "our own write is not history");
+            assert_eq!(fx.acks(), vec![100]);
+            assert!(fx.faults().is_empty());
+            assert!(
+                queue.priority.try_recv().is_err(),
+                "our own write is never re-broadcast"
+            );
+        }
+
+        #[tokio::test]
+        async fn unknown_mismatch_keeps_history_and_warns_without_broadcast() {
+            let _serial = capture_serial().lock().await;
+            let _ = drain_warnings();
+            let fx = fixture(Shape::Html, OriginMode::Mismatch, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 1, "an unknown origin is still kept");
+            assert_eq!(fx.acks(), vec![100]);
+            assert!(
+                queue.priority.try_recv().is_err(),
+                "an unknown origin is never re-broadcast"
+            );
+            assert!(
+                drain_warnings().contains(&"capture_origin_unknown"),
+                "an unknown origin must be a visible warning"
+            );
+        }
+
+        #[tokio::test]
+        async fn suppressed_decision_has_no_side_effects() {
+            let _serial = capture_serial().lock().await;
+            let fx = fixture(Shape::Suppressed, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 0);
+            assert_eq!(fx.acks(), vec![100]);
+            assert!(fx.faults().is_empty(), "suppression is not a capture fault");
+            assert!(queue.priority.try_recv().is_err());
+        }
+
+        #[tokio::test]
+        async fn files_decision_returns_the_legacy_fallback() {
+            let _serial = capture_serial().lock().await;
+            let fx = fixture(Shape::Files, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::FilesFallback);
+            assert_eq!(fx.history_len().await, 0);
+            assert!(fx.acks().is_empty());
+            assert!(queue.priority.try_recv().is_err());
+        }
+
+        #[tokio::test]
+        async fn empty_capture_is_acknowledged_without_history() {
+            let _serial = capture_serial().lock().await;
+            let fx = fixture(Shape::Empty, OriginMode::External, false, true).await;
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 0);
+            assert_eq!(fx.acks(), vec![100]);
+        }
+
+        #[tokio::test]
+        async fn failed_capture_retries_without_acking_until_the_fault_is_durable() {
+            let _serial = capture_serial().lock().await;
+            let fx = fixture(Shape::Failed, OriginMode::External, false, true).await;
+
+            for _ in 0..3 {
+                assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+                assert!(
+                    fx.acks().is_empty(),
+                    "a retrying failure is not acknowledged"
+                );
+                fx.advance_clock_ms(2000);
+            }
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.faults(), vec![(100, "capture_failed")]);
+            assert!(
+                fx.acks().is_empty(),
+                "a failed fault record must not swallow the copy"
+            );
+
+            fx.fault_ok.store(true, Ordering::SeqCst);
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.acks(), vec![100]);
+        }
+
+        #[tokio::test]
+        async fn native_only_keeps_the_original_without_portable_broadcast() {
+            let _serial = capture_serial().lock().await;
+            let fx = fixture(Shape::NativeOnly, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(
+                fx.history_len().await,
+                1,
+                "the original archive is retained"
+            );
+            assert_eq!(fx.acks(), vec![100]);
+            assert!(
+                queue.priority.try_recv().is_err(),
+                "a native-only capture has no portable payload to broadcast"
+            );
+            let id = fx.history_id().await;
+            let native = fx
+                .database
+                .lock()
+                .await
+                .get_composite_native(id)
+                .unwrap()
+                .expect("the retained original must be readable as a native snapshot");
+            assert_eq!(native.formats.len(), 1);
+            assert_eq!(native.formats[0].name, "CF_DIB");
+            assert_eq!(
+                native.formats[0].bytes, b"opaque original",
+                "the exact original bytes must survive the round trip"
+            );
+            assert!(
+                fx.database
+                    .lock()
+                    .await
+                    .get_composite_archive(id)
+                    .unwrap()
+                    .is_none(),
+                "a CNS1 native capture has no portable archive"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn late_provider_result_does_not_spend_the_new_copies_retry_budget() {
+            let _serial = capture_serial().lock().await;
+            let mut fx = fixture(Shape::Portable, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+            fx.gate.close();
+            let _release = fx.gate.open_on_drop();
+
+            let mut task = Box::pin(fx.tick(100));
+            tokio::select! {
+                _ = wait_for_signal(&fx.provider_entered, "the capture provider to start") => {}
+                _ = &mut task => panic!("capture finished before the provider was entered"),
+            }
+            // A newer copy supersedes the in-flight read while it is still running.
+            fx.set_revision(101);
+            fx.gate.open();
+            drop(_release);
+
+            assert_eq!(task.await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 0, "a late result must not save");
+            assert!(fx.acks().is_empty());
+            assert!(
+                fx.faults().is_empty(),
+                "a discarded late result is not a fault"
+            );
+            assert!(queue.priority.try_recv().is_err());
+
+            // The new copy starts with a fresh allowance: it is captured, not blocked
+            // by the discarded attempt's exhausted budget.
+            fx.fixture_snapshot = fixture_snapshot(Shape::Portable, 101);
+            let mut env = fx.env.clone();
+            let snapshot = fx.fixture_snapshot.clone();
+            let gate = fx.gate.clone();
+            let entered = fx.provider_entered.clone();
+            env.read = Arc::new(move || {
+                entered.notify_one();
+                gate.wait();
+                Ok(snapshot.clone())
+            });
+            fx.env = env;
+
+            assert_eq!(fx.tick(101).await, CompositeCapture::Handled);
+            assert_eq!(
+                fx.history_len().await,
+                1,
+                "the new copy is saved immediately"
+            );
+            assert_eq!(fx.acks(), vec![101]);
+        }
+
+        /// A read that returns a snapshot for a revision other than the one that
+        /// scheduled it (the helper observed a newer clipboard) is discarded exactly
+        /// like a late provider result: it never acknowledges the new copy and never
+        /// spends its retry allowance.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn snapshot_mismatch_does_not_charge_the_new_copy() {
+            let _serial = capture_serial().lock().await;
+            let mut fx = fixture(Shape::Portable, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+
+            // The provider reads a snapshot that already belongs to the next copy.
+            let mismatched = fixture_snapshot(Shape::Portable, 101);
+            let read = mismatched.clone();
+            let mut env = fx.env.clone();
+            env.read = Arc::new(move || Ok(read.clone()));
+            fx.env = env;
+            fx.set_revision(101);
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 0);
+            assert!(fx.acks().is_empty());
+            assert!(fx.faults().is_empty());
+            assert!(!fx.retry.lock().unwrap().exhausted());
+            assert!(queue.priority.try_recv().is_err());
+
+            // The next copy is captured immediately.
+            fx.fixture_snapshot = fixture_snapshot(Shape::Portable, 101);
+            let snapshot = fx.fixture_snapshot.clone();
+            let mut env = fx.env.clone();
+            env.read = Arc::new(move || Ok(snapshot.clone()));
+            fx.env = env;
+            assert_eq!(fx.tick(101).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 1);
+            assert_eq!(fx.acks(), vec![101]);
+        }
+
+        /// The final broadcast gate re-checks the generation, revision and recovery
+        /// counter under the engine lock. Each item is superseded on its own, after
+        /// the save and the pre-broadcast check have already run, so a refusal can
+        /// only come from the real enqueue gate.
+        #[tokio::test]
+        async fn final_broadcast_gate_refuses_a_capture_superseded_after_storage() {
+            let _serial = capture_serial().lock().await;
+            for supersede in [
+                Supersede::Nothing,
+                Supersede::Revision,
+                Supersede::Generation,
+                Supersede::Recovery,
+            ] {
+                let fx = fixture(Shape::Portable, OriginMode::External, false, true).await;
+                let mut queue = install_capture_sender(&fx.pool).await;
+                // Fill the bounded capture queue so the broadcast parks on real
+                // backpressure instead of racing the gate.
+                queue
+                    .filler
+                    .send(QueuedFrame::new(Command::Heartbeat, vec![]).unwrap())
+                    .await
+                    .unwrap();
+
+                let mut task = Box::pin(fx.tick(100));
+                tokio::select! {
+                    _ = wait_for_capture_queue(&fx.pool) => {}
+                    _ = &mut task => panic!("capture finished before reaching the broadcast gate"),
+                }
+                // The store and the pre-broadcast generation check have both run:
+                // the capture is parked on the reserved queue slot, not returning
+                // early. Superseding now can only be observed by the final gate.
+                std::future::poll_fn(|cx| {
+                    assert!(
+                        task.as_mut().poll(cx).is_pending(),
+                        "the capture must be blocked on queue backpressure, not an early return"
+                    );
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                assert_eq!(fx.history_len().await, 1, "the save already completed");
+
+                match supersede {
+                    Supersede::Nothing => {}
+                    Supersede::Revision => fx.set_revision(101),
+                    Supersede::Generation => {
+                        fx.engine.lock().await.supersede_file_clipboard();
+                    }
+                    Supersede::Recovery => crate::clipboard::request_wake_recovery(),
+                }
+
+                // Release the reserved slot; the gate now decides the handoff.
+                let _ = recv_bounded(&mut queue.priority, "the reserved slot to be released").await;
+                assert_eq!(task.await, CompositeCapture::Handled);
+
+                match supersede {
+                    Supersede::Nothing => {
+                        let queued = queue
+                            .priority
+                            .try_recv()
+                            .expect("a capture that stayed current is broadcast");
+                        assert_eq!(queued.command(), Command::CompositePayload);
+                    }
+                    other => assert!(
+                        queue.priority.try_recv().is_err(),
+                        "{other:?}: a superseded capture must never enter the real worker queue"
+                    ),
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn parent_unknown_origin_is_saved_but_never_automatically_archived() {
+            let _serial = capture_serial().lock().await;
+            let mut fx = fixture(Shape::Html, OriginMode::External, true, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+            fx.env.classify = Arc::new(|_, bundle| {
+                OriginTracker::default().classify(None, origin_fingerprint(bundle).unwrap(), None)
+            });
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 1);
+            assert_eq!(fx.acks(), vec![100]);
+            assert!(queue.priority.try_recv().is_err());
+            assert!(drain_warnings().contains(&"capture_origin_unknown"));
+            let id = fx.history_id().await;
+            let guard = tailsync_runtime::history::ArchiveEntryGuard::capture(
+                &*fx.database.lock().await,
+                id,
+            )
+            .unwrap();
+            assert_eq!(
+                fx.archive.enqueue_captured(
+                    fx.observe_ticket(100).unwrap(),
+                    Origin::External,
+                    id,
+                    guard,
+                ),
+                tailsync_runtime::automatic_image_archive::EnqueueResult::Queued,
+                "the unknown-origin seam must not already have enqueued this source"
+            );
+        }
+
+        #[tokio::test]
+        async fn parent_actual_sqlite_rejections_retry_both_saved_shapes() {
+            let _serial = capture_serial().lock().await;
+            for shape in [Shape::Portable, Shape::NativeOnly] {
+                let fx = fixture(shape, OriginMode::External, false, true).await;
+                let mut queue = install_capture_sender(&fx.pool).await;
+                let mut database = fx.database.lock().await;
+                assert!(database.is_storage_available());
+                database.reject_composite_inserts_for_test(true).unwrap();
+                drop(database);
+                for _ in 0..3 {
+                    assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+                    assert!(fx.acks().is_empty());
+                    assert_eq!(fx.history_len().await, 0);
+                    fx.advance_clock_ms(2000);
+                }
+                assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+                assert_eq!(fx.faults(), vec![(100, "capture_not_saved")]);
+                assert!(fx.acks().is_empty());
+                assert!(queue.priority.try_recv().is_err());
+                fx.database
+                    .lock()
+                    .await
+                    .reject_composite_inserts_for_test(false)
+                    .unwrap();
+                fx.settings.lock().await.sync_enabled = false;
+                assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+                assert_eq!(fx.history_len().await, 1);
+                assert_eq!(fx.acks(), vec![100]);
+            }
+        }
+
+        #[tokio::test]
+        async fn parent_fault_ack_requires_a_real_durable_journal_write() {
+            let _serial = capture_serial().lock().await;
+            let mut fx = fixture(Shape::Failed, OriginMode::External, false, false).await;
+            let blocked_root = fx.root.join("fault-root-is-a-file");
+            std::fs::write(&blocked_root, b"not a directory").unwrap();
+            let healthy_root = fx.root.join("durable-fault");
+            let writable = Arc::new(AtomicBool::new(false));
+            let flag = writable.clone();
+            fx.env.capture_fault = Arc::new(move |revision, kind| {
+                let root = if flag.load(Ordering::SeqCst) {
+                    healthy_root.clone()
+                } else {
+                    blocked_root.clone()
+                };
+                Box::pin(async move {
+                    matches!(
+                        tokio::task::spawn_blocking(move || {
+                            tailsync_core::peer::effect_journal::record_capture_fault(
+                                &root, revision, kind,
+                            )
+                        })
+                        .await,
+                        Ok(Ok(()))
+                    )
+                })
+            });
+            for _ in 0..3 {
+                fx.tick(100).await;
+                fx.advance_clock_ms(2000);
+            }
+            fx.tick(100).await;
+            assert!(
+                fx.acks().is_empty(),
+                "an actual journal error must not acknowledge"
+            );
+            writable.store(true, Ordering::SeqCst);
+            fx.tick(100).await;
+            assert_eq!(fx.acks(), vec![100]);
+            assert!(fx.root.join("durable-fault").is_dir());
+        }
+
+        /// The original-domain policy: a native-only original and a snapshot that
+        /// also carries a portable projection but requires the original domain must
+        /// both be classified through the native fingerprint, so a self-write is
+        /// suppressed without touching the portable projection.
+        #[tokio::test]
+        async fn parent_original_domain_classifies_native_self_writes() {
+            let _serial = capture_serial().lock().await;
+            for mixed in [false, true] {
+                let mut fx = fixture(
+                    if mixed {
+                        Shape::Portable
+                    } else {
+                        Shape::NativeOnly
+                    },
+                    OriginMode::External,
+                    false,
+                    true,
+                )
+                .await;
+                let mut queue = install_capture_sender(&fx.pool).await;
+                let mut snapshot = fx.fixture_snapshot.clone();
+                if mixed {
+                    // A captured image the portable model cannot carry forces the
+                    // original domain even though a text representation exists.
+                    snapshot.formats.push(NativeFormat {
+                        item: 0,
+                        name: "TIFF".into(),
+                        state: FormatState::Captured,
+                        bytes: b"II*\0opaque-original".to_vec(),
+                    });
+                }
+                snapshot.validate().unwrap();
+                if mixed {
+                    assert!(
+                        requires_original_domain(&snapshot),
+                        "a portable set carrying an unmappable original must use the original domain"
+                    );
+                } else {
+                    assert!(
+                        !requires_original_domain(&snapshot),
+                        "a pure native-only set has no portable projection to compare"
+                    );
+                    assert!(
+                        tailsync_core::composite::from_native_capture(&snapshot).is_err(),
+                        "the fixture must not convert to a portable bundle"
+                    );
+                }
+                let mut tracker = OriginTracker::default();
+                tracker.record(
+                    100,
+                    origin_fingerprint_from_native(&snapshot).unwrap(),
+                    SELF_TOKEN,
+                );
+                let tracker = Arc::new(StdMutex::new(tracker));
+                {
+                    let tracker = tracker.clone();
+                    fx.env.classify =
+                        Arc::new(move |snapshot: &NativeSnapshot, _bundle: &PortableBundle| {
+                            // Production `classify` routes to the original domain
+                            // whenever `requires_original_domain` holds.
+                            assert!(requires_original_domain(snapshot));
+                            tracker.lock().unwrap().classify(
+                                Some(snapshot.after),
+                                origin_fingerprint_from_native(snapshot).unwrap(),
+                                None,
+                            )
+                        });
+                }
+                {
+                    let tracker = tracker.clone();
+                    fx.env.classify_native = Arc::new(move |snapshot: &NativeSnapshot| {
+                        tracker.lock().unwrap().classify(
+                            Some(snapshot.after),
+                            origin_fingerprint_from_native(snapshot).unwrap(),
+                            None,
+                        )
+                    });
+                }
+                let read = snapshot.clone();
+                fx.env.read = Arc::new(move || Ok(read.clone()));
+                assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+                assert_eq!(fx.acks(), vec![100]);
+                assert_eq!(fx.history_len().await, 0);
+                assert!(queue.priority.try_recv().is_err());
+            }
+        }
+
+        /// A real native-only self-write (no portable projection at all) is
+        /// acknowledged without saving or broadcasting.
+        #[tokio::test]
+        async fn native_only_self_write_is_acknowledged_without_saving() {
+            let _serial = capture_serial().lock().await;
+            let mut fx = fixture(Shape::NativeOnly, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+            let mut tracker = OriginTracker::default();
+            tracker.record(
+                100,
+                origin_fingerprint_from_native(&fx.fixture_snapshot).unwrap(),
+                SELF_TOKEN,
+            );
+            let tracker = Arc::new(StdMutex::new(tracker));
+            fx.env.classify_native = Arc::new(move |snapshot: &NativeSnapshot| {
+                tracker.lock().unwrap().classify(
+                    Some(snapshot.after),
+                    origin_fingerprint_from_native(snapshot).unwrap(),
+                    None,
+                )
+            });
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.acks(), vec![100]);
+            assert_eq!(fx.history_len().await, 0);
+            assert!(queue.priority.try_recv().is_err());
+        }
+
+        #[tokio::test]
+        async fn parent_cancelled_provider_releases_the_exact_pipeline_lease() {
+            let _serial = capture_serial().lock().await;
+            let fx = fixture(Shape::Portable, OriginMode::External, false, false).await;
+            fx.gate.close();
+            let _release = fx.gate.open_on_drop();
+            let mut task = Box::pin(fx.tick(100));
+            tokio::select! {
+                _ = wait_for_signal(&fx.provider_entered, "the blocked provider") => {}
+                _ = &mut task => panic!("provider was not blocked"),
+            }
+            let lease = fx.env.pipeline_lease.lock().unwrap().clone().unwrap();
+            assert!(
+                lease.upgrade().is_some(),
+                "running provider must hold its reservation"
+            );
+            drop(task);
+            assert!(
+                lease.upgrade().is_some(),
+                "cancellation cannot free a still-running provider's memory"
+            );
+            fx.gate.open();
+            tokio::time::timeout(TEST_WAIT, async {
+                while lease.upgrade().is_some() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("detached provider retained the reservation");
+            assert_eq!(fx.history_len().await, 0);
+            assert!(fx.acks().is_empty());
+        }
+
+        #[tokio::test]
+        async fn parent_late_read_and_conversion_errors_do_not_charge_the_new_capture() {
+            let _serial = capture_serial().lock().await;
+            for (read_error, recovery) in [(true, false), (false, false), (false, true)] {
+                let mut fx = fixture(Shape::Portable, OriginMode::External, false, false).await;
+                fx.settings.lock().await.sync_enabled = false;
+                let gate = fx.gate.clone();
+                let entered = fx.provider_entered.clone();
+                fx.env.read = Arc::new(move || {
+                    entered.notify_one();
+                    gate.wait();
+                    if read_error {
+                        Err("injected native read failure".into())
+                    } else {
+                        Ok(fixture_snapshot(Shape::Failed, 100))
+                    }
+                });
+                fx.gate.close();
+                let _release = fx.gate.open_on_drop();
+                let mut task = Box::pin(fx.tick(100));
+                tokio::select! {
+                    _ = wait_for_signal(&fx.provider_entered, "the old failing provider") => {}
+                    _ = &mut task => panic!("provider was not blocked"),
+                }
+                let current = if recovery { 100 } else { 101 };
+                fx.set_revision(current);
+                if recovery {
+                    crate::clipboard::request_wake_recovery();
+                }
+                fx.gate.open();
+                assert_eq!(task.await, CompositeCapture::Handled);
+                assert!(fx.acks().is_empty());
+                assert!(fx.faults().is_empty());
+                assert!(!fx.retry.lock().unwrap().exhausted());
+                fx.env.read = Arc::new(move || Ok(fixture_snapshot(Shape::Portable, current)));
+                assert_eq!(fx.tick(current).await, CompositeCapture::Handled);
+                assert_eq!(fx.history_len().await, 1);
+                assert_eq!(fx.acks(), vec![current]);
+            }
+        }
+
+        #[tokio::test]
+        async fn parent_storage_wait_keeps_generation_and_recovery_gates() {
+            let _serial = capture_serial().lock().await;
+            for supersede in [Supersede::Generation, Supersede::Recovery] {
+                let fx = fixture(Shape::Portable, OriginMode::External, false, true).await;
+                let mut queue = install_capture_sender(&fx.pool).await;
+                let hold = fx.database.lock().await;
+                let mut task = Box::pin(fx.tick(100));
+                tokio::select! {
+                    _ = wait_for_signal(&fx.classify_notify, "the storage attempt") => {}
+                    _ = &mut task => panic!("capture finished while storage was held"),
+                }
+                std::future::poll_fn(|cx| {
+                    assert!(task.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                match supersede {
+                    Supersede::Generation => {
+                        fx.engine.lock().await.supersede_file_clipboard();
+                    }
+                    Supersede::Recovery => crate::clipboard::request_wake_recovery(),
+                    _ => unreachable!(),
+                }
+                drop(hold);
+                assert_eq!(task.await, CompositeCapture::Handled);
+                assert_eq!(fx.history_len().await, 1);
+                assert_eq!(fx.acks(), vec![100]);
+                assert!(queue.priority.try_recv().is_err());
+            }
+        }
+
+        #[tokio::test]
+        async fn parent_failed_origin_fingerprint_never_fabricates_a_match() {
+            let _serial = capture_serial().lock().await;
+            let _ = drain_warnings();
+            let mut fx = fixture(Shape::NativeOnly, OriginMode::External, true, false).await;
+            let mut native = fx.fixture_snapshot.clone();
+            native.formats.push(NativeFormat {
+                item: 0,
+                name: "org.fixture.unreadable".into(),
+                state: FormatState::Failed,
+                bytes: vec![],
+            });
+            native.validate().unwrap();
+            assert!(origin_fingerprint_from_native(&native).is_err());
+            fx.env.read = Arc::new(move || Ok(native.clone()));
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 1);
+            assert_eq!(fx.acks(), vec![100]);
+            assert!(
+                drain_warnings().contains(&"capture_origin_unknown"),
+                "failed fingerprint must keep the production UnknownMismatch outcome"
+            );
+        }
+
+        #[tokio::test]
+        async fn automatic_archive_policy_keeps_unknown_origins_local() {
+            let _serial = capture_serial().lock().await;
+            use tailsync_runtime::automatic_image_archive::EnqueueResult;
+            let fx = fixture(Shape::Html, OriginMode::External, true, false).await;
+            let _ = fx.tick(100).await;
+            assert_eq!(fx.history_len().await, 1);
+            let id = fx.history_id().await;
+
+            let ticket = fx
+                .observe_ticket(100)
+                .expect("an enabled archive issues a ticket");
+            let guard = {
+                let db = fx.database.lock().await;
+                tailsync_runtime::history::ArchiveEntryGuard::capture(&db, id)
+            }
+            .expect("the saved source binds a real archive guard");
+            assert_eq!(
+                fx.archive
+                    .enqueue_captured(ticket, Origin::External, id, guard.clone()),
+                EnqueueResult::Duplicate,
+                "the capture seam already enqueued this exact saved source"
+            );
+            assert_eq!(
+                fx.archive
+                    .enqueue_captured(ticket, Origin::Unknown, id, guard.clone()),
+                EnqueueResult::NotLocal,
+                "unknown origins stay out of the automatic archive"
+            );
+            assert_eq!(
+                fx.archive
+                    .enqueue_captured(ticket, Origin::UnknownMismatch, id, guard),
+                EnqueueResult::NotLocal
+            );
+        }
+    }
 }
 
 #[cfg(test)]

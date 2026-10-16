@@ -71,3 +71,9 @@ repair-regressions = []
 [dev-dependencies]
 proptest = "1"
 zip = { version = "8", default-features = false, features = ["deflate"] }
+
+# This probe calls test-only migration helpers; keep it available with its
+# documented feature without breaking ordinary cargo test example compilation.
+[[example]]
+name = "rollback_probe"
+required-features = ["test-support"]

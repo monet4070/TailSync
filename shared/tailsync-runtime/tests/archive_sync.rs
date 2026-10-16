@@ -28,6 +28,10 @@ use tailsync_runtime::history::{ArchiveCommit, ArchiveEntryGuard, HistoryOperati
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{watch, Mutex};
 
+// Independent scenarios share Core's process-wide pipeline budget. Their
+// actual socket peers, archive workers and cancellation remain concurrent.
+static PIPELINE_FIXTURE: Mutex<()> = Mutex::const_new(());
+
 struct Transport {
     bodies: Vec<(String, Vec<u8>)>,
     available: AtomicBool,
@@ -84,14 +88,28 @@ fn transport() -> Arc<Transport> {
 }
 
 fn root() -> std::path::PathBuf {
+    static NEXT_ROOT: AtomicUsize = AtomicUsize::new(0);
     std::env::temp_dir().join(format!(
-        "tailsync-runtime-archive-sync-{}-{}",
+        "tailsync-runtime-archive-sync-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+#[test]
+fn isolated_store_roots_are_unique_for_back_to_back_calls() {
+    let mut roots = std::collections::HashSet::new();
+    for _ in 0..16_384 {
+        let path = root();
+        assert!(
+            roots.insert(path.clone()),
+            "duplicate isolated store root: {path:?}"
+        );
+    }
 }
 
 fn base() -> PortableBundle {
@@ -262,6 +280,7 @@ async fn deliver(
 
 #[tokio::test]
 async fn download_hooks_and_real_archive_frames_complete_one_history_then_reopen_offline() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     for automatic in [false, true] {
         let sender_root = root();
         let receiver_root = root();
@@ -435,6 +454,7 @@ async fn download_hooks_and_real_archive_frames_complete_one_history_then_reopen
 
 #[tokio::test]
 async fn queue_is_bounded_coalesces_and_rejects_deleted_or_replaced_authority() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let directory = root();
     let mut database = HistoryDB::open_isolated_for_test_composite(&directory).unwrap();
     let id = database.add_composite(&base(), None, "local").unwrap();
@@ -469,6 +489,7 @@ async fn queue_is_bounded_coalesces_and_rejects_deleted_or_replaced_authority() 
 
 #[tokio::test]
 async fn binding_is_exact_and_catches_a_manual_archive_saved_before_the_base_was_queued() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let directory = root();
     let base = base();
     let mut database = HistoryDB::open_isolated_for_test_composite(&directory).unwrap();

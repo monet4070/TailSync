@@ -1218,3 +1218,516 @@ fn archive_updates_require_bilateral_composite_and_v5_capabilities() {
     };
     assert!(!disabled.advertised().archive_resource_updates);
 }
+
+// ------------------------------------------------------------------
+// F10-A: typed handshake/connection failure classification. These tests
+// drive a real Noise exchange and assert the structural failure *kind*
+// survives the `Box<dyn Error>` boundary, so the worker never has to
+// recover a classification from display text.
+// ------------------------------------------------------------------
+
+fn expect_connect_err(
+    result: Result<SecureConnection, Box<dyn std::error::Error + Send + Sync>>,
+) -> Box<dyn std::error::Error + Send + Sync> {
+    match result {
+        Ok(_) => panic!("handshake unexpectedly completed"),
+        Err(error) => error,
+    }
+}
+
+fn typed_failure<'a>(
+    error: &'a (dyn std::error::Error + Send + Sync + 'static),
+) -> &'a ConnectionFailure {
+    error
+        .downcast_ref::<ConnectionFailure>()
+        .expect("expected a typed ConnectionFailure")
+}
+
+fn local_client_identity() -> PeerIdentity {
+    PeerIdentity {
+        hostname: "client".into(),
+        tailscale_ip: String::new(),
+        iroh_endpoint_id: None,
+    }
+}
+
+/// Drive a real client `connect` against a scripted *plain* response frame
+/// (no Noise): used for the plain-wire-header and `PeerError` paths.
+async fn client_connect_against_plain_response(
+    response: Vec<u8>,
+) -> Box<dyn std::error::Error + Send + Sync> {
+    let client_identity = DeviceIdentity::generate_for_test();
+    let expected_identity = DeviceIdentity::generate_for_test();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server = tokio::spawn(async move {
+        let mut stream = server_io;
+        let request = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(request.command, Command::HandshakeReq);
+        stream.write_all(&response).await.unwrap();
+        stream.flush().await.unwrap();
+    });
+    let error = expect_connect_err(
+        connect(
+            client_io,
+            &client_identity,
+            local_client_identity(),
+            "server",
+            expected_identity.public_key(),
+        )
+        .await,
+    );
+    server.await.unwrap();
+    error
+}
+
+/// Drive a real client `connect` against a real Noise responder that encrypts
+/// the supplied advertisement bytes into its `HandshakeAck`.
+async fn client_connect_against_scripted_advertisement(
+    advertisement: Vec<u8>,
+) -> Box<dyn std::error::Error + Send + Sync> {
+    let server_identity = DeviceIdentity::generate_for_test();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let expected_key = server_identity.public_key().to_vec();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server = tokio::spawn(async move {
+        let mut stream = server_io;
+        let mut handshake = build_handshake(&server_identity, false).unwrap();
+        let request = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(request.command, Command::HandshakeReq);
+        let mut output = vec![0u8; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
+        handshake
+            .read_message(&request.payload, &mut output)
+            .unwrap();
+        let length = handshake
+            .write_message(&advertisement, &mut output)
+            .unwrap();
+        let frame = Frame::try_new(Command::HandshakeAck, 0, 0, output[..length].to_vec()).unwrap();
+        stream
+            .write_all(&frame.encode_with_version(protocol::LEGACY_VERSION))
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+    });
+    let error = expect_connect_err(
+        connect(
+            client_io,
+            &client_identity,
+            local_client_identity(),
+            "server",
+            &expected_key,
+        )
+        .await,
+    );
+    server.await.unwrap();
+    error
+}
+
+#[tokio::test]
+async fn advertised_incompatible_protocol_version_is_typed() {
+    for (advertisement, expected) in [
+        (
+            serde_json::json!({"hostname":"server","tailscale_ip":"","protocol_version":2,"app_version":"fixture-version","max_wire_version":4}),
+            "peer (fixture-version) uses v2",
+        ),
+        (
+            serde_json::json!({"hostname":"server","tailscale_ip":"","protocol_version":2,"max_wire_version":4}),
+            "peer uses v2",
+        ),
+    ] {
+        let error = client_connect_against_scripted_advertisement(
+            serde_json::to_vec(&advertisement).unwrap(),
+        )
+        .await;
+        let failure = typed_failure(error.as_ref());
+        assert_eq!(failure.kind(), ConnectionFailureKind::ProtocolIncompatible);
+        assert!(
+            failure.message().contains(expected),
+            "{}",
+            failure.message()
+        );
+        assert!(failure.message().contains("requires v4"));
+    }
+}
+
+#[tokio::test]
+async fn unsupported_plain_wire_header_is_typed_protocol_incompatible() {
+    let frame = Frame::try_new(Command::HandshakeAck, 0, 0, b"legacy".to_vec()).unwrap();
+    let error = client_connect_against_plain_response(frame.encode_with_version(5)).await;
+    let failure = typed_failure(error.as_ref());
+    assert_eq!(failure.kind(), ConnectionFailureKind::ProtocolIncompatible);
+    assert!(
+        failure.message().contains("peer uses v5"),
+        "{}",
+        failure.message()
+    );
+}
+
+#[tokio::test]
+async fn unknown_peer_error_is_not_misclassified() {
+    let frame = Frame::try_new(Command::PeerError, 0, 0, b"peer is busy".to_vec()).unwrap();
+    let error =
+        client_connect_against_plain_response(frame.encode_with_version(protocol::LEGACY_VERSION))
+            .await;
+    let failure = typed_failure(error.as_ref());
+    assert_eq!(failure.kind(), ConnectionFailureKind::Unknown);
+    assert_eq!(failure.message(), "peer is busy");
+}
+
+#[test]
+fn peer_error_text_is_anchored_only_for_genuine_peer_bytes() {
+    let protocol =
+        ConnectionFailure::from_peer_error("Incompatible TailSync protocol: peer uses v2");
+    assert_eq!(protocol.kind(), ConnectionFailureKind::ProtocolIncompatible);
+    // An unrelated peer message containing the marker is not a fixed legacy category.
+    let mid = ConnectionFailure::from_peer_error(
+        "rejected: Incompatible TailSync protocol: peer uses v2",
+    );
+    assert_eq!(mid.kind(), ConnectionFailureKind::Unknown);
+    let window = ConnectionFailure::from_peer_error("Pairing window is closed");
+    assert_eq!(window.kind(), ConnectionFailureKind::WindowClosed);
+    let unknown = ConnectionFailure::from_peer_error("peer is busy");
+    assert_eq!(unknown.kind(), ConnectionFailureKind::Unknown);
+}
+
+#[test]
+fn local_transport_text_is_never_reclassified_as_protocol() {
+    let failure = ConnectionFailure::new(
+        ConnectionFailureKind::Transport,
+        "Incompatible TailSync protocol: peer uses v9 (local transport noise)",
+    );
+    assert_eq!(failure.kind(), ConnectionFailureKind::Transport);
+    let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(failure);
+    assert_eq!(
+        classify_boxed(boxed.as_ref()),
+        ConnectionFailureKind::Transport
+    );
+    assert_eq!(
+        ConnectionFailure::from_boxed(boxed).kind(),
+        ConnectionFailureKind::Transport
+    );
+    let message = "Incompatible TailSync protocol: local IO detail";
+    let io = std::io::Error::other(message);
+    let framed = ProtocolError::Io(io);
+    let expected = framed.to_string();
+    let failure = ConnectionFailure::from_protocol_error(framed);
+    assert_eq!(failure.kind(), ConnectionFailureKind::Transport);
+    assert_eq!(failure.message(), expected);
+    let boxed = Box::new(std::io::Error::other(message));
+    assert_eq!(
+        ConnectionFailure::from_boxed(boxed).kind(),
+        ConnectionFailureKind::Transport
+    );
+}
+
+#[tokio::test]
+async fn identity_mismatch_is_typed() {
+    let server_identity = DeviceIdentity::generate_for_test();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let expected_key = server_identity.public_key().to_vec();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server = tokio::spawn(async move {
+        accept(
+            server_io,
+            &server_identity,
+            PeerIdentity {
+                hostname: "other".into(),
+                tailscale_ip: String::new(),
+                iroh_endpoint_id: None,
+            },
+        )
+        .await
+    });
+    let error = expect_connect_err(
+        connect(
+            client_io,
+            &client_identity,
+            local_client_identity(),
+            "server",
+            &expected_key,
+        )
+        .await,
+    );
+    let failure = typed_failure(error.as_ref());
+    assert_eq!(failure.kind(), ConnectionFailureKind::IdentityMismatch);
+    assert!(failure
+        .message()
+        .contains("Peer identity mismatch for server"));
+    let _ = server.await;
+}
+
+#[tokio::test]
+async fn early_eof_is_typed_connection_closed() {
+    let client_identity = DeviceIdentity::generate_for_test();
+    let expected_identity = DeviceIdentity::generate_for_test();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server = tokio::spawn(async move {
+        let mut stream = server_io;
+        let request = read_plain_frame(&mut stream, protocol::MAX_HANDSHAKE_PAYLOAD_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(request.command, Command::HandshakeReq);
+        drop(stream);
+    });
+    let error = expect_connect_err(
+        connect(
+            client_io,
+            &client_identity,
+            local_client_identity(),
+            "server",
+            expected_identity.public_key(),
+        )
+        .await,
+    );
+    server.await.unwrap();
+    assert_eq!(
+        typed_failure(error.as_ref()).kind(),
+        ConnectionFailureKind::ConnectionClosed
+    );
+    assert!(
+        error.to_string().starts_with("IO error: "),
+        "legacy framing display changed: {error}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_advertisement_is_typed_invalid_advertisement() {
+    let error = client_connect_against_scripted_advertisement(b"{".to_vec()).await;
+    assert_eq!(
+        typed_failure(error.as_ref()).kind(),
+        ConnectionFailureKind::InvalidAdvertisement
+    );
+}
+
+#[tokio::test]
+async fn closed_pairing_window_is_typed_on_both_sides() {
+    let server_identity = DeviceIdentity::generate_for_test();
+    let client_identity = DeviceIdentity::generate_for_test();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (_, pairing_window) = watch::channel(false);
+    let server = tokio::spawn(async move {
+        accept_with_pairing_window(
+            server_io,
+            &server_identity,
+            PeerIdentity {
+                hostname: "server".into(),
+                tailscale_ip: "127.0.0.1".into(),
+                iroh_endpoint_id: None,
+            },
+            pairing_window,
+        )
+        .await
+    });
+    let client_error = match connect_pairing(
+        client_io,
+        &client_identity,
+        PeerIdentity {
+            hostname: "client".into(),
+            tailscale_ip: "127.0.0.1".into(),
+            iroh_endpoint_id: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("closed pairing window accepted a connection"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        typed_failure(client_error.as_ref()).kind(),
+        ConnectionFailureKind::WindowClosed
+    );
+    let server_error = match server.await.unwrap() {
+        Ok(_) => panic!("closed pairing window accepted a connection"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        typed_failure(server_error.as_ref()).kind(),
+        ConnectionFailureKind::WindowClosed
+    );
+}
+
+/// F10-A: the private handshake advertisement is a projection of
+/// [`PeerIdentity`]; splitting it out must not move a single wire byte. This
+/// pins the exact JSON the peer sees, including the version fields the public
+/// serializer emits.
+#[test]
+fn handshake_advertisement_projection_matches_peer_identity_wire_text() {
+    let with_iroh = PeerIdentity {
+        hostname: "host".into(),
+        tailscale_ip: "100.64.0.9".into(),
+        iroh_endpoint_id: Some(
+            "5866666666666666666666666666666666666666666666666666666666666666".into(),
+        ),
+    };
+    let capabilities = CapabilitySet {
+        file_sliding_window: true,
+        ..CapabilitySet::disabled()
+    };
+    let encoded = encode_handshake_advertisement(with_iroh, capabilities).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "hostname": "host",
+            "tailscale_ip": "100.64.0.9",
+            "iroh_endpoint_id": "5866666666666666666666666666666666666666666666666666666666666666",
+            "protocol_version": protocol::LEGACY_VERSION,
+            "app_version": env!("CARGO_PKG_VERSION"),
+            "capabilities": {
+                "file_sliding_window": true,
+                "image_compressed_chunks": false,
+                "pairing_commit_proof": false,
+                "composite_clipboard": false,
+                "archive_resource_updates": false,
+            },
+            "max_wire_version": protocol::VERSION,
+        })
+    );
+
+    let without_iroh = PeerIdentity {
+        hostname: "host".into(),
+        tailscale_ip: String::new(),
+        iroh_endpoint_id: None,
+    };
+    let encoded = encode_handshake_advertisement(without_iroh, CapabilitySet::disabled()).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert!(value.get("iroh_endpoint_id").is_none());
+    assert!(value.get("capabilities").is_none());
+    assert_eq!(value["protocol_version"], protocol::LEGACY_VERSION);
+    assert_eq!(value["max_wire_version"], protocol::VERSION);
+}
+
+// Golden messages were captured from the original private decoder, including
+// UTF-8 byte columns and protocol failure precedence over trailing JSON.
+#[test]
+fn typed_advertisement_preserves_legacy_messages_and_error_precedence() {
+    let cases = [
+        (
+            r###"{"hostname": "fixture", "tailscale_ip": "127.0.0.1", "protocol_version": 2, "app_version": "版本 fixture"}"###,
+            r###"Incompatible TailSync protocol: peer (版本 fixture) uses v2, this version requires v4. Update TailSync on both devices. at line 1 column 108"###,
+            ConnectionFailureKind::ProtocolIncompatible,
+        ),
+        (
+            r###"{"hostname": "fixture", "tailscale_ip": "127.0.0.1", "protocol_version": 2, "app_version": "版本 fixture"} trailing"###,
+            r###"Incompatible TailSync protocol: peer (版本 fixture) uses v2, this version requires v4. Update TailSync on both devices. at line 1 column 108"###,
+            ConnectionFailureKind::ProtocolIncompatible,
+        ),
+        (
+            r###"{
+  "hostname": "fixture",
+  "tailscale_ip": "127.0.0.1",
+  "protocol_version": 2,
+  "app_version": "版本 fixture"
+}"###,
+            r###"Incompatible TailSync protocol: peer (版本 fixture) uses v2, this version requires v4. Update TailSync on both devices. at line 6 column 1"###,
+            ConnectionFailureKind::ProtocolIncompatible,
+        ),
+        (
+            r###"{
+  "hostname": "fixture",
+  "tailscale_ip": "127.0.0.1",
+  "protocol_version": 2,
+  "app_version": "版本 fixture"
+} trailing"###,
+            r###"Incompatible TailSync protocol: peer (版本 fixture) uses v2, this version requires v4. Update TailSync on both devices. at line 6 column 1"###,
+            ConnectionFailureKind::ProtocolIncompatible,
+        ),
+        (
+            r###"{"hostname": "fixture😀", "tailscale_ip": "127.0.0.1", "protocol_version": 2, "app_version": "版本 fixture😀"}"###,
+            r###"Incompatible TailSync protocol: peer (版本 fixture😀) uses v2, this version requires v4. Update TailSync on both devices. at line 1 column 116"###,
+            ConnectionFailureKind::ProtocolIncompatible,
+        ),
+        (
+            r###"{
+  "hostname": "fixture😀",
+  "tailscale_ip": "127.0.0.1",
+  "protocol_version": 2,
+  "app_version": "版本 fixture😀"
+}"###,
+            r###"Incompatible TailSync protocol: peer (版本 fixture😀) uses v2, this version requires v4. Update TailSync on both devices. at line 6 column 1"###,
+            ConnectionFailureKind::ProtocolIncompatible,
+        ),
+        (
+            r###"{"hostname": "fixture", "tailscale_ip": "127.0.0.1", "protocol_version": 4, "app_version": "版本 fixture"} trailing"###,
+            r###"trailing characters at line 1 column 110"###,
+            ConnectionFailureKind::InvalidAdvertisement,
+        ),
+        (
+            r###"{"hostname":"fixture","tailscale_ip":"127.0.0.1","protocol_version":4,"protocol_version":2}"###,
+            r###"duplicate field `protocol_version` at line 1 column 91"###,
+            ConnectionFailureKind::InvalidAdvertisement,
+        ),
+        (
+            r###"{"hostname":"fixture","tailscale_ip":"127.0.0.1","protocol_version":2,"capabilities":false}"###,
+            r###"invalid type: boolean `false`, expected struct CapabilitySet at line 1 column 90"###,
+            ConnectionFailureKind::InvalidAdvertisement,
+        ),
+    ];
+    for (input, expected, kind) in cases {
+        let failure = decode_handshake_advertisement(input.as_bytes()).unwrap_err();
+        assert_eq!(failure.kind(), kind, "{input}");
+        assert_eq!(failure.message(), expected, "{input}");
+    }
+}
+
+#[tokio::test]
+async fn peer_error_frames_only_classify_fixed_legacy_categories() {
+    for (message, kind) in [
+        (
+            "Incompatible TailSync protocol: peer uses v2",
+            ConnectionFailureKind::ProtocolIncompatible,
+        ),
+        (
+            "rejected: Incompatible TailSync protocol: peer uses v2",
+            ConnectionFailureKind::Unknown,
+        ),
+        (
+            "/private/Incompatible TailSync protocol:/fixture",
+            ConnectionFailureKind::Unknown,
+        ),
+        (
+            "Pairing window is closed",
+            ConnectionFailureKind::WindowClosed,
+        ),
+        (
+            "Pairing window was closed",
+            ConnectionFailureKind::WindowClosed,
+        ),
+        (
+            "peer notes Pairing window is closed",
+            ConnectionFailureKind::Unknown,
+        ),
+        (
+            "Pairing window is closed is an example",
+            ConnectionFailureKind::Unknown,
+        ),
+        ("peer is busy", ConnectionFailureKind::Unknown),
+    ] {
+        let frame = Frame::try_new(Command::PeerError, 0, 0, message.as_bytes().to_vec()).unwrap();
+        let error = client_connect_against_plain_response(
+            frame.encode_with_version(protocol::LEGACY_VERSION),
+        )
+        .await;
+        let failure = typed_failure(error.as_ref());
+        assert_eq!(failure.kind(), kind, "{message}");
+        assert_eq!(failure.message(), message);
+    }
+}
+
+#[tokio::test]
+async fn typed_advertisement_keeps_the_full_legacy_error_through_noise() {
+    let input = r###"{
+  "hostname": "fixture",
+  "tailscale_ip": "127.0.0.1",
+  "protocol_version": 2,
+  "app_version": "版本 fixture"
+} trailing"###;
+    let expected = r###"Incompatible TailSync protocol: peer (版本 fixture) uses v2, this version requires v4. Update TailSync on both devices. at line 6 column 1"###;
+    let error = client_connect_against_scripted_advertisement(input.as_bytes().to_vec()).await;
+    let failure = typed_failure(error.as_ref());
+    assert_eq!(failure.kind(), ConnectionFailureKind::ProtocolIncompatible);
+    assert_eq!(failure.message(), expected);
+}

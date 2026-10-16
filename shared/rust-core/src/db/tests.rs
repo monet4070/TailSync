@@ -230,6 +230,7 @@ fn synthetic_history_performance_baseline() {
 
 #[test]
 fn prepared_preview_survives_entry_deletion_without_reopening_its_path() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
     let root = std::env::temp_dir().join(format!(
         "tailsync-open-preview-{:016x}",
         rand::random::<u64>()
@@ -273,6 +274,7 @@ fn read_revision_rejects_mutations_and_replaced_database_instances() {
 
 #[test]
 fn prepared_preview_rejects_corruption_and_observes_cancellation() {
+    let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
     let root = std::env::temp_dir().join(format!(
         "tailsync-preview-cancel-{:016x}",
         rand::random::<u64>()

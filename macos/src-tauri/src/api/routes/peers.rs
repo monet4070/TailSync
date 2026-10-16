@@ -30,7 +30,7 @@ pub(super) async fn handle(command: PeersCommand, req: Request, state: &ApiState
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(error.into()),
                 },
             }
         }
@@ -63,7 +63,7 @@ pub(super) async fn handle(command: PeersCommand, req: Request, state: &ApiState
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(error.into()),
                 },
             }
         }
@@ -108,7 +108,7 @@ pub(super) async fn handle(command: PeersCommand, req: Request, state: &ApiState
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(error.into()),
                 },
             }
         }
@@ -138,7 +138,7 @@ pub(super) async fn handle(command: PeersCommand, req: Request, state: &ApiState
                 Err(error) => Response {
                     ok: false,
                     data: None,
-                    error: Some(error),
+                    error: Some(error.into()),
                 },
             }
         }
@@ -169,7 +169,7 @@ pub(super) async fn handle(command: PeersCommand, req: Request, state: &ApiState
                     Response {
                         ok: false,
                         data: None,
-                        error: Some(error),
+                        error: Some(error.into()),
                     }
                 }
             }

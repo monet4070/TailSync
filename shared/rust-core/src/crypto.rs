@@ -55,6 +55,111 @@ pub struct Settings {
     pub auto_save_network_images: bool,
 }
 
+/// User-editable settings fields accepted from a window.
+///
+/// A patch is merged into the latest state while the settings lock is held, so
+/// a second window that still holds an older snapshot cannot roll back edits it
+/// never saw. Fields owned by other commands are deliberately absent:
+/// `sync_enabled` and both shortcuts have dedicated commands, `enabled_peers`
+/// and the pairing trust maps belong to peer management, and `storage_root`
+/// belongs to the storage migration workflow.
+#[derive(Debug, Clone, Default, PartialEq, schemars::JsonSchema, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct SettingsPatch {
+    pub notifications_enabled: Option<bool>,
+    pub progress_bar_enabled: Option<bool>,
+    pub history_limit: Option<u32>,
+    pub storage_quota_bytes: Option<u64>,
+    pub language: Option<String>,
+    pub connection_mode: Option<String>,
+    pub auto_save_network_images: Option<bool>,
+}
+
+impl SettingsPatch {
+    /// Accepted field names. `crypto::tests` pins this list to the derived
+    /// schema, and the desktop generators read the same schema, so there is one
+    /// source of truth for the wire contract.
+    pub const FIELDS: [&'static str; 7] = [
+        "notifications_enabled",
+        "progress_bar_enabled",
+        "history_limit",
+        "storage_quota_bytes",
+        "language",
+        "connection_mode",
+        "auto_save_network_images",
+    ];
+
+    /// Prefix that classifies a rejected patch as a request error. The local
+    /// API turns legacy error text into a stable envelope, and the classifier
+    /// already recognizes this prefix, so a rejected patch is reported as
+    /// `invalid_argument` instead of an internal failure.
+    const REJECTION_PREFIX: &'static str = "invalid request json: update_settings expects a patch of editable fields; use dedicated commands for sync state, shortcuts, peers, and storage location";
+
+    /// Parse a window's field intents. One field is validated at a time so the
+    /// response can name the rejected field without echoing its value back to
+    /// the caller.
+    pub fn from_json_value(value: serde_json::Value) -> Result<Self, String> {
+        let fields = value
+            .as_object()
+            .ok_or_else(|| format!("{}: settings must be a JSON object", Self::REJECTION_PREFIX))?;
+        for (field, field_value) in fields {
+            let safe_field = field
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                .take(64)
+                .collect::<String>();
+            let safe_field = if safe_field.is_empty() {
+                "<unprintable>".to_string()
+            } else {
+                safe_field
+            };
+            if !Self::FIELDS.contains(&field.as_str()) {
+                return Err(format!(
+                    "{}: unsupported field {safe_field}",
+                    Self::REJECTION_PREFIX
+                ));
+            }
+            let mut single = serde_json::Map::new();
+            single.insert(field.clone(), field_value.clone());
+            if serde_json::from_value::<Self>(serde_json::Value::Object(single)).is_err() {
+                return Err(format!(
+                    "{}: invalid value for field {safe_field}",
+                    Self::REJECTION_PREFIX
+                ));
+            }
+        }
+        serde_json::from_value(value)
+            .map_err(|_| format!("{}: invalid settings patch", Self::REJECTION_PREFIX))
+    }
+
+    fn apply_to(self, current: &Settings) -> Settings {
+        let mut next = current.clone();
+        if let Some(value) = self.notifications_enabled {
+            next.notifications_enabled = value;
+        }
+        if let Some(value) = self.progress_bar_enabled {
+            next.progress_bar_enabled = value;
+        }
+        if let Some(value) = self.history_limit {
+            next.history_limit = value;
+        }
+        if let Some(value) = self.storage_quota_bytes {
+            next.storage_quota_bytes = value;
+        }
+        if let Some(value) = self.language {
+            next.language = value;
+        }
+        if let Some(value) = self.connection_mode {
+            next.connection_mode = value;
+        }
+        if let Some(value) = self.auto_save_network_images {
+            next.auto_save_network_images = value;
+        }
+        next
+    }
+}
+
 /// Settings validation failures (T353 migration). Display strings reach the
 /// UI and wire surfaces verbatim.
 #[derive(Debug, Error)]
@@ -536,6 +641,8 @@ pub type ShortcutChangeHook<'a> =
 pub struct SettingsUpdateOutcome {
     pub mode_changed: bool,
     pub connection_mode: String,
+    /// The committed settings, for surfaces that return the canonical snapshot.
+    pub persisted: Settings,
 }
 
 /// Merge, validate, persist, and commit a user settings update, then apply
@@ -554,9 +661,46 @@ pub async fn apply_settings_update(
     persist: SettingsPersist<'_>,
     apply_shortcut_change: Option<ShortcutChangeHook<'_>>,
 ) -> Result<SettingsUpdateOutcome, SettingsUpdateError> {
+    apply_settings_update_with(
+        settings,
+        database,
+        move |_| requested,
+        persist,
+        apply_shortcut_change,
+    )
+    .await
+}
+
+/// Apply a window's field intents to the latest settings while the lock is
+/// held. Production generic writes use this entry point so a patch can only
+/// change the fields it names, and the committed state is returned for the
+/// caller's canonical snapshot.
+pub async fn apply_settings_patch(
+    settings: &tokio::sync::Mutex<Settings>,
+    database: &tokio::sync::Mutex<db::HistoryDB>,
+    patch: SettingsPatch,
+    persist: SettingsPersist<'_>,
+) -> Result<SettingsUpdateOutcome, SettingsUpdateError> {
+    apply_settings_update_with(
+        settings,
+        database,
+        move |current| patch.apply_to(current),
+        persist,
+        None,
+    )
+    .await
+}
+
+async fn apply_settings_update_with(
+    settings: &tokio::sync::Mutex<Settings>,
+    database: &tokio::sync::Mutex<db::HistoryDB>,
+    update: impl FnOnce(&Settings) -> Settings,
+    persist: SettingsPersist<'_>,
+    apply_shortcut_change: Option<ShortcutChangeHook<'_>>,
+) -> Result<SettingsUpdateOutcome, SettingsUpdateError> {
     let mut settings_guard = settings.lock().await;
     let new_settings = settings_guard
-        .prepare_user_update(requested)
+        .prepare_user_update(update(&settings_guard))
         .map_err(SettingsUpdateError::Validation)?;
     let history_limit = new_settings.history_limit as i64;
     let storage_quota_bytes = new_settings.storage_quota_bytes;
@@ -576,7 +720,7 @@ pub async fn apply_settings_update(
     } else {
         persist(&new_settings).map_err(SettingsUpdateError::Persist)?;
     }
-    *settings_guard = new_settings;
+    *settings_guard = new_settings.clone();
     drop(settings_guard);
     if limits_changed {
         let mut database_guard = database.lock().await;
@@ -589,6 +733,7 @@ pub async fn apply_settings_update(
     Ok(SettingsUpdateOutcome {
         mode_changed,
         connection_mode,
+        persisted: new_settings,
     })
 }
 

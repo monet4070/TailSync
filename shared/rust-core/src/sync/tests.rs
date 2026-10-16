@@ -2357,3 +2357,72 @@ async fn progress_callbacks_run_outside_the_engine_lock_in_monotonic_order() {
         other => panic!("expected the terminal clear to be delivered last, got {other:?}"),
     }
 }
+
+/// F2 — the finish seam releases the at-most-once claim only for a provable
+/// no-effect. Every other classification keeps it and supersedes the file
+/// clipboard, and the decision reads the typed kind rather than the message.
+#[test]
+fn finish_incoming_text_and_image_keep_the_claim_unless_no_effect_is_proven() {
+    fn cases() -> Vec<(crate::sync::WriteFailure, bool)> {
+        vec![
+            (
+                crate::sync::WriteFailure::no_effect("helper never started"),
+                true,
+            ),
+            (
+                crate::sync::WriteFailure::may_have_effect("no-effect: this text must not decide"),
+                false,
+            ),
+            (
+                crate::sync::WriteFailure::may_have_effect(
+                    "publish outcome unknown: clipboard helper deadline expired",
+                ),
+                false,
+            ),
+            (
+                crate::sync::WriteFailure::may_have_effect(
+                    "clipboard formats were only partially published",
+                ),
+                false,
+            ),
+            (
+                crate::sync::WriteFailure::may_have_effect("clipboard publish was superseded"),
+                false,
+            ),
+        ]
+    }
+
+    let mut engine = SyncEngine::new();
+    for (index, (failure, releases)) in cases().into_iter().enumerate() {
+        let prepared = engine
+            .prepare_incoming_text(&format!("finish-text-{index}"))
+            .unwrap();
+        let before = engine.clipboard_generation();
+        let failure = engine
+            .finish_incoming_text(prepared, Err(failure))
+            .unwrap_err();
+        assert_eq!(failure.is_proven_no_effect(), releases, "text: {failure}");
+        assert_eq!(
+            engine.clipboard_generation() != before,
+            !releases,
+            "text: a failure that proves nothing must supersede the file clipboard: {failure}"
+        );
+    }
+
+    let mut engine = SyncEngine::new();
+    for (index, (failure, releases)) in cases().into_iter().enumerate() {
+        let rgba = [index as u8 + 1; 4];
+        let packed = crate::protocol::pack_rgba_image(1, 1, &rgba).unwrap();
+        let prepared = engine.prepare_incoming_image(&packed).unwrap();
+        let before = engine.clipboard_generation();
+        let failure = engine
+            .finish_incoming_image(prepared, Err(failure))
+            .unwrap_err();
+        assert_eq!(failure.is_proven_no_effect(), releases, "image: {failure}");
+        assert_eq!(
+            engine.clipboard_generation() != before,
+            !releases,
+            "image: a failure that proves nothing must supersede the file clipboard: {failure}"
+        );
+    }
+}

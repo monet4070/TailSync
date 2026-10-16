@@ -6,6 +6,8 @@
 
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
+use tailsync_core::pairing::{PairingFailure, PairingFailureKind};
+
 pub const LOCAL_CONTRACT_SCHEMA_VERSION: u32 = 2;
 pub const LOCAL_PREVIEW_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const STABLE_ERROR_SCHEMA_VERSION: u32 = 1;
@@ -31,8 +33,40 @@ pub enum StableErrorCode {
     NoSingleImage,
     FormatUnavailable,
     UnsupportedFormat,
+    PairingIdentityMismatch,
+    PairingWindowClosed,
+    PairingTimedOut,
+    PairingConnectionClosed,
+    PairingBusy,
+    PairingCancelled,
     #[serde(other)]
     InternalError,
+}
+
+impl StableErrorCode {
+    /// Fixed category for a finite pairing failure kind.
+    ///
+    /// Only the enum variant is read; the human-readable message is never
+    /// consulted, so rewriting the display text cannot move the category.
+    /// Kinds that carry no finer structural source stay `internal_error`
+    /// instead of guessing a network or retry policy: `Transport` also covers
+    /// persisted `PairingError::Transport` text, and an unclassified failure
+    /// must not claim to be a connectivity problem.
+    pub const fn from_pairing_failure_kind(kind: PairingFailureKind) -> Self {
+        match kind {
+            PairingFailureKind::ProtocolIncompatible => Self::ProtocolIncompatible,
+            PairingFailureKind::InvalidArgument => Self::InvalidArgument,
+            PairingFailureKind::IdentityMismatch => Self::PairingIdentityMismatch,
+            PairingFailureKind::WindowClosed => Self::PairingWindowClosed,
+            PairingFailureKind::TimedOut => Self::PairingTimedOut,
+            PairingFailureKind::ConnectionClosed => Self::PairingConnectionClosed,
+            PairingFailureKind::Busy => Self::PairingBusy,
+            PairingFailureKind::Cancelled => Self::PairingCancelled,
+            PairingFailureKind::InvalidAdvertisement
+            | PairingFailureKind::Transport
+            | PairingFailureKind::Unknown => Self::InternalError,
+        }
+    }
 }
 
 /// Coarse, non-sensitive context for localizing an error. These values never
@@ -93,6 +127,12 @@ impl<'de> Deserialize<'de> for StableErrorEnvelope {
             "no_single_image" => StableErrorCode::NoSingleImage,
             "format_unavailable" => StableErrorCode::FormatUnavailable,
             "unsupported_format" => StableErrorCode::UnsupportedFormat,
+            "pairing_identity_mismatch" => StableErrorCode::PairingIdentityMismatch,
+            "pairing_window_closed" => StableErrorCode::PairingWindowClosed,
+            "pairing_timed_out" => StableErrorCode::PairingTimedOut,
+            "pairing_connection_closed" => StableErrorCode::PairingConnectionClosed,
+            "pairing_busy" => StableErrorCode::PairingBusy,
+            "pairing_cancelled" => StableErrorCode::PairingCancelled,
             "internal_error" => StableErrorCode::InternalError,
             _ => return Ok(Self::new(StableErrorCode::InternalError)),
         };
@@ -177,6 +217,36 @@ impl StableErrorEnvelope {
                 "history.restore.code.unsupported_format",
                 StableErrorDetailClass::Resource,
             ),
+            StableErrorCode::PairingIdentityMismatch => (
+                false,
+                "error.pairing_identity_mismatch",
+                StableErrorDetailClass::Authorization,
+            ),
+            StableErrorCode::PairingWindowClosed => (
+                false,
+                "error.pairing_window_closed",
+                StableErrorDetailClass::Resource,
+            ),
+            StableErrorCode::PairingTimedOut => (
+                false,
+                "error.pairing_timed_out",
+                StableErrorDetailClass::Contention,
+            ),
+            StableErrorCode::PairingConnectionClosed => (
+                false,
+                "error.pairing_connection_closed",
+                StableErrorDetailClass::Protocol,
+            ),
+            StableErrorCode::PairingBusy => (
+                false,
+                "error.pairing_busy",
+                StableErrorDetailClass::Contention,
+            ),
+            StableErrorCode::PairingCancelled => (
+                false,
+                "error.pairing_cancelled",
+                StableErrorDetailClass::Request,
+            ),
             StableErrorCode::InternalError => {
                 (false, "error.internal", StableErrorDetailClass::Internal)
             }
@@ -188,6 +258,13 @@ impl StableErrorEnvelope {
             message_key: message_key.to_string(),
             detail_class,
         }
+    }
+
+    /// Fixed envelope for a typed pairing failure. The failure's display text
+    /// is discarded: it can carry a peer address, a private path or a token,
+    /// and it must not be able to change the fixed category either.
+    pub fn from_pairing_failure(failure: &PairingFailure) -> Self {
+        Self::new(StableErrorCode::from_pairing_failure_kind(failure.kind()))
     }
 
     /// Compatibility classifier used while platform adapters are migrated
@@ -605,6 +682,111 @@ mod tests {
         let bad_request =
             StableErrorEnvelope::from_legacy_message("change_storage_location", "missing parent");
         assert_eq!(bad_request.code, StableErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn every_pairing_kind_maps_to_a_fixed_code_that_ignores_its_display_text() {
+        use tailsync_core::pairing::{PairingFailure, PairingFailureKind};
+
+        let cases = [
+            (
+                PairingFailureKind::ProtocolIncompatible,
+                StableErrorCode::ProtocolIncompatible,
+            ),
+            (
+                PairingFailureKind::InvalidArgument,
+                StableErrorCode::InvalidArgument,
+            ),
+            (
+                PairingFailureKind::IdentityMismatch,
+                StableErrorCode::PairingIdentityMismatch,
+            ),
+            (
+                PairingFailureKind::WindowClosed,
+                StableErrorCode::PairingWindowClosed,
+            ),
+            (
+                PairingFailureKind::TimedOut,
+                StableErrorCode::PairingTimedOut,
+            ),
+            (
+                PairingFailureKind::ConnectionClosed,
+                StableErrorCode::PairingConnectionClosed,
+            ),
+            (PairingFailureKind::Busy, StableErrorCode::PairingBusy),
+            (
+                PairingFailureKind::Cancelled,
+                StableErrorCode::PairingCancelled,
+            ),
+            // Kinds without a finer structural source stay conservative: the
+            // text of a persisted transport failure must not be promoted into
+            // a "network failed" claim.
+            (
+                PairingFailureKind::InvalidAdvertisement,
+                StableErrorCode::InternalError,
+            ),
+            (
+                PairingFailureKind::Transport,
+                StableErrorCode::InternalError,
+            ),
+            (PairingFailureKind::Unknown, StableErrorCode::InternalError),
+        ];
+        for (kind, expected) in cases {
+            // A deliberately contradictory message that also carries a private
+            // path and a token: neither the category nor the envelope may move.
+            let failure = PairingFailure::new(
+                kind,
+                "database locked at /private/peer; token=secret; not found",
+            );
+            let envelope = StableErrorEnvelope::from_pairing_failure(&failure);
+            assert_eq!(envelope.code, expected, "{kind:?}");
+            assert_eq!(envelope.schema_version, STABLE_ERROR_SCHEMA_VERSION);
+            let serialized = serde_json::to_string(&envelope).expect("serialize envelope");
+            assert!(!serialized.contains("private"), "{kind:?}");
+            assert!(!serialized.contains("secret"), "{kind:?}");
+            assert!(!serialized.contains("database"), "{kind:?}");
+            assert!(!serialized.contains("token"), "{kind:?}");
+            assert!(!serialized.contains("not found"), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn pairing_codes_are_never_retryable_and_survive_the_wire() {
+        use tailsync_core::pairing::{PairingFailure, PairingFailureKind};
+
+        for kind in [
+            PairingFailureKind::IdentityMismatch,
+            PairingFailureKind::WindowClosed,
+            PairingFailureKind::TimedOut,
+            PairingFailureKind::ConnectionClosed,
+            PairingFailureKind::Busy,
+            PairingFailureKind::Cancelled,
+        ] {
+            let envelope =
+                StableErrorEnvelope::from_pairing_failure(&PairingFailure::new(kind, "x"));
+            assert!(!envelope.retryable, "{kind:?}");
+            let encoded = serde_json::to_value(&envelope).expect("serialize envelope");
+            let decoded: StableErrorEnvelope =
+                serde_json::from_value(encoded).expect("pairing code stays decodable");
+            assert_eq!(decoded, envelope, "{kind:?}");
+        }
+
+        // A peer-supplied envelope must not be able to move the fixed policy of
+        // a pairing code either: the wire `retryable`/`message_key`/
+        // `detail_class` are ignored, exactly as for the frozen codes.
+        let hostile: StableErrorEnvelope = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "code": "pairing_window_closed",
+            "retryable": true,
+            "message_key": "untrusted.message",
+            "detail_class": "future_detail"
+        }))
+        .expect("pairing code stays decodable");
+        assert_eq!(
+            hostile,
+            StableErrorEnvelope::new(StableErrorCode::PairingWindowClosed)
+        );
+        assert!(!hostile.retryable);
     }
 }
 

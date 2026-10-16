@@ -91,7 +91,7 @@ describe("usePairing", () => {
     expect(result.current.pairingTarget?.hostname).toBe("MacBook");
     expect(result.current.pairingOpen).toBe(true);
     expect(result.current.pairingBusy).toBe(false);
-    expect(result.current.pairingError).toBe("");
+    expect(result.current.pairingError).toBeNull();
   });
 
   it("skips enablePairing when pairing is already enabled", async () => {
@@ -131,7 +131,7 @@ describe("usePairing", () => {
     await act(async () => {
       await result.current.openPairing(makePeer());
     });
-    expect(result.current.pairingError).toBe("Error: boom");
+    expect(result.current.pairingError).toEqual({ kind: "legacy", text: "Error: boom" });
     expect(result.current.pairingStatus?.phase).toBe("waiting");
     expect(result.current.pairingBusy).toBe(false);
   });
@@ -313,7 +313,7 @@ describe("usePairing", () => {
     const refreshDevices = vi.fn().mockResolvedValue(undefined);
     const { result } = renderHook(() => usePairing({ refreshDevices }));
     await flushMicrotasks();
-    expect(result.current.pairingError).toBe("Error: offline");
+    expect(result.current.pairingError).toEqual({ kind: "legacy", text: "Error: offline" });
   });
 
   it("stops polling after unmount", async () => {

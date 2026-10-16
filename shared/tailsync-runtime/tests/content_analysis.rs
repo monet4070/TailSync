@@ -18,6 +18,10 @@ use tailsync_runtime::content_analysis::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
+// Every scenario uses the same process-wide single analysis admission and
+// pipeline ledger. Keep two-worker concurrency inside each scenario.
+static PIPELINE_FIXTURE: AsyncMutex<()> = AsyncMutex::const_new(());
+
 fn root() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
@@ -29,6 +33,7 @@ fn root() -> PathBuf {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retained_analysis_keeps_memory_and_authority_until_drop() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (path, database) = database();
     let id = store(&database, &html_bundle("<p>中文🙂</p>", vec![])).await;
     let ledger = tailsync_core::composite::budgets::global();
@@ -66,6 +71,7 @@ async fn retained_analysis_keeps_memory_and_authority_until_drop() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pipeline_pressure_refuses_analysis_before_owned_reads() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let ledger = tailsync_core::composite::budgets::global();
     let lease = ledger
@@ -99,6 +105,7 @@ impl NativeAnalyzer for WrongItemAnalyzer {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_cannot_reassign_the_saved_source_to_another_item() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let id = store(&database, &rtf_bundle("{\\rtf1 body}")).await;
     assert!(matches!(
@@ -109,6 +116,7 @@ async fn helper_cannot_reassign_the_saved_source_to_another_item() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn aborting_a_db_lock_waiter_releases_the_worker_not_the_callers_token() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let held = database.lock().await;
     let cancellation = Cancellation::default();
@@ -140,6 +148,7 @@ async fn aborting_a_db_lock_waiter_releases_the_worker_not_the_callers_token() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn archived_overlay_is_analyzed_without_replacing_original_identity() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let original = html_bundle(
         "<p>caption</p><img src='https://tailsync.invalid/red'>",
@@ -200,6 +209,7 @@ impl NativeAnalyzer for DeadlineAnalyzer {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deadline_cancels_and_joins_the_real_worker_then_releases_admission() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let id = store(&database, &rtf_bundle("{\\rtf1 body}")).await;
     let ledger = tailsync_core::composite::budgets::global();
@@ -269,6 +279,7 @@ async fn store(database: &Arc<AsyncMutex<HistoryDB>>, bundle: &PortableBundle) -
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_order_and_first_image_survive_the_production_read_path() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let html = "<p><img src=\"tailsync-resource:2\"><img src=\"tailsync-resource:1\"></p>";
     let bundle = html_bundle(
@@ -300,6 +311,7 @@ async fn node_order_and_first_image_survive_the_production_read_path() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_reference_keeps_both_positions() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let html = "<img src=\"tailsync-resource:1\"><p>x</p><img src=\"tailsync-resource:1\">";
     let bundle = html_bundle(
@@ -319,6 +331,7 @@ async fn duplicate_reference_keeps_both_positions() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_image_missing_is_located_and_not_replaced_by_the_second() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let html = "<img src=\"https://example.com/first.png\"><img src=\"tailsync-resource:2\">";
     let mut bundle = html_bundle(
@@ -346,6 +359,7 @@ async fn first_image_missing_is_located_and_not_replaced_by_the_second() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn analysis_leaves_the_stored_identity_and_original_untouched() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let archive = NativeArchive {
         platform: 1,
@@ -396,6 +410,7 @@ async fn analysis_leaves_the_stored_identity_and_original_untouched() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deleted_entry_is_rejected_as_stale() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let id = store(&database, &rtf_bundle("{\\rtf1 body}")).await;
     let (analyzer, entered) = GateAnalyzer::new();
@@ -417,6 +432,7 @@ async fn deleted_entry_is_rejected_as_stale() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_stops_the_worker_before_it_returns_facts() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let id = store(&database, &rtf_bundle("{\\rtf1 body}")).await;
     let (analyzer, entered) = GateAnalyzer::new();
@@ -442,6 +458,7 @@ async fn cancellation_stops_the_worker_before_it_returns_facts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_analysis_is_refused_while_one_is_running() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let id = store(&database, &rtf_bundle("{\\rtf1 gate}")).await;
     let (analyzer, entered) = GateAnalyzer::new();
@@ -463,6 +480,7 @@ async fn a_second_analysis_is_refused_while_one_is_running() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_item_archive_keeps_item_boundaries() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let archive = NativeArchive {
         platform: 1,
@@ -507,6 +525,7 @@ async fn multi_item_archive_keeps_item_boundaries() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_facts_replace_the_native_summary_for_a_native_only_capture() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let archive = NativeArchive {
         platform: 1,
@@ -544,6 +563,7 @@ async fn helper_facts_replace_the_native_summary_for_a_native_only_capture() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_entry_is_reported_as_unavailable() {
+    let _fixture = PIPELINE_FIXTURE.lock().await;
     let (_path, database) = database();
     let outcome = analyze_entry(database.clone(), 4242, Arc::new(UnsupportedNativeAnalyzer)).await;
     assert!(matches!(outcome, Err(ContentAnalysisError::Unavailable)));
