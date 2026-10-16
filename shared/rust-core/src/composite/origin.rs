@@ -407,6 +407,10 @@ mod tests {
         let now = Instant::now();
         t.record_at(1, [1; 32], [1; 16], now);
         assert_eq!(
+            t.classify_at(Some(2), [1; 32], Some([1; 16]), now),
+            Origin::External
+        );
+        assert_eq!(
             t.classify_at(
                 Some(1),
                 [1; 32],

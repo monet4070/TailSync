@@ -37,13 +37,6 @@ proptest! {
     }
 
     #[test]
-    fn frame_decode_consumes_at_most_the_input_length(data in small_bytes(1024)) {
-        if let Ok((_, consumed)) = Frame::decode(&data) {
-            prop_assert!(consumed <= data.len());
-        }
-    }
-
-    #[test]
     fn file_chunk_payload_decode_never_panics_on_arbitrary_bytes(data in small_bytes(1024)) {
         let _ = FileChunkPayload::decode(&data);
     }

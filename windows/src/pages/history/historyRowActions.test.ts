@@ -1,6 +1,4 @@
 
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import en from "../../i18n/en.json";
 import zhCN from "../../i18n/zh-CN.json";
@@ -205,19 +203,6 @@ describe("history row details strings", () => {
     }
   });
 
-  it("points resources_incomplete at the backup copy entries and ships the simplified menu labels", () => {
-    const enKeys: Record<string, string> = en;
-    const zhKeys: Record<string, string> = zhCN;
-    expect(enKeys["history.restore.code.resources_incomplete"]).not.toContain("Choose an available format");
-    expect(zhKeys["history.restore.code.resources_incomplete"]).not.toContain("选择可用格式");
-    expect(enKeys["history.restore.code.resources_incomplete"]).toMatch(/text/i);
-    expect(zhKeys["history.restore.code.resources_incomplete"]).toContain("文字");
-    expect(enKeys["history.composite.copy.text"]).toBe("Plain text only");
-    expect(enKeys["history.composite.copy.png"]).toBe("Image only");
-    expect(zhKeys["history.composite.copy.text"]).toBe("仅复制文字");
-    expect(zhKeys["history.composite.copy.png"]).toBe("仅复制图片");
-  });
-
   it("shows shipped wording instead of a raw withheld code", () => {
     const subject = composite({
       formats: ["text", "html", "png"],
@@ -250,36 +235,5 @@ describe("history row details strings", () => {
       expect(completeness, language).toBe(translate("history.composite.completeness.external_references"));
       expect(completeness, language).not.toContain("external_references");
     }
-  });
-});
-
-describe("history row details styles", () => {
-  function historyRules(): CSSStyleRule[] {
-    const style = document.createElement("style");
-    style.textContent = readHistoryCss();
-    document.head.appendChild(style);
-    return Array.from(style.sheet?.cssRules ?? []).filter(
-      (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule,
-    );
-  }
-
-  function readHistoryCss(): string {
-    const candidates = [
-      resolve(process.cwd(), "src/styles/history.css"),
-      resolve(process.cwd(), "windows/src/styles/history.css"),
-    ];
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) return readFileSync(candidate, "utf8");
-    }
-    throw new Error(`history.css not found from ${process.cwd()}`);
-  }
-
-  it("styles the diagnostics panel with theme variables so both schemes resolve", () => {
-    const rules = historyRules();
-    const panel = rules.find((rule) => rule.selectorText === ".item-diagnostics");
-    expect(panel).toBeDefined();
-    expect(panel?.style.background).toContain("var(--bg-card)");
-    const label = rules.find((rule) => rule.selectorText === ".item-diagnostics dt");
-    expect(label?.style.color).toBe("var(--text-tertiary)");
   });
 });

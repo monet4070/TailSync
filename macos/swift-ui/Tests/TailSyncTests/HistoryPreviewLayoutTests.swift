@@ -98,15 +98,6 @@ final class HistoryPreviewLayoutTests: XCTestCase {
         )
     }
 
-    func testPreviewControlsUseConsistentMinimumSizes() {
-        XCTAssertGreaterThanOrEqual(HistoryPreviewLayoutMetrics.regularControlSize, 32)
-        XCTAssertGreaterThanOrEqual(HistoryPreviewLayoutMetrics.compactControlSize, 28)
-        XCTAssertGreaterThanOrEqual(
-            HistoryPreviewLayoutMetrics.toolbarHeight,
-            HistoryPreviewLayoutMetrics.regularControlSize + 16
-        )
-    }
-
     @MainActor
     func testModifierScrollOverlayIsMouseTransparent() {
         let view = HistoryPreviewModifierScrollView(

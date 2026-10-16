@@ -317,6 +317,7 @@ fn missing_settings_use_defaults() {
     let settings = Settings::load_from_path(&path).unwrap();
     assert_eq!(settings.history_limit, Settings::default().history_limit);
     assert!(settings.trusted_peer_keys.is_empty());
+    assert!(!settings.auto_save_network_images);
 }
 
 #[cfg(target_os = "windows")]
@@ -403,32 +404,7 @@ fn macos_keychain_create_and_read_round_trip_without_cli_or_tty() {
 }
 
 #[test]
-fn legacy_settings_default_to_an_empty_trust_store() {
-    let settings: Settings = serde_json::from_str(
-        r#"{
-            "notifications_enabled": true,
-            "progress_bar_enabled": true,
-            "history_limit": 100,
-            "enabled_peers": {},
-            "language": "en",
-            "connection_mode": "lan"
-        }"#,
-    )
-    .unwrap();
-    assert!(settings.trusted_peer_keys.is_empty());
-    assert!(settings.trusted_peer_addresses.is_empty());
-    assert!(settings.paired_peer_endpoints.is_empty());
-    assert_eq!(settings.sync_shortcut, "CommandOrControl+Shift+S");
-    assert_eq!(settings.history_shortcut, "CommandOrControl+Shift+H");
-}
-
-#[test]
-fn auto_save_network_images_defaults_to_disabled() {
-    assert!(!Settings::default().auto_save_network_images);
-}
-
-#[test]
-fn legacy_settings_without_auto_save_default_to_disabled() {
+fn legacy_settings_preserve_safe_defaults_when_loaded() {
     let dir = temp_data_dir("legacy-no-auto-save");
     let path = write_config(
         &dir,
@@ -443,18 +419,12 @@ fn legacy_settings_without_auto_save_default_to_disabled() {
 
     let loaded = Settings::load_from_path(&path).unwrap();
     assert!(!loaded.auto_save_network_images);
-
-    let decoded: Settings = serde_json::from_str(
-        r#"{
-            "notifications_enabled": true,
-            "progress_bar_enabled": true,
-            "history_limit": 100,
-            "enabled_peers": {},
-            "language": "en"
-        }"#,
-    )
-    .unwrap();
-    assert!(!decoded.auto_save_network_images);
+    assert!(loaded.trusted_peer_keys.is_empty());
+    assert!(loaded.trusted_peer_addresses.is_empty());
+    assert!(loaded.paired_peer_endpoints.is_empty());
+    assert_eq!(loaded.sync_shortcut, "CommandOrControl+Shift+S");
+    assert_eq!(loaded.history_shortcut, "CommandOrControl+Shift+H");
+    assert_eq!(loaded.connection_mode, "auto");
 
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -686,22 +656,6 @@ fn legacy_manual_connection_mode_maps_to_lan() {
         "tailscale_only"
     );
     assert_eq!(super::normalize_connection_mode("invalid".into()), "auto");
-}
-
-#[test]
-fn legacy_settings_without_connection_mode_default_to_auto() {
-    let settings: Settings = serde_json::from_str(
-        r#"{
-            "notifications_enabled": true,
-            "progress_bar_enabled": true,
-            "history_limit": 100,
-            "enabled_peers": {},
-            "language": "en"
-        }"#,
-    )
-    .unwrap();
-
-    assert_eq!(settings.connection_mode, "auto");
 }
 
 #[test]

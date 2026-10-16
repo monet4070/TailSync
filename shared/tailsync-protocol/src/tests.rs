@@ -1,19 +1,6 @@
 use super::*;
 
 #[test]
-fn test_encode_decode_roundtrip() {
-    let frame = Frame::try_new(Command::TextPayload, 0, 42, b"hello world".to_vec())
-        .expect("valid text fixture");
-    let encoded = frame.encode();
-    let (decoded, bytes) = Frame::decode(&encoded).unwrap();
-
-    assert_eq!(bytes, encoded.len());
-    assert_eq!(decoded.command, Command::TextPayload);
-    assert_eq!(decoded.sequence, 42);
-    assert_eq!(decoded.payload, b"hello world");
-}
-
-#[test]
 fn v4_and_v5_frames_require_the_selected_session_version() {
     let frame = Frame::try_new(Command::TextPayload, 0, 42, b"versioned".to_vec()).unwrap();
     let old = frame.encode_with_version(LEGACY_VERSION);

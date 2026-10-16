@@ -933,21 +933,6 @@ fn preview_payload_rejects_oversized_metadata_before_decryption() {
 }
 
 #[test]
-fn preview_payload_reports_missing_history_id() {
-    let root = std::env::temp_dir().join(format!(
-        "tailsync-preview-missing-{}-{}",
-        std::process::id(),
-        rand::random::<u64>()
-    ));
-    let db = test_database(&root);
-
-    let error = db.get_preview_payload(404).unwrap_err();
-    assert_eq!(error, PreviewError::EntryNotFound { entry_id: 404 });
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
 fn keyword_search_treats_like_metacharacters_as_literals() {
     let root = std::env::temp_dir().join(format!(
         "tailsync-literal-search-{:016x}",

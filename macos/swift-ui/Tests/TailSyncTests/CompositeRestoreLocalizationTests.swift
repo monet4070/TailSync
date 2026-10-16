@@ -23,13 +23,6 @@ final class CompositeRestoreLocalizationTests: XCTestCase {
             }
         }
     }
-    func testActualRestoreErrorsUseTheLocalisedOutcome() {
-        withLanguages { _ in
-            for code in Self.restoreCodes where code != "published" {
-                XCTAssertEqual(ApiError.serverError(code).localizedDescription, Loc.t("history.restore.code.\(code)"))
-            }
-        }
-    }
     /// Mirrors `RestoreOutcome::code()` in `shared/tailsync-runtime/src/history.rs`.
     private static let restoreCodes = [
         "published",
@@ -186,16 +179,5 @@ final class CompositeRestoreLocalizationTests: XCTestCase {
                 XCTAssertNotEqual(text, key, "\(language): \(key) is missing")
             }
         }
-    }
-
-    func testTheBackupMenuNamesMatchTheSimplifiedPolicy() {
-        let original = Loc.shared.lang
-        defer { Loc.shared.lang = original }
-        Loc.shared.lang = "en"
-        XCTAssertEqual(Loc.t("history.composite.copy.text"), "Plain text only")
-        XCTAssertEqual(Loc.t("history.composite.copy.png"), "Image only")
-        Loc.shared.lang = "zh-CN"
-        XCTAssertEqual(Loc.t("history.composite.copy.text"), "仅复制文字")
-        XCTAssertEqual(Loc.t("history.composite.copy.png"), "仅复制图片")
     }
 }

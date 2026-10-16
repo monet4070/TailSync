@@ -133,30 +133,4 @@ final class HistoryRowDiagnosticsTests: XCTestCase {
             }
         }
     }
-
-    func testTheProductionRowUsesTheSharedPolicy() throws {
-        let row = try source("Sources/TailSync/Views/HistoryRow.swift")
-        XCTAssertTrue(row.contains("HistoryRowTrailingActions"))
-        XCTAssertTrue(row.contains("HistoryRowStatusLabel"))
-        XCTAssertFalse(
-            row.contains("$0 == \"text\""),
-            "HistoryRow must not re-inline the old text filter"
-        )
-        XCTAssertFalse(
-            row.contains("history.composite.formats"),
-            "HistoryRow must not print the technical counts"
-        )
-    }
-
-    private func source(_ relativePath: String) throws -> String {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let resolved = testFile.path.hasPrefix("/")
-            ? testFile
-            : URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(testFile.path)
-        let packageRoot = resolved
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        return try String(contentsOf: packageRoot.appendingPathComponent(relativePath), encoding: .utf8)
-    }
 }

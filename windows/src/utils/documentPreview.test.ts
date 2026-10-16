@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cancelDocumentPreview, getDocumentPreview } from "../tailsyncClient";
 import {
   DOCUMENT_HEADER_BYTES,
   DOCUMENT_MAX_METADATA_BYTES,
@@ -8,6 +9,10 @@ import {
   documentAssetBytes,
   type DocumentResponseInput,
 } from "./documentPreview";
+
+const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("../diagnostics/localIpcMetrics", () => ({ invoke: bridge.invoke }));
+const request = { entry_id: 7, owner: "history" as const, generation: 1, request_id: "fixture-request" };
 
 type DocumentMetadata = {
   request_id?: string | null;
@@ -113,6 +118,13 @@ describe("decodeDocumentFrame", () => {
     expect(decoded.assets).toEqual(payload);
   });
 
+  it("rejects an owner, generation, entry or request mismatch", () => {
+    const frame = encodeDocument(metadata(), new Uint8Array());
+    for (const changed of [{ ...request, owner: "favorites" as const }, { ...request, generation: 4 }, { ...request, entry_id: 8 }, { ...request, request_id: "old" }]) {
+      expect(() => decodeDocumentFrame(frame, changed)).toThrow();
+    }
+  });
+
   it("rejects an unknown magic or version", () => {
     const frame = encodeDocument(metadata(), new Uint8Array());
     const badMagic = frame.slice();
@@ -191,5 +203,64 @@ describe("documentAssetBytes", () => {
     expect(await documentAssetBytes(decoded, decoded.document.assets[0])).toEqual(payload);
     const tampered = { ...decoded.document.assets[0], sha256: "00".repeat(32) };
     expect(await documentAssetBytes(decoded, tampered)).toBeNull();
+  });
+});
+
+describe("document production client lifecycle", () => {
+  beforeEach(() => bridge.invoke.mockReset());
+
+  it("revalidates backend identity before returning installable data", async () => {
+    bridge.invoke.mockResolvedValueOnce(encodeDocument(metadata(), new Uint8Array())).mockResolvedValueOnce(true);
+    const loaded = await getDocumentPreview(request);
+    expect(loaded.metadata.owner).toBe("history");
+    expect(bridge.invoke).toHaveBeenNthCalledWith(2, "validate_document_preview", { request, stamp: loaded.metadata.stamp });
+  });
+
+  it("rejects a stale database identity instead of returning the frame", async () => {
+    bridge.invoke.mockResolvedValueOnce(encodeDocument(metadata(), new Uint8Array())).mockResolvedValueOnce(false).mockResolvedValue(undefined);
+    await expect(getDocumentPreview(request)).rejects.toThrow("stale");
+    expect(bridge.invoke).toHaveBeenCalledWith("cancel_document_preview", { request });
+  });
+
+  it("cancel and late delivery never return installable data", async () => {
+    let resolve: (bytes: Uint8Array) => void = () => undefined;
+    bridge.invoke.mockImplementation((command: string) => command === "get_document_preview" ? new Promise<Uint8Array>((ready) => { resolve = ready; }) : Promise.resolve(undefined));
+    const cancellation = new AbortController();
+    const loading = getDocumentPreview(request, cancellation.signal);
+    await vi.waitFor(() => expect(bridge.invoke).toHaveBeenCalledWith("get_document_preview", { request }));
+    cancellation.abort(); resolve(encodeDocument(metadata(), new Uint8Array()));
+    await expect(loading).rejects.toThrow("cancelled");
+    expect(bridge.invoke).toHaveBeenCalledWith("cancel_document_preview", { request });
+    expect(bridge.invoke).not.toHaveBeenCalledWith("validate_document_preview", expect.anything());
+  });
+
+  it("rejects cancellation while backend installation validation is pending", async () => {
+    let validated: (current: boolean) => void = () => undefined;
+    bridge.invoke.mockImplementation((command: string) => {
+      if (command === "get_document_preview") return Promise.resolve(encodeDocument(metadata(), new Uint8Array()));
+      if (command === "validate_document_preview") return new Promise<boolean>((ready) => { validated = ready; });
+      return Promise.resolve(undefined);
+    });
+    const cancellation = new AbortController();
+    const loading = getDocumentPreview(request, cancellation.signal);
+    await vi.waitFor(() => expect(bridge.invoke).toHaveBeenCalledWith("validate_document_preview", expect.anything()));
+    cancellation.abort(); validated(true);
+    await expect(loading).rejects.toThrow("cancelled");
+    expect(bridge.invoke).toHaveBeenCalledWith("cancel_document_preview", { request });
+  });
+
+  it("keeps one running cancellation and at most the newest request per owner", async () => {
+    let finish!: () => void;
+    bridge.invoke.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; })).mockResolvedValue(undefined);
+    const running = cancelDocumentPreview(request);
+    for (let generation = 2; generation < 40; generation += 1) {
+      void cancelDocumentPreview({ ...request, generation, request_id: `cancel-${generation}` });
+      void cancelDocumentPreview({ ...request, owner: "favorites", generation, request_id: `favorite-${generation}` });
+    }
+    expect(bridge.invoke).toHaveBeenCalledTimes(1);
+    finish();
+    await running;
+    expect(bridge.invoke).toHaveBeenCalledTimes(3);
+    expect(bridge.invoke.mock.calls.slice(1).map(([, value]) => value.request.generation)).toEqual([39, 39]);
   });
 });

@@ -159,7 +159,7 @@ describe("documentAssets", () => {
     expect(vi.mocked(URL.revokeObjectURL).mock.calls.map(([url]) => url)).toEqual(["blob:first"]);
   });
 
-  it("rejects a frame beyond the renderer retained-byte budget", async () => {
+  it("charges parsed-model and blob costs beyond the raw asset bytes", async () => {
     const red = documentAsset(0, 0, buildPngAsset(3, 3, 0x99));
     const frame = decode({
       version: 1,
@@ -170,8 +170,15 @@ describe("documentAssets", () => {
       first_image: 0,
     }, [red]);
 
-    await expect(prepareDocumentAssets(frame, undefined, { maxRetainedBytes: 8 })).rejects.toBeInstanceOf(DocumentPrepareError);
+    await expect(prepareDocumentAssets(frame, undefined, { maxRetainedBytes: frame.assets.buffer.byteLength })).rejects.toBeInstanceOf(DocumentPrepareError);
     expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("rejects an already cancelled assetless frame", async () => {
+    const frame = decode({ version: 1, blocks: [], assets: [], partial: [], styles_partial: false }, []);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(prepareDocumentAssets(frame, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
   });
 
   it("groups consecutive list paragraphs without disturbing other blocks", () => {

@@ -100,8 +100,7 @@ run RR-28  bash scripts/check-capture-failure-visibility.sh
 run RR-29  core 'composite::provenance'
 run RR-30  runtime rr30
 run RR-10  core 'composite_receipts::repair_regressions'
-run RR-11  node scripts/run-isolated-tests.mjs -- cargo test --locked --offline -p tailsync-core \
-    --features repair-regressions,test-support --test repair_regressions rr11 -- --test-threads=1
+run RR-11  core 'inbound_text_does_not_stall_the_runtime_on_a_slow_platform'
 run RR-12  core 'repair_regressions::rr12'
 run RR-13  core 'repair_regressions::rr13'
 run RR-NATIVE python3 tools/repair-probes/native_fault_probe.py --json

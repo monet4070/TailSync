@@ -27,12 +27,9 @@
 
 ## 历史调度模型记录（2026-09-30；不承担 S2-F5 验收）
 
-**方法**：`shared/rust-core/src/peer/delivery/tests.rs::scheduler_model_latency_baseline`（`#[ignore]`，不进 CI）。它驱动**真实的**通道（容量 `CHANNEL_SIZE = 64`）与**真实的**调度器 `receive_scheduled_frame`（priority 优先、`PRIORITY_BURST_LIMIT = 8` 允许 bulk 穿插），历史驱动宣称采用本文件负载：60 秒、每 50 ms 一个文本事件，同时推进名义上的 256 MiB 批次（64 个 `FileMeta` 控制帧走 priority、256 个 `FileChunk` 走 bulk）。帧自带 `enqueued_at`，延迟由入队到被调度的时间测得；文本入队用 `try_send`，满队即计为丢弃。
+> 2026-10-11 测试清理：删除 `scheduler_model_latency_baseline`。它使用模型服务时间和不符合生产协议的文件负载，已被 `s2_f5_authenticated_worker_baseline` 取代。下文保留历史观测与签署阈值，生产 ACK 隔离、队列背压和容量测试继续保留。
 
-```bash
-cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib \
-  scheduler_model_latency_baseline -- --ignored --nocapture
-```
+**方法**：`shared/rust-core/src/peer/delivery/tests.rs::scheduler_model_latency_baseline`（已删除，原为 `#[ignore]`）。它当时驱动**真实的**通道（容量 `CHANNEL_SIZE = 64`）与**真实的**调度器 `receive_scheduled_frame`（priority 优先、`PRIORITY_BURST_LIMIT = 8` 允许 bulk 穿插），历史驱动宣称采用本文件负载：60 秒、每 50 ms 一个文本事件，同时推进名义上的 256 MiB 批次（64 个 `FileMeta` 控制帧走 priority、256 个 `FileChunk` 走 bulk）。帧自带 `enqueued_at`，延迟由入队到被调度的时间测得；文本入队用 `try_send`，满队即计为丢弃。
 
 **逐帧服务时间取 200 µs**（模型参数，非实测网络）。worker 每帧一次 await 写线，单机 loopback 写是最接近的代理；该值随结果一并报告，不藏在结论里。
 
@@ -60,7 +57,7 @@ cargo test --locked --manifest-path shared/rust-core/Cargo.toml --lib \
 
 **判定依据是签署阈值，不是观测值**：阈值（p99 ≤ 100 ms、水位 ≤ 48、永久丢 0）对上述全部会话都成立。三者的余量差别很大，不要笼统说"都有余量"：p99 的余量是 1–2 个数量级（亚毫秒/毫秒级对 100 ms）；水位只是把观测到的 29–36 对 48，余量约 25–40%，**不到一个数量级**，同机负载继续加重就可能顶到；"永久丢 0"是硬性阈值，**没有任何余量**，任何一次非零丢弃即为不达标。观测值只说明离散度的量级——它随同机负载移动，p50 的 36 ↔ 90 µs 与 p99 的 125 µs ↔ 1.24 ms 都是调度噪声。
 
-历史模型自身的参数检查：`scheduler_model_latency_baseline` 打印数字之后会断言签署阈值（永久丢 == 0、p99 ≤ 100 ms、峰值深度 ≤ 48），失败即测试失败。它是 `#[ignore]` 的，只在显式运行时执行，所有失败会话必须记录并调查，不能重跑抹掉。
+历史模型当时会断言永久丢 == 0、p99 ≤ 100 ms、峰值深度 ≤ 48；这些断言只检查模型自身，不能作为生产性能通过证据。历史失败会话继续保留。
 
 **这些数字的边界（必须与数字一起看）**：
 

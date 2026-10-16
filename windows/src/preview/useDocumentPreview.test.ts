@@ -1,3 +1,4 @@
+import { createElement, StrictMode, useLayoutEffect } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -207,6 +208,48 @@ describe("useDocumentPreview", () => {
     await waitFor(() => expect(hook.result.current.state.status).toBe("ready"));
     await act(async () => hook.result.current.refresh(() => false));
     expect(mocks.getDocumentPreview).toHaveBeenCalledTimes(2);
+    hook.unmount();
+  });
+
+  it.each([false, true])("installs and cancels a preview on close with StrictMode=%s", async (strict) => {
+    const hook = renderHook(() => useDocumentPreview(historyTarget), {
+      wrapper: strict ? ({ children }) => createElement(StrictMode, null, children) : undefined,
+    });
+    await waitFor(() => expect(hook.result.current.state.status).toBe("ready"));
+    const request = requestAt(mocks.getDocumentPreview.mock.calls.length - 1);
+    hook.unmount();
+    await waitFor(() => expect(mocks.cancelDocumentPreview).toHaveBeenCalledWith(request));
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:prepared-0");
+  });
+
+  it("never exposes the previous owner in the next committed render, even when the new request fails", async () => {
+    const observations: string[] = [];
+    const hook = renderHook(({ current }: { current: DocumentTarget }) => {
+      const result = useDocumentPreview(current);
+      useLayoutEffect(() => {
+        if (result.state.status === "ready") observations.push(`${current.owner}:${result.state.target.owner}`);
+      });
+      return result;
+    }, { initialProps: { current: historyTarget } });
+    await waitFor(() => expect(hook.result.current.state.status).toBe("ready"));
+    mocks.getDocumentPreview.mockRejectedValueOnce(new Error("new request fails"));
+    hook.rerender({ current: { entryId: 7, owner: "favorites" } });
+    await waitFor(() => expect(hook.result.current.state.status).toBe("error"));
+    expect(observations).not.toContain("favorites:history");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:prepared-0");
+    hook.unmount();
+  });
+
+  it("keeps the owned job occupied until a cancelled getter actually exits", async () => {
+    let finish!: (value: DecodedDocumentFrame) => void;
+    mocks.getDocumentPreview.mockImplementationOnce(() => new Promise<DecodedDocumentFrame>((resolve) => { finish = resolve; }));
+    const hook = renderHook(({ current }: { current: DocumentTarget }) => useDocumentPreview(current), { initialProps: { current: historyTarget } });
+    await waitFor(() => expect(mocks.getDocumentPreview).toHaveBeenCalledTimes(1));
+    for (let entryId = 8; entryId < 25; entryId += 1) hook.rerender({ current: { entryId, owner: "history" } });
+    expect(mocks.getDocumentPreview).toHaveBeenCalledTimes(1);
+    await act(async () => finish(buildFrame(requestAt(0))));
+    act(() => hook.result.current.retry());
+    await waitFor(() => expect(hook.result.current.state.status).toBe("ready"));
     hook.unmount();
   });
 });
