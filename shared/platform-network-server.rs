@@ -1166,6 +1166,7 @@ mod acceptance_tests {
                     file_sliding_window: true,
                     image_compressed_chunks: true,
                     pairing_commit_proof: false,
+                    composite_clipboard: false,
                 },
             )
             .await
@@ -1196,6 +1197,7 @@ mod acceptance_tests {
                 file_sliding_window: true,
                 image_compressed_chunks: true,
                 pairing_commit_proof: false,
+                composite_clipboard: false,
             },
         )
         .await

@@ -53,6 +53,7 @@ acceptance-injection = []
 # are applied independently during each authenticated handshake.
 protocol-file-sliding-window = []
 protocol-image-compressed-chunks = []
+protocol-composite-clipboard = []
 
 [dev-dependencies]
 proptest = "1"

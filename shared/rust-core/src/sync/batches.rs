@@ -965,7 +965,10 @@ impl SyncEngine {
                     }
                 }
             } else {
-                self.clear_file_progress(Some(batch_id), Some(source));
+                self.deliver_progress_now(SyncEngine::clear_progress_update(
+                    Some(batch_id),
+                    Some(source),
+                ));
             }
         }
         let receive_keys = self

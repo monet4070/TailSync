@@ -21,6 +21,7 @@ pub struct CapabilitySet {
     pub file_sliding_window: bool,
     pub image_compressed_chunks: bool,
     pub pairing_commit_proof: bool,
+    pub composite_clipboard: bool,
 }
 
 impl CapabilitySet {
@@ -29,11 +30,15 @@ impl CapabilitySet {
             file_sliding_window: false,
             image_compressed_chunks: false,
             pairing_commit_proof: false,
+            composite_clipboard: false,
         }
     }
 
     pub const fn is_empty(&self) -> bool {
-        !self.file_sliding_window && !self.image_compressed_chunks && !self.pairing_commit_proof
+        !self.file_sliding_window
+            && !self.image_compressed_chunks
+            && !self.pairing_commit_proof
+            && !self.composite_clipboard
     }
 
     /// Negotiate each extension independently. A remote advertisement can
@@ -44,6 +49,7 @@ impl CapabilitySet {
             image_compressed_chunks: local.image_compressed_chunks
                 && remote.image_compressed_chunks,
             pairing_commit_proof: local.pairing_commit_proof && remote.pairing_commit_proof,
+            composite_clipboard: local.composite_clipboard && remote.composite_clipboard,
         }
     }
 }
@@ -55,17 +61,25 @@ pub struct CapabilitySwitches {
     pub file_sliding_window: bool,
     pub image_compressed_chunks: bool,
     pub pairing_commit_proof: bool,
+    pub composite_clipboard: bool,
 }
 
 impl CapabilitySwitches {
     /// Build flags are the file/image default policy; operators can disable any
     /// extension before starting the process for an immediate rollback.
     pub fn runtime_defaults() -> Self {
+        Self::from_env(|name| std::env::var_os(name).is_some())
+    }
+
+    /// Resolve the runtime kill switches from a name lookup. Split out from
+    /// [`Self::runtime_defaults`] so tests can exercise the switch policy
+    /// without mutating the process environment.
+    pub(crate) fn from_env(is_set: impl Fn(&str) -> bool) -> Self {
         Self {
-            file_sliding_window: std::env::var_os("TAILSYNC_DISABLE_FILE_WINDOW").is_none(),
-            image_compressed_chunks: std::env::var_os("TAILSYNC_DISABLE_IMAGE_CHUNKS").is_none(),
-            pairing_commit_proof: std::env::var_os("TAILSYNC_DISABLE_PAIRING_COMMIT_PROOF")
-                .is_none(),
+            file_sliding_window: !is_set("TAILSYNC_DISABLE_FILE_WINDOW"),
+            image_compressed_chunks: !is_set("TAILSYNC_DISABLE_IMAGE_CHUNKS"),
+            pairing_commit_proof: !is_set("TAILSYNC_DISABLE_PAIRING_COMMIT_PROOF"),
+            composite_clipboard: !is_set("TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD"),
         }
     }
 
@@ -76,6 +90,8 @@ impl CapabilitySwitches {
             image_compressed_chunks: cfg!(feature = "protocol-image-compressed-chunks")
                 && self.image_compressed_chunks,
             pairing_commit_proof: self.pairing_commit_proof,
+            composite_clipboard: cfg!(feature = "protocol-composite-clipboard")
+                && self.composite_clipboard,
         }
     }
 }
@@ -108,6 +124,7 @@ const fn capabilities_for_wire(capabilities: CapabilitySet, wire_version: u8) ->
         image_compressed_chunks: wire_version == protocol::VERSION
             && capabilities.image_compressed_chunks,
         pairing_commit_proof: capabilities.pairing_commit_proof,
+        composite_clipboard: wire_version == protocol::VERSION && capabilities.composite_clipboard,
     }
 }
 

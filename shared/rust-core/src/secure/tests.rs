@@ -442,6 +442,7 @@ fn capability_advertisements_are_backward_compatible_and_fail_closed() {
         file_sliding_window: true,
         image_compressed_chunks: false,
         pairing_commit_proof: false,
+        composite_clipboard: true,
     };
     let encoded = encode_handshake_advertisement(identity, enabled).expect("encode capabilities");
     assert_eq!(
@@ -480,6 +481,7 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
         file_sliding_window: true,
         image_compressed_chunks: true,
         pairing_commit_proof: false,
+        composite_clipboard: true,
     }
     .advertised();
     assert_eq!(
@@ -495,6 +497,7 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
         file_sliding_window: true,
         image_compressed_chunks: true,
         pairing_commit_proof: false,
+        composite_clipboard: true,
     };
     assert_eq!(
         CapabilitySet::negotiate(both, CapabilitySet::disabled()),
@@ -507,14 +510,52 @@ fn capability_negotiation_requires_build_runtime_and_peer_support() {
                 file_sliding_window: true,
                 image_compressed_chunks: false,
                 pairing_commit_proof: false,
+                composite_clipboard: false,
             }
         ),
         CapabilitySet {
             file_sliding_window: true,
             image_compressed_chunks: false,
             pairing_commit_proof: false,
+            composite_clipboard: false,
         }
     );
+}
+
+#[test]
+fn composite_clipboard_requires_build_runtime_and_v5_wire() {
+    let enabled = CapabilitySet {
+        composite_clipboard: true,
+        ..CapabilitySet::disabled()
+    };
+    assert!(!capabilities_for_wire(enabled, protocol::LEGACY_VERSION).composite_clipboard);
+    assert!(capabilities_for_wire(enabled, protocol::VERSION).composite_clipboard);
+
+    assert!(!CapabilitySet::negotiate(enabled, CapabilitySet::disabled()).composite_clipboard);
+    assert!(CapabilitySet::negotiate(enabled, enabled).composite_clipboard);
+
+    let advertised = CapabilitySwitches {
+        composite_clipboard: true,
+        ..CapabilitySwitches::default()
+    }
+    .advertised();
+    assert_eq!(
+        advertised.composite_clipboard,
+        cfg!(feature = "protocol-composite-clipboard")
+    );
+}
+
+#[test]
+fn composite_runtime_switch_reads_its_kill_switch() {
+    let disabled =
+        CapabilitySwitches::from_env(|name| name == "TAILSYNC_DISABLE_COMPOSITE_CLIPBOARD");
+    assert!(!disabled.composite_clipboard);
+    assert!(disabled.file_sliding_window);
+    assert!(disabled.image_compressed_chunks);
+    assert!(disabled.pairing_commit_proof);
+
+    let enabled = CapabilitySwitches::from_env(|_| false);
+    assert!(enabled.composite_clipboard);
 }
 
 #[tokio::test]
@@ -523,6 +564,7 @@ async fn negotiated_capabilities_are_bound_to_each_authenticated_session() {
         file_sliding_window: true,
         image_compressed_chunks: true,
         pairing_commit_proof: false,
+        composite_clipboard: true,
     };
     let first = negotiate_capabilities_for_one_session(both, both).await;
     assert_eq!(first, (both, both));
@@ -531,6 +573,7 @@ async fn negotiated_capabilities_are_bound_to_each_authenticated_session() {
         file_sliding_window: false,
         image_compressed_chunks: true,
         pairing_commit_proof: false,
+        composite_clipboard: false,
     };
     let second = negotiate_capabilities_for_one_session(both, image_only).await;
     assert_eq!(second, (image_only, image_only));
@@ -911,6 +954,7 @@ fn oversized_image_chunk_is_rejected_from_decrypted_header_before_body_read() {
             file_sliding_window: false,
             image_compressed_chunks: true,
             pairing_commit_proof: false,
+            composite_clipboard: false,
         },
         wire_version: protocol::VERSION,
     };

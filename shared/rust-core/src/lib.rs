@@ -2,6 +2,7 @@
 compile_error!("acceptance-injection must never be enabled in a release build");
 
 pub mod cancellation;
+pub mod composite;
 pub mod crypto;
 pub mod db;
 pub mod diagnostics;

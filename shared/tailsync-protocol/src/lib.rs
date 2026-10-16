@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+use crate::composite::{PortableMime, MAX_COMPOSITE_MANIFEST_SIZE};
+
 pub const MAGIC: [u8; 4] = *b"TSYN";
 /// The handshake and pairing remain on v4 so an existing peer can negotiate
 /// without first understanding the v5 data-frame header.
@@ -279,6 +281,11 @@ pub enum Command {
     TextPayload = 0x0101,
     ImagePayload = 0x0102,
     ImageChunk = 0x010d,
+    // Composite clipboard (M1 frozen command values; no sender/receiver is
+    // wired up yet).
+    CompositePayload = 0x010e,
+    CompositeChunk = 0x010f,
+    CompositeAck = 0x0110,
     FileMeta = 0x0103,
     FileChunk = 0x0104,
     FileAck = 0x0105,
@@ -316,6 +323,9 @@ impl Command {
             0x0101 => Some(Self::TextPayload),
             0x0102 => Some(Self::ImagePayload),
             0x010d => Some(Self::ImageChunk),
+            0x010e => Some(Self::CompositePayload),
+            0x010f => Some(Self::CompositeChunk),
+            0x0110 => Some(Self::CompositeAck),
             0x0103 => Some(Self::FileMeta),
             0x0104 => Some(Self::FileChunk),
             0x0105 => Some(Self::FileAck),
@@ -344,6 +354,9 @@ impl Command {
             Self::TextPayload => MAX_TEXT_PAYLOAD_SIZE,
             Self::ImagePayload => MAX_IMAGE_PAYLOAD_SIZE,
             Self::ImageChunk => MAX_IMAGE_CHUNK_PAYLOAD_SIZE,
+            Self::CompositePayload => crate::composite::MAX_COMPOSITE_EVENT_SIZE,
+            Self::CompositeChunk => crate::composite::MAX_COMPOSITE_CHUNK_PAYLOAD_SIZE,
+            Self::CompositeAck => MAX_CONTROL_PAYLOAD_SIZE,
             Self::FileMeta | Self::FileResume | Self::FileBatchStart => MAX_FILE_META_PAYLOAD_SIZE,
             Self::FileChunk => MAX_FILE_CHUNK_PAYLOAD_SIZE,
             Self::Heartbeat
@@ -431,6 +444,58 @@ pub enum ProtocolError {
     InvalidFileOffset,
     #[error("invalid packed RGBA image")]
     InvalidImage,
+    #[error("invalid composite bundle magic")]
+    CompositeInvalidMagic,
+    #[error("composite bundle is truncated")]
+    CompositeTruncated,
+    #[error("unsupported composite bundle version {0}")]
+    CompositeUnsupportedVersion(u16),
+    #[error("composite bundle has an unknown portable mime 0x{0:02x}")]
+    CompositeUnknownMime(u8),
+    #[error("composite bundle has an unknown completeness 0x{0:02x}")]
+    CompositeUnknownCompleteness(u8),
+    #[error("composite bundle has a non-zero reserved flag")]
+    CompositeReservedFlags,
+    #[error("composite bundle exceeds the {limit} byte limit: {actual}")]
+    CompositeTooLarge { actual: usize, limit: usize },
+    #[error("composite manifest exceeds the {MAX_COMPOSITE_MANIFEST_SIZE} byte limit")]
+    CompositeManifestTooLarge,
+    #[error("composite bundle has too many {kind}: {actual} (max {limit})")]
+    CompositeTooManyEntries {
+        kind: &'static str,
+        actual: usize,
+        limit: usize,
+    },
+    #[error("composite bundle has no representations")]
+    CompositeEmpty,
+    #[error("composite representation exceeds the {limit} byte limit for {mime:?}: {actual}")]
+    CompositeRepresentationTooLarge {
+        mime: PortableMime,
+        actual: usize,
+        limit: usize,
+    },
+    #[error("composite bundle contains duplicate representation format {0:?}")]
+    CompositeDuplicateRepresentation(PortableMime),
+    #[error("composite bundle contains a non-image resource")]
+    CompositeNonImageResource,
+    #[error("composite bundle contains an invalid image")]
+    CompositeInvalidImage,
+    #[error("composite image exceeds the decoded RGBA limit")]
+    CompositeImageTooLarge,
+    #[error("composite bundle contains an out-of-range byte range")]
+    CompositeInvalidRange,
+    #[error("composite bundle contains overlapping byte ranges")]
+    CompositeOverlappingRanges,
+    #[error("composite bundle contains an invalid resource binding")]
+    CompositeInvalidBinding,
+    #[error("composite bundle contains a duplicate resource binding")]
+    CompositeDuplicateBinding,
+    #[error("composite manifest length does not match its entries")]
+    CompositeManifestMismatch,
+    #[error("composite entry digest mismatch")]
+    CompositeDigestMismatch,
+    #[error("composite bundle has trailing bytes")]
+    CompositeTrailingBytes,
     #[error("frame admission rejected: {0}")]
     AdmissionRejected(String),
     #[error("incomplete frame: expected {expected}, got {got}")]
@@ -642,6 +707,8 @@ impl Frame {
         ))
     }
 }
+
+pub mod composite;
 
 #[cfg(test)]
 mod tests;

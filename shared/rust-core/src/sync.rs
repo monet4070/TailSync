@@ -469,10 +469,7 @@ pub async fn verify_and_commit_received_file(
         }
         Err(error) => {
             let _ = std::fs::remove_file(&path);
-            sync_engine
-                .lock()
-                .await
-                .discard_received_file(source, batch_id);
+            SyncEngine::discard_received_file_shared(sync_engine, source, batch_id).await;
             Err(error)
         }
     }

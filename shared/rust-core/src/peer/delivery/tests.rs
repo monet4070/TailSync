@@ -970,6 +970,7 @@ impl DeliveryConnection for WindowConnection {
             file_sliding_window: true,
             image_compressed_chunks: false,
             pairing_commit_proof: false,
+            composite_clipboard: false,
         }
     }
 }
@@ -990,6 +991,7 @@ impl DeliveryConnection for ImageConnection {
             file_sliding_window: false,
             image_compressed_chunks: true,
             pairing_commit_proof: false,
+            composite_clipboard: false,
         }
     }
 }
