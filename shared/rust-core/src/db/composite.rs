@@ -22,6 +22,7 @@ pub(super) const LOCAL_ARCHIVE_EVENT_SOURCE: &str = "tailsync-local-archive-v1";
 const REMOTE_ARCHIVE_EVENT_PREFIX: &str = "archive:";
 const ARCHIVE_SOURCE_IDENTITY_LIMIT: usize = 256;
 const COMPOSITE_EVENT_METADATA_LIMIT: i64 = 4096;
+const RICH_CLIPBOARD_SUMMARY: &str = "Rich clipboard content";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteArchiveOutcome {
     Applied(i64),
@@ -328,12 +329,36 @@ fn archive_digest(m: &Manifest) -> Result<String, Box<dyn std::error::Error>> {
     h.update(&serde_json::to_vec(&view)?);
     Ok(h.finalize().to_hex().to_string())
 }
+fn portable_image_summary(m: &Manifest) -> Option<String> {
+    // Received standalone PNGs have no NativeArchive. Their authenticated
+    // manifests carry dimensions, so listing needs no pixel decode.
+    let [image] = m.parts.as_slice() else {
+        return None;
+    };
+    if m.native_only
+        || m.completeness != Completeness::Complete as u8
+        || !m.bindings.is_empty()
+        || image.role != "representation"
+        || image.mime != Mime::Png as u8
+    {
+        return None;
+    }
+    let (width, height) = (image.width?, image.height?);
+    (width > 0 && height > 0).then(|| format!("image/png · {width}×{height} · 1 frame"))
+}
 pub(super) fn summary_bytes(decoded: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let m: Manifest = serde_json::from_slice(decoded)?;
     if !matches!(m.version, 1..=5) {
         return Err("Invalid composite manifest".into());
     }
     validate_manifest(&m)?;
+    // Existing captures get a corrected display without rewriting the
+    // encrypted manifest, content identity, archive revision, or event digest.
+    if m.summary == RICH_CLIPBOARD_SUMMARY {
+        if let Some(summary) = portable_image_summary(&m) {
+            return Ok(summary.into_bytes());
+        }
+    }
     Ok(m.summary.into_bytes())
 }
 pub(super) fn info_bytes(decoded: &[u8]) -> Result<CompositeInfo, Box<dyn std::error::Error>> {
@@ -1710,7 +1735,7 @@ impl HistoryDB {
                         })
                         .filter(|s| !s.is_empty())
                 })
-                .unwrap_or_else(|| "Rich clipboard content".into()),
+                .unwrap_or_else(|| RICH_CLIPBOARD_SUMMARY.into()),
             completeness: bundle.completeness as u8,
             parts: vec![],
             bindings: bundle
@@ -1876,6 +1901,11 @@ impl HistoryDB {
         // early return cleans them up. The manifest encryption below used to return
         // through `?` and leak every payload file it had just written.
         let pending = self.arm_pending_payloads(&written);
+        if m.summary == RICH_CLIPBOARD_SUMMARY {
+            if let Some(summary) = portable_image_summary(&m) {
+                m.summary = summary;
+            }
+        }
         if has_identity {
             let content_id = if let Some(archive) = archive {
                 identity::archive_content_id(archive)?
@@ -4913,6 +4943,127 @@ mod lifecycle_tests {
 
     fn solid_png(red: u8, green: u8, blue: u8) -> Vec<u8> {
         composite::packed_to_png(1, 1, &[red, green, blue, 255]).unwrap()
+    }
+
+    #[test]
+    fn remote_portable_image_summary_survives_reopen_and_event_retry() {
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let image = solid_png(255, 0, 0);
+        let input = PortableBundle {
+            representations: vec![Representation {
+                mime: Mime::Png,
+                bytes: image.clone(),
+            }],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        let event = crate::protocol::MessageId([71; 16]);
+        let timestamp = crate::protocol::unix_timestamp_ms();
+        let id = db
+            .add_composite_event(
+                &input,
+                None,
+                "remote Windows",
+                Some(("remote", event, timestamp)),
+            )
+            .unwrap();
+        let identity = db.composite_identity(id).unwrap();
+        let stored: Vec<u8> = db
+            .conn
+            .query_row("SELECT data FROM history WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let manifest: Manifest =
+            serde_json::from_slice(&crypto::decrypt(&stored).unwrap()).unwrap();
+        assert_eq!(manifest.summary, "image/png · 1×1 · 1 frame");
+        drop(db);
+        let mut db =
+            HistoryDB::open_at_with_policy(&root, MigrationPolicy::CompositeAllowed).unwrap();
+        assert_eq!(
+            db.add_composite_event(
+                &input,
+                None,
+                "remote Windows",
+                Some(("remote", event, timestamp))
+            )
+            .unwrap(),
+            id
+        );
+        let entry = db.get_all(None, None, 10, 0).unwrap().remove(0);
+        assert_eq!(entry.description, "image/png · 1×1 · 1 frame");
+        assert_eq!(db.display_kind(id).unwrap(), "image");
+        assert_eq!(db.get_composite(id).unwrap(), input);
+        assert_eq!(db.composite_identity(id).unwrap(), identity);
+        assert_eq!(
+            db.get_preview_payload(id).unwrap().data,
+            composite::png_to_packed(&image).unwrap()
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_portable_image_summary_is_derived_without_rewriting_capture() {
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let input = PortableBundle {
+            representations: vec![Representation {
+                mime: Mime::Png,
+                bytes: solid_png(0, 255, 0),
+            }],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        let id = db.add_composite(&input, None, "remote Windows").unwrap();
+        let identity = db.composite_identity(id).unwrap().unwrap();
+        assert!(db
+            .update_composite_archive_summary(id, &identity, "Rich clipboard content")
+            .unwrap());
+        db.set_favorite(id, true).unwrap();
+        let identity = db.composite_identity(id).unwrap();
+        let stored: Vec<u8> = db
+            .conn
+            .query_row("SELECT data FROM history WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let cancellation = crate::cancellation::Cancellation::default();
+        let revision = db.read_revision().unwrap();
+        let chunk = db
+            .prepare_read_chunk(
+                HistoryQuery {
+                    collection: HistoryCollection::Favorites,
+                    keyword: None,
+                    category: Some("image"),
+                    start_time: None,
+                    end_time: None,
+                    limit: 10,
+                    offset: 0,
+                },
+                None,
+                &revision,
+                10,
+            )
+            .unwrap();
+        let entries = chunk.matching_entries(None, &cancellation).unwrap();
+        assert_eq!(entries[0].description, "image/png · 1×1 · 1 frame");
+        assert!(entries[0].pinned);
+        assert_eq!(db.get_all(Some("1×1"), None, 10, 0).unwrap()[0].id, id);
+        let after: Vec<u8> = db
+            .conn
+            .query_row("SELECT data FROM history WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored, after);
+        assert_eq!(db.composite_identity(id).unwrap(), identity);
+        assert_eq!(db.get_composite(id).unwrap(), input);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
