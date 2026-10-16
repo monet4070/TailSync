@@ -55,9 +55,17 @@ func isSuppressed(_ items: [NSPasteboardItem]) -> Bool {
     items.contains { item in item.types.contains { policySuppressed.contains($0.rawValue) } }
 }
 func isPureFileSelection(_ items: [NSPasteboardItem]) -> Bool {
-    !items.isEmpty && items.allSatisfy { item in
+    // Finder advertises UTF-16/UTF-8 filenames and an icon beside each file URL.
+    // These are file-selection metadata, not independent document contents.
+    // Keep this list exact so HTML, QQ and unknown mixed items still use capture.
+    let auxiliaryTypes: Set<String> = [
+        NSPasteboard.PasteboardType.string.rawValue,
+        "public.utf16-external-plain-text",
+        "com.apple.icns",
+    ]
+    return !items.isEmpty && items.allSatisfy { item in
         item.types.contains(.fileURL) && item.types.allSatisfy {
-            $0 == .string || policyDeferred.contains($0.rawValue) || policyControls.contains($0.rawValue)
+            auxiliaryTypes.contains($0.rawValue) || policyDeferred.contains($0.rawValue) || policyControls.contains($0.rawValue)
         }
     }
 }
