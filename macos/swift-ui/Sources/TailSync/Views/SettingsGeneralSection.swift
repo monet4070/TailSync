@@ -4,7 +4,12 @@ extension SettingsView {
     var generalSection: some View {
         settingsCard(title: Loc.t("settings.general")) {
             settingRow {
-                Text(Loc.t("settings.syncEnabled"))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Loc.t("settings.syncEnabled"))
+                    Text(Loc.t("settings.syncEnabledDescription"))
+                        .font(.caption2)
+                        .foregroundColor(palette.tertiaryColor)
+                }
                 Spacer()
                 Toggle("", isOn: $settings.sync_enabled)
                     .labelsHidden()
@@ -25,6 +30,10 @@ extension SettingsView {
                             .font(.caption2)
                             .foregroundColor(palette.warningColor)
                             .lineLimit(2)
+                    } else {
+                        Text(Loc.t("settings.launchAtLoginDescription"))
+                            .font(.caption2)
+                            .foregroundColor(palette.tertiaryColor)
                     }
                 }
                 Spacer()
@@ -50,7 +59,12 @@ extension SettingsView {
             shortcutRow(.history)
             themedDivider.padding(.leading, 16)
             settingRow {
-                Text(Loc.t("settings.notifications"))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Loc.t("settings.notifications"))
+                    Text(Loc.t("settings.notificationsDescription"))
+                        .font(.caption2)
+                        .foregroundColor(palette.tertiaryColor)
+                }
                 Spacer()
                 Toggle("", isOn: $settings.notifications_enabled)
                     .labelsHidden()
@@ -63,7 +77,12 @@ extension SettingsView {
             }
             themedDivider.padding(.leading, 16)
             settingRow {
-                Text(Loc.t("settings.progressBar"))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Loc.t("settings.progressBar"))
+                    Text(Loc.t("settings.progressDescription"))
+                        .font(.caption2)
+                        .foregroundColor(palette.tertiaryColor)
+                }
                 Spacer()
                 Toggle("", isOn: $settings.progress_bar_enabled)
                     .labelsHidden()
@@ -74,16 +93,45 @@ extension SettingsView {
         }
     }
 
+    func keycapBadge(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+            .foregroundColor(palette.primaryColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(palette.raisedColor)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(palette.borderColor, lineWidth: 1)
+            }
+            .shadow(color: palette.primaryColor.opacity(0.06), radius: 1, y: 1)
+    }
+
     func shortcutRow(_ kind: ShortcutKind) -> some View {
         settingRow {
-            Text(Loc.t(kind.titleKey))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Loc.t(kind.titleKey))
+                Text(Loc.t(kind == .sync ? "settings.syncShortcutDescription" : "settings.historyShortcutDescription"))
+                    .font(.caption2)
+                    .foregroundColor(palette.tertiaryColor)
+            }
             Spacer()
             if recordingShortcut == kind {
-                Text(shortcutDraft.isEmpty
+                let display = shortcutDraft.isEmpty
                      ? Loc.t("settings.shortcutRecording")
-                     : ShortcutDisplayFormatter.string(for: shortcutDraft))
-                    .font(.caption2.monospaced())
+                     : ShortcutDisplayFormatter.string(for: shortcutDraft)
+                Text(display)
+                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundColor(palette.accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(palette.accentSoftColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .stroke(palette.accentColor, lineWidth: 1)
+                    }
                 Button(Loc.t("settings.shortcutCancel")) { cancelShortcutRecording(kind) }
                     .buttonStyle(.borderless)
                     .disabled(shortcutBusy)
@@ -92,11 +140,14 @@ extension SettingsView {
                     .controlSize(.small)
                     .disabled(shortcutDraft.isEmpty || shortcutBusy)
             } else {
-                Text(kind.value(in: settings).isEmpty
-                     ? Loc.t("settings.shortcutNone")
-                     : ShortcutDisplayFormatter.string(for: kind.value(in: settings)))
-                    .font(.caption2.monospaced())
-                    .foregroundColor(palette.tertiaryColor)
+                let formatted = ShortcutDisplayFormatter.string(for: kind.value(in: settings))
+                if formatted.isEmpty {
+                    Text(Loc.t("settings.shortcutNone"))
+                        .font(.caption2.monospaced())
+                        .foregroundColor(palette.tertiaryColor)
+                } else {
+                    keycapBadge(formatted)
+                }
                 Button(Loc.t(kind.recordKey)) { startShortcutRecording(kind) }
                     .buttonStyle(.borderless)
                     .disabled(shortcutBusy || recordingShortcut != nil)

@@ -1,0 +1,324 @@
+/* ── 设置页重构原型样式 (redesign.css) ────────────────────────── */
+
+/* 顶部演示切换控制条 */
+.rd-demo-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border-strong);
+  font-size: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.rd-demo-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.rd-demo-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+.rd-demo-switches {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.rd-pill-group {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}
+.rd-pill-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.rd-pill-btn.active {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* 原型外层居中容器 */
+.rd-preview-stage {
+  min-height: calc(100vh - 46px);
+  padding: 24px 16px 48px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  background: color-mix(in srgb, var(--bg-window) 80%, black 5%);
+}
+
+.rd-window-frame {
+  width: 100%;
+  max-width: 680px;
+  min-height: 720px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-window);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--window-radius, 10px);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+/* Mac 标题栏 traffic lights */
+.rd-mac-traffic-lights {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 12px;
+}
+.rd-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.rd-dot.red { background: #ff5f56; border: 1px solid #e0443e; }
+.rd-dot.yellow { background: #ffbd2e; border: 1px solid #dea123; }
+.rd-dot.green { background: #27c93f; border: 1px solid #1aab29; }
+
+/* Mac 风格卡片与分组（解决 Mac 空白太大、松散无结构的问题） */
+.rd-mac-sec {
+  margin-bottom: 20px;
+}
+.rd-mac-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  padding: 0 4px;
+}
+.rd-mac-sec-head h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.rd-mac-card,
+.rd-win-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+/* 行样式 */
+.rd-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--divider);
+  transition: background 0.12s ease;
+}
+.rd-row:last-child {
+  border-bottom: none;
+}
+.rd-row--button {
+  cursor: pointer;
+}
+.rd-row--button:hover {
+  background: var(--bg-hover);
+}
+.rd-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rd-row-info > span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.rd-row-info > small {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* 快捷键键帽强化（彻底解决 Mac 快捷键不明显的问题） */
+.rd-shortcut-control .shortcut-recorder {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.rd-shortcut-control .shortcut-keycaps kbd {
+  background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-input) 100%);
+  border: 1px solid var(--border-strong);
+  border-bottom: 2px solid var(--text-tertiary);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+.rd-recording {
+  border-color: var(--brand) !important;
+  outline: 2px solid var(--brand-soft);
+  animation: pulse 1s infinite alternate;
+}
+@keyframes pulse {
+  from { opacity: 0.8; }
+  to { opacity: 1; }
+}
+
+/* 设备列表紧凑布局（解决 Windows 版连接逻辑错乱及 Iroh 占地过大） */
+.rd-mode-status {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin: 6px 14px 10px;
+}
+.rd-device-list {
+  padding: 0 8px 8px;
+}
+.rd-self-row {
+  opacity: 0.85;
+  background: var(--bg-input) !important;
+  margin-bottom: 6px;
+}
+.rd-peer-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+.rd-peer-route {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+.rd-peer-route.ok {
+  color: var(--green);
+}
+
+/* 折叠式远程 Iroh 配对抽屉 */
+.rd-add-block {
+  margin: 8px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.rd-pair-bar {
+  padding: 10px 12px;
+  background: transparent;
+}
+.rd-collapsible {
+  border-top: 1px solid var(--divider);
+}
+.rd-collapsible-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.rd-collapsible-trigger:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.rd-collapsible-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rd-chevron {
+  transition: transform 0.2s ease;
+}
+.rd-chevron.open {
+  transform: rotate(180deg);
+}
+.rd-collapsible-content {
+  padding: 10px 12px 14px;
+  background: var(--bg-card);
+  border-top: 1px solid var(--divider);
+}
+.rd-hint-text {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
+}
+.rd-remote-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.rd-remote-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rd-sublabel {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.rd-btn-block {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+}
+.rd-input-group {
+  display: flex;
+  gap: 6px;
+}
+.rd-input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 11px;
+}
+.rd-stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rd-num-input {
+  width: 64px;
+  height: 28px;
+  text-align: right;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.rd-unit {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}

@@ -9,6 +9,10 @@ let package = Package(
             name: "TailSync",
             path: "Sources/TailSync"
         ),
+        .executableTarget(
+            name: "TailSyncPreview",
+            path: "Sources/TailSyncPreview"
+        ),
         .testTarget(
             name: "TailSyncTests",
             dependencies: ["TailSync"],
