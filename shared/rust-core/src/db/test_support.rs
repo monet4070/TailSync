@@ -11,6 +11,28 @@ impl HistoryDB {
         self.storage_work_observer = Some(observer);
     }
 
+    /// Install or remove a SQLite trigger that rejects text history inserts.
+    /// Used to inject a durable-history failure after a clipboard effect has
+    /// already been applied, so the applied-but-uncommitted recovery path can
+    /// be exercised deterministically.
+    pub fn reject_text_inserts_for_test(
+        &mut self,
+        reject: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if reject {
+            self.conn.execute_batch(
+                "CREATE TRIGGER IF NOT EXISTS reject_text_insert
+                 BEFORE INSERT ON history
+                 WHEN NEW.type = 'text'
+                 BEGIN SELECT RAISE(ABORT, 'injected text write failure'); END;",
+            )?;
+        } else {
+            self.conn
+                .execute_batch("DROP TRIGGER IF EXISTS reject_text_insert;")?;
+        }
+        Ok(())
+    }
+
     pub fn open_isolated_for_test(root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         if root.exists() {
             return Err("isolated test store must not already exist".into());

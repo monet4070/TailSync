@@ -123,6 +123,7 @@ test -x "$APP_PATH/Contents/MacOS/clipboard-helper"
 /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices:0' "$APP_PATH/Contents/Info.plist" | grep -qx '_tailsync._tcp'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$APP_PATH/Contents/Info.plist" | grep -qx 'tailsync'
 codesign --verify --deep --strict "$APP_PATH"
+python3 scripts/check_macos_deployment.py "$APP_PATH"
 if [[ "$RELEASE_TIER" == "trusted" ]]; then
     xcrun stapler validate "$APP_PATH"
     spctl --assess --type execute --verbose=2 "$APP_PATH"

@@ -199,3 +199,23 @@ fn file_offset_ack_round_trips() {
     assert_eq!(FileOffset::decode(&offset.encode()).unwrap(), offset);
     assert!(FileOffset::decode(&[0; 23]).is_err());
 }
+#[test]
+fn pairing_commit_commands_round_trip_both_wire_versions() {
+    for (command, number) in [
+        (Command::PairingCommitted, 0x0011),
+        (Command::PairingCommittedAck, 0x0012),
+    ] {
+        assert_eq!(Command::from_u16(number), Some(command));
+        assert_eq!(command as u16, number);
+        for version in [LEGACY_VERSION, VERSION] {
+            let encoded = Frame::try_new(command, 0, 0, vec![7; 16])
+                .unwrap()
+                .encode_with_version(version);
+            let (decoded, consumed) = Frame::decode_with_version(&encoded, version).unwrap();
+            assert_eq!(decoded.command, command);
+            assert_eq!(decoded.payload, [7; 16]);
+            assert_eq!(decoded.flags.bits(), 0);
+            assert_eq!(consumed, encoded.len());
+        }
+    }
+}

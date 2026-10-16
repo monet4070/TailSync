@@ -20,6 +20,7 @@ const TRANSPORT_WRITE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct CapabilitySet {
     pub file_sliding_window: bool,
     pub image_compressed_chunks: bool,
+    pub pairing_commit_proof: bool,
 }
 
 impl CapabilitySet {
@@ -27,11 +28,12 @@ impl CapabilitySet {
         Self {
             file_sliding_window: false,
             image_compressed_chunks: false,
+            pairing_commit_proof: false,
         }
     }
 
     pub const fn is_empty(&self) -> bool {
-        !self.file_sliding_window && !self.image_compressed_chunks
+        !self.file_sliding_window && !self.image_compressed_chunks && !self.pairing_commit_proof
     }
 
     /// Negotiate each extension independently. A remote advertisement can
@@ -41,25 +43,29 @@ impl CapabilitySet {
             file_sliding_window: local.file_sliding_window && remote.file_sliding_window,
             image_compressed_chunks: local.image_compressed_chunks
                 && remote.image_compressed_chunks,
+            pairing_commit_proof: local.pairing_commit_proof && remote.pairing_commit_proof,
         }
     }
 }
 
-/// Runtime kill switches for protocol extensions. Build support and runtime
-/// permission are both required before an extension may be advertised.
+/// Runtime kill switches for protocol extensions. Build-gated file and image
+/// extensions additionally require compile-time support.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CapabilitySwitches {
     pub file_sliding_window: bool,
     pub image_compressed_chunks: bool,
+    pub pairing_commit_proof: bool,
 }
 
 impl CapabilitySwitches {
-    /// Build flags are the default policy; operators can disable either
+    /// Build flags are the file/image default policy; operators can disable any
     /// extension before starting the process for an immediate rollback.
     pub fn runtime_defaults() -> Self {
         Self {
             file_sliding_window: std::env::var_os("TAILSYNC_DISABLE_FILE_WINDOW").is_none(),
             image_compressed_chunks: std::env::var_os("TAILSYNC_DISABLE_IMAGE_CHUNKS").is_none(),
+            pairing_commit_proof: std::env::var_os("TAILSYNC_DISABLE_PAIRING_COMMIT_PROOF")
+                .is_none(),
         }
     }
 
@@ -69,6 +75,7 @@ impl CapabilitySwitches {
                 && self.file_sliding_window,
             image_compressed_chunks: cfg!(feature = "protocol-image-compressed-chunks")
                 && self.image_compressed_chunks,
+            pairing_commit_proof: self.pairing_commit_proof,
         }
     }
 }
@@ -100,6 +107,7 @@ const fn capabilities_for_wire(capabilities: CapabilitySet, wire_version: u8) ->
         file_sliding_window: capabilities.file_sliding_window,
         image_compressed_chunks: wire_version == protocol::VERSION
             && capabilities.image_compressed_chunks,
+        pairing_commit_proof: capabilities.pairing_commit_proof,
     }
 }
 
@@ -203,6 +211,7 @@ pub struct SecureConnection {
     partial_record: Vec<u8>,
     partial_expected: Option<usize>,
     peer_identity: PeerIdentity,
+    remote_public_key: Vec<u8>,
     session_id: String,
     negotiated_capabilities: CapabilitySet,
     wire_version: u8,
@@ -223,6 +232,10 @@ pub enum HandshakePurpose {
 }
 
 impl SecureConnection {
+    /// Noise-authenticated static identity, stable across reconnects and names.
+    pub fn remote_public_key(&self) -> &[u8] {
+        &self.remote_public_key
+    }
     pub fn peer_identity(&self) -> &PeerIdentity {
         &self.peer_identity
     }
@@ -279,6 +292,13 @@ impl SecureConnection {
         &mut self,
         frame: &Frame,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if matches!(
+            frame.command,
+            Command::PairingCommitted | Command::PairingCommittedAck
+        ) && !self.negotiated_capabilities.pairing_commit_proof
+        {
+            return Err("Pairing commit proof was not negotiated".into());
+        }
         if self.wire_version == protocol::LEGACY_VERSION && frame.command == Command::ImageChunk {
             return Err(ProtocolError::UnsupportedVersion(self.wire_version).into());
         }
@@ -426,7 +446,8 @@ use handshake::{flush_with_timeout, write_all_with_timeout};
 
 pub use handshake::{
     accept, accept_with_pairing_window, accept_with_pairing_window_and_capabilities, connect,
-    connect_pairing, connect_with_capabilities, write_error, write_image_chunk_error, write_ready,
+    connect_pairing, connect_pairing_with_capabilities, connect_with_capabilities, write_error,
+    write_image_chunk_error, write_ready,
 };
 
 #[cfg(test)]

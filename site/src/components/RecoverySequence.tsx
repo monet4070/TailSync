@@ -22,9 +22,9 @@ export function RecoverySequence() {
           <small>WAKE RECOVERY / MAIN</small>
         </div>
         <span className="recovery-eyebrow"><RefreshCw size={15} /> RESILIENT SESSION</span>
-        <h2>睡一觉，醒来<strong>同步仍在继续。</strong></h2>
+        <h2>唤醒之后，<strong>自动尝试恢复同步。</strong></h2>
         <p>
-          Windows 或 macOS 从休眠中唤醒后，TailSync 主动探测对端、重建加密会话并恢复剪贴板监听。恢复的文件不会再回传给原发送端，链路重新上线，也不会形成回环。
+          Windows 或 macOS 从休眠中唤醒后，TailSync 主动探测对端、重建加密会话并恢复剪贴板监听。恢复的文件不会再回传给原发送端，这是已实现的恢复逻辑；真实双设备睡眠/唤醒与 Windows 原生流程仍待验收。
         </p>
         <div className="recovery-facts" data-cascade>
           <span><Activity size={16} /> 唤醒后主动健康检查</span>

@@ -11,6 +11,7 @@ pub mod connection_limiter;
 pub mod delivery;
 pub mod directory;
 pub mod discovery_admission;
+mod event_receipts;
 pub mod event_receiver;
 pub mod health;
 pub mod inbound_source;

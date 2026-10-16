@@ -157,6 +157,7 @@ impl PairingManager {
             pending: pending
                 .records()
                 .iter()
+                .filter(|record| record.phase != PendingTrustPhase::Completed)
                 .map(|record| PendingPairingSummary {
                     hostname: record.hostname.clone(),
                     address: record.address.clone(),
@@ -460,6 +461,14 @@ impl PairingManager {
         pending: PendingPairing,
         mut receiver: mpsc::Receiver<PairingAction>,
     ) {
+        if pending
+            .connection
+            .negotiated_capabilities()
+            .pairing_commit_proof
+        {
+            self.run_commit_session(session_id, pending, receiver).await;
+            return;
+        }
         let PendingPairing {
             mut connection,
             hostname,
@@ -639,7 +648,7 @@ impl PairingManager {
         }
     }
 
-    async fn set_confirmation(&self, session_id: u64, local: bool, remote: bool) {
+    pub(super) async fn set_confirmation(&self, session_id: u64, local: bool, remote: bool) {
         let mut state = self.state.lock().await;
         if state.session_id != session_id {
             return;
@@ -668,6 +677,27 @@ impl PairingManager {
         interface: &str,
         address: &str,
     ) -> Result<(), PairingError> {
+        self.record_pairing_intent(
+            session_id,
+            hostname,
+            remote_public_key,
+            interface,
+            address,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn record_pairing_intent(
+        &self,
+        session_id: u64,
+        hostname: &str,
+        remote_public_key: &[u8],
+        interface: &str,
+        address: &str,
+        commit_nonce: Option<[u8; 16]>,
+    ) -> Result<(), PairingError> {
         // Keep the session alive until the note is durable. In particular,
         // revocation cannot return and then have this old session recreate it.
         let state = self.state.lock().await;
@@ -684,6 +714,8 @@ impl PairingManager {
             interface: interface.to_string(),
             address: address.to_string(),
             recorded_at: unix_now(),
+            phase: PendingTrustPhase::Pending,
+            commit_nonce,
         };
         let mut store = self.pending.lock().await;
         if store
@@ -765,7 +797,14 @@ impl PairingManager {
     /// are half-paired, and so tests can assert that a failed pairing left a
     /// note rather than trust.
     pub async fn pending_trust(&self) -> Vec<PendingTrustRecord> {
-        self.pending.lock().await.records().to_vec()
+        self.pending
+            .lock()
+            .await
+            .records()
+            .iter()
+            .filter(|record| record.phase != PendingTrustPhase::Completed)
+            .cloned()
+            .collect()
     }
 
     /// Drop the note for a device the user has forgotten. Otherwise the half
@@ -801,6 +840,36 @@ impl PairingManager {
             let _ = control.try_send(PairingAction::Cancel);
         }
         let mut settings = self.settings.lock().await;
+        let mut store = self.pending.lock().await;
+        store.retry_unavailable();
+        if !store.is_writable()
+            || store
+                .get(hostname)
+                .is_some_and(|record| record.commit_nonce.is_some())
+        {
+            // A retained proof-capable Pending note can otherwise recreate
+            // trust after a supposedly successful forget. Fail closed by
+            // disabling the peer, and report that forget needs a retry. Only
+            // successful receipt invalidation may complete key removal.
+            let cleanup = store.remove(hostname);
+            let mut updated = settings.clone();
+            if cleanup.is_err() {
+                updated.enabled_peers.insert(hostname.to_string(), false);
+            } else {
+                updated.forget_peer_without_save(hostname);
+            }
+            if self.persist_trust {
+                updated
+                    .save()
+                    .map_err(|error| PairingError::Transport(error.to_string()))?;
+            }
+            *settings = updated;
+            if let Err(error) = cleanup {
+                return Err(PairingError::Transport(format!("Could not discard pairing receipt; device disabled, retry forgetting after storage recovers: {error}")));
+            }
+            return Ok(());
+        }
+        drop(store);
         if self.persist_trust {
             settings
                 .forget_peer(hostname)
@@ -821,7 +890,7 @@ impl PairingManager {
         *self.promotion_gate.lock().await = Some(gate);
     }
 
-    fn commit_pairing_state(state: &mut PairingState) {
+    pub(super) fn commit_pairing_state(state: &mut PairingState) {
         state.enabled = false;
         state.phase = PairingPhase::Paired;
         state.deadline = None;
@@ -837,7 +906,7 @@ impl PairingManager {
             .await;
     }
 
-    async fn fail_session_non_ban(&self, session_id: u64, error: String) {
+    pub(super) async fn fail_session_non_ban(&self, session_id: u64, error: String) {
         self.record_non_ban_failure_for_session(Some(session_id), error)
             .await;
     }
@@ -847,7 +916,7 @@ impl PairingManager {
     /// command only releases the slot. After local confirmation the session is
     /// attributed to a deliberate user action and the anomaly counts against
     /// the lockout budget.
-    async fn fail_session_on_protocol_error(
+    pub(super) async fn fail_session_on_protocol_error(
         &self,
         session_id: u64,
         local_confirmed: bool,
@@ -860,7 +929,7 @@ impl PairingManager {
         }
     }
 
-    async fn expire_current_session(self: &Arc<Self>, session_id: u64) {
+    pub(super) async fn expire_current_session(self: &Arc<Self>, session_id: u64) {
         let (generation, session_timed_out) = {
             let state = self.state.lock().await;
             if state.session_id != session_id {

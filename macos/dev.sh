@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 RUST_TARGET_DIR="$PWD/src-tauri/target-macos"
 export CARGO_TARGET_DIR="$RUST_TARGET_DIR"
+export MACOSX_DEPLOYMENT_TARGET=13.0
 
 echo "═══ TailSync v2 Dev Launcher ═══"
 
@@ -17,7 +18,7 @@ echo "[2/4] Building SwiftUI app..."
 
 # ── Build native clipboard helper ──────────────────────────────
 echo "[3/4] Building clipboard helper..."
-(cd src-tauri && swiftc clipboard-helper.swift -o clipboard-helper)
+(cd src-tauri && swiftc -target "$(uname -m)-apple-macosx13.0" clipboard-helper.swift -o clipboard-helper)
 chmod +x src-tauri/clipboard-helper
 
 # ── Kill old processes ─────────────────────────────────────────

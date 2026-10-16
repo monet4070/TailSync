@@ -969,6 +969,7 @@ impl DeliveryConnection for WindowConnection {
         CapabilitySet {
             file_sliding_window: true,
             image_compressed_chunks: false,
+            pairing_commit_proof: false,
         }
     }
 }
@@ -988,6 +989,7 @@ impl DeliveryConnection for ImageConnection {
         CapabilitySet {
             file_sliding_window: false,
             image_compressed_chunks: true,
+            pairing_commit_proof: false,
         }
     }
 }

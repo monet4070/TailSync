@@ -32,6 +32,17 @@ const STORE_FORMAT_VERSION: u32 = 1;
 /// One half-confirmed pairing: the local user confirmed the verification code
 /// and the local side has written this record, but the peer has not yet been
 /// observed to have written its own non-authoritative pending record.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingTrustPhase {
+    #[default]
+    Pending,
+    CommittedAwaitingAck,
+    /// A replay receipt, never an admission source. Kept until forget/new
+    /// consent so a peer that lost our last ACK can still finish later.
+    Completed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingTrustRecord {
     pub hostname: String,
@@ -41,6 +52,12 @@ pub struct PendingTrustRecord {
     pub address: String,
     /// Unix seconds at which this side recorded the confirmation.
     pub recorded_at: u64,
+    #[serde(default)]
+    pub phase: PendingTrustPhase,
+    /// Original pairing transaction, not the current reconnect's Noise ID.
+    /// Legacy notes have no nonce and require a new user-confirmed pairing.
+    #[serde(default)]
+    pub commit_nonce: Option<[u8; 16]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +156,21 @@ impl PendingTrustStore {
         self.writable
     }
 
+    /// Retry a transient storage failure at a new pairing session. Corrupt or
+    /// future data remain untouched/read-only; only a successfully loaded
+    /// durable store can replace the in-memory recovery snapshot.
+    pub(super) fn retry_unavailable(&mut self) {
+        if self.writable {
+            return;
+        }
+        if let Some(path) = self.path.as_ref() {
+            let replacement = Self::load_from_path(path);
+            if replacement.writable {
+                *self = replacement;
+            }
+        }
+    }
+
     pub fn records(&self) -> &[PendingTrustRecord] {
         &self.records
     }
@@ -170,8 +202,8 @@ impl PendingTrustStore {
         Ok(())
     }
 
-    /// Drop the pending record. Called once the pairing became durable on both
-    /// sides, or when the user forgets the device.
+    /// Drop a legacy pending note or a forgotten device's receipt. Proof-capable
+    /// completion retains a Completed receipt for replaying a lost final ACK.
     pub fn remove(&mut self, hostname: &str) -> std::io::Result<()> {
         let mut updated = self.clone();
         updated.records.retain(|known| known.hostname != hostname);

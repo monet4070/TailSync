@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { SettingsConnectionsSectionProps } from "./SettingsSectionTypes";
 import type { SettingsData } from "../../types/settings.generated";
+import type { PairingStatus } from "../../tailsyncClient";
 import { SettingsConnectionsSection } from "./SettingsConnectionsSection";
 
 const mockDevices = {
@@ -176,4 +177,23 @@ it("exposes pending recovery without presenting a trusted online device", () => 
   expect(openPairing).toHaveBeenCalledWith(expect.objectContaining({hostname:"incomplete-device",trusted:false,online:false,address:"192.168.1.2"}));
   fireEvent.click(screen.getByRole("button", {name:labels["settings.forgetPairing"] ?? "settings.forgetPairing"}));
   expect(handleForget).toHaveBeenCalledWith(expect.objectContaining({hostname:"incomplete-device",trusted:false}));
+});
+
+it("keeps an active trust row pending until the commit exchange completes", () => {
+  const status: PairingStatus = {
+    pairing_enabled: true, phase: "finalizing", failed_attempts: 0,
+    max_failures: 5, remaining_seconds: 30,
+    pending: [{ hostname: "MACBOOK-PRO", address: "192.168.1.101",
+      interface: "lan", fingerprint: "SHA256:ef5678peer", locally_trusted: true }],
+  };
+  const { container, unmount } = renderConnections("auto", { pairingStatus: status });
+  expect(container.querySelector(".peer-badge")?.textContent).toBe("settings.pendingPeerCompletion");
+  expect(screen.queryByText("Paired")).not.toBeInTheDocument();
+  // Local admission already exists; the label must not change its sync policy.
+  expect(screen.getByText("Sync ready")).toBeInTheDocument();
+  unmount();
+  const completed = renderConnections("auto", {
+    pairingStatus: { ...status, pairing_enabled: false, phase: "paired", pending: [] },
+  });
+  expect(completed.container.querySelector(".peer-badge")?.textContent).toBe("Paired");
 });

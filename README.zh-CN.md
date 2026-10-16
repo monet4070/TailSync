@@ -23,7 +23,7 @@
 </div>
 
 > [!NOTE]
-> TailSync 2.3.1 目前处于积极开发阶段。macOS 与 Windows 客户端已经可以互相同步，并支持休眠/唤醒后自动恢复。tag 流水线默认生成免费的 Community Release：更新包仍有 TailSync 私钥签名、SHA-256 校验和降级保护，但 macOS 未公证、Windows 无商业代码签名；付费平台签名可在以后切换为 Trusted Release。首次公开发布前仍需完成真实设备验收。
+> TailSync 2.3.1 目前处于积极开发阶段。macOS 与 Windows 客户端已实现同步和休眠/唤醒恢复逻辑，真实双设备恢复与 Windows 原生流程仍待验收。tag 流水线默认生成免费的 Community Release：更新包仍有 TailSync 私钥签名、SHA-256 校验和降级保护，但 macOS 未公证、Windows 无商业代码签名；付费平台签名可在以后切换为 Trusted Release。首次公开发布前仍需完成真实设备验收。
 
 ## 为什么选择 TailSync
 
@@ -42,11 +42,11 @@
 
 | 平台 | 状态 | 客户端形态 |
 |---|---|---|
-| macOS | ✅ 可用 | SwiftUI 菜单栏应用 + Rust 守护进程 |
-| Windows | ✅ 可用 | React / TypeScript / Tauri 桌面应用 |
+| macOS 13+ | 已实现，外部验收待完成 | SwiftUI 菜单栏应用 + Rust 守护进程 |
+| Windows 10/11 | 已实现，原生验收待完成 | React / TypeScript / Tauri 桌面应用 |
 | Android | 🧪 尚未支持 | 不属于当前跨平台兼容范围 |
 
-macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/rust-core` 中的 v4 线协议、加密、历史存储和同步状态机，并通过跨平台漂移检查保持契约一致。
+macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/rust-core` 中的 v4 身份/基础兼容契约、按连接协商的 v4/v5 数据帧、加密、历史存储和同步状态机，并通过跨平台漂移检查保持契约一致。
 
 ## 核心功能
 
@@ -140,7 +140,7 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 - 文本、图片和文件历史均使用系统保护的数据密钥加密存储。
 - 文件历史使用 1 MiB 分块 AES-256-GCM 容器；恢复时只在受控剪贴板目录生成临时明文。
 
-当前线协议为 v4，加入了原子配对提交确认和原子文件批次；握手会交换协议版本，不匹配时明确提示同时更新两端。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.3.1，数据库 schema 为 v11，这三个版本号彼此独立。
+身份/基础兼容版本为 v4，认证握手按连接协商 v4/v5 数据帧和扩展能力，旧对端回退 v4；基础版本不兼容时提示更新两端。配对采用持久化同意、认证对账与可恢复最终确认，并非分布式原子提交。文件批次历史使用本地 SQLite 事务。已固定的设备身份仍然有效，无需仅因协议升级重新配对。当前产品版本为 2.3.1，数据库 schema 为 v11，这三个版本号彼此独立。
 
 旧版 TailSync v1 历史数据库会在首次启动时自动导入。迁移按内容哈希保持幂等，损坏条目会写入诊断报告但不会阻止启动；原 `history.db` 和 `.fernet_key` 会保留，不会被自动删除。
 
@@ -152,7 +152,7 @@ TailSync 不会仅凭“发现过这个设备”就长期显示在线。唯一�
 | `19890` | TCP | 配对、认证和剪贴板数据传输 |
 | macOS Application Support 下的 `tailsyncd.sock` | Unix socket，仅本机 | SwiftUI 外壳与 Rust 守护进程通信；校验连接对端 PID 和能力令牌 |
 
-局域网发现使用 mDNS 服务名 `_tailsync._tcp.local.`。macOS 本地 API 使用用户专属目录下的 Unix socket，不监听本地 TCP 端口；Windows 本地 API 仍使用 `127.0.0.1:19889`，不要通过端口转发暴露到其他设备。
+局域网发现使用 mDNS 服务名 `_tailsync._tcp.local.`。macOS 本地 API 使用用户专属目录下的 Unix socket，不监听本地 TCP 端口；production Windows 使用进程内 Tauri 命令，不再启动 `127.0.0.1:19889` 旧 TCP API；UDP 19889 仍用于发现。
 
 ## 从源码运行
 
@@ -290,7 +290,7 @@ macOS 与 Windows 的平台 UI 可以按系统体验分别演进；共享业务�
 ## 当前限制
 
 - 未完成文件批次可在发送端或接收端退出、崩溃、重启后续传。发送端 journal 与接收端 `.part`/manifest 最多保留 24 小时；恢复按接收端已验证偏移继续，并在整批完成后重新校验文件。详见[跨重启文件续传](docs/features/resumable-file-transfer.md)。
-- macOS 本地 JSON-lines API 使用用户专属 Unix socket，并对连接对端 PID 及每个请求强制校验 256 位能力令牌；请求上限为 1 MiB，读写超时为 5 秒。Windows 本地 API 才使用 `127.0.0.1:19889`，仍不应通过端口转发暴露。
+- macOS 本地 JSON-lines API 使用用户专属 Unix socket，并对连接对端 PID 及每个请求强制校验 256 位能力令牌；请求上限为 1 MiB，读写超时为 5 秒。production Windows 使用 Tauri 命令，`127.0.0.1:19889` 旧 TCP API 已禁用。
 - 历史正文与图片/文件负载由应用数据密钥加密；类型、时间戳等数据库元数据不加密，系统磁盘加密仍可提供额外的整盘保护。
 - 默认 tag 产物是 Community Release：macOS 使用 ad-hoc 签名且未公证，Windows 不含商业 Authenticode 签名，因此首次打开会出现 Gatekeeper 或 SmartScreen 警告；不要通过关闭系统安全功能来规避警告。
 - updater 签名、稳定通道 manifest 和降级保护已经接入，但尚未在本仓库凭据下完成首次线上更新及完整真实设备回归矩阵。预发布 tag 不进入稳定更新通道。
@@ -307,3 +307,11 @@ TailSync 核心代码采用 [MIT License](LICENSE)。
 如果 TailSync 对你有帮助，欢迎点一个 ⭐
 
 </div>
+
+## 投递边界与诊断
+
+文本/图片使用有界内存可靠重试；发送端进程重启不等于持久离线 outbox。接收端持久事件回执避免旧 event 跨重启再次覆盖剪贴板，同内容新 event ID 仍是新意图。文件使用持久传输 journal 和最长 24 小时的续传状态，受源文件身份/内容一致性与存储可用性约束。详见[事件回执语义](docs/remote-event-receipts.md)。
+
+存储降级时请保持 TailSync 运行，恢复原存储位置访问并等待历史恢复后再搬迁；后端会拒绝降级状态搬迁，保留已 ACK/收藏的内存历史。
+
+提交问题请提供版本、OS/架构、双方设备/配对状态、所选网络路线、方向与操作时间，按[诊断说明](docs/diagnostics.md)收集日志并移除敏感本地路径。真实 sleep/wake、Windows 原生安装/剪贴板、relay/NAT 和旧 macOS 执行仍是最终验收项目。

@@ -611,6 +611,11 @@ struct ConnectionsView: View {
     }
 
     func peerRow(_ peer: ApiClient.PeerSnapshot) -> some View {
+        let incompletePairing = pairingStatus?.pending?.first { $0.hostname == peer.hostname }
+        let paired = peer.trusted && incompletePairing == nil
+        let pairingLabel = incompletePairing.map {
+            $0.locally_trusted ? "settings.pendingPeerCompletion" : "settings.pendingPairing"
+        } ?? (paired ? "settings.paired" : "settings.notPaired")
         let routes = peerRoutes(for: peer)
         let status = peerStatus(peer, routes: routes)
         let testRoutes = latencyTestRoutes(in: routes)
@@ -626,12 +631,12 @@ struct ConnectionsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(peer.hostname).font(.body.weight(.medium))
-                    Image(systemName: peer.trusted ? "checkmark.shield.fill" : "exclamationmark.shield")
+                    Image(systemName: paired ? "checkmark.shield.fill" : "exclamationmark.shield")
                         .font(.caption2)
-                        .foregroundColor(peer.trusted ? palette.positiveColor : palette.warningColor)
-                    Text(peer.trusted ? Loc.t("settings.paired") : Loc.t("settings.notPaired"))
+                        .foregroundColor(paired ? palette.positiveColor : palette.warningColor)
+                    Text(Loc.t(pairingLabel))
                         .font(.caption2)
-                        .foregroundColor(peer.trusted ? palette.positiveColor : palette.warningColor)
+                        .foregroundColor(paired ? palette.positiveColor : palette.warningColor)
                 }
                 if let version = peer.requiredProtocolVersion {
                     Text(

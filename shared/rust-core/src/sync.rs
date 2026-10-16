@@ -46,6 +46,12 @@ pub use outgoing::{
 
 const SEEN_MESSAGE_RETENTION_SECONDS: i64 = 10 * 60;
 const SEEN_MESSAGE_MAX_ENTRIES: usize = 1024;
+/// Inbound reliable events whose clipboard effect has been applied but whose
+/// history persistence has not yet committed. Retention is bounded like the
+/// committed-event set: a retry after this window is treated as a fresh event
+/// rather than risking an unbounded map.
+const APPLIED_EVENT_RETENTION_SECONDS: i64 = 10 * 60;
+const APPLIED_EVENT_MAX_ENTRIES: usize = 1024;
 pub const INCOMPLETE_TRANSFER_RETENTION_SECONDS: u64 = 24 * 60 * 60;
 const CANCELLED_BATCH_RETENTION_SECONDS: i64 = 24 * 60 * 60;
 const CANCELLED_BATCH_MAX_ENTRIES: usize = 1024;
@@ -330,6 +336,11 @@ pub struct SyncEngine {
     /// the same clipboard event twice.
     seen_messages: HashMap<Arc<str>, HashMap<MessageId, i64>>,
     seen_message_order: VecDeque<(Arc<str>, MessageId, i64)>,
+    /// Events whose clipboard effect already happened but whose history write
+    /// has not committed. Retries of these must not re-apply the clipboard,
+    /// because newer local or remote intent may have superseded them.
+    applied_events: HashMap<Arc<str>, HashMap<MessageId, i64>>,
+    applied_event_order: VecDeque<(Arc<str>, MessageId, i64)>,
     /// Active file receives: authenticated peer + transfer ID → receive state.
     active_receives: HashMap<(String, ReceiveKey), FileReceiveState>,
     /// Per-transfer and per-batch locks are kept outside the state mutex's

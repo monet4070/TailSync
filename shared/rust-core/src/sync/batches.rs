@@ -35,6 +35,49 @@ pub(super) fn transition_received_batch_commit(
     Ok(())
 }
 
+/// Test-only seam that lets a regression test widen the lock-free plaintext
+/// staging window deterministically. Production builds compile the runner to a
+/// no-op, so the receive hot path is unchanged outside tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod staging_test_hook {
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use super::TransferId;
+
+    type Hook = Arc<dyn Fn(TransferId) + Send + Sync>;
+    static HOOK: OnceLock<Mutex<Option<Hook>>> = OnceLock::new();
+
+    fn slot() -> &'static Mutex<Option<Hook>> {
+        HOOK.get_or_init(|| Mutex::new(None))
+    }
+
+    /// Install or clear the staging hook. Only callers compiled with the
+    /// `test-support` feature (which does not imply `cfg(test)`) touch this, so
+    /// it is allowed to be unused in a plain dependency build.
+    #[allow(dead_code)]
+    pub fn set(hook: Option<Hook>) {
+        *slot().lock().expect("staging hook mutex poisoned") = hook;
+    }
+
+    /// Invoke the installed hook (if any) for one batch. The hook is cloned
+    /// out of the slot before it runs so a hook that blocks cannot deadlock a
+    /// concurrent staging call from an unrelated test.
+    pub fn pause_before_commit(batch_id: TransferId) {
+        let hook = slot().lock().expect("staging hook mutex poisoned").clone();
+        if let Some(hook) = hook {
+            hook(batch_id);
+        }
+    }
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn run_staging_test_hook(_batch_id: TransferId) {}
+
+#[cfg(any(test, feature = "test-support"))]
+fn run_staging_test_hook(batch_id: TransferId) {
+    staging_test_hook::pause_before_commit(batch_id);
+}
+
 #[cfg(feature = "acceptance-injection")]
 fn maybe_abort_received_batch_stage(state: ReceivedBatchCommitState, batch_id: TransferId) {
     let requested = std::env::var("TAILSYNC_RECEIVED_BATCH_ABORT_STAGE").unwrap_or_default();
@@ -707,7 +750,7 @@ impl SyncEngine {
         }
         let (
             files,
-            activate_clipboard,
+            mut activate_clipboard,
             staging_directory,
             existing_staging,
             source_device_id,
@@ -756,7 +799,8 @@ impl SyncEngine {
             )
         };
 
-        let clipboard_paths = if activate_clipboard {
+        let mut clipboard_paths = if activate_clipboard {
+            run_staging_test_hook(batch_id);
             let stage_files = files.clone();
             let stage_source = source.to_string();
             tokio::task::spawn_blocking(move || {
@@ -774,10 +818,20 @@ impl SyncEngine {
         };
         {
             let mut engine = sync_engine.lock().await;
+            // Staging runs with the engine lock released. Re-validate the
+            // intent token captured before staging: if a newer clipboard
+            // intent superseded this batch while plaintext staging ran, the
+            // batch must not become the active OS clipboard.
+            let current_generation = engine.clipboard_generation;
             let batch = engine
                 .incoming_batches
                 .get_mut(&key)
                 .ok_or_else(|| "File batch state disappeared during staging".to_string())?;
+            if activate_clipboard && batch.local_generation != current_generation {
+                activate_clipboard = false;
+                remove_failed_clipboard_staging(&clipboard_paths);
+                clipboard_paths = Vec::new();
+            }
             persist_clipboard_staging(batch, clipboard_paths.clone())?;
         }
 

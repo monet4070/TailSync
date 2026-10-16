@@ -41,6 +41,10 @@ function makePeers(overrides: Partial<PeersResponse> = {}): PeersResponse {
   };
 }
 
+function peersWithSelf(hostname: string): PeersResponse {
+  return makePeers({ self: { ...makePeers().self, hostname } });
+}
+
 function flushMicrotasks() {
   return act(async () => {});
 }
@@ -275,5 +279,86 @@ describe("useDevices", () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
     expect(mockedGetPeers).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores a stale snapshot that resolves after a newer one", async () => {
+    let resolveInitial!: (peers: PeersResponse) => void;
+    mockedGetPeers.mockReturnValueOnce(new Promise((resolve) => {
+      resolveInitial = resolve;
+    }));
+    const { result } = renderDevices("auto");
+    await flushMicrotasks();
+
+    mockedRefreshPeers.mockResolvedValueOnce(peersWithSelf("NEW"));
+    await act(async () => {
+      await result.current.refreshDevices();
+    });
+    expect(result.current.devices?.self.hostname).toBe("NEW");
+
+    // The initial request finishes last with an older snapshot; it must not
+    // roll the committed newer snapshot back.
+    await act(async () => {
+      resolveInitial(peersWithSelf("STALE"));
+      await Promise.resolve();
+    });
+    expect(result.current.devices?.self.hostname).toBe("NEW");
+  });
+
+  it("keeps the newer error when an older request later succeeds", async () => {
+    let resolveInitial!: (peers: PeersResponse) => void;
+    mockedGetPeers.mockReturnValueOnce(new Promise((resolve) => {
+      resolveInitial = resolve;
+    }));
+    const { result } = renderDevices("auto");
+    await flushMicrotasks();
+
+    mockedRefreshPeers.mockRejectedValueOnce(new Error("offline"));
+    await act(async () => {
+      await result.current.refreshDevices();
+    });
+    expect(result.current.devices).toBeNull();
+    expect(result.current.devicesError).toBe("Error: offline");
+
+    // The older request now succeeds; the committed error state stays.
+    await act(async () => {
+      resolveInitial(peersWithSelf("OLD"));
+      await Promise.resolve();
+    });
+    expect(result.current.devices).toBeNull();
+    expect(result.current.devicesError).toBe("Error: offline");
+  });
+
+  it("clears the loading flag when a silent reload supersedes a pending refresh", async () => {
+    const { result } = renderDevices("auto");
+    await flushMicrotasks();
+
+    let resolveRefresh!: (peers: PeersResponse) => void;
+    mockedRefreshPeers.mockReturnValue(new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    let pendingRefresh!: Promise<void>;
+    act(() => {
+      pendingRefresh = result.current.refreshDevices();
+    });
+    await flushMicrotasks();
+    expect(result.current.devicesLoading).toBe(true);
+
+    // A silent reload (poll / health event) starts and finishes while the
+    // manual refresh is still in flight.
+    mockedGetPeers.mockResolvedValueOnce(peersWithSelf("NEW"));
+    await act(async () => {
+      await result.current.onDevicesRefreshed();
+    });
+    expect(result.current.devices?.self.hostname).toBe("NEW");
+    expect(result.current.devicesLoading).toBe(false);
+
+    // The older refresh resolving must not resurrect the spinner or the
+    // superseded snapshot.
+    await act(async () => {
+      resolveRefresh(peersWithSelf("STALE"));
+      await pendingRefresh;
+    });
+    expect(result.current.devicesLoading).toBe(false);
+    expect(result.current.devices?.self.hostname).toBe("NEW");
   });
 });

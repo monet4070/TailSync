@@ -118,6 +118,7 @@ where
         partial_record: Vec::new(),
         partial_expected: None,
         peer_identity: peer_info,
+        remote_public_key: remote_key.clone(),
         session_id,
         negotiated_capabilities: capabilities_for_wire(
             CapabilitySet::negotiate(local_capabilities, peer_capabilities),
@@ -180,14 +181,35 @@ where
 }
 
 pub async fn connect_pairing<S>(
-    mut stream: S,
+    stream: S,
     identity: &DeviceIdentity,
     local_info: PeerIdentity,
 ) -> Result<AcceptedConnection, Box<dyn std::error::Error + Send + Sync>>
 where
     S: SessionIo + 'static,
 {
-    let local_capabilities = CapabilitySet::disabled();
+    connect_pairing_with_capabilities(
+        stream,
+        identity,
+        local_info,
+        CapabilitySwitches::runtime_defaults(),
+    )
+    .await
+}
+
+pub async fn connect_pairing_with_capabilities<S>(
+    mut stream: S,
+    identity: &DeviceIdentity,
+    local_info: PeerIdentity,
+    switches: CapabilitySwitches,
+) -> Result<AcceptedConnection, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: SessionIo + 'static,
+{
+    let local_capabilities = CapabilitySet {
+        pairing_commit_proof: switches.pairing_commit_proof,
+        ..CapabilitySet::disabled()
+    };
     let mut handshake = build_handshake(identity, true)?;
     let mut output = vec![0u8; protocol::MAX_HANDSHAKE_PAYLOAD_SIZE];
     let length = handshake.write_message(&[], &mut output)?;
@@ -234,6 +256,7 @@ where
         partial_record: Vec::new(),
         partial_expected: None,
         peer_identity: peer_identity.clone(),
+        remote_public_key: remote_public_key.clone(),
         session_id,
         negotiated_capabilities: CapabilitySet::negotiate(local_capabilities, peer_capabilities),
         wire_version: protocol::LEGACY_VERSION,
@@ -303,7 +326,10 @@ where
         identity,
         local_info,
         Some(pairing_enabled),
-        CapabilitySet::disabled(),
+        CapabilitySet {
+            pairing_commit_proof: CapabilitySwitches::runtime_defaults().pairing_commit_proof,
+            ..CapabilitySet::disabled()
+        },
     )
     .await
 }
@@ -469,6 +495,7 @@ where
             partial_record: Vec::new(),
             partial_expected: None,
             peer_identity: peer_info.clone(),
+            remote_public_key: remote_key.clone(),
             session_id,
             negotiated_capabilities,
             wire_version,

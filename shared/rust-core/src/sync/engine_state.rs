@@ -332,6 +332,89 @@ impl SyncEngine {
         }
     }
 
+    /// Record that an inbound event's clipboard effect has been applied while
+    /// its history write is still outstanding. A retry of this event must not
+    /// re-apply the clipboard effect, because newer clipboard intent (local or
+    /// remote) may have superseded it in the meantime.
+    pub fn mark_event_applied(&mut self, source: &str, message_id: MessageId) {
+        let now = chrono::Utc::now().timestamp();
+        self.prune_applied_events(now);
+        let source: Arc<str> = if let Some((source, _)) = self.applied_events.get_key_value(source)
+        {
+            source.clone()
+        } else {
+            let source: Arc<str> = Arc::from(source);
+            self.applied_events.insert(source.clone(), HashMap::new());
+            source
+        };
+        let events = self
+            .applied_events
+            .get_mut(source.as_ref())
+            .expect("applied-event source key was just inserted or found");
+        if events.contains_key(&message_id) {
+            return;
+        }
+        events.insert(message_id, now);
+        self.applied_event_order
+            .push_back((source, message_id, now));
+        self.prune_applied_events(now);
+    }
+
+    pub fn has_applied_event(&self, source: &str, message_id: MessageId) -> bool {
+        let now = chrono::Utc::now().timestamp();
+        self.applied_events
+            .get(source)
+            .and_then(|events| events.get(&message_id))
+            .is_some_and(|applied_at| {
+                now.saturating_sub(*applied_at) <= APPLIED_EVENT_RETENTION_SECONDS
+            })
+    }
+
+    pub fn clear_applied_event(&mut self, source: &str, message_id: MessageId) {
+        if let Some(events) = self.applied_events.get_mut(source) {
+            events.remove(&message_id);
+            if events.is_empty() {
+                self.applied_events.remove(source);
+            }
+        }
+    }
+
+    pub(super) fn prune_applied_events(&mut self, now: i64) {
+        while let Some((source, message_id, applied_at)) = self.applied_event_order.front().cloned()
+        {
+            let current = self
+                .applied_events
+                .get(source.as_ref())
+                .and_then(|events| events.get(&message_id))
+                .copied();
+            let expired = now.saturating_sub(applied_at) > APPLIED_EVENT_RETENTION_SECONDS;
+            let over_capacity = self.applied_event_order.len() > APPLIED_EVENT_MAX_ENTRIES;
+            if current != Some(applied_at) || expired || over_capacity {
+                self.applied_event_order.pop_front();
+                if self
+                    .applied_events
+                    .get(source.as_ref())
+                    .and_then(|events| events.get(&message_id))
+                    .copied()
+                    == Some(applied_at)
+                {
+                    let remove_peer =
+                        self.applied_events
+                            .get_mut(source.as_ref())
+                            .is_some_and(|events| {
+                                events.remove(&message_id);
+                                events.is_empty()
+                            });
+                    if remove_peer {
+                        self.applied_events.remove(source.as_ref());
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     pub fn add_shadow_filter(&mut self, text: &str) {
         let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
         self.shadow_filter.insert(hash);

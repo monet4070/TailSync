@@ -250,6 +250,12 @@ impl HistoryDB {
         &mut self,
         parent: &Path,
     ) -> Result<StorageMigrationResult, Box<dyn std::error::Error>> {
+        // A disk-tree copy cannot carry RAM-only acknowledged history. Fail
+        // before touching either root or settings; configured recovery adopts
+        // those rows first, after which ordinary relocation is safe.
+        if !self.storage_available {
+            return Err("StorageUnavailableWithPendingHistory: restore access to the current storage location and wait for history recovery before moving TailSync data; keep TailSync running to preserve in-memory history".into());
+        }
         validate_storage_dir(parent)?;
         let old_root = get_storage_dir();
         let target = parent.join(STORAGE_DIRECTORY_NAME);
@@ -313,18 +319,21 @@ impl HistoryDB {
 
     pub fn reopen_storage_at(&mut self, root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let previous_root = get_storage_dir();
+        if !self.storage_available && !paths_equivalent(&previous_root, root) {
+            return Err("StorageUnavailableWithPendingHistory: recover the current storage location before switching roots".into());
+        }
         configure_storage_dir(Some(root))?;
-        let mut replacement = match Self::open_at(root) {
+        let replacement = match Self::open_at(root) {
             Ok(database) => database,
             Err(error) => {
                 let _ = configure_storage_dir(Some(&previous_root));
                 return Err(error);
             }
         };
-        replacement.max_history = self.max_history;
-        replacement.storage_quota_bytes = self.storage_quota_bytes;
-        replacement.storage_available = true;
-        *self = replacement;
+        if let Err(error) = self.adopt_replacement(replacement) {
+            let _ = configure_storage_dir(Some(&previous_root));
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -1348,5 +1357,116 @@ mod tests {
         drop(settings);
         configure_storage_dir(Some(&original)).unwrap();
         fs::remove_dir_all(base).unwrap();
+    }
+    #[tokio::test]
+    async fn degraded_relocation_rejects_without_losing_favorites_or_disk_history() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("p35-degraded-relocation");
+        let old_root = base.join("old");
+        configure_storage_dir(Some(&old_root)).unwrap();
+        let disk = test_database(&old_root);
+        disk.lock()
+            .await
+            .add_text("persistent old", "self")
+            .unwrap();
+        drop(disk);
+        let mut degraded = HistoryDB::new_unavailable().unwrap();
+        degraded.add_text("ACKed unique", "peer").unwrap();
+        let id = degraded.get_all(None, None, 10, 0).unwrap()[0].id;
+        degraded.set_favorite(id, true).unwrap();
+        let image = crate::protocol::pack_rgba_image(1, 1, &[6; 4]).unwrap();
+        degraded.add_image(&image, "peer").unwrap();
+        degraded
+            .add_file("offline.bin", b"file while degraded", "peer")
+            .unwrap();
+        for entry in degraded.get_all(None, None, 10, 0).unwrap() {
+            degraded.set_favorite(entry.id, true).unwrap();
+        }
+        let database = std::sync::Arc::new(tokio::sync::Mutex::new(degraded));
+        let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
+        for _ in 0..3 {
+            let result = migrate_storage_with_rollback(
+                &database,
+                &settings,
+                &base.join("parent"),
+                StorageMigrationHooks {
+                    wait_timeout: std::time::Duration::from_secs(1),
+                    has_active_transfers: &|| false,
+                    notify: None,
+                    persist_settings: &|_| panic!("rejected migration must not save settings"),
+                },
+            )
+            .await;
+            assert!(result.is_err(), "degraded relocation must fail safely");
+            let db = database.lock().await;
+            assert_eq!(db.get_data(id).unwrap(), b"ACKed unique");
+            for entry in db.get_all(None, None, 10, 0).unwrap() {
+                assert!(entry.pinned);
+                let bytes = db.get_data(entry.id).unwrap();
+                assert!(!bytes.is_empty());
+            }
+            assert_eq!(db.count_all_filtered(None, None, None, None).unwrap(), 3);
+            assert_eq!(get_storage_dir(), old_root);
+            assert!(!base.join("parent").exists());
+        }
+        database.lock().await.reopen_configured_storage().unwrap();
+        database.lock().await.reopen_configured_storage().unwrap();
+        assert_eq!(
+            database
+                .lock()
+                .await
+                .count_all_filtered(None, None, None, None)
+                .unwrap(),
+            4
+        );
+        // Recovery persisted all payload/reference pairs. A failed Settings save
+        // now rolls the healthy store back without losing the adopted rows.
+        let error = migrate_storage_with_rollback(
+            &database,
+            &settings,
+            &base.join("parent"),
+            StorageMigrationHooks {
+                wait_timeout: std::time::Duration::from_secs(1),
+                has_active_transfers: &|| false,
+                notify: None,
+                persist_settings: &|_| Err("injected settings failure".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StorageMigrationFailure::SaveFailedAfterRollback { .. }
+        ));
+        assert_eq!(get_storage_dir(), old_root);
+        let result = migrate_storage_with_rollback(
+            &database,
+            &settings,
+            &base.join("parent"),
+            StorageMigrationHooks {
+                wait_timeout: std::time::Duration::from_secs(1),
+                has_active_transfers: &|| false,
+                notify: None,
+                persist_settings: &|_| Ok(()),
+            },
+        )
+        .await
+        .unwrap();
+        let db = database.lock().await;
+        let entries = db.get_all(None, None, 10, 0).unwrap();
+        assert_eq!(entries.len(), 4);
+        for entry in entries {
+            let bytes = db.get_data(entry.id).unwrap();
+            match entry.entry_type.as_str() {
+                "image" => assert_eq!(bytes, image),
+                "file" => assert_eq!(bytes, b"file while degraded"),
+                "text" => assert!(bytes == b"persistent old" || bytes == b"ACKed unique"),
+                _ => panic!("unexpected history type"),
+            }
+        }
+        assert_eq!(get_storage_dir(), PathBuf::from(result.new_root));
+        drop(db);
+        configure_storage_dir(Some(&original)).unwrap();
     }
 }

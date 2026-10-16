@@ -188,6 +188,10 @@ jobs:
         run: node scripts/run-remediation-tests.mjs --job rust-windows -- cargo test --locked --manifest-path shared/tailsync-runtime/Cargo.toml
       - name: Check Windows application formatting
         run: cargo fmt --manifest-path windows/src-tauri/Cargo.toml --all -- --check
+      - name: Run isolated two-process clipboard restart regression
+        run: node scripts/run-isolated-tests.mjs -- cargo test --locked -p tailsync-core --features test-support --test reliable_event_process -- --test-threads=1
+      - name: Test macOS deployment guard
+        run: python3 -m unittest discover -s macos/scripts -p 'test_macos_deployment.py'
       - name: Check macOS application formatting
         run: cargo fmt --manifest-path macos/src-tauri/Cargo.toml --all -- --check
       - name: Run shared core Clippy

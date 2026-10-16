@@ -23,7 +23,7 @@ TailSync prefers your local network and falls back to Tailscale when needed, wit
 </div>
 
 > [!NOTE]
-> TailSync 2.3.1 is under active development. The macOS and Windows clients can already sync with each other and recover automatically after sleep or wake. Tagged builds produce a free Community Release by default: update packages still carry a TailSync private-key signature, SHA-256 checksums, and downgrade protection, but the macOS build is not notarized and the Windows build has no commercial code signature. Paid platform signing can be enabled later as a Trusted Release. Real-device acceptance testing is still required before the first public release.
+> TailSync 2.3.1 is under active development. The macOS and Windows clients implement synchronization and automatic sleep/wake recovery logic. Native Windows and real two-device recovery acceptance remain pending. Tagged builds produce a free Community Release by default: update packages still carry a TailSync private-key signature, SHA-256 checksums, and downgrade protection, but the macOS build is not notarized and the Windows build has no commercial code signature. Paid platform signing can be enabled later as a Trusted Release. Real-device acceptance testing is still required before the first public release.
 
 ## Why TailSync
 
@@ -42,11 +42,11 @@ TailSync prefers your local network and falls back to Tailscale when needed, wit
 
 | Platform | Status | Client |
 |---|---|---|
-| macOS | ✅ Available | SwiftUI menu-bar app + Rust daemon |
-| Windows | ✅ Available | React / TypeScript / Tauri desktop app |
+| macOS 13+ | Implementation available; external acceptance pending | SwiftUI menu-bar app + Rust daemon |
+| Windows 10/11 | Implementation available; native acceptance pending | React / TypeScript / Tauri desktop app |
 | Android | 🧪 Not yet supported | Outside the current cross-platform compatibility scope |
 
-macOS uses native SwiftUI, while Windows uses React and Tauri. Both clients share the v4 wire protocol, encryption, history storage, and synchronization state machine in `shared/rust-core`; cross-platform drift checks keep their contracts aligned.
+macOS uses native SwiftUI, while Windows uses React and Tauri. Both clients share identity/base compatibility v4 and negotiated v4/v5 wire frames, encryption, history storage, and synchronization state machine in `shared/rust-core`; cross-platform drift checks keep their contracts aligned.
 
 ## Features
 
@@ -140,7 +140,7 @@ Under normal conditions, a disconnected peer becomes **offline in about 8–12 s
 - Text, image, and file history is encrypted at rest with a system-protected data key.
 - File history uses 1 MiB AES-256-GCM chunk containers; restore operations write temporary plaintext only into a controlled clipboard directory.
 
-The current wire protocol is v4. It adds atomic pairing-commit confirmation and atomic file batches. Peers exchange protocol versions during the handshake and show a clear prompt to update both clients when the versions differ. Pinned device identities remain valid across a protocol upgrade, so re-pairing is not required for that reason alone. The current product version is 2.3.1, and the database schema is v11; these three version numbers are independent.
+Identity/base compatibility remains v4. Authenticated handshakes negotiate v4 or v5 data frames and optional extensions per connection, with v4 fallback for older peers. Pairing uses persisted consent, authenticated reconciliation and resumable finalization; it is not an atomic distributed commit. File-batch history commits are local SQLite transactions. Incompatible base versions prompt users to update both clients. Pinned device identities remain valid across a protocol upgrade, so re-pairing is not required for that reason alone. The current product version is 2.3.1, and the database schema is v11; these three version numbers are independent.
 
 TailSync imports legacy v1 history databases on first launch. Migration is idempotent by content hash; corrupted entries are written to a diagnostic report without preventing startup. The original `history.db` and `.fernet_key` files are retained and never deleted automatically.
 
@@ -152,7 +152,7 @@ TailSync imports legacy v1 history databases on first launch. Migration is idemp
 | `19890` | TCP | Pairing, authentication, and clipboard data transfer |
 | `tailsyncd.sock` under macOS Application Support | Unix socket, local only | Communication between the SwiftUI shell and Rust daemon, with peer PID and capability-token checks |
 
-LAN discovery advertises the mDNS service `_tailsync._tcp.local.`. On macOS, the local API uses a Unix socket in a user-specific directory and does not listen on local TCP. The Windows local API still uses `127.0.0.1:19889`; do not expose it to other devices through port forwarding.
+LAN discovery advertises the mDNS service `_tailsync._tcp.local.`. On macOS, the local API uses a Unix socket in a user-specific directory and does not listen on local TCP. Production Windows uses in-process Tauri commands and does not start the legacy TCP local API on `127.0.0.1:19889`. UDP 19889 is still used for discovery.
 
 ## Run from source
 
@@ -290,7 +290,7 @@ The macOS and Windows interfaces may evolve independently to match their respect
 ## Current limitations
 
 - Incomplete file batches can resume after the sender or receiver exits, crashes, or restarts. Sender journals and receiver `.part` files / manifests are retained for at most 24 hours. Resume starts at the receiver's last verified offset, then verifies every file again when the batch completes. See [resumable file transfers](docs/features/resumable-file-transfer.md).
-- The macOS local JSON Lines API uses a Unix socket in a user-specific directory and requires peer-PID validation plus a 256-bit capability token on every request. Requests are limited to 1 MiB with five-second read and write timeouts. Only the Windows local API uses `127.0.0.1:19889`, and it should not be exposed through port forwarding.
+- The macOS local JSON Lines API uses a Unix socket in a user-specific directory and requires peer-PID validation plus a 256-bit capability token on every request. Requests are limited to 1 MiB with five-second read and write timeouts. Production Windows uses Tauri commands; the legacy TCP local API on `127.0.0.1:19889` is disabled.
 - History bodies and image / file payloads are encrypted with the application data key. Database metadata such as type and timestamp is not encrypted; full-disk encryption can provide additional protection.
 - Tagged builds are Community Releases by default. macOS uses ad-hoc signing without notarization, and Windows has no commercial Authenticode signature, so Gatekeeper or SmartScreen warns on first launch. Do not bypass these warnings by disabling operating-system security features.
 - Updater signing, the stable-channel manifest, and downgrade protection are implemented, but the first online update and complete real-device regression matrix have not yet been completed with this repository's credentials. Pre-release tags do not enter the stable update channel.
@@ -307,3 +307,11 @@ TailSync core code is available under the [MIT License](LICENSE).
 If TailSync helps you, consider giving the project a ⭐
 
 </div>
+
+## Delivery and diagnostics
+
+Text/image delivery uses bounded in-memory reliable retry. Sender process restart does not provide a durable offline outbox. Receiver event receipts protect against accepted event replay after restart; identical content with a new event ID remains a new intent. Files have a durable transfer journal and resumable payloads (up to 24 hours), subject to source identity/content checks and available storage. See [receipt and recovery semantics](docs/remote-event-receipts.md).
+
+When storage is degraded, keep TailSync running and restore access to the original storage location. Wait for history recovery before moving data. The backend refuses relocation while storage is degraded to preserve acknowledged/favorited RAM history.
+
+For bug reports, see [diagnostics collection](docs/diagnostics.md). Report product version, source/package fingerprint if available, OS/architecture, each peer's status and selected network route, direction of transfer, operation time, and steps to reproduce. Real sleep/wake, Windows install/clipboard, relay/NAT and older macOS execution remain final acceptance checks.
