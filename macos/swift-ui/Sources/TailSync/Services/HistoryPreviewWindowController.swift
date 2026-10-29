@@ -2,6 +2,7 @@ import AppKit
 import PDFKit
 import QuickLookUI
 import SwiftUI
+import WebKit
 
 enum HistoryPreviewOwner: Hashable {
     case history
@@ -126,6 +127,8 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
 
     private func focusRenderedContent(in window: NSWindow) -> Bool {
         func contentResponder(in view: NSView) -> NSView? {
+            guard !view.isHidden else { return nil }
+            if view is WKWebView { return view }
             if let text = view as? NSTextView, !text.isEditable { return text }
             if view is PDFView || view is QLPreviewView { return view }
             if let descendant = view.subviews.lazy.compactMap({ contentResponder(in: $0) }).first {
@@ -442,6 +445,11 @@ final class HistoryPreviewWindowController: NSObject, NSWindowDelegate {
 
 enum HistoryPreviewWindowKeyPolicy {
     static func keepsSpaceKey(_ responder: NSResponder?) -> Bool {
+        var ancestor = responder as? NSView
+        while let view = ancestor {
+            if view is WKWebView { return true }
+            ancestor = view.superview
+        }
         if let textView = responder as? NSTextView {
             // Search fields use an editable field editor; the read-only
             // source viewer intentionally retains Space-to-close.

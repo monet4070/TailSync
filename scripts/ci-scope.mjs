@@ -115,6 +115,13 @@ function classify(file, jobs, categories) {
     return true;
   }
 
+  if (file === "windows/scripts/build-markdown-assets.mjs" ||
+      file.startsWith("macos/swift-ui/Sources/TailSync/Resources/Markdown/")) {
+    enable(jobs, "frontend_windows", "rust_macos", "scripts", "shared_resolution");
+    categories.add("markdown-assets");
+    return true;
+  }
+
   if (file.startsWith("windows/scripts/") || file.startsWith("macos/scripts/")) {
     enable(
       jobs,
@@ -170,7 +177,7 @@ function classify(file, jobs, categories) {
     return true;
   }
 
-  if (file.startsWith("shared/schema/") || file.startsWith("shared/onboarding/")) {
+  if (file.startsWith("shared/schema/") || file.startsWith("shared/onboarding/") || file.startsWith("shared/markdown-preview/")) {
     enable(
       jobs,
       "frontend_windows",

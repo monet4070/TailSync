@@ -136,41 +136,15 @@ final class HistoryPreviewModelTests: XCTestCase {
         }
     }
 
-    func testMarkdownRemovesResourcesAndUnsafeLinkSchemes() {
-        let source = """
-        # Article
-        ![remote image](https://example.com/image.png)
-        <script>alert('x')</script>
-        [safe](https://example.com/read)
-        [unsafe](javascript:alert(1))
-        [local](file:///Users/test/secret)
-        [custom](tailsync://open/item)
-        """
-
-        let sanitized = HistoryMarkdownRenderer.sanitizedSource(source)
-        XCTAssertTrue(sanitized.contains("remote image"))
-        XCTAssertFalse(sanitized.contains("image.png"))
-        // Script tags are removed entirely. ("script" as a substring of the
-        // harmless plain text "javascript:alert(1)" stays in the raw source;
-        // the javascript: link itself is de-linked below by isAllowedLink.)
-        XCTAssertFalse(sanitized.localizedCaseInsensitiveContains("<script"))
-        XCTAssertFalse(sanitized.localizedCaseInsensitiveContains("</script>"))
-
-        let article = HistoryMarkdownRenderer.attributedArticle(source)
-        let links = article.runs.compactMap(\.link).map(\.absoluteString)
-        XCTAssertEqual(links, ["https://example.com/read"])
-        XCTAssertTrue(HistoryMarkdownRenderer.isAllowedLink(
-            URL(string: "HTTP://example.com")!
-        ))
-        XCTAssertFalse(HistoryMarkdownRenderer.isAllowedLink(
-            URL(string: "mailto:test@example.com")!
-        ))
-
-        let oversized = String(
-            repeating: "x",
-            count: HistoryMarkdownRenderer.maximumRichTextBytes + 1
-        )
-        XCTAssertEqual(String(HistoryMarkdownRenderer.attributedArticle(oversized).characters), oversized)
+    @MainActor
+    func testMarkdownOfflineResourcesAndNavigationPolicy() {
+        XCTAssertFalse(HistoryMarkdownResources.engine.isEmpty)
+        XCTAssertTrue(HistoryMarkdownResources.styles.contains("data:font/woff2;base64,"))
+        XCTAssertTrue(HistoryMarkdownResources.shell.contains("default-src 'none'"))
+        XCTAssertTrue(HistoryMarkdownResources.shell.contains("script-src 'none'"))
+        XCTAssertTrue(HistoryMarkdownWebRenderer.isAllowedLink(URL(string: "https://example.com")!))
+        XCTAssertFalse(HistoryMarkdownWebRenderer.isAllowedLink(URL(string: "file:///secret")!))
+        XCTAssertFalse(HistoryMarkdownWebRenderer.isAllowedLink(URL(string: "javascript:alert(1)")!))
     }
 
     func testLogicalLineIndexUsesTextKitUtf16Offsets() {
@@ -228,66 +202,6 @@ final class HistoryPreviewModelTests: XCTestCase {
         XCTAssertFalse(HistoryPreviewImageLimits.accepts(
             frameDimensions: Array(repeating: (width: 1_024, height: 1_024), count: 65)
         ))
-    }
-
-    func testMarkdownDocumentPreservesCommonBlockStructure() {
-        let document = HistoryMarkdownRenderer.document("""
-        # Release notes
-
-        Paragraph with **bold text** and `inline code`.
-
-        > Quoted guidance
-
-        - First item
-          - Nested item
-        - [x] Completed task
-
-        3. Numbered item
-
-        ```swift
-        let answer = 42
-        ```
-
-        | Name | Value |
-        | ---- | ----: |
-        | Mode | Safe  |
-
-        ---
-        """)
-
-        XCTAssertTrue(document.parsesInlineMarkdown)
-        XCTAssertEqual(document.blocks.count, 8)
-        guard case .heading(level: 1, text: "Release notes") = document.blocks[0] else {
-            return XCTFail("ATX heading should remain a heading")
-        }
-        guard case .paragraph(let paragraph) = document.blocks[1] else {
-            return XCTFail("prose should remain a paragraph")
-        }
-        XCTAssertTrue(paragraph.contains("**bold text**"))
-        guard case .blockQuote(let quote) = document.blocks[2],
-              case .paragraph("Quoted guidance") = quote.first else {
-            return XCTFail("blockquote structure should be preserved")
-        }
-        guard case .list(let bullets) = document.blocks[3] else {
-            return XCTFail("bullet/task list should remain a list")
-        }
-        XCTAssertEqual(bullets.map(\.depth), [0, 1, 0])
-        XCTAssertEqual(bullets.last?.marker, .task(true))
-        guard case .list(let numbered) = document.blocks[4] else {
-            return XCTFail("ordered list should remain a list")
-        }
-        XCTAssertEqual(numbered.first?.marker, .number(3))
-        guard case .code(language: "swift", text: "let answer = 42") = document.blocks[5] else {
-            return XCTFail("fenced code language and source should be preserved")
-        }
-        guard case .table(let headers, let rows) = document.blocks[6] else {
-            return XCTFail("pipe table should remain a table")
-        }
-        XCTAssertEqual(headers, ["Name", "Value"])
-        XCTAssertEqual(rows, [["Mode", "Safe"]])
-        guard case .thematicBreak = document.blocks[7] else {
-            return XCTFail("horizontal rule should remain a separator")
-        }
     }
 
     func testWindowSizePolicyMatchesRendererNeeds() {

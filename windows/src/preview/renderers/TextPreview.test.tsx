@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { installMarkdownTestWorker } from '../../test/markdownWorker';
 import { PREVIEW_TEXT_FONT_SIZE_KEY } from "../previewPreferences";
 import { TextPreview } from "./TextPreview";
 import {
@@ -10,6 +11,7 @@ import {
 const t = (key: string) => key;
 
 describe("TextPreview", () => {
+  beforeEach(installMarkdownTestWorker);
   it("renders selectable 18px text and remembers user zoom", () => {
     render(<TextPreview data={new TextEncoder().encode("Readable text")} name="note.txt" t={t} />);
     const text = screen.getByText("Readable text");
@@ -46,11 +48,11 @@ describe("TextPreview", () => {
     expect(container.querySelector(".hljs-string")).not.toBeNull();
   });
 
-  it("lets users render clipboard text as sanitized Markdown", () => {
+  it("lets users render clipboard text as sanitized Markdown", async () => {
     render(<TextPreview data={new TextEncoder().encode("# Heading")} name="note.txt" t={t} />);
 
     fireEvent.click(screen.getByTitle("history.preview.markdownMode"));
-    expect(screen.getByRole("heading", { name: "Heading" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Heading" })).toBeInTheDocument();
   });
 
   it("bounds expensive code rendering while retaining complete copy statistics", () => {

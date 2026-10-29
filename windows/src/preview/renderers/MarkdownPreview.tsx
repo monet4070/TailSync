@@ -1,113 +1,67 @@
-import { useCallback, useMemo } from "react";
-import DOMPurify from "dompurify";
-import { marked } from "marked";
-import { open } from "@tauri-apps/plugin-shell";
-import { useModifierWheelZoom, usePreviewTextFontSize, zoomFromWheel } from "../previewPreferences";
-import { limitTextSource } from "./textPreviewPolicy";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import DOMPurify from 'dompurify';
+import { open } from '@tauri-apps/plugin-shell';
+import { explicitWebUrl, prepareMarkdownDOM } from '../../../../shared/markdown-preview/dom.mjs';
+import { limitMarkdownSource, type MarkdownResult } from '../../../../shared/markdown-preview/parser.mjs';
+import 'katex/dist/katex.min.css';
+import '../../../../shared/markdown-preview/article.css';
+import { useModifierWheelZoom, usePreviewTextFontSize, zoomFromWheel } from '../previewPreferences';
 
-function explicitWebUrl(value: string): string | null {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
-  } catch {
-    return null;
-  }
-}
-
-function sanitizeRenderedMarkdown(rendered: string): string {
-  const sanitized = DOMPurify.sanitize(rendered, {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: [
-      "audio",
-      "base",
-      "embed",
-      "form",
-      "iframe",
-      "img",
-      "link",
-      "meta",
-      "object",
-      "picture",
-      "source",
-      "style",
-      "svg",
-      "video",
-    ],
-    FORBID_ATTR: [
-      "formaction",
-      "ping",
-      "src",
-      "srcset",
-      "style",
-      "target",
-      "xlink:href",
-    ],
-  });
-
-  // DOMPurify blocks script-bearing URLs. This second, explicit policy also
-  // removes relative, file, mail and custom-scheme navigation so a preview can
-  // only hand an intentional http(s) click to the operating system.
-  const template = document.createElement("template");
-  template.innerHTML = sanitized;
-  template.content.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
-    const safe = explicitWebUrl(anchor.getAttribute("href") ?? "");
-    if (safe === null) {
-      anchor.removeAttribute("href");
-      return;
-    }
-    anchor.setAttribute("href", safe);
-    anchor.setAttribute("rel", "noopener noreferrer");
-  });
-  return template.innerHTML;
-}
-
-export function MarkdownPreview({
-  data,
-  t,
-}: {
-  data: Uint8Array;
-  t?: (key: string) => string;
-}) {
+export function MarkdownPreview({ data, t }: { data: Uint8Array; t?: (key: string) => string }) {
   const [fontSize, setFontSize] = usePreviewTextFontSize();
-  const articleRef = useModifierWheelZoom<HTMLElement>((deltaY) => {
-    setFontSize((value) => zoomFromWheel(value, deltaY, 12, 32));
+  const scrollRef = useModifierWheelZoom<HTMLDivElement>((deltaY) => {
+    setFontSize(value => zoomFromWheel(value, deltaY, 12, 32));
   });
-  const source = useMemo(() => new TextDecoder("utf-8").decode(data), [data]);
-  const limited = useMemo(() => limitTextSource(source), [source]);
-  const html = useMemo(() => {
-    const rendered = marked.parse(limited.source);
-    if (typeof rendered !== "string") return "";
-    return sanitizeRenderedMarkdown(rendered);
-  }, [limited.source]);
+  const articleRef = useRef<HTMLElement>(null);
+  const source = useMemo(() => limitMarkdownSource(new TextDecoder('utf-8').decode(data)), [data]);
+  const [state, setState] = useState({ truncated: false, loading: true });
+
+  useLayoutEffect(() => {
+    const article = articleRef.current;
+    if (!article) return;
+    let disposed = false;
+    let worker: Worker | undefined;
+    const showSource = () => {
+      if (disposed) return;
+      const pre = document.createElement('pre');
+      pre.className = 'md-source-fallback'; pre.textContent = source.source;
+      article.replaceChildren(pre); setState({ truncated: true, loading: false });
+    };
+    article.replaceChildren(); setState({ truncated: source.truncated, loading: true });
+    const timeout = window.setTimeout(() => { worker?.terminate(); showSource(); }, 2500);
+    try {
+      worker = new Worker(new URL('./markdown.worker.ts', import.meta.url), { type: 'module' });
+      worker.onmessage = (event: MessageEvent<MarkdownResult>) => {
+        if (disposed) return;
+        window.clearTimeout(timeout);
+        const fragment = prepareMarkdownDOM(event.data,
+          (html, config) => DOMPurify.sanitize(html, { ...config, RETURN_DOM_FRAGMENT: true }), document);
+        if (fragment) {
+          article.replaceChildren(fragment);
+          setState({ truncated: source.truncated || event.data.truncated, loading: false });
+        } else showSource();
+        worker?.terminate();
+      };
+      worker.onerror = () => { window.clearTimeout(timeout); worker?.terminate(); showSource(); };
+      worker.postMessage(source.source);
+    } catch { window.clearTimeout(timeout); showSource(); }
+    return () => { disposed = true; window.clearTimeout(timeout); worker?.terminate(); };
+  }, [source]);
 
   const openLink = useCallback((event: React.MouseEvent<HTMLElement>) => {
-    const anchor = event.target instanceof Element
-      ? event.target.closest<HTMLAnchorElement>("a[href]")
-      : null;
-    if (anchor === null) return;
+    const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
+    if (!anchor) return;
     event.preventDefault();
-    const url = explicitWebUrl(anchor.getAttribute("href") ?? "");
-    if (url === null) return;
-    void open(url).catch((error: unknown) => {
-      console.error("Could not open Markdown preview link:", error);
-    });
+    const url = explicitWebUrl(anchor.getAttribute('href') ?? '');
+    if (url) void open(url).catch(error => console.error('Could not open Markdown preview link:', error));
   }, []);
 
-  return (
-    <>
-      {t && limited.truncated && (
-        <div className="preview-truncated-notice" role="status" data-testid="preview-truncated">
-          {t("history.preview.truncated")}
-        </div>
-      )}
-      <article
-        ref={articleRef}
-        className="preview-markdown"
-        data-testid="preview-markdown"
-        style={{ fontSize }}
-        onClick={openLink}
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    </>
-  );
+  return <div className="preview-markdown" ref={scrollRef}>
+    {state.loading && <div className="md-notice" role="status">{t?.('history.preview.loading') ?? 'Loading…'}</div>}
+    {state.truncated && !state.loading && <div className="md-notice" role="status" data-testid="preview-truncated">
+      {t?.('history.preview.truncated') ?? 'Preview limited; original content is unchanged.'}
+    </div>}
+    <article ref={articleRef} className="md-article" data-testid="preview-markdown"
+      style={{ fontSize }} onClick={openLink} aria-busy={state.loading} />
+  </div>;
 }

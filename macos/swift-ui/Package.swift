@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "TailSync",
-            path: "Sources/TailSync"
+            path: "Sources/TailSync",
+            resources: [.copy("Resources/Markdown")]
         ),
         .testTarget(
             name: "TailSyncTests",

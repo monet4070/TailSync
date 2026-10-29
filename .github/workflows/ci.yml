@@ -102,7 +102,7 @@ jobs:
         run: npm run lint
       - name: Test
         working-directory: windows
-        run: npm test
+        run: npm run check:markdown-assets && npm test
       - name: Build
         working-directory: windows
         run: npm run build
@@ -313,6 +313,7 @@ jobs:
       - name: Run Swift UI unit tests
         env:
           TAILSYNC_WEB_SVG_RENDER_TESTS: "1"
+          TAILSYNC_MARKDOWN_WEB_TESTS: "1"
         run: node scripts/run-remediation-tests.mjs --job rust-macos -- swift test --package-path macos/swift-ui
       - name: Build release Swift UI
         run: swift build -c release --package-path macos/swift-ui

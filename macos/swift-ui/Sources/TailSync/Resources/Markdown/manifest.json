@@ -1,0 +1,15 @@
+{
+  "sources": {
+    "shared/markdown-preview/parser.mjs": "be58f913912a1dca44a97adca8ab2246c670c075fc2abf33ef0c529cf3f73b0f",
+    "shared/markdown-preview/dom.mjs": "757ea1deddd34ec17d557998aaee3425e90bc56d942e4f2745030d0e586aad44",
+    "shared/markdown-preview/native-runtime.mjs": "17f104273bc25b72fa01872a0a5e275c17c7a12598c5ae5d9da6dff937621f70",
+    "shared/markdown-preview/article.css": "bfa4c42792c012fb6e5e17df47af83205085a7f9338e729d3a1a2806568a5b68",
+    "windows/scripts/build-markdown-assets.mjs": "4cd4a8134573c07dc2ed04cb1428f12a25bba974c1babed82c5b2e5800b8049c",
+    "windows/package-lock.json": "b8a039c8d9e6ec075e03f0879845ef84a9f0425afde810d063bbf50583ed5e9b"
+  },
+  "outputs": {
+    "engine.js": "012111029e8c0b41177c70f36655909beae73dd2fa1e8c2d264dd081efd22400",
+    "preview.css": "89dd6a871537ac23dd4e10041dff3f09ef453a8ae6504527c3bc05ee52c5a866",
+    "LICENSES.txt": "47f9add89bab49adfeeecfbb9fedb51b9f4bc9eb4126f4a559e3a367f988a072"
+  }
+}

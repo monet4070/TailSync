@@ -104,6 +104,7 @@ mkdir -p "$STAGING_BUNDLE/Contents/Resources"
 
 # Copy binaries
 cp "$SWIFT_BIN_DIR/TailSync" "$STAGING_BUNDLE/Contents/MacOS/TailSync"
+cp -R "$SWIFT_BIN_DIR/TailSync_TailSync.bundle" "$STAGING_BUNDLE/Contents/Resources/"
 cp "$RUST_TARGET_DIR/release/tailsync" "$STAGING_BUNDLE/Contents/MacOS/tailsyncd"
 cp "$HELPER_BIN" "$STAGING_BUNDLE/Contents/MacOS/clipboard-helper"
 chmod +x "$STAGING_BUNDLE/Contents/MacOS/"*

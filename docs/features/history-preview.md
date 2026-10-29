@@ -32,7 +32,8 @@ renderer family, bounded to the current display's usable work area.
   highlighting, plus a manual text/code mode switch;
 - rendered Markdown article view with distinct headings, paragraphs, nested
   lists/tasks, block quotes, fenced and indented code, horizontal rules, and
-  pipe tables (no source or split view);
+  pipe tables with aligned columns, wrapping cells and local horizontal scroll;
+  offline LaTeX formulas using `$…$`, `$$…$$`, `\(…\)` and `\[…\]`;
 - clipboard images and PNG, JPEG, GIF, and WebP files centered and fitted on
   the first frame, with fit-relative zoom, bounded pan hit-testing, view-only
   rotation, transparency, and dimensions;
@@ -68,7 +69,27 @@ when the entry has been restored to the clipboard.
 Preview payloads are capped at 64 MiB and checked before and after decryption.
 Markdown is sanitized and cannot automatically load remote images, media,
 frames, scripts, or styles. Links are handed to the system browser only after
-an explicit click. On macOS, SVG markup is rendered by the system browser
+an explicit click. Both desktop Markdown previews use the same GFM parsing,
+formula and typography policy in `shared/markdown-preview/`. Windows parses in
+a disposable Worker; macOS uses an isolated WebKit content world with page
+scripts disabled. Marked, KaTeX, CSS and fonts are bundled locally. Raw HTML
+is sanitized before adding locally generated, untrusted-command-disabled
+KaTeX output. Theme and font changes do not parse the source again.
+
+Markdown rich rendering is bounded to 256 Ki characters (macOS also bounds
+the bridge to 256 KiB of UTF-8), 12,000 source tokens, 500 rows/32 columns per
+table, 128 formulas of at most 2,048 characters, 200 macro expansions per
+formula, 2 MiB of generated markup and 16,000 DOM elements. Invalid formulas
+remain readable as source; over-budget documents use a limited or plain-text
+preview with a notice. Windows terminates an unresponsive parser after 2.5 s.
+Copy-all and restore retain the original content.
+
+macOS offline assets are generated with `node windows/scripts/build-markdown-assets.mjs`;
+the frontend CI checks them against the source and dependency lockfile. The
+Swift resource bundle is included in the packaged application. Local layout,
+formula and performance results are in the [Markdown acceptance record](../acceptance/markdown-preview-2026-10-29.md).
+
+On macOS, SVG markup is rendered by the system browser
 engine inside a locked-down offscreen WKWebView: JavaScript is disabled at the
 configuration level, the host document carries a `default-src 'none'`
 Content-Security-Policy that blocks every network subresource (inline styles

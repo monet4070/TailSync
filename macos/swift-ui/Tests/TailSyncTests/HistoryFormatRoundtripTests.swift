@@ -57,8 +57,7 @@ final class HistoryFormatRoundtripTests: XCTestCase {
             case .text(let value):
                 XCTAssertFalse(value.isEmpty, row.name)
                 if format == .markdown {
-                    let document = HistoryMarkdownRenderer.document(value)
-                    XCTAssertFalse(document.blocks.isEmpty, row.name)
+                    XCTAssertFalse(HistoryMarkdownResources.engine.isEmpty, row.name)
                 } else if format == .svg {
                     let renderer = HistoryPreviewWebViewSVGRenderer()
                     let png = try await renderer.renderPNG(fromSVG: value, trustingExternalResources: false)

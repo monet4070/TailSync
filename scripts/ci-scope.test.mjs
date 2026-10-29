@@ -170,10 +170,18 @@ test("explicit full verification overrides targeted paths", () => {
 });
 
 
-test("shared onboarding changes verify both UIs and native contracts", () => {
-  for (const path of ["shared/onboarding/guide.json", "shared/onboarding/generate-swift.mjs"]) {
+test("shared UI content and Markdown changes verify both UIs and native contracts", () => {
+  for (const path of ["shared/onboarding/guide.json", "shared/onboarding/generate-swift.mjs", "shared/markdown-preview/parser.mjs", "shared/markdown-preview/article.css"]) {
     assert.deepEqual(enabled(planCiScope([path])), [
       "frontend_windows", "rust_windows", "rust_macos", "shared_resolution",
+    ]);
+  }
+});
+
+test("offline Markdown generators and resource-only changes verify the generated assets", () => {
+  for (const path of ["windows/scripts/build-markdown-assets.mjs", "macos/swift-ui/Sources/TailSync/Resources/Markdown/engine.js"]) {
+    assert.deepEqual(enabled(planCiScope([path])), [
+      "frontend_windows", "rust_macos", "scripts", "shared_resolution",
     ]);
   }
 });
