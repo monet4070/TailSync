@@ -67,6 +67,7 @@ macOS uses native SwiftUI, while Windows uses React and Tauri. Both clients shar
 - Loop prevention for files managed in `clipboard-files/`, keeping received files from being sent back to their origin
 - Filename sanitization, a 1 GiB receive limit, and inbound connection limits
 - English and Simplified Chinese interfaces, localized tray menus, light / dark / system appearance, five built-in color themes, notifications, device controls, and route selection
+- Arrival notifications show the content type and source device without clipboard text or filenames. On macOS they use the passive interruption level; runtime problems use active delivery and remain subject to system notification settings.
 - Custom themes (Theme V2): import `.tailsync-theme` bundles containing a `theme.json` manifest and optional `assets/`, then enable, update, or remove them beside the built-in themes. Theme selection is a local preference stored in `themes-v2/local-settings.json`; missing bundles fall back to the default theme. See [`docs/THEMING.md`](docs/THEMING.md).
 
 ## Architecture

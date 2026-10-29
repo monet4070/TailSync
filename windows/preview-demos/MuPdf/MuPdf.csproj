@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../Viewer.props" />
+  <PropertyGroup><AssemblyName>TailSync.Preview.MuPdf</AssemblyName></PropertyGroup>
+  <ItemGroup><PackageReference Include="MuPDF.NET" Version="3.28.2.4" /></ItemGroup>
+</Project>

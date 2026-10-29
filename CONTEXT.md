@@ -98,6 +98,11 @@ shared/platform-clipboard-{transfer,tests}.rs 是平台 Rust 模块的 canonical
 - Windows 历史运行时提示必须使用 `useHistoryNotice` 的页面内联槽位；相同 key 的重复事件只能
   增加计数，不能刷新 TTL 或创建固定定位浮层；不同 key 的连续错误共享 8 秒可见预算和 1.5 秒
   冷却间隔，保证错误风暴也不能让提示常驻或遮挡分页和操作控件。
+- N1a 系统通知只接收来源、类型、数量和有限本地化问题类别，不发布历史 description、文件名或原始异常；macOS 到达为 passive，问题为 active。投递失败不得改变已完成的业务提交结果。
+- 到达提醒来自接收提交后的 `ClipboardArrival`，不从“最新历史 + 历史ID”推断。两端使用共享有界事件队列，按认证来源替换到达卡；消息/文件批次去重与数量独立于历史行身份。Windows 系统通知只通过 `notifications.rs`/WinRT 适配器发射，身份使用 Tauri config identifier；实际展示与退出后激活仍须原生验收。
+- 网页正文、图片及图片在文字间的位置是核心同步目标，字体和复杂排版为次要内容。默认便携发布与历史恢复共用 RestorePlan::portable_default：原件依赖完整时沿用兼容路径，依赖不全时可发布经过验证的 AvailableContent 图文副本，缺图原位占位，最终保持 StoredIncomplete。ADR-007 扩展 K6 的受限例外；自动接收仍拒绝 MissingFormats，原始历史、wire digest、防覆盖和不重复发布规则不变。ADR-006 的独立 PNG 单图选择不代表可给任意 HTML 节点虚构资源绑定。
+- ADR-008 将公开图片获取前移到首次事件冻结前，仍受 auto_save_network_images 与观察时许可控制：前置总期限 2 秒、单请求 600 毫秒，较晚图片超时可保留已完成图片。来源原件、补图后的初始便携内容和网络原件原子入库，首发 wire digest 此后固定；后续 ArchiveUpdate 只补冻结内容中原来未绑定的节点，不再次写当前剪贴板。沿用 Manifest 5 和初始 archive revision 1，不新增协议／schema；取消后的图片线程继续持有内存 admission。具体准入、回退和验收见 docs/adr/ADR-008-first-publish-network-images.md。
+- 代码校验放在外部输入、存储、系统副作用和资源生命周期边界；内部沿已校验契约传递，不重复验证或用默认值吞掉异常。额外防御说明边界，错误须可观测；重试只用于幂等、可恢复操作并设置上限。
 ## 领域词汇（以 README 与代码为准）
 
 | 术语 | 含义 |

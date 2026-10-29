@@ -42,7 +42,7 @@ export function HistoryList({
   let pageEnterIndex = 0;
 
   return (
-    <div className="history-list" tabIndex={-1}>
+    <div data-tour="history-items" className="history-list" tabIndex={-1}>
       <div className="history-page" key={pageAnimationRevision}>
         {orderedGroups.map(([group, groupEntries]) => (
           <div className="date-group" key={group}>

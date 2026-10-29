@@ -7,8 +7,65 @@ pub struct AvailableContent {
     pub missing_images: u16,
 }
 
+/// Select saved image bytes as an alternative; never bind them to an unrelated HTML node.
+/// The caller has already decoded/validated the portable bundle at its input boundary.
+pub(crate) fn image_only_png_alternative(
+    bundle: &PortableBundle,
+) -> Result<Option<usize>, ProtocolError> {
+    if bundle.completeness == Completeness::MissingFormats {
+        return Ok(None);
+    }
+    let Some(png) = bundle
+        .representations
+        .iter()
+        .position(|r| r.mime == Mime::Png)
+    else {
+        return Ok(None);
+    };
+    if bundle.representation(Mime::Rtf).is_some()
+        || bundle
+            .representation(Mime::Text)
+            .is_some_and(|text| !text.iter().all(u8::is_ascii_whitespace))
+    {
+        return Ok(None);
+    }
+    let Some(html_index) = bundle
+        .representations
+        .iter()
+        .position(|r| r.mime == Mime::Html)
+    else {
+        return Ok(None);
+    };
+    let html = &bundle.representations[html_index].bytes;
+    let inventory = super::html::reference_inventory(html)?;
+    if inventory.images.len() != 1
+        || inventory.unsupported_dependencies
+        || !super::html::text_summary(html).trim().is_empty()
+    {
+        return Ok(None);
+    }
+    let image = &inventory.images[0];
+    let already_saved = bundle.bindings.iter().any(|binding| {
+        binding.representation as usize == html_index && binding.offset as usize == image.start
+    }) || html[image.start..image.end]
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"data:"));
+    Ok((!already_saved).then_some(png))
+}
+
 pub fn prepare(bundle: &PortableBundle) -> Result<AvailableContent, ProtocolError> {
     bundle.validate()?;
+    if let Some(index) = image_only_png_alternative(bundle)? {
+        return Ok(AvailableContent {
+            bundle: PortableBundle {
+                representations: vec![bundle.representations[index].clone()],
+                resources: vec![],
+                bindings: vec![],
+                completeness: Completeness::Complete,
+            },
+            missing_images: 1,
+        });
+    }
     let invalid = || ProtocolError::InvalidComposite;
     let index = bundle
         .representations

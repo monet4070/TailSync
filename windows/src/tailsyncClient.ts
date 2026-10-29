@@ -251,6 +251,26 @@ export function closeHistoryWindow(): Promise<void> {
   return invoke<void>("close_history_window");
 }
 
+export function openHistoryWindow(): Promise<void> {
+  return invoke<void>("open_history_window");
+}
+
+export function openOnboardingWindow(): Promise<void> {
+  return invoke<void>("open_onboarding_window");
+}
+
+export function dismissOnboarding(): Promise<void> {
+  return invoke<void>("dismiss_onboarding");
+}
+
+export function suppressOnboarding(): Promise<void> {
+  return invoke<void>("suppress_onboarding");
+}
+
+export function onboardingSuppressed(): Promise<boolean> {
+  return invoke<boolean>("onboarding_suppressed");
+}
+
 export function openFavoritesWindow(): Promise<void> {
   return invoke<void>("open_favorites_window");
 }

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { demoPreviewPayload, isDemoEntry } from "../onboarding/demo";
+import { readTour } from "../onboarding/tourState";
 import { getPreview } from "../tailsyncClient";
 import {
   parsePreviewResponse,
@@ -107,8 +109,10 @@ export function usePreviewPayload(target: PreviewTarget | null) {
 
     let active = true;
     setState({ status: "loading", target });
-    void getPreview(target.entryId, target.batchId)
-      .then((response) => parsePreviewResponse(response))
+    const demo = readTour().active && isDemoEntry(target.entryId)
+      ? demoPreviewPayload(target.entryId, target.batchId)
+      : null;
+    void (demo ? Promise.resolve(demo) : getPreview(target.entryId, target.batchId).then((response) => parsePreviewResponse(response)))
       .then((payload) => {
         if (active) setState({ status: "ready", target, payload });
       })

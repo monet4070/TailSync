@@ -6013,7 +6013,6 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
- "tauri-winrt-notification",
  "tokio",
  "tracing",
  "tracing-log",

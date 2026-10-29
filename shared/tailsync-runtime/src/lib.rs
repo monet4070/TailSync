@@ -12,6 +12,8 @@ pub mod document_preview;
 pub mod execution;
 pub mod history;
 pub mod history_display;
+pub mod notification_events;
+pub mod notification_text;
 pub mod peer_refresh;
 pub mod preview;
 pub mod source_context;

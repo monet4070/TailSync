@@ -610,6 +610,28 @@ pub async fn archive_external_images(
     limits: &ArchiveLimits,
     cancellation: &Cancellation,
 ) -> Result<ArchiveOutcome, ArchiveError> {
+    archive_images_admitted(bundle, transport, limits, cancellation, None).await
+}
+
+/// Retain capture admission in decode workers even when the caller times out or
+/// is dropped. A cancelled worker must not outlive its memory accounting.
+pub async fn archive_capture_images(
+    bundle: &PortableBundle,
+    transport: &dyn ResourceTransport,
+    limits: &ArchiveLimits,
+    cancellation: &Cancellation,
+    memory: Arc<super::budgets::PipelineLease>,
+) -> Result<ArchiveOutcome, ArchiveError> {
+    archive_images_admitted(bundle, transport, limits, cancellation, Some(memory)).await
+}
+
+async fn archive_images_admitted(
+    bundle: &PortableBundle,
+    transport: &dyn ResourceTransport,
+    limits: &ArchiveLimits,
+    cancellation: &Cancellation,
+    memory: Option<Arc<super::budgets::PipelineLease>>,
+) -> Result<ArchiveOutcome, ArchiveError> {
     let limits = ArchiveLimits {
         max_resources: limits.max_resources.min(ARCHIVE_RESOURCE_LIMIT),
         max_bytes_per_resource: limits
@@ -631,15 +653,26 @@ pub async fn archive_external_images(
         max_total_pixels: limits.max_total_pixels.min(ARCHIVE_TOTAL_PIXELS),
     };
     let deadline = Instant::now() + limits.total_deadline;
+    // First publication reserves a small finalization window so a slow later
+    // image need not discard earlier completed images. Background saves keep
+    // their existing deadline semantics.
+    let resource_deadline = if memory.is_some() {
+        deadline
+            .checked_sub(Duration::from_millis(100))
+            .filter(|at| *at > Instant::now())
+            .unwrap_or(deadline)
+    } else {
+        deadline
+    };
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(ArchiveError::Cancelled),
-        result = tokio::time::timeout(limits.total_deadline, archive_images_inner(bundle, transport, &limits, cancellation, deadline)) => result.map_err(|_| ArchiveError::Deadline)?,
+        result = tokio::time::timeout(limits.total_deadline, archive_images_inner(bundle, transport, &limits, cancellation, deadline, resource_deadline, memory)) => result.map_err(|_| ArchiveError::Deadline)?,
     }
 }
 
 async fn run_archive_worker<Output, Operation>(
-    admission: Arc<SemaphorePermit<'static>>,
+    admission: Arc<ArchiveAdmission>,
     cancellation: &Cancellation,
     deadline: Instant,
     operation: Operation,
@@ -682,6 +715,11 @@ struct ArchivedOriginal {
     body: Vec<u8>,
 }
 
+struct ArchiveAdmission {
+    _memory: Option<Arc<super::budgets::PipelineLease>>,
+    _network: SemaphorePermit<'static>,
+}
+
 fn resolve_originals(
     derived: &PortableBundle,
     originals: Vec<ArchivedOriginal>,
@@ -712,6 +750,8 @@ async fn archive_images_inner(
     limits: &ArchiveLimits,
     cancellation: &Cancellation,
     deadline: Instant,
+    resource_deadline: Instant,
+    memory: Option<Arc<super::budgets::PipelineLease>>,
 ) -> Result<ArchiveOutcome, ArchiveError> {
     bundle.validate().map_err(|_| ArchiveError::Decode)?;
     let images = external_images(bundle).map_err(|_| ArchiveError::Decode)?;
@@ -727,10 +767,14 @@ async fn archive_images_inner(
     if images.len() > limits.max_resources {
         return Err(ArchiveError::TooManyResources);
     }
-    let admission = Arc::new(tokio::select! {
+    let network = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(ArchiveError::Cancelled),
         permit = NETWORK_ADMISSION.acquire() => permit.map_err(|_| ArchiveError::Transport)?,
+    };
+    let admission = Arc::new(ArchiveAdmission {
+        _network: network,
+        _memory: memory,
     });
     let image_limits = NetworkImageLimits {
         max_pixels: limits.max_pixels_per_resource,
@@ -765,7 +809,7 @@ async fn archive_images_inner(
             transport,
             &parsed,
             limits,
-            deadline,
+            resource_deadline,
             cancellation,
             &mut remaining_wire,
         )
@@ -773,6 +817,15 @@ async fn archive_images_inner(
         {
             Ok(fetched) => fetched,
             Err(ArchiveError::Cancelled) => return Err(ArchiveError::Cancelled),
+            Err(error @ (ArchiveError::TotalBudget | ArchiveError::Deadline))
+                if resource_deadline < deadline =>
+            {
+                failures.push((position, error.clone()));
+                if error == ArchiveError::TotalBudget || Instant::now() >= resource_deadline {
+                    break;
+                }
+                continue;
+            }
             Err(ArchiveError::TotalBudget) => return Err(ArchiveError::TotalBudget),
             Err(ArchiveError::Deadline) => return Err(ArchiveError::Deadline),
             Err(error) => {
@@ -787,8 +840,11 @@ async fn archive_images_inner(
             max_derived_bytes: image_limits.max_derived_bytes.min(remaining_derived),
             ..image_limits
         };
-        let (derived, body, image_format) =
-            match run_archive_worker(admission.clone(), cancellation, deadline, move || {
+        let (derived, body, image_format) = match run_archive_worker(
+            admission.clone(),
+            cancellation,
+            resource_deadline,
+            move || {
                 let declared = fetched.declared;
                 let decoded =
                     network_image::decode_static_png(&fetched.bytes, declared, &decode_limits);
@@ -806,18 +862,21 @@ async fn archive_images_inner(
                         }
                         _ => ArchiveError::Decode,
                     })
-            })
-            .await
-            {
-                Ok(decoded) => decoded,
-                Err(error @ (ArchiveError::Cancelled | ArchiveError::Deadline)) => {
-                    return Err(error)
-                }
-                Err(error) => {
-                    failures.push((position, error));
-                    continue;
-                }
-            };
+            },
+        )
+        .await
+        {
+            Ok(decoded) => decoded,
+            Err(ArchiveError::Deadline) if resource_deadline < deadline => {
+                failures.push((position, ArchiveError::Deadline));
+                break;
+            }
+            Err(error @ (ArchiveError::Cancelled | ArchiveError::Deadline)) => return Err(error),
+            Err(error) => {
+                failures.push((position, error));
+                continue;
+            }
+        };
         if derived.png.len() > remaining_derived || derived.pixels > remaining_pixels {
             failures.push((position, ArchiveError::DerivedBudget));
             continue;
@@ -2008,7 +2067,12 @@ mod tests {
     #[tokio::test]
     async fn cancelled_waiter_does_not_release_a_running_archive_worker() {
         static WORKER_ADMISSION: Semaphore = Semaphore::const_new(1);
-        let admission = Arc::new(WORKER_ADMISSION.acquire().await.unwrap());
+        let ledger = Arc::new(super::super::budgets::BudgetLedger::default());
+        let memory = Arc::new(ledger.reserve_pipeline(64 * 1024 * 1024).unwrap());
+        let admission = Arc::new(ArchiveAdmission {
+            _network: WORKER_ADMISSION.acquire().await.unwrap(),
+            _memory: Some(memory),
+        });
         let cancellation = Cancellation::default();
         let worker_cancellation = cancellation.clone();
         let (started, observed) = tokio::sync::oneshot::channel();
@@ -2030,6 +2094,7 @@ mod tests {
         cancellation.cancel();
         let outcome = tokio::time::timeout(Duration::from_secs(1), waiter).await;
         let retained = WORKER_ADMISSION.try_acquire().is_err();
+        assert_eq!(ledger.snapshot().pipeline_reserved, 64 * 1024 * 1024);
         release.send(()).unwrap();
         assert_eq!(outcome.unwrap().unwrap(), Err(ArchiveError::Cancelled));
         assert!(retained);
@@ -2044,7 +2109,12 @@ mod tests {
     #[tokio::test]
     async fn deadline_returns_without_waiting_for_a_blocked_archive_worker() {
         static WORKER_ADMISSION: Semaphore = Semaphore::const_new(1);
-        let admission = Arc::new(WORKER_ADMISSION.acquire().await.unwrap());
+        let ledger = Arc::new(super::super::budgets::BudgetLedger::default());
+        let memory = Arc::new(ledger.reserve_pipeline(64 * 1024 * 1024).unwrap());
+        let admission = Arc::new(ArchiveAdmission {
+            _network: WORKER_ADMISSION.acquire().await.unwrap(),
+            _memory: Some(memory),
+        });
         let (started, observed) = tokio::sync::oneshot::channel();
         let (release, held) = std::sync::mpsc::channel();
         let waiter = tokio::spawn(async move {
@@ -2063,6 +2133,7 @@ mod tests {
         observed.await.unwrap();
         let outcome = tokio::time::timeout(Duration::from_secs(1), waiter).await;
         let retained = WORKER_ADMISSION.try_acquire().is_err();
+        assert_eq!(ledger.snapshot().pipeline_reserved, 64 * 1024 * 1024);
         release.send(()).unwrap();
         assert_eq!(outcome.unwrap().unwrap(), Err(ArchiveError::Deadline));
         assert!(retained);

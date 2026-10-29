@@ -231,7 +231,10 @@ pub async fn open_preview_window(
         }
         controller.reserve(request.owner, restore.epoch)
     };
-    let document_eligible = {
+    let demo_entry = request.entry_id >= 8_000_000_000;
+    let document_eligible = if demo_entry {
+        false
+    } else {
         let database = app_state.db.lock().await;
         if let Some(batch_id) = request.batch_id.as_deref() {
             let navigation = database

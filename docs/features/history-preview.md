@@ -1,5 +1,7 @@
 # History preview
 
+For an image-only browser copy with one unresolved HTML image reference and a saved standalone PNG, preview uses the saved PNG as an independent representation. Restoring available content may copy that PNG while reporting the unresolved HTML image; it does not bind the PNG to the HTML node or fetch blob/file/private-network references. Copies with text, RTF, multiple HTML images, or an already saved bound/inline HTML image retain their existing selection rules. A generic `payload_unavailable` error is displayed as unavailable, without claiming that authentication or decryption failed.
+
 TailSync provides a reusable, independent preview window for clipboard history.
 The history list remains available while the preview is open, so search,
 filters, pagination, restore, and delete are never covered by preview content.

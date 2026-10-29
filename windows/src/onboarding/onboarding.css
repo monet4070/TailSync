@@ -1,0 +1,26 @@
+.app > .guided-tour { position: fixed; inset: 0; z-index: 900; pointer-events: none; }
+.app.has-guided-tour { padding-bottom: var(--tour-panel-height); }
+.app.has-guided-tour > .settings-content { min-height: 0; }
+.guided-tour-card { display: flex; flex-direction: column; }
+.guided-tour-copy { min-height: 0; overflow-y: auto; }
+.guided-tour-caption, .guided-tour-controls { flex-shrink: 0; }
+.guided-tour-never { align-self: flex-start; color: var(--text-secondary) !important; font-size: 10px !important; padding: 2px 0 !important; }
+.guided-tour-mask { position: absolute; inset: 0; fill: rgba(13,17,25,.68); pointer-events: none; }
+.guided-tour-mask path { pointer-events: visiblePainted; }
+.guided-tour-highlight { position: absolute; border: 2px solid var(--brand, #7469e4); border-radius: 7px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand, #7469e4) 20%, transparent); }
+.guided-tour-card { position: absolute; pointer-events: auto; box-sizing: border-box; background: var(--bg-card, #fff); color: var(--text-primary, #222); border: 1px solid var(--border, #ddd); border-radius: 14px; padding: 18px; box-shadow: 0 16px 48px #0005; max-height: calc(100vh - 32px); overflow-y: auto; font: 13px/1.6 var(--art-ui, sans-serif); }
+.guided-tour-card h2 { font-size: 18px; line-height: 1.4; margin: 10px 0; outline: none; }
+.guided-tour-card p { margin: 8px 0; color: var(--text-secondary); font-size: 12px; }
+.guided-tour-caption { display: flex; justify-content: space-between; align-items: center; color: var(--brand); font-size: 10px; font-weight: 600; }
+.guided-tour-card button { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; background: transparent; color: inherit; padding: 6px; border-radius: 6px; font: inherit; }
+.guided-tour-card button:disabled { opacity: .4; cursor: default; }
+.guided-tour-card button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.guided-tour-card .guided-tour-tip { font-size: 11px; border-left: 2px solid var(--brand); padding-left: 9px; }
+.guided-tour-hint { display: flex; align-items: center; gap: 6px; color: var(--brand); font-size: 10px; margin-top: 12px; }
+.guided-tour-controls { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
+.guided-tour-controls > span { font-size: 11px; color: var(--text-tertiary); }
+.guided-tour-controls > div { display: flex; gap: 12px; }
+.guided-tour-card .guided-tour-next { background: var(--brand); color: var(--brand-text); padding: 7px 12px; }
+.onboarding-entry { text-align: left; width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 16px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; color: var(--text-primary); cursor: pointer; }
+.onboarding-entry span { display: grid; gap: 5px; }
+.onboarding-entry small { color: var(--text-secondary); }

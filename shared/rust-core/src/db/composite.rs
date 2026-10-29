@@ -101,6 +101,53 @@ struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_info: Option<crate::composite::source_context::SourceProof>,
 }
+fn archived_info(archived: &PortableBundle) -> ArchivedInfo {
+    ArchivedInfo {
+        formats: archived
+            .representations
+            .iter()
+            .map(|representation| match representation.mime {
+                Mime::Text => "text",
+                Mime::Html => "html",
+                Mime::Rtf => "rtf",
+                Mime::Png => "png",
+            })
+            .chain(archived.resources.iter().map(|_| "png"))
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        standalone_png: archived.representation(Mime::Png).is_some(),
+        resource_count: archived.resources.len() as u16,
+        representation_count: archived.representations.len() as u16,
+        image_count: (archived.resources.len()
+            + usize::from(archived.representation(Mime::Png).is_some()))
+            as u16,
+        completeness: archived.completeness as u8,
+        preview_width: archived
+            .representation(Mime::Png)
+            .or_else(|| {
+                archived
+                    .resources
+                    .first()
+                    .map(|resource| resource.png.as_slice())
+            })
+            .and_then(|bytes| bytes.get(16..20))
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_be_bytes),
+        preview_height: archived
+            .representation(Mime::Png)
+            .or_else(|| {
+                archived
+                    .resources
+                    .first()
+                    .map(|resource| resource.png.as_slice())
+            })
+            .and_then(|bytes| bytes.get(20..24))
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_be_bytes),
+    }
+}
 // Listing eligibility uses bounded, hash-checked HTML bytes on the read
 // worker, without decoding images or changing a saved manifest/identity.
 pub(super) struct PreparedCompositeMenu {
@@ -335,33 +382,39 @@ pub(super) fn summary_bytes(decoded: &[u8]) -> Result<Vec<u8>, Box<dyn std::erro
         return Err("Invalid composite manifest".into());
     }
     validate_manifest(&m)?;
-    // Older portable/Windows captures stored the generic rich-content label.
-    // Project their existing PNG dimensions without rewriting archive identity
-    // or reading/decoding the full image on every history listing.
-    let summary =
-        if m.summary == "Rich clipboard content" && !m.native_only && m.archive_version.is_none() {
-            let representations: Vec<_> = m
-                .parts
-                .iter()
-                .filter(|p| p.role == "representation")
-                .collect();
-            if representations.len() == 1
-                && representations[0].mime == Mime::Png as u8
-                && !m.parts.iter().any(|p| p.role == "resource")
-                && m.bindings.is_empty()
-            {
-                match (representations[0].width, representations[0].height) {
-                    (Some(width), Some(height)) if width > 0 && height > 0 => {
-                        format!("image/png · {width}×{height} · 1 frame")
-                    }
-                    _ => m.summary,
+    // Older portable/Windows and Qt image captures stored the generic label.
+    // A complete, single-item archive may also have a standalone PNG projection
+    // alongside app metadata. Show its saved dimensions without rewriting the
+    // archive identity or decoding full images on every history listing.
+    let summary = if m.summary == "Rich clipboard content"
+        && !m.native_only
+        && (m.archive_version.is_none()
+            || (m.native_items == 1
+                && m.completeness == Completeness::Complete as u8
+                && m.archived_info.is_none()))
+    {
+        let representations: Vec<_> = m
+            .parts
+            .iter()
+            .filter(|p| p.role == "representation")
+            .collect();
+        if representations.len() == 1
+            && representations[0].mime == Mime::Png as u8
+            && !m.parts.iter().any(|p| p.role == "resource")
+            && m.bindings.is_empty()
+        {
+            match (representations[0].width, representations[0].height) {
+                (Some(width), Some(height)) if width > 0 && height > 0 => {
+                    format!("image/png · {width}×{height} · 1 frame")
                 }
-            } else {
-                m.summary
+                _ => m.summary,
             }
         } else {
             m.summary
-        };
+        }
+    } else {
+        m.summary
+    };
     Ok(summary.into_bytes())
 }
 pub(super) fn info_bytes(decoded: &[u8]) -> Result<CompositeInfo, Box<dyn std::error::Error>> {
@@ -1019,51 +1072,7 @@ impl HistoryDB {
         } else {
             "portable-cbp1+resource-archive".into()
         });
-        m.archived_info = Some(ArchivedInfo {
-            formats: archived
-                .representations
-                .iter()
-                .map(|representation| match representation.mime {
-                    Mime::Text => "text",
-                    Mime::Html => "html",
-                    Mime::Rtf => "rtf",
-                    Mime::Png => "png",
-                })
-                .chain(archived.resources.iter().map(|_| "png"))
-                .map(str::to_string)
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-            standalone_png: archived.representation(Mime::Png).is_some(),
-            resource_count: archived.resources.len() as u16,
-            representation_count: archived.representations.len() as u16,
-            image_count: (archived.resources.len()
-                + usize::from(archived.representation(Mime::Png).is_some()))
-                as u16,
-            completeness: archived.completeness as u8,
-            preview_width: archived
-                .representation(Mime::Png)
-                .or_else(|| {
-                    archived
-                        .resources
-                        .first()
-                        .map(|resource| resource.png.as_slice())
-                })
-                .and_then(|bytes| bytes.get(16..20))
-                .and_then(|bytes| bytes.try_into().ok())
-                .map(u32::from_be_bytes),
-            preview_height: archived
-                .representation(Mime::Png)
-                .or_else(|| {
-                    archived
-                        .resources
-                        .first()
-                        .map(|resource| resource.png.as_slice())
-                })
-                .and_then(|bytes| bytes.get(20..24))
-                .and_then(|bytes| bytes.try_into().ok())
-                .map(u32::from_be_bytes),
-        });
+        m.archived_info = Some(archived_info(archived));
         m.source_info = source_info;
         {
             let identity = m
@@ -1310,7 +1319,18 @@ impl HistoryDB {
         if hex::encode(base_digest) != digest_hex {
             return Err("Composite archive binding digest mismatch".into());
         }
-        let originals = self.read_network_image_originals(id, &m)?;
+        // Images already present in the frozen first event are not updates.
+        // Later archive commits only supplement nodes that were unbound there.
+        let external = composite::resource_archive::external_images(&base)?;
+        let originals = self
+            .read_network_image_originals(id, &m)?
+            .into_iter()
+            .filter(|original| {
+                external
+                    .iter()
+                    .any(|image| image.image_index == original.image_index as usize)
+            })
+            .collect::<Vec<_>>();
         if originals.is_empty() {
             return Ok(None);
         }
@@ -1587,6 +1607,7 @@ impl HistoryDB {
             event,
             false,
             false,
+            &[],
         )
     }
     /// Store and protect a remote event until its effect reaches a durable result.
@@ -1596,7 +1617,7 @@ impl HistoryDB {
         source: &str,
         event: (&str, crate::protocol::MessageId, i64),
     ) -> Result<i64, Box<dyn std::error::Error>> {
-        self.add_composite_inner(bundle, None, source, Some(event), false, true)
+        self.add_composite_inner(bundle, None, source, Some(event), false, true, &[])
     }
     pub fn add_native_snapshot(
         &mut self,
@@ -1613,6 +1634,7 @@ impl HistoryDB {
             None,
             true,
             false,
+            &[],
         )
     }
     pub fn add_native_archive(
@@ -1642,6 +1664,55 @@ impl HistoryDB {
             None,
             native_only,
             false,
+            &[],
+        )
+    }
+    /// Freeze the network-enriched portable event while retaining exact CNA1
+    /// source bytes and downloaded originals in the same history transaction.
+    pub fn add_native_archive_with_images(
+        &mut self,
+        archive: &NativeArchive,
+        images: &composite::resource_archive::ArchiveOutcome,
+        source: &str,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        let base = composite::from_archive(archive).map_err(|_| "Invalid source archive")?;
+        self.add_enriched_capture(&base, NativeInput::Archive(archive), images, source)
+    }
+
+    pub fn add_native_capture_with_images(
+        &mut self,
+        snapshot: &NativeSnapshot,
+        images: &composite::resource_archive::ArchiveOutcome,
+        source: &str,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        let base =
+            composite::from_native_capture(snapshot).map_err(|_| "Invalid source capture")?;
+        self.add_enriched_capture(&base, NativeInput::Legacy(snapshot), images, source)
+    }
+
+    fn add_enriched_capture(
+        &mut self,
+        base: &PortableBundle,
+        native: NativeInput<'_>,
+        images: &composite::resource_archive::ArchiveOutcome,
+        source: &str,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        if !schema::identity_schema_present(&self.conn)?
+            || base.completeness == Completeness::MissingFormats
+            || images.originals.is_empty()
+        {
+            return Err("Network capture requires a complete source and identity schema".into());
+        }
+        composite::resource_archive::validate_archive_derivation(base, &images.bundle)?;
+        composite::network_originals::validate_originals(&images.bundle, &images.originals)?;
+        self.add_composite_inner(
+            &images.bundle,
+            Some(native),
+            source,
+            None,
+            false,
+            false,
+            &images.originals,
         )
     }
     pub fn get_composite_archive(
@@ -1671,6 +1742,8 @@ impl HistoryDB {
         }
         Ok(Some(archive))
     }
+    // These values are one atomic capture, including the optional network parts.
+    #[allow(clippy::too_many_arguments)]
     fn add_composite_inner(
         &mut self,
         bundle: &PortableBundle,
@@ -1679,6 +1752,7 @@ impl HistoryDB {
         event: Option<(&str, crate::protocol::MessageId, i64)>,
         native_only: bool,
         protected: bool,
+        network_originals: &[composite::network_originals::NetworkImageOriginal],
     ) -> Result<i64, Box<dyn std::error::Error>> {
         let archive = match input {
             Some(NativeInput::Archive(a)) => Some(a),
@@ -1746,8 +1820,10 @@ impl HistoryDB {
             summary: archive
                 .and_then(image_summary)
                 .or_else(|| {
-                    archive
-                        .is_none()
+                    (archive.is_none()
+                        || (!native_only
+                            && native.is_some_and(|s| s.items == 1)
+                            && bundle.completeness == Completeness::Complete))
                         .then(|| portable_image_summary(bundle))
                         .flatten()
                 })
@@ -1791,6 +1867,25 @@ impl HistoryDB {
                 )
             })
             .collect();
+        if !network_originals.is_empty() {
+            m.version = 5;
+            m.integrity_method = Some("portable-cbp1+resource-archive+network-originals".into());
+            m.archived_info = Some(archived_info(bundle));
+            inputs.push((
+                ARCHIVE_LAYER_ROLE.into(),
+                0,
+                0,
+                "O04".into(),
+                bundle.encode()?,
+            ));
+            inputs.push((
+                NETWORK_ORIGINALS_ROLE.into(),
+                0,
+                0,
+                "NIO1".into(),
+                composite::network_originals::encode_originals(network_originals)?,
+            ));
+        }
         inputs.extend(bundle.resources.iter().map(|r| {
             (
                 "resource".into(),
@@ -5166,12 +5261,61 @@ mod lifecycle_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn browser_image_with_unavailable_html_reference_previews_saved_png() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let png = png();
+        for reference in [
+            "blob:https://example.com/image",
+            "file:///C:/browser/image.png",
+        ] {
+            let bundle = PortableBundle {
+                representations: vec![
+                    Representation {
+                        mime: Mime::Html,
+                        bytes: format!("<html><body><img src='{reference}'></body></html>")
+                            .into_bytes(),
+                    },
+                    Representation {
+                        mime: Mime::Png,
+                        bytes: png.clone(),
+                    },
+                ],
+                resources: vec![],
+                bindings: vec![],
+                completeness: Completeness::ExternalReferences,
+            };
+            let id = db.add_composite(&bundle, None, "browser fixture").unwrap();
+            let handle = db
+                .prepare_content_analysis(id)
+                .unwrap()
+                .unwrap()
+                .handle
+                .clone();
+            let classification = composite::display::classify_bundle(&bundle, false, vec![]);
+            db.commit_display_classification(
+                &handle,
+                &classification,
+                &crate::cancellation::Cancellation::default(),
+            )
+            .unwrap();
+            let preview = db.get_preview_payload(id).unwrap();
+            assert_eq!(preview.kind, "image");
+            assert_eq!(preview.data, composite::png_to_packed(&png).unwrap());
+            assert_eq!(db.get_composite(id).unwrap(), bundle);
+        }
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn solid_png(red: u8, green: u8, blue: u8) -> Vec<u8> {
         composite::packed_to_png(1, 1, &[red, green, blue, 255]).unwrap()
     }
 
     #[test]
-    fn standalone_portable_and_windows_images_have_image_summaries() {
+    fn standalone_portable_windows_and_qt_images_have_image_summaries() {
         let root = root();
         let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let png = solid_png(255, 0, 0);
@@ -5196,8 +5340,35 @@ mod lifecycle_tests {
                 bytes: png,
             }],
         };
-        for snapshot in [None, Some(&native)] {
-            let id = db.add_composite(&bundle, snapshot, "fixture").unwrap();
+        let mut qt_archive = NativeArchive {
+            platform: 1,
+            enumeration_complete: true,
+            original: native.clone(),
+            derived: vec![],
+        };
+        qt_archive.original.formats[0].name = "public.png".into();
+        qt_archive.original.formats.extend([
+            NativeFormat {
+                item: 0,
+                name: "public.file-url".into(),
+                state: FormatState::Absent,
+                bytes: vec![],
+            },
+            NativeFormat {
+                item: 0,
+                name: "com.trolltech.anymime.application--x-qt-image".into(),
+                state: FormatState::Captured,
+                bytes: vec![],
+            },
+        ]);
+        for input in 0..3 {
+            let id = match input {
+                0 => db.add_composite(&bundle, None, "fixture"),
+                1 => db.add_composite(&bundle, Some(&native), "fixture"),
+                _ => db.add_native_archive(&qt_archive, "fixture"),
+            }
+            .unwrap();
+            assert_eq!(db.display_kind(id).unwrap(), "image");
             assert_eq!(
                 db.get_all(None, None, 10, 0)
                     .unwrap()
@@ -5274,6 +5445,28 @@ mod lifecycle_tests {
                 .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
                 .unwrap();
             assert_eq!(after, legacy);
+            if input == 2 {
+                assert_eq!(
+                    db.get_composite_archive(id).unwrap(),
+                    Some(qt_archive.clone())
+                );
+                // Do not project a single image title onto multi-item or
+                // incomplete archives, even when they contain a PNG cover.
+                for (items, completeness) in [
+                    (2, Completeness::Complete),
+                    (1, Completeness::MissingFormats),
+                ] {
+                    let mut guarded = m.clone();
+                    guarded.native_items = items;
+                    guarded.completeness = completeness as u8;
+                    guarded.identity.as_mut().unwrap().archive_digest =
+                        archive_digest(&guarded).unwrap();
+                    assert_eq!(
+                        summary_bytes(&serde_json::to_vec(&guarded).unwrap()).unwrap(),
+                        b"Rich clipboard content"
+                    );
+                }
+            }
         }
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
@@ -5423,7 +5616,11 @@ mod lifecycle_tests {
         let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let blue = solid_png(0, 0, 255);
         let html = "<p><img src=\"tailsync-resource:9\"><img src=\"tailsync-resource:1\"></p>";
-        let bundle = document_bundle(html, vec![(1, blue)]);
+        let mut bundle = document_bundle(html, vec![(1, blue)]);
+        bundle.representations.push(Representation {
+            mime: Mime::Png,
+            bytes: solid_png(0, 255, 0),
+        });
         let id = db.add_composite(&bundle, None, "fixture").unwrap();
         let outcome = db
             .prepare_composite_image(id)

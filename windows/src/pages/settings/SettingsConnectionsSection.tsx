@@ -1,5 +1,10 @@
 import { Activity, Grid2X2, RefreshCw, Trash2, Wifi } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { PeerDevice, PeerRoute, PendingPairingSummary } from "../../tailsyncClient";
+import { useI18n } from "../../hooks/useI18n";
+import { DEMO_PEER_HOST } from "../../onboarding/demo";
+import guide from "../../../../shared/onboarding/guide.json";
+import { readTour, TOUR_EVENT } from "../../onboarding/tourState";
 import { pairingAddressForPeer } from "../../utils/pairingAddress";
 import { routeSupportsLatencyTest } from "../../utils/peerRoute";
 import { RemotePairingPanel } from "./RemotePairingPanel";
@@ -37,6 +42,19 @@ export function SettingsConnectionsSection({
   remotePairing,
   defaultExpandedRemotePairing = false,
 }: SettingsConnectionsSectionProps) {
+  const { locale } = useI18n();
+  const [demoActive, setDemoActive] = useState(() => readTour().active);
+  const [demoStage, setDemoStage] = useState(0);
+  const [demoLatency, setDemoLatency] = useState<number | null>(null);
+  const [demoPaired, setDemoPaired] = useState(false);
+  const [demoSyncEnabled, setDemoSyncEnabled] = useState(true);
+  const demo = (key: keyof typeof guide.ui) => guide.ui[key][locale.startsWith("zh") ? "zh-CN" : "en"];
+  useEffect(() => {
+    const sync = () => setDemoActive(readTour().active);
+    window.addEventListener(TOUR_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => { window.removeEventListener(TOUR_EVENT, sync); window.removeEventListener("storage", sync); };
+  }, []);
   return (
     <section className="setting-group connection-group">
       <div className="setting-group-header section-header-with-action">
@@ -63,7 +81,7 @@ export function SettingsConnectionsSection({
         </div>
       </div>
 
-      <div className="connection-mode" role="radiogroup" aria-label={t("settings.connectionMode")}>
+      <div data-tour="connection-mode" className="connection-mode" role="radiogroup" aria-label={t("settings.connectionMode")}>
         <button
           type="button"
           className={settings.connection_mode === "auto" ? "active" : ""}
@@ -104,7 +122,7 @@ export function SettingsConnectionsSection({
         </button>
       </div>
 
-      <div className="pairing-window-row">
+      <div data-tour="pairing" className="pairing-window-row">
         <div>
           <strong>{t("settings.devicePairing")}</strong>
           <span>
@@ -137,7 +155,22 @@ export function SettingsConnectionsSection({
         </div>
       ))}
 
-      <div className="device-list" aria-live="polite">
+      <div data-tour="peers" className="device-list" aria-live="polite">
+        {demoActive && <div className="device-row peer-device-row demo-device-row">
+          <div className="device-avatar">D</div>
+          <div className="device-info">
+            <div className="device-name"><span className="device-name-text">{DEMO_PEER_HOST}</span><span className={demoPaired ? "peer-badge paired" : "peer-badge unpaired"}>{t(demoPaired ? "settings.paired" : "settings.notPaired")}</span><span className="peer-badge">{demo("demo")}</span></div>
+            <div className="device-fingerprint">192.0.2.42:19890 · LAN</div>
+            <div className="device-fingerprint">{demo("demoPeerHint")}</div>
+          </div>
+          <div className="device-actions">
+            <button type="button" className="icon-button" onClick={() => setDemoLatency(12)} aria-label={t("settings.testAllConnections")}><Activity size={16} strokeWidth={1.7} aria-hidden="true" /></button>
+            {demoLatency !== null && <span className="connection-test-result success">{demoLatency} ms</span>}
+            {demoPaired
+              ? <label className="toggle" title={demo("demoSyncToggle")}><input type="checkbox" checked={demoSyncEnabled} onChange={event => setDemoSyncEnabled(event.target.checked)} /><div className="toggle-track" /></label>
+              : <button type="button" className="pair-device-action" onClick={() => setDemoStage(1)}>{demo("demoPair")}</button>}
+          </div>
+        </div>}
         {devices && (
           <div className="device-row local-device">
             <div className="device-avatar self">{devices.self.hostname.slice(0, 1).toUpperCase()}</div>
@@ -348,6 +381,13 @@ export function SettingsConnectionsSection({
           </div>
         )}
       </div>
+
+      {demoStage > 0 && <div className="tour-demo-dialog" role="dialog" aria-modal="true" aria-label={demo("demoPairingTitle")}>
+        <div><strong>{demo("demoPairingTitle")}</strong><span>{DEMO_PEER_HOST}</span><b>246 810</b><p>{demoStage === 3 ? demo("demoPaired") : demo("demoCode")}</p>
+          {demoStage < 3 ? <button type="button" className="pair-device-action" onClick={() => setDemoStage(value => { if (value === 2) setDemoPaired(true); return value + 1; })}>{demo(demoStage === 1 ? "demoContinue" : "demoConfirm")}</button> : <button type="button" className="pair-device-action" onClick={() => setDemoStage(0)}>{demo("finish")}</button>}
+          <button type="button" onClick={() => setDemoStage(0)}>{t("common.close")}</button>
+        </div>
+      </div>}
 
       {["auto", "iroh_only"].includes(settings.connection_mode) && (
         <RemotePairingPanel

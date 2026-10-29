@@ -384,6 +384,7 @@ struct HistoryFilterBar: View {
                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .tourTarget("favorites")
                     .help(Loc.t("favorites.open"))
                     .accessibilityLabel(Loc.t("favorites.open"))
                 }

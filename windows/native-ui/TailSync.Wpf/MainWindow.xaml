@@ -1,0 +1,56 @@
+<local:MacWindow x:Class="TailSync.Wpf.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:TailSync.Wpf" Title="History">
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions><RowDefinition Height="32" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <ContentControl x:Name="TitleHost" />
+        <Grid x:Name="HistoryPage" Grid.Row="1">
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="34" /></Grid.RowDefinitions>
+            <Border Margin="12,8,12,4" Padding="8" Background="{DynamicResource InputBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0" CornerRadius="10">
+                <StackPanel>
+                    <Grid Height="36"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <Border Background="{DynamicResource InputBrush}" BorderBrush="{DynamicResource AccentBrush}" BorderThickness="2" CornerRadius="7">
+                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><local:VectorIcon Kind="search" Width="15" Height="15" Margin="9,0,8,0" /><TextBox x:Name="SearchBox" Grid.Column="1" FontFamily="{DynamicResource DisplayFont}" FontSize="18" BorderThickness="0" Background="Transparent" Padding="0,0,4,0" Tag="搜索历史..." TextChanged="Search_Changed" AutomationProperties.Name="搜索历史" /></Grid>
+                        </Border>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center">
+                            <Button x:Name="SyncButton" Style="{StaticResource PlainButton}" Width="7" Click="Sync_Click" AutomationProperties.Name="剪贴板同步"><Ellipse x:Name="SyncDot" Width="7" Height="7" Fill="{DynamicResource PositiveBrush}" /></Button>
+                            <Button x:Name="PinButton" Style="{StaticResource IconButton}" Margin="8,0,0,0" Click="Pin_Click" AutomationProperties.Name="窗口置顶"><local:VectorIcon Kind="pin" /></Button>
+                            <Button x:Name="FavoritesButton" Style="{StaticResource IconButton}" Margin="8,0,0,0" Click="Favorites_Click" AutomationProperties.Name="打开收藏"><local:VectorIcon Kind="star" /></Button>
+                        </StackPanel>
+                    </Grid>
+                    <Grid Height="28" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="8" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <ComboBox x:Name="CategoryFilter" SelectedIndex="0" SelectionChanged="Filter_Changed" AutomationProperties.Name="内容分类"><ComboBoxItem Content="全部分类" Tag="all" /><ComboBoxItem Content="文本" Tag="text" /><ComboBoxItem Content="链接" Tag="website" /><ComboBoxItem Content="代码" Tag="code" /><ComboBoxItem Content="路径" Tag="path" /><ComboBoxItem Content="图片" Tag="image" /><ComboBoxItem Content="文件" Tag="file" /></ComboBox>
+                        <ComboBox x:Name="DateFilter" Grid.Column="2" SelectedIndex="0" SelectionChanged="Filter_Changed" AutomationProperties.Name="日期筛选"><ComboBoxItem Content="按日期筛选" Tag="all" /><ComboBoxItem Content="今天" Tag="today" /><ComboBoxItem Content="昨天" Tag="yesterday" /><ComboBoxItem Content="近 7 天" Tag="last7" /><ComboBoxItem Content="近 30 天" Tag="last30" /><ComboBoxItem Content="本月" Tag="thisMonth" /><ComboBoxItem Content="自定义" Tag="custom" /></ComboBox>
+                    </Grid>
+                    <Grid x:Name="CustomDates" Visibility="Collapsed" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="8" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><DatePicker x:Name="StartDate" SelectedDate="2026-10-24" SelectedDateChanged="Range_Changed" AutomationProperties.Name="开始日期" /><DatePicker x:Name="EndDate" Grid.Column="2" SelectedDate="2026-10-25" SelectedDateChanged="Range_Changed" AutomationProperties.Name="结束日期" /></Grid>
+                </StackPanel>
+            </Border>
+            <ListBox x:Name="HistoryList" Grid.Row="1" ItemsSource="{Binding Entries}" SelectedItem="{Binding SelectedEntry, Mode=TwoWay}" ItemContainerStyle="{StaticResource HistoryItem}" BorderThickness="0" Background="{DynamicResource SurfaceBrush}" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" MouseDoubleClick="History_DoubleClick" PreviewKeyDown="History_KeyDown" AutomationProperties.Name="历史记录列表">
+                <ListBox.ItemTemplate><DataTemplate>
+                    <Border Padding="10,8,4,8" MinHeight="{Binding RowHeight}"><Grid>
+                        <Grid.ContextMenu><ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"><MenuItem Header="回溯" Click="RestoreRow_Click" /><MenuItem Header="预览" Click="PreviewRow_Click" /><MenuItem Header="收藏 / 取消收藏" Click="FavoriteRow_Click" /><MenuItem Header="删除" Click="DeleteRow_Click" /></ContextMenu></Grid.ContextMenu>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="38" /><ColumnDefinition Width="8" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <Border Width="24" Height="24" HorizontalAlignment="Left" VerticalAlignment="Center" Background="{DynamicResource AccentSoftBrush}" CornerRadius="9"><local:VectorIcon Kind="{Binding Icon}" /></Border>
+                        <StackPanel Grid.Column="2">
+                            <DockPanel Height="15" LastChildFill="False" Margin="0,0,6,0">
+                                <Border DockPanel.Dock="Left" Background="{DynamicResource AccentSoftBrush}" CornerRadius="7" Padding="4,1"><TextBlock Text="{Binding KindLabel}" FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}" /></Border>
+                                <TextBlock DockPanel.Dock="Left" Text="{Binding Time}" Style="{StaticResource Caption}" Margin="6,0,0,0" />
+                                <local:VectorIcon DockPanel.Dock="Right" Kind="star" Filled="True" Width="10" Height="10" Margin="6,0,0,0" Stroke="{DynamicResource AccentBrush}" Visibility="{Binding Pinned, Converter={StaticResource BoolVisibility}}" />
+                                <TextBlock DockPanel.Dock="Right" Text="{Binding SourcePeer}" FontSize="10" MaxWidth="90" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource SecondaryBrush}" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding Description}" FontFamily="{DynamicResource DisplayFont}" FontSize="13" Height="19" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                            <Grid Height="13" Margin="0,2,0,0"><TextBlock Text="{Binding RowSizeLine}" FontSize="10" Foreground="{DynamicResource SecondaryBrush}" Margin="0,0,62,0" />
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Style="{StaticResource IconButton}" Width="24" Height="24" Click="Info_Click" Visibility="{Binding IsComposite, Converter={StaticResource BoolVisibility}}" AutomationProperties.Name="条目详情"><local:VectorIcon Kind="info" Width="13" Height="13" /></Button><Button Style="{StaticResource IconButton}" Width="31" Height="24" Click="Format_Click" Visibility="{Binding HasFormatMenu, Converter={StaticResource BoolVisibility}}" AutomationProperties.Name="选择复制格式"><StackPanel Orientation="Horizontal"><local:VectorIcon Kind="more" Width="13" Height="13" Stroke="{DynamicResource AccentBrush}" /><local:VectorIcon Kind="down" Width="9" Height="9" Margin="2,0,0,0" Stroke="{DynamicResource AccentBrush}" /></StackPanel></Button></StackPanel>
+                            </Grid>
+
+                        </StackPanel>
+                        <Border Grid.Column="2" Height="1" VerticalAlignment="Bottom" Background="{DynamicResource DividerBrush}" Margin="0,0,0,-8" />
+                    </Grid></Border>
+                </DataTemplate></ListBox.ItemTemplate>
+            </ListBox>
+            <StackPanel x:Name="EmptyState" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"><TextBlock x:Name="EmptyTitle" Text="暂无记录" HorizontalAlignment="Center" /><TextBlock x:Name="EmptyDescription" Style="{StaticResource Caption}" Margin="0,6,0,0" /></StackPanel>
+            <Border Grid.Row="2" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource DividerBrush}" Padding="12,0"><DockPanel LastChildFill="False"><StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="‹" Style="{StaticResource IconButton}" Width="18" IsEnabled="False" /><TextBlock Text="1" FontSize="11" Margin="8,0" /><Button Content="›" Style="{StaticResource IconButton}" Width="18" IsEnabled="False" /></StackPanel><Button x:Name="ClearButton" DockPanel.Dock="Right" Content="清空所有记录" Style="{StaticResource PlainButton}" Foreground="{DynamicResource AccentBrush}" Click="Clear_Click" /></DockPanel></Border>
+        </Grid>
+        <ScrollViewer x:Name="SettingsPage" Grid.Row="1" Visibility="Collapsed" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="SettingsContent" Margin="0,14" /></ScrollViewer>
+        <ScrollViewer x:Name="ConnectionsPage" Grid.Row="1" Visibility="Collapsed" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="ConnectionsContent" Margin="0,14" /></ScrollViewer>
+        <Border x:Name="Feedback" Grid.Row="1" VerticalAlignment="Bottom" HorizontalAlignment="Center" MaxWidth="480" Margin="12,0,12,12" Padding="14,10" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="10" Visibility="Collapsed"><TextBlock x:Name="FeedbackText" TextWrapping="Wrap" FontSize="12" /></Border>
+    </Grid>
+</local:MacWindow>

@@ -15,7 +15,7 @@ export function SettingsGeneralSection({
   update,
 }: SettingsGeneralSectionProps) {
   return (
-    <section className="setting-group">
+    <section data-tour="general" className="setting-group">
       <div className="setting-group-header">
         <h3>{t("settings.general")}</h3>
         <p>{t("settings.generalDescription")}</p>

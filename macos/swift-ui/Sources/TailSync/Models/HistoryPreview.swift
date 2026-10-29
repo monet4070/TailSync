@@ -288,7 +288,7 @@ struct HistoryPreviewFailure: Equatable, Sendable {
                 return HistoryPreviewFailure(kind: .corrupt, canRetry: false)
             case .payloadUnavailable:
                 return HistoryPreviewFailure(
-                    kind: .decryption,
+                    kind: .unavailable,
                     canRetry: remoteError.retryable ?? true
                 )
             case .entryNotFound, .batchNotFound, .entryNotInBatch:

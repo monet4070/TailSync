@@ -199,10 +199,10 @@ fn hide_bundled_daemon_from_dock() {}
 
 fn start_storage_monitor(
     database: Arc<Mutex<db::HistoryDB>>,
-    app: Option<tauri::AppHandle>,
+    _app: Option<tauri::AppHandle>,
+    settings: Arc<Mutex<crypto::Settings>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tauri::async_runtime::JoinHandle<()> {
-    use tauri_plugin_notification::NotificationExt;
     tauri::async_runtime::spawn(async move {
         let mut warned = false;
         loop {
@@ -218,6 +218,7 @@ fn start_storage_monitor(
                 warned = false;
                 continue;
             }
+            let language = settings.lock().await.language.clone();
             let mut history = database.lock().await;
             history.mark_storage_unavailable();
             let reopen = history.reopen_configured_storage();
@@ -235,37 +236,21 @@ fn start_storage_monitor(
                     // waiting for the next unrelated clipboard event.
                     // `bump_clipboard_version` also bumps the runtime revision.
                     api::bump_clipboard_version();
-                    let message = "TailSync storage is available again. File transfer resumed.";
-                    if let Some(app) = &app {
-                        let _ = app
-                            .notification()
-                            .builder()
-                            .title("TailSync")
-                            .body(message)
-                            .show();
-                    } else {
-                        // The headless daemon has no notification handle; surface
-                        // the recovery on the runtime channel so it is not lost.
-                        api::push_runtime_notification("info", message);
-                    }
+                    api::push_system_notification(
+                        "info",
+                        tailsync_runtime::notification_text::SystemNotification::StorageRecovered,
+                        &language,
+                    );
                 }
                 Err(error) if !warned => {
                     warned = true;
                     api::bump_runtime_revision();
                     log::warn!("TailSync storage unavailable: {error}");
-                    if let Some(app) = &app {
-                        let _ = app
-                            .notification()
-                            .builder()
-                            .title("TailSync")
-                            .body("TailSync storage is unavailable. File transfer is paused.")
-                            .show();
-                    } else {
-                        api::push_runtime_notification(
-                            "error",
-                            "TailSync storage is unavailable. File transfer is paused.",
-                        );
-                    }
+                    api::push_system_notification(
+                        "error",
+                        tailsync_runtime::notification_text::SystemNotification::StorageUnavailable,
+                        &language,
+                    );
                 }
                 Err(_) => {}
             }
@@ -581,7 +566,7 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
     track_task(
         &background_tasks,
         tauri::async_runtime::spawn(network::peer_cache_refresh_loop(
-            settings,
+            settings.clone(),
             pool.clone(),
             None,
             shutdown_rx.clone(),
@@ -589,7 +574,7 @@ async fn run_headless_app() -> Result<(), Box<dyn std::error::Error>> {
     );
     track_task(
         &background_tasks,
-        start_storage_monitor(db, None, shutdown_rx.clone()),
+        start_storage_monitor(db, None, settings, shutdown_rx.clone()),
     );
 
     info!("TailSync v2 headless daemon initialized successfully");
@@ -725,6 +710,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let settings_for_server = settings.clone();
     let settings_for_iroh = settings.clone();
     let settings_for_discovery = settings.clone();
+    let settings_for_storage = settings.clone();
     let identity_for_server = identity.clone();
     let identity_for_iroh = identity.clone();
     let identity_for_discovery = identity.clone();
@@ -870,6 +856,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 start_storage_monitor(
                     db_for_storage_monitor,
                     Some(handle.clone()),
+                    settings_for_storage,
                     shutdown_for_setup.clone(),
                 ),
             );

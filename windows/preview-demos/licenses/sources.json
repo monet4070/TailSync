@@ -1,0 +1,6 @@
+{
+  "pdfium_archive": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8111/pdfium-win-x64.tgz",
+  "archive_sha256": "3452d11031050ec65e57f180215b57b9e6d465e3fbedafa8a77ad90885c7d23e",
+  "mupdf_binding": "https://github.com/ArtifexSoftware/MuPDF.NET",
+  "mupdf_engine": "https://github.com/ArtifexSoftware/mupdf/tree/1.28.2"
+}

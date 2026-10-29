@@ -14,6 +14,8 @@ import {
 } from "../tailsyncClient";
 import { useRestoreActivity } from "../hooks/useRestoreActivity";
 import { useRuntimeSnapshots } from "../hooks/useRuntimeSnapshots";
+import { isDemoEntry } from "../onboarding/demo";
+import { readTour } from "../onboarding/tourState";
 import { HistoryImeGuard } from "../utils/historyKeyboard";
 import { PreviewShell } from "../preview/PreviewShell";
 import {
@@ -211,7 +213,7 @@ export function Preview() {
     try {
       setRestoreFailed(false);
       setRestoreSucceeded(false);
-      await restoreEntry(restoreId);
+      if (!(readTour().active && isDemoEntry(restoreId))) await restoreEntry(restoreId);
       setRestoreSucceeded(true);
       if (!keepOpen) {
         const owner = snapshot.owner;

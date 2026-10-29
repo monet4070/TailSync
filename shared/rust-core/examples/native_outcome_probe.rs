@@ -155,6 +155,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         HelperOutcome::OutputExceeded { .. } => ("output_exceeded", false, false),
         HelperOutcome::SpawnFailed { .. } => ("spawn_failed", false, true),
     };
+    let (exit_success, stdout_bytes, stderr_bytes, elapsed) = match &outcome {
+        HelperOutcome::Exited {
+            success,
+            stdout,
+            stderr_bytes,
+            elapsed,
+        } => (
+            Some(*success),
+            Some(stdout.len()),
+            Some(*stderr_bytes),
+            *elapsed,
+        ),
+        HelperOutcome::TimedOut {
+            stderr_bytes,
+            elapsed,
+        }
+        | HelperOutcome::OutputExceeded {
+            stderr_bytes,
+            elapsed,
+        } => (None, None, Some(*stderr_bytes), *elapsed),
+        HelperOutcome::SpawnFailed { elapsed, .. } => (None, None, None, *elapsed),
+    };
 
     println!(
         "{}",
@@ -170,6 +192,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "board": board,
             "intent_registered": registered,
             "outcome": outcome_kind,
+            "helper_exit_success": exit_success,
+            "helper_stdout_bytes": stdout_bytes,
+            "helper_stderr_bytes": stderr_bytes,
+            "helper_elapsed_ms": elapsed.as_millis(),
             "timed_out": timed_out,
             "spawn_failed": spawn_failed,
             "may_have_had_an_effect": !spawn_failed,

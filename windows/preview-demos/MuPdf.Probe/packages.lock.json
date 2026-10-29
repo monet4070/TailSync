@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "MuPDF.NET": {
+        "type": "Direct",
+        "requested": "[3.28.2.4, )",
+        "resolved": "3.28.2.4",
+        "contentHash": "SV1OEJDz1b0f9u15fkaalIRwrxdUu1nvXyDYb8hIvZwhPxY1wDGR67YYCqhen37Ud8N0JsWOKXMsQswZbeSKdw==",
+        "dependencies": {
+          "MuPDF.Fonts": "1.0.4",
+          "MuPDF.NativeAssets": "1.28.2",
+          "Newtonsoft.Json": "13.0.4",
+          "SharpZipLib": "1.4.2",
+          "SkiaSharp": "3.119.4",
+          "SkiaSharp.NativeAssets.Linux": "3.119.4"
+        }
+      },
+      "MuPDF.Fonts": {
+        "type": "Transitive",
+        "resolved": "1.0.4",
+        "contentHash": "XA2tq3ew8+fyk/muXIKS0tngvI1jStjM3NxZ+ZJ2HQP3Z2vcNvehcDJnbjBe9s8rbP2l+YH/f0KBtD8un7GuOg==",
+        "dependencies": {
+          "SharpCompress": "1.0.0"
+        }
+      },
+      "MuPDF.NativeAssets": {
+        "type": "Transitive",
+        "resolved": "1.28.2",
+        "contentHash": "tMOP2tc9MP96gCfSNi6leXF93zgtfVT9Ux+E+ZaU6TWTVfICtU49nlNXecdgHv8q8WmfNodNDLxYejT3/FKHKw==",
+        "dependencies": {
+          "MuPDF.NativeAssets.Linux.arm": "1.28.2",
+          "MuPDF.NativeAssets.Linux.arm64": "1.28.2",
+          "MuPDF.NativeAssets.Linux.x64": "1.28.2",
+          "MuPDF.NativeAssets.Windows.x64": "1.28.2",
+          "MuPDF.NativeAssets.Windows.x86": "1.28.2"
+        }
+      },
+      "MuPDF.NativeAssets.Linux.arm": {
+        "type": "Transitive",
+        "resolved": "1.28.2",
+        "contentHash": "P35u+aRsOHb8A6mXoVkkcWYVusAzbQ1WTDHRskXW8RsVEz2xXicAHj57jYIlYNZruknxQuetmWBucXIOsA8PVA=="
+      },
+      "MuPDF.NativeAssets.Linux.arm64": {
+        "type": "Transitive",
+        "resolved": "1.28.2",
+        "contentHash": "WhfWCIZB9V7a2jd+YGrv1gKOQservDYfc9Vj8zEh8oDPHjFpF+XZV4mIEVqCbHSvxFaekm4EGP/g3SG65+Ctow=="
+      },
+      "MuPDF.NativeAssets.Linux.x64": {
+        "type": "Transitive",
+        "resolved": "1.28.2",
+        "contentHash": "MhzNvht6df2f0bRjDXYV5WUgEwJ9Hq5vLO2GuG3asAzaMwBCyHIHvEupq7XttI7D4KwCreuNYZRi9n8ZU6u/rg=="
+      },
+      "MuPDF.NativeAssets.Windows.x64": {
+        "type": "Transitive",
+        "resolved": "1.28.2",
+        "contentHash": "Symiwv76H2RP9w9cclPGgErlZzcQBtmaZ7HXB/lFQtn6qjvWjn9z6qb+iEY0eIk7lPD/HathllCyxe+a8HrR9w=="
+      },
+      "MuPDF.NativeAssets.Windows.x86": {
+        "type": "Transitive",
+        "resolved": "1.28.2",
+        "contentHash": "Oesz4TSzilEGHkbD1AyixzUlC2PKMjztLfxsVpyzY+RSzzM/QKGmrk6CHUk+I1rrLm1dRFmf0zvF1NjpbWiG7g=="
+      },
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+      },
+      "SharpCompress": {
+        "type": "Transitive",
+        "resolved": "1.0.0",
+        "contentHash": "bdBq9V2epw7KBX3TeA+lxnKU8dD61tsqVuyuo5cAXj4d+9+fcIQObTr0705oTWnPDRhjRx3TpgOFbYYAMObpaw=="
+      },
+      "SharpZipLib": {
+        "type": "Transitive",
+        "resolved": "1.4.2",
+        "contentHash": "yjj+3zgz8zgXpiiC3ZdF/iyTBbz2fFvMxZFEBPUcwZjIvXOf37Ylm+K58hqMfIBt5JgU/Z2uoUS67JmTLe973A=="
+      },
+      "SkiaSharp": {
+        "type": "Transitive",
+        "resolved": "3.119.4",
+        "contentHash": "53NOSUZ1Us+91Sm0uCkIivh/k7jOowRErZT2sIWwPFN9mLUvdxnE6rS4sWo4255+Rd2MWUSF+j0NMZHD6Cke+Q==",
+        "dependencies": {
+          "SkiaSharp.NativeAssets.Win32": "3.119.4",
+          "SkiaSharp.NativeAssets.macOS": "3.119.4"
+        }
+      },
+      "SkiaSharp.NativeAssets.Linux": {
+        "type": "Transitive",
+        "resolved": "3.119.4",
+        "contentHash": "UAyVzbqNfZsZbKbzj68zXLyUyF/SbTKmzTfOO6qDu++dtIUMMTzPBe8oOuzU/DiewpfKoUUlOSsJmqWc6blxBw=="
+      },
+      "SkiaSharp.NativeAssets.macOS": {
+        "type": "Transitive",
+        "resolved": "3.119.4",
+        "contentHash": "fgBOWEqbY012x7gMfJU4ezgz6dfhJb30Z6YdW35h85Zoe39+a8YNbAAwL29ihPfWoppg5AjvyKNzD1oCvlqWwA=="
+      },
+      "SkiaSharp.NativeAssets.Win32": {
+        "type": "Transitive",
+        "resolved": "3.119.4",
+        "contentHash": "XOpbx/4CReO2wYsq2s6rbvdauc6dntG4Zv499sHGTJ87bwZaFXszFkwql3+FIZMc8kUPeaj3Mx2ezIJmo8a1Kg=="
+      },
+      "core": {
+        "type": "Project"
+      }
+    }
+  }
+}

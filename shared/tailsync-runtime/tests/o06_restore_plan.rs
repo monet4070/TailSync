@@ -111,6 +111,258 @@ fn payload(completeness: Completeness, html: &str) -> HistoryRestorePayload {
     }
 }
 #[test]
+fn browser_image_restore_uses_saved_png_without_claiming_html_was_repaired() {
+    use tailsync_core::composite::restore::{RestoreSelection, RestoreTarget};
+    use tailsync_runtime::history::PreparedHistoryRestore;
+    let png = tailsync_core::composite::packed_to_png(1, 1, &[1, 2, 3, 255]).unwrap();
+    let mut original = payload(
+        Completeness::ExternalReferences,
+        "<img src='file:///C:/browser/image.png'>",
+    );
+    let mut bundle = PortableBundle::decode(original.data.as_deref().unwrap()).unwrap();
+    bundle.representations.retain(|r| r.mime != Mime::Text);
+    bundle.representations.push(Representation {
+        mime: Mime::Png,
+        bytes: png.clone(),
+    });
+    original.data = Some(bundle.encode().unwrap());
+    for target in [RestoreTarget::Macos, RestoreTarget::Windows] {
+        let plan = match original.prepare_restore_plan(false, target, None).unwrap() {
+            PreparedHistoryRestore::Ready(plan) => plan,
+            other => panic!("saved browser image must be usable: {other:?}"),
+        };
+        assert_eq!(plan.selection(), RestoreSelection::AvailableContent);
+        assert_eq!(plan.missing_images(), 1);
+        let native = plan.native().unwrap();
+        assert!(native
+            .formats
+            .iter()
+            .any(|f| (f.name == "public.png" || f.name == "PNG") && f.bytes == png));
+        assert!(!native
+            .formats
+            .iter()
+            .any(|f| f.name == "public.html" || f.name == "HTML Format"));
+    }
+    assert_eq!(
+        PortableBundle::decode(original.data.as_deref().unwrap()).unwrap(),
+        bundle
+    );
+}
+
+#[test]
+fn browser_image_with_caption_keeps_document_body_instead_of_selecting_standalone_png() {
+    use tailsync_core::composite::restore::RestoreTarget;
+    use tailsync_runtime::history::PreparedHistoryRestore;
+    let mut original = payload(
+        Completeness::ExternalReferences,
+        "<p>caption</p><img src='file:///C:/browser/image.png'>",
+    );
+    let mut bundle = PortableBundle::decode(original.data.as_deref().unwrap()).unwrap();
+    bundle.representations.push(Representation {
+        mime: Mime::Png,
+        bytes: tailsync_core::composite::packed_to_png(1, 1, &[1, 2, 3, 255]).unwrap(),
+    });
+    original.data = Some(bundle.encode().unwrap());
+    let PreparedHistoryRestore::Ready(plan) = original
+        .prepare_restore_plan(false, RestoreTarget::Macos, None)
+        .unwrap()
+    else {
+        panic!("caption must remain restorable")
+    };
+    let native = plan.native().unwrap();
+    assert!(native
+        .formats
+        .iter()
+        .any(|f| f.name == "public.html" && String::from_utf8_lossy(&f.bytes).contains("caption")));
+    assert!(!native.formats.iter().any(|f| f.name == "public.png"));
+}
+
+#[test]
+fn web_article_default_selection_matches_history_on_both_native_targets_without_reordering_images()
+{
+    use base64::Engine as _;
+    use tailsync_core::composite::{
+        restore::{RestoreInput, RestorePlan, RestoreTarget},
+        Resource, ResourceBinding,
+    };
+    use tailsync_runtime::history::PreparedHistoryRestore;
+    for (stylesheet, missing_image) in [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let style = if stylesheet {
+            "<style>@import 'https://fixture.invalid/page.css';</style>"
+        } else {
+            ""
+        };
+        let missing = if missing_image {
+            "<img src='https://fixture.invalid/missing.png'>"
+        } else {
+            ""
+        };
+        let html = format!("{style}<p>Alpha<img src='tailsync-resource:7'>Beta{missing}Gamma<img src='tailsync-resource:3'>Delta<img src='tailsync-resource:7'>Omega</p>");
+        let mut saved = payload(
+            if stylesheet || missing_image {
+                Completeness::ExternalReferences
+            } else {
+                Completeness::Complete
+            },
+            &html,
+        );
+        let mut bundle = PortableBundle::decode(saved.data.as_deref().unwrap()).unwrap();
+        bundle.resources = vec![
+            Resource {
+                id: 7,
+                png: tailsync_core::composite::packed_to_png(1, 1, &[255, 0, 0, 255]).unwrap(),
+            },
+            Resource {
+                id: 3,
+                png: tailsync_core::composite::packed_to_png(1, 1, &[0, 255, 0, 255]).unwrap(),
+            },
+        ];
+        for id in [7, 3] {
+            let reference = format!("tailsync-resource:{id}");
+            for (offset, _) in html.match_indices(&reference) {
+                bundle.bindings.push(ResourceBinding {
+                    representation: 1,
+                    resource: id,
+                    offset: offset as u32,
+                    length: reference.len() as u32,
+                });
+            }
+        }
+        saved.data = Some(bundle.encode().unwrap());
+        let before = saved.data.clone();
+        let red = base64::engine::general_purpose::STANDARD.encode(&bundle.resources[0].png);
+        let green = base64::engine::general_purpose::STANDARD.encode(&bundle.resources[1].png);
+        for target in [RestoreTarget::Macos, RestoreTarget::Windows] {
+            let sync_plan = RestorePlan::portable_default(
+                &bundle,
+                RestoreInput {
+                    source_platform: None,
+                    requested_format: None,
+                },
+                target,
+            )
+            .unwrap();
+            let PreparedHistoryRestore::Ready(history_plan) =
+                saved.prepare_restore_plan(false, target, None).unwrap()
+            else {
+                panic!("web article must have an available default restore")
+            };
+            assert_eq!(sync_plan.outputs(), history_plan.outputs());
+            assert_eq!(history_plan.missing_images(), u16::from(missing_image));
+            let format = history_plan
+                .native()
+                .unwrap()
+                .formats
+                .iter()
+                .find(|f| matches!(f.name.as_str(), "public.html" | "HTML Format"))
+                .unwrap();
+            let html = if target == RestoreTarget::Windows {
+                tailsync_core::composite::html::decode_cf_html(&format.bytes).unwrap()
+            } else {
+                String::from_utf8(format.bytes.clone()).unwrap()
+            };
+            let mut tail = html.as_str();
+            let mut order = vec!["Alpha", red.as_str(), "Beta"];
+            if missing_image {
+                order.push("[🖼]");
+            }
+            order.extend(["Gamma", green.as_str(), "Delta", red.as_str(), "Omega"]);
+            for token in order {
+                let position = tail
+                    .find(token)
+                    .unwrap_or_else(|| panic!("missing or reordered token {token} for {target:?}"));
+                tail = &tail[position + token.len()..];
+            }
+            assert_eq!(html.matches("data:image/png;base64,").count(), 3);
+            assert!(!html.contains("fixture.invalid"));
+            assert_eq!(saved.data, before);
+        }
+    }
+}
+
+#[test]
+#[ignore = "native acceptance fixture export; set TAILSYNC_WEB_ARTICLE_NATIVE_DIR"]
+fn export_native_web_article_consumer_fixtures() {
+    use tailsync_core::composite::{
+        restore::{RestoreInput, RestorePlan, RestoreTarget},
+        Resource, ResourceBinding,
+    };
+    let output = std::path::PathBuf::from(
+        std::env::var_os("TAILSYNC_WEB_ARTICLE_NATIVE_DIR").expect("set fixture output directory"),
+    );
+    std::fs::create_dir_all(&output).unwrap();
+    for with_text_rtf in [false, true] {
+        let html = "<p>Alpha<img src='tailsync-resource:1'>Beta<img src='tailsync-resource:2'>Gamma<img src='tailsync-resource:1'>Omega</p>";
+        let mut bundle = PortableBundle {
+            representations: vec![Representation {
+                mime: Mime::Html,
+                bytes: html.as_bytes().to_vec(),
+            }],
+            resources: vec![
+                Resource {
+                    id: 1,
+                    png: tailsync_core::composite::packed_to_png(
+                        24,
+                        24,
+                        &[255, 0, 0, 255].repeat(24 * 24),
+                    )
+                    .unwrap(),
+                },
+                Resource {
+                    id: 2,
+                    png: tailsync_core::composite::packed_to_png(
+                        24,
+                        24,
+                        &[0, 255, 0, 255].repeat(24 * 24),
+                    )
+                    .unwrap(),
+                },
+            ],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        for id in [1, 2] {
+            let reference = format!("tailsync-resource:{id}");
+            for (offset, _) in html.match_indices(&reference) {
+                bundle.bindings.push(ResourceBinding {
+                    representation: 0,
+                    resource: id,
+                    offset: offset as u32,
+                    length: reference.len() as u32,
+                });
+            }
+        }
+        if with_text_rtf {
+            bundle.representations.push(Representation {
+                mime: Mime::Rtf,
+                bytes: br"{\rtf1\ansi Alpha Beta Gamma Omega}".to_vec(),
+            });
+        }
+        let name = if with_text_rtf {
+            "with-text-rtf"
+        } else {
+            "html-only"
+        };
+        std::fs::write(output.join(format!("{name}.cbp")), bundle.encode().unwrap()).unwrap();
+        let plan = RestorePlan::portable_default(
+            &bundle,
+            RestoreInput {
+                source_platform: None,
+                requested_format: None,
+            },
+            RestoreTarget::Macos,
+        )
+        .unwrap();
+        std::fs::write(
+            output.join(format!("{name}.cns")),
+            plan.native().unwrap().encode().unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn o06_missing_or_external_resources_never_report_whole_group_success() {
     let external = "<p>text</p><img src='https://fixture.invalid/deleted.png'>";
     for (completeness, html) in [
@@ -524,6 +776,10 @@ fn o06_archived_bindings_materialize_as_separate_output_without_mutating_origina
                 mime: Mime::Html,
                 bytes: html.to_vec(),
             },
+            Representation {
+                mime: Mime::Rtf,
+                bytes: br"{\rtf1 offline}".to_vec(),
+            },
         ],
         resources: vec![Resource {
             id: 1,
@@ -561,7 +817,7 @@ fn o06_archived_bindings_materialize_as_separate_output_without_mutating_origina
     else {
         panic!("offline resources must prepare")
     };
-    assert_eq!(plan.selection(), RestoreSelection::PortableCompatibility);
+    assert_eq!(plan.selection(), RestoreSelection::DocumentCompatibility);
     let output = std::str::from_utf8(&plan.native().unwrap().formats[1].bytes).unwrap();
     assert!(output.contains("data:image/png;base64,"));
     assert!(!output.contains("https://"));
@@ -574,6 +830,14 @@ fn o06_archived_bindings_materialize_as_separate_output_without_mutating_origina
     };
     assert_eq!(text.selection(), RestoreSelection::ExplicitFormat);
     assert_eq!(text.outputs().len(), 1);
+    let tailsync_runtime::history::PreparedHistoryRestore::Ready(rtf) = p
+        .prepare_restore_plan(true, RestoreTarget::Macos, Some("rtf"))
+        .unwrap()
+    else {
+        panic!("explicit stored RTF must remain available")
+    };
+    assert_eq!(rtf.selection(), RestoreSelection::ExplicitFormat);
+    assert_eq!(rtf.native().unwrap().formats[0].bytes, br"{\rtf1 offline}");
     assert_eq!(p.native, original);
     assert_eq!(p.data, data);
 }

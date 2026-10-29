@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Core/Core.csproj" />
+    <PackageReference Include="bblanchon.PDFium.macOS" Version="158.0.8111" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+    <PackageReference Include="bblanchon.PDFium.Win32" Version="158.0.8111" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <Compile Include="../Pdfium/Engine.cs" Link="Engine.cs" />
+    <Compile Include="../Probe/Program.cs" Link="Program.cs" />
+  </ItemGroup>
+</Project>

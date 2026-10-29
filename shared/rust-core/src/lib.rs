@@ -11,6 +11,7 @@ pub mod identity;
 pub mod image_chunks;
 pub mod import;
 pub mod iroh_transport;
+pub mod notifications;
 pub mod observability;
 pub mod pairing;
 pub mod peer;

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="TailSync.Native.Core/TailSync.Native.Core.csproj" />
+  <Project Path="TailSync.Wpf/TailSync.Wpf.csproj" />
+</Solution>

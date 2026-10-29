@@ -3,13 +3,17 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use tailsync_core::cancellation::Cancellation;
 use tailsync_core::composite::origin::Origin;
-use tailsync_core::composite::resource_archive::ResourceTransport;
+use tailsync_core::composite::resource_archive::{
+    archive_capture_images, ArchiveLimits, ArchiveOutcome, ResourceTransport,
+};
+use tailsync_core::composite::{Completeness, PortableBundle};
 use tailsync_core::db::HistoryDB;
 use tokio::sync::{watch, Mutex, Notify};
 
 use crate::history::{ArchiveCommit, ArchiveEntryGuard, HistoryOperations};
 
 const MAX_PENDING: usize = 8;
+const CAPTURE_IMAGE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone, Copy)]
 pub struct CaptureTicket(u64);
@@ -60,6 +64,7 @@ struct QueueState {
     generation: u64,
     pending: VecDeque<ArchiveJob>,
     active: Option<(i64, Cancellation)>,
+    preparing: Option<Cancellation>,
 }
 
 pub struct AutomaticImageArchive {
@@ -94,6 +99,7 @@ impl AutomaticImageArchive {
                 generation: 0,
                 pending: VecDeque::new(),
                 active: None,
+                preparing: None,
             }),
             changed: Notify::new(),
             database,
@@ -131,6 +137,9 @@ impl AutomaticImageArchive {
         if let Some((_, cancellation)) = &state.active {
             cancellation.cancel();
         }
+        if let Some(cancellation) = &state.preparing {
+            cancellation.cancel();
+        }
     }
 
     pub fn cancel_pending(&self) {
@@ -151,6 +160,71 @@ impl AutomaticImageArchive {
     pub fn capture_ticket(&self) -> Option<CaptureTicket> {
         let state = self.lock();
         (state.enabled && !state.closed).then_some(CaptureTicket(state.generation))
+    }
+
+    /// Complete a small captured article before freezing its first outgoing event.
+    /// The ticket retains the network preference at the original observation;
+    /// disabling it cancels this work just like the background archive worker.
+    pub async fn prepare_capture(
+        &self,
+        ticket: Option<CaptureTicket>,
+        origin: Origin,
+        bundle: &PortableBundle,
+        retained_bytes: usize,
+        cancellation: Cancellation,
+        memory: Arc<tailsync_core::composite::budgets::PipelineLease>,
+    ) -> Option<ArchiveOutcome> {
+        let ticket = ticket?;
+        if origin != Origin::External
+            || bundle.completeness == Completeness::MissingFormats
+            || cancellation.is_cancelled()
+        {
+            return None;
+        }
+        // Leave the existing capture lease enough headroom for bounded network
+        // bytes, pixels, normalized resources and their atomic storage copies.
+        let source_bytes = bundle
+            .representations
+            .iter()
+            .map(|r| r.bytes.len())
+            .chain(bundle.resources.iter().map(|r| r.png.len()))
+            .fold(retained_bytes, usize::saturating_add);
+        if source_bytes > 16 * 1024 * 1024 {
+            return None;
+        }
+        {
+            let mut state = self.lock();
+            if !state.enabled
+                || state.closed
+                || ticket.0 != state.generation
+                || state.preparing.is_some()
+            {
+                return None;
+            }
+            state.preparing = Some(cancellation.clone());
+        }
+        let _preparation = CapturePreparation(self, cancellation.clone());
+        let limits = ArchiveLimits {
+            total_deadline: CAPTURE_IMAGE_DEADLINE,
+            request_timeout: std::time::Duration::from_millis(600),
+            ..ArchiveLimits::default()
+        };
+        match archive_capture_images(
+            bundle,
+            self.transport.as_ref(),
+            &limits,
+            &cancellation,
+            memory,
+        )
+        .await
+        {
+            Ok(outcome) if outcome.archived > 0 && !cancellation.is_cancelled() => Some(outcome),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::debug!(code = error.code(), "capture image preparation stopped");
+                None
+            }
+        }
     }
 
     pub fn enqueue_captured(
@@ -239,6 +313,15 @@ impl AutomaticImageArchive {
     }
 }
 
+struct CapturePreparation<'a>(&'a AutomaticImageArchive, Cancellation);
+
+impl Drop for CapturePreparation<'_> {
+    fn drop(&mut self) {
+        self.1.cancel();
+        self.0.lock().preparing = None;
+    }
+}
+
 struct StopOnDrop<'a>(&'a AutomaticImageArchive);
 
 impl Drop for StopOnDrop<'_> {
@@ -275,6 +358,8 @@ mod tests {
         blocked: AtomicBool,
         started: Notify,
         release: Notify,
+        block_after: AtomicUsize,
+        delay_ms: AtomicUsize,
     }
 
     impl MockTransport {
@@ -284,6 +369,8 @@ mod tests {
                 blocked: AtomicBool::new(blocked),
                 started: Notify::new(),
                 release: Notify::new(),
+                block_after: AtomicUsize::new(usize::MAX),
+                delay_ms: AtomicUsize::new(0),
             }
         }
     }
@@ -296,9 +383,11 @@ mod tests {
             cancellation: &'a Cancellation,
         ) -> FetchFuture<'a> {
             Box::pin(async move {
-                self.calls.fetch_add(1, Ordering::SeqCst);
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
                 self.started.notify_one();
-                if self.blocked.load(Ordering::SeqCst) {
+                if self.blocked.load(Ordering::SeqCst)
+                    || call >= self.block_after.load(Ordering::SeqCst)
+                {
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => return Err(ArchiveError::Cancelled),
@@ -306,6 +395,13 @@ mod tests {
                     }
                 }
                 cancellation.check().map_err(|_| ArchiveError::Cancelled)?;
+                let delay = self.delay_ms.load(Ordering::SeqCst);
+                if delay > 0 {
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return Err(ArchiveError::Cancelled),
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(delay as u64)) => {},
+                    }
+                }
                 Ok(FetchResponse {
                     status: 200,
                     location: None,
@@ -374,6 +470,265 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    fn capture_memory() -> Arc<tailsync_core::composite::budgets::PipelineLease> {
+        Arc::new(
+            Arc::new(tailsync_core::composite::budgets::BudgetLedger::default())
+                .reserve_pipeline(240 * 1024 * 1024)
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn first_publish_download_respects_observation_ticket_origin_and_size_budget() {
+        let transport = Arc::new(MockTransport::new(false));
+        let queue = queue(database(), false, transport.clone(), Arc::default());
+        let source = bundle("before image");
+        assert!(queue
+            .prepare_capture(
+                None,
+                Origin::External,
+                &source,
+                0,
+                Cancellation::default(),
+                capture_memory()
+            )
+            .await
+            .is_none());
+        queue.set_enabled(true);
+        let ticket = queue.capture_ticket();
+        for origin in [Origin::SelfWrite, Origin::Unknown, Origin::UnknownMismatch] {
+            assert!(queue
+                .prepare_capture(
+                    ticket,
+                    origin,
+                    &source,
+                    0,
+                    Cancellation::default(),
+                    capture_memory()
+                )
+                .await
+                .is_none());
+        }
+        assert!(queue
+            .prepare_capture(
+                ticket,
+                Origin::External,
+                &source,
+                16 * 1024 * 1024,
+                Cancellation::default(),
+                capture_memory()
+            )
+            .await
+            .is_none());
+        queue.cancel_pending();
+        assert!(queue
+            .prepare_capture(
+                ticket,
+                Origin::External,
+                &source,
+                0,
+                Cancellation::default(),
+                capture_memory()
+            )
+            .await
+            .is_none());
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+        let outcome = queue
+            .prepare_capture(
+                queue.capture_ticket(),
+                Origin::External,
+                &source,
+                0,
+                Cancellation::default(),
+                capture_memory(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.archived, 1);
+        assert!(outcome.images_complete());
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        assert!(source.resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disabling_or_cancelling_first_publish_stops_fetch_without_late_result() {
+        for disable in [false, true] {
+            let transport = Arc::new(MockTransport::new(true));
+            let queue = queue(database(), true, transport.clone(), Arc::default());
+            let cancellation = Cancellation::default();
+            let source = bundle("cancelled article");
+            let prepare = queue.prepare_capture(
+                queue.capture_ticket(),
+                Origin::External,
+                &source,
+                0,
+                cancellation.clone(),
+                capture_memory(),
+            );
+            tokio::pin!(prepare);
+            tokio::select! {
+                _ = transport.started.notified() => {},
+                _ = &mut prepare => panic!("fetch should wait for cancellation"),
+            }
+            if disable {
+                queue.set_enabled(false);
+            } else {
+                cancellation.cancel();
+            }
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(250), prepare)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            transport.release.notify_one();
+            assert!(queue.lock().preparing.is_none());
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "public-network acceptance; set TAILSYNC_PUBLIC_IMAGE_URLS to a JSON array"]
+    async fn first_publish_public_network_images() {
+        let urls: Vec<String> =
+            serde_json::from_str(&std::env::var("TAILSYNC_PUBLIC_IMAGE_URLS").unwrap()).unwrap();
+        assert!(!urls.is_empty());
+        for url in urls {
+            let queue = AutomaticImageArchive::new(
+                database(),
+                true,
+                Arc::new(tailsync_core::composite::resource_archive::ReqwestTransport::new()),
+                Arc::new(|| {}),
+            );
+            let mut source = bundle("public network article");
+            source.representations[0].bytes =
+                format!("<p>Alpha<img src='{url}'>Omega</p>").into_bytes();
+            let original = source.clone();
+            let outcome = queue
+                .prepare_capture(
+                    queue.capture_ticket(),
+                    Origin::External,
+                    &source,
+                    0,
+                    Cancellation::default(),
+                    capture_memory(),
+                )
+                .await
+                .expect("public image missed foreground deadline");
+            assert_eq!(outcome.archived, 1);
+            assert!(outcome.images_complete());
+            assert_eq!(outcome.bundle.bindings.len(), 1);
+            assert_eq!(source, original);
+        }
+    }
+    #[tokio::test]
+    async fn first_publish_has_a_fixed_deadline_and_releases_its_capture_slot() {
+        let transport = Arc::new(MockTransport::new(true));
+        let queue = queue(database(), true, transport.clone(), Arc::default());
+        let source = bundle("slow article");
+        let cancellation = Cancellation::default();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            queue.prepare_capture(
+                queue.capture_ticket(),
+                Origin::External,
+                &source,
+                0,
+                cancellation.clone(),
+                capture_memory()
+            )
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(cancellation.is_cancelled());
+        assert!(queue.lock().preparing.is_none());
+        transport.blocked.store(false, Ordering::SeqCst);
+        assert!(queue
+            .prepare_capture(
+                queue.capture_ticket(),
+                Origin::External,
+                &source,
+                0,
+                Cancellation::default(),
+                capture_memory()
+            )
+            .await
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn first_publish_keeps_completed_images_when_a_later_image_times_out() {
+        let transport = Arc::new(MockTransport::new(false));
+        transport.block_after.store(1, Ordering::SeqCst);
+        let queue = queue(database(), true, transport.clone(), Arc::default());
+        let mut source = bundle("before");
+        source.representations[0].bytes.extend_from_slice(
+            b"<p>between</p><img src='https://fixture.example/slow.png'><p>after</p>",
+        );
+        let outcome = queue
+            .prepare_capture(
+                queue.capture_ticket(),
+                Origin::External,
+                &source,
+                0,
+                Cancellation::default(),
+                capture_memory(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.archived, 1);
+        assert!(!outcome.images_complete());
+        assert_eq!(outcome.originals.len(), 1);
+        let plan = tailsync_core::composite::restore::RestorePlan::portable_default(
+            &outcome.bundle,
+            tailsync_core::composite::restore::RestoreInput {
+                source_platform: None,
+                requested_format: None,
+            },
+            tailsync_core::composite::restore::RestoreTarget::Adapter,
+        )
+        .unwrap();
+        assert_eq!(plan.missing_images(), 1);
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 2);
+        assert!(source.resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn first_publish_finalizes_partial_images_within_the_total_deadline() {
+        let transport = Arc::new(MockTransport::new(false));
+        transport.delay_ms.store(500, Ordering::SeqCst);
+        let queue = queue(database(), true, transport.clone(), Arc::default());
+        let mut source = bundle("article");
+        for index in 1..5 {
+            source.representations[0].bytes.extend_from_slice(
+                format!("<p>section {index}</p><img src='https://fixture.example/{index}.png'>")
+                    .as_bytes(),
+            );
+        }
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            queue.prepare_capture(
+                queue.capture_ticket(),
+                Origin::External,
+                &source,
+                0,
+                Cancellation::default(),
+                capture_memory(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(outcome.archived > 0 && outcome.archived < 5);
+        assert!(!outcome.images_complete());
+        assert_eq!(outcome.bundle.bindings.len(), outcome.archived);
+        assert!(
+            transport.calls.load(Ordering::SeqCst) < 5,
+            "the deadline must stop new requests"
+        );
     }
 
     fn start(

@@ -168,3 +168,12 @@ test("explicit full verification overrides targeted paths", () => {
   assert.equal(plan.mode, "full");
   assert.deepEqual(enabled(plan), CI_JOBS);
 });
+
+
+test("shared onboarding changes verify both UIs and native contracts", () => {
+  for (const path of ["shared/onboarding/guide.json", "shared/onboarding/generate-swift.mjs"]) {
+    assert.deepEqual(enabled(planCiScope([path])), [
+      "frontend_windows", "rust_windows", "rust_macos", "shared_resolution",
+    ]);
+  }
+});

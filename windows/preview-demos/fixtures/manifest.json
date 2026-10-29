@@ -1,0 +1,26 @@
+{
+  "synthetic": true,
+  "pdf_font": "Arial Unicode.ttf",
+  "files": [
+    {
+      "name": "layout.docx",
+      "bytes": 99741,
+      "sha256": "a7ed1e0fa9851dff540eaead33c48c5ccb7bf79a73e37877930afc11eb9a6e06"
+    },
+    {
+      "name": "mixed-60-pages.pdf",
+      "bytes": 657137,
+      "sha256": "07a931c1c4288100edb6992edf464d82132cc2a6ccaf88391af5ab070771c827"
+    },
+    {
+      "name": "reading-3-pages.pdf",
+      "bytes": 177140,
+      "sha256": "e977645324d6fd8dbb6d1e9d1e455bc1a3d871eb2aa1a4607e25ae55ddc87fa6"
+    },
+    {
+      "name": "reading.docx",
+      "bytes": 98548,
+      "sha256": "4bc372088b29a38be337899dc65007bfe990dacc676a6dd83a7a9a6f2d217152"
+    }
+  ]
+}

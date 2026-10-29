@@ -2,6 +2,11 @@
 *.toml text eol=lf
 windows/src-tauri/gen/schemas/*.json text eol=lf
 
+# Synthetic document fixtures and upstream license bytes are kept verbatim.
+windows/preview-demos/fixtures/*.pdf binary
+windows/preview-demos/fixtures/*.docx binary
+windows/preview-demos/licenses/** -text -whitespace
+
 # Preserve archived evidence bytes and the whitespace emitted by test runners.
 docs/remediation/review-evidence-2026-09-30/** -text
 docs/remediation/review-evidence-2026-09-30/**/*.log -whitespace

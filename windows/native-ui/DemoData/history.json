@@ -1,0 +1,147 @@
+[
+  {
+    "id": 1,
+    "type": "text",
+    "title": "把灵感留在手边",
+    "description": "一个安静的剪贴板，让内容在设备之间自然流动。",
+    "body": "一个安静的剪贴板，让内容在设备之间自然流动。\n\n在 Mac 上复制一段文字，回到 Windows 时，它已经在这里。少一点来回，多一点专注。\n\n下一步\n• 打磨键盘操作与焦点返回\n• 保留内容原有的格式\n• 让后台更轻，让工作更流畅",
+    "timestamp": "2026-10-25T10:42:00+08:00",
+    "time": "10:42:00",
+    "source_peer": "MacBook Pro",
+    "size_bytes": 362,
+    "pinned": false,
+    "categories": [
+      "text"
+    ],
+    "icon": "text",
+    "preview": "text",
+    "composite": true,
+    "local_only": true,
+    "display_kind": "内容待识别"
+  },
+  {
+    "id": 2,
+    "type": "text",
+    "title": "Fluent 2 · Design System",
+    "description": "https://fluent2.microsoft.design",
+    "body": "https://fluent2.microsoft.design",
+    "timestamp": "2026-10-25T10:38:00+08:00",
+    "time": "10:38:00",
+    "source_peer": "MacBook Pro",
+    "size_bytes": 32,
+    "pinned": true,
+    "categories": [
+      "website"
+    ],
+    "icon": "globe",
+    "preview": "website",
+    "composite": true
+  },
+  {
+    "id": 3,
+    "type": "text",
+    "title": "连接状态订阅",
+    "description": "async fn watch_runtime(mut events: Receiver<Snapshot>)",
+    "body": "async fn watch_runtime(\n    mut events: Receiver<Snapshot>,\n) -> Result<()> {\n    while let Some(snapshot) = events.recv().await {\n        let state = snapshot.connection_state();\n        runtime.publish(state).await?;\n    }\n    Ok(())\n}",
+    "timestamp": "2026-10-25T10:31:00+08:00",
+    "time": "10:31:00",
+    "source_peer": "此电脑",
+    "size_bytes": 247,
+    "pinned": false,
+    "categories": [
+      "code"
+    ],
+    "icon": "code",
+    "preview": "code",
+    "composite": true
+  },
+  {
+    "id": 4,
+    "type": "image",
+    "title": "午后，山与湖",
+    "description": "风景参考.svg · 示例插画",
+    "body": "示例矢量插画，用于查看图片预览布局。",
+    "timestamp": "2026-10-25T10:24:00+08:00",
+    "time": "10:24:00",
+    "source_peer": "MacBook Pro",
+    "size_bytes": 2048,
+    "pinned": false,
+    "categories": [
+      "image"
+    ],
+    "icon": "image",
+    "preview": "image"
+  },
+  {
+    "id": 5,
+    "type": "file",
+    "title": "品牌素材",
+    "description": "Logo.svg、色彩规范.pdf、README.md",
+    "body": "Logo.svg\n色彩规范.pdf\nREADME.md",
+    "timestamp": "2026-10-25T10:16:00+08:00",
+    "time": "10:16:00",
+    "source_peer": "MacBook Pro",
+    "size_bytes": 2457600,
+    "pinned": false,
+    "categories": [
+      "file"
+    ],
+    "icon": "folder",
+    "preview": "files",
+    "batch_id": "demo-brand-batch",
+    "batch_total": 3
+  },
+  {
+    "id": 6,
+    "type": "text",
+    "title": "周五的几个小想法",
+    "description": "好的工具应该在你需要时出现，其他时间安静待着。",
+    "body": "好的工具应该在你需要时出现，其他时间安静待着。\n\n留白让信息有呼吸感。\n让高频操作更直接。\n给复杂功能一个清楚的边界。",
+    "timestamp": "2026-10-24T18:46:00+08:00",
+    "time": "18:46:00",
+    "source_peer": "此电脑",
+    "size_bytes": 184,
+    "pinned": true,
+    "categories": [
+      "text"
+    ],
+    "icon": "text",
+    "preview": "text",
+    "composite": true,
+    "display_kind": "文稿"
+  },
+  {
+    "id": 7,
+    "type": "text",
+    "title": "项目工作目录",
+    "description": "C:\\Projects\\TailSync",
+    "body": "C:\\Projects\\TailSync",
+    "timestamp": "2026-10-24T16:20:00+08:00",
+    "time": "16:20:00",
+    "source_peer": "此电脑",
+    "size_bytes": 20,
+    "pinned": true,
+    "categories": [
+      "path"
+    ],
+    "icon": "folder",
+    "preview": "path"
+  },
+  {
+    "id": 8,
+    "type": "file",
+    "title": "产品交互说明.pdf",
+    "description": "PDF 文档 · 1.2 MB",
+    "body": "文件预览占位\n\n原生 PDF 渲染将在后续接入。当前原型只演示文件信息与操作位置。",
+    "timestamp": "2026-10-24T14:08:00+08:00",
+    "time": "14:08:00",
+    "source_peer": "MacBook Pro",
+    "size_bytes": 1258291,
+    "pinned": false,
+    "categories": [
+      "file"
+    ],
+    "icon": "file",
+    "preview": "file"
+  }
+]

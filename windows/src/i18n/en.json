@@ -201,7 +201,7 @@
   "settings.limit": "History limit",
   "settings.limitDescription": "Keep up to {value} clipboard history entries",
   "settings.autoSaveNetworkImages": "Auto-save network images",
-  "settings.autoSaveNetworkImagesDescription": "Download public images in new local copies only (uses data and storage). Existing or received history stays manual. Turning off cancels pending auto-downloads, not saved images.",
+  "settings.autoSaveNetworkImagesDescription": "Download public images in new local copies (uses data and storage). Sync briefly waits for images; later downloads are available in history. Existing or received items stay manual. Turning off cancels pending downloads and keeps saved images.",
   "settings.historyLimit": "History limit",
   "settings.appearance": "Appearance",
   "settings.theme": "Theme",
@@ -404,7 +404,6 @@
   "history.peer.self": "This device",
   "history.composite.advanced": "Advanced",
   "history.composite.details": "Details",
-  "history.composite.moreActions": "More actions",
   "history.composite.diag.formats": "Formats",
   "history.composite.diag.representations": "Representations",
   "history.composite.diag.images": "Images",
@@ -445,5 +444,6 @@
   "history.captureNotShared": "This copy was saved to history, but could not be prepared for sync. Restore it from history, or copy it again from the source app to sync it.",
   "history.captureFailed": "This copy could not be captured completely. Available content is kept in history when possible.",
   "history.warningOverflow": "Additional sync warnings occurred. Review recent history and delivery results.",
-  "history.deliveryRejected": "Clipboard content could not be delivered to {peer}. The peer may not support its formats; review history and copy it again if needed."
+  "history.deliveryRejected": "Clipboard content could not be delivered to {peer}. The peer may not support its formats; review history and copy it again if needed.",
+  "common.close": "Close"
 }

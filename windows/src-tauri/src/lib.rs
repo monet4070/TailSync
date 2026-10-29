@@ -6,6 +6,8 @@ mod clipboard_composite;
 mod clipboard_file;
 mod commands;
 mod network;
+mod notifications;
+mod onboarding;
 mod preview_window;
 mod sync_adapter;
 mod tray;
@@ -206,23 +208,16 @@ fn start_parent_monitor(
 #[cfg(target_os = "windows")]
 fn start_background_notifications(
     app: tauri::AppHandle,
-    db: Arc<Mutex<db::HistoryDB>>,
     settings: Arc<Mutex<crypto::Settings>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tauri::async_runtime::JoinHandle<()> {
-    use tauri_winrt_notification::Toast;
-
     tauri::async_runtime::spawn(async move {
-        let app_id = app.config().identifier.clone();
-        let mut last_seen_id = db
-            .lock()
-            .await
-            .get_all_filtered(None, None, None, None, 1, 0)
-            .ok()
-            .and_then(|entries| entries.first().map(|entry| entry.id))
-            .unwrap_or_default();
-        let mut last_version = api::get_clipboard_version();
+        let mut notification_cursor = 0;
         let mut last_revision = api::get_runtime_revision();
+        if let Err(error) = notifications::register_identity(&app) {
+            log::warn!("Could not register native notification identity; system notifications disabled for this run: {error}");
+            return;
+        }
 
         loop {
             tokio::select! {
@@ -234,40 +229,48 @@ fn start_background_notifications(
                 }
                 _ = wait_for_shutdown(&mut shutdown) => return,
             }
-            let version = api::get_clipboard_version();
-            if version == last_version {
-                continue;
-            }
-            last_version = version;
-
-            let latest = db
-                .lock()
-                .await
-                .get_all_filtered(None, None, None, None, 1, 0)
-                .ok()
-                .and_then(|entries| entries.into_iter().next());
-            let Some(entry) = latest else {
-                continue;
+            let (events, earliest) = {
+                let buffer = api::notification_events_since(notification_cursor);
+                (buffer.0, buffer.1)
             };
-            if entry.id <= last_seen_id {
+            let missed = earliest.saturating_sub(notification_cursor + 1);
+            if missed > 0 {
+                log::warn!(
+                    "Native notification feed gap cursor={notification_cursor} earliest={earliest}"
+                );
+            }
+            let mut arrivals = std::collections::BTreeMap::new();
+            for event in events {
+                notification_cursor = event.id;
+                if let Some(arrival) = event.arrival {
+                    arrivals.insert(arrival.source_id.clone(), arrival);
+                }
+            }
+            let settings = settings.lock().await;
+            if !settings.notifications_enabled {
                 continue;
             }
-            last_seen_id = entry.id;
-            if entry.source_peer == "self"
-                || entry.batch_id.is_some()
-                || !settings.lock().await.notifications_enabled
-            {
-                continue;
+            let language = settings.language.clone();
+            drop(settings);
+            if missed > 0 {
+                notifications::show(
+                    &app,
+                    "notification-gap",
+                    &tailsync_runtime::notification_text::SystemNotification::NotificationGap {
+                        count: missed,
+                    }
+                    .body(&language),
+                    true,
+                );
             }
-
-            let body = match entry.entry_type.as_str() {
-                "image" => format!("Image received from {}", entry.source_peer),
-                "file" => format!("{} received from {}", entry.description, entry.source_peer),
-                _ => entry.description,
-            };
-            let notification = Toast::new(&app_id).title("TailSync").text2(&body);
-            if let Err(error) = notification.show() {
-                log::debug!("Could not show background notification: {error}");
+            for (source, arrival) in arrivals {
+                let body = tailsync_runtime::notification_text::SystemNotification::Arrival {
+                    kind: &arrival.kind,
+                    peer: &arrival.source_name,
+                    count: arrival.count,
+                }
+                .body(&language);
+                notifications::show(&app, &format!("arrival:{source}"), &body, true);
             }
         }
     })
@@ -276,9 +279,9 @@ fn start_background_notifications(
 fn start_storage_monitor(
     database: Arc<Mutex<db::HistoryDB>>,
     app: tauri::AppHandle,
+    settings: Arc<Mutex<crypto::Settings>>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tauri::async_runtime::JoinHandle<()> {
-    use tauri_plugin_notification::NotificationExt;
     tauri::async_runtime::spawn(async move {
         let mut warned = false;
         loop {
@@ -294,27 +297,36 @@ fn start_storage_monitor(
                 warned = false;
                 continue;
             }
+            let (notifications_enabled, language) = {
+                let settings = settings.lock().await;
+                (settings.notifications_enabled, settings.language.clone())
+            };
             let mut history = database.lock().await;
             history.mark_storage_unavailable();
-            match history.reopen_configured_storage() {
+            let reopen = history.reopen_configured_storage();
+            // Release the history lock before crossing the native notification boundary.
+            drop(history);
+            match reopen {
                 Ok(()) => {
                     warned = false;
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("TailSync")
-                        .body("TailSync storage is available again. File transfer resumed.")
-                        .show();
+                    if !notifications_enabled {
+                        continue;
+                    }
+                    crate::notifications::show(
+                        &app,
+                        "issue:storage",
+                        &tailsync_runtime::notification_text::SystemNotification::StorageRecovered
+                            .body(&language),
+                        true,
+                    );
                 }
                 Err(error) if !warned => {
                     warned = true;
                     log::warn!("TailSync storage unavailable: {error}");
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("TailSync")
-                        .body("TailSync storage is unavailable. File transfer is paused.")
-                        .show();
+                    if !notifications_enabled {
+                        continue;
+                    }
+                    crate::notifications::show(&app, "issue:storage", &tailsync_runtime::notification_text::SystemNotification::StorageUnavailable.body(&language), false);
                 }
                 Err(_) => {}
             }
@@ -624,6 +636,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let settings_for_server = settings.clone();
     let settings_for_iroh = settings.clone();
     let settings_for_discovery = settings.clone();
+    let settings_for_storage = settings.clone();
     let identity_for_server = identity.clone();
     let identity_for_iroh = identity.clone();
     let identity_for_discovery = identity.clone();
@@ -802,6 +815,37 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
+            #[cfg(all(target_os = "windows", not(test)))]
+            if onboarding::should_show_on_start()
+                && pending_remote_pairing_link
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_none()
+                && ![
+                    "TAILSYNC_OPEN_SETTINGS_ON_START",
+                    "TAILSYNC_OPEN_CONNECTIONS_ON_START",
+                    "TAILSYNC_OPEN_HISTORY_ON_START",
+                ]
+                .iter()
+                .any(|key| std::env::var_os(key).is_some())
+            {
+                let guide_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    // A deep link may arrive between setup and this scheduled task.
+                    let has_invite = guide_handle
+                        .state::<AppState>()
+                        .pending_remote_pairing_link
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_some();
+                    if has_invite || guide_handle.get_webview_window("connections").is_some() {
+                        return;
+                    }
+                    if let Err(error) = onboarding::open_onboarding_window(guide_handle).await {
+                        log::warn!("Could not open getting started: {error}");
+                    }
+                });
+            }
             let pool_for_health = pool_for_setup.clone();
 
             // Start clipboard monitor (file → text → image)
@@ -818,7 +862,6 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "windows")]
             let notification_task = start_background_notifications(
                 handle.clone(),
-                db_for_setup.clone(),
                 settings_for_notifications,
                 shutdown_for_setup.clone(),
             );
@@ -882,6 +925,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 start_storage_monitor(
                     db_for_storage_monitor,
                     handle.clone(),
+                    settings_for_storage,
                     shutdown_for_setup.clone(),
                 ),
             );

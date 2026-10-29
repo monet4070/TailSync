@@ -65,9 +65,8 @@ struct SettingsView: View {
     @State var saveCoordinator = SettingsSaveCoordinator()
     @State var storageStatus: ApiClient.StorageStatus?
     @State var storageBusy = false
-    @State var qqImageAccessBusy = false
-    @State var qqImageAccessAuthorized = false
-    @State var qqImageAccessMessageKey: String?
+    @StateObject var thirdPartyImageAccess = ThirdPartyImageAccessSettings()
+    @ObservedObject private var tour = GuidedTourController.shared
     @State var oldStorage: ApiClient.StorageMigrationResult?
     // True when the local service cannot be reached, so the last known storage
     // reading must not keep presenting itself as a healthy current state.
@@ -133,15 +132,32 @@ struct SettingsView: View {
             } else {
                 ScrollView {
                     VStack(spacing: 16) {
-                        generalSection
-                        updatesSection
-                        historySection
-                        storageSection
+                        if !tour.suppressed {
+                            Button { AppDelegate.showOnboarding() } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(OnboardingGuide.shared.label("title", language: loc.lang)).font(.headline)
+                                    Text(OnboardingGuide.shared.label("reopen", language: loc.lang))
+                                        .font(.caption).foregroundColor(palette.secondaryColor)
+                                }
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                            }.padding(16)
+                                .background(palette.surfaceColor)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.borderColor))
+                            }.buttonStyle(.plain).padding(.horizontal, 16)
+                        }
+                        generalSection.tourTarget("general")
+                        updatesSection.tourTarget("updates")
+                        historySection.tourTarget("history-settings")
+                        storageSection.tourTarget("storage")
                         networkSection
-                        appearanceSection
+                        appearanceSection.tourTarget("appearance")
                     }
                     .padding(.vertical, 14)
                 }
+                .tourScrollable()
                 .overlay(alignment: .bottom) {
                     actionToast
                 }
@@ -197,6 +213,7 @@ struct SettingsView: View {
                 cancelShortcutRecording(recordingShortcut)
             }
         }
+        .guidedTour(window: "settings")
         .tailSyncThemed()
     }
 

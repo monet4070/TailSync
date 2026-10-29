@@ -33,7 +33,7 @@ export function HistoryMainContent({
 }: HistoryMainContentProps) {
   if (loading && entries.length === 0) {
     return (
-      <div className="skeleton-list">
+      <div data-tour="history-items" className="skeleton-list">
         {[0, 1, 2, 3].map((index) => (
           <div className="skeleton-item" key={index}>
             <div className="skeleton-icon" />
@@ -50,7 +50,7 @@ export function HistoryMainContent({
 
   if (entries.length === 0) {
     return (
-      <div className="empty-state">
+      <div data-tour="history-items" className="empty-state">
         {hasActiveFilters ? (
           <>
             <div className="empty-state-illustration">

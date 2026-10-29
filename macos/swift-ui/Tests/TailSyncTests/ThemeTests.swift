@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import TailSync
 
@@ -45,6 +46,23 @@ final class ThemeTests: XCTestCase {
         XCTAssertTrue(image.isTemplate)
         XCTAssertEqual(copy.size, NSSize(width: 18, height: 18))
         XCTAssertFalse(copy.isTemplate)
+    }
+
+    func testUnresolvedStartupThemeKeepsAccentLabelsDistinctFromTheirBackground() {
+        for theme in TailSyncColorTheme.allCases {
+            for scheme in [ColorScheme.light, .dark] {
+                let palette = theme.palette(for: scheme)
+                XCTAssertEqual(palette.accentSoft, palette.accent)
+                XCTAssertEqual(palette.accentSoftOpacity, 0.12, accuracy: 0.001)
+                XCTAssertLessThan(palette.accentSoftOpacity, palette.accentOpacity)
+            }
+        }
+        let explicit = TailSyncThemeDefinition.resolvedV2(
+            id: "custom:solid-soft",
+            light: ["colors": ["accent": ["soft": "#f0e0d0"]]],
+            dark: [:]
+        )
+        XCTAssertEqual(explicit.lightPalette.accentSoftOpacity, 1)
     }
 
     func testThemeCardPreviewResolvesTheThemeBeingPresented() {

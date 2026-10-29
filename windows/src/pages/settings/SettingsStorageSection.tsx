@@ -16,7 +16,7 @@ export function SettingsStorageSection({
   handleDeleteOldStorage,
 }: SettingsStorageSectionProps) {
   return (
-    <section className="setting-group">
+    <section data-tour="storage" className="setting-group">
       <div className="setting-group-header">
         <h3>{t("settings.storage")}</h3>
         <p>{t("settings.storageDescription")}</p>

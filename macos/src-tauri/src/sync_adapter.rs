@@ -53,6 +53,10 @@ impl TauriSyncPlatform {
 }
 
 impl SyncPlatform for TauriSyncPlatform {
+    fn received_content(&self, arrival: tailsync_core::notifications::ClipboardArrival) {
+        api::push_arrival_notification(arrival);
+    }
+
     fn prepare_restore_plan(
         &self,
         plan: tailsync_core::composite::restore::RestorePlan,
@@ -298,7 +302,6 @@ impl SyncPlatform for TauriSyncPlatform {
             clipboard_paths: staged_clipboard_paths,
         } = commit;
         let db = self.db.clone();
-        let runtime = self.runtime.clone();
         let settings = self.settings.clone();
         let activation_version = api::get_clipboard_version();
         Box::pin(async move {
@@ -306,7 +309,10 @@ impl SyncPlatform for TauriSyncPlatform {
                 batch_id: batch_id.map(TransferId::as_hex),
                 device: device.clone(),
             };
-            let notifications_enabled = settings.lock().await.notifications_enabled;
+            let (notifications_enabled, language) = {
+                let settings = settings.lock().await;
+                (settings.notifications_enabled, settings.language.clone())
+            };
             let history_files = files
                 .iter()
                 .map(|file| db::HistoryFileInput {
@@ -321,6 +327,8 @@ impl SyncPlatform for TauriSyncPlatform {
                 .map(|file| file.name.clone())
                 .collect::<Vec<_>>();
             let history_batch_id = batch_id.unwrap_or_else(TransferId::random).as_hex();
+            let notification_batch_id = history_batch_id.clone();
+            let notification_source_id = source_device_id.clone();
             let db_source_peer = device.clone();
             let stored_paths = match tokio::task::spawn_blocking(move || {
                 let mut database = db.blocking_lock();
@@ -363,6 +371,17 @@ impl SyncPlatform for TauriSyncPlatform {
             };
 
             let _history_version_bump = HistoryVersionBump;
+            if batch_complete {
+                api::push_arrival_notification(tailsync_core::notifications::ClipboardArrival {
+                    source_id: notification_source_id,
+                    source_name: device.clone(),
+                    event_id: format!("files:{notification_batch_id}"),
+                    kind: "file".into(),
+                    count: batch_total,
+                    entry_id: None,
+                });
+            }
+
             if activate_clipboard && batch_complete {
                 let clipboard_paths = if let Some(paths) = staged_clipboard_paths {
                     if paths.len() != names.len() {
@@ -379,13 +398,7 @@ impl SyncPlatform for TauriSyncPlatform {
                                     "Could not prepare received batch for clipboard: {error}"
                                 );
                                 if notifications_enabled {
-                                    notify(
-                                        &runtime,
-                                        &format!(
-                                            "Could not place received files on the clipboard: {error}"
-                                        ),
-                                        true,
-                                    );
+                                    api::push_system_notification("error", tailsync_runtime::notification_text::SystemNotification::ClipboardUpdateFailed, &language);
                                 }
                                 return Ok(());
                             }
@@ -398,18 +411,10 @@ impl SyncPlatform for TauriSyncPlatform {
                 } else if let Err(error) = clipboard_file::write_clipboard_files(&clipboard_paths) {
                     log::error!("Could not restore file batch clipboard: {error}");
                     if notifications_enabled {
-                        notify(
-                            &runtime,
-                            &format!("Could not update the clipboard: {error}"),
-                            true,
-                        );
+                        api::push_system_notification("error", tailsync_runtime::notification_text::SystemNotification::ClipboardUpdateFailed, &language);
                     }
                     return Ok(());
                 }
-            }
-            if batch_complete && notifications_enabled {
-                let body = format!("Received {} file(s)", names.len());
-                notify(&runtime, &body, false);
             }
             Ok(())
         })
@@ -417,31 +422,17 @@ impl SyncPlatform for TauriSyncPlatform {
 
     fn file_batch_failed(&self, _batch_id: Option<TransferId>, message: &str) {
         log::error!("File batch failed: {message}");
-        let runtime = self.runtime.clone();
         let settings = self.settings.clone();
-        let message = message.to_string();
         tauri::async_runtime::spawn(async move {
-            if settings.lock().await.notifications_enabled {
-                notify(&runtime, &message, true);
+            let settings = settings.lock().await;
+            if settings.notifications_enabled {
+                api::push_system_notification(
+                    "error",
+                    tailsync_runtime::notification_text::SystemNotification::FileTransferFailed,
+                    &settings.language,
+                );
             }
         });
-    }
-}
-
-fn notify(runtime: &ClipboardRuntime, body: &str, is_error: bool) {
-    if let ClipboardRuntime::Tauri(app) = runtime {
-        use tauri_plugin_notification::NotificationExt;
-        let _ = app
-            .notification()
-            .builder()
-            .title("TailSync")
-            .body(body)
-            .show();
-    } else if is_error {
-        crate::api::push_runtime_notification("error", body);
-        log::warn!("TailSync notification: {body}");
-    } else {
-        log::info!("TailSync notification: {body}");
     }
 }
 

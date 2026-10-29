@@ -1,20 +1,29 @@
 import AppKit
+import UserNotifications
 import XCTest
 @testable import TailSync
 
 @MainActor
 final class AppBehaviorTests: XCTestCase {
-    func testLocalCopiesAndUnknownHistoricalSourcesNeverNotifyArrival() {
-        for source in ["self", "", " \n\t", " self "] {
-            XCTAssertFalse(RuntimeNotificationPolicy.shouldNotifyArrival(sourcePeer: source),
-                "Local or unidentified history must not announce a remote arrival")
+    func testArrivalNotificationsContainOnlyLocalizedTypeAndSourceAndArePassive() {
+        let originalLanguage = Loc.shared.lang
+        defer { Loc.shared.lang = originalLanguage }
+        for (language, expected) in [("zh-CN", "来自 MacBook 的文本"), ("en", "Text from MacBook")] {
+            Loc.shared.lang = language
+            let content = RuntimeNotificationPolicy.arrivalContent(type: "text", sourcePeer: "MacBook")
+            XCTAssertEqual(content.body, expected)
+            XCTAssertEqual(content.interruptionLevel, .passive)
+            XCTAssertNil(content.sound)
         }
-    }
-
-    func testRealRemoteClipboardArrivalsStillNotify() {
-        for source in ["Windows laptop", "另一台 Mac", "local"] {
-            XCTAssertTrue(RuntimeNotificationPolicy.shouldNotifyArrival(sourcePeer: source))
-        }
+        XCTAssertEqual(RuntimeNotificationPolicy.runtimeContent(level: "error").interruptionLevel, .active)
+        XCTAssertEqual(RuntimeNotificationPolicy.runtimeContent(level: "info").interruptionLevel, .passive)
+        Loc.shared.lang = "zh-CN"
+        XCTAssertEqual(RuntimeNotificationPolicy.arrivalContent(type: "text", sourcePeer: "MacBook", count: 3).body,
+                       "已收到来自 MacBook 的 3 项内容")
+        XCTAssertEqual(RuntimeNotificationPolicy.runtimeContent(level: "error", code: "clipboardUpdateFailed").body,
+                       "内容已保存，但未能更新剪贴板。")
+        XCTAssertEqual(RuntimeNotificationPolicy.runtimeContent(level: "error", code: "unknown-code").body,
+                       "操作未能完成，请打开 TailSync 查看运行状态。")
     }
 
     func testNotificationCursorRecoveryDetectsGapsAndRestarts() {
@@ -128,22 +137,32 @@ final class AppBehaviorTests: XCTestCase {
         XCTAssertLessThanOrEqual(DaemonShutdownPolicy.pollInterval, 0.05)
     }
 
-    func testNotificationPollerOnlyRefreshesHistoryForHistoryChanges() {
-        XCTAssertTrue(RuntimeNotificationPolicy.shouldRefreshHistory(
-            previousHistoryVersion: nil,
-            currentHistoryVersion: 0,
-            isFirstPoll: true
-        ))
-        XCTAssertFalse(RuntimeNotificationPolicy.shouldRefreshHistory(
-            previousHistoryVersion: 12,
-            currentHistoryVersion: 12,
-            isFirstPoll: false
-        ))
-        XCTAssertTrue(RuntimeNotificationPolicy.shouldRefreshHistory(
-            previousHistoryVersion: 12,
-            currentHistoryVersion: 13,
-            isFirstPoll: false
-        ))
+    func testKeychainAuthorizationWaitAndDeniedStartupDoNotTriggerRelaunches() {
+        var recovery = DaemonRecoveryPolicy()
+        recovery.didLaunch()
+        // Several minutes of watchdog ticks must leave a pending system dialog
+        // alone. A cancelled startup has the same absent API response.
+        for _ in 0..<100 {
+            XCTAssertFalse(recovery.observePing(alive: false))
+        }
+        XCTAssertFalse(recovery.hasResponded)
+    }
+
+    func testDaemonRecoveryStartsAfterReadinessAndResetsOnEveryLaunch() {
+        var recovery = DaemonRecoveryPolicy()
+        XCTAssertFalse(recovery.observePing(alive: true))
+        XCTAssertTrue(recovery.hasResponded)
+        XCTAssertFalse(recovery.observePing(alive: false))
+        // A successful ping breaks a sequence of failures.
+        XCTAssertFalse(recovery.observePing(alive: true))
+        XCTAssertFalse(recovery.observePing(alive: false))
+        XCTAssertTrue(recovery.observePing(alive: false))
+
+        recovery.didLaunch()
+        XCTAssertFalse(recovery.hasResponded)
+        for _ in 0..<100 {
+            XCTAssertFalse(recovery.observePing(alive: false))
+        }
     }
 
     func testTerminationPreventsAllDaemonActivity() {

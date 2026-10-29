@@ -106,6 +106,7 @@ struct HistoryView: View {
     }
 
     @ObservedObject private var loc = Loc.shared
+    @ObservedObject private var tour = GuidedTourController.shared
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var entries: [HistoryEntry] = []
@@ -164,6 +165,8 @@ struct HistoryView: View {
     @State private var restoreFeedbackTask: Task<Void, Never>? = nil
     @State private var expandedBatchIds: Set<String> = []
     @State private var favoriteMutations: [String: Bool] = [:]
+    @State private var demoEntries: [HistoryEntry] = []
+    @State private var demoSeeded = false
 
     private let pageSize = 30
     private let collapsedBatchFileLimit = 2
@@ -255,6 +258,7 @@ struct HistoryView: View {
                 onQueryChanged: scheduleSearch
             )
             .padding(.horizontal, 12).padding(.top, 8)
+            .tourTarget("history-search")
 
             if unresolvedMigrationCount > 0 {
                 HStack(spacing: 7) {
@@ -304,6 +308,7 @@ struct HistoryView: View {
             }
 
             // List
+            VStack(spacing: 0) {
             if isLoading && entries.isEmpty {
                 Spacer()
                 ProgressView().controlSize(.small)
@@ -478,6 +483,8 @@ struct HistoryView: View {
                 }
             }
 
+            }.tourTarget("history-items")
+
             // Pagination + clear
             HStack(spacing: 12) {
                 Button {
@@ -508,8 +515,18 @@ struct HistoryView: View {
                 Button(Loc.t("history.clearAll"), role: .destructive) { clearAll() }
             }
         }
+        .guidedTour(window: isFavoritesCollection ? "favorites" : "history")
         .background(HistoryKeyboardListResponder(session: keyboard).frame(width: 0, height: 0))
         .onChange(of: keyboard.selectedID) { _ in followPreviewSelection() }
+        .onChange(of: tour.active) { active in
+            if !active {
+                demoSeeded = false
+                demoEntries = []
+                page = 0
+                focusedEntryId = nil
+                load(targetPage: 0)
+            }
+        }
         .onAppear {
             keyboard.onCommand = handleKeyboard
             HistoryPreviewWindowController.shared.registerKeyboardHandlers(
@@ -687,6 +704,24 @@ struct HistoryView: View {
         loadGeneration += 1
         let generation = loadGeneration
         let requestedQuery = historyQuery(page: requestedPage)
+        if GuidedTourController.shared.active {
+            if !demoSeeded {
+                demoEntries = OnboardingDemo.entries(query: HistoryQuery(keyword: nil, category: nil, startTime: nil, endTime: nil, limit: pageSize, offset: 0, collection: collection))
+                demoSeeded = true
+            }
+            let filtered = demoEntries.filter { entry in
+                (requestedQuery.category == nil || requestedQuery.category == "all" || entry.category == requestedQuery.category)
+                    && (requestedQuery.keyword?.isEmpty != false || entry.description.localizedCaseInsensitiveContains(requestedQuery.keyword!))
+            }
+            entries = Array(filtered.dropFirst(requestedPage * pageSize).prefix(pageSize))
+            hasNext = filtered.count > (requestedPage + 1) * pageSize
+            page = requestedPage
+            loadedQuery = requestedQuery
+            isLoading = false
+            pruneSelection()
+            followPreviewSelection()
+            return
+        }
         isLoading = true
         errorMsg = nil
         let task = Task { @MainActor in
@@ -857,6 +892,10 @@ struct HistoryView: View {
     }
 
     private func restoreBatch(_ batchId: String) {
+        if GuidedTourController.shared.active {
+            showActionMessage(OnboardingGuide.shared.label("demoRestore", language: loc.lang))
+            return
+        }
         performRestore(restoredEntryID: nil, dismiss: false) { _ in
             try await dependencies.restoreBatch(batchId)
             return nil
@@ -1047,6 +1086,11 @@ struct HistoryView: View {
     }
 
     private func restore(_ id: Int64, dismiss: Bool = false) {
+        if GuidedTourController.shared.active && OnboardingDemo.isDemoEntry(id) {
+            restoredId = id
+            showActionMessage(OnboardingGuide.shared.label("demoRestore", language: loc.lang))
+            return
+        }
         let identity = entries.first(where: { $0.id == id })?.composite?.identity
         performRestore(restoredEntryID: id, dismiss: dismiss) { resolvedID in
             if let reported = dependencies.restoreReported {
@@ -1240,6 +1284,15 @@ struct HistoryView: View {
             showActionMessage(Loc.t("history.favoriteProtected"))
             return
         }
+        if GuidedTourController.shared.active && OnboardingDemo.isDemoEntry(entry.id) {
+            let removed = Set(entries.filter { $0.id == entry.id || ($0.batch_id != nil && $0.batch_id == entry.batch_id) }.map(\.id))
+            demoEntries.removeAll { removed.contains($0.id) }
+            entries.removeAll { removed.contains($0.id) }
+            HistoryPreviewWindowController.shared.closeIfShowing(entryId: entry.id)
+            pruneSelection()
+            showActionMessage(OnboardingGuide.shared.label("demoDelete", language: loc.lang))
+            return
+        }
         isDeleting = true
         let generation = interactionGeneration
         let ids = displayedEntries.map(\.id)
@@ -1272,6 +1325,14 @@ struct HistoryView: View {
     }
 
     private func clearAll() {
+        if GuidedTourController.shared.active {
+            demoEntries = []
+            entries = []
+            focusedEntryId = nil
+            HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+            showActionMessage(OnboardingGuide.shared.label("demoClear", language: loc.lang))
+            return
+        }
         Task {
             let ok = await ApiClient.shared.clearAllHistory()
             if ok {
@@ -1290,6 +1351,18 @@ struct HistoryView: View {
         guard !isDeleting else { return }
         let mutationKey = logicalItemKey(entry)
         let favorite = !entry.pinned
+        if GuidedTourController.shared.active && OnboardingDemo.isDemoEntry(entry.id) {
+            withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                for index in entries.indices where logicalItemKey(entries[index]) == mutationKey {
+                    entries[index].pinned = favorite
+                }
+                for index in demoEntries.indices where logicalItemKey(demoEntries[index]) == mutationKey {
+                    demoEntries[index].pinned = favorite
+                }
+            }
+            showActionMessage(OnboardingGuide.shared.label(favorite ? "demoFavorite" : "demoUnfavorite", language: loc.lang))
+            return
+        }
         guard favoriteMutations[mutationKey] == nil else { return }
         favoriteMutations[mutationKey] = favorite
         withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.18)) {

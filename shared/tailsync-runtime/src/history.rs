@@ -300,6 +300,32 @@ impl HistoryRestorePayload {
             && !self.native_only
             && matches!(
                 selected,
+                PreparedRestore::Native(_) | PreparedRestore::Portable(_)
+            )
+        {
+            let bundle = match decoded {
+                Some(bundle) => std::borrow::Cow::Borrowed(bundle),
+                None => std::borrow::Cow::Owned(
+                    tailsync_core::composite::PortableBundle::decode(
+                        self.data
+                            .as_deref()
+                            .ok_or("Composite data is unavailable")?,
+                    )
+                    .map_err(|error| error.to_string())?,
+                ),
+            };
+            if tailsync_core::composite::restore::prefers_document_compatibility(&bundle)
+                .map_err(|error| error.to_string())?
+            {
+                return RestorePlan::portable_default(&bundle, input, target)
+                    .map(|plan| PreparedHistoryRestore::Ready(Box::new(plan)))
+                    .map_err(|error| error.to_string());
+            }
+        }
+        if format.is_none()
+            && !self.native_only
+            && matches!(
+                selected,
                 PreparedRestore::Unsupported {
                     code: "resources_incomplete"
                 }
@@ -316,7 +342,7 @@ impl HistoryRestorePayload {
                     .map_err(|error| error.to_string())?,
                 ),
             };
-            if let Ok(plan) = RestorePlan::available_content(&bundle, input.clone(), target) {
+            if let Ok(plan) = RestorePlan::portable_default(&bundle, input.clone(), target) {
                 return Ok(PreparedHistoryRestore::Ready(Box::new(plan)));
             }
         }

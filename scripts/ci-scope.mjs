@@ -170,7 +170,7 @@ function classify(file, jobs, categories) {
     return true;
   }
 
-  if (file.startsWith("shared/schema/")) {
+  if (file.startsWith("shared/schema/") || file.startsWith("shared/onboarding/")) {
     enable(
       jobs,
       "frontend_windows",

@@ -240,15 +240,20 @@ fn partial(reason: &'static str, detail: impl Into<String>) -> PartialReason {
     }
 }
 
-fn select_representation(bundle: &PortableBundle) -> Option<usize> {
-    [Mime::Html, Mime::Rtf, Mime::Text, Mime::Png]
+fn select_representation(bundle: &PortableBundle) -> Result<Option<usize>, AnalysisError> {
+    if let Some(png) = super::available_restore::image_only_png_alternative(bundle)
+        .map_err(|_| AnalysisError::Invalid)?
+    {
+        return Ok(Some(png));
+    }
+    Ok([Mime::Html, Mime::Rtf, Mime::Text, Mime::Png]
         .into_iter()
         .find_map(|mime| {
             bundle
                 .representations
                 .iter()
                 .position(|representation| representation.mime == mime)
-        })
+        }))
 }
 
 fn source_for(provenance: &[RepresentationSource], index: usize) -> RepresentationSource {
@@ -289,7 +294,7 @@ pub fn analyze(
     let selected = if request.native_only {
         None
     } else {
-        select_representation(&request.bundle)
+        select_representation(&request.bundle)?
     };
     let selected_is_rtf = selected
         .map(|index| request.bundle.representations[index].mime == Mime::Rtf)

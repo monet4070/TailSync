@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="TailSync.Native.Core/TailSync.Native.Core.csproj" />
+  <Project Path="TailSync.Native/TailSync.Native.csproj" />
+  <Project Path="TailSync.Native.Checks/TailSync.Native.Checks.csproj" />
+</Solution>

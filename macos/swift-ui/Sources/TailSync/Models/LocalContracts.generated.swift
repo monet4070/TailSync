@@ -100,6 +100,26 @@ struct ContractArchiveResourceFailure: Codable, Sendable {
   }
 }
 
+struct ContractClipboardArrival: Codable, Sendable {
+  let `count`: UInt64
+  let `entry_id`: Int64?
+  let `event_id`: String
+  let `kind`: String
+  let `source_id`: String
+  let `source_name`: String
+  private enum CodingKeys: String, CodingKey { case `count`, `entry_id`, `event_id`, `kind`, `source_id`, `source_name` }
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.`count` = try container.decode(UInt64.self, forKey: .`count`)
+    guard container.contains(.`entry_id`) else { throw DecodingError.keyNotFound(CodingKeys.`entry_id`, .init(codingPath: decoder.codingPath, debugDescription: "Required nullable field is missing")) }
+    self.`entry_id` = try container.decodeIfPresent(Int64.self, forKey: .`entry_id`)
+    self.`event_id` = try container.decode(String.self, forKey: .`event_id`)
+    self.`kind` = try container.decode(String.self, forKey: .`kind`)
+    self.`source_id` = try container.decode(String.self, forKey: .`source_id`)
+    self.`source_name` = try container.decode(String.self, forKey: .`source_name`)
+  }
+}
+
 struct ContractCompositeInfo: Codable, Sendable {
   let `completeness`: String
   let `formats`: [String]
@@ -975,12 +995,16 @@ struct ContractPreviewFrameMetadata: Codable, Sendable {
 }
 
 struct ContractRuntimeNotification: Codable, Sendable {
+  let `arrival`: ContractClipboardArrival?
+  let `code`: String?
   let `id`: UInt64
   let `level`: String
   let `message`: String
-  private enum CodingKeys: String, CodingKey { case `id`, `level`, `message` }
+  private enum CodingKeys: String, CodingKey { case `arrival`, `code`, `id`, `level`, `message` }
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.`arrival` = try container.decodeIfPresent(ContractClipboardArrival.self, forKey: .`arrival`)
+    self.`code` = try container.decodeIfPresent(String.self, forKey: .`code`)
     self.`id` = try container.decode(UInt64.self, forKey: .`id`)
     self.`level` = try container.decode(String.self, forKey: .`level`)
     self.`message` = try container.decode(String.self, forKey: .`message`)

@@ -29,47 +29,45 @@ extension SettingsView {
                     .onChange(of: settings.auto_save_network_images) { value in save(.autoSaveNetworkImages(value)) }
             }
             themedDivider.padding(.leading, 16)
-            settingRow {
-                settingTitle("settings.qqImageAccess", descriptionKey: "settings.qqImageAccessDescription")
-                Spacer()
-                Button(Loc.t(qqImageAccessAuthorized ? "settings.qqImageAccessChange" : "settings.qqImageAccessChoose")) {
-                    chooseQQImageCache()
+            DisclosureGroup {
+                settingRow {
+                    settingTitle("settings.qqImageAccess", descriptionKey: "settings.qqImageAccessDescription")
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { thirdPartyImageAccess.isEnabled },
+                        set: { value in
+                            Task { await thirdPartyImageAccess.setEnabled(value, language: loc.lang) }
+                        }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .disabled(thirdPartyImageAccess.isBusy)
+                    .accessibilityLabel(Loc.t("settings.qqImageAccess"))
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(qqImageAccessBusy)
-                .accessibilityLabel(Loc.t("settings.qqImageAccessChoose"))
+                if let key = thirdPartyImageAccess.messageKey {
+                    Text(Loc.t(key))
+                        .font(.caption)
+                        .foregroundColor(palette.secondaryColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 10)
+                }
+                themedDivider.padding(.leading, 16)
+                settingRow {
+                    settingTitle("settings.wechatImageAccess", descriptionKey: "settings.wechatImageAccessDescription")
+                    Spacer()
+                    Text(Loc.t("settings.imageAccessAutomatic"))
+                        .font(.caption)
+                        .foregroundColor(palette.secondaryColor)
+                }
+            } label: {
+                settingTitle("settings.thirdPartyImages", descriptionKey: "settings.thirdPartyImagesDescription")
             }
-            if let key = qqImageAccessMessageKey {
-                Text(Loc.t(key))
-                    .font(.caption)
-                    .foregroundColor(palette.secondaryColor)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-            }
+            .disclosureGroupStyle(ThirdPartyImagesDisclosureStyle())
         }
         .task {
-            qqImageAccessAuthorized = await QQImageCacheAccessController.status() == .authorized
-            if qqImageAccessAuthorized { qqImageAccessMessageKey = "settings.qqImageAccessReady" }
-        }
-    }
-
-    func chooseQQImageCache() {
-        qqImageAccessBusy = true
-        Task { @MainActor in
-            defer { qqImageAccessBusy = false }
-            switch await QQImageCacheAccessController.chooseDirectory(language: loc.lang) {
-            case .granted:
-                qqImageAccessAuthorized = true
-                qqImageAccessMessageKey = "settings.qqImageAccessReady"
-            case .cancelled:
-                break
-            case .invalidDirectory:
-                qqImageAccessMessageKey = "settings.qqImageAccessInvalid"
-            default:
-                qqImageAccessMessageKey = "settings.qqImageAccessFailed"
-            }
+            await thirdPartyImageAccess.load()
         }
     }
 
@@ -196,9 +194,18 @@ extension SettingsView {
                 let notice = UNMutableNotificationContent()
                 notice.title = "TailSync"
                 notice.body = Loc.t("settings.storageChanged")
-                try? await UNUserNotificationCenter.current().add(
-                    UNNotificationRequest(identifier: UUID().uuidString, content: notice, trigger: nil)
-                )
+                notice.sound = nil
+                notice.interruptionLevel = .passive
+                if loc.notificationsEnabled {
+                    do {
+                        try await UNUserNotificationCenter.current().add(
+                            UNNotificationRequest(identifier: "tailsync-storage-changed", content: notice, trigger: nil)
+                        )
+                    } catch {
+                        // Storage has already moved; notification delivery failure must not report a failed migration.
+                        print("[TailSync] Storage notification submission failed: \(error.localizedDescription)")
+                    }
+                }
             } catch {
                 storageErrorMessage = error.localizedDescription
             }
@@ -253,4 +260,40 @@ extension SettingsView {
         }
     }
 
+}
+
+private struct ThirdPartyImagesDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                configuration.isExpanded.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        .accessibilityHidden(true)
+                    configuration.label
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityRepresentation {
+                DisclosureGroup(isExpanded: configuration.$isExpanded) {
+                    EmptyView()
+                } label: {
+                    configuration.label
+                }
+                .disclosureGroupStyle(.automatic)
+            }
+            if configuration.isExpanded {
+                configuration.content
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
+        }
+    }
 }

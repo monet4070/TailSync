@@ -60,17 +60,20 @@ pub async fn change_storage_location(
     state: State<'_, AppState>,
     parent: String,
 ) -> Result<db::StorageMigrationResult, CommandError> {
-    use tauri_plugin_notification::NotificationExt;
     let parent = std::path::PathBuf::from(parent);
-    let notifications_enabled = state.settings.lock().await.notifications_enabled;
+    let (notifications_enabled, language) = {
+        let settings = state.settings.lock().await;
+        (settings.notifications_enabled, settings.language.clone())
+    };
     let show = || {
         if notifications_enabled {
-            let _ = app
-                .notification()
-                .builder()
-                .title("TailSync")
-                .body("File transfers finished. Moving TailSync data now.")
-                .show();
+            crate::notifications::show(
+                &app,
+                "storage:moving",
+                &tailsync_runtime::notification_text::SystemNotification::StorageMoving
+                    .body(&language),
+                true,
+            );
         }
     };
     let notify: Option<&(dyn Fn() + Send + Sync)> = Some(&show);

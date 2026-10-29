@@ -75,7 +75,7 @@ fn runtime_notification_buffer_is_bounded_and_cursored() {
         buffer.push("error", format!("failure {index}"));
     }
 
-    assert_eq!(buffer.entries.len(), MAX_RUNTIME_NOTIFICATIONS);
+    assert_eq!(buffer.since(0).len(), MAX_RUNTIME_NOTIFICATIONS);
     assert!(buffer
         .since(first)
         .iter()

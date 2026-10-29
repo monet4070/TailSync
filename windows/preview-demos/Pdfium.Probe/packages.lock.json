@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "bblanchon.PDFium.macOS": {
+        "type": "Direct",
+        "requested": "[158.0.8111, )",
+        "resolved": "158.0.8111",
+        "contentHash": "6GL1+vYRVCc3Q1LsmTLENlv/ZjRbLt3LZHG1nBnSxi9QDKfKWDViBX5VJt/wFlh2qpweEiLc9U6bFTlLo67y0A=="
+      },
+      "core": {
+        "type": "Project"
+      }
+    }
+  }
+}

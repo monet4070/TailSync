@@ -175,8 +175,8 @@ const TEXT_VERSION_MARKERS = [
   },
   {
     relative: 'docs/USER_GUIDE.zh-CN.md',
-    pattern: /> 适用版本：TailSync (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)，线协议 v4，数据库 schema v11/,
-    build: (version) => `> 适用版本：TailSync ${version}，线协议 v4，数据库 schema v11`,
+    pattern: /> 适用版本：TailSync (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/,
+    build: (version) => `> 适用版本：TailSync ${version}`,
   },
   {
     relative: 'docs/THEMING.md',

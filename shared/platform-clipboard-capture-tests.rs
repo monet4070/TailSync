@@ -1,12 +1,13 @@
 // Shared composite-capture monitor tests (F3-B).
 //
-// These three behaviour tests exercise the production capture transaction
+// These shared behaviour tests exercise the production capture transaction
 // (`process_composite_capture`) that the real clipboard monitor calls. They are
 // byte-identical between macOS and Windows, so they live in this canonical
 // include pasted inside each wrapper's `composite_capture::tests` module, next
 // to the platform fixtures, `Shape`/`OriginMode` matrix, real CNA1/CNS1 producer,
 // isolated SQLite store, retry/ack/warning ledger and the real queue sender they
 // use. Each platform still drives its own legal producer and storage path.
+// CNA1 archive-provider regressions live in the macOS fixture's private include.
 
 #[tokio::test]
 async fn missing_formats_retries_are_bounded_then_saved_incomplete() {
@@ -405,20 +406,31 @@ struct WorkerProbe {
     fetches: Arc<std::sync::Mutex<Vec<String>>>,
     commits: Arc<std::sync::Mutex<Vec<i64>>>,
     committed: Arc<tokio::sync::Notify>,
+    capture_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 struct SuccessfulTransport {
     fetches: Arc<std::sync::Mutex<Vec<String>>>,
+    capture_attempts: Arc<std::sync::atomic::AtomicUsize>,
+    capture_succeeds: bool,
 }
 
 impl ResourceTransport for SuccessfulTransport {
     fn fetch_once<'a>(
         &'a self,
         url: &'a ArchiveUrl,
-        _limits: &'a FetchLimits,
+        limits: &'a FetchLimits,
         _cancellation: &'a Cancellation,
     ) -> FetchFuture<'a> {
         Box::pin(async move {
+            // Existing background-worker scenarios model a resource that fails
+            // the short first-publish attempt but is available on a later save.
+            if limits.request_timeout < std::time::Duration::from_secs(1) {
+                self.capture_attempts.fetch_add(1, Ordering::SeqCst);
+                if !self.capture_succeeds {
+                    return Err(ArchiveError::Transport);
+                }
+            }
             self.fetches.lock().unwrap().push(url.as_str().to_owned());
             Ok(tailsync_core::composite::resource_archive::FetchResponse {
                 status: 200,
@@ -432,10 +444,15 @@ impl ResourceTransport for SuccessfulTransport {
 
 impl WorkerProbe {
     fn install(fx: &mut Fixture) -> Self {
+        Self::install_with_capture(fx, false)
+    }
+
+    fn install_with_capture(fx: &mut Fixture, capture_succeeds: bool) -> Self {
         let probe = Self {
             fetches: Arc::default(),
             commits: Arc::default(),
             committed: Arc::default(),
+            capture_attempts: Arc::default(),
         };
         let commits = probe.commits.clone();
         let committed = probe.committed.clone();
@@ -444,6 +461,8 @@ impl WorkerProbe {
             true,
             Arc::new(SuccessfulTransport {
                 fetches: probe.fetches.clone(),
+                capture_attempts: probe.capture_attempts.clone(),
+                capture_succeeds,
             }),
             Arc::new(move |commit| {
                 commits.lock().unwrap().push(commit.id);
@@ -465,6 +484,116 @@ impl WorkerProbe {
         tokio::time::timeout(TEST_WAIT, worker)
             .await
             .expect("archive worker did not stop");
+    }
+}
+
+#[tokio::test]
+async fn url_image_is_in_the_first_frozen_event_and_the_original_capture_is_retained() {
+    let _serial = capture_serial().lock().await;
+    let mut fx = fixture(Shape::HtmlImage, OriginMode::External, true, true).await;
+    let probe = WorkerProbe::install_with_capture(&mut fx, true);
+    let mut queue = install_capture_sender(&fx.pool).await;
+    assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+    let queued = queue.priority.try_recv().expect("one complete first event");
+    let wire = tailsync_core::composite::PortableBundle::decode(
+        &queued.payload()[tailsync_core::protocol::EVENT_ENVELOPE_HEADER_SIZE..],
+    )
+    .unwrap();
+    assert_eq!(
+        wire.completeness,
+        tailsync_core::composite::Completeness::Complete
+    );
+    assert_eq!(wire.bindings.len(), 1);
+    assert_eq!(wire.resources.len(), 1);
+    assert!(tailsync_core::composite::restore::dependencies_complete(&wire).unwrap());
+    assert!(
+        queue.priority.try_recv().is_err(),
+        "no text-first or second image event"
+    );
+    assert_eq!(probe.capture_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.fetches.lock().unwrap().len(), 1);
+    assert!(
+        probe.commits.lock().unwrap().is_empty(),
+        "no background update was needed"
+    );
+    let id = fx.history_id().await;
+    let db = fx.database.lock().await;
+    assert_eq!(db.get_composite(id).unwrap(), wire);
+    assert_eq!(db.get_composite_network_originals(id).unwrap().len(), 1);
+    let native = db.get_composite_native(id).unwrap().unwrap();
+    assert!(native
+        .formats
+        .iter()
+        .any(|format| String::from_utf8_lossy(&format.bytes)
+            .contains("https://fixture.example/capture-image.png")));
+    let identity = db.composite_identity(id).unwrap().unwrap();
+    assert!(db
+        .export_composite_archive_update(id, &identity)
+        .unwrap()
+        .is_none());
+}
+
+struct PendingCaptureTransport {
+    started: tokio::sync::Notify,
+}
+
+impl ResourceTransport for PendingCaptureTransport {
+    fn fetch_once<'a>(
+        &'a self,
+        _url: &'a ArchiveUrl,
+        _limits: &'a FetchLimits,
+        cancellation: &'a Cancellation,
+    ) -> FetchFuture<'a> {
+        Box::pin(async move {
+            self.started.notify_one();
+            cancellation.cancelled().await;
+            Err(ArchiveError::Cancelled)
+        })
+    }
+}
+
+#[tokio::test]
+async fn new_copy_or_restore_cancels_image_preparation_without_sending_the_old_article() {
+    let _serial = capture_serial().lock().await;
+    for new_copy in [true, false] {
+        let mut fx = fixture(Shape::HtmlImage, OriginMode::External, true, true).await;
+        let transport = Arc::new(PendingCaptureTransport {
+            started: tokio::sync::Notify::new(),
+        });
+        fx.archive = Arc::new(AutomaticImageArchive::new(
+            fx.database.clone(),
+            true,
+            transport.clone(),
+            Arc::new(|| {}),
+        ));
+        let mut queue = install_capture_sender(&fx.pool).await;
+        let task = fx.tick(100);
+        tokio::pin!(task);
+        tokio::select! {
+            _ = wait_for_signal(&transport.started, "first-publish image fetch") => {},
+            _ = &mut task => panic!("the image fetch should wait"),
+        }
+        if new_copy {
+            fx.revision.store(101, Ordering::SeqCst);
+        } else {
+            fx.engine.lock().await.supersede_file_clipboard();
+        }
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), task)
+                .await
+                .unwrap(),
+            CompositeCapture::Handled
+        );
+        assert_eq!(
+            fx.history_len().await,
+            1,
+            "preserve the already captured source"
+        );
+        assert_eq!(fx.acks(), vec![100]);
+        assert!(
+            queue.priority.try_recv().is_err(),
+            "the old article must not be sent"
+        );
     }
 }
 

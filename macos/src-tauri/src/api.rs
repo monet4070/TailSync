@@ -42,7 +42,9 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::{LazyLock, Mutex as StdMutex};
 
 static RUNTIME_REVISION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(1).0);
-const MAX_RUNTIME_NOTIFICATIONS: usize = 32;
+use tailsync_runtime::notification_events::RuntimeNotificationBuffer;
+#[cfg(test)]
+use tailsync_runtime::notification_events::MAX_RUNTIME_NOTIFICATIONS;
 
 pub use tailsync_runtime::contracts::RuntimeNotification;
 
@@ -58,50 +60,6 @@ static SERVICE_INSTANCE: LazyLock<u64> = LazyLock::new(|| {
 
 pub fn service_instance() -> u64 {
     *SERVICE_INSTANCE
-}
-
-#[derive(Default)]
-struct RuntimeNotificationBuffer {
-    next_id: u64,
-    /// Notifications evicted from the bounded buffer since this process started.
-    dropped: u64,
-    entries: VecDeque<RuntimeNotification>,
-}
-
-impl RuntimeNotificationBuffer {
-    fn push(&mut self, level: &str, message: String) -> u64 {
-        self.next_id = self.next_id.wrapping_add(1).max(1);
-        let id = self.next_id;
-        self.entries.push_back(RuntimeNotification {
-            id,
-            level: level.to_string(),
-            message,
-        });
-        while self.entries.len() > MAX_RUNTIME_NOTIFICATIONS {
-            self.entries.pop_front();
-            self.dropped = self.dropped.saturating_add(1);
-        }
-        id
-    }
-
-    fn since(&self, id: u64) -> Vec<RuntimeNotification> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.id > id)
-            .cloned()
-            .collect()
-    }
-
-    /// Oldest id a client can still read. With an empty buffer this is the next id to
-    /// be assigned, i.e. "nothing more to read". A client whose cursor is below this
-    /// missed notifications that can no longer be read: it must re-read a full
-    /// snapshot instead of trusting its cursor.
-    fn earliest_available_id(&self) -> u64 {
-        self.entries
-            .front()
-            .map(|entry| entry.id)
-            .unwrap_or_else(|| self.next_id.wrapping_add(1).max(1))
-    }
 }
 
 static RUNTIME_NOTIFICATIONS: LazyLock<StdMutex<RuntimeNotificationBuffer>> =
@@ -127,10 +85,25 @@ pub async fn wait_for_runtime_revision(since: u64, wait: Duration) -> u64 {
     revision
 }
 
-pub fn push_runtime_notification(level: &str, message: impl Into<String>) {
-    if let Ok(mut notifications) = RUNTIME_NOTIFICATIONS.lock() {
-        notifications.push(level, message.into());
-        drop(notifications);
+pub fn push_system_notification(
+    level: &str,
+    notification: tailsync_runtime::notification_text::SystemNotification<'_>,
+    language: &str,
+) {
+    RUNTIME_NOTIFICATIONS
+        .lock()
+        .expect("notification buffer poisoned")
+        .push_system(level, notification, language);
+    bump_runtime_revision();
+}
+
+pub fn push_arrival_notification(arrival: tailsync_core::notifications::ClipboardArrival) {
+    let inserted = RUNTIME_NOTIFICATIONS
+        .lock()
+        .expect("notification buffer poisoned")
+        .push_arrival(arrival)
+        .is_some();
+    if inserted {
         bump_runtime_revision();
     }
 }
@@ -155,7 +128,7 @@ fn notification_snapshot_from(
         NotificationSnapshot {
             entries: since.map(|id| buffer.since(id)).unwrap_or_default(),
             earliest: buffer.earliest_available_id(),
-            dropped: buffer.dropped,
+            dropped: buffer.dropped_total(),
         }
     };
     // Test-only overflow boundary: mutations after this read must not produce

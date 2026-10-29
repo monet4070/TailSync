@@ -106,7 +106,7 @@ pub fn classify(snapshot: &NativeSnapshot, bundle: &PortableBundle) -> Origin {
 pub fn classify_native(snapshot: &NativeSnapshot) -> Origin {
     classify_digest(
         snapshot,
-        composite::fingerprint::origin_fingerprint_from_native(snapshot).ok(),
+        composite::fingerprint::origin_fingerprint_from_capture(snapshot).ok(),
     )
 }
 fn process_has_exited(pid: u32) -> bool {
@@ -293,19 +293,23 @@ pub fn prepare_readable_restore(
         return Err("Restore preparation cancelled".into());
     }
     if plan.target() != composite::restore::RestoreTarget::Macos
-        || plan.selection() != composite::restore::RestoreSelection::AvailableContent
+        || !matches!(
+            plan.selection(),
+            composite::restore::RestoreSelection::AvailableContent
+                | composite::restore::RestoreSelection::DocumentCompatibility
+        )
     {
         return Ok(plan);
     }
-    let html = plan
-        .native()
-        .and_then(|snapshot| {
-            snapshot
-                .formats
-                .iter()
-                .find(|format| format.name == "public.html")
-        })
-        .ok_or("Readable restore has no HTML")?;
+    let Some(html) = plan.native().and_then(|snapshot| {
+        snapshot
+            .formats
+            .iter()
+            .find(|format| format.name == "public.html")
+    }) else {
+        // A saved PNG is already publishable; only HTML needs rich text attachment conversion.
+        return Ok(plan);
+    };
     if !composite::html::restore_reference_inventory_complete(&html.bytes, &[])
         .map_err(|error| error.to_string())?
     {
@@ -346,6 +350,195 @@ pub fn prepare_readable_restore(
         composite::supervisor::HelperOutcome::SpawnFailed { detail, .. } => Err(detail),
     }
 }
+#[cfg(all(test, target_os = "macos"))]
+mod restore_preparation_tests {
+    use super::*;
+    use composite::{restore::RestoreTarget, Completeness, Mime, Representation};
+    use tailsync_runtime::history::{HistoryRestorePayload, PreparedHistoryRestore};
+
+    #[test]
+    #[ignore = "native consumer acceptance; requires helper and exported article fixtures"]
+    fn export_prepared_web_article_native_fixtures() {
+        let output = std::path::PathBuf::from(
+            std::env::var_os("TAILSYNC_WEB_ARTICLE_NATIVE_DIR")
+                .expect("set native article fixture output"),
+        );
+        for name in ["html-only", "with-text-rtf"] {
+            let bundle =
+                PortableBundle::decode(&std::fs::read(output.join(format!("{name}.cbp"))).unwrap())
+                    .unwrap();
+            let plan = composite::restore::RestorePlan::portable_default(
+                &bundle,
+                composite::restore::RestoreInput {
+                    source_platform: None,
+                    requested_format: None,
+                },
+                RestoreTarget::Macos,
+            )
+            .unwrap();
+            let plan = prepare_readable_restore(plan, &false.into()).unwrap();
+            assert!(plan
+                .native()
+                .unwrap()
+                .formats
+                .iter()
+                .any(|f| f.name == "com.apple.flat-rtfd"));
+            std::fs::write(
+                output.join(format!("{name}-prepared.cns")),
+                plan.native().unwrap().encode().unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "WebKit selection acceptance; requires exported browser source and helper"]
+    fn prepare_browser_selection_for_native_consumer() {
+        use tailsync_core::composite::supervisor::{run, HelperOutcome, HelperRequest};
+        use tailsync_core::protocol::{
+            native_archive::NativeArchive,
+            native_clipboard::{PublishReceipt, PublishState},
+        };
+        let output = std::path::PathBuf::from(
+            std::env::var_os("TAILSYNC_WEB_ARTICLE_NATIVE_DIR").expect("set native article output"),
+        );
+        let archive =
+            NativeArchive::decode(&std::fs::read(output.join("browser-source.cna")).unwrap())
+                .unwrap();
+        let bundle = composite::from_archive(&archive).unwrap();
+        let isolated = std::env::temp_dir().join(format!(
+            "tailsync-web-article-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let mut database = tailsync_core::db::HistoryDB::open_isolated_for_test_composite(
+            &isolated,
+        )
+        .unwrap();
+        let id = database
+            .add_native_archive(&archive, "browser-acceptance")
+            .unwrap();
+        let payload = tailsync_runtime::history::HistoryOperations::new(&mut database)
+            .restore_payload(id)
+            .unwrap();
+        let prepared = payload
+            .prepare_restore_plan(true, RestoreTarget::Macos, None)
+            .unwrap();
+        let PreparedHistoryRestore::Ready(plan) = prepared
+        else {
+            panic!("browser document unavailable: {prepared:?}")
+        };
+        let plan = prepare_readable_restore(*plan, &false.into()).unwrap();
+        let snapshot = plan.native().unwrap();
+        let board = std::fs::read_to_string(output.join("target-board.txt")).unwrap();
+        assert!(board.starts_with("tailsync-probe."));
+        let mut input = [17; 16].to_vec();
+        input.extend_from_slice(&(-1_i64).to_be_bytes());
+        input.extend(snapshot.encode().unwrap());
+        let result = run(HelperRequest {
+            program: &resolve_helper().unwrap(),
+            args: &["--pasteboard", board.trim(), "--write-snapshot"],
+            stdin: Some(input),
+            deadline: std::time::Duration::from_secs(6),
+            stdout_limit: 4096,
+        });
+        let HelperOutcome::Exited {
+            success: true,
+            stdout,
+            ..
+        } = result
+        else {
+            panic!("private publication failed: {result:?}")
+        };
+        assert_eq!(
+            PublishReceipt::decode(&stdout).unwrap().state,
+            PublishState::Published
+        );
+        assert_eq!(
+            database.get_composite_archive(id).unwrap().unwrap(),
+            archive
+        );
+        std::fs::write(
+            output.join("browser-portable.cbp"),
+            bundle.encode().unwrap(),
+        )
+        .unwrap();
+        drop(database);
+        std::fs::remove_dir_all(isolated).unwrap();
+    }
+
+    #[test]
+    fn browser_png_available_restore_survives_macos_preparation() {
+        let png = composite::packed_to_png(1, 1, &[1, 2, 3, 255]).unwrap();
+        let bundle = PortableBundle {
+            representations: vec![
+                Representation {
+                    mime: Mime::Html,
+                    bytes: b"<img src='blob:https://fixture.example/image'>".to_vec(),
+                },
+                Representation {
+                    mime: Mime::Png,
+                    bytes: png.clone(),
+                },
+            ],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::ExternalReferences,
+        };
+        for native in [
+            None,
+            Some(NativeSnapshot {
+                before: 1,
+                after: 1,
+                items: 1,
+                state: tailsync_core::protocol::native_clipboard::SnapshotState::Stable,
+                formats: bundle
+                    .representations
+                    .iter()
+                    .map(
+                        |representation| tailsync_core::protocol::native_clipboard::NativeFormat {
+                            item: 0,
+                            name: if representation.mime == Mime::Png {
+                                "public.png"
+                            } else {
+                                "public.html"
+                            }
+                            .into(),
+                            state: tailsync_core::protocol::native_clipboard::FormatState::Captured,
+                            bytes: representation.bytes.clone(),
+                        },
+                    )
+                    .collect(),
+            }),
+        ] {
+            let payload = HistoryRestorePayload {
+                entry_type: "composite".into(),
+                file_path: None,
+                file_name: None,
+                data: Some(bundle.encode().unwrap()),
+                identity: None,
+                native_only: false,
+                native_archive_complete: native.as_ref().map(|_| true),
+                native_archive_platform: native.as_ref().map(|_| 1),
+                native,
+            };
+            let PreparedHistoryRestore::Ready(plan) = payload
+                .prepare_restore_plan(true, RestoreTarget::Macos, None)
+                .unwrap()
+            else {
+                panic!("saved browser PNG must be available for copying")
+            };
+            let outputs = plan.outputs();
+            let plan = prepare_readable_restore(*plan, &false.into()).unwrap();
+            assert_eq!(plan.outputs(), outputs);
+            assert_eq!(plan.missing_images(), 1);
+            let formats = &plan.native().unwrap().formats;
+            assert_eq!(formats.len(), 1);
+            assert_eq!(formats[0].name, "public.png");
+            assert_eq!(formats[0].bytes, png);
+        }
+    }
+}
+
 pub fn write_native_cancellable(
     snapshot: &NativeSnapshot,
     expected: Option<i64>,

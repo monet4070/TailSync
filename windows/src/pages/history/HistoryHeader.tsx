@@ -58,6 +58,7 @@ export function HistoryHeader({
           )}
           {!isFavoritesCollection && (
             <button
+              data-tour="favorites"
               className="titlebar-btn titlebar-favorites"
               type="button"
               onClick={() => void openFavorites()}
@@ -79,7 +80,7 @@ export function HistoryHeader({
         </div>
       </div>
 
-      <div className="history-toolbar">
+      <div data-tour="history-search" className="history-toolbar">
         <div className="search-bar">
           <span className="search-icon">
             <Search size={18} strokeWidth={1.7} aria-hidden="true" />

@@ -12,7 +12,7 @@ export function SettingsUpdateSection({
   handleInstallUpdate,
 }: SettingsUpdateSectionProps) {
   return (
-    <section className="setting-group update-group">
+    <section data-tour="updates" className="setting-group update-group">
       <div className="setting-group-header">
         <h3>{t("settings.updates")}</h3>
         <p>{t("settings.updatesDescription")}</p>

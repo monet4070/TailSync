@@ -85,4 +85,8 @@ tauri::generate_handler![
     commands::get_update_status,
     commands::check_for_update,
     commands::install_update,
+    onboarding::open_onboarding_window,
+    onboarding::dismiss_onboarding,
+    onboarding::suppress_onboarding,
+    onboarding::onboarding_suppressed,
 ]

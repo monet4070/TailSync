@@ -146,6 +146,14 @@ pub async fn receive_assembled(
     .await
     .map_err(|_| "Composite validation worker failed")??;
     let digest = validated.digest();
+    let mut arrival = crate::notifications::ClipboardArrival {
+        source_id: source_identity.clone(),
+        source_name: source_name.clone(),
+        event_id: envelope.message_id.as_hex(),
+        kind: "content".into(),
+        count: 1,
+        entry_id: None,
+    };
     // R4-02 fast path: an event that already reached a terminal result is answered
     // from the journal without queueing behind anything. This is what makes the lock
     // a *dedup* lock rather than a serialisation point.
@@ -183,6 +191,16 @@ pub async fn receive_assembled(
     );
     admission.push(native_memory);
     let bundle = validated.shared_bundle();
+    arrival.kind = if bundle.representations.len() == 1 {
+        match bundle.representations[0].mime {
+            composite::Mime::Text => "text",
+            composite::Mime::Png => "image",
+            _ => "content",
+        }
+    } else {
+        "content"
+    }
+    .into();
     drop(validated);
     let permission = authorized.clone();
     if !tokio::task::spawn_blocking(move || permission())
@@ -220,14 +238,18 @@ pub async fn receive_assembled(
         // budget (1 per identity, 2 globally) and its pipeline footprint is reserved.
         let outcome = tokio::task::spawn_blocking(move || {
             let _held = held;
-            composite::restore::RestorePlan::compatibility(
-                (*candidate).clone(),
-                composite::restore::RestoreInput {
-                    source_platform: None,
-                    requested_format: None,
-                },
-                target,
-            )
+            let input = composite::restore::RestoreInput {
+                source_platform: None,
+                requested_format: None,
+            };
+            if candidate.completeness == Completeness::MissingFormats {
+                // A missing source format can contain uncaptured body content.
+                // Automatic publication needs a trustworthy captured document.
+                return Err(crate::protocol::ProtocolError::InvalidComposite);
+            }
+            // Use the same default selection as history restoration: keep saved
+            // images bound to their own nodes and missing images in body order.
+            composite::restore::RestorePlan::portable_default(&candidate, input, target)
         })
         .await
         .map_err(|_| "Composite native-preparation worker failed")?;
@@ -241,6 +263,9 @@ pub async fn receive_assembled(
             None
         }
     };
+    let available_content_selected = native_prepared.as_ref().is_some_and(|plan| {
+        plan.selection() == composite::restore::RestoreSelection::AvailableContent
+    });
     let _operation = crate::peer::operation_lock::global()
         .acquire(crate::peer::operation_lock::OperationKey::new(
             source_identity.clone(),
@@ -301,7 +326,7 @@ pub async fn receive_assembled(
             composite_receipts::update(key.clone(), Operation::ClaimPrepared(history_ref)).await?;
             result = Some(if history_ref <= 0 {
                 AckResult::Superseded // a durable deletion tombstone must not resurrect content
-            } else if bundle.completeness != Completeness::Complete {
+            } else if bundle.completeness != Completeness::Complete && !available_content_selected {
                 AckResult::StoredIncomplete
             } else if preparation_superseded {
                 AckResult::Superseded
@@ -389,6 +414,11 @@ pub async fn receive_assembled(
                     // no-effect is retryable; everything else becomes a durable
                     // result, because the platform may already have changed.
                     match settled {
+                        crate::composite::NativePublish::Published(_)
+                            if available_content_selected =>
+                        {
+                            AckResult::StoredIncomplete
+                        }
                         crate::composite::NativePublish::Published(_) => AckResult::Applied,
                         crate::composite::NativePublish::Partial(_) => AckResult::FailedPartial,
                         crate::composite::NativePublish::Superseded(_) => AckResult::Superseded,
@@ -438,6 +468,12 @@ pub async fn receive_assembled(
         let completed = composite_receipts::update(key, Operation::Complete).await?;
         if let Some(id) = completed.and_then(|record| record.history_ref) {
             database.lock().await.release_history(id);
+            if id > 0 {
+                arrival.entry_id = Some(id);
+                if let Some(platform) = engine.lock().await.platform_handle() {
+                    platform.received_content(arrival);
+                }
+            }
         }
         result = Some(outcome);
     }
@@ -473,11 +509,16 @@ mod tests {
     use crate::sync::{FileBatchProgress, FileReceiveCommit, PlatformResultFuture, SyncPlatform};
     use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
     struct Platform {
+        arrivals: std::sync::Mutex<Vec<crate::notifications::ClipboardArrival>>,
         writes: AtomicUsize,
+        published: std::sync::Mutex<Vec<PortableBundle>>,
         revision: AtomicI64,
         result: std::sync::Mutex<PublishState>,
     }
     impl SyncPlatform for Platform {
+        fn received_content(&self, arrival: crate::notifications::ClipboardArrival) {
+            self.arrivals.lock().unwrap().push(arrival);
+        }
         fn write_text(&self, _: &str) -> Result<(), String> {
             Ok(())
         }
@@ -489,7 +530,7 @@ mod tests {
         }
         fn write_composite(
             &self,
-            _: &PortableBundle,
+            bundle: &PortableBundle,
             expected: Option<i64>,
         ) -> Result<crate::composite::NativePublish, String> {
             use crate::composite::NativePublish;
@@ -503,6 +544,7 @@ mod tests {
             let state = *self.result.lock().unwrap();
             if matches!(state, PublishState::Published | PublishState::Partial) {
                 self.writes.fetch_add(1, Ordering::SeqCst);
+                self.published.lock().unwrap().push(bundle.clone());
                 self.revision.fetch_add(1, Ordering::SeqCst);
             }
             let receipt = PublishReceipt {
@@ -563,7 +605,9 @@ mod tests {
             HistoryDB::open_isolated_for_test_composite(&root).unwrap(),
         ));
         let platform = Arc::new(Platform {
+            arrivals: std::sync::Mutex::new(Vec::new()),
             writes: AtomicUsize::new(0),
+            published: std::sync::Mutex::new(Vec::new()),
             revision: AtomicI64::new(7),
             result: std::sync::Mutex::new(PublishState::Published),
         });
@@ -845,7 +889,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn o06_unbound_html_is_stored_without_write_even_when_wire_claims_complete() {
+    async fn unbound_html_publishes_available_body_without_trusting_wire_completeness() {
         let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
         let (root, db, engine, platform, source) = setup().await;
         let mut e = event();
@@ -861,7 +905,12 @@ mod tests {
             run(e, &source, &engine, &db).await.unwrap().result,
             AckResult::StoredIncomplete
         );
-        assert_eq!(platform.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(platform.writes.load(Ordering::SeqCst), 1);
+        let published = platform.published.lock().unwrap().clone();
+        let html = std::str::from_utf8(published[0].representation(Mime::Html).unwrap()).unwrap();
+        assert!(html.contains("recoverable"));
+        assert!(html.contains("[🖼]"));
+        assert!(!html.contains("fixture.invalid"));
         let database = db.lock().await;
         let rows = database.get_all(None, None, 10, 0).unwrap();
         assert_eq!(rows.len(), 1);
@@ -869,6 +918,232 @@ mod tests {
         drop(database);
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_image_is_applied_once_without_replaying_unresolved_html() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
+        let (root, db, engine, platform, source) = setup().await;
+        let png = composite::packed_to_png(1, 1, &[1, 2, 3, 255]).unwrap();
+        let bundle = PortableBundle {
+            representations: vec![
+                composite::Representation {
+                    mime: composite::Mime::Html,
+                    bytes: b"<img src='file:///C:/browser/image.png'>".to_vec(),
+                },
+                composite::Representation {
+                    mime: composite::Mime::Png,
+                    bytes: png.clone(),
+                },
+            ],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::ExternalReferences,
+        };
+        let event = EventEnvelope::new(bundle.encode().unwrap());
+        assert_eq!(
+            run(event.clone(), &source, &engine, &db)
+                .await
+                .unwrap()
+                .result,
+            AckResult::StoredIncomplete
+        );
+        assert_eq!(
+            run(event, &source, &engine, &db).await.unwrap().result,
+            AckResult::StoredIncomplete
+        );
+        let arrivals = platform.arrivals.lock().unwrap().clone();
+        assert_eq!(arrivals.len(), 1);
+        assert_eq!(arrivals[0].source_id, source);
+        assert!(arrivals[0].entry_id.unwrap() > 0);
+        assert_eq!(platform.writes.load(Ordering::SeqCst), 1);
+        {
+            let published = platform.published.lock().unwrap();
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].representations.len(), 1);
+            assert_eq!(
+                published[0].representation(composite::Mime::Png).unwrap(),
+                png
+            );
+            assert_eq!(published[0].completeness, Completeness::Complete);
+        }
+        let database = db.lock().await;
+        let rows = database.get_all(None, None, 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(database.get_composite(rows[0].id).unwrap(), bundle);
+        drop(database);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn web_article(stylesheet: bool, missing_image: bool) -> PortableBundle {
+        let style = if stylesheet {
+            "<style>@import 'https://fixture.invalid/page.css';</style>"
+        } else {
+            ""
+        };
+        let missing = if missing_image {
+            "<img src='https://fixture.invalid/missing.png'>"
+        } else {
+            ""
+        };
+        let html = format!("{style}<p>Alpha<img src='tailsync-resource:7'>Beta{missing}Gamma<img src='tailsync-resource:3'>Delta<img src='tailsync-resource:7'>Omega</p>");
+        let bindings = [7, 3]
+            .into_iter()
+            .flat_map(|id| {
+                let reference = format!("tailsync-resource:{id}");
+                html.match_indices(&reference)
+                    .map(|(offset, _)| ResourceBinding {
+                        representation: 1,
+                        resource: id,
+                        offset: offset as u32,
+                        length: reference.len() as u32,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        PortableBundle {
+            representations: vec![
+                Representation {
+                    mime: Mime::Text,
+                    bytes: b"AlphaBetaGammaDeltaOmega".to_vec(),
+                },
+                Representation {
+                    mime: Mime::Html,
+                    bytes: html.into_bytes(),
+                },
+            ],
+            resources: vec![
+                Resource {
+                    id: 7,
+                    png: packed_to_png(1, 1, &[255, 0, 0, 255]).unwrap(),
+                },
+                Resource {
+                    id: 3,
+                    png: packed_to_png(1, 1, &[0, 255, 0, 255]).unwrap(),
+                },
+            ],
+            bindings,
+            completeness: if stylesheet || missing_image {
+                Completeness::ExternalReferences
+            } else {
+                Completeness::Complete
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn web_article_sync_keeps_text_and_repeated_images_in_place_and_publishes_once() {
+        use base64::Engine as _;
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
+        for (stylesheet, missing_image) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let (root, db, engine, platform, source) = setup().await;
+            let original = web_article(stylesheet, missing_image);
+            let expected = if stylesheet || missing_image {
+                AckResult::StoredIncomplete
+            } else {
+                AckResult::Applied
+            };
+            let event = EventEnvelope::new(original.encode().unwrap());
+            let digest = original.digest().unwrap();
+            let ack = run(event.clone(), &source, &engine, &db).await.unwrap();
+            assert_eq!(ack.result, expected);
+            assert_eq!(ack.digest, digest);
+            assert_eq!(
+                run(event, &source, &engine, &db).await.unwrap().result,
+                expected
+            );
+            assert_eq!(platform.writes.load(Ordering::SeqCst), 1);
+            let published = platform.published.lock().unwrap().clone();
+            let bundle = &published[0];
+            assert!(composite::restore::dependencies_complete(bundle).unwrap());
+            let index = bundle
+                .representations
+                .iter()
+                .position(|r| r.mime == Mime::Html)
+                .unwrap();
+            let html =
+                String::from_utf8(composite::html::materialize(bundle, index).unwrap()).unwrap();
+            let red = base64::engine::general_purpose::STANDARD.encode(&original.resources[0].png);
+            let green =
+                base64::engine::general_purpose::STANDARD.encode(&original.resources[1].png);
+            let mut tail = html.as_str();
+            let mut expected_order = vec!["Alpha", red.as_str(), "Beta"];
+            if missing_image {
+                expected_order.push("[🖼]");
+            }
+            expected_order.extend(["Gamma", green.as_str(), "Delta", red.as_str(), "Omega"]);
+            for token in expected_order {
+                let position = tail
+                    .find(token)
+                    .unwrap_or_else(|| panic!("missing or reordered {token} in {html}"));
+                tail = &tail[position + token.len()..];
+            }
+            assert_eq!(html.matches("data:image/png;base64,").count(), 3);
+            assert!(!html.contains("fixture.invalid"));
+            let database = db.lock().await;
+            let rows = database.get_all(None, None, 10, 0).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(database.get_composite(rows[0].id).unwrap(), original);
+            drop(database);
+            drop(db);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn web_article_fallback_preserves_partial_unknown_and_superseded_results() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
+        for (state, expected) in [
+            (PublishState::Partial, AckResult::FailedPartial),
+            (PublishState::Failed, AckResult::ApplyUnknown),
+            (PublishState::Superseded, AckResult::Superseded),
+        ] {
+            let (root, db, engine, platform, source) = setup().await;
+            *platform.result.lock().unwrap() = state;
+            let event = EventEnvelope::new(web_article(false, true).encode().unwrap());
+            assert_eq!(
+                run(event.clone(), &source, &engine, &db)
+                    .await
+                    .unwrap()
+                    .result,
+                expected
+            );
+            assert_eq!(
+                run(event, &source, &engine, &db).await.unwrap().result,
+                expected
+            );
+            assert_eq!(
+                platform.writes.load(Ordering::SeqCst),
+                usize::from(state == PublishState::Partial)
+            );
+            drop(db);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn web_article_missing_formats_or_newer_copy_never_automatically_publish_a_fallback() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
+        for missing_formats in [false, true] {
+            let (root, db, engine, platform, source) = setup().await;
+            let mut bundle = web_article(false, true);
+            if missing_formats {
+                bundle.completeness = Completeness::MissingFormats;
+            } else {
+                engine.lock().await.supersede_file_clipboard();
+            }
+            let event = EventEnvelope::new(bundle.encode().unwrap());
+            assert_eq!(
+                run(event, &source, &engine, &db).await.unwrap().result,
+                AckResult::StoredIncomplete
+            );
+            assert_eq!(platform.writes.load(Ordering::SeqCst), 0);
+            drop(db);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[tokio::test]

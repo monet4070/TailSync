@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../Viewer.props" />
+  <PropertyGroup><AssemblyName>TailSync.Preview.Pdfium</AssemblyName></PropertyGroup>
+  <ItemGroup><PackageReference Include="bblanchon.PDFium.Win32" Version="158.0.8111" /></ItemGroup>
+</Project>

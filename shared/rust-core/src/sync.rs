@@ -189,6 +189,9 @@ pub struct FileBatchProgress {
 pub type PlatformResultFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 
 pub trait SyncPlatform: Send + Sync {
+    /// Optional presentation hook. Implementations only enqueue metadata; they
+    /// must not perform native I/O or change the committed receive result.
+    fn received_content(&self, _arrival: crate::notifications::ClipboardArrival) {}
     fn prepare_restore_plan(
         &self,
         plan: crate::composite::restore::RestorePlan,

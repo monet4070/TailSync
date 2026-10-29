@@ -15,6 +15,7 @@ Windows/site 前端和发布恢复脚本。此后的纯文档改动另由版本�
 | [`../README.zh-CN.md`](../README.zh-CN.md) | 简体中文版：与英文版对应的项目说明 |
 | [`../CONTEXT.md`](../CONTEXT.md) | 领域词汇、模块边界、跨平台契约与开发门禁 |
 | [`USER_GUIDE.zh-CN.md`](USER_GUIDE.zh-CN.md) | 面向使用者的安装、配对、同步、历史、预览与排障说明 |
+| [`features/onboarding.md`](features/onboarding.md) | 双端八步新手引导、共享内容、入口与本机进度 |
 | [`features/resumable-file-transfer.md`](features/resumable-file-transfer.md) | 文件批次跨重启续传、持久状态、提交边界与验收矩阵 |
 | [`features/remote-iroh-pairing.md`](features/remote-iroh-pairing.md) | 无自建服务器的 `tailsync://` Iroh 远程配对、链接安全边界与验收矩阵 |
 | [`features/favorites-long-press.md`](features/favorites-long-press.md) | 长按收藏动画、选中态和删除权限 |
@@ -28,6 +29,11 @@ Windows/site 前端和发布恢复脚本。此后的纯文档改动另由版本�
 
 ## 优化计划
 
+- [网页图文同步本机验收 · 2026-10-29](acceptance/web-article-sync-2026-10-29.md)：WebKit 选区与 AppKit 原生消费验证、HTML／RTF 竞争修复、自动化回归及双设备缺口。
+- [首次发布前获取网页图片 · 2026-10-29](adr/ADR-008-first-publish-network-images.md)：沿用网络图片设置，在事件冻结前有界获取公开 PNG／JPEG／静态 WebP；原件保留，首发与后续补图使用固定摘要和正确节点绑定。
+- [网页图文同步优先级 · 2026-10-29](adr/ADR-007-web-article-sync.md)：用户确认正文、图片及图文位置为核心；共用可用副本选择，首次公开图片获取见 ADR-008，双设备验收仍待完成。
+- [通知审查与改造方案 · 2026-10-23](NOTIFICATION-REVIEW-AND-DESIGN-2026-10-23.md)：N1a 默认脱敏、本地化与 passive/active 已完成源码实施；其余聚合、前台交接、点击定位、错误保留和共享事件仍为后续设计。
+- [通知隐私与网页图片修复 · 2026-10-23](acceptance/notification-privacy-and-browser-image-2026-10-23.md)：已保存 PNG 的预览/回溯、错误分类、边界处理、验证结果及原生验收缺口。
 - [COMPOSITE-CLIPBOARD-IMPROVEMENT-EXECUTION-2026-10-06.md](COMPOSITE-CLIPBOARD-IMPROVEMENT-EXECUTION-2026-10-06.md)：逐项实施与暂停汇报台账；S0 基线、五类真实接缝复现、现场待验证条件及后续任务。
 - [COMPOSITE-CLIPBOARD-IMPROVEMENT-CODE-REVIEW-2026-10-06.md](COMPOSITE-CLIPBOARD-IMPROVEMENT-CODE-REVIEW-2026-10-06.md)：已完成阶段（O11/O01/O02/O06）的只读实现复核：优雅性、测试冗余、死代码与修改效果；仅提建议，不改代码。
 - [COMPOSITE-CLIPBOARD-REVIEW-VERIFICATION-FIXES-2026-10-06.md](COMPOSITE-CLIPBOARD-REVIEW-VERIFICATION-FIXES-2026-10-06.md)：核实最新审查发现，记录误判更正、DeepSeek/high 修复范围与主代理复验。
@@ -41,6 +47,8 @@ Windows/site 前端和发布恢复脚本。此后的纯文档改动另由版本�
 - [`OPTIMIZATION-IMPLEMENTATION-STATUS-2026-09-06.md`](OPTIMIZATION-IMPLEMENTATION-STATUS-2026-09-06.md)：按工作包记录当前实现、已执行门禁和仍需真机/发布环境完成的验收；不能用本地 probe 结果代替真实双系统证据。
 
 ## 审计与历史记录
+
+- [技术栈与架构审查 · 2026-10-22](ARCHITECTURE-REVIEW-2026-10-22.md)：当前分层、用户入口、双端新手引导及本机验证边界。
 
 以下文档保留问题发现、证据和决策过程。它们带有日期，正文中的旧行号、旧风险和“待修”描述
 只代表当时快照；判断当前状态时先看文件顶部的状态说明和当前规格：
@@ -59,6 +67,7 @@ Windows/site 前端和发布恢复脚本。此后的纯文档改动另由版本�
 
 ## 架构决策
 
+- [ADR-006：网页单图的独立 PNG 替代](adr/ADR-006-browser-image-alternative.md)：预览、回溯与实时接收的受限选择规则；扩展 K6 的不完整发布语义，保持原件、claim 与不可重复副作用约束。
 - [`adr/ADR-004-composite-clipboard-contracts.md`](adr/ADR-004-composite-clipboard-contracts.md)：
   冻结复合剪贴板的十条契约（K1—K10）、确立 ClipboardCoordinator/异步 ClipboardPort、
   EffectJournal 与 MigrationPolicy 三个深边界，并冻结支持范围。ADR-001—003 仍有效。

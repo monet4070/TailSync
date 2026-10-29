@@ -2,7 +2,13 @@
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/main/crates/tauri-config-schema/capabilities/default.json",
   "identifier": "default",
   "description": "Default capabilities for TailSync",
-  "windows": ["history", "favorites", "settings", "preview"],
+  "windows": [
+    "history",
+    "favorites",
+    "settings",
+    "connections",
+    "preview"
+  ],
   "permissions": [
     "core:default",
     "notification:default",

@@ -33,7 +33,7 @@ export function SettingsAppearanceSection({
   changeLanguage,
 }: SettingsAppearanceSectionProps) {
   return (
-    <section className="setting-group">
+    <section data-tour="appearance" className="setting-group">
       <div className="setting-group-header">
         <h3>{t("settings.appearance")}</h3>
         <p>{t("settings.appearanceDescription")}</p>

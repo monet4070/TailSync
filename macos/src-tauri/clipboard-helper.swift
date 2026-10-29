@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import ImageIO
 import Darwin
 
@@ -87,6 +88,7 @@ func receiptData(_ status: UInt8, _ revision: Int, _ token: Data) -> Data {
 func emitReceipt(_ status: UInt8, _ revision: Int, _ token: Data) {
     FileHandle.standardOutput.write(receiptData(status, revision, token))
 }
+
 
 #if TAILSYNC_PROBE_FAULTS
 /// Probe-only deterministic stall (repair plan §4 R0.3, §5 T08).
@@ -246,6 +248,58 @@ struct QQImageCacheAccess {
     }
     func status() -> String { authorizedDirectory() == nil ? "not_authorized" : "authorized" }
 
+    private var suggestionURL: URL { bookmarkURL.appendingPathExtension("suggestion") }
+
+    /// Remember only a bounded directory hint from the copied message. This
+    /// neither enumerates QQ accounts nor grants access to any directory.
+    func messageDirectory(from bytes: Data) -> URL? {
+        guard bytes.count <= 1024 * 1024,
+              let rows = (try? PropertyListSerialization.propertyList(from: bytes, options: [], format: nil)) as? [[String: Any]],
+              !rows.isEmpty, rows.count <= 256 else { return nil }
+        var roots = Set<String>()
+        for row in rows {
+            guard Set(row.keys) == ["TencentElementType", "TencentElementValue"],
+                  let type = row["TencentElementType"] as? NSNumber,
+                  CFGetTypeID(type) != CFBooleanGetTypeID(),
+                  type.doubleValue == Double(type.intValue), [1, 11].contains(type.intValue),
+                  let value = row["TencentElementValue"] as? String else { return nil }
+            if type.intValue == 1 {
+                guard let image = QQImageCachePath(value, home: home) else { return nil }
+                roots.insert(image.root)
+            }
+        }
+        guard roots.count == 1, let root = roots.first, root.utf8.count <= 4096 else { return nil }
+        return URL(fileURLWithPath: root, isDirectory: true)
+    }
+
+    @discardableResult
+    func rememberSuggestion(from bytes: Data) -> Bool {
+        guard let directory = messageDirectory(from: bytes) else { return false }
+        do { try savePrivate(Data(directory.path.utf8), to: suggestionURL); return true }
+        catch { return false }
+    }
+
+    func suggestedDirectory() -> URL? {
+        if let bytes = boundedFile(suggestionURL.path, limit: 4096),
+           let root = String(data: bytes, encoding: .utf8), QQImageCachePath.cacheRoot(root, home: home) {
+            return URL(fileURLWithPath: root, isDirectory: true)
+        }
+        return authorizedDirectory()?.url
+    }
+
+    func revoke() throws {
+        let parent = bookmarkURL.deletingLastPathComponent()
+        let directory = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if directory < 0, errno == ENOENT { return }
+        guard directory >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        defer { close(directory) }
+        var info = stat()
+        guard fstat(directory, &info) == 0, info.st_uid == getuid() else { throw CocoaError(.fileWriteNoPermission) }
+        guard unlinkat(directory, bookmarkURL.lastPathComponent, 0) == 0 || errno == ENOENT else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+    }
+
     /// Called only after the user accepts the folder picker, never by capture.
     func remember(_ url: URL) throws {
         guard url.isFileURL, QQImageCachePath.cacheRoot(url.path, home: home) else {
@@ -258,7 +312,11 @@ struct QQImageCacheAccess {
                                        includingResourceValuesForKeys: nil, relativeTo: nil)
         guard let check = resolve(data, expectedRoot: url.path) else { throw CocoaError(.fileReadNoPermission) }
         defer { withExtendedLifetime(check) {} }
-        let parent = bookmarkURL.deletingLastPathComponent()
+        try savePrivate(data, to: bookmarkURL)
+    }
+
+    private func savePrivate(_ data: Data, to destination: URL) throws {
+        let parent = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true,
                                                attributes: [.posixPermissions: 0o700])
         let directory = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -272,7 +330,7 @@ struct QQImageCacheAccess {
         defer { close(fd); unlinkat(directory, temporary, 0) }
         let written = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
         guard written == data.count, fsync(fd) == 0,
-              renameat(directory, temporary, directory, bookmarkURL.lastPathComponent) == 0
+              renameat(directory, temporary, directory, destination.lastPathComponent) == 0
         else { throw CocoaError(.fileWriteUnknown) }
     }
 
@@ -302,23 +360,12 @@ struct QQImageCacheAccess {
     }
 
     func read(_ path: String) -> Data? {
-        guard let image = QQImageCachePath(path, home: home) else { return nil }
-        let scope = authorizedDirectory(for: image.root)
+        guard let image = QQImageCachePath(path, home: home),
+              let scope = authorizedDirectory(for: image.root) else { return nil }
         defer { withExtendedLifetime(scope) {} }
-        var directory: Int32
-        if let scope {
-            // Start at the selected root: opening protected ancestors first
-            // would fail even when the nested Pic directory is authorized.
-            directory = open(scope.url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        } else {
-            directory = open(home, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard directory >= 0 else { return nil }
-            for piece in String(image.root.dropFirst(home.count + 1)).split(separator: "/") {
-                let next = openat(directory, String(piece), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                close(directory); directory = next
-                guard directory >= 0 else { return nil }
-            }
-        }
+        // A disabled setting must not read even caches that happen to be readable
+        // without a security-scoped bookmark (for example under broader OS grants).
+        var directory = open(scope.url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { return nil }
         defer { close(directory) }
         for piece in image.relative.dropLast() {
@@ -429,9 +476,10 @@ func rtfdToPortable(_ bytes: Data) -> (html: Data, text: Data)? {
         return "rgba(\(Int(rgb.redComponent * 255)),\(Int(rgb.greenComponent * 255)),\(Int(rgb.blueComponent * 255)),\(rgb.alphaComponent))"
     }
     rich.enumerateAttributes(in: NSRange(location: 0, length: rich.length)) { attributes, range, stop in
-        // An unsupported attribute keeps the original native item; it must not
-        // silently become a supposedly complete portable projection.
-        let supported: Set<NSAttributedString.Key> = [.attachment, .font, .foregroundColor, .backgroundColor, .underlineStyle, .strikethroughStyle, .paragraphStyle]
+        // WebKit includes kerning and stroke metadata even on ordinary text.
+        // These cosmetic attributes may be simplified without dropping the
+        // body or its attachments. Unknown semantic attributes remain guarded.
+        let supported: Set<NSAttributedString.Key> = [.attachment, .font, .foregroundColor, .backgroundColor, .underlineStyle, .strikethroughStyle, .paragraphStyle, .kern, .strokeColor, .strokeWidth]
         guard attributes.keys.allSatisfy({ supported.contains($0) }) else { valid = false; stop.pointee = true; return }
         if let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle,
            paragraph.alignment != .natural && paragraph.alignment != .left ||
@@ -849,6 +897,7 @@ func readArchiveData() -> Data {
        let converted = qqToPortable(source.3, itemCount: items.count,
            fallbackPNG: derived.first(where: { $0.0 == 0 && $0.1 == "public.png" })?.4
                ?? originals.first(where: { $0.0 == 0 && $0.1 == .png && $0.2 == 0 })?.3) {
+        QQImageCacheAccess().rememberSuggestion(from: source.3)
         let pair = [("public.html", converted.html), ("public.utf8-plain-text", converted.text)]
         let cost = pair.reduce(0) { $0 + 12 + $1.0.utf8.count + qqMessageType.utf8.count + qqConverter.utf8.count + $1.1.count }
         if originals.count + derived.count + 2 <= 64, used + cost <= nativeLimit {
@@ -885,6 +934,15 @@ if arguments.first == "--qq-image-access-status" {
     guard arguments.count == 1 else { exit(64) }
     FileHandle.standardOutput.write(Data(QQImageCacheAccess().status().utf8)); exit(0)
 }
+if arguments.first == "--revoke-qq-image-access" {
+    guard arguments.count == 1 else { exit(64) }
+    do {
+        try QQImageCacheAccess().revoke()
+        FileHandle.standardOutput.write(Data("revoked".utf8)); exit(0)
+    } catch {
+        FileHandle.standardOutput.write(Data("unavailable".utf8)); exit(0)
+    }
+}
 if arguments.first == "--grant-qq-image-access" {
     guard arguments.count == 2, ["en", "zh-CN"].contains(arguments[1]) else { exit(64) }
     let chinese = arguments[1] == "zh-CN"
@@ -896,23 +954,25 @@ if arguments.first == "--grant-qq-image-access" {
     panel.resolvesAliases = false
     panel.title = chinese ? "允许 TailSync 保存 QQ 多图消息" : "Allow TailSync to save QQ multi-image messages"
     panel.message = chinese
-        ? "选择当前 QQ 账号的 nt_data/Pic 图片缓存目录。TailSync 只读取复制消息引用的图片。授权后请重新复制消息。"
-        : "Choose this QQ account's nt_data/Pic image cache. TailSync reads only images referenced by copied messages. Copy the message again after allowing access."
+        ? "已定位 QQ 图片目录，请直接点击“允许读取图片”完成 macOS 授权，之后重新复制消息。"
+        : "The QQ image folder has been located. Click Allow image access to confirm macOS access, then copy the message again."
     panel.prompt = chinese ? "允许读取图片" : "Allow image access"
     let access = QQImageCacheAccess()
     let panelDelegate = QQCacheFolderPanelDelegate(home: access.home, chinese: chinese)
     panel.delegate = panelDelegate
     defer { withExtendedLifetime(panelDelegate) {} }
     // Suggest only a path already present in the copied message; never scan accounts.
-    if let item = pb.pasteboardItems?.first,
-       let bytes = item.data(forType: NSPasteboard.PasteboardType(qqMessageType)), bytes.count <= 1024 * 1024,
-       let rows = (try? PropertyListSerialization.propertyList(from: bytes, options: [], format: nil)) as? [[String: Any]],
-       let path = rows.first(where: { ($0["TencentElementType"] as? Int) == 1 })?["TencentElementValue"] as? String,
-       let image = QQImageCachePath(path, home: access.home) {
-        panel.directoryURL = URL(fileURLWithPath: image.root, isDirectory: true)
-    } else if let existing = access.authorizedDirectory() {
-        panel.directoryURL = existing.url
+    var suggested = access.suggestedDirectory()
+    if let bytes = pb.pasteboardItems?.first?.data(forType: NSPasteboard.PasteboardType(qqMessageType)) {
+        guard let current = access.messageDirectory(from: bytes) else {
+            FileHandle.standardOutput.write(Data("copy_message_first".utf8)); exit(0)
+        }
+        suggested = current
     }
+    guard let suggested else {
+        FileHandle.standardOutput.write(Data("copy_message_first".utf8)); exit(0)
+    }
+    panel.directoryURL = suggested
     app.activate(ignoringOtherApps: true)
     guard panel.runModal() == .OK, let url = panel.url else {
         FileHandle.standardOutput.write(Data("cancelled".utf8)); exit(0)
@@ -978,7 +1038,7 @@ if arguments.first == "--rtfd-from-html" {
         input.append(chunk)
     }
     guard input.count >= 2, input.count <= limit,
-          let expectedImages = readBE(input, 0, 2), expectedImages <= 20,
+          let expectedImages = readBE(input, 0, 2), expectedImages <= 64,
           let rich = try? NSAttributedString(
             data: Data(input.dropFirst(2)),
             options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue],
@@ -1017,6 +1077,8 @@ if arguments.first == "--probe-rtfd" {
     let rich = NSMutableAttributedString(string: "RTFD 中文 ", attributes: [.font: NSFont.boldSystemFont(ofSize: 14)])
     rich.append(NSAttributedString(attachment: attachment))
     rich.append(NSAttributedString(string: " 尾部"))
+    // Match the cosmetic metadata emitted by real WebKit selections.
+    rich.addAttributes([.kern: 0, .strokeColor: NSColor.black, .strokeWidth: 0], range: NSRange(location: 0, length: rich.length))
     guard let data = rich.rtfd(from: NSRange(location: 0, length: rich.length)) else { exit(65) }
     let item = NSPasteboardItem(); item.setData(data, forType: .rtfd)
     pb.clearContents(); guard pb.writeObjects([item]) else { exit(65) }
@@ -1082,7 +1144,8 @@ if arguments.first == "--write-snapshot" {
     guard snapshot.prefix(5) == Data("CNS1\u{1}".utf8), snapshot[5] == 0,
           let itemCount = readBE(snapshot, 6, 2), itemCount > 0, itemCount <= 16, readBE(snapshot, 8, 8) == readBE(snapshot, 16, 8),
           snapshot[26..<32].allSatisfy({ $0 == 0 }), let count = readBE(snapshot, 24, 2), count > 0, count <= 64 else { exit(65) }
-    let items = (0..<itemCount).map { _ in NSPasteboardItem() }; var offset = 32; var seen = Set<String>()
+    var items = Array(repeating: [(NSPasteboard.PasteboardType, Data)](), count: Int(itemCount))
+    var offset = 32; var seen = Set<String>()
     for _ in 0..<count {
         guard let itemIndex = readBE(snapshot, offset, 2), itemIndex < itemCount,
               offset + 12 <= snapshot.count, snapshot[offset + 2] == 0, snapshot[offset + 3] == 0,
@@ -1098,19 +1161,34 @@ if arguments.first == "--write-snapshot" {
         let bytes = snapshot[end..<end + Int(length)]
         if type == .string || type == .html { guard String(data: bytes, encoding: .utf8) != nil else { exit(65) } }
         // Native replay retains bounded original bytes; it does not decode frames.
-        guard items[Int(itemIndex)].setData(bytes, forType: type) else { emitReceipt(1, pb.changeCount, token); exit(0) }
+        items[Int(itemIndex)].append((type, Data(bytes)))
         offset = end + Int(length)
     }
-    guard offset == snapshot.count, items.allSatisfy({ !$0.types.isEmpty }), items[0].setData(token, forType: sourceType) else { exit(65) }
+    guard offset == snapshot.count, items.allSatisfy({ !$0.isEmpty }) else { exit(65) }
+    items[0].append((sourceType, token))
+    var native: Pasteboard?
+    guard PasteboardCreate(pb.name.rawValue as CFString, &native) == noErr, let native else { exit(65) }
+    PasteboardSynchronize(native)
     guard expected == -1 || Int64(pb.changeCount) == expected else { emitReceipt(3, pb.changeCount, token); exit(0) }
-    let clearedRevision = pb.clearContents()
+    guard PasteboardClear(native) == noErr else { emitReceipt(1, pb.changeCount, token); exit(0) }
+    let clearedRevision = pb.changeCount
     // A concurrent owner after clear must not be overwritten by this helper.
     guard pb.changeCount == clearedRevision else { emitReceipt(3, pb.changeCount, token); exit(0) }
 #if TAILSYNC_PROBE_FAULT_AFTER_CLEAR
     // R0 probe: the clipboard has already been cleared, the write has not happened.
     probeStall(8000)
 #endif
-    let wrote = pb.writeObjects(items)
+    // OS boundary: publish eager bytes directly; AppKit can leave RTF text conversions promised after this helper exits.
+    var wrote = true
+    publication: for (index, formats) in items.enumerated() {
+        let itemID = UnsafeMutableRawPointer(bitPattern: index + 1)!
+        for (type, bytes) in formats {
+            guard PasteboardPutItemFlavor(native, itemID, type.rawValue as CFString, bytes as CFData, []) == noErr else {
+                wrote = false
+                break publication
+            }
+        }
+    }
     let revision = pb.changeCount
     let ownsToken = pb.data(forType: sourceType) == token
 #if TAILSYNC_PROBE_FAULT_AFTER_WRITE

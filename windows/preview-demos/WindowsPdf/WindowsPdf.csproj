@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../Viewer.props" />
+  <PropertyGroup><AssemblyName>TailSync.Preview.WindowsPdf</AssemblyName></PropertyGroup>
+</Project>

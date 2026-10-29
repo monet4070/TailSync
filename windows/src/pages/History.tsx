@@ -1,3 +1,7 @@
+import { GuidedTour } from "../onboarding/GuidedTour";
+import { demoHistoryPage, demoLogicalKey, isDemoEntry } from "../onboarding/demo";
+import { readTour, TOUR_EVENT } from "../onboarding/tourState";
+import onboardingGuide from "../../../shared/onboarding/guide.json";
 import { useRestoreActivity } from "../hooks/useRestoreActivity";
 import { StableIpcError } from "../utils/stableIpcError";
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
@@ -98,6 +102,8 @@ function logicalHistoryItemKey(entry: HistoryEntry): string {
 
 export function History({ collection = "all" }: HistoryProps) {
   const isFavoritesCollection = collection === "favorites";
+  const demoHidden = useRef(new Set<string>());
+  const demoFavorites = useRef(new Map<string, boolean>());
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const favoriteMutations = useRef(new Map<string, boolean>());
   const deleting = useRef(false);
@@ -217,7 +223,7 @@ export function History({ collection = "all" }: HistoryProps) {
   }, []);
 
   const { theme, themeAssetSlots } = useTheme();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const syncWarningKey = syncWarning && {
     delivery_rejected: "history.deliveryRejected",
     expired_event: "history.syncExpired",
@@ -356,7 +362,9 @@ export function History({ collection = "all" }: HistoryProps) {
         collection,
       );
       const queryKey = JSON.stringify(query);
-      const result = await getHistoryPage(query, () => sessionActive.current && historyRequests.current.isCurrent(requestGeneration) && desiredQuery.current === requestedQuery);
+      const result = readTour().active
+        ? demoHistoryPage(query, demoHidden.current, demoFavorites.current)
+        : await getHistoryPage(query, () => sessionActive.current && historyRequests.current.isCurrent(requestGeneration) && desiredQuery.current === requestedQuery);
       if (!historyRequests.current.isCurrent(requestGeneration) || desiredQuery.current !== requestedQuery) return;
 
       if (result.total !== null) {
@@ -430,6 +438,19 @@ export function History({ collection = "all" }: HistoryProps) {
     showHistoryNotice,
     historyLoadErrorMessage,
   ]);
+
+  useEffect(() => {
+    let wasActive = readTour().active;
+    const sync = () => {
+      const active = readTour().active;
+      if (active !== wasActive) {
+        wasActive = active;
+        void loadHistory({ detectNewEntries: false });
+      }
+    };
+    window.addEventListener(TOUR_EVENT, sync);
+    return () => window.removeEventListener(TOUR_EVENT, sync);
+  }, [loadHistory]);
 
   /* ── Polling ──────────────────────────────────────────────────── */
 
@@ -658,6 +679,11 @@ export function History({ collection = "all" }: HistoryProps) {
     if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
     const entry = entries.find((entry) => entry.id === id);
     if (!entry) return;
+    if (readTour().active && isDemoEntry(id)) {
+      flashSelectedId(id);
+      showHistoryNotice({ key: "demo-restore", level: "success", message: onboardingGuide.ui.demoRestore[locale.startsWith("zh") ? "zh-CN" : "en"] });
+      return;
+    }
     restoring.current = true;
     setFailedRestore(null);
     clearHistoryNotice();
@@ -687,7 +713,7 @@ export function History({ collection = "all" }: HistoryProps) {
     } finally {
       restoring.current = false;
     }
-  }, [entries, externalRestoring, queryReady, visibleIds, flashSelectedId, clearHistoryNotice, showHistoryNotice, t, closeHistory, showActionError]);
+  }, [entries, externalRestoring, queryReady, visibleIds, flashSelectedId, clearHistoryNotice, showHistoryNotice, t, locale, closeHistory, showActionError]);
 
   const handleArchiveImages = async (id: number) => {
     if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
@@ -841,6 +867,14 @@ export function History({ collection = "all" }: HistoryProps) {
     if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady) return;
     const entry = entries.find((candidate) => candidate.id === id);
     if (!entry || favoriteMutations.current.has(logicalHistoryItemKey(entry))) return;
+    if (readTour().active && isDemoEntry(id)) {
+      demoHidden.current.add(demoLogicalKey(entry));
+      setEntries((current) => current.filter((candidate) => demoLogicalKey(candidate) !== demoLogicalKey(entry)));
+      setTotalEntries((current) => Math.max(0, (current ?? 1) - 1));
+      setFocusedId(null);
+      showHistoryNotice({ key: "demo-delete", level: "success", message: onboardingGuide.ui.demoDelete[locale.startsWith("zh") ? "zh-CN" : "en"] });
+      return;
+    }
     if (entry.pinned && !isFavoritesCollection) {
       showHistoryNotice({ key: "favorite-protected", level: "error", message: t("history.favoriteProtected") });
       return;
@@ -869,7 +903,7 @@ export function History({ collection = "all" }: HistoryProps) {
       deleting.current = false;
     }
   }, [entries, externalRestoring, isFavoritesCollection, loadHistory, loadMigrationDiagnostics,
-    queryReady, showActionError, showHistoryNotice, t, visibleIds]);
+    queryReady, showActionError, showHistoryNotice, t, locale, visibleIds]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -935,6 +969,15 @@ export function History({ collection = "all" }: HistoryProps) {
   const handleRestore = (id: number, format?: string) => restoreSelected(id, true, format);
 
   const handleClearHistory = async () => {
+    if (readTour().active) {
+      demoHidden.current = new Set(demoHistoryPage({ keyword: null, category: null, startTime: null, endTime: null, limit: 1000, offset: 0 }).entries.map(demoLogicalKey));
+      setEntries([]);
+      setTotalEntries(0);
+      setFocusedId(null);
+      setShowClearConfirm(false);
+      showHistoryNotice({ key: "demo-clear", level: "success", message: onboardingGuide.ui.demoClear[locale.startsWith("zh") ? "zh-CN" : "en"] });
+      return;
+    }
     setClearing(true);
     try {
       await clearHistory();
@@ -962,6 +1005,11 @@ export function History({ collection = "all" }: HistoryProps) {
   const handleRestoreBatch = async (batchId: string) => {
     if (restoring.current || externalRestoring.current || !queryReady || !sessionActive.current) return;
     restoring.current = true;
+    if (readTour().active && batchId === "tailsync-demo-batch") {
+      restoring.current = false;
+      showHistoryNotice({ key: "demo-restore", level: "success", message: onboardingGuide.ui.demoRestore[locale.startsWith("zh") ? "zh-CN" : "en"] });
+      return;
+    }
     previewGeneration.current++;
     previewRequestKey.current = "";
     try {
@@ -984,6 +1032,14 @@ export function History({ collection = "all" }: HistoryProps) {
     const mutationKey = logicalHistoryItemKey(entry);
     if (favoriteMutations.current.has(mutationKey)) return;
     const favorite = !entry.pinned;
+    if (readTour().active && isDemoEntry(entry.id)) {
+      demoFavorites.current.set(demoLogicalKey(entry), favorite);
+      setEntries((current) => current.map((item) =>
+        demoLogicalKey(item) === mutationKey ? { ...item, pinned: favorite } : item
+      ));
+      showHistoryNotice({ key: favorite ? "demo-favorite" : "demo-unfavorite", level: "success", message: onboardingGuide.ui[favorite ? "demoFavorite" : "demoUnfavorite"][locale.startsWith("zh") ? "zh-CN" : "en"] });
+      return;
+    }
     favoriteMutations.current.set(mutationKey, favorite);
     setEntries((current) => current.map((item) =>
       logicalHistoryItemKey(item) === mutationKey
@@ -1048,6 +1104,7 @@ export function History({ collection = "all" }: HistoryProps) {
       className={`app ${theme}`}
       data-focused-entry-id={focusedId === null ? undefined : String(focusedId)}
     >
+      {!isFavoritesCollection && <GuidedTour window="history" />}
       <HistoryHeader
         searchRef={searchRef}
         t={t}
