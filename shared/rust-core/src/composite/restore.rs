@@ -173,16 +173,10 @@ impl RestorePlan {
                     }
                 }
             }
-            if target != RestoreTarget::Macos {
-                if let Ok(bytes) = super::readable_restore::rtf(&document) {
-                    document.representations.push(super::Representation {
-                        mime: Mime::Rtf,
-                        bytes,
-                    });
-                }
-            }
             // Keep the captured HTML and its image positions. macOS adds a
             // native RTFD representation from this same HTML in its adapter.
+            // Do not synthesize a competing paragraph-based RTF: its image
+            // blocks would move inline attachments onto separate lines.
             let mut plan = Self::compatibility(document, input, target)?;
             plan.selection = RestoreSelection::DocumentCompatibility;
             return Ok(plan);
@@ -543,18 +537,28 @@ mod tests {
         assert!(!plan.outputs().iter().any(|o| o.name == "public.rtf"));
         let windows =
             RestorePlan::portable_default(&bundle, input(), RestoreTarget::Windows).unwrap();
-        let rtf = windows
+        assert!(!windows
+            .outputs()
+            .iter()
+            .any(|o| o.name == "Rich Text Format"));
+        let cf_html = windows
             .native()
             .unwrap()
             .formats
             .iter()
-            .find(|f| f.name == "Rich Text Format")
+            .find(|f| f.name == "HTML Format")
+            .unwrap();
+        let macos_html = plan
+            .native()
+            .unwrap()
+            .formats
+            .iter()
+            .find(|f| f.name == "public.html")
             .unwrap();
         assert_eq!(
-            String::from_utf8_lossy(&rtf.bytes)
-                .matches("\\pict")
-                .count(),
-            2
+            cf_html.bytes,
+            super::super::html::encode_cf_html(std::str::from_utf8(&macos_html.bytes).unwrap())
+                .unwrap()
         );
         assert_eq!(
             bundle, original,

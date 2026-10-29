@@ -16,7 +16,7 @@
 
 默认便携发布共用 `RestorePlan::portable_default`：
 
-1. 原表示依赖完整时，保留 HTML 与资源绑定位置。图文文稿若同时带有纯文字 RTF，默认选用 `DocumentCompatibility`，避免目标应用优先读取 RTF 而丢图；macOS 从同一 HTML 生成原生 RTFD，Windows 可生成带嵌入图片的兼容 RTF。独立单图仍沿用原有规则。
+1. 原表示依赖完整时，保留 HTML 与资源绑定位置。图文文稿若同时带有纯文字 RTF，默认选用 `DocumentCompatibility`，避免目标应用优先读取 RTF 而丢图；macOS 从同一 HTML 生成原生 RTFD，Windows 保留 CF_HTML，不附带会把行内图片重排为独立段落的合成 RTF。独立单图仍沿用原有规则。
 2. 存在未闭合依赖时，复用历史恢复已有的 `AvailableContent` 路径。保留已绑定图片与其节点；缺图在原位置放占位；必要时从有界阅读模型生成独立副本，去除样式表等加载依赖。
 3. 无可信正文或已保存图片，或遇到结构／预算限制，继续保留历史并拒绝自动发布。显式单格式请求保持原来的严格语义。
 
