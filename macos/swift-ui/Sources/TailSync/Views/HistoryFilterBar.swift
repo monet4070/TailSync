@@ -188,9 +188,9 @@ struct FilterMenuList: View {
     let selectedID: String
     let onSelect: (String) -> Void
 
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.tailSyncPalette) private var palette
     @Environment(\.tailSyncSelection) private var selection
+    @State private var hoveredID: String?
 
     private var font: Font { selection.readingFont(size: 13) }
 
@@ -200,26 +200,39 @@ struct FilterMenuList: View {
                 FilterMenuRow(
                     label: option.label,
                     isSelected: option.id == selectedID,
+                    isHovered: option.id == hoveredID,
                     font: font,
                     palette: palette,
                     onSelect: { onSelect(option.id) }
                 )
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active:
+                        hoveredID = option.id
+                    case .ended:
+                        // A late exit from the previous row must not clear
+                        // the row the pointer has already entered.
+                        if hoveredID == option.id { hoveredID = nil }
+                    }
+                }
             }
         }
         .padding(5)
         .frame(minWidth: 176, maxWidth: 220)
+        .onContinuousHover { phase in
+            if case .ended = phase { hoveredID = nil }
+        }
+        .onDisappear { hoveredID = nil }
     }
 }
 
 private struct FilterMenuRow: View {
     let label: String
     let isSelected: Bool
+    let isHovered: Bool
     let font: Font
     let palette: TailSyncThemePalette
     let onSelect: () -> Void
-
-    @State private var hovering = false
-    @ObservedObject private var loc = Loc.shared
 
     var body: some View {
         Button(action: onSelect) {
@@ -242,15 +255,14 @@ private struct FilterMenuRow: View {
             }
             .frame(height: 26)
             .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isSelected ? palette.activeColor : (hovering ? palette.hoverColor : .clear))
+                    .fill(isSelected ? palette.activeColor : (isHovered ? palette.hoverColor : .clear))
             )
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(loc.reduceMotion ? nil : .easeOut(duration: 0.1), value: hovering)
     }
 }
 
