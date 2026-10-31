@@ -28,26 +28,37 @@ static DISPLAY_SCENARIO: Mutex<()> = Mutex::const_new(());
 struct Store {
     path: std::path::PathBuf,
     database: Arc<Mutex<HistoryDB>>,
+    // Fields drop in declaration order: close SQLite before deleting on Windows.
+    _cleanup: DirectoryCleanup,
 }
+
+struct DirectoryCleanup(std::path::PathBuf);
 
 impl Store {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "tailsync-display-runtime-{}-{:?}",
+            "tailsync-display-runtime-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let database = HistoryDB::open_isolated_for_test_composite(&path).unwrap();
         Self {
+            _cleanup: DirectoryCleanup(path.clone()),
             path,
             database: Arc::new(Mutex::new(database)),
         }
     }
 }
 
-impl Drop for Store {
+impl Drop for DirectoryCleanup {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        let result = std::fs::remove_dir_all(&self.0);
+        if !std::thread::panicking() {
+            result.expect("fixture database must be closed before removing its directory");
+        }
     }
 }
 

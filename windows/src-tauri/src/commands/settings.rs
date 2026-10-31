@@ -120,7 +120,13 @@ pub async fn update_settings(
         &state.db,
         patch,
         &|settings: &crate::crypto::Settings| {
-            crate::automatic_images::persist(settings, &state.image_archive)
+            if crate::wpf_bridge::isolated() {
+                // Acceptance exercises the real persistent patch without
+                // enabling network image archiving in the user's environment.
+                settings.save().map_err(|error| error.to_string())
+            } else {
+                crate::automatic_images::persist(settings, &state.image_archive)
+            }
         },
     )
     .await
@@ -139,6 +145,9 @@ pub async fn update_settings(
 /// Open the history window
 #[command]
 pub async fn open_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if crate::wpf_bridge::navigate(&app, "open", "history") {
+        return Ok(());
+    }
     crate::window_lifecycle::capture_history_foreground_for_open(&app);
     open_history_window_captured(app).await
 }
@@ -186,6 +195,9 @@ async fn open_history_window_captured(app: tauri::AppHandle) -> Result<(), Comma
 /// or hidden history window is restored and focused; a focused visible one is
 /// hidden and enters the normal transient-window release path.
 pub(crate) async fn toggle_history_window(app: tauri::AppHandle) -> Result<(), String> {
+    if crate::wpf_bridge::navigate(&app, "toggle", "history") {
+        return Ok(());
+    }
     use tauri::Manager;
 
     if let Some(window) = app.get_webview_window(crate::window_lifecycle::HISTORY_WINDOW_LABEL) {
@@ -205,6 +217,9 @@ pub(crate) async fn toggle_history_window(app: tauri::AppHandle) -> Result<(), S
 /// Open the favorites window that shares the history row interaction model.
 #[command]
 pub async fn open_favorites_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if crate::wpf_bridge::navigate(&app, "open", "favorites") {
+        return Ok(());
+    }
     use tauri::Manager;
 
     crate::window_lifecycle::mark_window_open(
@@ -240,6 +255,9 @@ pub async fn open_favorites_window(app: tauri::AppHandle) -> Result<(), CommandE
 /// Open the settings window
 #[command]
 pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if crate::wpf_bridge::navigate(&app, "open", "settings") {
+        return Ok(());
+    }
     use tauri::Manager;
 
     crate::window_lifecycle::mark_window_open(&app, crate::window_lifecycle::SETTINGS_WINDOW_LABEL);
@@ -287,6 +305,9 @@ async fn open_connections_window_impl(
     app: tauri::AppHandle,
     tour: bool,
 ) -> Result<(), CommandError> {
+    if crate::wpf_bridge::navigate(&app, if tour { "tour" } else { "open" }, "connections") {
+        return Ok(());
+    }
     use tauri::Manager;
 
     crate::window_lifecycle::mark_window_open(
@@ -331,6 +352,9 @@ async fn open_connections_window_impl(
 
 #[command]
 pub async fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if crate::wpf_bridge::navigate(&app, "close", "history") {
+        return Ok(());
+    }
     if app
         .try_state::<crate::preview_window::PreviewWindowController>()
         .is_some()
@@ -351,6 +375,9 @@ pub async fn close_history_window(app: tauri::AppHandle) -> Result<(), CommandEr
 
 #[command]
 pub async fn close_favorites_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if crate::wpf_bridge::navigate(&app, "close", "favorites") {
+        return Ok(());
+    }
     if app
         .try_state::<crate::preview_window::PreviewWindowController>()
         .is_some()
@@ -370,6 +397,9 @@ pub async fn close_favorites_window(app: tauri::AppHandle) -> Result<(), Command
 
 #[command]
 pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if crate::wpf_bridge::navigate(&app, "close", "settings") {
+        return Ok(());
+    }
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::SETTINGS_WINDOW_LABEL,
@@ -379,6 +409,9 @@ pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), CommandError> 
 
 #[command]
 pub fn close_connections_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if crate::wpf_bridge::navigate(&app, "close", "connections") {
+        return Ok(());
+    }
     crate::window_lifecycle::hide_then_release_window(
         app,
         crate::window_lifecycle::CONNECTIONS_WINDOW_LABEL,

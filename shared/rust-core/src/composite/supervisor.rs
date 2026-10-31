@@ -289,6 +289,53 @@ pub fn run_registered(
 mod tests {
     use super::*;
 
+    // Exercise the same real child-process boundary on both platforms. Windows
+    // uses the inbox PowerShell host and byte streams, with no clipboard or
+    // filesystem side effects and no dependency on a Unix compatibility shell.
+    fn child(kind: &str) -> (PathBuf, Vec<&'static str>) {
+        #[cfg(windows)]
+        {
+            let script = match kind {
+                "hello" => "[Console]::Out.Write('hello')",
+                "hang" => "[Threading.Thread]::Sleep(30000)",
+                "flood" => "$stream=[Console]::OpenStandardOutput();$bytes=New-Object byte[] 4096;while($true){$stream.Write($bytes,0,$bytes.Length)}",
+                "stderr" => "[Console]::Error.Write('secret clipboard body C:/private');[Console]::Out.Write('ok')",
+                "echo" => "[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput())",
+                "exit" => "exit 0",
+                _ => unreachable!(),
+            };
+            let system = std::env::var_os("SystemRoot").expect("Windows system directory");
+            (
+                PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+                vec![
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    script,
+                ],
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            match kind {
+                "hello" => ("/bin/sh".into(), vec!["-c", "printf hello"]),
+                "hang" => ("/bin/sleep".into(), vec!["30"]),
+                "flood" => ("/bin/cat".into(), vec!["/dev/zero"]),
+                "stderr" => (
+                    "/bin/sh".into(),
+                    vec![
+                        "-c",
+                        "printf 'secret clipboard body /Users/me/private' >&2; printf ok",
+                    ],
+                ),
+                "echo" => ("/bin/cat".into(), vec![]),
+                "exit" => ("/usr/bin/true".into(), vec![]),
+                _ => unreachable!(),
+            }
+        }
+    }
+
     fn request<'a>(
         program: &'a Path,
         args: &'a [&'a str],
@@ -307,13 +354,8 @@ mod tests {
     /// A helper that exits normally is reported with its output and status.
     #[test]
     fn a_normal_exit_returns_its_output() {
-        let program = PathBuf::from("/bin/sh");
-        let outcome = run(request(
-            &program,
-            &["-c", "printf hello"],
-            Duration::from_secs(5),
-            1024,
-        ));
+        let (program, args) = child("hello");
+        let outcome = run(request(&program, &args, Duration::from_secs(5), 1024));
         match outcome {
             HelperOutcome::Exited {
                 success, stdout, ..
@@ -329,9 +371,9 @@ mod tests {
     /// `TimedOut` — not as a success and not as a definite no-effect.
     #[test]
     fn a_hanging_helper_is_terminated_and_reported_as_timed_out() {
-        let program = PathBuf::from("/bin/sleep");
+        let (program, args) = child("hang");
         let started = Instant::now();
-        let outcome = run(request(&program, &["30"], Duration::from_millis(200), 1024));
+        let outcome = run(request(&program, &args, Duration::from_millis(200), 1024));
         assert!(
             matches!(outcome, HelperOutcome::TimedOut { .. }),
             "a hanging helper must be reported as TimedOut, got {outcome:?}"
@@ -366,14 +408,9 @@ mod tests {
     /// deadline — and it is not reported as a truncated success.
     #[test]
     fn stdout_is_capped_and_flooding_is_stopped_early() {
-        let program = PathBuf::from("/bin/cat");
+        let (program, args) = child("flood");
         let started = Instant::now();
-        let outcome = run(request(
-            &program,
-            &["/dev/zero"],
-            Duration::from_secs(30),
-            4096,
-        ));
+        let outcome = run(request(&program, &args, Duration::from_secs(30), 4096));
         assert!(
             matches!(outcome, HelperOutcome::OutputExceeded { .. }),
             "a flooding helper must be reported as OutputExceeded, got {outcome:?}"
@@ -389,16 +426,8 @@ mod tests {
     /// is never surfaced — only the byte count.
     #[test]
     fn stderr_is_drained_but_never_surfaced() {
-        let program = PathBuf::from("/bin/sh");
-        let outcome = run(request(
-            &program,
-            &[
-                "-c",
-                "printf 'secret clipboard body /Users/me/private' >&2; printf ok",
-            ],
-            Duration::from_secs(5),
-            1024,
-        ));
+        let (program, args) = child("stderr");
+        let outcome = run(request(&program, &args, Duration::from_secs(5), 1024));
         match outcome {
             HelperOutcome::Exited {
                 stdout,
@@ -416,11 +445,11 @@ mod tests {
     /// keeps the payload alive after the call returns.
     #[test]
     fn stdin_is_written_and_the_writer_is_reclaimed() {
-        let program = PathBuf::from("/bin/cat");
+        let (program, args) = child("echo");
         let payload = vec![b'x'; 4 * 1024 * 1024];
         let outcome = run(HelperRequest {
             program: &program,
-            args: &[],
+            args: &args,
             stdin: Some(payload.clone()),
             deadline: Duration::from_secs(10),
             stdout_limit: payload.len() + 16,
@@ -435,12 +464,12 @@ mod tests {
     /// the write fails with a broken pipe and the thread is joined.
     #[test]
     fn an_early_exit_does_not_leak_the_stdin_writer() {
-        let program = PathBuf::from("/usr/bin/true");
+        let (program, args) = child("exit");
         let payload = vec![b'y'; 8 * 1024 * 1024];
         let started = Instant::now();
         let outcome = run(HelperRequest {
             program: &program,
-            args: &[],
+            args: &args,
             stdin: Some(payload),
             deadline: Duration::from_secs(5),
             stdout_limit: 1024,

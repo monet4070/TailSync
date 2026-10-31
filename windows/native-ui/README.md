@@ -1,6 +1,6 @@
 # TailSync · Windows 原生界面原型
 
-另有独立 **WPF 备选工程**：[`TailSync.Wpf/README.md`](TailSync.Wpf/README.md)，使用 `build-wpf.ps1` 构建运行。下文仍描述原有 WinUI 工程；两版保留作同功能对照。
+**WPF 前端已接入真实 Rust 后台并按 main 迁移功能**：[`TailSync.Wpf/README.md`](TailSync.Wpf/README.md)，使用 `build-wpf.ps1` 构建运行。下文仅描述原有 WinUI 演示工程，不能当成 WPF 的功能或运行说明。
 
 独立 **C# / XAML / WinUI 3** 工程，保留现有 Rust 后台的接入边界。当前修订以 Mac SwiftUI 源码和用户提供的两张 2× 截图为视觉参照，采用相同的独立窗口结构；原型没有接入 WebView2。
 

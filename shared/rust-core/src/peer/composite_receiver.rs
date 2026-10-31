@@ -643,6 +643,27 @@ mod tests {
         )
         .await
     }
+    async fn cleanup(root: std::path::PathBuf, mut database: Arc<Mutex<HistoryDB>>) {
+        // PendingHistoryProtection releases its DB reference from a scheduled
+        // task. Wait for actual ownership, rather than racing Windows' file
+        // sharing rules (Unix can unlink the same open SQLite files).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match Arc::try_unwrap(database) {
+                Ok(database) => {
+                    drop(database.into_inner());
+                    break;
+                }
+                Err(shared) => database = shared,
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "history protection did not release its database"
+            );
+            tokio::task::yield_now().await;
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[tokio::test]
     async fn revocation_after_validation_prevents_both_native_effect_and_history() {
         let _pipeline = crate::composite::budgets::pipeline_budget_test_lock_async().await;
@@ -673,8 +694,7 @@ mod tests {
             .get_all(None, None, 10, 0)
             .unwrap()
             .is_empty());
-        drop(db);
-        std::fs::remove_dir_all(root).unwrap();
+        cleanup(root, db).await;
     }
     #[tokio::test]
     async fn o10_revoked_or_superseded_events_skip_busy_native_preparation() {
@@ -716,8 +736,7 @@ mod tests {
                 usize::from(authorized)
             );
             drop(lease);
-            drop(db);
-            std::fs::remove_dir_all(root).unwrap();
+            cleanup(root, db).await;
         }
     }
 
@@ -754,8 +773,7 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(platform.writes.load(Ordering::SeqCst), 1);
-        drop(db);
-        std::fs::remove_dir_all(root).unwrap();
+        cleanup(root, db).await;
     }
     #[tokio::test]
     async fn crash_after_claim_saves_history_as_unknown_without_a_native_effect() {
@@ -777,8 +795,7 @@ mod tests {
         );
         assert_eq!(platform.writes.load(Ordering::SeqCst), 0);
         assert_eq!(db.lock().await.get_all(None, None, 10, 0).unwrap().len(), 1);
-        drop(db);
-        std::fs::remove_dir_all(root).unwrap();
+        cleanup(root, db).await;
     }
     #[tokio::test]
     async fn newer_native_revision_and_partial_effect_have_distinct_durable_results() {
@@ -804,8 +821,7 @@ mod tests {
             AckResult::FailedPartial
         );
         assert_eq!(platform.writes.load(Ordering::SeqCst), 1);
-        drop(db);
-        std::fs::remove_dir_all(root).unwrap();
+        cleanup(root, db).await;
     }
     /// R2-02 / T04 — the structural gate and the native-preparation gate are
     /// separate, and only the first one decides whether content is worth keeping.
@@ -884,8 +900,7 @@ mod tests {
             "the content is still recoverable from history"
         );
 
-        drop(db);
-        std::fs::remove_dir_all(root).unwrap();
+        cleanup(root, db).await;
     }
 
     #[tokio::test]
@@ -916,8 +931,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(database.get_composite(rows[0].id).unwrap(), b);
         drop(database);
-        drop(db);
-        std::fs::remove_dir_all(root).unwrap();
+        cleanup(root, db).await;
     }
 
     #[tokio::test]
@@ -972,8 +986,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(database.get_composite(rows[0].id).unwrap(), bundle);
         drop(database);
-        drop(db);
-        std::fs::remove_dir_all(root).unwrap();
+        cleanup(root, db).await;
     }
 
     fn web_article(stylesheet: bool, missing_image: bool) -> PortableBundle {
@@ -1088,8 +1101,7 @@ mod tests {
             assert_eq!(rows.len(), 1);
             assert_eq!(database.get_composite(rows[0].id).unwrap(), original);
             drop(database);
-            drop(db);
-            std::fs::remove_dir_all(root).unwrap();
+            cleanup(root, db).await;
         }
     }
 
@@ -1119,8 +1131,7 @@ mod tests {
                 platform.writes.load(Ordering::SeqCst),
                 usize::from(state == PublishState::Partial)
             );
-            drop(db);
-            std::fs::remove_dir_all(root).unwrap();
+            cleanup(root, db).await;
         }
     }
 
@@ -1141,8 +1152,7 @@ mod tests {
                 AckResult::StoredIncomplete
             );
             assert_eq!(platform.writes.load(Ordering::SeqCst), 0);
-            drop(db);
-            std::fs::remove_dir_all(root).unwrap();
+            cleanup(root, db).await;
         }
     }
 
@@ -1166,7 +1176,6 @@ mod tests {
             AckResult::StoredIncomplete
         );
         assert_eq!(platform.writes.load(Ordering::SeqCst), 0);
-        drop(db);
-        std::fs::remove_dir_all(root).unwrap();
+        cleanup(root, db).await;
     }
 }

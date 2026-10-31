@@ -47,6 +47,7 @@ Check((await fresh.GetHistoryAsync(new(Date: "custom", Start: new(2026, 10, 25),
 Check((await fresh.GetHistoryAsync(new(Date: "custom", Start: new(2026, 10, 26), End: new(2026, 10, 25)))).Count == 0, "inverted range has no stale entries");
 var demo = await fresh.GetHistoryAsync(new());
 Check(demo.Single(x => x.Id == 1).IsComposite && !demo.Single(x => x.Id == 1).HasFormatMenu && demo.Single(x => x.Id == 2).HasFormatMenu, "native-only diagnostics do not expose format menu");
+await HistoryStateChecks.Run();
 Console.WriteLine("All native presentation checks passed.");
 
 static void Check(bool condition, string scenario)

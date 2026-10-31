@@ -401,7 +401,19 @@ pub(super) fn builtin_tokens(id: &str, mode: &str) -> Value {
         _ => return builtin_tokens(CANVAS_ID, mode),
     };
     let display = match id {
-        CANVAS_ID | LEDGER_ID => vec![
+        CANVAS_ID => vec![
+            "Noto Serif SC",
+            "Source Han Serif SC",
+            "STZhongsong",
+            "Songti SC",
+            "STSong",
+            "SimSun",
+            "Iowan Old Style",
+            "Baskerville",
+            "Georgia",
+            "serif",
+        ],
+        LEDGER_ID => vec![
             "STZhongsong",
             "Songti SC",
             "STSong",
@@ -436,5 +448,59 @@ pub(super) fn builtin_tokens(id: &str, mode: &str) -> Value {
         ],
         _ => vec!["system-ui"],
     };
-    serde_json::json!({"colors":{"accent":{"default":accent,"hover":hover,"soft":soft,"onAccent":on},"background":{"canvas":bg,"surface":surface,"input":input,"hover":bg_hover,"active":active,"raised":raised,"toast":toast},"text":{"primary":primary,"secondary":secondary,"tertiary":tertiary,"toast":text_toast},"border":{"default":border,"strong":strong,"divider":divider},"status":{"positive":positive,"positiveSoft":positive_soft,"warning":warning,"warningSoft":warning_soft,"info":info,"infoSoft":info_soft}},"typography":{"ui":{"families":["Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC","sans-serif"],"size":13,"lineHeight":20,"weight":400},"display":{"families":display},"reading":{"families":["Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC","sans-serif"]},"search":{"size":if id == FLUX_ID || id == MONO_ID {16}else{18},"useDisplayFont":!(id == FLUX_ID || id == MONO_ID)},"section":{"size":if id == MONO_ID {18}else{23},"uppercase":id == FLUX_ID || id == MONO_ID},"history":{"size":13}},"density":{"control":13,"row":13},"shape":{"controlRadius":if id == MONO_ID {3}else{9},"surfaceRadius":if id == MONO_ID {3}else{10},"windowRadius":if id == MONO_ID {3}else{10}},"effects":{"opacity":1,"shadow":{"radius":if id == MONO_ID {0}else{70},"y":if id == MONO_ID {0}else{24},"opacity":if id == MONO_ID {0.0}else{0.16}},"motion":{"fast":160,"slow":420,"easing":"cubic-bezier(0.22, 1, 0.36, 1)"}},"components":component_defaults()})
+    let mut tokens = serde_json::json!({"colors":{"accent":{"default":accent,"hover":hover,"soft":soft,"onAccent":on},"background":{"canvas":bg,"surface":surface,"input":input,"hover":bg_hover,"active":active,"raised":raised,"toast":toast},"text":{"primary":primary,"secondary":secondary,"tertiary":tertiary,"toast":text_toast},"border":{"default":border,"strong":strong,"divider":divider},"status":{"positive":positive,"positiveSoft":positive_soft,"warning":warning,"warningSoft":warning_soft,"info":info,"infoSoft":info_soft}},"typography":{"ui":{"families":["Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC","sans-serif"],"size":14,"lineHeight":22,"weight":400},"display":{"families":display},"reading":{"families":["Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC","sans-serif"]},"search":{"size":if id == MONO_ID {15}else{16},"useDisplayFont":false},"section":{"size":match id { MONO_ID => 21, FLUX_ID => 22, AURA_ID => 23, _ => 24 },"uppercase":id == FLUX_ID || id == MONO_ID},"history":{"size":if id == MONO_ID {14}else{15},"useDisplayFont":false}},"density":{"control":13,"row":13},"shape":{"controlRadius":if id == MONO_ID {3}else{9},"surfaceRadius":if id == MONO_ID {3}else{10},"windowRadius":if id == MONO_ID {3}else{10}},"effects":{"opacity":1,"shadow":{"radius":if id == MONO_ID {0}else{70},"y":if id == MONO_ID {0}else{24},"opacity":if id == MONO_ID {0.0}else{0.16}},"motion":{"fast":160,"slow":420,"easing":"cubic-bezier(0.22, 1, 0.36, 1)"}},"components":component_defaults()});
+    // Expressive faces belong to headings; dense mixed-language content uses
+    // the theme's reading role. Mono keeps its technical identity in that role.
+    if id == MONO_ID {
+        tokens["typography"]["reading"]["families"] = serde_json::json!([
+            "Cascadia Code",
+            "Cascadia Mono",
+            "Microsoft YaHei UI",
+            "SF Mono",
+            "monospace"
+        ]);
+    } else if id == CANVAS_ID {
+        tokens["typography"]["ui"]["families"] = serde_json::json!([
+            "Noto Sans SC",
+            "Source Han Sans SC",
+            "Segoe UI Variable Text",
+            "Segoe UI",
+            "Microsoft YaHei UI",
+            "PingFang SC",
+            "sans-serif"
+        ]);
+        tokens["typography"]["reading"]["families"] = serde_json::json!([
+            "Noto Serif SC",
+            "Source Han Serif SC",
+            "Songti SC",
+            "STSong",
+            "STZhongsong",
+            "SimSun",
+            "Georgia",
+            "serif"
+        ]);
+        tokens["typography"]["history"]["size"] = serde_json::json!(16);
+    }
+    for component in COMPONENT_NAMES {
+        let size = match *component {
+            "search" => tokens["typography"]["search"]["size"].clone(),
+            "history" => tokens["typography"]["history"]["size"].clone(),
+            "section" => tokens["typography"]["section"]["size"].clone(),
+            "toast" => serde_json::json!(13),
+            _ => serde_json::json!(14),
+        };
+        if let Some(states) = tokens["components"][*component].as_object_mut() {
+            for state in states.values_mut() {
+                state["typography"]["size"] = size.clone();
+                state["typography"]["weight"] = serde_json::json!(if *component == "button"
+                    || id == CANVAS_ID && matches!(*component, "history" | "panel")
+                {
+                    500
+                } else {
+                    400
+                });
+            }
+        }
+    }
+    tokens
 }

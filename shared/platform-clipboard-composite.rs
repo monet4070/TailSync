@@ -777,6 +777,7 @@ pub const HELPER_PROTOCOL_VERSION: u32 = if cfg!(target_os = "macos") { 4 } else
 pub enum HelperHealth {
     Healthy { protocol: u32 },
     Missing,
+    #[cfg(unix)]
     NotExecutable,
     VersionMismatch { found: Option<u32>, expected: u32 },
     ProbeFailed { detail: String },
@@ -791,6 +792,7 @@ impl HelperHealth {
         match self {
             Self::Healthy { protocol } => format!("helper protocol {protocol}"),
             Self::Missing => "clipboard helper is not present".into(),
+            #[cfg(unix)]
             Self::NotExecutable => "clipboard helper is not executable".into(),
             Self::VersionMismatch { found, expected } => match found {
                 Some(found) => format!("clipboard helper protocol {found}, expected {expected}"),

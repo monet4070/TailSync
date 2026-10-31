@@ -592,6 +592,14 @@ pub(super) fn resolve_manifest_unenforced(
         return err("THEME_MODE", "mode must be light or dark", "/mode");
     };
     let mut tokens = canvas(mode);
+    // A new explicit builtin role must not silently reinterpret existing
+    // custom packages. Packages opt into the role in foundation/mode/platform.
+    if let Some(history) = tokens
+        .pointer_mut("/typography/history")
+        .and_then(Value::as_object_mut)
+    {
+        history.remove("useDisplayFont");
+    }
     let mut provenance = BTreeMap::new();
     mark_provenance(&tokens, &mut provenance, "canvas", "");
     merge(

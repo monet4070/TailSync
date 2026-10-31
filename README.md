@@ -25,6 +25,8 @@ TailSync prefers your local network and falls back to Tailscale when needed, wit
 > [!NOTE]
 > TailSync 2.3.2 is under active development. Earlier versions are already published as free Community Releases. The macOS and Windows clients implement synchronization and automatic sleep/wake recovery logic, but native Windows and real two-device acceptance for this version remain pending. Update packages carry a TailSync private-key signature, SHA-256 checksums, and downgrade protection, while the macOS build is ad-hoc signed (not notarized) and the Windows build has no commercial code signature. Paid platform signing can be enabled later as a Trusted Release.
 
+The native Windows WPF client includes the October 31 clipboard and onboarding fixes and connects to the Rust backend through authenticated, current-user named pipes. See the [WPF build and usage guide](windows/native-ui/TailSync.Wpf/README.md). `windows/native-ui/build-wpf.ps1 -Publish` produces a complete portable directory with the .NET runtime, backend, and clipboard helper. The React/Tauri frontend source remains available.
+
 ## Why TailSync
 
 | | Capability | What it does |

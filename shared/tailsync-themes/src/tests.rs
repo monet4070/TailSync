@@ -579,6 +579,142 @@ fn platform_tokens_apply_after_mode_tokens() {
 }
 
 #[test]
+fn builtins_keep_expressive_titles_and_readable_content() {
+    for id in builtin_ids() {
+        for mode in ["light", "dark"] {
+            let resolved = resolve_theme_at(id, mode, "windows", false, Path::new(".")).unwrap();
+            assert_eq!(
+                resolved
+                    .tokens
+                    .pointer("/typography/history/useDisplayFont"),
+                Some(&Value::Bool(false))
+            );
+            assert_eq!(
+                resolved.tokens.pointer("/typography/search/useDisplayFont"),
+                Some(&Value::Bool(false))
+            );
+            assert!(
+                resolved
+                    .tokens
+                    .pointer("/typography/history/size")
+                    .unwrap()
+                    .as_u64()
+                    .unwrap()
+                    >= 14
+            );
+            assert_ne!(
+                resolved.tokens.pointer("/typography/display/families"),
+                resolved.tokens.pointer("/typography/reading/families")
+            );
+        }
+    }
+}
+
+#[test]
+fn canvas_uses_a_screen_readable_serif_without_changing_other_theme_roles() {
+    for platform in ["windows", "macos"] {
+        for mode in ["light", "dark"] {
+            let canvas =
+                resolve_theme_at(CANVAS_ID, mode, platform, false, Path::new(".")).unwrap();
+            assert_eq!(
+                canvas
+                    .tokens
+                    .pointer("/typography/reading/families/0")
+                    .unwrap(),
+                "Noto Serif SC"
+            );
+            assert_eq!(
+                canvas
+                    .tokens
+                    .pointer("/typography/display/families/0")
+                    .unwrap(),
+                "Noto Serif SC"
+            );
+            assert_eq!(
+                canvas.tokens.pointer("/typography/history/size").unwrap(),
+                16
+            );
+            assert_eq!(
+                canvas.tokens.pointer("/typography/ui/families/0").unwrap(),
+                "Noto Sans SC"
+            );
+            assert_eq!(
+                canvas
+                    .tokens
+                    .pointer("/components/history/default/typography/weight")
+                    .unwrap(),
+                500
+            );
+            assert_eq!(
+                canvas
+                    .tokens
+                    .pointer("/components/panel/default/typography/weight")
+                    .unwrap(),
+                500
+            );
+            assert_eq!(
+                canvas.tokens.pointer("/typography/history/useDisplayFont"),
+                Some(&Value::Bool(false))
+            );
+            assert_eq!(
+                canvas.tokens.pointer("/typography/search/useDisplayFont"),
+                Some(&Value::Bool(false))
+            );
+        }
+    }
+}
+
+#[test]
+fn explicit_history_font_role_is_optional_typed_and_preserves_legacy_packages() {
+    let base = manifest();
+    let bytes = package(base.clone());
+    let (legacy, assets) = read_package(&bytes).unwrap();
+    let resolved = resolve_manifest(
+        &legacy,
+        &package_digest(&bytes),
+        "light",
+        "windows",
+        false,
+        assets,
+    )
+    .unwrap();
+    assert!(resolved
+        .tokens
+        .pointer("/typography/history/useDisplayFont")
+        .is_none());
+    for display in [true, false] {
+        let mut value = base.clone();
+        value["foundation"] =
+            serde_json::json!({"typography": {"history": {"useDisplayFont": display}}});
+        let bytes = package(value);
+        assert!(validate_theme(&bytes, "light", false).valid);
+        let (manifest, assets) = read_package(&bytes).unwrap();
+        let resolved = resolve_manifest(
+            &manifest,
+            &package_digest(&bytes),
+            "light",
+            "windows",
+            false,
+            assets,
+        )
+        .unwrap();
+        assert_eq!(
+            resolved
+                .tokens
+                .pointer("/typography/history/useDisplayFont"),
+            Some(&Value::Bool(display))
+        );
+    }
+    let mut invalid = base;
+    invalid["foundation"] =
+        serde_json::json!({"typography": {"history": {"useDisplayFont": "false"}}});
+    assert_eq!(
+        diagnostic(invalid).json_pointer,
+        "/foundation/typography/history/useDisplayFont"
+    );
+}
+
+#[test]
 fn accepts_every_supported_token_field() {
     let mut m = manifest();
     m["foundation"] = serde_json::json!({

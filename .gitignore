@@ -57,6 +57,10 @@ windows/ci-artifacts/
 ci-downloads/
 
 # Runtime logs
+/.bench-tools/
+/windows/ui-benchmark/slint/target/
+/windows/ui-benchmark/tauri/target/
+/windows/ui-benchmark/web-dist/
 **/logs/
 **/*.log
 **/*tailsync-process-audit*.log

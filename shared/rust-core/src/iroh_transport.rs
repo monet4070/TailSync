@@ -8,7 +8,9 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
+use iroh::endpoint::{
+    presets, ConnectError, ConnectWithOptsError, Connection, RecvStream, SendStream,
+};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Mutex, Notify};
@@ -273,6 +275,12 @@ impl IrohEndpoint {
         self.endpoint.id().to_string()
     }
 
+    /// Remote endpoint-only invites depend on relay/discovery publication.
+    /// Binding a UDP socket alone does not make a fresh endpoint reachable.
+    pub async fn wait_online(&self) {
+        self.endpoint.online().await;
+    }
+
     pub async fn connect(&self, endpoint_id: &str) -> Result<IrohBiStream, String> {
         let endpoint_id = EndpointId::from_str(&canonical_endpoint_id(endpoint_id)?)
             .map_err(|error| format!("Invalid Iroh endpoint ID: {error}"))?;
@@ -288,11 +296,25 @@ impl IrohEndpoint {
         endpoint_addr: EndpointAddr,
         alpn: &[u8],
     ) -> Result<IrohBiStream, String> {
-        let connection = self
-            .endpoint
-            .connect(endpoint_addr, alpn)
-            .await
-            .map_err(|error| format!("Iroh connection failed: {error}"))?;
+        // A newly published endpoint can become relay-online before its signed
+        // addressing record is visible to lookup services. Retry only that
+        // typed pre-connect condition; handshake/authentication failures and
+        // established streams are never replayed here.
+        let mut attempt = 0;
+        let delays = [250, 500, 1000, 1500];
+        let connection = loop {
+            match self.endpoint.connect(endpoint_addr.clone(), alpn).await {
+                Ok(connection) => break connection,
+                Err(ConnectError::Connect {
+                    source: ConnectWithOptsError::NoAddress { .. },
+                    ..
+                }) if attempt < delays.len() => {
+                    tokio::time::sleep(Duration::from_millis(delays[attempt])).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(format!("Iroh connection failed: {error}")),
+            }
+        };
         let (send, recv) = connection
             .open_bi()
             .await

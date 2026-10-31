@@ -123,7 +123,7 @@ function assertTreeMatch(relativeDirectory, allowedDrift = []) {
   if (drift.length) fail(`Shared tree drift detected in ${relativeDirectory}: ${drift.join(', ')}`);
 }
 
-// The production UIs intentionally differ: Windows uses React/Tauri while
+// The production UIs intentionally differ: Windows uses WPF or React/Tauri while
 // macOS ships SwiftUI. Cross-platform checks below cover their shared runtime
 // and serialized contracts instead of requiring frontend source parity.
 assertTreeMatch('src-tauri/src', [
@@ -173,6 +173,10 @@ assertTreeMatch('src-tauri/src', [
   'preview_window.rs',
   'tray.rs',
   'window_lifecycle.rs',
+  // Current-user authenticated Windows named pipes adapt the native WPF shell;
+  // macOS keeps its SwiftUI/Unix-socket adapter.
+  'wpf_bridge.rs',
+  'wpf_bridge/windows_transport.rs',
 ]);
 
 for (const [relativePath, canonicalPath] of [

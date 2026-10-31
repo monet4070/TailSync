@@ -8,6 +8,13 @@ public sealed class DemoTailSyncClient : ITailSyncClient
 
     public DemoTailSyncClient()
     {
+        var benchmarkFixture = Environment.GetEnvironmentVariable("TAILSYNC_UI_BENCH_FIXTURE");
+        if (!string.IsNullOrEmpty(benchmarkFixture))
+        {
+            _entries = JsonSerializer.Deserialize<List<HistoryEntry>>(File.ReadAllText(benchmarkFixture))
+                ?? throw new InvalidDataException("Empty benchmark fixture");
+            return;
+        }
         var assembly = typeof(DemoTailSyncClient).Assembly;
         var name = assembly.GetManifestResourceNames().Single(x => x.EndsWith("history.json", StringComparison.Ordinal));
         using var stream = assembly.GetManifestResourceStream(name)!;
@@ -39,7 +46,9 @@ public sealed class DemoTailSyncClient : ITailSyncClient
             results = results.Where(x => $"{x.Title}\n{x.Description}\n{x.Body}\n{x.SourcePeer}"
                 .Contains(term, StringComparison.OrdinalIgnoreCase));
         }
-        IReadOnlyList<HistoryEntry> page = results.OrderByDescending(x => x.Timestamp).ThenByDescending(x => x.Id).ToArray();
+        var ordered = results.OrderByDescending(x => x.Timestamp).ThenByDescending(x => x.Id);
+        IReadOnlyList<HistoryEntry> page = (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("TAILSYNC_UI_BENCH_FIXTURE"))
+            ? ordered.AsEnumerable() : ordered.Take(30)).ToArray();
         return Task.FromResult(page);
     }
 

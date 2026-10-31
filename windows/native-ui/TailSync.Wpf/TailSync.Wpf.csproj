@@ -8,8 +8,21 @@
     <SelfContained>false</SelfContained>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RootNamespace>TailSync.Wpf</RootNamespace>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <Product>TailSync WPF</Product>
+    <Version>2.3.2</Version>
+    <InformationalVersion>2.3.2-wpf-clipboard-onboarding.20261031+source.35c7234</InformationalVersion>
+    <ApplicationIcon>../../src-tauri/icons/icon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="../../../shared/onboarding/guide.json" LogicalName="TailSync.Wpf.OnboardingGuide.json" />
+    <EmbeddedResource Include="../../../shared/onboarding/demo.json" LogicalName="TailSync.Wpf.OnboardingDemo.json" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
+    <PackageReference Include="AvalonEdit" Version="6.3.1.120" />
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+    <PackageReference Include="Markdig" Version="1.5.1" />
+    <PackageReference Include="SharpVectors.Wpf" Version="1.8.6" />
+    <EmbeddedResource Include="Resources/*.json" LogicalName="TailSync.Wpf.%(Filename).json" />
     <EmbeddedResource Include="../Design/wpf-palettes.generated.json" LogicalName="TailSync.Wpf.Palettes.json" />
     <ProjectReference Include="../TailSync.Native.Core/TailSync.Native.Core.csproj" />
   </ItemGroup>

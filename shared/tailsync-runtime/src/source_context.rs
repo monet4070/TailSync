@@ -686,6 +686,7 @@ mod tests {
             std::env::temp_dir().join(format!("tailsync-source-registry-{:016x}", rand_u64()));
         let db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
         let revision = db.read_revision().unwrap();
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
         revision
     }
@@ -1112,6 +1113,7 @@ mod tests {
         .await;
         assert_eq!(replay.unwrap_err(), "source_grant_consumed");
         std::fs::remove_file(&path).ok();
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1184,6 +1186,7 @@ mod tests {
             "source_unknown_node"
         );
         std::fs::remove_file(&path).ok();
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1272,6 +1275,7 @@ mod tests {
             "source_superseded"
         );
         std::fs::remove_file(&path).ok();
+        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -25,6 +25,8 @@
 > [!NOTE]
 > TailSync 2.3.2 目前处于积极开发阶段。此前版本已作为免费的 Community Release 公开发布。macOS 与 Windows 客户端已实现同步和休眠/唤醒恢复逻辑，但本版本的真实双设备恢复与 Windows 原生流程仍待验收。更新包仍有 TailSync 私钥签名、SHA-256 校验和降级保护，macOS 为 ad-hoc 签名（未公证）、Windows 无商业代码签名；付费平台签名可在以后切换为 Trusted Release。
 
+Windows 原生 WPF 版本已合入 2026-10-31 剪贴板与引导修复，沿用 Rust 同步后台，通过当前用户认证的命名管道通信。构建、运行与已验证范围见 [WPF 使用说明](windows/native-ui/TailSync.Wpf/README.md)；`windows/native-ui/build-wpf.ps1 -Publish` 会发布包含 .NET 运行库、后台与剪贴板 helper 的完整目录。旧 React/Tauri 前端源码继续保留。
+
 ## 为什么选择 TailSync
 
 | | 能力 | 说明 |

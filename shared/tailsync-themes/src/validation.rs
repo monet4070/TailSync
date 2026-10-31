@@ -461,7 +461,7 @@ pub(super) fn validate_tokens(value: &Value, path: &str) -> Result<(), ThemeErro
                     if group == "section" {
                         &["size", "uppercase"]
                     } else {
-                        &["size"]
+                        &["size", "useDisplayFont"]
                     },
                     &p,
                 )?;
@@ -474,6 +474,15 @@ pub(super) fn validate_tokens(value: &Value, path: &str) -> Result<(), ThemeErro
                             "THEME_TOKEN_TYPE",
                             "uppercase must be a boolean",
                             pointer(&p, "uppercase"),
+                        );
+                    }
+                }
+                if let Some(value) = values.get("useDisplayFont") {
+                    if !value.is_boolean() {
+                        return err(
+                            "THEME_TOKEN_TYPE",
+                            "useDisplayFont must be a boolean",
+                            pointer(&p, "useDisplayFont"),
                         );
                     }
                 }

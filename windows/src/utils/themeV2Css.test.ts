@@ -15,11 +15,15 @@ describe("themeV2CssPairs", () => {
     expect(historyFontRole("builtin:flux@1")).toBe("reading");
     expect(historyFontRole("builtin:aura@1")).toBe("reading");
     expect(historyFontRole("builtin:mono@1")).toBe("reading");
+    expect(historyFontRole("builtin:canvas@1", false)).toBe("reading");
+    expect(historyFontRole("builtin:flux@1", true)).toBe("display");
 
     const tokens = { typography: { display: { families: ["Display"] }, reading: { families: ["Reading"] } } };
     expect(Object.fromEntries(themeV2CssPairs(tokens, { themeId: "builtin:canvas@1" }))["--font-history"])
       .toBe("var(--font-display)");
     expect(Object.fromEntries(themeV2CssPairs(tokens, { themeId: "builtin:flux@1" }))["--font-history"])
+      .toBe("var(--font-content)");
+    expect(Object.fromEntries(themeV2CssPairs({ typography: { history: { useDisplayFont: false } } }, { themeId: "custom:studio" }))["--font-history"])
       .toBe("var(--font-content)");
   });
 

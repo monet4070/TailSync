@@ -13,6 +13,7 @@ mod sync_adapter;
 mod tray;
 mod updates;
 mod window_lifecycle;
+mod wpf_bridge;
 
 pub use tailsync_core::{
     crypto, db, history_classifier, identity, pairing, protocol, secure, sync,
@@ -339,6 +340,10 @@ pub fn run() -> i32 {
     if let Some(code) = clipboard_composite::helper_check_cli() {
         return code;
     }
+    if let Err(error) = wpf_bridge::configure() {
+        eprintln!("{error}");
+        return 1;
+    }
     init_logging();
     match run_app() {
         Ok(()) => 0,
@@ -625,7 +630,7 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let settings_for_monitor = settings.clone();
     let (image_archive, archive_task) = automatic_images::start(
         db.clone(),
-        settings.blocking_lock().auto_save_network_images,
+        !wpf_bridge::isolated() && settings.blocking_lock().auto_save_network_images,
         pool.clone(),
         settings.clone(),
         shutdown_rx.clone(),
@@ -678,30 +683,36 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown_for_setup = shutdown_rx.clone();
     let shutdown_for_state = shutdown_tx.clone();
 
-    let app = tauri::Builder::default()
-        // This must remain the first plugin so secondary launches are rejected
-        // before app setup creates another tray or registers global shortcuts.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            let handle = app.clone();
-            #[cfg(not(target_os = "windows"))]
-            let _ = &args;
-            #[cfg(target_os = "windows")]
-            if let Some(link) = commands::remote_pairing_link_from_args(&args) {
+    let builder = tauri::Builder::default();
+    let builder = if wpf_bridge::isolated() {
+        builder
+    } else {
+        builder
+            // This must remain the first plugin so secondary launches are rejected
+            // before app setup creates another tray or registers global shortcuts.
+            .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+                let handle = app.clone();
+                #[cfg(not(target_os = "windows"))]
+                let _ = &args;
                 #[cfg(target_os = "windows")]
-                if let Err(error) = commands::queue_remote_pairing_link(&handle, link) {
-                    log::debug!(
-                        "Ignoring invalid TailSync deep link from a repeated launch: {error}"
-                    );
+                if let Some(link) = commands::remote_pairing_link_from_args(&args) {
+                    #[cfg(target_os = "windows")]
+                    if let Err(error) = commands::queue_remote_pairing_link(&handle, link) {
+                        log::debug!(
+                            "Ignoring invalid TailSync deep link from a repeated launch: {error}"
+                        );
+                    }
+                    #[cfg(target_os = "windows")]
+                    return;
                 }
-                #[cfg(target_os = "windows")]
-                return;
-            }
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = commands::open_history_window(handle).await {
-                    log::warn!("Could not focus TailSync after a repeated launch: {error}");
-                }
-            });
-        }))
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::open_history_window(handle).await {
+                        log::warn!("Could not focus TailSync after a repeated launch: {error}");
+                    }
+                });
+            }))
+    };
+    let app = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -717,7 +728,11 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             let handle = app.handle().clone();
             updates::register_app_handle(handle.clone());
             #[cfg(target_os = "windows")]
-            updates::spawn_automatic_update_check(handle.clone());
+            // The legacy automatic dialog can install the Tauri-only package.
+            // WPF must wait for a paired shell/backend distribution channel.
+            if !wpf_bridge::active() {
+                updates::spawn_automatic_update_check(handle.clone());
+            }
             if let Some(task) =
                 start_parent_monitor(shutdown_for_parent, shutdown_for_setup.clone())
             {
@@ -751,42 +766,80 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             };
             let initial_shortcuts = state.settings.blocking_lock().clone();
             app.manage(state);
+            app.manage(wpf_bridge::FrontendEvents::default());
             app.manage(tailsync_runtime::document_preview::DocumentSession::default());
             #[cfg(target_os = "windows")]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
-                if let Err(error) = app.deep_link().register_all() {
-                    log::debug!("Could not register the TailSync deep-link scheme: {error}");
-                }
-                let deep_link_handle = handle.clone();
-                app.deep_link().on_open_url(move |event| {
-                    for url in event.urls() {
-                        if let Err(error) =
-                            commands::queue_remote_pairing_link(&deep_link_handle, url.as_str())
-                        {
-                            log::debug!("Ignoring invalid TailSync deep link: {error}");
-                        }
+                // The WPF host owns URL association. Registering this sidecar
+                // would cold-start the legacy WebView frontend on an invite.
+                if !wpf_bridge::active() {
+                    if let Err(error) = app.deep_link().register_all() {
+                        log::debug!("Could not register the TailSync deep-link scheme: {error}");
                     }
-                });
-                // On Windows the initial protocol launch is exposed through
-                // `get_current`, while later launches arrive as events. Read
-                // the current value after the listener is installed so a
-                // cold-start invite is not lost before the settings window
-                // exists.
-                if let Ok(Some(urls)) = app.deep_link().get_current() {
-                    for url in urls {
-                        if let Err(error) =
-                            commands::queue_remote_pairing_link(&handle, url.as_str())
-                        {
-                            log::debug!("Ignoring invalid TailSync deep link: {error}");
+                    let deep_link_handle = handle.clone();
+                    app.deep_link().on_open_url(move |event| {
+                        for url in event.urls() {
+                            if let Err(error) =
+                                commands::queue_remote_pairing_link(&deep_link_handle, url.as_str())
+                            {
+                                log::debug!("Ignoring invalid TailSync deep link: {error}");
+                            }
+                        }
+                    });
+                    // On Windows the initial protocol launch is exposed through
+                    // `get_current`, while later launches arrive as events. Read
+                    // the current value after the listener is installed so a
+                    // cold-start invite is not lost before the settings window
+                    // exists.
+                    if let Ok(Some(urls)) = app.deep_link().get_current() {
+                        for url in urls {
+                            if let Err(error) =
+                                commands::queue_remote_pairing_link(&handle, url.as_str())
+                            {
+                                log::debug!("Ignoring invalid TailSync deep link: {error}");
+                            }
                         }
                     }
                 }
             }
             app.manage(preview_window::PreviewWindowController::default());
             app.manage(window_lifecycle::TransientWindowController::default());
-            if let Err(error) = commands::register_saved_shortcuts(&handle, &initial_shortcuts) {
-                log::warn!("Could not register saved global shortcuts: {error}");
+            if !wpf_bridge::isolated() {
+                if let Err(error) = commands::register_saved_shortcuts(&handle, &initial_shortcuts)
+                {
+                    log::warn!("Could not register saved global shortcuts: {error}");
+                }
+            }
+            #[cfg(target_os = "windows")]
+            wpf_bridge::start(handle.clone(), shutdown_for_setup.clone())?;
+            if wpf_bridge::isolated() {
+                if wpf_bridge::network_check() {
+                    let sync = sync_for_setup.clone();
+                    let db = db_for_setup.clone();
+                    let settings = settings_for_iroh.clone();
+                    let identity = identity_for_iroh.clone();
+                    let pairing = pairing.clone();
+                    let invites = remote_invites.clone();
+                    let shutdown = shutdown_for_setup.clone();
+                    let task = tauri::async_runtime::spawn(async move {
+                        if let Err(error) = network::start_iroh_server(
+                            sync, db, settings, identity, pairing, invites, shutdown,
+                        )
+                        .await
+                        {
+                            log::error!("Iroh acceptance listener failed: {error}");
+                        }
+                    });
+                    track_task(&tasks_for_setup, task);
+                }
+                tauri::async_runtime::spawn(coordinate_shutdown(
+                    handle.clone(),
+                    pool_for_setup,
+                    shutdown_for_setup,
+                    tasks_for_setup,
+                ));
+                return Ok(());
             }
             #[cfg(all(not(target_os = "macos"), not(test)))]
             tray::start_tray(handle.clone());
@@ -816,7 +869,8 @@ fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             #[cfg(all(target_os = "windows", not(test)))]
-            if onboarding::should_show_on_start()
+            if !wpf_bridge::active()
+                && onboarding::should_show_on_start()
                 && pending_remote_pairing_link
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)

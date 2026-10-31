@@ -13,6 +13,18 @@ static TRANSPARENT_TRAY_RGBA: [u8; 32 * 32 * 4] = [0; 32 * 32 * 4];
 
 #[cfg(not(target_os = "macos"))]
 fn request_shutdown<R: Runtime>(app: &AppHandle<R>) {
+    if crate::wpf_bridge::navigate(app, "quit", "") {
+        // Let WPF close its windows and acknowledge shutdown before the backend
+        // exits, so a deliberate tray quit is never reported as a transport fault.
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            let shutdown = state.shutdown.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let _ = shutdown.send(true);
+            });
+        }
+        return;
+    }
     if let Some(state) = app.try_state::<crate::AppState>() {
         let _ = state.shutdown.send(true);
     } else {
@@ -498,7 +510,7 @@ fn create_tauri_tray(app: &AppHandle) -> Result<BuiltTrayMenu<tauri::Wry>, Strin
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
-                button_state: MouseButtonState::Down,
+                button_state: MouseButtonState::Up,
                 ..
             } = event
             {

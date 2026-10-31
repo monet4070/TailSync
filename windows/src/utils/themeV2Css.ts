@@ -12,11 +12,11 @@ type JsonObject = Record<string, unknown>;
 
 /**
  * Keep the history-row font selection aligned with macOS HistoryRow.
- * Canvas/Ledger and custom themes use their expressive display face; the
- * denser Flux/Aura/Mono themes keep history content in the reading face.
- * Unknown ids fall back to the default Canvas behavior.
+ * Explicit theme typography wins. Missing tokens keep the historical
+ * Canvas/Ledger/custom display role and Flux/Aura/Mono reading role.
  */
-export function historyFontRole(themeId?: string): HistoryFontRole {
+export function historyFontRole(themeId?: string, useDisplayFont?: boolean): HistoryFontRole {
+  if (typeof useDisplayFont === "boolean") return useDisplayFont ? "display" : "reading";
   return themeId === "builtin:flux@1"
     || themeId === "builtin:aura@1"
     || themeId === "builtin:mono@1"
@@ -123,7 +123,8 @@ export function themeV2CssPairs(tokens: JsonObject, options: ThemeV2CssOptions =
   const number = (name: string, path: string[], suffix = "px") => { const n = value(tokens, path); if (typeof n === "number") pairs.push([name, `${n}${suffix}`]); };
   const families = (name: string, path: string[]) => { const x=value(tokens,path); if (Array.isArray(x) && x.every(v => typeof v === "string")) pairs.push([name, x.join(", ")]); };
   families("--font-ui", ["typography","ui","families"]); families("--font-display", ["typography","display","families"]); families("--font-content", ["typography","reading","families"]);
-  pairs.push(["--font-history", historyFontRole(options.themeId) === "display" ? "var(--font-display)" : "var(--font-content)"]);
+  const displayHistory = value(tokens, ["typography", "history", "useDisplayFont"]);
+  pairs.push(["--font-history", historyFontRole(options.themeId, typeof displayHistory === "boolean" ? displayHistory : undefined) === "display" ? "var(--font-display)" : "var(--font-content)"]);
   number("--font-size-ui", ["typography","ui","size"]); number("--line-height-ui", ["typography","ui","lineHeight"], "px"); number("--font-weight-body", ["typography","ui","weight"], "");
   number("--search-font-size", ["typography","search","size"]); number("--font-size-section", ["typography","section","size"]); number("--font-size-content", ["typography","history","size"]);
   if (typeof value(tokens,["typography","search","useDisplayFont"]) === "boolean") pairs.push(["--search-font-family", value(tokens,["typography","search","useDisplayFont"]) ? "var(--font-display)" : "var(--font-ui)"]);

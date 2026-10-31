@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-const source = readFileSync(new URL('./guide.json', import.meta.url), 'utf8');
+const source = readFileSync(new URL('./guide.json', import.meta.url), 'utf8').replace(/\r\n?/g, '\n');
 const guide = JSON.parse(source);
 if (new Set(guide.steps.map(step => step.id)).size !== guide.steps.length) throw new Error('Duplicate onboarding step');
 for (const step of guide.steps) {
@@ -11,7 +11,7 @@ const target = new URL('../../macos/swift-ui/Sources/TailSync/Models/OnboardingC
 if (process.argv.includes('--check')) {
   if (readFileSync(target, 'utf8') !== output) throw new Error(`${fileURLToPath(target)} is stale`);
 } else writeFileSync(target, output);
-const demo = readFileSync(new URL('./demo.json', import.meta.url), 'utf8');
+const demo = readFileSync(new URL('./demo.json', import.meta.url), 'utf8').replace(/\r\n?/g, '\n');
 const demoOutput = '// Generated from shared/onboarding/demo.json. Do not edit.\nimport Foundation\n\nenum OnboardingDemoContent {\n    static let json = #"""\n' + demo.trim() + '\n"""#\n}\n';
 const demoTarget = new URL('../../macos/swift-ui/Sources/TailSync/Models/OnboardingDemo.generated.swift', import.meta.url);
 if (process.argv.includes('--check')) {

@@ -10,22 +10,27 @@ internal sealed class DemoDialog : MacWindow
 {
     private DemoDialog(Window owner,string title,UIElement body,string action,bool cancel)
     {
-        Owner=owner;Title=title;Width=340;SizeToContent=SizeToContent.Height;WindowStartupLocation=WindowStartupLocation.CenterOwner;ResizeMode=ResizeMode.NoResize;ShowInTaskbar=false;
+        Owner=owner;Title=title;Width=400;MinWidth=360;SizeToContent=SizeToContent.Height;WindowStartupLocation=WindowStartupLocation.CenterOwner;ResizeMode=ResizeMode.NoResize;ShowInTaskbar=false;
         WindowChrome.SetWindowChrome(this,new WindowChrome { CaptionHeight=0,ResizeBorderThickness=new(0),GlassFrameThickness=new(0),CornerRadius=new(12) });
         var panel=new StackPanel { Margin=new(24) };panel.Children.Add(body);
-        var buttons=new StackPanel { Orientation=Orientation.Horizontal,HorizontalAlignment=HorizontalAlignment.Right,Margin=new(0,20,0,0) };
-        if(cancel){var back=Ui.Button(MacDesign.Text("settings.cancel"),()=>DialogResult=false);back.IsCancel=true;buttons.Children.Add(back);}
-        var confirm=Ui.Button(action,()=>DialogResult=true,"PrimaryButton");confirm.Margin=new(cancel?10:0,0,0,0);confirm.IsDefault=true;buttons.Children.Add(confirm);panel.Children.Add(buttons);Content=panel;
+        var buttons=new Grid { Margin=new(0,24,0,0) };
+        buttons.ColumnDefinitions.Add(new()); if(cancel) buttons.ColumnDefinitions.Add(new());
+        Button? initialFocus=null;
+        if(cancel){var back=Ui.Button(AppSession.IsDemo ? MacDesign.Text("settings.cancel") : Localizer.Text("settings.cancel"),()=>DialogResult=false);back.IsCancel=true;back.MinHeight=38;back.Margin=new(0,0,5,0);buttons.Children.Add(back);initialFocus=back;}
+        var confirm=Ui.Button(action,()=>DialogResult=true,"PrimaryButton");confirm.MinHeight=38;confirm.IsDefault=true;
+        if(cancel){confirm.Margin=new(5,0,0,0);Grid.SetColumn(confirm,1);}buttons.Children.Add(confirm);panel.Children.Add(buttons);Content=panel;
+        KeyboardNavigation.SetTabNavigation(this,KeyboardNavigationMode.Cycle);
+        ModalShade? shade=null;Loaded+=(_,_)=>{shade=ModalShade.Show(owner);var focus=initialFocus??confirm;FocusManager.SetFocusedElement(this,focus);focus.Focus();};Closed+=(_,_)=>shade?.Dispose();
         PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape){e.Handled=true;DialogResult=false;}};
     }
     public static bool Confirm(Window owner,string title,string message,string action)
     {
-        var heading=Ui.Text(title,17);heading.SetResourceReference(TextBlock.FontFamilyProperty,"DisplayFont");var body=Ui.Stack(Orientation.Vertical,14,heading,Ui.Text(message,13));
+        var heading=Ui.Text(title);heading.SetResourceReference(TextBlock.FontSizeProperty,"SectionFontSize");heading.SetResourceReference(TextBlock.FontFamilyProperty,"DisplayFont"); heading.FontWeight = FontWeights.SemiBold;var body=Ui.Stack(Orientation.Vertical,14,heading,Ui.Text(message,14,"Secondary"));
         return new DemoDialog(owner,title,body,action,true).ShowDialog()==true;
     }
     public static void Inform(Window owner,string title,string message)
     {
-        var heading=Ui.Text(title,17);heading.SetResourceReference(TextBlock.FontFamilyProperty,"DisplayFont");new DemoDialog(owner,title,Ui.Stack(Orientation.Vertical,14,heading,Ui.Text(message,13)),"知道了",false).ShowDialog();
+        var heading=Ui.Text(title);heading.SetResourceReference(TextBlock.FontSizeProperty,"SectionFontSize");heading.SetResourceReference(TextBlock.FontFamilyProperty,"DisplayFont"); heading.FontWeight = FontWeights.SemiBold;new DemoDialog(owner,title,Ui.Stack(Orientation.Vertical,14,heading,Ui.Text(message,14,"Secondary")),Localizer.Choose("知道了","Got it"),false).ShowDialog();
     }
     public static void Pair(Window owner)
     {

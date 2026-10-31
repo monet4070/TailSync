@@ -180,6 +180,14 @@ pub async fn create_remote_pairing_invite_classified(
         ));
     }
     let endpoint = iroh::endpoint().await.map_err(transport_failure)?;
+    timeout(REMOTE_INVITE_CONNECT_TIMEOUT, endpoint.wait_online())
+        .await
+        .map_err(|_| {
+            PairingFailure::new(
+                PairingFailureKind::TimedOut,
+                "Iroh relay/discovery is not ready; try creating the invite again",
+            )
+        })?;
     let invite = invites
         .create_from_endpoint_id(&endpoint.endpoint_id(), DEFAULT_INVITE_TTL)
         .map_err(invite_failure)?;

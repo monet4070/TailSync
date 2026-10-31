@@ -7,6 +7,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shell;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using TailSync.Native.Core;
 namespace TailSync.Wpf;
 
@@ -14,10 +15,14 @@ internal static class Ui
 {
     public static Brush Brush(string key) => (Brush)Application.Current.FindResource(key + "Brush");
     public static T Name<T>(T element, string name) where T : DependencyObject { AutomationProperties.SetName(element, name); return element; }
-    public static TextBlock Text(string value, double size = 13, string color = "Primary")
+    public static TextBlock Text(string value, double size = 14, string color = "Primary")
     {
         var label = new TextBlock { Text = value, FontSize = size, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
         label.SetResourceReference(TextBlock.ForegroundProperty, color + "Brush"); return label;
+    }
+    public static TextBlock Detail(string value, string color = "Secondary")
+    {
+        var label = Text(value, 13, color); label.SetResourceReference(TextBlock.FontSizeProperty, "DetailFontSize"); return label;
     }
     public static StackPanel Stack(Orientation orientation = Orientation.Vertical, double gap = 0, params UIElement[] children)
     {
@@ -25,22 +30,65 @@ internal static class Ui
         foreach (var child in children) { if (child is FrameworkElement f && panel.Children.Count > 0 && gap > 0) { var m=f.Margin; f.Margin = orientation == Orientation.Horizontal ? new(m.Left+gap,m.Top,m.Right,m.Bottom) : new(m.Left,m.Top+gap,m.Right,m.Bottom); } panel.Children.Add(child); }
         return panel;
     }
-    public static Button Button(string label, Action? action = null, string? style = null)
+    public static Button Button(string label, Action? action = null, string? style = null, string? icon = null)
     {
         var b = Name(new Button { Content = label }, label);
+        ControlMotion.ButtonSurface(b);
+        if (icon != null) ButtonDesign.SetIcon(b, icon);
         if (style != null) b.SetResourceReference(FrameworkElement.StyleProperty, style);
         if (action != null) b.Click += (_, _) => action(); return b;
     }
     public static Button IconButton(string icon, string name, Action action)
     {
-        var button = Button(name, action, "IconButton"); button.Content = new VectorIcon { Kind = icon }; button.ToolTip = name; return button;
+        var button = Button(name, action, "IconButton"); button.Content = null; ButtonDesign.SetIcon(button, icon); button.ToolTip = name; return button;
     }
     public static Border Surface(UIElement content, Thickness? padding = null)
     {
         var border = new Border { Child = content, CornerRadius = new(10), BorderThickness = new(1), Padding = padding ?? new(0) };
-        border.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush"); border.SetResourceReference(Border.BorderBrushProperty, "BorderBrush"); return border;
+        border.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush"); border.SetResourceReference(Border.BorderBrushProperty, "BorderBrush"); border.SetResourceReference(Border.CornerRadiusProperty,"SurfaceRadius"); return border;
     }
-    public static void Divider(Panel rows) { var line = new Border { Height = 1, Margin = new(16,0,0,0) }; line.SetResourceReference(Border.BackgroundProperty, "DividerBrush"); rows.Children.Add(line); }
+    // Shadow only the empty backing shape: applying an Effect to the content
+    // would rasterize the text and lose ClearType at fractional DPI scales.
+    public static Grid SettingsCard(UIElement content)
+    {
+        var card = new Grid();
+        var shadow = Surface(new Grid());
+        shadow.IsHitTestVisible = false;
+        shadow.SetResourceReference(FrameworkElement.StyleProperty, "CardShadow");
+        var foreground = Surface(content);
+        foreground.UseLayoutRounding = true; foreground.SnapsToDevicePixels = true;
+        RenderOptions.SetClearTypeHint(foreground, ClearTypeHint.Enabled);
+        card.Children.Add(shadow); card.Children.Add(foreground); return card;
+    }
+    public static StackPanel PageHeader(string title, string description)
+    {
+        var heading = Text(title); heading.ClearValue(TextBlock.FontSizeProperty); heading.SetResourceReference(FrameworkElement.StyleProperty, "SectionTitle"); heading.Margin = new(0);
+        var caption = Text(description, 13, "Secondary");
+        return Stack(Orientation.Vertical, 6, heading, caption);
+    }
+    public static Grid PreferenceRow(UIElement copy, UIElement action, string? icon = null, double padding = 15)
+    {
+        var row = new AdaptiveSettingRow { Margin = new(16, padding, 16, padding) };
+        if (icon != null)
+        {
+            var label = new Grid(); label.ColumnDefinitions.Add(new() { Width = new GridLength(30) }); label.ColumnDefinitions.Add(new());
+            var glyph = new VectorIcon { Kind = icon, Width = 18, Height = 18, HorizontalAlignment = HorizontalAlignment.Left };
+            glyph.SetResourceReference(VectorIcon.StrokeProperty, "AccentBrush"); label.Children.Add(glyph);
+            Grid.SetColumn(copy, 1); label.Children.Add(copy); copy = label;
+        }
+        if (copy is FrameworkElement text) { text.Margin = new(0, 0, 14, 0); text.VerticalAlignment = VerticalAlignment.Center; }
+        row.Children.Add(copy); Grid.SetColumn(action, 1); row.Children.Add(action); ControlMotion.Preference(row, action); return row;
+    }
+    public static StackPanel Label(string title, string description = "", bool strong = false)
+    {
+        var label = Text(title); label.SetResourceReference(TextBlock.FontSizeProperty, "ThemePanelDefaultFontSize");
+        if (strong) label.FontWeight = FontWeights.SemiBold;
+        else label.SetResourceReference(TextBlock.FontWeightProperty, "ThemePanelDefaultFontWeight");
+        var copy = Stack(Orientation.Vertical, 3, label);
+        if (description.Length > 0) copy.Children.Add(Detail(description));
+        return copy;
+    }
+    public static void Divider(Panel rows) { var line = new Border { Height = 1, Margin = new(16,0,16,0) }; line.SetResourceReference(Border.BackgroundProperty, "DividerBrush"); rows.Children.Add(line); }
     public static DrawingImage Landscape()
     {
         var group = new DrawingGroup();
@@ -61,63 +109,118 @@ internal static class Ui
     }
 }
 
-public sealed class VectorIcon : FrameworkElement
-{
-    public static readonly DependencyProperty KindProperty = DependencyProperty.Register(nameof(Kind), typeof(string), typeof(VectorIcon), new FrameworkPropertyMetadata("file", FrameworkPropertyMetadataOptions.AffectsRender));
-    public static readonly DependencyProperty StrokeProperty = DependencyProperty.Register(nameof(Stroke), typeof(Brush), typeof(VectorIcon), new FrameworkPropertyMetadata(Brushes.Gray, FrameworkPropertyMetadataOptions.AffectsRender));
-    public static readonly DependencyProperty FilledProperty = DependencyProperty.Register(nameof(Filled), typeof(bool), typeof(VectorIcon), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender));
-    public bool Filled { get => (bool)GetValue(FilledProperty); set => SetValue(FilledProperty,value); }
-    public string Kind { get => (string)GetValue(KindProperty); set => SetValue(KindProperty,value); }
-    public Brush Stroke { get => (Brush)GetValue(StrokeProperty); set => SetValue(StrokeProperty,value); }
-    private static readonly Dictionary<string,Geometry> Shapes = new Dictionary<string,string> {
-        ["search"]="M10 6A4 4 0 1 1 2 6A4 4 0 1 1 10 6M9 9L14 14", ["pin"]="M5 2L11 2M6 2L6 6L4 9L12 9L10 6L10 2M8 9L8 15",
-        ["star"]="M8 1L10 5.5L15 6L11.2 9.3L12.3 14L8 11.5L3.7 14L4.8 9.3L1 6L6 5.5Z",
-        ["file"]="M4 1L10 1L13 4L13 15L3 15L3 1ZM9 1L9 5L13 5M5 8L11 8M5 11L11 11",
-        ["info"]="M15 8A7 7 0 1 1 1 8A7 7 0 1 1 15 8M8 7L8 12M8 4L8 4.5", ["more"]="M15 8A7 7 0 1 1 1 8A7 7 0 1 1 15 8M4 8L4.3 8M8 8L8.3 8M12 8L12.3 8",
-        ["folder"]="M1 4L1 14L15 14L15 5L7 5L5 2L1 2Z", ["link"]="M6 5L8 3A3 3 0 0 1 13 8L11 10M5 6L3 8A3 3 0 0 0 8 13L10 11M5 11L11 5",
-        ["code"]="M5 4L1 8L5 12M11 4L15 8L11 12M9 2L7 14", ["image"]="M1 2L15 2L15 14L1 14ZM1 12L6 7L9 10L12 7L15 10M12 4L12 5",
-        ["laptop"]="M3 2L13 2L13 11L3 11ZM1 14L15 14L13 11L3 11Z", ["globe"]="M15 8A7 7 0 1 1 1 8A7 7 0 1 1 15 8M1 8L15 8M8 1C3 5 3 11 8 15C13 11 13 5 8 1",
-        ["shield"]="M8 1L14 4L13 10L8 15L3 10L2 4ZM5 8L7 10L11 6", ["refresh"]="M13 5A6 6 0 1 0 14 10M10 5L14 5L14 1",
-        ["keyboard"]="M1 3L15 3L15 13L1 13ZM3 6L4 6M6 6L7 6M9 6L10 6M12 6L13 6M3 9L4 9M6 9L7 9M9 9L10 9M12 9L13 9M4 11L12 11",
-        ["edit"]="M3 11L2 14L5 13L14 4L12 2ZM10 4L12 6", ["close"]="M3 3L13 13M13 3L3 13", ["arrow"]="M3 13L13 3M5 3L13 3L13 11",
-        ["check"]="M2 8L6 12L14 3", ["chevron"]="M5 2L11 8L5 14", ["down"]="M3 5L8 10L13 5", ["disk"]="M2 2L14 2L14 14L2 14ZM2 10L14 10M11 12L12 12",
-        ["download"]="M8 1L8 10M4 6L8 10L12 6M2 12L2 15L14 15L14 12", ["latency"]="M1 5L14 5L11 2M15 11L2 11L5 14"
-    }.ToDictionary(x=>x.Key,x=>Geometry.Parse(x.Value));
-    public VectorIcon() { Width=Height=16; VerticalAlignment=VerticalAlignment.Center; SetResourceReference(StrokeProperty,"SecondaryBrush"); IsHitTestVisible=false; }
-    protected override void OnRender(DrawingContext dc)
-    {
-        base.OnRender(dc); dc.PushTransform(new ScaleTransform(ActualWidth/16,ActualHeight/16));
-        var pen=new Pen(Stroke,1.3) { StartLineCap=PenLineCap.Round, EndLineCap=PenLineCap.Round, LineJoin=PenLineJoin.Round };
-        dc.DrawGeometry(Filled?Stroke:null,pen,Shapes.GetValueOrDefault(Kind,Shapes["file"])); dc.Pop();
-    }
-}
-
 public class MacWindow : Window
 {
     private HwndSource? _source;
+    private DispatcherOperation? _resizeRepaint;
+    private bool _entered;
     public ContextMenu? CaptionMenu { get; set; }
     public MacWindow()
     {
+        WindowStartupLocation=WindowStartupLocation.CenterScreen;
         SetResourceReference(StyleProperty,"MacWindow");
         WindowChrome.SetWindowChrome(this,new WindowChrome { CaptionHeight=32, ResizeBorderThickness=new(5), CornerRadius=new(12), GlassFrameThickness=new(0), UseAeroCaptionButtons=false });
-        SourceInitialized += (_,_) => { var hwnd=new WindowInteropHelper(this).Handle;_source=HwndSource.FromHwnd(hwnd);_source?.AddHook(WindowMessage);if (OperatingSystem.IsWindowsVersionAtLeast(10,0,22000)) { var preference=2; DwmSetWindowAttribute(hwnd,33,ref preference,sizeof(int)); } };
-        Closed += (_,_) => { _source?.RemoveHook(WindowMessage);_source=null; };
+        SourceInitialized += (_,_) => { var hwnd=new WindowInteropHelper(this).Handle;_source=HwndSource.FromHwnd(hwnd);_source?.AddHook(WindowMessage);UpdateRenderBackground();if (OperatingSystem.IsWindowsVersionAtLeast(10,0,22000)) { var preference=2; DwmSetWindowAttribute(hwnd,33,ref preference,sizeof(int)); } };
+        SizeChanged += (_, e) => { if (e.WidthChanged || e.HeightChanged) QueueResizeRepaint(); };
+        Closed += (_,_) => { _resizeRepaint?.Abort();_resizeRepaint=null;_source?.RemoveHook(WindowMessage);_source=null; };
+        ContentRendered += (_, _) =>
+        {
+            if (_entered) return; _entered = true;
+            if (this is MainWindow { Page: "settings" or "connections" } or PairingWindow or DemoDialog)
+                ControlMotion.OpenWindow(this, this is PairingWindow or DemoDialog);
+        };
     }
     private IntPtr WindowMessage(IntPtr hwnd,int message,IntPtr wParam,IntPtr lParam,ref bool handled)
     {
+        if (message == 0x0046 && lParam != 0) // WM_WINDOWPOSCHANGING
+        {
+            var position = Marshal.PtrToStructure<WindowPosition>(lParam);
+            if ((position.Flags & 0x0001) == 0 && GetWindowRect(hwnd, out var previous)
+                && (position.Width != previous.Right - previous.Left || position.Height != previous.Bottom - previous.Top))
+            {
+                // A retained WPF scene reflows its right/center-aligned content.
+                // USER32 must not copy the previous client pixels to new positions
+                // while WPF is composing that scene at the new size.
+                position.Flags |= 0x0100; // SWP_NOCOPYBITS
+                Marshal.StructureToPtr(position, lParam, false);
+            }
+        }
+        else if (message == 0x0231) // WM_ENTERSIZEMOVE
+        {
+            // The opening HWND animation and a pending wheel motion must not
+            // compete with the user's native move/resize loop.
+            if (DependencyPropertyHelper.GetValueSource(this, TopProperty).IsAnimated)
+            {
+                var top = Top; BeginAnimation(TopProperty, null);
+                if (double.IsFinite(top)) SetCurrentValue(TopProperty, top);
+            }
+            foreach (var host in ControlMotion.Visuals<FrameworkElement>(this).Where(SmoothScroll.GetIsEnabled)) SmoothScroll.Cancel(host);
+        }
+        else if (message == 0x0232) QueueResizeRepaint(); // WM_EXITSIZEMOVE
         // WindowChrome consumes caption hit tests, so use the non-client message
         // to make the review window menu available without adding product chrome.
         if(message==0x00A5 && wParam.ToInt64()==2 && CaptionMenu is { } menu) { menu.PlacementTarget=this;menu.Placement=System.Windows.Controls.Primitives.PlacementMode.MousePoint;menu.IsOpen=true;handled=true; }
         return IntPtr.Zero;
     }
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == BackgroundProperty) UpdateRenderBackground();
+    }
+    private void UpdateRenderBackground()
+    {
+        // Match the native render target's clear color to the opaque themed
+        // canvas, including the newly exposed area before its first WPF frame.
+        if (_source?.CompositionTarget is HwndTarget target && Background is SolidColorBrush { Color.A: 255, Opacity: 1 } brush)
+            target.BackgroundColor = brush.Color;
+    }
+    private void QueueResizeRepaint()
+    {
+        if (_source == null || _resizeRepaint is { Status: DispatcherOperationStatus.Pending }) return;
+        _resizeRepaint = Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(() =>
+        {
+            _resizeRepaint = null;
+            if (_source is { IsDisposed: false } source && IsVisible && WindowState != WindowState.Minimized)
+                // Invalidate the entire native client after layout, not only its
+                // newly exposed strips. Leave WPF's synchronized resize/present
+                // path intact; no background erase or nested UpdateWindow loop.
+                InvalidateRect(source.Handle, 0, false);
+        }));
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowPosition { public nint Window, InsertAfter; public int X, Y, Width, Height; public uint Flags; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
     protected Grid MakeTitleBar(string title)
     {
         var bar=new Grid { Height=32, Background=Brushes.Transparent };
-        var heading=Ui.Text(title,13,"Secondary");heading.FontWeight=FontWeights.Bold;heading.Margin=new(84,0,0,0);bar.Children.Add(heading);
-        var lights=new StackPanel { Orientation=Orientation.Horizontal, Margin=new(9,0,0,0), VerticalAlignment=VerticalAlignment.Center, HorizontalAlignment=HorizontalAlignment.Left };
-        var colors=new[]{("#FF7067","#E44C45","关闭窗口"),("#FFCD41","#E7A322","最小化窗口"),("#78D54E","#4CAE24","最大化窗口")};
-        for(var i=0;i<colors.Length;i++) {var index=i;var c=colors[i];var b=Ui.Button(c.Item3,()=>{if(index==0)Close();else if(index==1)WindowState=WindowState.Minimized;else WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;},"TrafficLight");b.Background=(Brush)new BrushConverter().ConvertFromString(c.Item1)!;b.BorderBrush=(Brush)new BrushConverter().ConvertFromString(c.Item2)!;b.Margin=new(i==0?0:10,0,0,0);WindowChrome.SetIsHitTestVisibleInChrome(b,true);lights.Children.Add(b);}
-        bar.Children.Add(lights);return bar;
+        bar.ColumnDefinitions.Add(new());bar.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        var branding=new DockPanel{Margin=new(14,0,8,0)};
+        var logo=new Image{Width=18,Height=18,Stretch=Stretch.Uniform,Margin=new(0,0,8,0)};
+        logo.SetResourceReference(Image.SourceProperty,"ThemeLogoImage");
+        var logoStyle=new Style(typeof(Image));var missingLogo=new Trigger{Property=Image.SourceProperty,Value=null};missingLogo.Setters.Add(new Setter(VisibilityProperty,Visibility.Collapsed));logoStyle.Triggers.Add(missingLogo);logo.Style=logoStyle;
+        DockPanel.SetDock(logo,Dock.Left);branding.Children.Add(logo);
+        var heading=Ui.Text(title,12,"Secondary");heading.SetBinding(TextBlock.TextProperty,new System.Windows.Data.Binding(nameof(Title)){Source=this});heading.FontWeight=FontWeights.SemiBold;heading.TextWrapping=TextWrapping.NoWrap;heading.TextTrimming=TextTrimming.CharacterEllipsis;branding.Children.Add(heading);bar.Children.Add(branding);
+        var controls=new StackPanel { Orientation=Orientation.Horizontal, HorizontalAlignment=HorizontalAlignment.Right };
+        Button CaptionButton(string icon,string label,Action action,string style="WindowCaptionButton")
+        {
+            var button=Ui.Button(label,action,style);button.ToolTip=label;
+            var glyph=new VectorIcon { Kind=icon,Width=14,Height=14 };
+            glyph.SetBinding(VectorIcon.StrokeProperty,new System.Windows.Data.Binding(nameof(Control.Foreground)){Source=button});
+            button.Content=glyph;WindowChrome.SetIsHitTestVisibleInChrome(button,true);controls.Children.Add(button);return button;
+        }
+        var minimize=CaptionButton("minimize","最小化窗口",()=>SystemCommands.MinimizeWindow(this));
+        minimize.Visibility=ResizeMode==ResizeMode.NoResize&&!ShowInTaskbar?Visibility.Collapsed:Visibility.Visible;
+        var maximize=CaptionButton("maximize","最大化窗口",()=>{if(WindowState==WindowState.Maximized)SystemCommands.RestoreWindow(this);else SystemCommands.MaximizeWindow(this);});
+        maximize.Visibility = ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip ? Visibility.Visible : Visibility.Collapsed;
+        StateChanged+=(_,_)=>{
+            var restored=WindowState==WindowState.Maximized;((VectorIcon)maximize.Content).Kind=restored?"restore":"maximize";
+            maximize.ToolTip=restored?"还原窗口":"最大化窗口";AutomationProperties.SetName(maximize,(string)maximize.ToolTip);
+        };
+        CaptionButton("close","关闭窗口",()=>SystemCommands.CloseWindow(this),"WindowCloseButton");
+        Grid.SetColumn(controls,1);bar.Children.Add(controls);return bar;
     }
     [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr window,int attribute,ref int value,int size);
+    [DllImport("user32.dll")][return:MarshalAs(UnmanagedType.Bool)] private static extern bool GetWindowRect(nint window, out NativeRect rectangle);
+    [DllImport("user32.dll")][return:MarshalAs(UnmanagedType.Bool)] private static extern bool InvalidateRect(nint window, nint rectangle, [MarshalAs(UnmanagedType.Bool)] bool erase);
 }
