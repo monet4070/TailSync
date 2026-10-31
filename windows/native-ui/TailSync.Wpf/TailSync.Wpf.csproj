@@ -11,7 +11,7 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <Product>TailSync WPF</Product>
     <Version>2.3.2</Version>
-    <InformationalVersion>2.3.2-wpf-clipboard-onboarding.20261031+source.35c7234</InformationalVersion>
+    <InformationalVersion>2.3.2-wpf-network-alignment.20261031+core.bc5ff76</InformationalVersion>
     <ApplicationIcon>../../src-tauri/icons/icon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>

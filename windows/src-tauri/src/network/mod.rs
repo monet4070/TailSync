@@ -22,6 +22,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// Default TCP port for TailSync
 pub const TCP_PORT: u16 = 19890;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const IROH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Max queued frames per peer before backpressure kicks in

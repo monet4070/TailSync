@@ -97,6 +97,7 @@ def run(executable, directory):
             committed = a.invoke("update_settings", {"settingsJson": json.dumps({"connection_mode": mode})})
             check(committed["connection_mode"] == mode and a.invoke("get_settings")["connection_mode"] == mode,
                   mode + ": setting commits and round-trips through WPF IPC")
+        time.sleep(.5)
         invite = a.invoke("create_remote_pairing_invite")
         preview = b.invoke("inspect_remote_pairing_link", {"link": invite["link"]})
         check(bool(preview["endpoint_id"]) and 0 < preview["remaining_seconds"] <= 120,
@@ -106,7 +107,7 @@ def run(executable, directory):
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             statuses = [node.invoke("get_pairing_status") for node in nodes]
-            if all(status.get("peer", {}).get("verification_code") for status in statuses):
+            if all((status.get("peer") or {}).get("verification_code") for status in statuses):
                 break
             time.sleep(.15)
         codes = [str((status.get("peer") or {}).get("verification_code", "")) for status in statuses]
@@ -127,6 +128,42 @@ def run(executable, directory):
             settings = node.invoke("get_settings")
             check(bool(settings["trusted_peer_keys"]) and bool(settings["paired_peer_endpoints"]),
                   label + ": peer identity and Iroh endpoint persist through the real Core")
+        # Keep one device's completed receipt while the other explicitly
+        # forgets. An old receipt must not replace consent for the new SAS.
+        # Swap creator/joiner to cover both inbound and outbound repair.
+        for label, forgetter, creator, joiner in [("b", b, a, b), ("a", a, b, a)]:
+            hostname = next(iter(forgetter.invoke("get_settings")["trusted_peer_keys"]))
+            forgetter.invoke("forget_peer", {"hostname": hostname})
+            check(not forgetter.invoke("get_settings")["trusted_peer_keys"],
+                  label + ": explicit forget removes authoritative trust")
+            invite = creator.invoke("create_remote_pairing_invite")
+            joiner.invoke("start_remote_pairing", {"link": invite["link"]})
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                statuses = [node.invoke("get_pairing_status") for node in nodes]
+                if all(status["phase"] == "verification" for status in statuses):
+                    break
+                if any(status.get("error") for status in statuses):
+                    break
+                time.sleep(.15)
+            check(all(status["phase"] == "verification" for status in statuses),
+                  label + ": one-sided forget permits a new code confirmation on both devices")
+            codes = [(status.get("peer") or {}).get("verification_code") for status in statuses]
+            check(len(codes[0]) == 6 and codes[0] == codes[1], label + ": repaired pairing codes match")
+            check(all(0 < status["remaining_seconds"] <= 30 for status in statuses),
+                  label + ": verification countdown agrees with the real session deadline")
+            creator.invoke("confirm_pairing")
+            joiner.invoke("confirm_pairing")
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                statuses = [node.invoke("get_pairing_status") for node in nodes]
+                if all(status["phase"] == "paired" for status in statuses):
+                    break
+                if any(status.get("error") for status in statuses):
+                    break
+                time.sleep(.15)
+            check(all(status["phase"] == "paired" for status in statuses),
+                  label + ": fresh confirmations replace the old transaction and pair both devices")
         # Acceptance must still reject user clipboard and global-shortcut writes.
         try:
             a.invoke("restore_entry", {"id": 1})

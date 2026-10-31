@@ -75,6 +75,7 @@ impl PairingManager {
                 failure_kind: None,
                 generation: 0,
                 session_id: 0,
+                verification_deadline: None,
                 control: None,
                 session_direction: None,
             }),
@@ -110,6 +111,7 @@ impl PairingManager {
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
             state.session_direction = None;
+            state.verification_deadline = None;
             (old_control, state.generation, deadline)
         };
         if let Some(control) = old_control {
@@ -147,9 +149,15 @@ impl PairingManager {
         PairingStatus {
             pairing_enabled: state.enabled,
             phase: state.phase,
-            expires_at: state.expires_at,
+            expires_at: state
+                .verification_deadline
+                .map(|deadline| {
+                    unix_timestamp_after(deadline.saturating_duration_since(Instant::now()))
+                })
+                .or(state.expires_at),
             remaining_seconds: state
-                .deadline
+                .verification_deadline
+                .or(state.deadline)
                 .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs())
                 .unwrap_or(0),
             failed_attempts: state.failed_attempts,
@@ -233,6 +241,7 @@ impl PairingManager {
             } else if let Some(existing_direction) = state.session_direction {
                 if state.control.is_none() {
                     state.session_direction = None;
+                    state.verification_deadline = None;
                     None
                 } else if state.peer.as_ref().is_some_and(|peer| peer.local_confirmed) {
                     // Once the user confirmed this code, neither a same-
@@ -260,6 +269,12 @@ impl PairingManager {
             };
             state.session_id = state.session_id.wrapping_add(1);
             state.phase = PairingPhase::Verification;
+            state.verification_deadline = Some(
+                state
+                    .deadline
+                    .unwrap_or_else(Instant::now)
+                    .min(Instant::now() + PAIRING_SESSION_TIMEOUT),
+            );
             state.peer = Some(PairingPeerStatus {
                 hostname: pending.hostname.clone(),
                 address: pending.address.clone(),
@@ -338,6 +353,7 @@ impl PairingManager {
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
             state.session_direction = None;
+            state.verification_deadline = None;
             control
         };
         self.window_signal.send_replace(false);
@@ -384,9 +400,11 @@ impl PairingManager {
             state.peer = None;
             state.control = None;
             state.session_direction = None;
+            state.verification_deadline = None;
             let message = error;
             state.error = Some(message.clone());
             state.failure_kind = failure_kind;
+            log::warn!("Pairing failed ({failure_kind:?}): {message}");
             if crate::diagnostics::is_collected() {
                 crate::diagnostics::record(crate::diagnostics::Record {
                     event: crate::diagnostics::Event::PairingFailed,
@@ -439,9 +457,11 @@ impl PairingManager {
         state.peer = None;
         state.control = None;
         state.session_direction = None;
+        state.verification_deadline = None;
         state.phase = PairingPhase::Waiting;
         state.error = Some(message.clone());
         state.failure_kind = failure_kind;
+        log::warn!("Pairing session ended ({failure_kind:?}): {message}");
         state.session_id = state.session_id.wrapping_add(1);
         if crate::diagnostics::is_collected() {
             crate::diagnostics::record(crate::diagnostics::Record {
@@ -480,6 +500,7 @@ impl PairingManager {
             state.generation = state.generation.wrapping_add(1);
             state.session_id = state.session_id.wrapping_add(1);
             state.session_direction = None;
+            state.verification_deadline = None;
             (control, true)
         };
         if close_window {
@@ -515,15 +536,17 @@ impl PairingManager {
         } = pending;
         let deadline = {
             let state = self.state.lock().await;
-            state.deadline.unwrap_or_else(Instant::now)
+            state
+                .verification_deadline
+                .or(state.deadline)
+                .unwrap_or_else(Instant::now)
         };
         // The user-controlled pairing window may stay open for two minutes,
         // but an unauthenticated connection must not occupy the sole
         // verification slot for that entire time. The window expiration task
         // still owns the outer lifetime; this shorter deadline only releases
         // the current session and returns the window to Waiting.
-        let session_deadline = Instant::now() + PAIRING_SESSION_TIMEOUT;
-        let timeout = tokio::time::sleep_until(deadline.min(session_deadline));
+        let timeout = tokio::time::sleep_until(deadline);
         tokio::pin!(timeout);
         let mut local_confirmed = false;
         let mut remote_confirmed = false;
@@ -889,6 +912,7 @@ impl PairingManager {
         state.generation = state.generation.wrapping_add(1);
         state.session_id = state.session_id.wrapping_add(1);
         state.session_direction = None;
+        state.verification_deadline = None;
         self.window_signal.send_replace(false);
         if let Some(control) = control {
             let _ = control.try_send(PairingAction::Cancel);
@@ -953,6 +977,7 @@ impl PairingManager {
         state.failure_kind = None;
         state.control = None;
         state.session_direction = None;
+        state.verification_deadline = None;
         state.generation = state.generation.wrapping_add(1);
     }
 
@@ -1044,6 +1069,7 @@ impl PairingManager {
             state.phase = PairingPhase::Waiting;
             state.session_id = state.session_id.wrapping_add(1);
             state.session_direction = None;
+            state.verification_deadline = None;
             (control, false)
         };
         if close_window {

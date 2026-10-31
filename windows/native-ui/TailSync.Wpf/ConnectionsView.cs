@@ -69,7 +69,9 @@ internal sealed class ConnectionsView : StackPanel
             {
                 _pairing = await NativeBackend.InvokeAsync<JsonElement>("cancel_pairing", token: Token); _pairWindow?.Complete(); _pairWindow = null;
             }
-            else { _pairing = await NativeBackend.InvokeAsync<JsonElement>("enable_pairing", token: Token); OpenPairWindow(); }
+            // Keep the device list available while waiting. Both devices may
+            // open their pairing windows before either chooses a peer.
+            else { _pairing = await NativeBackend.InvokeAsync<JsonElement>("enable_pairing", token: Token); }
             ApplyPairing();
         });
         var pairTitle = Ui.Text(T("settings.devicePairing"), 16); pairTitle.FontWeight = FontWeights.SemiBold; _pairState.FontSize = 13;

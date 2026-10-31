@@ -673,7 +673,7 @@ pub(super) async fn race_connect_and_handshake_classified(
     let hostname = hostname.to_string();
     tailsync_core::peer::delivery::race_connections_classified(
         candidates,
-        HANDSHAKE_TIMEOUT,
+        IROH_CONNECTION_TIMEOUT + HANDSHAKE_TIMEOUT,
         move |target, _candidate| {
             let identity = identity.clone();
             let settings = settings.clone();
@@ -724,32 +724,46 @@ async fn connect_and_handshake(
     }
     let connection = match target {
         ResolvedTarget::Tcp(address) => {
-            let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(address)).await??;
-            secure::connect_with_capabilities(
-                stream,
-                identity,
-                local_peer_identity(&mode),
-                hostname,
-                &expected_key,
-                secure::CapabilitySwitches::runtime_defaults(),
+            let stream = timeout(CONNECTION_TIMEOUT, TcpStream::connect(address))
+                .await
+                .map_err(|_| connection_timeout("TCP connection timed out"))??;
+            timeout(
+                HANDSHAKE_TIMEOUT,
+                secure::connect_with_capabilities(
+                    stream,
+                    identity,
+                    local_peer_identity(&mode),
+                    hostname,
+                    &expected_key,
+                    secure::CapabilitySwitches::runtime_defaults(),
+                ),
             )
-            .await?
+            .await
+            .map_err(|_| connection_timeout("Secure handshake timed out"))??
         }
         ResolvedTarget::Iroh(endpoint_id) => {
-            let endpoint = iroh::endpoint().await.map_err(std::io::Error::other)?;
-            let stream = endpoint
-                .connect(endpoint_id)
-                .await
-                .map_err(std::io::Error::other)?;
-            secure::connect_with_capabilities(
-                stream,
-                identity,
-                local_peer_identity(&mode),
-                hostname,
-                &expected_key,
-                secure::CapabilitySwitches::runtime_defaults(),
+            let stream = timeout(IROH_CONNECTION_TIMEOUT, async {
+                let endpoint = iroh::endpoint().await.map_err(std::io::Error::other)?;
+                endpoint
+                    .connect(endpoint_id)
+                    .await
+                    .map_err(std::io::Error::other)
+            })
+            .await
+            .map_err(|_| connection_timeout("Iroh connection timed out"))??;
+            timeout(
+                HANDSHAKE_TIMEOUT,
+                secure::connect_with_capabilities(
+                    stream,
+                    identity,
+                    local_peer_identity(&mode),
+                    hostname,
+                    &expected_key,
+                    secure::CapabilitySwitches::runtime_defaults(),
+                ),
             )
-            .await?
+            .await
+            .map_err(|_| connection_timeout("Secure handshake timed out"))??
         }
     };
 
@@ -798,6 +812,10 @@ async fn connect_and_handshake(
         }
     }
     Ok(connection)
+}
+
+fn connection_timeout(message: &str) -> secure::ConnectionFailure {
+    secure::ConnectionFailure::new(secure::ConnectionFailureKind::TimedOut, message)
 }
 
 // ═══════════════════════════════════════════════════════════════════

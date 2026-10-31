@@ -375,8 +375,52 @@ async fn completed_receipt_can_answer_peer_that_lost_last_ack() {
     let a = f.manager();
     assert!(a.status().await.pending.is_empty());
     let mut client = f.install(&a).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), client.read_frame())
+            .await
+            .is_err()
+    );
+    send(&mut client, Command::PairingCommitted, nonce.clone()).await;
     assert_eq!(read(&mut client, Command::PairingCommitted).await, nonce);
+    read(&mut client, Command::PairingCommittedAck).await;
     complete(&a, &mut client, nonce).await;
+}
+
+#[tokio::test]
+async fn a_completed_receipt_does_not_reject_fresh_user_confirmation() {
+    for direction in [PairingDirection::Inbound, PairingDirection::Outbound] {
+        let f = Fixture::new();
+        let old_nonce = [42; 16];
+        let key = f.remote.public_key_base64();
+        f.settings
+            .lock()
+            .await
+            .trusted_peer_keys
+            .insert("client".into(), key.clone());
+        f.seed(old_nonce, PendingTrustPhase::Completed, key).await;
+        let a = f.manager();
+        let (client, server) = connections(&f.local, &f.remote, true, true).await;
+        a.enable().await;
+        a.install_session(PendingPairing {
+            connection: server.connection,
+            hostname: "client".into(),
+            remote_public_key: server.remote_public_key,
+            handshake_hash: server.handshake_hash,
+            address: "100.64.0.5".into(),
+            interface: "tailscale".into(),
+            remote_invite: None,
+            direction,
+        })
+        .await
+        .unwrap();
+        let mut client = client.connection;
+        tokio::task::yield_now().await;
+        assert_eq!(a.status().await.phase, PairingPhase::Verification);
+        let nonce = bootstrap(&a, &mut client).await;
+        assert_ne!(nonce, old_nonce);
+        complete(&a, &mut client, nonce).await;
+        assert_eq!(a.status().await.phase, PairingPhase::Paired);
+    }
 }
 
 #[tokio::test]
@@ -450,7 +494,9 @@ async fn duplicate_proofs_and_reordered_ack_are_idempotent() {
     drop(client);
     let a = f.manager();
     let mut client = f.install(&a).await;
+    send(&mut client, Command::PairingCommitted, nonce.clone()).await;
     read(&mut client, Command::PairingCommitted).await;
+    read(&mut client, Command::PairingCommittedAck).await;
     for _ in 0..2 {
         send(&mut client, Command::PairingCommitted, nonce.clone()).await;
         read(&mut client, Command::PairingCommittedAck).await;
@@ -838,6 +884,9 @@ async fn parent_real_commit_session_deadline_keeps_the_window_open_and_records_t
     let f = Fixture::new();
     let manager = f.manager();
     let _client = f.install(&manager).await;
+    let verification = manager.status().await;
+    assert!(verification.remaining_seconds <= PAIRING_SESSION_TIMEOUT.as_secs());
+    assert_eq!(verification.phase, PairingPhase::Verification);
     tokio::task::yield_now().await;
     tokio::time::advance(PAIRING_SESSION_TIMEOUT + Duration::from_secs(1)).await;
     let status = parent_wait_for_pairing_failure(&manager).await;

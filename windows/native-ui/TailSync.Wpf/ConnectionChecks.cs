@@ -82,6 +82,12 @@ internal static class ConnectionChecks
                 new { address = new string('a', 64), @interface = "iroh", online = true } } });
             Check(QualityChecks.Descendants(view).OfType<Expander>().Any(item => item.IsExpanded && item.Content is Panel panel && panel.Children.OfType<TextBlock>().Any()), "device identity disclosure survives mode-driven device refreshes");
             Check(ConnectionsView.PairingAddress(routeFixture) == new string('a', 64), "Iroh-only mode never pairs using an available LAN address");
+            var allowPairing = QualityChecks.Descendants(view).OfType<Button>()
+                .Single(button => button.Content as string == Localizer.Text("settings.allowPairing"));
+            allowPairing.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => allowPairing.IsEnabled && allowPairing.Content as string == Localizer.Text("settings.closePairing"));
+            Check(window.IsEnabled && !app.Windows.OfType<PairingWindow>().Any(),
+                "allowing inbound pairing keeps device selection available before verification");
             var invite = await NativeBackend.InvokeAsync<JsonElement>("create_remote_pairing_invite");
             var preview = await NativeBackend.InvokeAsync<JsonElement>("inspect_remote_pairing_link", new { link = invite.String("link") });
             Check(preview.String("endpoint_id").Length > 0, "WPF transport creates and inspects a real Iroh invite");

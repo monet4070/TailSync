@@ -442,7 +442,11 @@ impl Write for RotatingLogWriter {
 
 fn init_logging() {
     let _ = tracing_log::LogTracer::init();
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // Per-packet Iroh span-close events otherwise rotate out the pairing
+        // and connection failures needed to diagnose a real device problem.
+        EnvFilter::new("info,iroh=warn,iroh_relay=warn,noq=warn")
+    });
     #[cfg(not(debug_assertions))]
     {
         let path = db::get_data_dir().join("tailsync.log");

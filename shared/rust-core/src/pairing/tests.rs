@@ -1317,6 +1317,7 @@ fn committing_a_pairing_clears_the_classification() {
         failure_kind: Some(PairingFailureKind::Transport),
         generation: 7,
         session_id: 3,
+        verification_deadline: Some(Instant::now() + Duration::from_secs(1)),
         control: None,
         session_direction: None,
     };
@@ -1325,6 +1326,7 @@ fn committing_a_pairing_clears_the_classification() {
     assert_eq!(state.phase, PairingPhase::Paired);
     assert_eq!(state.error, None);
     assert_eq!(state.failure_kind, None);
+    assert_eq!(state.verification_deadline, None);
 }
 
 #[tokio::test]

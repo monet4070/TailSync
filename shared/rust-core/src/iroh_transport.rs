@@ -216,6 +216,13 @@ pub struct AcceptedConnection {
     pub remote_endpoint_id: String,
 }
 
+/// Keep accepting new peers while this peer completes its QUIC handshake.
+/// Waiting for an incoming packet is cancellation safe; completing its
+/// handshake must be owned by a task, independently of listener housekeeping.
+pub struct IncomingConnection {
+    incoming: iroh::endpoint::Incoming,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IrohConnectionKind {
     Business,
@@ -341,21 +348,35 @@ impl IrohEndpoint {
     }
 
     pub async fn accept(&self) -> Result<Option<AcceptedConnection>, String> {
-        let Some(incoming) = self.endpoint.accept().await else {
+        let Some(incoming) = self.accept_incoming().await else {
             return Ok(None);
         };
-        let connection = incoming
+        incoming.accept().await.map(Some)
+    }
+
+    pub async fn accept_incoming(&self) -> Option<IncomingConnection> {
+        self.endpoint
+            .accept()
             .await
-            .map_err(|error| format!("Could not accept Iroh connection: {error}"))?;
-        let remote_endpoint_id = connection.remote_id().to_string();
-        Ok(Some(AcceptedConnection {
-            connection,
-            remote_endpoint_id,
-        }))
+            .map(|incoming| IncomingConnection { incoming })
     }
 
     pub async fn close(&self) {
         self.endpoint.close().await;
+    }
+}
+
+impl IncomingConnection {
+    pub async fn accept(self) -> Result<AcceptedConnection, String> {
+        let connection = self
+            .incoming
+            .await
+            .map_err(|error| format!("Could not accept Iroh connection: {error}"))?;
+        let remote_endpoint_id = connection.remote_id().to_string();
+        Ok(AcceptedConnection {
+            connection,
+            remote_endpoint_id,
+        })
     }
 }
 
@@ -712,6 +733,50 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn unfinished_incoming_handshake_does_not_block_the_next_peer() {
+        let server = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let client_a = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
+        };
+        let client_b = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
+        };
+        let address = loopback_addr(&server);
+        let address_a = address.clone();
+        let dial_a = tokio::spawn(async move { client_a.connect_addr(address_a).await.unwrap() });
+        let first = tokio::time::timeout(Duration::from_secs(10), server.accept_incoming())
+            .await
+            .unwrap()
+            .unwrap();
+        // Leave the first peer before its server-side QUIC handshake. This
+        // used to occupy (and be cancelled inside) the listener's select!.
+        let dial_b = tokio::spawn(async move { client_b.connect_addr(address).await.unwrap() });
+        let second = tokio::time::timeout(Duration::from_secs(10), server.accept_incoming())
+            .await
+            .expect("the first peer blocked accepting a second peer")
+            .unwrap();
+        let accepted_b = tokio::time::timeout(Duration::from_secs(10), second.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let stream_b = dial_b.await.unwrap();
+        let accepted_a = tokio::time::timeout(Duration::from_secs(10), first.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let stream_a = dial_a.await.unwrap();
+        assert_ne!(accepted_a.remote_endpoint_id, accepted_b.remote_endpoint_id);
+        drop((accepted_a, accepted_b, stream_a, stream_b));
+        server.close().await;
+    }
+
     // Each accepted probe is drained before the next connection attempt. The
     // client must reuse its long-lived endpoint so repeated measurements do
     // not restart relay discovery or race a newly bound endpoint's teardown.
@@ -1019,8 +1084,133 @@ mod tests {
             client_settings.lock().await.trusted_peer_keys.get("server"),
             Some(&server_identity.public_key_base64())
         );
+        // Pairing is usable only when each device can subsequently initiate
+        // an authenticated business connection with the persisted peer key.
+        authenticated_roundtrip(
+            &client,
+            &server,
+            &client_identity,
+            &server_identity,
+            &server_settings,
+            "client",
+            "server",
+            use_loopback,
+        )
+        .await;
+        authenticated_roundtrip(
+            &server,
+            &client,
+            &server_identity,
+            &client_identity,
+            &client_settings,
+            "server",
+            "client",
+            use_loopback,
+        )
+        .await;
         client.close().await;
         server.close().await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn authenticated_roundtrip(
+        dialer: &IrohEndpoint,
+        listener: &IrohEndpoint,
+        dialer_identity: &DeviceIdentity,
+        listener_identity: &DeviceIdentity,
+        listener_settings: &Arc<Mutex<Settings>>,
+        dialer_name: &str,
+        listener_name: &str,
+        use_loopback: bool,
+    ) {
+        let shutdown_barrier = tokio::sync::Barrier::new(2);
+        let incoming = async {
+            let accepted = listener.accept().await.unwrap().unwrap();
+            let source = crate::peer::inbound_source::InboundSource::Iroh(
+                accepted.remote_endpoint_id.clone(),
+            );
+            let stream = accepted.accept_stream().await.unwrap();
+            let accepted = secure::accept(
+                stream,
+                listener_identity,
+                PeerIdentity {
+                    hostname: listener_name.into(),
+                    tailscale_ip: String::new(),
+                    iroh_endpoint_id: Some(listener.endpoint_id()),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(accepted.purpose, HandshakePurpose::Connection);
+            assert!(crate::peer::admission::peer_is_allowed(
+                &*listener_settings.lock().await,
+                &accepted.peer_identity.hostname,
+                &accepted.remote_public_key,
+                &source,
+            ));
+            let mut connection = accepted.connection;
+            secure::write_ready(&mut connection).await.unwrap();
+            let heartbeat = connection.read_frame().await.unwrap();
+            assert_eq!(heartbeat.command, crate::protocol::Command::Heartbeat);
+            connection
+                .write_frame(
+                    &crate::protocol::Frame::try_new(
+                        crate::protocol::Command::HeartbeatAck,
+                        0,
+                        heartbeat.sequence,
+                        Vec::new(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            connection.shutdown().await.unwrap();
+            shutdown_barrier.wait().await;
+        };
+        let outgoing = async {
+            let address = if use_loopback {
+                loopback_addr(listener)
+            } else {
+                listener.endpoint.addr()
+            };
+            let stream = dialer.connect_addr(address).await.unwrap();
+            let mut connection = secure::connect(
+                stream,
+                dialer_identity,
+                PeerIdentity {
+                    hostname: dialer_name.into(),
+                    tailscale_ip: String::new(),
+                    iroh_endpoint_id: Some(dialer.endpoint_id()),
+                },
+                listener_name,
+                listener_identity.public_key(),
+            )
+            .await
+            .unwrap();
+            connection
+                .write_frame(
+                    &crate::protocol::Frame::try_new(
+                        crate::protocol::Command::Heartbeat,
+                        0,
+                        7,
+                        Vec::new(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                connection.read_frame().await.unwrap().command,
+                crate::protocol::Command::HeartbeatAck
+            );
+            connection.shutdown().await.unwrap();
+            shutdown_barrier.wait().await;
+        };
+        tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::join!(incoming, outgoing);
+        })
+        .await
+        .expect("paired peers must authenticate and exchange a heartbeat in both directions");
     }
 
     #[tokio::test]

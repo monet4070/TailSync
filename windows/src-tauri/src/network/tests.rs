@@ -719,6 +719,7 @@ async fn connection_race_surfaces_typed_protocol_incompatibility() {
     let settings = race_settings(&server_identity);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let (release_reply, keep_reply) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         // Answer with a plain frame whose header advertises an unsupported
@@ -728,6 +729,9 @@ async fn connection_race_surfaces_typed_protocol_incompatibility() {
             .await
             .unwrap();
         tokio::io::AsyncWriteExt::flush(&mut stream).await.unwrap();
+        // Dropping a Windows socket with an unread request can RST away this
+        // reply. Keep it alive until the client has classified the header.
+        let _ = keep_reply.await;
     });
 
     let failure = match race_connect_and_handshake_classified(
@@ -750,6 +754,7 @@ async fn connection_race_surfaces_typed_protocol_incompatibility() {
         "{}",
         failure.message()
     );
+    let _ = release_reply.send(());
     server.await.unwrap();
 }
 

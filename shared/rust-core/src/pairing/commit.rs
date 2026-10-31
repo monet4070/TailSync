@@ -209,10 +209,12 @@ impl PairingManager {
                 return;
             }
             self.pending.lock().await.retry_unavailable();
-            state.deadline.unwrap_or_else(Instant::now)
+            state
+                .verification_deadline
+                .or(state.deadline)
+                .unwrap_or_else(Instant::now)
         };
-        let timeout =
-            tokio::time::sleep_until(deadline.min(Instant::now() + PAIRING_SESSION_TIMEOUT));
+        let timeout = tokio::time::sleep_until(deadline);
         tokio::pin!(timeout);
         macro_rules! attempt {
             ($operation:expr) => {
@@ -230,7 +232,16 @@ impl PairingManager {
             };
         }
 
-        if let Some(record) = self.local_commit_receipt(&hostname, &key).await {
+        // A completed transaction is only a replay receipt. Advertising its
+        // old nonce unprompted makes a fresh pairing fail when the other
+        // device has forgotten us: that device has no intent for the old
+        // transaction. Keep completed receipts passive; a peer still waiting
+        // for our last ACK can present its matching commit proof below.
+        if let Some(record) = self
+            .local_commit_receipt(&hostname, &key)
+            .await
+            .filter(|record| record.phase != PendingTrustPhase::Completed)
+        {
             nonce = record.commit_nonce.expect("receipt filter checked nonce");
             local_confirmed = true;
             local_persisted = true;

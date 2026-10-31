@@ -63,9 +63,9 @@ pub async fn start_server(
             break;
         }
         let mode = settings.lock().await.connection_mode.clone();
-        if !tailsync_core::peer::types::ConnectionMode::parse(&mode).is_some_and(|mode| {
-            mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh)
-        }) {
+        if !tailsync_core::peer::types::ConnectionMode::parse(&mode)
+            .is_some_and(|mode| mode.allows(tailsync_core::peer::types::ConnectionInterface::Iroh))
+        {
             close_endpoint().await;
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
@@ -89,10 +89,7 @@ pub async fn start_server(
         };
 
         let accepted = tokio::select! {
-            accepted = timeout(HANDSHAKE_TIMEOUT, endpoint.accept()) => match accepted {
-                Ok(accepted) => Some(accepted),
-                Err(_) => continue,
-            },
+            incoming = endpoint.accept_incoming() => Some(incoming),
             joined = handlers.join_next(), if !handlers.is_empty() => {
                 if let Some(Err(error)) = joined {
                     debug!("Inbound Iroh connection task ended unexpectedly: {error}");
@@ -107,20 +104,16 @@ pub async fn start_server(
         };
 
         match accepted {
-            Ok(Some(accepted)) => {
-                let remote_endpoint_id = accepted.remote_endpoint_id.clone();
-                let connection_kind = accepted.kind();
-                let Some(permit) = limiter.try_acquire_source(remote_endpoint_id.clone()) else {
-                    warn!("Connection limit reached for an inbound Iroh peer");
-                    continue;
-                };
-                if connection_kind == tailsync_core::iroh_transport::IrohConnectionKind::Rtt {
-                    handlers.spawn(async move {
-                        let _permit = permit;
-                        accepted.wait_for_close().await;
-                    });
+            Some(incoming) => {
+                // Includes unfinished QUIC handshakes, so anonymous traffic
+                // cannot grow an unbounded task set. A slow peer no longer
+                // blocks the listener or loses its handshake when an unrelated
+                // handler finishes or the listener's mode is refreshed.
+                if handlers.len() >= 64 {
+                    warn!("Connection limit reached for inbound Iroh handshakes");
                     continue;
                 }
+                let limiter = limiter.clone();
                 let sync = sync_engine.clone();
                 let db = database.clone();
                 let settings = settings.clone();
@@ -128,7 +121,29 @@ pub async fn start_server(
                 let pairing = pairing.clone();
                 let remote_invites = remote_invites.clone();
                 handlers.spawn(async move {
+                    let accepted = match timeout(IROH_CONNECTION_TIMEOUT, incoming.accept()).await {
+                        Ok(Ok(accepted)) => accepted,
+                        Ok(Err(error)) => {
+                            debug!("Rejected inbound Iroh connection: {error}");
+                            return;
+                        }
+                        Err(_) => {
+                            debug!("Inbound Iroh QUIC handshake timed out");
+                            return;
+                        }
+                    };
+                    let remote_endpoint_id = accepted.remote_endpoint_id.clone();
+                    let connection_kind = accepted.kind();
+                    let Some(permit) = limiter.try_acquire_source(remote_endpoint_id.clone())
+                    else {
+                        warn!("Connection limit reached for an inbound Iroh peer");
+                        return;
+                    };
                     let _permit = permit;
+                    if connection_kind == tailsync_core::iroh_transport::IrohConnectionKind::Rtt {
+                        accepted.wait_for_close().await;
+                        return;
+                    }
                     let stream = match timeout(HANDSHAKE_TIMEOUT, accepted.accept_stream()).await {
                         Ok(Ok(stream)) => stream,
                         Ok(Err(error)) => {
@@ -173,17 +188,9 @@ pub async fn start_server(
                     }
                 });
             }
-            Ok(None) => {
+            None => {
                 invalidate_endpoint(generation).await;
                 tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            Err(error) => {
-                debug!("Rejected inbound Iroh connection: {error}");
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_millis(50)) => {}
-                    _ = mode_changed().notified() => {}
-                    _ = wait_for_shutdown(&mut shutdown) => break,
-                }
             }
         }
     }

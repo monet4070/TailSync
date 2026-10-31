@@ -517,6 +517,79 @@ impl Drop for PairingAttemptDropSignal {
 }
 
 #[tokio::test(start_paused = true)]
+async fn slow_tcp_establishment_keeps_a_fresh_noise_handshake_budget() {
+    for address in ["192.168.1.5", "100.64.0.5"] {
+        let identity = pairing_identity();
+        let settings = pairing_settings("auto");
+        let manager = PairingManager::new(settings.clone(), identity.clone());
+        manager.enable().await;
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server = tokio::spawn(async move {
+            let responder = pairing_identity();
+            let mut accepted = secure::accept(
+                server_io,
+                &responder,
+                secure::PeerIdentity {
+                    hostname: "slow-peer".into(),
+                    tailscale_ip: String::new(),
+                    iroh_endpoint_id: None,
+                },
+            )
+            .await
+            .unwrap();
+            secure::write_ready(&mut accepted.connection).await.unwrap();
+            let _connection = accepted.connection;
+            std::future::pending::<()>().await;
+        });
+        let started = tokio::time::Instant::now();
+        start_pairing_with_connector(
+            manager.clone(),
+            identity,
+            settings,
+            address,
+            |_| async move {
+                tokio::time::sleep(Duration::from_secs(6)).await;
+                Ok::<_, PairingFailure>(client_io)
+            },
+        )
+        .await
+        .expect("a reachable LAN/Tailscale peer must survive a six-second transport setup");
+        assert!(started.elapsed() >= Duration::from_secs(6));
+        let status = manager.status().await;
+        assert_eq!(status.phase, PairingPhase::Verification);
+        assert_eq!(status.peer.unwrap().verification_code.len(), 6);
+        assert_eq!(status.failed_attempts, 0);
+        manager.cancel().await;
+        server.abort();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_transport_does_not_extend_the_noise_handshake_deadline() {
+    let identity = pairing_identity();
+    let settings = pairing_settings("auto");
+    let manager = PairingManager::new(settings.clone(), identity.clone());
+    manager.enable().await;
+    let (client_io, _unresponsive_peer) = tokio::io::duplex(256 * 1024);
+    let started = tokio::time::Instant::now();
+    let failure = start_pairing_with_connector(
+        manager.clone(),
+        identity,
+        settings,
+        "100.64.0.5",
+        |_| async move {
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            Ok::<_, PairingFailure>(client_io)
+        },
+    )
+    .await
+    .expect_err("a connected peer cannot leave the Noise handshake waiting indefinitely");
+    assert_eq!(failure.kind(), PairingFailureKind::TimedOut);
+    assert_eq!(started.elapsed(), Duration::from_secs(11));
+    assert_eq!(manager.status().await.failed_attempts, 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn parent_direct_handshake_deadline_records_timeout_and_drops_the_attempt() {
     let identity = pairing_identity();
     let settings = pairing_settings("auto");

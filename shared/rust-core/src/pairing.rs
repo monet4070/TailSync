@@ -176,6 +176,7 @@ struct PairingState {
     failure_kind: Option<PairingFailureKind>,
     generation: u64,
     session_id: u64,
+    verification_deadline: Option<Instant>,
     control: Option<mpsc::Sender<PairingAction>>,
     session_direction: Option<PairingDirection>,
 }

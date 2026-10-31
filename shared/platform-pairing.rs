@@ -66,29 +66,47 @@ where
         .map_err(PairingFailure::from)?;
 
     let mut window = pairing.subscribe_window();
-    let operation = timeout(HANDSHAKE_TIMEOUT, async move {
+    let connect_timeout = match &target {
+        PairingTarget::Tcp(_) => CONNECTION_TIMEOUT,
+        PairingTarget::Iroh(_) => IROH_CONNECTION_TIMEOUT,
+    };
+    // Address discovery/relay establishment has its own budget. The five
+    // second Noise deadline begins only after the transport is connected.
+    let operation = timeout(connect_timeout + HANDSHAKE_TIMEOUT, async move {
         match &target {
             PairingTarget::Tcp(ip) => {
-                let stream = connect(SocketAddr::new(*ip, TCP_PORT)).await?;
-                let accepted =
-                    secure::connect_pairing(stream, &identity, local_peer_identity(&mode))
-                        .await
-                        .map_err(PairingFailure::from_boxed)?;
+                let stream = timeout(CONNECTION_TIMEOUT, connect(SocketAddr::new(*ip, TCP_PORT)))
+                    .await
+                    .map_err(|_| pairing_handshake_timeout())??;
+                let accepted = timeout(
+                    HANDSHAKE_TIMEOUT,
+                    secure::connect_pairing(stream, &identity, local_peer_identity(&mode)),
+                )
+                .await
+                .map_err(|_| pairing_handshake_timeout())?
+                .map_err(PairingFailure::from_boxed)?;
                 let interface = infer_interface(&ip.to_string()).map_err(|message| {
                     PairingFailure::new(PairingFailureKind::InvalidArgument, message)
                 })?;
                 Ok::<_, PairingFailure>((accepted, ip.to_string(), interface))
             }
             PairingTarget::Iroh(endpoint_id) => {
-                let endpoint = iroh::endpoint().await.map_err(transport_failure)?;
-                let stream = endpoint
-                    .connect(endpoint_id)
-                    .await
-                    .map_err(transport_failure)?;
-                let accepted =
-                    secure::connect_pairing(stream, &identity, local_peer_identity(&mode))
+                let stream = timeout(IROH_CONNECTION_TIMEOUT, async {
+                    let endpoint = iroh::endpoint().await.map_err(transport_failure)?;
+                    endpoint
+                        .connect(endpoint_id)
                         .await
-                        .map_err(PairingFailure::from_boxed)?;
+                        .map_err(transport_failure)
+                })
+                .await
+                .map_err(|_| pairing_handshake_timeout())??;
+                let accepted = timeout(
+                    HANDSHAKE_TIMEOUT,
+                    secure::connect_pairing(stream, &identity, local_peer_identity(&mode)),
+                )
+                .await
+                .map_err(|_| pairing_handshake_timeout())?
+                .map_err(PairingFailure::from_boxed)?;
                 iroh_identity_binding(
                     &accepted,
                     endpoint_id,
@@ -106,17 +124,18 @@ where
                 break match result {
                     Ok(Ok(accepted)) => accepted,
                     Ok(Err(failure)) => {
-                        let failure = failure.with_context("Pairing handshake failed: ");
+                        let failure = if failure.kind() == PairingFailureKind::TimedOut {
+                            failure
+                        } else {
+                            failure.with_context("Pairing handshake failed: ")
+                        };
                         pairing
                             .record_non_ban_failure_classified(failure.clone())
                             .await;
                         return Err(failure);
                     }
                     Err(_) => {
-                        let failure = PairingFailure::new(
-                            PairingFailureKind::TimedOut,
-                            "Pairing handshake timed out",
-                        );
+                        let failure = pairing_handshake_timeout();
                         pairing
                             .record_non_ban_failure_classified(failure.clone())
                             .await;
@@ -148,6 +167,10 @@ where
         })
         .await
         .map_err(PairingFailure::from)
+}
+
+fn pairing_handshake_timeout() -> PairingFailure {
+    PairingFailure::new(PairingFailureKind::TimedOut, "Pairing handshake timed out")
 }
 
 /// Create a self-contained, one-time invite. The endpoint is started here so
@@ -340,9 +363,13 @@ where
             "The remote pairing invite was rejected or is no longer available",
         ));
     }
-    let accepted = secure::connect_pairing(stream, identity, local_peer_identity(mode))
-        .await
-        .map_err(PairingFailure::from_boxed)?;
+    let accepted = timeout(
+        HANDSHAKE_TIMEOUT,
+        secure::connect_pairing(stream, identity, local_peer_identity(mode)),
+    )
+    .await
+    .map_err(|_| pairing_handshake_timeout())?
+    .map_err(PairingFailure::from_boxed)?;
     iroh_identity_binding(
         &accepted,
         &invite.endpoint_id_string(),
