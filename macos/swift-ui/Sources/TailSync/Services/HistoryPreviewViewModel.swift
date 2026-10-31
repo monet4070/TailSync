@@ -14,22 +14,27 @@ struct HistoryPreviewDependencies: @unchecked Sendable {
 
     static let live = HistoryPreviewDependencies(
         load: { id, batchId in
-            try await ApiClient.shared.getPreviewData(id: id, batchId: batchId)
+            if let demo = OnboardingDemo.previewData(id: id, batchId: batchId) { return demo }
+            return try await ApiClient.shared.getPreviewData(id: id, batchId: batchId)
         },
         restore: { id in
             try await ApiClient.shared.restoreEntry(id: id)
         },
         loadDocument: { id, owner, generation, requestId in
-            try await ApiClient.shared.getDocumentPreview(
+            if let demo = OnboardingDemo.documentPreview(id: id, owner: owner, generation: generation, requestId: requestId) { return demo }
+            return try await ApiClient.shared.getDocumentPreview(
                 id: id, owner: owner, generation: generation, requestId: requestId)
         },
         validateDocument: { preview in
-            try await ApiClient.shared.validateDocumentPreview(preview)
+            if OnboardingDemo.isDemoEntry(preview.entryId) { return true }
+            return try await ApiClient.shared.validateDocumentPreview(preview)
         },
         validateDocumentStamp: { id, owner, generation, requestId, stamp in
-            try await ApiClient.shared.validateDocumentPreview(id: id, owner: owner, generation: generation, requestId: requestId, stamp: stamp)
+            if OnboardingDemo.isDemoEntry(id) { return true }
+            return try await ApiClient.shared.validateDocumentPreview(id: id, owner: owner, generation: generation, requestId: requestId, stamp: stamp)
         },
         cancelDocument: { id, owner, generation, requestId in
+            if OnboardingDemo.isDemoEntry(id) { return }
             await ApiClient.shared.cancelDocumentPreview(
                 id: id, owner: owner, generation: generation, requestId: requestId)
         },

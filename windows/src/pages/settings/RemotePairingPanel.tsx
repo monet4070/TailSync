@@ -41,7 +41,7 @@ export function RemotePairingPanel({
   const visibleError = pairingIssueText(error, t);
 
   return (
-    <div className={`remote-pairing-panel remote-pairing-drawer${expanded ? " is-expanded" : ""}`}>
+    <div data-tour="remote-pairing" className={`remote-pairing-panel remote-pairing-drawer${expanded ? " is-expanded" : ""}`}>
       <button
         type="button"
         className="remote-pairing-drawer-header"

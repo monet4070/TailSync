@@ -26,6 +26,7 @@ impl RestoreTarget {
 pub enum RestoreSelection {
     Originals,
     PortableCompatibility,
+    DocumentCompatibility,
     ExplicitFormat,
     AvailableContent,
 }
@@ -99,7 +100,10 @@ impl RestorePlan {
     }
     pub fn with_macos_rtfd(self, bytes: Vec<u8>) -> Result<Self, ProtocolError> {
         if self.target != RestoreTarget::Macos
-            || self.selection != RestoreSelection::AvailableContent
+            || !matches!(
+                self.selection,
+                RestoreSelection::AvailableContent | RestoreSelection::DocumentCompatibility
+            )
             || bytes.is_empty()
         {
             return Err(ProtocolError::InvalidNativeSnapshot);
@@ -140,6 +144,44 @@ impl RestorePlan {
         plan.selection = RestoreSelection::AvailableContent;
         plan.missing_images = available.missing_images;
         Ok(plan)
+    }
+    /// Select a self-contained portable output for default publication. Original
+    /// bytes remain in history; unavailable images stay at their document positions
+    /// in the selected copy. An explicit format request never silently degrades.
+    pub fn portable_default(
+        bundle: &PortableBundle,
+        input: RestoreInput,
+        target: RestoreTarget,
+    ) -> Result<Self, ProtocolError> {
+        if input.requested_format.is_none() && !dependencies_complete(bundle)? {
+            return Self::available_content(bundle, input, target);
+        }
+        if input.requested_format.is_none() && prefers_document_compatibility(bundle)? {
+            // An original RTF representation can contain only the text while HTML
+            // carries the images. Native consumers often prefer RTF, so publish
+            // one coherent document instead of letting that alternative hide images.
+            let mut document = bundle.clone();
+            if let Some(index) = document
+                .representations
+                .iter()
+                .position(|r| r.mime == Mime::Rtf)
+            {
+                document.representations.remove(index);
+                for binding in &mut document.bindings {
+                    if binding.representation as usize > index {
+                        binding.representation -= 1;
+                    }
+                }
+            }
+            // Keep the captured HTML and its image positions. macOS adds a
+            // native RTFD representation from this same HTML in its adapter.
+            // Do not synthesize a competing paragraph-based RTF: its image
+            // blocks would move inline attachments onto separate lines.
+            let mut plan = Self::compatibility(document, input, target)?;
+            plan.selection = RestoreSelection::DocumentCompatibility;
+            return Ok(plan);
+        }
+        Self::compatibility(bundle.clone(), input, target)
     }
     /// Diagnostic inventory, computed only when inspected. Publication uses the
     /// owned prepared bytes directly and does not allocate or hash this inventory.
@@ -324,6 +366,15 @@ impl RestorePlan {
     }
 }
 
+pub fn prefers_document_compatibility(bundle: &PortableBundle) -> Result<bool, ProtocolError> {
+    let Some(html) = bundle.representation(Mime::Html) else {
+        return Ok(false);
+    };
+    let images = super::html::available_image_inventory(html)?;
+    Ok(!images.is_empty()
+        && (images.len() > 1 || !super::html::text_summary(html).trim().is_empty()))
+}
+
 /// A wire completeness label alone is not evidence of closed HTML dependencies.
 /// Resource bindings and actual reference spans are checked without loading any
 /// resource. Image decoding/size checks belong to validate_for_publish.
@@ -453,6 +504,65 @@ mod tests {
             b,
             rich(),
             "preparation cannot mutate source bindings or bytes"
+        );
+    }
+    #[test]
+    fn article_default_keeps_html_positions_when_text_only_rtf_competes() {
+        let mut bundle = rich();
+        bundle.representations.insert(
+            0,
+            Representation {
+                mime: Mime::Rtf,
+                bytes: br"{\rtf1 text without attachments}".to_vec(),
+            },
+        );
+        for binding in &mut bundle.bindings {
+            binding.representation += 1;
+        }
+        let original = bundle.clone();
+        let mut expected = bundle.clone();
+        expected.representations.retain(|r| r.mime != Mime::Rtf);
+        for binding in &mut expected.bindings {
+            binding.representation -= 1;
+        }
+        let expected = RestorePlan::compatibility(expected, input(), RestoreTarget::Macos).unwrap();
+        let plan = RestorePlan::portable_default(&bundle, input(), RestoreTarget::Macos).unwrap();
+        assert_eq!(plan.selection(), RestoreSelection::DocumentCompatibility);
+        assert_eq!(plan.missing_images(), 0);
+        assert_eq!(
+            plan.native(),
+            expected.native(),
+            "HTML and every inline binding must stay in place"
+        );
+        assert!(!plan.outputs().iter().any(|o| o.name == "public.rtf"));
+        let windows =
+            RestorePlan::portable_default(&bundle, input(), RestoreTarget::Windows).unwrap();
+        assert!(!windows
+            .outputs()
+            .iter()
+            .any(|o| o.name == "Rich Text Format"));
+        let cf_html = windows
+            .native()
+            .unwrap()
+            .formats
+            .iter()
+            .find(|f| f.name == "HTML Format")
+            .unwrap();
+        let macos_html = plan
+            .native()
+            .unwrap()
+            .formats
+            .iter()
+            .find(|f| f.name == "public.html")
+            .unwrap();
+        assert_eq!(
+            cf_html.bytes,
+            super::super::html::encode_cf_html(std::str::from_utf8(&macos_html.bytes).unwrap())
+                .unwrap()
+        );
+        assert_eq!(
+            bundle, original,
+            "the stored alternatives must remain intact"
         );
     }
     #[test]

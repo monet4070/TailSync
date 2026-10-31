@@ -31,6 +31,8 @@ import { thumbnailKeyForEntry, type ThumbnailData } from "../../hooks/useThumbna
 import type { Translate } from "./HistoryViewTypes";
 
 interface HistoryItemProps {
+  shortcutNumber?: number;
+  shortcutEnabled?: boolean;
   t: Translate;
   entry: HistoryEntry;
   categories: HistoryCategory[];
@@ -60,6 +62,8 @@ interface HistoryItemProps {
 type FavoriteStyle = CSSProperties & { "--favorite-progress"?: number };
 
 export function HistoryItem({
+  shortcutNumber,
+  shortcutEnabled = false,
   t,
   entry,
   categories,
@@ -121,6 +125,12 @@ export function HistoryItem({
     : false;
 
   const showsActions = restoreFormats.length > 0 || maintenanceActions || advancedActions;
+  const shortcutBadge = shortcutNumber === undefined ? null : (
+    <kbd
+      className={`history-shortcut${shortcutEnabled ? " is-active" : ""}`}
+      aria-label={t("history.keyboard.number").replace("{number}", String(shortcutNumber))}
+    >{shortcutNumber}</kbd>
+  );
 
   return (
     <article
@@ -171,6 +181,7 @@ export function HistoryItem({
       }}
     >
       <span className="favorite-press-progress" aria-hidden="true" />
+      {shortcutBadge}
       {(entry.display?.thumbnail_eligible ?? (entry.type === "image" || (entry.composite?.image_count ?? 0) > 0 || entry.composite?.native_only)) ? (
         <LazyThumbnail
           id={entry.id}

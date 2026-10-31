@@ -9,7 +9,7 @@ export function SettingsHistorySection({
   setAutoSaveNetworkImages,
 }: SettingsHistorySectionProps) {
   return (
-    <section className="setting-group">
+    <section data-tour="history-settings" className="setting-group">
       <div className="setting-group-header">
         <h3>{t("settings.history")}</h3>
         <p>{t("settings.historyDescription")}</p>

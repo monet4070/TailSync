@@ -13,6 +13,8 @@ import type { HistoryListProps } from "./HistoryViewTypes";
 import { HistoryItem } from "./HistoryItem";
 
 export function HistoryList({
+  shortcutNumbers,
+  shortcutsActive,
   t,
   entries,
   calendarNow,
@@ -42,7 +44,6 @@ export function HistoryList({
   let pageEnterIndex = 0;
 
   return (
-    <div className="history-list" tabIndex={-1}>
       <div className="history-page" key={pageAnimationRevision}>
         {orderedGroups.map(([group, groupEntries]) => (
           <div className="date-group" key={group}>
@@ -125,6 +126,8 @@ export function HistoryList({
                     </div>
                   )}
                   <HistoryItem
+                    shortcutNumber={shortcutNumbers.get(entry.id)}
+                    shortcutEnabled={shortcutsActive}
                     t={t}
                     entry={entry}
                     categories={categories}
@@ -156,6 +159,5 @@ export function HistoryList({
           </div>
         ))}
       </div>
-    </div>
   );
 }

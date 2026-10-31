@@ -1,11 +1,21 @@
 # History preview
 
+For an image-only browser copy with one unresolved HTML image reference and a saved standalone PNG, preview uses the saved PNG as an independent representation. Restoring available content may copy that PNG while reporting the unresolved HTML image; it does not bind the PNG to the HTML node or fetch blob/file/private-network references. Copies with text, RTF, multiple HTML images, or an already saved bound/inline HTML image retain their existing selection rules. A generic `payload_unavailable` error is displayed as unavailable, without claiming that authentication or decryption failed.
+
 TailSync provides a reusable, independent preview window for clipboard history.
 The history list remains available while the preview is open, so search,
 filters, pagination, restore, and delete are never covered by preview content.
 
 ## Interaction
 
+- history opens with list focus and the first displayed record selected. In list
+  focus only, `1–6` restores the numbered single record, Left/Right turns pages,
+  and `F` focuses search. Search retains ordinary digits and cursor navigation;
+  Down returns to the first result. The first six rendered rows on each 30-item
+  page are numbered, excluding headers and collapsed files. These commands do
+  not control a focused preview, menu, or text editor. See the
+  [shortcut contract](history-number-shortcuts.md) and
+  [implementation/acceptance record](../acceptance/history-number-shortcuts-2026-10-30.md).
 - single click selects a history row;
 - Space opens the selected row in the single preview window;
 - selecting another row and pressing Space replaces the current preview;

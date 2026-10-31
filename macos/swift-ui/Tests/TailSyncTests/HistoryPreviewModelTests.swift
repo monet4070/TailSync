@@ -312,7 +312,7 @@ final class HistoryPreviewModelTests: XCTestCase {
             (.previewTooLarge, HistoryPreviewFailure(kind: .tooLarge, canRetry: false)),
             (.unsupportedType, HistoryPreviewFailure(kind: .unsupported, canRetry: false)),
             (.invalidSize, HistoryPreviewFailure(kind: .corrupt, canRetry: false)),
-            (.payloadUnavailable, HistoryPreviewFailure(kind: .decryption, canRetry: true)),
+            (.payloadUnavailable, HistoryPreviewFailure(kind: .unavailable, canRetry: true)),
             (.entryNotFound, HistoryPreviewFailure(kind: .unavailable, canRetry: false)),
             (.metadataUnavailable, HistoryPreviewFailure(kind: .unavailable, canRetry: true))
         ]

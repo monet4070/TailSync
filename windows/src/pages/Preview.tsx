@@ -14,6 +14,8 @@ import {
 } from "../tailsyncClient";
 import { useRestoreActivity } from "../hooks/useRestoreActivity";
 import { useRuntimeSnapshots } from "../hooks/useRuntimeSnapshots";
+import { isDemoEntry, isDemoDocument } from "../onboarding/demo";
+import { readTour, TOUR_EVENT, TOUR_KEY } from "../onboarding/tourState";
 import { HistoryImeGuard } from "../utils/historyKeyboard";
 import { PreviewShell } from "../preview/PreviewShell";
 import {
@@ -65,7 +67,7 @@ export function Preview() {
   const ime = useRef(new HistoryImeGuard());
   const [restoreSucceeded, setRestoreSucceeded] = useState(false);
   const [restoreFailed, setRestoreFailed] = useState(false);
-  const documentEligible = snapshot?.documentEligible === true;
+  const documentEligible = snapshot?.documentEligible === true || (target !== null && isDemoDocument(target.entryId));
   const { state, retry } = usePreviewPayload(documentEligible ? null : target);
   const documentTarget = useMemo<DocumentTarget | null>(() => {
     if (!documentEligible || !target || !snapshot) return null;
@@ -81,7 +83,7 @@ export function Preview() {
     if (previous !== null && previous !== runtime.history_version) {
       await refreshDocument(() => !sessionClosedRef.current && !restoring.current && !externalRestoringRef.current);
     }
-  }, 2500, documentTarget !== null);
+  }, 2500, documentTarget !== null && !isDemoEntry(documentTarget.entryId));
 
   const applySnapshot = useCallback((snapshot: PreviewWindowSnapshot | null) => {
     if (!validSnapshot(snapshot) || snapshot.revision <= latestRevision.current) return;
@@ -154,6 +156,22 @@ export function Preview() {
     setSessionClosed(true);
   }, []);
 
+  useEffect(() => {
+    const sync = () => {
+      if (!target || !isDemoEntry(target.entryId) || readTour().active) return;
+      latestRevision.current++;
+      retireSession();
+      setTarget(null);
+      setSnapshot(null);
+      void closePreviewWindow().catch(console.error);
+    };
+    const storage = (event: StorageEvent) => { if (event.key === null || event.key === TOUR_KEY) sync(); };
+    window.addEventListener(TOUR_EVENT, sync);
+    window.addEventListener("storage", storage);
+    sync();
+    return () => { window.removeEventListener(TOUR_EVENT, sync); window.removeEventListener("storage", storage); };
+  }, [target, retireSession]);
+
   const close = useCallback(() => {
     if (sessionClosedRef.current || restoring.current || externalRestoringRef.current) return;
     const closingRevision = ++latestRevision.current;
@@ -211,7 +229,12 @@ export function Preview() {
     try {
       setRestoreFailed(false);
       setRestoreSucceeded(false);
-      await restoreEntry(restoreId);
+      if (isDemoEntry(restoreId)) {
+        if (!readTour().active) return;
+      } else {
+        if (readTour().active) return;
+        await restoreEntry(restoreId);
+      }
       setRestoreSucceeded(true);
       if (!keepOpen) {
         const owner = snapshot.owner;

@@ -300,6 +300,32 @@ impl HistoryRestorePayload {
             && !self.native_only
             && matches!(
                 selected,
+                PreparedRestore::Native(_) | PreparedRestore::Portable(_)
+            )
+        {
+            let bundle = match decoded {
+                Some(bundle) => std::borrow::Cow::Borrowed(bundle),
+                None => std::borrow::Cow::Owned(
+                    tailsync_core::composite::PortableBundle::decode(
+                        self.data
+                            .as_deref()
+                            .ok_or("Composite data is unavailable")?,
+                    )
+                    .map_err(|error| error.to_string())?,
+                ),
+            };
+            if tailsync_core::composite::restore::prefers_document_compatibility(&bundle)
+                .map_err(|error| error.to_string())?
+            {
+                return RestorePlan::portable_default(&bundle, input, target)
+                    .map(|plan| PreparedHistoryRestore::Ready(Box::new(plan)))
+                    .map_err(|error| error.to_string());
+            }
+        }
+        if format.is_none()
+            && !self.native_only
+            && matches!(
+                selected,
                 PreparedRestore::Unsupported {
                     code: "resources_incomplete"
                 }
@@ -316,7 +342,7 @@ impl HistoryRestorePayload {
                     .map_err(|error| error.to_string())?,
                 ),
             };
-            if let Ok(plan) = RestorePlan::available_content(&bundle, input.clone(), target) {
+            if let Ok(plan) = RestorePlan::portable_default(&bundle, input.clone(), target) {
                 return Ok(PreparedHistoryRestore::Ready(Box::new(plan)));
             }
         }
@@ -1219,7 +1245,7 @@ impl HistoryOperations<'_> {
         on_commit: H,
     ) -> Result<ArchiveEntryImagesReport, String> {
         use tailsync_core::composite::resource_archive::{
-            archive_external_images, ArchiveLimits, ArchiveOutcome,
+            archive_external_images_with_originals, ArchiveLimits, ArchiveOutcome,
         };
         let _admission = tokio::select! {
             biased;
@@ -1227,7 +1253,7 @@ impl HistoryOperations<'_> {
             permit = ARCHIVE_ADMISSION.acquire() => permit.map_err(|_| "archive_transport".to_string())?,
         };
         let cancellation_for_read = cancellation.clone();
-        let (identity, authority, base) = crate::execution::run_db_named_cancellable(
+        let (identity, authority, base, originals) = crate::execution::run_db_named_cancellable(
             "history.archive_entry_images.read",
             database.clone(),
             cancellation.clone(),
@@ -1256,13 +1282,17 @@ impl HistoryOperations<'_> {
                     .map(Ok)
                     .unwrap_or_else(|| database.get_composite(id))
                     .map_err(|_| "storage_unavailable".to_string())?;
-                Ok((identity, authority, base))
+                let originals = database
+                    .get_composite_network_originals(id)
+                    .map_err(|_| "storage_unavailable".to_string())?;
+                Ok((identity, authority, base, originals))
             },
         )
         .await
         .map_err(|error: DbExecutionError<String>| error.to_string())?;
-        let outcome: ArchiveOutcome = archive_external_images(
+        let outcome: ArchiveOutcome = archive_external_images_with_originals(
             &base,
+            &originals,
             transport.as_ref(),
             &ArchiveLimits::default(),
             &cancellation,

@@ -274,6 +274,19 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), CommandEr
 /// Open the connections and devices window
 #[command]
 pub async fn open_connections_window(app: tauri::AppHandle) -> Result<(), CommandError> {
+    open_connections_window_impl(app, false).await
+}
+
+pub(crate) async fn open_connections_window_for_tour(
+    app: tauri::AppHandle,
+) -> Result<(), CommandError> {
+    open_connections_window_impl(app, true).await
+}
+
+async fn open_connections_window_impl(
+    app: tauri::AppHandle,
+    tour: bool,
+) -> Result<(), CommandError> {
     use tauri::Manager;
 
     crate::window_lifecycle::mark_window_open(
@@ -291,7 +304,14 @@ pub async fn open_connections_window(app: tauri::AppHandle) -> Result<(), Comman
         crate::window_lifecycle::configure_transparent_window(tauri::WebviewWindowBuilder::new(
             &app,
             crate::window_lifecycle::CONNECTIONS_WINDOW_LABEL,
-            tauri::WebviewUrl::App("connections.html".into()),
+            tauri::WebviewUrl::App(
+                if tour {
+                    "connections.html?tour=start"
+                } else {
+                    "connections.html"
+                }
+                .into(),
+            ),
         ))
         .title("TailSync - Devices & Connections")
         .inner_size(540.0, 720.0)

@@ -90,6 +90,17 @@ export type ArchiveResourceFailure = {
 function validArchiveResourceFailure(value: unknown): value is ArchiveResourceFailure { return (isRecord(value) && (Object.hasOwn(value, "code") && (typeof value["code"] === "string")) && (Object.hasOwn(value, "image_index") && (typeof value["image_index"] === "number" && Number.isSafeInteger(value["image_index"]) && value["image_index"] >= 0 && value["image_index"] <= 65535))); }
 export function decodeArchiveResourceFailure(value: unknown): ArchiveResourceFailure { if (!validArchiveResourceFailure(value)) throw new Error("Invalid ArchiveResourceFailure response"); return value; }
 
+export type ClipboardArrival = {
+  "count": number;
+  "entry_id": number | null;
+  "event_id": string;
+  "kind": string;
+  "source_id": string;
+  "source_name": string;
+};
+function validClipboardArrival(value: unknown): value is ClipboardArrival { return (isRecord(value) && (Object.hasOwn(value, "count") && (typeof value["count"] === "number" && Number.isSafeInteger(value["count"]) && value["count"] >= 0)) && (Object.hasOwn(value, "entry_id") && ((typeof value["entry_id"] === "number" && Number.isSafeInteger(value["entry_id"])) || (value["entry_id"] === null))) && (Object.hasOwn(value, "event_id") && (typeof value["event_id"] === "string")) && (Object.hasOwn(value, "kind") && (typeof value["kind"] === "string")) && (Object.hasOwn(value, "source_id") && (typeof value["source_id"] === "string")) && (Object.hasOwn(value, "source_name") && (typeof value["source_name"] === "string"))); }
+export function decodeClipboardArrival(value: unknown): ClipboardArrival { if (!validClipboardArrival(value)) throw new Error("Invalid ClipboardArrival response"); return value; }
+
 export type CompositeInfo = {
   "completeness": "complete" | "external_references" | "missing_formats";
   "formats": Array<string>;
@@ -535,11 +546,13 @@ function validPreviewFrameMetadata(value: unknown): value is PreviewFrameMetadat
 export function decodePreviewFrameMetadata(value: unknown): PreviewFrameMetadata { if (!validPreviewFrameMetadata(value)) throw new Error("Invalid PreviewFrameMetadata response"); return value; }
 
 export type RuntimeNotification = {
+  "arrival"?: ClipboardArrival | null;
+  "code"?: string | null;
   "id": number;
   "level": string;
   "message": string;
 };
-function validRuntimeNotification(value: unknown): value is RuntimeNotification { return (isRecord(value) && (Object.hasOwn(value, "id") && (typeof value["id"] === "number" && Number.isSafeInteger(value["id"]) && value["id"] >= 0)) && (Object.hasOwn(value, "level") && (typeof value["level"] === "string")) && (Object.hasOwn(value, "message") && (typeof value["message"] === "string"))); }
+function validRuntimeNotification(value: unknown): value is RuntimeNotification { return (isRecord(value) && (!Object.hasOwn(value, "arrival") || (validClipboardArrival(value["arrival"]) || (value["arrival"] === null))) && (!Object.hasOwn(value, "code") || ((typeof value["code"] === "string") || (value["code"] === null))) && (Object.hasOwn(value, "id") && (typeof value["id"] === "number" && Number.isSafeInteger(value["id"]) && value["id"] >= 0)) && (Object.hasOwn(value, "level") && (typeof value["level"] === "string")) && (Object.hasOwn(value, "message") && (typeof value["message"] === "string"))); }
 export function decodeRuntimeNotification(value: unknown): RuntimeNotification { if (!validRuntimeNotification(value)) throw new Error("Invalid RuntimeNotification response"); return value; }
 
 export type SourceContextGrantReport = {

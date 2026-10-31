@@ -206,3 +206,17 @@ test('verify rejects a duplicated doc version marker', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('bump preserves independent protocol and conditional schema descriptions', () => {
+  const root = fixture('2.1.0');
+  try {
+    const guide = join(root, 'docs/USER_GUIDE.zh-CN.md');
+    const suffix = '；身份/基础兼容 v4，数据帧 v4/v5，条件 schema v11/v12/v13。\n';
+    writeFileSync(guide, '> 适用版本：TailSync 2.1.0' + suffix);
+    bumpRepositoryVersions(root, '2.2.0');
+    assert.equal(readFileSync(guide, 'utf8'), '> 适用版本：TailSync 2.2.0' + suffix);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

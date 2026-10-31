@@ -2,6 +2,14 @@ import type { HistoryEntry } from "../tailsyncClient";
 import { computeBatchInfos, groupEntriesByDate } from "./historyGrouping";
 import { COLLAPSED_BATCH_FILE_LIMIT } from "../pages/history/HistoryConstants";
 
+export function isHistoryListTarget(target: EventTarget | null): target is HTMLElement {
+  return target instanceof HTMLElement && target.matches(".history-list, .history-item");
+}
+
+export function historyShortcutNumber(key: string): number | null {
+  return /^[1-6]$/.test(key) ? Number(key) : null;
+}
+
 // Some WebView2 IMEs emit a final Enter/Escape after compositionend.
 export class HistoryImeGuard {
   private composing = false;

@@ -1,3 +1,4 @@
+import { GuidedTour } from "../onboarding/GuidedTour";
 import { useCallback } from "react";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
@@ -132,6 +133,7 @@ export function Connections() {
         </button>
       </div>
 
+      <GuidedTour window="connections" />
       <div className="settings-content">
         <SettingsConnectionsSection
           settings={settings}

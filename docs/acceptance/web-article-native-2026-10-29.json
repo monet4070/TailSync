@@ -1,0 +1,112 @@
+{
+  "result": "passed",
+  "consumers": {
+    "html-only": {
+      "formats": [
+        "public.html",
+        "Apple HTML pasteboard type",
+        "com.apple.flat-rtfd",
+        "NeXT RTFD pasteboard type",
+        "org.tailsync.clipboard-source"
+      ],
+      "general_clipboard_modified": false,
+      "image_colors_rgb": [
+        [
+          255,
+          38,
+          0
+        ],
+        [
+          0,
+          249,
+          0
+        ],
+        [
+          255,
+          38,
+          0
+        ]
+      ],
+      "image_count": 3,
+      "image_positions_utf16": [
+        5,
+        10,
+        16
+      ],
+      "pasted": true,
+      "text": "Alpha￼Beta￼Gamma￼Omega\n"
+    },
+    "with-text-rtf": {
+      "formats": [
+        "public.html",
+        "Apple HTML pasteboard type",
+        "com.apple.flat-rtfd",
+        "NeXT RTFD pasteboard type",
+        "org.tailsync.clipboard-source"
+      ],
+      "general_clipboard_modified": false,
+      "image_colors_rgb": [
+        [
+          255,
+          38,
+          0
+        ],
+        [
+          0,
+          249,
+          0
+        ],
+        [
+          255,
+          38,
+          0
+        ]
+      ],
+      "image_count": 3,
+      "image_positions_utf16": [
+        5,
+        10,
+        16
+      ],
+      "pasted": true,
+      "text": "Alpha￼Beta￼Gamma￼Omega\n"
+    },
+    "webkit-selection": {
+      "formats": [
+        "public.html",
+        "Apple HTML pasteboard type",
+        "public.utf8-plain-text",
+        "NSStringPboardType",
+        "com.apple.flat-rtfd",
+        "NeXT RTFD pasteboard type",
+        "org.tailsync.clipboard-source"
+      ],
+      "general_clipboard_modified": false,
+      "image_colors_rgb": [
+        [
+          255,
+          38,
+          0
+        ],
+        [
+          0,
+          249,
+          0
+        ],
+        [
+          255,
+          38,
+          0
+        ]
+      ],
+      "image_count": 3,
+      "image_positions_utf16": [
+        5,
+        10,
+        16
+      ],
+      "pasted": true,
+      "text": "Alpha￼Beta￼Gamma￼Omega\n"
+    }
+  }
+}

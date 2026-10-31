@@ -50,6 +50,8 @@ extension ApiClient {
       let id: UInt64
       let level: String
       let message: String
+      let code: String?
+      let arrival: ContractClipboardArrival?
     }
 
     let revision: UInt64
@@ -94,17 +96,9 @@ extension ApiClient {
       let statusData = data["status"] as? [String: Any]
     else { return nil }
 
-    let notifications: [RuntimeSnapshot.Notification] =
-      (data["notifications"] as? [[String: Any]] ?? []).compactMap { value in
-        guard let id = (value["id"] as? NSNumber)?.uint64Value,
-          let message = value["message"] as? String
-        else { return nil }
-        return RuntimeSnapshot.Notification(
-          id: id,
-          level: value["level"] as? String ?? "error",
-          message: message
-        )
-      }
+    let notifications = contract.notifications.map {
+      RuntimeSnapshot.Notification(id: $0.id, level: $0.level, message: $0.message, code: $0.code, arrival: $0.arrival)
+    }
 
     return RuntimeSnapshot(
       revision: nextRevision,

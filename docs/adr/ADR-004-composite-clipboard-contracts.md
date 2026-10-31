@@ -1,5 +1,9 @@
 # ADR-004：复合剪贴板的十条契约与三个深边界
 
+2026-10-23 补充：[ADR-006](ADR-006-browser-image-alternative.md) 为 K6 的“不完整则不执行 native effect”增加一个受限例外：网页单图可以只发布已验证的独立 PNG，最终仍保持 StoredIncomplete；其余持久化、授权、claim 和不重复发布约束继续有效。
+
+2026-10-29 补充：[ADR-007](ADR-007-web-article-sync.md) 将上述例外扩展至已验证可独立发布的网页图文副本，保留正文、已保存图片及其位置，缺图原位占位；最终仍保持 StoredIncomplete。产品优先级调整为正文、图片和图文顺序。
+
 - 状态：已接受（2026-10-04）
 - 范围：`shared/rust-core/src/{composite,peer,sync,db}/`、`shared/tailsync-protocol/`、
   `shared/platform-clipboard-composite.rs`、两端 `clipboard*`/`sync_adapter.rs`、两端 UI 恢复入口

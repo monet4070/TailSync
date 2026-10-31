@@ -53,11 +53,28 @@ async function mount() {
 
 describe("Preview keyboard restore integration", () => {
   beforeEach(() => {
+    localStorage.clear();
     mocks.listeners.clear();
     vi.clearAllMocks();
     mocks.pull.mockResolvedValue(snapshot());
     mocks.restore.mockResolvedValue(undefined);
     mocks.closePreview.mockResolvedValue(undefined);
+  });
+
+  it("retires and closes a demo preview when Settings ends the tour", async () => {
+    const key = "tailsync-guided-tour-v2";
+    localStorage.setItem(key, JSON.stringify({ active: true, index: 8 }));
+    mocks.pull.mockResolvedValue(snapshot(1, 8_000_000_001));
+    render(<Preview />);
+    await screen.findByRole("heading", { name: "entry-8000000001" });
+    await act(async () => {
+      localStorage.setItem(key, JSON.stringify({ active: false, index: 14 }));
+      window.dispatchEvent(new StorageEvent("storage", { key }));
+    });
+    await waitFor(() => expect(mocks.closePreview).toHaveBeenCalled());
+    expect(screen.queryByRole("heading", { name: "entry-8000000001" })).toBeNull();
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(mocks.restore).not.toHaveBeenCalled();
   });
 
   it.each(["Escape", "Enter"])("keeps preview content while %s waits for Windows to hide it", async (key) => {

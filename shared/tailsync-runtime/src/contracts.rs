@@ -811,4 +811,8 @@ pub struct RuntimeNotification {
     pub id: u64,
     pub level: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arrival: Option<tailsync_core::notifications::ClipboardArrival>,
 }

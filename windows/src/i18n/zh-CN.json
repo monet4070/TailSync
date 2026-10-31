@@ -8,6 +8,9 @@
   "history.restore.code.no_single_image": "此条目包含多张图片，没有可单独复制的图片。",
   "history.restore.availableContent": "已复制已保存内容，{count} 张图片未保存",
   "history.restored": "历史已回溯至剪切板",
+  "history.keyboard.shortcuts": "1–6 取用 · ← → 翻页 · F 搜索",
+  "history.keyboard.searchHint": "↓ 返回条目",
+  "history.keyboard.number": "按 {number} 回溯此条目",
   "history.prev": "上一页",
   "history.next": "下一页",
   "history.categoryFilter": "按分类筛选",
@@ -201,7 +204,7 @@
   "settings.limit": "历史记录上限",
   "settings.limitDescription": "最多保留 {value} 条剪贴板历史",
   "settings.autoSaveNetworkImages": "自动保存网络图片",
-  "settings.autoSaveNetworkImagesDescription": "仅本机新复制内容会下载公开图片，消耗流量与存储；旧记录和接收内容不会自动下载。关闭会停止未完成的自动下载，已保存图片保留。旧记录可手动保存。",
+  "settings.autoSaveNetworkImagesDescription": "下载本机新复制内容中的公开图片，消耗流量与存储。同步会短暂等待图片；稍后下载完成的图片可从历史恢复。旧记录和接收内容需手动保存；关闭会停止未完成的自动下载，已保存图片保留。",
   "settings.historyLimit": "历史上限",
   "settings.appearance": "外观",
   "settings.theme": "主题",
@@ -404,7 +407,6 @@
   "history.peer.self": "本机",
   "history.composite.advanced": "高级",
   "history.composite.details": "详情",
-  "history.composite.moreActions": "更多操作",
   "history.composite.diag.formats": "格式",
   "history.composite.diag.representations": "表示数",
   "history.composite.diag.images": "图片数",
@@ -445,5 +447,6 @@
   "history.captureNotShared": "本次复制已保存到历史，但无法准备同步内容。可从历史手动恢复；需要再次同步时，请从来源应用重新复制。",
   "history.captureFailed": "本次复制未能完整采集。可读取的内容会尽可能保存在历史记录中。",
   "history.warningOverflow": "还有更多同步警告。请检查最近的历史记录和投递结果。",
-  "history.deliveryRejected": "剪贴板内容未能投递到 {peer}。对方可能不支持其格式；请检查历史记录，按需重新复制。"
+  "history.deliveryRejected": "剪贴板内容未能投递到 {peer}。对方可能不支持其格式；请检查历史记录，按需重新复制。",
+  "common.close": "关闭"
 }

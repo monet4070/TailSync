@@ -82,6 +82,99 @@ fn derive(
     (archived, originals)
 }
 
+#[test]
+fn enriched_capture_is_atomic_and_rejects_body_or_image_substitution() {
+    use crate::composite::resource_archive::ArchiveOutcome;
+    use crate::protocol::native_archive::NativeArchive;
+    use crate::protocol::native_clipboard::{
+        FormatState, NativeFormat, NativeSnapshot, SnapshotState,
+    };
+    let root = root();
+    let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+    let source = base(2, 8);
+    let archive = NativeArchive {
+        platform: 1,
+        enumeration_complete: true,
+        original: NativeSnapshot {
+            before: 7,
+            after: 7,
+            items: 1,
+            state: SnapshotState::Stable,
+            formats: vec![NativeFormat {
+                item: 0,
+                name: "public.html".into(),
+                state: FormatState::Captured,
+                bytes: source.representation(Mime::Html).unwrap().to_vec(),
+            }],
+        },
+        derived: vec![],
+    };
+    let (bundle, originals) = derive(
+        &source,
+        vec![
+            (NetworkImageFormat::Png, body(PNG_1X1)),
+            (NetworkImageFormat::Jpeg, body(JPEG_1X1)),
+        ],
+    );
+    let mut outcome = ArchiveOutcome {
+        bundle,
+        originals,
+        archived: 2,
+        deduplicated: 0,
+        failures: vec![],
+    };
+    let saved_html = outcome.bundle.representations[0].bytes.clone();
+    outcome.bundle.representations[0]
+        .bytes
+        .extend_from_slice(b"<p>substituted body</p>");
+    assert!(db
+        .add_native_archive_with_images(&archive, &outcome, "self")
+        .is_err());
+    outcome.bundle.representations[0].bytes = saved_html;
+    let saved_image = outcome.bundle.resources[0].png.clone();
+    outcome.bundle.resources[0].png =
+        crate::composite::packed_to_png(1, 1, &[0, 255, 0, 255]).unwrap();
+    assert!(db
+        .add_native_archive_with_images(&archive, &outcome, "self")
+        .is_err());
+    outcome.bundle.resources[0].png = saved_image;
+    db.conn.execute_batch("CREATE TRIGGER reject_capture_originals BEFORE INSERT ON history_parts WHEN NEW.kind='network_originals' BEGIN SELECT RAISE(ABORT, 'injected capture failure'); END;").unwrap();
+    assert!(db
+        .add_native_archive_with_images(&archive, &outcome, "self")
+        .is_err());
+    assert!(db.get_all(None, None, 10, 0).unwrap().is_empty());
+    db.conn
+        .execute_batch("DROP TRIGGER reject_capture_originals")
+        .unwrap();
+    let id = db
+        .add_native_archive_with_images(&archive, &outcome, "self")
+        .unwrap();
+    assert_eq!(db.get_composite(id).unwrap(), outcome.bundle);
+    assert_eq!(db.get_composite_archive(id).unwrap().unwrap(), archive);
+    assert_eq!(
+        db.get_composite_network_originals(id).unwrap(),
+        outcome.originals
+    );
+    let legacy = db
+        .add_native_capture_with_images(&archive.original, &outcome, "self")
+        .unwrap();
+    assert_eq!(db.get_composite(legacy).unwrap(), outcome.bundle);
+    assert_eq!(
+        db.get_composite_native(legacy).unwrap().unwrap().formats,
+        archive.original.formats
+    );
+    drop(db);
+    let reopened =
+        HistoryDB::open_with_policy_for_probe(&root, MigrationPolicy::CompositeAllowed).unwrap();
+    assert_eq!(reopened.get_composite(id).unwrap(), outcome.bundle);
+    assert_eq!(
+        reopened.get_composite_network_originals(id).unwrap(),
+        outcome.originals
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn commit(
     database: &mut HistoryDB,
     id: i64,

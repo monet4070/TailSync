@@ -7,6 +7,7 @@ func validateGeneratedFixture(_ contract: String, data: Data) throws {
   case "ActiveRoute": _ = try JSONDecoder().decode(ContractActiveRoute.self, from: data)
   case "ArchiveEntryImagesReport": _ = try JSONDecoder().decode(ContractArchiveEntryImagesReport.self, from: data)
   case "ArchiveResourceFailure": _ = try JSONDecoder().decode(ContractArchiveResourceFailure.self, from: data)
+  case "ClipboardArrival": _ = try JSONDecoder().decode(ContractClipboardArrival.self, from: data)
   case "CompositeInfo": _ = try JSONDecoder().decode(ContractCompositeInfo.self, from: data)
   case "ConnectionInterface": _ = try JSONDecoder().decode(ContractConnectionInterface.self, from: data)
   case "DaemonStatus": _ = try JSONDecoder().decode(ContractDaemonStatus.self, from: data)

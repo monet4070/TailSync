@@ -52,6 +52,7 @@ macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/r
 
 - 文本、图片、文件双向同步
 - 本地历史记录的搜索、收藏、恢复、受保护删除、数量限制，以及文本 / 图片 / 文件分类和日期筛选
+- 历史呼出后聚焦并选中首条：列表中 `1–6` 取用前六个显示条目、`← / →` 翻页、`F` 进入搜索；搜索框内数字和左右键正常编辑，`↓` 返回列表。原生桌面验收待完成，见[实施记录](docs/acceptance/history-number-shortcuts-2026-10-30.md)。
 - `auto`、`lan_only`、`iroh_only`、`tailscale_only` 四种连接策略
 - UDP、mDNS / DNS-SD 与 Tailscale 候选发现
 - LAN 与 Tailscale 独立健康检查及往返延迟显示
@@ -67,6 +68,7 @@ macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/r
 - 文件回传抑制：应用托管的 `clipboard-files/` 文件不会被回传给原发送端
 - 文件名清理、1 GiB 接收上限和入站连接数限制
 - 中英文界面与本地化托盘菜单、浅色 / 深色 / 跟随系统及五套配色主题、通知、设备启停与路由选择
+- 到达通知仅显示内容类型与来源设备，不显示剪贴板正文或文件名；macOS 普通到达使用被动通知级别，运行问题使用主动级别并服从系统通知设置。
 - 自定义主题（Theme V2）：导入 `.tailsync-theme` 主题包（`theme.json` 清单 + 可选 `assets/`），在设置页启用、更新与删除，与内置主题并列；主题选择为本地偏好（`themes-v2/local-settings.json`），缺包时自动回退默认主题，详见 `docs/THEMING.md`
 
 ## 技术架构
@@ -110,7 +112,7 @@ flowchart LR
 > 第一次使用？请阅读[《TailSync 实用指南》](docs/USER_GUIDE.zh-CN.md)，其中包含安装、配对、历史预览、文件批次、主题、存储管理和常见故障排查。
 
 1. 在 macOS 和 Windows 上分别启动 TailSync。
-2. 在两端的“设置 → 连接与设备”中选择 `自动`、`仅局域网`、`仅 Iroh` 或 `仅 Tailscale`。
+2. 在两端的“连接与设备”中选择 `自动`、`仅局域网`、`仅 Iroh` 或 `仅 Tailscale`。
 3. 一端点击“允许配对”，另一端点击连接按钮，核对相同的六位验证码和设备指纹。
 4. 双方确认后，复制文本、图片或文件即可自动同步。
 

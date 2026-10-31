@@ -7,6 +7,8 @@ import {
   type PreparedDocumentAssets,
 } from "./documentAssets";
 import { classifyPreviewFailure, type PreviewFailure } from "./usePreviewPayload";
+import { demoDocumentFrame, isDemoEntry } from "../onboarding/demo";
+import { readTour } from "../onboarding/tourState";
 
 export interface DocumentTarget {
   entryId: number;
@@ -134,6 +136,7 @@ export function useDocumentPreview(target: DocumentTarget | null) {
     let active = true;
     let cancelled = false;
     let started = false;
+    const demo = isDemoEntry(target.entryId);
     const request = {
       entry_id: target.entryId,
       owner: target.owner,
@@ -141,7 +144,7 @@ export function useDocumentPreview(target: DocumentTarget | null) {
       request_id: nextDocumentRequestId(),
     };
     const cancel = () => {
-      if (cancelled || !started) return;
+      if (demo || cancelled || !started) return;
       cancelled = true;
       void cancelDocumentPreview(request).catch(() => undefined);
     };
@@ -155,14 +158,17 @@ export function useDocumentPreview(target: DocumentTarget | null) {
         admitted = true;
         if (!active || controller.signal.aborted) return;
         started = true;
-        const frame = await getDocumentPreview(request, controller.signal);
+        const frame = demo
+          ? (readTour().active ? demoDocumentFrame(request) : null)
+          : await getDocumentPreview(request, controller.signal);
+        if (frame === null) throw new Error("Demo document is unavailable");
         if (!active || controller.signal.aborted) return;
         prepared = await prepareDocumentAssets(frame, controller.signal);
         if (!active || controller.signal.aborted) {
           prepared.release();
           return;
         }
-        const current = await validateDocumentPreview(request, frame.metadata.stamp);
+        const current = demo ? readTour().active : await validateDocumentPreview(request, frame.metadata.stamp);
         if (!active || controller.signal.aborted) {
           prepared.release();
           return;
@@ -172,7 +178,7 @@ export function useDocumentPreview(target: DocumentTarget | null) {
         prepared = null;
         releasePrepared();
         preparedRef.current = installed;
-        preparedRequestRef.current = request;
+        preparedRequestRef.current = demo ? null : request;
         setState({ status: "ready", target, prepared: installed });
       } catch (error) {
         prepared?.release();
@@ -195,7 +201,7 @@ export function useDocumentPreview(target: DocumentTarget | null) {
 
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
   const refresh = useCallback(async (canRefresh: () => boolean = () => true) => {
-    if (target === null || !canRefresh()) return;
+    if (target === null || isDemoEntry(target.entryId) || !canRefresh()) return;
     const installed = preparedRef.current;
     const installedRequest = preparedRequestRef.current;
     if (installed === null || installedRequest === null) {

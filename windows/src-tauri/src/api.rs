@@ -43,56 +43,46 @@ use tokio::sync::{watch, Mutex, Semaphore};
 use tokio::time::timeout;
 
 static RUNTIME_REVISION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(1).0);
-const MAX_RUNTIME_NOTIFICATIONS: usize = 32;
+use tailsync_runtime::notification_events::RuntimeNotificationBuffer;
+#[cfg(test)]
+use tailsync_runtime::notification_events::MAX_RUNTIME_NOTIFICATIONS;
 
 pub use tailsync_runtime::contracts::RuntimeNotification;
-
-#[derive(Default)]
-struct RuntimeNotificationBuffer {
-    next_id: u64,
-    entries: VecDeque<RuntimeNotification>,
-}
-
-impl RuntimeNotificationBuffer {
-    fn push(&mut self, level: &str, message: String) -> u64 {
-        self.next_id = self.next_id.wrapping_add(1).max(1);
-        let id = self.next_id;
-        self.entries.push_back(RuntimeNotification {
-            id,
-            level: level.to_string(),
-            message,
-        });
-        while self.entries.len() > MAX_RUNTIME_NOTIFICATIONS {
-            self.entries.pop_front();
-        }
-        id
-    }
-
-    fn since(&self, id: u64) -> Vec<RuntimeNotification> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.id > id)
-            .cloned()
-            .collect()
-    }
-}
 
 static RUNTIME_NOTIFICATIONS: LazyLock<StdMutex<RuntimeNotificationBuffer>> =
     LazyLock::new(|| StdMutex::new(RuntimeNotificationBuffer::default()));
 
 pub fn push_runtime_notification(level: &str, message: impl Into<String>) {
-    if let Ok(mut notifications) = RUNTIME_NOTIFICATIONS.lock() {
-        notifications.push(level, message.into());
-        drop(notifications);
+    RUNTIME_NOTIFICATIONS
+        .lock()
+        .expect("notification buffer poisoned")
+        .push(level, message.into());
+    bump_runtime_revision();
+}
+
+pub fn push_arrival_notification(arrival: tailsync_core::notifications::ClipboardArrival) {
+    let inserted = RUNTIME_NOTIFICATIONS
+        .lock()
+        .expect("notification buffer poisoned")
+        .push_arrival(arrival)
+        .is_some();
+    if inserted {
         bump_runtime_revision();
     }
+}
+
+pub fn notification_events_since(id: u64) -> (Vec<RuntimeNotification>, u64) {
+    let buffer = RUNTIME_NOTIFICATIONS
+        .lock()
+        .expect("notification buffer poisoned");
+    (buffer.since(id), buffer.earliest_available_id())
 }
 
 pub fn get_runtime_notifications_since(id: u64) -> Vec<RuntimeNotification> {
     RUNTIME_NOTIFICATIONS
         .lock()
-        .map(|notifications| notifications.since(id))
-        .unwrap_or_default()
+        .expect("notification buffer poisoned")
+        .since(id)
 }
 
 pub fn get_runtime_revision() -> u64 {

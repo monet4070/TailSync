@@ -152,6 +152,105 @@ async fn manual_network_archive_persists_all_three_original_bodies_and_refresh_i
 }
 
 #[tokio::test]
+async fn retry_checks_retained_wire_bytes_before_attempting_a_database_merge() {
+    let root = root();
+    let mut database = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+    let id = database.add_composite(&bundle(3), None, "local").unwrap();
+    let database = Arc::new(Mutex::new(database));
+    let jpeg = include_bytes!("../../tailsync-protocol/tests/fixtures/images/color.jpg");
+    let mut bytes = jpeg[..2].to_vec();
+    // Valid JPEG APP15 segments retain large original bodies with tiny pixels.
+    for _ in 0..96 {
+        bytes.extend_from_slice(&[0xff, 0xef, 0xff, 0xff]);
+        bytes.resize(bytes.len() + 65_533, 0);
+    }
+    bytes.extend_from_slice(&jpeg[2..]);
+    let transport = Arc::new(Transport {
+        responses: vec![("image/jpeg".into(), bytes); 3],
+        second_available: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+    });
+    let first = HistoryOperations::archive_entry_images(
+        database.clone(),
+        id,
+        transport.clone(),
+        Cancellation::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.archived, 2);
+    let retained = database
+        .lock()
+        .await
+        .get_composite_network_originals(id)
+        .unwrap();
+    transport.second_available.store(true, Ordering::SeqCst);
+    let result = HistoryOperations::archive_entry_images(
+        database.clone(),
+        id,
+        transport,
+        Cancellation::default(),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), "archive_total_budget");
+    assert_eq!(
+        database
+            .lock()
+            .await
+            .get_composite_network_originals(id)
+            .unwrap(),
+        retained
+    );
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn repeated_large_images_remain_a_valid_partial_archive_after_retry() {
+    let root = root();
+    let mut database = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+    let id = database.add_composite(&bundle(3), None, "local").unwrap();
+    let database = Arc::new(Mutex::new(database));
+    let bytes = packed_to_png(2000, 1500, &vec![255; 2000 * 1500 * 4]).unwrap();
+    let transport = Arc::new(Transport {
+        responses: vec![("image/png".into(), bytes); 3],
+        second_available: AtomicBool::new(true),
+        calls: AtomicUsize::new(0),
+    });
+    let first = HistoryOperations::archive_entry_images(
+        database.clone(),
+        id,
+        transport.clone(),
+        Cancellation::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.archived, 2);
+    let second = HistoryOperations::archive_entry_images(
+        database.clone(),
+        id,
+        transport,
+        Cancellation::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.archived, 0);
+    assert!(!second.complete);
+    assert_eq!(second.failures[0].code, "archive_derived_budget");
+    assert_eq!(
+        database
+            .lock()
+            .await
+            .get_composite_network_originals(id)
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(database);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn failed_network_image_retry_merges_originals_instead_of_replacing_the_first() {
     let root = root();
     let mut database = HistoryDB::open_isolated_for_test_composite(&root).unwrap();

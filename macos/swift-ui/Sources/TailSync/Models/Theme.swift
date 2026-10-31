@@ -800,7 +800,7 @@ struct TailSyncThemePalette: Equatable {
         self.toastText = toastText
         self.accentOpacity = accentOpacity
         self.accentHoverOpacity = accentHoverOpacity ?? accentOpacity
-        self.accentSoftOpacity = accentSoftOpacity ?? accentOpacity
+        self.accentSoftOpacity = accentSoftOpacity ?? (accentSoft == nil ? 0.12 : 1)
         self.accentContrastOpacity = accentContrastOpacity
         self.windowOpacity = windowOpacity
         self.surfaceOpacity = surfaceOpacity

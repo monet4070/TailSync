@@ -456,8 +456,13 @@ fn provenance(
     let verifies_projection = || {
         *projection_verified.get_or_init(|| {
             archive.is_some_and(|archive| {
-                tailsync_core::composite::from_archive(archive)
-                    .is_ok_and(|projected| projected == *bundle)
+                tailsync_core::composite::from_archive(archive).is_ok_and(|projected| {
+                    projected == *bundle
+                        || tailsync_core::composite::resource_archive::validate_archive_derivation(
+                            &projected, bundle,
+                        )
+                        .is_ok()
+                })
             })
         })
     };

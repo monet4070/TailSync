@@ -169,7 +169,10 @@ fn runtime_notification_buffer_is_bounded_and_incremental() {
     assert_eq!(all.first().map(|entry| entry.id), Some(4));
     let latest = notifications.since((MAX_RUNTIME_NOTIFICATIONS + 1) as u64);
     assert_eq!(latest.len(), 2);
-    assert_eq!(latest[0].message, "failure 33");
+    assert_eq!(
+        latest[0].message,
+        format!("failure {}", MAX_RUNTIME_NOTIFICATIONS + 1)
+    );
 }
 
 #[tokio::test]
@@ -519,14 +522,18 @@ fn runtime_notification_overflow_is_reported_not_hidden() {
         1,
         "an empty buffer has nothing to read"
     );
-    assert_eq!(buffer.dropped, 0);
+    assert_eq!(buffer.dropped_total(), 0);
 
     let evicted = 5;
     for index in 0..(MAX_RUNTIME_NOTIFICATIONS + evicted) {
         buffer.push("info", format!("event {index}"));
     }
 
-    assert_eq!(buffer.dropped, evicted as u64, "evictions must be counted");
+    assert_eq!(
+        buffer.dropped_total(),
+        evicted as u64,
+        "evictions must be counted"
+    );
     assert_eq!(
         buffer.earliest_available_id(),
         evicted as u64 + 1,

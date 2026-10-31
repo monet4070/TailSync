@@ -151,6 +151,45 @@
         "code"
       ]
     },
+    "ClipboardArrival": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "entry_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "event_id": {
+          "description": "Reliable message id or file batch id; never a history-list watermark.",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "source_id": {
+          "description": "Authenticated device identity, independent of the display name.",
+          "type": "string"
+        },
+        "source_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_name",
+        "event_id",
+        "kind",
+        "count",
+        "entry_id"
+      ]
+    },
     "CompositeInfo": {
       "description": "Composite metadata for one history entry — **not** the entry itself (R5-05\ncorrected this comment, which previously described a `HistoryEntry`).\n\nThe counts are deliberately distinct, because the two UIs must not conflate them:\n`representation_count` is how many formats the item carries, while `image_count`\ncounts image resources *and* a PNG representation. A row that says \"3 formats\" and\na row that says \"2 images\" are answering different questions, and a `native_only`\nitem must not be labelled as several cross-platform formats at all.",
       "type": "object",
@@ -1915,6 +1954,22 @@
     "RuntimeNotification": {
       "type": "object",
       "properties": {
+        "arrival": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClipboardArrival"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "integer",
           "format": "uint64",

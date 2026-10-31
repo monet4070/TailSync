@@ -172,17 +172,36 @@ pub(super) fn is_cargo_test_harness_executable(executable: &std::path::Path) -> 
     let Some(name) = executable.file_stem().and_then(std::ffi::OsStr::to_str) else {
         return false;
     };
-    let Some(hash) = name
-        .strip_prefix("tailsync_lib-")
-        .or_else(|| name.strip_prefix("tailsync_runtime-"))
-    else {
+    let Some((target, hash)) = name.rsplit_once('-') else {
         return false;
     };
 
+    // Test/OS boundary: only known Cargo harnesses use fixture keys and isolated data.
+    const TEST_TARGETS: &[&str] = &[
+        "tailsync_lib",
+        "tailsync_runtime",
+        "archive_sync",
+        "composite_repair_followup",
+        "content_analysis",
+        "document_corpus",
+        "history_display",
+        "legacy_data_isolation",
+        "native_html_display",
+        "network_originals",
+        "o06_restore_plan",
+        "qq_display",
+        "received_batch_crash_matrix",
+        "reliable_event_process",
+        "repair_regressions",
+    ];
+
     // Cargo places libtest executables in target/<profile>/deps and appends a
-    // hexadecimal crate hash. Requiring both guards against accidentally
-    // enabling the test DEK in a normal or `--all-features` application build.
-    parent == "deps" && hash.len() >= 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    // hexadecimal crate hash. Requiring a known test target as well guards
+    // against enabling the test DEK in a normal or `--all-features` app build.
+    parent == "deps"
+        && TEST_TARGETS.contains(&target)
+        && hash.len() >= 16
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Verify that the process can load the existing data key or safely create

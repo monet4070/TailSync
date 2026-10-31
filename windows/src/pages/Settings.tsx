@@ -1,3 +1,4 @@
+import { GuidedTour } from "../onboarding/GuidedTour";
 import { useCallback, useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -39,7 +40,10 @@ import {
 } from "../hooks/useShortcutRecorder";
 import { useUpdater } from "../hooks/useUpdater";
 import { useLaunchAtLogin } from "../hooks/useLaunchAtLogin";
-import { X } from "lucide-react";
+import { X, ArrowUpRight } from "lucide-react";
+import { readTourSuppressed, startTour, TOUR_SUPPRESSED_EVENT, TOUR_SUPPRESSED_KEY } from "../onboarding/tourState";
+import onboardingGuide from "../../../shared/onboarding/guide.json";
+import "../onboarding/onboarding.css";
 import { ThemeLogo } from "../ThemeLogo";
 import { GIB } from "./settings/SettingsFormatters";
 import { ShortcutRecorderDialog } from "./settings/SettingsShortcutControls";
@@ -53,6 +57,7 @@ import { ThemeImportDialog } from "./settings/SettingsDialogs";
 /* ── Types ──────────────────────────────────────────────────────── */
 
 export function Settings() {
+  const [tourSuppressed, setTourSuppressed] = useState(false);
   const [v2Themes, setV2Themes] = useState<ThemeV2Descriptor[]>([]);
   const [v2Active, setV2Active] = useState("builtin:canvas@1");
   const [v2HighContrast, setV2HighContrast] = useState(false);
@@ -68,6 +73,14 @@ export function Settings() {
     themePreference,
   } = useTheme();
   const { t, setLocale, locale } = useI18n();
+  useEffect(() => {
+    const sync = () => { void readTourSuppressed().then(value => setTourSuppressed(value === true)).catch(() => setTourSuppressed(false)); };
+    sync();
+    const storage = (event: StorageEvent) => { if (event.key === null || event.key === TOUR_SUPPRESSED_KEY) sync(); };
+    window.addEventListener(TOUR_SUPPRESSED_EVENT, sync);
+    window.addEventListener("storage", storage);
+    return () => { window.removeEventListener(TOUR_SUPPRESSED_EVENT, sync); window.removeEventListener("storage", storage); };
+  }, []);
   const launchAtLogin = useLaunchAtLogin();
   const {
     settings,
@@ -381,7 +394,14 @@ export function Settings() {
       </div>
 
       {/* ── Settings content ── */}
+      <GuidedTour window="settings" />
       <div className="settings-content">
+        {!tourSuppressed && <button type="button" className="onboarding-entry" onClick={() => {
+          void startTour().catch(() => setErrorMessage(t("settings.error")));
+        }}>
+          <span><strong>{onboardingGuide.ui.title[locale.startsWith("zh") ? "zh-CN" : "en"]}</strong><small>{onboardingGuide.ui.reopen[locale.startsWith("zh") ? "zh-CN" : "en"]}</small></span>
+          <ArrowUpRight size={18} aria-hidden="true" />
+        </button>}
         <SettingsGeneralSection
           settings={settings}
           t={t}

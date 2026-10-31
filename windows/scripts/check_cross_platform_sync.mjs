@@ -47,6 +47,11 @@ for (const marker of ['Cargo.toml', 'src/lib.rs']) {
 const settingsSchemaPath = join(dirname(sharedCoreRoot), 'schema/settings.schema.json');
 if (!existsSync(settingsSchemaPath)) fail(`Missing shared Settings schema: ${settingsSchemaPath}`);
 
+const windowsIdentifier = JSON.parse(readFileSync(join(winRoot, 'src-tauri/tauri.conf.json'), 'utf8')).identifier;
+const cargoBundleIdentifier = readFileSync(join(winRoot, 'src-tauri/Cargo.toml'), 'utf8')
+  .match(/\[package\.metadata\.bundle\]\s+identifier\s*=\s*"([^"]+)"/)?.[1];
+if (cargoBundleIdentifier !== windowsIdentifier) fail('Windows notification and bundle identities must agree.');
+
 // Shared SVG preview policy fixtures drive the macOS (XCTest) and Windows
 // (vitest) trust-gate suites; both platforms must consume the same file, so
 // verify it exists, parses, and carries the required sections.
@@ -124,6 +129,10 @@ function assertTreeMatch(relativeDirectory, allowedDrift = []) {
 assertTreeMatch('src-tauri/src', [
   // Windows WebViews coordinate restore leases in Rust; SwiftUI uses its native coordinator.
   'commands/restore_coordination.rs',
+  // Windows bootstraps the overlay in a real WebView; macOS uses SwiftUI anchors.
+  'onboarding.rs',
+  // NSIS installation identity and markers; SwiftUI owns its bundle identity.
+  'onboarding_state.rs',
   'api.rs',
   'api/routes.rs',
   'api/routes/history.rs',
@@ -152,6 +161,9 @@ assertTreeMatch('src-tauri/src', [
   'commands.rs',
   'lib.rs',
   'sync_adapter.rs',
+  // Native WinRT presentation belongs only to the Windows adapter.
+  'notifications.rs',
+  'notifications/native.rs',
   'network/lan.rs',
   'network/mdns.rs',
   'network/mod.rs',
@@ -344,6 +356,9 @@ for (const [description, source, markers] of [
 // Check its output, rather than inferring registration from incidental strings.
 const registryCheck = spawnSync(process.execPath, [join(repoRoot, 'shared/schema/generate-local-commands.mjs'), '--check'], { cwd: repoRoot, encoding: 'utf8' });
 if (registryCheck.status !== 0) fail(registryCheck.stderr || registryCheck.stdout);
+// Both native interfaces consume the same tour copy and action identifiers.
+const onboardingCheck = spawnSync(process.execPath, [join(repoRoot, 'shared/onboarding/generate-swift.mjs'), '--check'], { cwd: repoRoot, encoding: 'utf8' });
+if (onboardingCheck.status !== 0) fail(onboardingCheck.stderr || onboardingCheck.stdout);
 const localCommands = JSON.parse(readFileSync(join(repoRoot, 'shared/schema/local-commands.json'), 'utf8'));
 const rustCommands = new Set([...Object.values(localCommands.macos.json).flat(), ...localCommands.macos.binary]);
 const swiftCommands = new Set([...swiftSource.matchAll(/"cmd"\s*:\s*"([a-z][a-z0-9_]*)"/g)]

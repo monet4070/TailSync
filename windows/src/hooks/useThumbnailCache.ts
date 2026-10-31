@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getImageData } from "../tailsyncClient";
 import { decodeStableErrorEnvelope } from "../types/localContracts.generated";
 import { StableIpcError } from "../utils/stableIpcError";
+import { isDemoEntry } from "../onboarding/demo";
 
 export interface ThumbnailData {
   b64: string;
@@ -135,6 +136,8 @@ export function useThumbnailCache(maxEntries: number, maxBytes = 4 * 1024 * 1024
   }, []);
 
   const loadThumbnail = useCallback(async (key: string, id: number) => {
+    // Demo previews have bundled bytes; their virtual IDs have no DB thumbnail.
+    if (isDemoEntry(id)) return;
     if (!active.current || cache.current.has(key) || inFlight.current.has(key) || queuedCount.current >= 64) return;
     queuedCount.current += 1;
     const requestId = ++nextRequest.current;

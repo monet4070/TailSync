@@ -36,20 +36,18 @@ impl ClipboardRuntime {
         // notice even when native notifications were disabled. Keep that
         // behavior in the platform seam while sharing the transfer flow.
         crate::api::push_runtime_notification("error", message);
-        if !settings.lock().await.notifications_enabled {
+        let settings = settings.lock().await;
+        if !settings.notifications_enabled {
             return;
         }
         if let ClipboardRuntime::Tauri(app) = self {
-            use tauri_plugin_notification::NotificationExt;
-            if let Err(error) = app
-                .notification()
-                .builder()
-                .title("TailSync")
-                .body(message)
-                .show()
-            {
-                log::warn!("Could not show file transfer notification: {error}");
-            }
+            crate::notifications::show(
+                &app,
+                "issue:transfer",
+                &tailsync_runtime::notification_text::SystemNotification::FileTransferFailed
+                    .body(&settings.language),
+                false,
+            );
         }
     }
 }
@@ -877,6 +875,33 @@ mod composite_capture {
                     return CompositeCapture::Handled;
                 }
 
+                let retained_bytes = snapshot
+                    .formats
+                    .iter()
+                    .map(|f| f.bytes.len())
+                    .fold(0usize, usize::saturating_add)
+                    .saturating_mul(2);
+                let images = prepare_capture_images(
+                    CaptureImageInput {
+                        bundle: &bundle,
+                        retained_bytes,
+                        memory: memory.clone(),
+                    },
+                    archive_ticket,
+                    origin,
+                    capture_generation,
+                    snapshot.after,
+                    PortablePublishContext {
+                        database,
+                        sync_engine,
+                        pool,
+                        settings,
+                        image_archive,
+                        recovery_generation,
+                        env,
+                    },
+                )
+                .await;
                 let archive_candidate = origin == Origin::External
                     && bundle.representations.iter().any(|representation| {
                         representation.mime == tailsync_core::composite::Mime::Html
@@ -891,37 +916,43 @@ mod composite_capture {
                     if !db.is_storage_available() {
                         return Err("History storage unavailable".to_string());
                     }
-                    let id = db
-                        .add_composite(&stored, Some(&native), "self")
-                        .map_err(|e| e.to_string())?;
+                    let (id, enriched) = match images {
+                        Some(images) => match db.add_native_capture_with_images(&native, &images, "self") {
+                            Ok(id) => (id, Some(images.bundle)),
+                            Err(error) => {
+                                warn!("Network image storage failed; preserving the source: {error}");
+                                (db.add_composite(&stored, Some(&native), "self").map_err(|e| e.to_string())?, None)
+                            }
+                        },
+                        None => (db.add_composite(&stored, Some(&native), "self").map_err(|e| e.to_string())?, None),
+                    };
                     let guard = archive_candidate
                         .then(|| {
                             tailsync_runtime::history::ArchiveEntryGuard::capture(&db, id).ok()
                         })
                         .flatten();
-                    Ok::<_, String>((id, guard))
+                    Ok::<_, String>((id, guard, enriched))
                 })
                 .await;
-                if !matches!(saved, Ok(Ok(_))) {
-                    finish_failed_capture(
-                        observed,
-                        CaptureFailure::NotSaved,
-                        snapshot_retry,
-                        ack,
-                        env,
-                    )
-                    .await;
-                    return CompositeCapture::Handled;
-                }
+                let (id, guard, enriched) = match saved {
+                    Ok(Ok(saved)) => saved,
+                    _ => {
+                        finish_failed_capture(
+                            observed,
+                            CaptureFailure::NotSaved,
+                            snapshot_retry,
+                            ack,
+                            env,
+                        )
+                        .await;
+                        return CompositeCapture::Handled;
+                    }
+                };
+                let bundle = enriched.unwrap_or(bundle);
                 acknowledge_capture(snapshot_retry, ack, snapshot.after);
                 crate::api::bump_clipboard_version();
-                let archive_binding = match &saved {
-                    Ok(Ok((id, Some(guard)))) => Some(tailsync_runtime::history::ArchiveCommit {
-                        id: *id,
-                        guard: guard.clone(),
-                    }),
-                    _ => None,
-                };
+                let archive_binding =
+                    guard.map(|guard| tailsync_runtime::history::ArchiveCommit { id, guard });
                 publish_saved_portable_capture(
                     SavedPortableCapture {
                         snapshot,
@@ -1419,7 +1450,7 @@ mod composite_capture {
                             // whenever `requires_original_domain` holds; mirror that
                             // with the real predicate, fingerprint and tracker.
                             let digest = if requires_original_domain(snapshot) {
-                                origin_fingerprint_from_native(snapshot).ok()
+                                tailsync_core::composite::fingerprint::origin_fingerprint_from_capture(snapshot).ok()
                             } else {
                                 origin_fingerprint(bundle).ok()
                             };
@@ -1439,7 +1470,11 @@ mod composite_capture {
                     classify_native: Arc::new(move |snapshot: &NativeSnapshot| {
                         classify_signal_native.notify_one();
                         let mut tracker = tracker_native.lock().unwrap();
-                        let digest = origin_fingerprint_from_native(snapshot).ok();
+                        let digest =
+                            tailsync_core::composite::fingerprint::origin_fingerprint_from_capture(
+                                snapshot,
+                            )
+                            .ok();
                         match digest {
                             Some(digest) => tracker.classify(Some(snapshot.after), digest, None),
                             None => Origin::UnknownMismatch,

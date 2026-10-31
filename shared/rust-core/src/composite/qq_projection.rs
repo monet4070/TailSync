@@ -2,21 +2,28 @@
 use crate::protocol::native_archive::{NativeArchive, CONVERTER_QQ_TO_PORTABLE, QQ_MESSAGE_FORMAT};
 use crate::protocol::native_clipboard::{FormatState, NativeFormat, NativeSnapshot, SnapshotState};
 
-pub(super) fn project(archive: &NativeArchive) -> Option<NativeSnapshot> {
-    if archive.platform != 1
-        || !archive.enumeration_complete
-        || archive.original.state != SnapshotState::Stable
-        || !archive.original.formats.iter().any(|format| {
+pub(super) fn deferred_image_descriptor(format: &NativeFormat) -> bool {
+    // QQ advertises the descriptor on the message item as well as extra items.
+    // This predicate is used only after identifying the captured QQ message.
+    format.name == "public.file-url" && format.state == FormatState::Absent
+}
+
+pub(super) fn message_shape(snapshot: &NativeSnapshot) -> bool {
+    snapshot.state == SnapshotState::Stable
+        && snapshot.formats.iter().any(|format| {
             format.item == 0
                 && format.name == QQ_MESSAGE_FORMAT
                 && format.state == FormatState::Captured
         })
-        || archive.original.formats.iter().any(|format| {
+        && !snapshot.formats.iter().any(|format| {
             format.item > 0
-                && !(format.name == "public.file-url" && format.state == FormatState::Absent)
+                && !deferred_image_descriptor(format)
                 && !crate::protocol::native_policy::control(&format.name)
         })
-    {
+}
+
+pub(super) fn project(archive: &NativeArchive) -> Option<NativeSnapshot> {
+    if archive.platform != 1 || !archive.enumeration_complete || !message_shape(&archive.original) {
         return None;
     }
     let converted: Vec<_> = archive

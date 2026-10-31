@@ -1,7 +1,7 @@
 use super::network_image::{self, NetworkImageFormat, NetworkImageLimits};
 use super::resource_archive::{
     ARCHIVE_BYTES_PER_RESOURCE, ARCHIVE_DERIVED_BYTES_PER_RESOURCE, ARCHIVE_PIXELS_PER_RESOURCE,
-    ARCHIVE_RESOURCE_LIMIT, ARCHIVE_TOTAL_BYTES, ARCHIVE_TOTAL_PIXELS,
+    ARCHIVE_RESOURCE_LIMIT, ARCHIVE_TOTAL_BYTES, ARCHIVE_TOTAL_DERIVED_BYTES, ARCHIVE_TOTAL_PIXELS,
 };
 use super::{Mime, PortableBundle};
 use crate::protocol::ProtocolError;
@@ -168,6 +168,7 @@ pub fn validate_originals(
     let html = &bundle.representations[html_index].bytes;
     let inventory = super::html::reference_inventory(html)?;
     let mut remaining_pixels = ARCHIVE_TOTAL_PIXELS;
+    let mut remaining_derived = ARCHIVE_TOTAL_DERIVED_BYTES;
     for original in originals {
         let span = *inventory
             .images
@@ -200,7 +201,7 @@ pub fn validate_originals(
             max_rgba_bytes: usize::try_from(max_pixels.saturating_mul(4))
                 .unwrap_or(usize::MAX)
                 .min(super::RGBA_LIMIT),
-            max_derived_bytes: ARCHIVE_DERIVED_BYTES_PER_RESOURCE,
+            max_derived_bytes: ARCHIVE_DERIVED_BYTES_PER_RESOURCE.min(remaining_derived),
         };
         let derived = network_image::decode_static_png(&original.bytes, original.format, &limits)
             .map_err(|_| invalid())?;
@@ -208,6 +209,9 @@ pub fn validate_originals(
             return Err(invalid());
         }
         remaining_pixels -= derived.pixels;
+        remaining_derived = remaining_derived
+            .checked_sub(derived.png.len())
+            .ok_or_else(invalid)?;
     }
     Ok(())
 }

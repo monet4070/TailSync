@@ -55,6 +55,7 @@ const historyTarget: DocumentTarget = { entryId: 7, owner: "history" };
 
 describe("useDocumentPreview", () => {
   beforeEach(() => {
+    localStorage.clear();
     let counter = 0;
     vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:prepared-${counter++}`);
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
@@ -63,6 +64,22 @@ describe("useDocumentPreview", () => {
   });
 
   afterEach(() => vi.restoreAllMocks());
+
+  it("prepares and releases bundled PPTX content without database or cancellation IPC", async () => {
+    localStorage.setItem("tailsync-guided-tour-v2", JSON.stringify({ active: true, index: 8 }));
+    const hook = renderHook(({ target }: { target: DocumentTarget | null }) => useDocumentPreview(target), {
+      initialProps: { target: { entryId: 8_000_000_012, owner: "history" } as DocumentTarget | null },
+    });
+    await waitFor(() => expect(hook.result.current.state.status).toBe("ready"));
+    if (hook.result.current.state.status !== "ready") throw new Error("PPTX demo not ready");
+    expect(hook.result.current.state.prepared.frame.metadata.entry_id).toBe(8_000_000_012);
+    const release = vi.spyOn(hook.result.current.state.prepared, "release");
+    hook.rerender({ target: null });
+    expect(release).toHaveBeenCalled();
+    expect(mocks.getDocumentPreview).not.toHaveBeenCalled();
+    expect(mocks.validateDocumentPreview).not.toHaveBeenCalled();
+    expect(mocks.cancelDocumentPreview).not.toHaveBeenCalled();
+  });
 
   it("keeps generations monotonic across remount, owner change and retry", async () => {
     const first = renderHook(({ target }: { target: DocumentTarget }) => useDocumentPreview(target), {

@@ -128,12 +128,64 @@ pub fn requires_original_domain(snapshot: &NativeSnapshot) -> bool {
                     .is_some_and(|m| m.is_static_png() && m.within_budget()))
     })
 }
-/// Origin fingerprint of a native snapshot, through the same model as the publish
-/// side.
-///
-/// Portable shapes retain their v2 projection. Admitted original-only shapes
-/// have an independent domain compared on both publication and read-back.
-/// Unknown or incomplete sets remain unknown (ADR-004 K1).
+/// Identify recognized QQ messages and self-contained Qt images with unread
+/// file descriptors. Bind every captured byte and descriptor in
+/// an observation-only domain; this never makes the set eligible for publication.
+/// Ordinary captures keep the exact fingerprint used by native publication.
+pub fn origin_fingerprint_from_capture(
+    snapshot: &NativeSnapshot,
+) -> Result<[u8; 32], ProtocolError> {
+    if let Ok(digest) = origin_fingerprint_from_native(snapshot) {
+        return Ok(digest);
+    }
+    snapshot.validate()?;
+    if super::qt_image::matches(snapshot) {
+        let mut original = snapshot.clone();
+        original.before = 0;
+        original.after = 0;
+        original
+            .formats
+            .retain(|f| !crate::protocol::native_policy::control(&f.name));
+        original
+            .formats
+            .sort_by(|a, b| (a.item, &a.name).cmp(&(b.item, &b.name)));
+        let mut h = Hasher::new();
+        h.update(b"tailsync-origin-qt-image-observation-v1\0");
+        h.update(&original.encode()?);
+        return Ok(*h.finalize().as_bytes());
+    }
+    if !super::qq_projection::message_shape(snapshot)
+        || !snapshot
+            .formats
+            .iter()
+            .any(super::qq_projection::deferred_image_descriptor)
+    {
+        return Err(ProtocolError::InvalidComposite);
+    }
+    let mut original = snapshot.clone();
+    original.before = 0;
+    original.after = 0;
+    original
+        .formats
+        .retain(|f| !crate::protocol::native_policy::control(&f.name));
+    if original.formats.iter().any(|f| {
+        !super::qq_projection::deferred_image_descriptor(f)
+            && (f.state != crate::protocol::native_clipboard::FormatState::Captured
+                || !crate::protocol::native_policy::macos_publishable(&f.name, f.bytes.len()))
+    }) {
+        return Err(ProtocolError::InvalidComposite);
+    }
+    original
+        .formats
+        .sort_by(|a, b| (a.item, &a.name).cmp(&(b.item, &b.name)));
+    let mut h = Hasher::new();
+    h.update(b"tailsync-origin-qq-observation-v1\0");
+    h.update(&original.encode()?);
+    Ok(*h.finalize().as_bytes())
+}
+
+/// Fingerprint of an actual publishable set. No deferred/missing format is
+/// admitted here, including QQ file descriptors; original replay stays strict.
 pub fn origin_fingerprint_from_native(
     snapshot: &NativeSnapshot,
 ) -> Result<[u8; 32], ProtocolError> {

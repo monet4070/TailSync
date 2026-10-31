@@ -271,12 +271,15 @@ fn encryption_keys_must_be_exactly_32_bytes() {
 }
 
 #[test]
-fn test_dek_is_limited_to_cargo_platform_test_executables() {
+fn test_dek_is_limited_to_known_cargo_test_executables() {
     assert!(super::is_cargo_test_harness_executable(
         std::path::Path::new("/workspace/target/debug/deps/tailsync_lib-b130076dc5f25812")
     ));
     assert!(super::is_cargo_test_harness_executable(
         std::path::Path::new("/workspace/target/debug/deps/tailsync_runtime-b130076dc5f25812.exe")
+    ));
+    assert!(super::is_cargo_test_harness_executable(
+        std::path::Path::new("/workspace/target/debug/deps/archive_sync-b130076dc5f25812")
     ));
     for path in [
         "/workspace/target/debug/tailsync",
@@ -284,10 +287,36 @@ fn test_dek_is_limited_to_cargo_platform_test_executables() {
         "/workspace/target/debug/deps/tailsync_lib-not-a-hash",
         "/workspace/target/debug/deps/tailsync_core-b130076dc5f25812",
         "/workspace/target/release/deps/tailsync-b130076dc5f25812",
+        "/Applications/TailSync.app/Contents/MacOS/tailsyncd",
+        "/workspace/target/debug/archive_sync-b130076dc5f25812",
+        "/workspace/target/debug/deps/archive_sync-not-a-hash",
+        "/workspace/target/debug/deps/unknown_test-b130076dc5f25812",
     ] {
         assert!(!super::is_cargo_test_harness_executable(
             std::path::Path::new(path)
         ));
+    }
+}
+
+#[test]
+fn cargo_integration_targets_are_isolated_from_user_keys_and_data() {
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for directory in [core.join("tests"), core.join("../tailsync-runtime/tests")] {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension() != Some(std::ffi::OsStr::new("rs")) {
+                continue;
+            }
+            let target = path.file_stem().unwrap().to_str().unwrap();
+            for suffix in ["", ".exe"] {
+                let executable =
+                    format!("/workspace/target/debug/deps/{target}-b130076dc5f25812{suffix}");
+                assert!(
+                    super::is_cargo_test_harness_executable(std::path::Path::new(&executable)),
+                    "integration target can reach the user keychain: {target}"
+                );
+            }
+        }
     }
 }
 

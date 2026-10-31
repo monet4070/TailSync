@@ -95,10 +95,12 @@ struct HistoryView: View {
     init(
         collection: String = "all",
         dependencies: HistoryViewDependencies = .live,
-        keyboardSession: HistoryKeyboardSession? = nil
+        keyboardSession: HistoryKeyboardSession? = nil,
+        tour: GuidedTourController = .shared
     ) {
         self.collection = collection
         self.dependencies = dependencies
+        _tour = ObservedObject(wrappedValue: tour)
         _keyboard = StateObject(wrappedValue: keyboardSession ?? HistoryKeyboardSession())
         visibilityNotification = .tailSyncHistoryCollectionVisibilityChanged(
             for: collection
@@ -106,6 +108,7 @@ struct HistoryView: View {
     }
 
     @ObservedObject private var loc = Loc.shared
+    @ObservedObject private var tour = GuidedTourController.shared
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var entries: [HistoryEntry] = []
@@ -137,6 +140,7 @@ struct HistoryView: View {
     @State private var pendingLoadPage: Int? = nil
     @State private var queryGeneration = 0
     @State private var pendingPageSelection: HistoryPendingSelection? = nil
+    @State private var scrollToTopRevision = 0
     @State private var errorMsg: String? = nil
     @State private var lastVersion: UInt64 = 0
     @State private var runtimeRevision: UInt64 = 0
@@ -164,6 +168,8 @@ struct HistoryView: View {
     @State private var restoreFeedbackTask: Task<Void, Never>? = nil
     @State private var expandedBatchIds: Set<String> = []
     @State private var favoriteMutations: [String: Bool] = [:]
+    @State private var demoEntries: [HistoryEntry] = []
+    @State private var demoSeeded = false
 
     private let pageSize = 30
     private let collapsedBatchFileLimit = 2
@@ -206,6 +212,12 @@ struct HistoryView: View {
             batchPositions[batchId] = position + 1
             return position < collapsedBatchFileLimit
         }
+    }
+
+    private var numberedIDs: [Int64] { Array(displayedEntries.prefix(6).map(\.id)) }
+
+    private var quickShortcutsActive: Bool {
+        keyboard.listHasFocus && resultsAreCurrent && !isRestoring && !isDeleting && !showingClearAlert
     }
 
     private func batchCount(_ entry: HistoryEntry) -> Int {
@@ -255,6 +267,7 @@ struct HistoryView: View {
                 onQueryChanged: scheduleSearch
             )
             .padding(.horizontal, 12).padding(.top, 8)
+            .tourTarget("history-search")
 
             if unresolvedMigrationCount > 0 {
                 HStack(spacing: 7) {
@@ -304,6 +317,7 @@ struct HistoryView: View {
             }
 
             // List
+            VStack(spacing: 0) {
             if isLoading && entries.isEmpty {
                 Spacer()
                 ProgressView().controlSize(.small)
@@ -394,6 +408,8 @@ struct HistoryView: View {
                             isRestored: restoredId == entry.id,
                             isFocused: focusedEntryId == entry.id,
                             showsMultipleLabels: multipleLabelsSupported,
+                            shortcutNumber: isFavoritesCollection ? nil : numberedIDs.firstIndex(of: entry.id).map { $0 + 1 },
+                            shortcutEnabled: quickShortcutsActive,
                             previewRequest: historyPreviewRequest(
                                 focusedId: entry.id,
                                 entries: entries,
@@ -474,21 +490,30 @@ struct HistoryView: View {
                         scroll.scrollTo(id, anchor: nil)
                     }
                 }
+                .onChange(of: scrollToTopRevision) { _ in
+                    if let id = displayedEntries.first?.id { scroll.scrollTo(id, anchor: .top) }
+                }
                 .animation(loc.reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.9), value: entries.count)
                 }
             }
 
+            }.tourTarget("history-items")
+
             // Pagination + clear
+            if !isFavoritesCollection {
+                Text(Loc.t(keyboard.listHasFocus ? "history.keyboard.shortcuts" : "history.keyboard.searchHint"))
+                    .font(.caption2)
+                    .foregroundColor(palette.secondaryColor)
+                    .padding(.top, 5)
+            }
             HStack(spacing: 12) {
                 Button {
-                    let target = page - 1
-                    load(targetPage: target)
+                    turnPage(-1)
                 } label: { Image(systemName: "chevron.left") }
                     .disabled(page == 0 || isRestoring || !resultsAreCurrent)
                 Text("\(page + 1)").font(.caption).foregroundColor(palette.tertiaryColor).monospacedDigit()
                 Button {
-                    let target = page + 1
-                    load(targetPage: target)
+                    turnPage(1)
                 } label: { Image(systemName: "chevron.right") }
                     .disabled(!hasNext || isRestoring || !resultsAreCurrent)
                 Spacer()
@@ -508,9 +533,31 @@ struct HistoryView: View {
                 Button(Loc.t("history.clearAll"), role: .destructive) { clearAll() }
             }
         }
+        .guidedTour(window: isFavoritesCollection ? "favorites" : "history", controller: tour)
         .background(HistoryKeyboardListResponder(session: keyboard).frame(width: 0, height: 0))
         .onChange(of: keyboard.selectedID) { _ in followPreviewSelection() }
+        .onChange(of: tour.active) { _ in
+            interactionGeneration &+= 1
+            cancelPendingQueries()
+            previewFollowTask?.cancel()
+            restoreFeedbackTask?.cancel()
+            HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+            demoSeeded = false
+            demoEntries = []
+            entries = []
+            keyword = ""
+            selectedCategory = "all"
+            selectedDateFilter = .all
+            pendingPageSelection = nil
+            retryRestoreAction = nil
+            restoredId = nil
+            isRestoring = false
+            page = 0
+            focusedEntryId = nil
+            load(targetPage: 0)
+        }
         .onAppear {
+            keyboard.quickShortcutsEnabled = !isFavoritesCollection
             keyboard.onCommand = handleKeyboard
             HistoryPreviewWindowController.shared.registerKeyboardHandlers(
                 for: previewOwner,
@@ -522,10 +569,12 @@ struct HistoryView: View {
                     interactionGeneration &+= 1
                     restoredId = nil
                     keyboard.selectedID = displayedEntries.first?.id
-                    keyboard.focusSearch()
+                    scrollToTopRevision &+= 1
+                    keyboard.focusList()
                 }
             }
-            keyboard.focusSearch(selectAll: false)
+            if isFavoritesCollection { keyboard.focusSearch(selectAll: false) }
+            else { keyboard.focusList() }
             load()
             if dependencies.usesRuntimeUpdates {
                 loadProgressPreference()
@@ -687,6 +736,30 @@ struct HistoryView: View {
         loadGeneration += 1
         let generation = loadGeneration
         let requestedQuery = historyQuery(page: requestedPage)
+        if tour.active {
+            if !demoSeeded {
+                demoEntries = OnboardingDemo.entries(query: HistoryQuery(keyword: nil, category: nil, startTime: nil, endTime: nil, limit: pageSize, offset: 0, collection: collection))
+                demoSeeded = true
+            }
+            let filtered = demoEntries.filter { entry in
+                (requestedQuery.category == nil || requestedQuery.category == "all" || entry.category == requestedQuery.category)
+                    && (requestedQuery.keyword?.isEmpty != false || entry.description.localizedCaseInsensitiveContains(requestedQuery.keyword!))
+            }
+            entries = Array(filtered.dropFirst(requestedPage * pageSize).prefix(pageSize))
+            hasNext = filtered.count > (requestedPage + 1) * pageSize
+            page = requestedPage
+            loadedQuery = requestedQuery
+            isLoading = false
+            pendingLoadPage = nil
+            if let pendingPageSelection {
+                keyboard.selectedID = pendingPageSelection == .first
+                    ? displayedEntries.first?.id : displayedEntries.last?.id
+                self.pendingPageSelection = nil
+                if pendingPageSelection == .first { scrollToTopRevision &+= 1 }
+            } else { pruneSelection() }
+            followPreviewSelection()
+            return
+        }
         isLoading = true
         errorMsg = nil
         let task = Task { @MainActor in
@@ -699,6 +772,11 @@ struct HistoryView: View {
             do {
                 let result = try await dependencies.load(requestedQuery)
                 guard generation == loadGeneration, !Task.isCancelled, windowIsVisible else { return }
+                // Offset pages can disappear while another window deletes history.
+                if result.isEmpty && requestedPage > 0 {
+                    load(targetPage: requestedPage - 1)
+                    return
+                }
                 entries = HistoryFavoriteMutationPolicy.reconcile(
                     Array(result.prefix(pageSize)),
                     pendingFavorites: favoriteMutations
@@ -711,6 +789,7 @@ struct HistoryView: View {
                         ? displayedEntries.first?.id
                         : displayedEntries.last?.id
                     self.pendingPageSelection = nil
+                    if pendingPageSelection == .first { scrollToTopRevision &+= 1 }
                 } else {
                     pruneSelection()
                 }
@@ -857,6 +936,10 @@ struct HistoryView: View {
     }
 
     private func restoreBatch(_ batchId: String) {
+        if tour.active || batchId == "tailsync-demo-batch" {
+            showActionMessage(OnboardingGuide.shared.label("demoRestore", language: loc.lang))
+            return
+        }
         performRestore(restoredEntryID: nil, dismiss: false) { _ in
             try await dependencies.restoreBatch(batchId)
             return nil
@@ -955,17 +1038,33 @@ struct HistoryView: View {
     private func handleKeyboard(_ command: HistoryKeyboardCommand) {
         guard !keyboard.isComposing, !isRestoring, !isDeleting, !showingClearAlert else { return }
         switch command {
+        case .quickSearch:
+            guard !isFavoritesCollection, keyboard.listHasFocus else { return }
+            cancelPageTurn()
+            keyboard.focusSearch()
+        case .number(let number):
+            guard !isFavoritesCollection, keyboard.listHasFocus, resultsAreCurrent,
+                  numberedIDs.indices.contains(number - 1) else { return }
+            let id = numberedIDs[number - 1]
+            focusedEntryId = id
+            restore(id, dismiss: true)
+        case .page(let direction):
+            guard !isFavoritesCollection, keyboard.listHasFocus else { return }
+            turnPage(direction)
         case .down:
             guard resultsAreCurrent else { return }
             keyboard.reconcile(ids: displayedEntries.map(\.id))
-            if keyboard.focus == .search { keyboard.focusList(); return }
+            if keyboard.focus == .search {
+                focusedEntryId = displayedEntries.first?.id
+                keyboard.focusList()
+                return
+            }
             if let id = focusedEntryId,
                let index = displayedEntries.firstIndex(where: { $0.id == id }),
                index + 1 < displayedEntries.count {
                 focusedEntryId = displayedEntries[index + 1].id
             } else if hasNext {
-                pendingPageSelection = .first
-                load(targetPage: page + 1)
+                turnPage(1)
             }
         case .up:
             guard resultsAreCurrent else { return }
@@ -974,10 +1073,11 @@ struct HistoryView: View {
                let index = displayedEntries.firstIndex(where: { $0.id == id }), index > 0 {
                 focusedEntryId = displayedEntries[index - 1].id
             } else if page > 0 {
-                pendingPageSelection = .last
-                load(targetPage: page - 1)
+                turnPage(-1, selection: .last)
             } else { keyboard.focusSearch() }
-        case .search: keyboard.focusSearch()
+        case .search:
+            cancelPageTurn()
+            keyboard.focusSearch()
         case .restore(let keepOpen):
             guard resultsAreCurrent, let id = focusedEntryId else { return }
             restore(id, dismiss: !keepOpen)
@@ -1004,6 +1104,21 @@ struct HistoryView: View {
                 )
             }
         }
+    }
+
+    private func cancelPageTurn() {
+        guard pendingPageSelection != nil else { return }
+        cancelPendingLoad()
+        pendingLoadPage = nil
+        pendingPageSelection = nil
+    }
+
+    private func turnPage(_ direction: Int, selection: HistoryPendingSelection = .first) {
+        guard resultsAreCurrent, !isRestoring, !isDeleting,
+              direction < 0 ? page > 0 : hasNext else { return }
+        pendingPageSelection = selection
+        keyboard.focusList()
+        load(targetPage: page + direction)
     }
 
     private func historyQuery(page: Int) -> HistoryQuery {
@@ -1047,6 +1162,12 @@ struct HistoryView: View {
     }
 
     private func restore(_ id: Int64, dismiss: Bool = false) {
+        if OnboardingDemo.isDemoEntry(id) {
+            guard tour.active else { return }
+            restoredId = id
+            showActionMessage(OnboardingGuide.shared.label("demoRestore", language: loc.lang))
+            return
+        }
         let identity = entries.first(where: { $0.id == id })?.composite?.identity
         performRestore(restoredEntryID: id, dismiss: dismiss) { resolvedID in
             if let reported = dependencies.restoreReported {
@@ -1062,7 +1183,7 @@ struct HistoryView: View {
     // Keyboard, row, batch and hosted-preview restores share one lock and
     // completion path, so no entry point can mutate the clipboard concurrently.
     private func archiveImages(_ id: Int64) {
-        guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
+        guard !tour.active, !OnboardingDemo.isDemoEntry(id), !isRestoring, !isDeleting, resultsAreCurrent else { return }
         isRestoring = true
         let generation = interactionGeneration
         restoreFeedbackTask?.cancel()
@@ -1081,7 +1202,7 @@ struct HistoryView: View {
     }
 
     private func authorizeSourceContext(_ id: Int64) {
-        guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
+        guard !tour.active, !OnboardingDemo.isDemoEntry(id), !isRestoring, !isDeleting, resultsAreCurrent else { return }
         isRestoring = true
         let generation = interactionGeneration
         restoreFeedbackTask?.cancel()
@@ -1117,7 +1238,7 @@ struct HistoryView: View {
     }
 
     private func importSourcePacket(_ id: Int64) {
-        guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
+        guard !tour.active, !OnboardingDemo.isDemoEntry(id), !isRestoring, !isDeleting, resultsAreCurrent else { return }
         isRestoring = true
         let generation = interactionGeneration
         let panel = NSOpenPanel()
@@ -1147,7 +1268,7 @@ struct HistoryView: View {
     }
 
     private func revokeSourceContext() {
-        guard let grantId = lastSourceGrantId else { return }
+        guard !tour.active, let grantId = lastSourceGrantId else { return }
         let generation = interactionGeneration
         Task { @MainActor in
             guard let report = try? await dependencies.sourceContextRevoke(grantId), report.revoked,
@@ -1161,7 +1282,8 @@ struct HistoryView: View {
         restoredEntryID: Int64?, dismiss: Bool,
         operation: @escaping @Sendable (Int64?) async throws -> ContractHistoryRestoreReport?
     ) {
-        guard !isRestoring, !isDeleting, resultsAreCurrent else { return }
+        guard !tour.active, restoredEntryID.map({ !OnboardingDemo.isDemoEntry($0) }) ?? true,
+              !isRestoring, !isDeleting, resultsAreCurrent else { return }
         isRestoring = true
         retryRestoreAction = nil
         actionMessageTask?.cancel()
@@ -1176,6 +1298,7 @@ struct HistoryView: View {
         }
         HistoryPreviewWindowController.shared.setRestoreState(.restoring, for: previewOwner)
         restoreFeedbackTask = Task { @MainActor in
+            guard !Task.isCancelled, generation == interactionGeneration, !tour.active else { return }
             let report: ContractHistoryRestoreReport?
             do {
                 report = try await operation(restoredEntryID)
@@ -1240,6 +1363,17 @@ struct HistoryView: View {
             showActionMessage(Loc.t("history.favoriteProtected"))
             return
         }
+        if OnboardingDemo.isDemoEntry(entry.id) {
+            guard tour.active else { return }
+            let removed = Set(entries.filter { $0.id == entry.id || ($0.batch_id != nil && $0.batch_id == entry.batch_id) }.map(\.id))
+            demoEntries.removeAll { removed.contains($0.id) }
+            entries.removeAll { removed.contains($0.id) }
+            HistoryPreviewWindowController.shared.closeIfShowing(entryId: entry.id)
+            pruneSelection()
+            showActionMessage(OnboardingGuide.shared.label("demoDelete", language: loc.lang))
+            return
+        }
+        guard !tour.active else { return }
         isDeleting = true
         let generation = interactionGeneration
         let ids = displayedEntries.map(\.id)
@@ -1251,6 +1385,7 @@ struct HistoryView: View {
             ?? ids.prefix(index).last { !removedIDs.contains($0) }
         Task {
             defer { isDeleting = false }
+            guard !tour.active, generation == interactionGeneration else { return }
             do {
                 try await dependencies.delete(entry.id, collection)
                 guard generation == interactionGeneration else { return }
@@ -1272,7 +1407,16 @@ struct HistoryView: View {
     }
 
     private func clearAll() {
+        if tour.active {
+            demoEntries = []
+            entries = []
+            focusedEntryId = nil
+            HistoryPreviewWindowController.shared.close(ifOwnedBy: previewOwner)
+            showActionMessage(OnboardingGuide.shared.label("demoClear", language: loc.lang))
+            return
+        }
         Task {
+            guard !tour.active else { return }
             let ok = await ApiClient.shared.clearAllHistory()
             if ok {
                 page = 0
@@ -1290,7 +1434,20 @@ struct HistoryView: View {
         guard !isDeleting else { return }
         let mutationKey = logicalItemKey(entry)
         let favorite = !entry.pinned
-        guard favoriteMutations[mutationKey] == nil else { return }
+        if OnboardingDemo.isDemoEntry(entry.id) {
+            guard tour.active else { return }
+            withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                for index in entries.indices where logicalItemKey(entries[index]) == mutationKey {
+                    entries[index].pinned = favorite
+                }
+                for index in demoEntries.indices where logicalItemKey(demoEntries[index]) == mutationKey {
+                    demoEntries[index].pinned = favorite
+                }
+            }
+            showActionMessage(OnboardingGuide.shared.label(favorite ? "demoFavorite" : "demoUnfavorite", language: loc.lang))
+            return
+        }
+        guard !tour.active, favoriteMutations[mutationKey] == nil else { return }
         favoriteMutations[mutationKey] = favorite
         withAnimation(loc.reduceMotion ? nil : .easeOut(duration: 0.18)) {
             for index in entries.indices
@@ -1304,6 +1461,7 @@ struct HistoryView: View {
             do {
                 // The daemon applies the mutation to the complete logical
                 // item, including every member of a file batch.
+                guard !tour.active else { return }
                 try await ApiClient.shared.setHistoryFavorite(id: entry.id, favorite: favorite)
                 // Reload instead of changing only the pressed row: file
                 // batches are one logical favorite and the daemon mutates

@@ -52,18 +52,65 @@ enum DaemonLifecyclePolicy {
     }
 }
 
-enum RuntimeNotificationPolicy {
-    static func shouldNotifyArrival(sourcePeer: String) -> Bool {
-        let source = sourcePeer.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !source.isEmpty && source != "self"
+struct DaemonRecoveryPolicy {
+    private(set) var hasResponded = false
+    private var consecutiveFailures = 0
+
+    mutating func didLaunch() {
+        hasResponded = false
+        consecutiveFailures = 0
     }
 
-    static func shouldRefreshHistory(
-        previousHistoryVersion: UInt64?,
-        currentHistoryVersion: UInt64,
-        isFirstPoll: Bool
-    ) -> Bool {
-        isFirstPoll || previousHistoryVersion != currentHistoryVersion
+    mutating func observePing(alive: Bool) -> Bool {
+        if alive {
+            hasResponded = true
+            consecutiveFailures = 0
+            return false
+        }
+        // Startup can wait indefinitely for a Keychain authorization dialog.
+        // A denied/cancelled startup must also wait for an explicit app relaunch,
+        // instead of automatically asking for the same authorization again.
+        guard hasResponded else { return false }
+        consecutiveFailures += 1
+        return consecutiveFailures >= 2
+    }
+}
+
+enum RuntimeNotificationPolicy {
+    static func arrivalContent(type: String, sourcePeer: String, count: UInt64 = 1) -> UNMutableNotificationContent {
+        let key: String = switch type {
+        case "image": "notice.arrivalImage"
+        case "file": "notice.arrivalFile"
+        case "text": "notice.arrivalText"
+        default: "notice.arrivalContent"
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "TailSync"
+        content.body = Loc.t(count > 1 ? "notice.arrivalSummary" : key)
+            .replacingOccurrences(of: "{peer}", with: sourcePeer)
+            .replacingOccurrences(of: "{count}", with: String(count))
+        content.sound = nil
+        content.interruptionLevel = .passive
+        return content
+    }
+
+    static func runtimeContent(level: String, code: String? = nil) -> UNMutableNotificationContent {
+        let needsAttention = level == "error" || level == "warning"
+        let content = UNMutableNotificationContent()
+        content.title = "TailSync"
+        // Daemon messages may contain clipboard data or file paths; only fixed localized text crosses the OS boundary.
+        let key: String = switch code {
+        case "clipboardUpdateFailed": "notice.clipboardUpdateFailed"
+        case "fileTransferFailed": "notice.fileTransferFailed"
+        case "storageUnavailable": "notice.storageUnavailable"
+        case "storageRecovered": "notice.storageRecovered"
+        case "storageMoving": "notice.storageMoving"
+        default: needsAttention ? "notice.runtimeProblem" : "notice.runtimeUpdate"
+        }
+        content.body = Loc.t(key)
+        content.sound = nil
+        content.interruptionLevel = needsAttention ? .active : .passive
+        return content
     }
 
     /// Whether the notification cursor is still usable.
@@ -160,19 +207,16 @@ struct TailSyncApp: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     private let singleInstanceLock = SingleInstanceLock()
     private var ownsSingleInstanceLock = false
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
-    private var lastNotifiedId: Int64 = 0
-    private var isFirstNotificationPoll = true
     private var notificationRuntimeRevision: UInt64 = 0
-    private var notificationHistoryVersion: UInt64?
     private var notificationEventId: UInt64 = 0
     /// Identity of the daemon whose cursor space `notificationEventId` belongs to.
     private var notificationServiceInstance: UInt64?
-    private var consecutiveWatchdogFailures = 0
+    private var daemonRecovery = DaemonRecoveryPolicy()
     private var watchdogBackoffSeconds: TimeInterval = 0
     private var watchdogRetryAfter: Date?
     private var daemonBuildInProgress = false
@@ -262,6 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
         guard ownsSingleInstanceLock else { return }
         Self.forceAccessory()
         NSApp.setActivationPolicy(.accessory)
@@ -299,6 +344,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         GlobalShortcutController.shared.onHistoryActivate = {
             Self.toggleHistory()
+        }
+
+        if !OnboardingProgress().dismissed,
+           !CommandLine.arguments.contains("--open-settings"),
+           !CommandLine.arguments.contains("--open-connections") {
+            DispatchQueue.main.async {
+                if Self.connectionsWC == nil { Self.showOnboarding(resume: true) }
+            }
         }
 
         if CommandLine.arguments.contains("--open-settings") {
@@ -339,6 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             print("[TailSync] system woke up — reconnecting...")
             Task { @MainActor [weak self] in
                 guard let self, self.daemonActivityAllowed else { return }
+                guard self.daemonRecovery.hasResponded else { return }
                 // Give Tailscale time to re-establish its tunnel
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard self.daemonActivityAllowed else { return }
@@ -369,6 +423,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         notificationTask?.cancel()
         notificationTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            let center = UNUserNotificationCenter.current()
+            let delivered = await center.deliveredNotifications()
+            // OS boundary: retire only the previous per-history arrival cards, preserving problem notifications.
+            let legacyArrivalIDs = delivered.map(\.request.identifier).filter { identifier in
+                identifier.hasPrefix("tailsync-") && Int64(identifier.dropFirst("tailsync-".count)) != nil
+            }
+            center.removeDeliveredNotifications(withIdentifiers: legacyArrivalIDs)
             while !Task.isCancelled {
                 guard self.daemonActivityAllowed else { return }
                 guard let snapshot = await ApiClient.shared.waitForRuntimeSnapshot(
@@ -379,12 +440,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     continue
                 }
                 self.notificationRuntimeRevision = snapshot.revision
-                let shouldRefreshHistory = RuntimeNotificationPolicy.shouldRefreshHistory(
-                    previousHistoryVersion: self.notificationHistoryVersion,
-                    currentHistoryVersion: snapshot.historyVersion,
-                    isFirstPoll: self.isFirstNotificationPoll
-                )
-                self.notificationHistoryVersion = snapshot.historyVersion
 
                 // The cursor is only trustworthy while it is still readable. A gap or
                 // a daemon restart means this snapshot is the new baseline, and the
@@ -408,69 +463,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         content.title = "TailSync"
                         content.body = Loc.t("notice.notificationGap").replacingOccurrences(of: "{count}", with: String(missed))
                         content.sound = nil
+                        content.interruptionLevel = .passive
                         let request = UNNotificationRequest(identifier: "tailsync-gap-\(snapshot.serviceInstance)-\(snapshot.notificationEarliestAvailableId)", content: content, trigger: nil)
-                        try? await UNUserNotificationCenter.current().add(request)
+                        await submitNotification(request)
                     }
                 }
                 if snapshot.serviceInstance != 0 {
                     self.notificationServiceInstance = snapshot.serviceInstance
                 }
 
+                var arrivals: [String: ContractClipboardArrival] = [:]
                 for event in snapshot.notifications {
                     self.notificationEventId = max(self.notificationEventId, event.id)
                     guard Loc.shared.notificationsEnabled,
                           Bundle.main.bundleURL.pathExtension == "app",
                           self.daemonActivityAllowed else { continue }
-                    let content = UNMutableNotificationContent()
-                    content.title = "TailSync"
-                    content.body = event.message
-                    content.sound = nil
+                    if let arrival = event.arrival {
+                        arrivals[arrival.source_id] = arrival
+                        continue
+                    }
+                    let content = RuntimeNotificationPolicy.runtimeContent(level: event.level, code: event.code)
                     let request = UNNotificationRequest(
-                        identifier: "tailsync-runtime-\(event.id)",
+                        identifier: event.code.map { "tailsync-issue-\($0 == "storageRecovered" ? "storageUnavailable" : $0)" }
+                            ?? "tailsync-runtime-\(snapshot.serviceInstance)-\(event.id)",
                         content: content,
                         trigger: nil
                     )
-                    try? await UNUserNotificationCenter.current().add(request)
+                    await submitNotification(request)
                 }
 
-                // Establish a baseline before notifying so existing history is
-                // not reported as newly received after every app launch.
-                if self.isFirstNotificationPoll {
-                    self.isFirstNotificationPoll = false
-                    if let latest = try? await ApiClient.shared.getHistory(limit: 1, offset: 0) {
-                        self.lastNotifiedId = latest.first?.id ?? 0
-                    }
-                    continue
+                for arrival in arrivals.values {
+                    let content = RuntimeNotificationPolicy.arrivalContent(
+                        type: arrival.kind, sourcePeer: arrival.source_name, count: arrival.count)
+                    if let id = arrival.entry_id { content.userInfo["entry_id"] = id }
+                    let request = UNNotificationRequest(
+                        identifier: "tailsync-arrival-\(arrival.source_id)", content: content, trigger: nil)
+                    await submitNotification(request)
                 }
-                guard shouldRefreshHistory,
-                      Loc.shared.notificationsEnabled,
-                      Bundle.main.bundleURL.pathExtension == "app",
-                      snapshot.historyVersion > 0,
-                      self.daemonActivityAllowed else { continue }
-                guard let latest = try? await ApiClient.shared.getHistory(limit: 1, offset: 0),
-                      let newest = latest.first,
-                      newest.id > self.lastNotifiedId,
-                      self.daemonActivityAllowed else { continue }
-                self.lastNotifiedId = newest.id
-                guard RuntimeNotificationPolicy.shouldNotifyArrival(sourcePeer: newest.source_peer) else { continue }
-                let body: String = switch newest.type {
-                    case "image": "📷 Image received"
-                    case "file":  "📎 \(newest.description)"
-                    default:      newest.description
-                }
-                // Use UNUserNotificationCenter so notifications show the app icon
-                let content = UNMutableNotificationContent()
-                content.title = "TailSync"
-                content.body = body
-                content.sound = nil
-                let request = UNNotificationRequest(
-                    identifier: "tailsync-\(newest.id)",
-                    content: content,
-                    trigger: nil
-                )
-                try? await UNUserNotificationCenter.current().add(request)
             }
         }
+    }
+
+    private func submitNotification(_ request: UNNotificationRequest) async {
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+        } catch {
+            // Notification delivery is an external side effect; report failure without retrying a potentially accepted request.
+            print("[TailSync] Notification submission failed (\(request.identifier)): \(error.localizedDescription)")
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        Task { @MainActor in Self.showHistory() }
+        completionHandler()
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        // OS presentation boundary: foreground notifications remain in the center without a banner.
+        completionHandler([.list])
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -748,7 +804,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @MainActor
     static func installAvailableUpdateAndRelaunch() async throws -> Bool {
+        let tour = GuidedTourController.shared
         guard try await ApiClient.shared.installUpdate() else { return false }
+        try tour.preserveAfterUpdate()
         await stopDaemonForRestart()
         try scheduleUpdatedAppRelaunch()
         NSApp.terminate(nil)
@@ -812,6 +870,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startDaemonProcess(_ binPath: String) {
         Self.stopDaemon()
+        daemonRecovery.didLaunch()
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binPath).absoluteURL
         var environment = ProcessInfo.processInfo.environment
@@ -976,20 +1035,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // consolidated snapshot also reads storage metadata and may
                 // legitimately wait behind a migration or a long database
                 // query; it must never be treated as process death.
-                guard await ApiClient.shared.ping() else {
-                    self.consecutiveWatchdogFailures += 1
-                    if self.consecutiveWatchdogFailures >= 2 {
+                let expectedPID = Self.daemonProcess?.processIdentifier
+                let alive = await ApiClient.shared.ping()
+                guard self.daemonActivityAllowed,
+                      Self.daemonProcess?.processIdentifier == expectedPID else { return }
+                guard alive else {
+                    if self.daemonRecovery.observePing(alive: false) {
                         print("[TailSync] daemon API unresponsive — restarting...")
                         await Self.stopDaemonForRestart()
                         guard self.daemonActivityAllowed else { return }
                         self.launchDaemon()
-                        self.consecutiveWatchdogFailures = 0
                         self.scheduleWatchdogRetry()
                     }
                     return
                 }
-                self.consecutiveWatchdogFailures = 0
+                let firstResponse = !self.daemonRecovery.hasResponded
+                _ = self.daemonRecovery.observePing(alive: true)
                 self.resetWatchdogBackoff()
+                if firstResponse {
+                    // Daemon readiness is an IPC boundary; begin bounded theme reads after its first response.
+                    await Loc.shared.retryThemeCatalogueLoading()
+                    guard self.daemonActivityAllowed else { return }
+                }
                 // A zero revision requests an immediate consolidated snapshot
                 // for menu/UI refresh only. Failure here leaves the daemon
                 // alone because the independent ping above already succeeded.
@@ -1163,6 +1230,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         Self.forceAccessory()
+    }
+
+    static func showOnboarding(resume: Bool = false) {
+        GuidedTourController.shared.start(resume: resume)
     }
 
     static func showSettings() {

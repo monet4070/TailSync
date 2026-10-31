@@ -6,7 +6,7 @@ use std::sync::Arc;
 pub struct CapturedBroadcast {
     revision: i64,
     payload: Arc<[u8]>,
-    _memory: PipelineLease,
+    _memory: Arc<PipelineLease>,
 }
 impl CapturedBroadcast {
     pub fn revision(&self) -> i64 {
@@ -26,17 +26,23 @@ pub fn prepare_broadcast(
 ) -> Result<CapturedBroadcast, String> {
     let revision = snapshot.after;
     drop(snapshot);
-    let mut memory = Arc::try_unwrap(memory)
-        .map_err(|_| "Capture worker still owns broadcast admission".to_string())?;
     let payload = bundle.encode().map_err(|e| e.to_string())?;
     drop(bundle);
     let payload: Arc<[u8]> = Arc::from(payload.into_boxed_slice());
     // Capture scratch is gone. Keep the source buffer plus one envelope-copy
     // workspace admitted; SharedEvent separately admits its retained wire body.
-    memory.shrink_to(
-        (payload.len() as u64).saturating_mul(2)
-            + crate::protocol::EVENT_ENVELOPE_HEADER_SIZE as u64,
-    );
+    let memory = match Arc::try_unwrap(memory) {
+        Ok(mut memory) => {
+            memory.shrink_to(
+                (payload.len() as u64).saturating_mul(2)
+                    + crate::protocol::EVENT_ENVELOPE_HEADER_SIZE as u64,
+            );
+            Arc::new(memory)
+        }
+        // A cancelled image decoder may still own scratch. Keep the full lease
+        // until it exits instead of dropping the copy or undercounting memory.
+        Err(memory) => memory,
+    };
     Ok(CapturedBroadcast {
         revision,
         payload,
@@ -49,6 +55,39 @@ mod tests {
     use super::*;
     use crate::{composite::*, peer::delivery::SharedEvent, protocol::Command};
     use rand::{RngCore, SeedableRng};
+
+    #[test]
+    fn cancelled_image_worker_keeps_its_full_lease_without_dropping_the_fallback_event() {
+        let ledger = Arc::new(budgets::BudgetLedger::default());
+        let memory = Arc::new(ledger.reserve_pipeline(240 * 1024 * 1024).unwrap());
+        let worker_memory = memory.clone();
+        let snapshot = NativeSnapshot {
+            before: 3,
+            after: 3,
+            items: 1,
+            state: crate::protocol::native_clipboard::SnapshotState::Stable,
+            formats: vec![],
+        };
+        let bundle = PortableBundle {
+            representations: vec![Representation {
+                mime: Mime::Text,
+                bytes: b"saved body".to_vec(),
+            }],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::Complete,
+        };
+        let captured = prepare_broadcast(snapshot, bundle, memory).unwrap();
+        assert_eq!(ledger.snapshot().pipeline_reserved, 240 * 1024 * 1024);
+        assert_eq!(
+            PortableBundle::decode(captured.payload()).unwrap().text(),
+            Some("saved body")
+        );
+        drop(captured);
+        assert_eq!(ledger.snapshot().pipeline_reserved, 240 * 1024 * 1024);
+        drop(worker_memory);
+        assert_eq!(ledger.snapshot().pipeline_reserved, 0);
+    }
 
     #[test]
     fn review_large_capture_hands_off_scratch_before_shared_event_admission() {

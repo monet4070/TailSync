@@ -2,7 +2,17 @@ import { Clipboard, SearchX, Star } from "lucide-react";
 import { HistoryList } from "./HistoryList";
 import type { HistoryMainContentProps } from "./HistoryViewTypes";
 
-export function HistoryMainContent({
+export function HistoryMainContent(props: HistoryMainContentProps) {
+  return (
+    <div data-tour="history-items" className="history-list" tabIndex={-1}>
+      <HistoryMainContentBody {...props} />
+    </div>
+  );
+}
+
+function HistoryMainContentBody({
+  shortcutNumbers,
+  shortcutsActive,
   t,
   themeAssetSlots,
   loading,
@@ -82,6 +92,8 @@ export function HistoryMainContent({
 
   return (
     <HistoryList
+      shortcutNumbers={shortcutNumbers}
+      shortcutsActive={shortcutsActive}
       t={t}
       entries={entries}
       calendarNow={calendarNow}

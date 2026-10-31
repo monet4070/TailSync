@@ -20,6 +20,7 @@ pub mod origin;
 pub mod outcome;
 pub mod provenance;
 mod qq_projection;
+mod qt_image;
 pub mod readable_restore;
 pub mod resource_archive;
 pub mod restore;
@@ -388,6 +389,13 @@ pub fn from_archive(
             bytes: vec![1],
         });
     }
+    // WeChat/Qt advertises a deferred file URL alongside complete image bytes.
+    // The validated single-image shape needs no file access. Retain the original
+    // descriptor in history, but omit it from the portable image projection.
+    if archive.platform == 1 && archive.enumeration_complete && qt_image::matches(&archive.original)
+    {
+        projection.formats.retain(|f| f.name != "public.file-url");
+    }
     // An unsuccessful portable conversion must not discard a valid archive.
     from_native(&projection).map_err(|error| preserve_native_conversion(&archive.original, error))
 }
@@ -650,6 +658,158 @@ mod qq_projection_tests {
         assert_eq!(portable.completeness, Completeness::ExternalReferences);
         assert_eq!(archive.encode().unwrap(), before);
         assert_eq!(archive.original.items, 2);
+    }
+
+    #[test]
+    fn qq_capture_origin_accepts_deferred_descriptors_without_admitting_native_publish() {
+        use super::origin::{Origin, OriginTracker};
+        let a = archive();
+        let original = a.encode().unwrap();
+        let bundle = from_archive(&a).unwrap();
+        let digest = fingerprint::origin_fingerprint_from_capture(&a.original)
+            .expect("QQ descriptor-only extra items must not prevent external-copy detection");
+        assert_eq!(
+            OriginTracker::default().classify(Some(a.original.after), digest, None),
+            Origin::External
+        );
+        assert!(fingerprint::origin_fingerprint_from_native(&a.original).is_err());
+        assert_eq!(a.encode().unwrap(), original);
+
+        // Receiving or restoring the converted message publishes portable formats,
+        // which must still match their actual read-back and never echo to a peer.
+        let published = to_macos_snapshot(&bundle).unwrap();
+        let written = fingerprint::origin_fingerprint_from_native(&published).unwrap();
+        let mut tracker = OriginTracker::default();
+        tracker.record(42, written, [7; 16]);
+        assert_eq!(
+            tracker.classify(
+                Some(42),
+                fingerprint::origin_fingerprint_from_capture(&published).unwrap(),
+                Some([7; 16])
+            ),
+            Origin::SelfWrite
+        );
+    }
+
+    #[test]
+    fn qq_capture_origin_accepts_descriptor_on_message_item() {
+        use super::origin::{Origin, OriginTracker};
+        let mut a = archive();
+        a.original.items = 1;
+        a.original.formats[1].item = 0;
+        a.original.formats.push(NativeFormat {
+            item: 0,
+            name: "dyn.ah62d4rv4gu8y6y4grf0gn5xbrzw1gydcr7u1e3cytf2gn".into(),
+            state: FormatState::Captured,
+            bytes: b"QQ companion metadata".to_vec(),
+        });
+        a.validate().unwrap();
+        assert!(from_archive(&a).is_ok());
+        let digest = fingerprint::origin_fingerprint_from_capture(&a.original)
+            .expect("QQ advertises its unread file URL on the message item too");
+        assert_eq!(
+            OriginTracker::default().classify(Some(a.original.after), digest, None),
+            Origin::External
+        );
+        assert!(fingerprint::origin_fingerprint_from_native(&a.original).is_err());
+        for state in [
+            FormatState::Failed,
+            FormatState::TooLarge,
+            FormatState::Captured,
+        ] {
+            let mut invalid = a.original.clone();
+            invalid.formats[1].state = state;
+            assert!(fingerprint::origin_fingerprint_from_capture(&invalid).is_err());
+        }
+        let mut invalid = a.original.clone();
+        invalid.formats[1].name = "public.png".into();
+        assert!(fingerprint::origin_fingerprint_from_capture(&invalid).is_err());
+        let mut invalid = a.original.clone();
+        invalid.formats[0].name = "com.example.not-qq".into();
+        assert!(fingerprint::origin_fingerprint_from_capture(&invalid).is_err());
+    }
+
+    #[test]
+    fn qq_capture_origin_preserves_mismatches_and_unresolved_writes() {
+        use super::origin::{Origin, OriginTracker};
+        let a = archive();
+        let digest = fingerprint::origin_fingerprint_from_capture(&a.original).unwrap();
+        let mut tracker = OriginTracker::default();
+        tracker.record(1, [0; 32], [7; 16]);
+        assert_eq!(
+            tracker.classify(Some(1), digest, None),
+            Origin::UnknownMismatch
+        );
+        let mut tracker = OriginTracker::default();
+        assert!(tracker.record_intent([8; 16], digest));
+        assert_eq!(
+            tracker.classify(Some(1), digest, None),
+            Origin::UnknownMismatch
+        );
+    }
+
+    #[test]
+    fn qq_capture_origin_binds_original_bytes_and_descriptors() {
+        let a = archive();
+        let digest = fingerprint::origin_fingerprint_from_capture(&a.original).unwrap();
+        let mut reordered = a.original.clone();
+        reordered.before = 100;
+        reordered.after = 100;
+        reordered.formats.reverse();
+        assert_eq!(
+            fingerprint::origin_fingerprint_from_capture(&reordered).unwrap(),
+            digest
+        );
+        let mut changed = a.original.clone();
+        changed.formats[0].bytes.push(1);
+        assert_ne!(
+            fingerprint::origin_fingerprint_from_capture(&changed).unwrap(),
+            digest
+        );
+        let mut changed = a.original.clone();
+        changed.items += 1;
+        changed.formats.push(NativeFormat {
+            item: 2,
+            name: "public.file-url".into(),
+            state: FormatState::Absent,
+            bytes: vec![],
+        });
+        assert_ne!(
+            fingerprint::origin_fingerprint_from_capture(&changed).unwrap(),
+            digest
+        );
+    }
+
+    #[test]
+    fn qq_capture_origin_does_not_admit_other_missing_or_failed_formats() {
+        for state in [
+            FormatState::Failed,
+            FormatState::TooLarge,
+            FormatState::Captured,
+        ] {
+            let mut a = archive();
+            a.original.formats[1].state = state;
+            assert!(fingerprint::origin_fingerprint_from_capture(&a.original).is_err());
+        }
+        for name in [
+            "public.utf8-plain-text",
+            "public.png",
+            "com.example.private",
+        ] {
+            let mut a = archive();
+            a.original.formats[1].name = name.into();
+            assert!(fingerprint::origin_fingerprint_from_capture(&a.original).is_err());
+        }
+        let mut a = archive();
+        a.original.formats[0].name = "com.example.not-qq".into();
+        assert!(fingerprint::origin_fingerprint_from_capture(&a.original).is_err());
+        let mut a = archive();
+        a.original.formats[0].state = FormatState::Failed;
+        a.original.formats[0].bytes.clear();
+        assert!(fingerprint::origin_fingerprint_from_capture(&a.original).is_err());
+        let mut a = archive();
+        a.original.after += 1;
+        assert!(fingerprint::origin_fingerprint_from_capture(&a.original).is_err());
     }
     #[test]
     fn partial_untrusted_or_ambiguous_qq_conversion_never_flattens_native_items() {

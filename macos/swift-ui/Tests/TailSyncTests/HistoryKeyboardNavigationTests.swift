@@ -379,17 +379,49 @@ final class HistoryKeyboardNavigationTests: XCTestCase {
     }
 
     func testCommandEventMappingRejectsTypingAndUnownedModifierCombinations() throws {
-        for code: UInt16 in [0, 3, 51, 123, 124] {
+        for code: UInt16 in [0, 51] {
             XCTAssertNil(HistoryKeyboardCommand.event(try keyEvent(code)), "keyCode \(code)")
         }
         for modifiers: NSEvent.ModifierFlags in [.shift, .control, .option, [.command, .shift], [.command, .option]] {
-            for code: UInt16 in [125, 126, 53, 49, 48, 36, 76, 3] {
+            for code: UInt16 in [125, 126, 53, 49, 48, 36, 76, 3, 18, 123, 124] {
                 XCTAssertNil(
                     HistoryKeyboardCommand.event(try keyEvent(code, modifiers: modifiers)),
                     "keyCode \(code), modifiers \(modifiers)"
                 )
             }
         }
+    }
+
+    func testListShortcutsParseDigitsNumpadSearchAndPagesWithoutRepeats() throws {
+        for (code, command): (UInt16, HistoryKeyboardCommand) in [
+            (18, .number(1)), (22, .number(6)), (83, .number(1)),
+            (3, .quickSearch), (123, .page(-1)), (124, .page(1))
+        ] {
+            XCTAssertEqual(HistoryKeyboardCommand.event(try keyEvent(code)), command)
+            XCTAssertNil(HistoryKeyboardCommand.event(try keyEvent(code, repeatKey: true)))
+        }
+        XCTAssertEqual(HistoryKeyboardCommand.event(try keyEvent(18, modifiers: .capsLock)), .number(1))
+    }
+
+    func testListShortcutsDoNotInterceptSearchFieldEditing() throws {
+        let fixture = SearchFixture(text: "")
+        defer { fixture.dispose() }
+        fixture.session.quickShortcutsEnabled = true
+        var commands: [HistoryKeyboardCommand] = []
+        fixture.session.onCommand = { commands.append($0) }
+        let editor = try fixture.focusSearch()
+        for code: UInt16 in [3, 18, 22] {
+            let event = try keyEvent(code, in: fixture.window)
+            XCTAssertFalse(fixture.field.performKeyEquivalent(with: event))
+            editor.interpretKeyEvents([event])
+        }
+        XCTAssertEqual(editor.string, "f16")
+        XCTAssertTrue(commands.isEmpty)
+        XCTAssertFalse(fixture.session.listHasFocus)
+        fixture.session.focusList()
+        XCTAssertTrue(fixture.session.listHasFocus)
+        fixture.window.sendEvent(try keyEvent(18, in: fixture.window))
+        XCTAssertEqual(commands, [.number(1)])
     }
 
     private func keyEvent(
@@ -407,6 +439,8 @@ final class HistoryKeyboardNavigationTests: XCTestCase {
         case 48: characters = "\t"
         case 36, 76: characters = "\r"
         case 3: characters = "f"
+        case 18, 83: characters = "1"
+        case 22: characters = "6"
         default: characters = "a"
         }
         return try XCTUnwrap(NSEvent.keyEvent(

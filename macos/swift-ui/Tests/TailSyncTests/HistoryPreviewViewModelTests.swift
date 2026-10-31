@@ -174,7 +174,7 @@ final class HistoryPreviewViewModelTests: XCTestCase {
         guard case .failed(let failure) = model.state else {
             return XCTFail("the first load should fail")
         }
-        XCTAssertEqual(failure.kind, .decryption)
+        XCTAssertEqual(failure.kind, .unavailable)
         XCTAssertTrue(failure.canRetry)
 
         model.retry()

@@ -45,6 +45,57 @@ pub(super) struct PortablePublishContext<'a> {
     pub(super) env: &'a CaptureEnvironment,
 }
 
+/// Image acquisition belongs before storage/event freezing. A newer copy or
+/// recovery cancels the wait; the caller can still preserve the captured source.
+pub(super) struct CaptureImageInput<'a> {
+    pub(super) bundle: &'a PortableBundle,
+    pub(super) retained_bytes: usize,
+    pub(super) memory: Arc<tailsync_core::composite::budgets::PipelineLease>,
+}
+
+pub(super) async fn prepare_capture_images(
+    input: CaptureImageInput<'_>,
+    ticket: Option<tailsync_runtime::automatic_image_archive::CaptureTicket>,
+    origin: Origin,
+    generation: u64,
+    revision: i64,
+    context: PortablePublishContext<'_>,
+) -> Option<tailsync_core::composite::resource_archive::ArchiveOutcome> {
+    let ticket = ticket?;
+    if origin != Origin::External || !context.settings.lock().await.sync_enabled {
+        return None;
+    }
+    if context.env.revision() != Some(revision)
+        || context.sync_engine.lock().await.clipboard_generation() != generation
+    {
+        return None;
+    }
+    let cancellation = tailsync_core::cancellation::Cancellation::default();
+    let prepare = context.image_archive.prepare_capture(
+        Some(ticket),
+        origin,
+        input.bundle,
+        input.retained_bytes,
+        cancellation.clone(),
+        input.memory,
+    );
+    tokio::pin!(prepare);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut prepare => return result,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
+                if context.env.revision() != Some(revision)
+                    || context.sync_engine.lock().await.clipboard_generation() != generation
+                    || CLIPBOARD_RECOVERY_GENERATION.load(Ordering::Acquire) != context.recovery_generation
+                {
+                    cancellation.cancel();
+                }
+            }
+        }
+    }
+}
+
 /// Records the stored outcome and runs the shared publication tail for one
 /// portable save that already acknowledged and versioned its own revision.
 ///

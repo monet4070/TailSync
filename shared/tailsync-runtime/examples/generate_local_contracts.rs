@@ -266,6 +266,8 @@ fn fixtures() -> LocalContractExports {
                 id: 1,
                 level: "error".into(),
                 message: "synthetic error".into(),
+                arrival: None,
+                code: None,
             }],
             notification_earliest_available_id: 1,
             notification_dropped_total: 0,

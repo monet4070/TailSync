@@ -112,7 +112,7 @@ pub async fn process_reliable_event(
                 )))
             }
         };
-        process_event_content(
+        let history_ref = process_event_content(
             frame.command,
             &envelope.content,
             source,
@@ -135,6 +135,18 @@ pub async fn process_reliable_event(
             // The history write committed, so the intermediate "applied" state
             // is no longer needed; the event is now fully seen.
             engine.clear_applied_event(source, envelope.message_id);
+            if let Some(history_ref) = history_ref {
+                if let Some(platform) = engine.platform_handle() {
+                    platform.received_content(crate::notifications::ClipboardArrival {
+                        source_id: receipt_source.clone(),
+                        source_name: source.to_string(),
+                        event_id: envelope.message_id.as_hex(),
+                        kind: kind.into(),
+                        count: 1,
+                        entry_id: Some(history_ref),
+                    });
+                }
+            }
         }
         on_applied();
         ReliableEventOutcome::Applied
@@ -179,7 +191,7 @@ async fn process_event_content(
     receipt: Receipt,
     sync_engine: &Arc<Mutex<SyncEngine>>,
     database: &Arc<Mutex<HistoryDB>>,
-) -> Result<(), ReliableEventError> {
+) -> Result<Option<i64>, ReliableEventError> {
     let text = match command {
         Command::TextPayload => Some(
             String::from_utf8(content.to_vec())
@@ -215,7 +227,8 @@ async fn process_event_content(
         .await
         .map_err(receipt_error)?;
     if existing.as_ref().is_some_and(|record| record.received) {
-        return Ok(());
+        // Another session completed this event while we waited; there is no new arrival to announce.
+        return Ok(None);
     }
     let (history_ref, protection) =
         if let Some(id) = existing.as_ref().and_then(|record| record.history_ref) {
@@ -351,7 +364,7 @@ async fn process_event_content(
         .lock()
         .await
         .settle_legacy_arrival(source, message_id);
-    Ok(())
+    Ok((history_ref > 0).then_some(history_ref))
 }
 
 fn receipt_error(error: String) -> ReliableEventError {
@@ -378,6 +391,7 @@ mod tests {
     }
 
     struct TestPlatform {
+        arrivals: std::sync::Mutex<Vec<crate::notifications::ClipboardArrival>>,
         writes: std::sync::Mutex<Vec<String>>,
         /// The typed failure the next text write reports, if any.
         text_failure: std::sync::Mutex<Option<crate::sync::WriteFailure>>,
@@ -388,6 +402,7 @@ mod tests {
     impl Default for TestPlatform {
         fn default() -> Self {
             Self {
+                arrivals: std::sync::Mutex::new(Vec::new()),
                 writes: std::sync::Mutex::new(Vec::new()),
                 text_failure: std::sync::Mutex::new(None),
                 image_failure: std::sync::Mutex::new(None),
@@ -439,6 +454,9 @@ mod tests {
     }
 
     impl SyncPlatform for TestPlatform {
+        fn received_content(&self, arrival: crate::notifications::ClipboardArrival) {
+            self.arrivals.lock().unwrap().push(arrival);
+        }
         fn write_text(&self, text: &str) -> Result<(), String> {
             self.classified_text_write(text).map_err(String::from)
         }
@@ -682,6 +700,14 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(outcome, ReliableEventOutcome::Applied);
+        let arrivals = platform.arrivals.lock().unwrap().clone();
+        assert_eq!(arrivals.len(), 1);
+        assert_eq!(
+            arrivals[0].source_id,
+            crate::secure::fingerprint(client_identity.public_key())
+        );
+        assert_eq!(arrivals[0].event_id, envelope.message_id.as_hex());
+        assert!(arrivals[0].entry_id.unwrap() > 0);
         assert_eq!(last_sequence, Some(1));
 
         // The acknowledgement is written back with the same sequence.
@@ -988,6 +1014,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn receive_arrivals_are_independent_of_newer_local_history() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let db = Arc::new(Mutex::new(history_fixture()));
+        let (engine, platform) = test_engine().await;
+        let mut sequence = None;
+        for index in 1..=3 {
+            let envelope = EventEnvelope::new(format!("remote {index}").into_bytes());
+            process_reliable_event(
+                &mut server,
+                &text_frame(index, &envelope),
+                "client",
+                &engine,
+                &db,
+                &mut sequence,
+                || (),
+            )
+            .await
+            .unwrap();
+            client.read_frame().await.unwrap();
+            db.lock()
+                .await
+                .add_text(&format!("local {index}"), "self")
+                .unwrap();
+        }
+        assert_eq!(
+            db.lock().await.get_all(None, None, 1, 0).unwrap()[0].source_peer,
+            "self"
+        );
+        let arrivals = platform.arrivals.lock().unwrap();
+        assert_eq!(arrivals.len(), 3);
+        assert!(arrivals
+            .iter()
+            .all(|arrival| arrival.source_name == "client"));
+    }
+
+    #[tokio::test]
     async fn duplicate_event_is_acknowledged_without_reapply() {
         let _warnings = crate::sync_warning::test_lock_async().await;
         while crate::sync_warning::take().is_some() {}
@@ -1031,6 +1096,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(outcome, ReliableEventOutcome::Duplicate);
+        assert_eq!(platform.arrivals.lock().unwrap().len(), 1);
         let _ = client.read_frame().await.unwrap();
 
         assert_eq!(platform.writes.lock().unwrap().len(), 1);

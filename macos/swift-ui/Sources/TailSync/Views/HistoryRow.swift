@@ -36,6 +36,8 @@ struct HistoryRow: View {
     let favoriteProgress: CGFloat
     let showsTransientFavoriteStamp: Bool
     let trailingContentWidth: CGFloat
+    let shortcutNumber: Int?
+    let shortcutEnabled: Bool
     @State private var thumbnail: NSImage? = nil
     @State private var installedThumbnailKey: HistoryThumbnailKey? = nil
     @State private var hovering = false
@@ -51,7 +53,9 @@ struct HistoryRow: View {
         showsMultipleLabels: Bool,
         favoriteProgress: CGFloat = 0,
         showsTransientFavoriteStamp: Bool = false,
-        trailingContentWidth: CGFloat = 0
+        trailingContentWidth: CGFloat = 0,
+        shortcutNumber: Int? = nil,
+        shortcutEnabled: Bool = false
     ) {
         self.entry = entry
         self.owner = owner
@@ -61,6 +65,8 @@ struct HistoryRow: View {
         self.favoriteProgress = favoriteProgress
         self.showsTransientFavoriteStamp = showsTransientFavoriteStamp
         self.trailingContentWidth = trailingContentWidth
+        self.shortcutNumber = shortcutNumber
+        self.shortcutEnabled = shortcutEnabled
     }
 
     private var component: TailSyncThemeComponentTokens? {
@@ -96,6 +102,7 @@ struct HistoryRow: View {
                         .clipShape(RoundedRectangle(cornerRadius: component?.radius ?? selection.metrics.controlRadius, style: .continuous))
                 }
             }
+            .padding(.top, 8)
             .frame(width: HistoryThumbnailLayout.columnWidth)
             .task(id: thumbnailKey) {
                 thumbnail = nil
@@ -185,6 +192,24 @@ struct HistoryRow: View {
                 .opacity(favoriteProgress > 0 ? 1 : 0)
                 .allowsHitTesting(false)
         }
+        .overlay(alignment: .topLeading) {
+            if let shortcutNumber {
+                Text(String(shortcutNumber))
+                    .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundColor(shortcutEnabled ? palette.accentContrastColor : palette.secondaryColor)
+                    .frame(width: 14, height: 14)
+                    .background(shortcutEnabled ? palette.accentColor : palette.surfaceColor,
+                                in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(palette.surfaceColor, lineWidth: 1))
+                    .offset(x: -7, y: -7)
+                    .allowsHitTesting(false)
+                    .accessibilityLabel(Loc.t("history.keyboard.number").replacingOccurrences(of: "{number}", with: String(shortcutNumber)))
+            }
+        }
+        // Reserve the outside half of the corner badge, including for the first row.
+        .padding(.top, 8)
+        .padding(.leading, 8)
         .accessibilityAddTraits(isFocused ? .isSelected : [])
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -226,6 +251,8 @@ struct HistoryInteractiveRow: View {
     let isRestored: Bool
     let isFocused: Bool
     let showsMultipleLabels: Bool
+    var shortcutNumber: Int? = nil
+    var shortcutEnabled = false
     let previewRequest: HistoryPreviewRequest?
     let onSelect: () -> Void
     let onRestore: () -> Void
@@ -261,7 +288,9 @@ struct HistoryInteractiveRow: View {
                 pressProgress: favoriteProgress
             ),
             showsTransientFavoriteStamp: showsTransientFavoriteStamp,
-            trailingContentWidth: trailingContentWidth
+            trailingContentWidth: trailingContentWidth,
+            shortcutNumber: shortcutNumber,
+            shortcutEnabled: shortcutEnabled
         )
         .contentShape(Rectangle())
         .overlay {

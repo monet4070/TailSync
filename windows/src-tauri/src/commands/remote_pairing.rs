@@ -159,8 +159,8 @@ pub(crate) fn queue_remote_pairing_link(app: &AppHandle, raw: &str) -> Result<()
         .map_err(|error| error.to_string())?;
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = crate::commands::open_settings_window(handle).await {
-            log::debug!("Could not open settings for a remote pairing invite: {error}");
+        if let Err(error) = crate::commands::open_connections_window(handle).await {
+            log::debug!("Could not open connections for a remote pairing invite: {error}");
         }
     });
     Ok(())

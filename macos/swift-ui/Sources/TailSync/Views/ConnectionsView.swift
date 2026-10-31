@@ -64,6 +64,12 @@ struct ConnectionsView: View {
     @State var peerTestGenerations: [String: Int] = [:]
     @State var peerLoadGeneration = 0
     @State var peerRequestInFlight = false
+    @State private var demoPairingOpen = false
+    @State private var demoPairingStage = 0
+    @State private var demoLatency: Int?
+    @State private var demoPaired = false
+    @State private var demoSyncEnabled = true
+    @ObservedObject private var tour = GuidedTourController.shared
 
     @State var saveGeneration = 0
     @State var saveCoordinator = SettingsSaveCoordinator()
@@ -170,6 +176,7 @@ struct ConnectionsView: View {
                     }
                     .padding(.vertical, 14)
                 }
+                .tourScrollable()
                 .overlay(alignment: .bottom) {
                     actionToast
                 }
@@ -195,6 +202,9 @@ struct ConnectionsView: View {
         .sheet(isPresented: $showPairingSheet) {
             pairingSheet
         }
+        .sheet(isPresented: $demoPairingOpen) {
+            demoPairingSheet
+        }
         .onReceive(
             NotificationCenter.default.publisher(for: .tailSyncRemotePairingInviteReceived)
         ) { notification in
@@ -218,6 +228,7 @@ struct ConnectionsView: View {
                 handleRemotePairingLink(link)
             }
         }
+        .guidedTour(window: "connections")
         .tailSyncThemed()
     }
 
@@ -248,20 +259,20 @@ struct ConnectionsView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 280)
-            }
+            }.tourTarget("connection-mode")
 
             themedDivider.padding(.leading, 16)
             localIdentityRow
 
             themedDivider.padding(.leading, 16)
-            peerList
+            VStack(spacing: 0) { peerList }.tourTarget("peers")
 
             themedDivider.padding(.leading, 16)
-            pairingPanel
+            pairingPanel.tourTarget("pairing")
 
             if ["auto", "iroh_only"].contains(settings.connection_mode) {
                 themedDivider.padding(.leading, 16)
-                remotePairingDrawer
+                remotePairingDrawer.tourTarget("remote-pairing")
             }
         }
     }
@@ -431,7 +442,18 @@ struct ConnectionsView: View {
 
     @ViewBuilder
     var peerList: some View {
-        if peersLoading {
+        if tour.active {
+            HStack {
+                Text("1 \(Loc.t("settings.devices")) · \(OnboardingGuide.shared.label("demo", language: loc.lang))")
+                    .font(.caption2).foregroundColor(palette.tertiaryColor)
+                Spacer()
+                Button { demoLatency = nil } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.bordered).controlSize(.small).frame(minWidth: 54)
+                    .help(Loc.t("settings.refresh"))
+            }
+            .padding(.horizontal, 16).padding(.vertical, 6)
+            demoPeerRow
+        } else if peersLoading {
             settingRow {
                 ProgressView().controlSize(.small)
                 Text(Loc.t("settings.loadingDevices"))
@@ -471,6 +493,79 @@ struct ConnectionsView: View {
                 peerRow(peer)
             }
         }
+    }
+
+    @ViewBuilder
+    private var demoPeerRow: some View {
+        if let peer = OnboardingDemo.peerSnapshot(), let route = peer.routes.first {
+            settingRow {
+                Circle().fill(palette.positiveColor).frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(peer.hostname).font(.body.weight(.medium))
+                        Image(systemName: demoPaired ? "checkmark.shield.fill" : "exclamationmark.shield")
+                            .font(.caption2).foregroundColor(demoPaired ? palette.positiveColor : palette.warningColor)
+                        Text(Loc.t(demoPaired ? "settings.paired" : "settings.notPaired"))
+                            .font(.caption2).foregroundColor(demoPaired ? palette.positiveColor : palette.warningColor)
+                    }
+                    Text(route.address).font(.caption2.monospaced()).foregroundColor(palette.tertiaryColor)
+                    Text(OnboardingGuide.shared.label("demoPeerHint", language: loc.lang))
+                        .font(.caption2).foregroundColor(palette.tertiaryColor)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if let demoLatency {
+                    Text("\(demoLatency) ms").font(.caption2.monospaced()).foregroundColor(palette.tertiaryColor)
+                }
+                Button { demoLatency = 12 } label: {
+                    Image(systemName: "bolt.horizontal").frame(width: 22, height: 22)
+                }
+                .buttonStyle(.bordered).controlSize(.small).frame(minWidth: 54)
+                .help(Loc.t("settings.testAllConnections"))
+                if demoPaired {
+                    Toggle("", isOn: $demoSyncEnabled)
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                        .accessibilityLabel(OnboardingGuide.shared.label("demoSyncToggle", language: loc.lang))
+                } else {
+                    Button(OnboardingGuide.shared.label("demoPair", language: loc.lang)) {
+                        demoPairingStage = 0
+                        demoPairingOpen = true
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private var demoPairingSheet: some View {
+        VStack(spacing: 16) {
+            Image(systemName: demoPairingStage == 2 ? "checkmark.shield.fill" : "lock.shield")
+                .font(.system(size: 30)).foregroundColor(palette.accentColor)
+            Text(OnboardingGuide.shared.label("demoPairingTitle", language: loc.lang))
+                .font(.title3.weight(.semibold))
+            if demoPairingStage == 2 {
+                Text(OnboardingGuide.shared.label("demoPaired", language: loc.lang))
+                    .multilineTextAlignment(.center).foregroundColor(palette.secondaryColor)
+                Button(OnboardingGuide.shared.label("finish", language: loc.lang)) { demoPairingOpen = false }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Text("DEMO-LAPTOP · 演示设备").font(.headline)
+                Text(OnboardingDemo.verificationCode)
+                    .font(.system(size: 34, weight: .bold, design: .monospaced))
+                Text(OnboardingGuide.shared.label("demoCode", language: loc.lang))
+                    .font(.caption).multilineTextAlignment(.center).foregroundColor(palette.secondaryColor)
+                Button(OnboardingGuide.shared.label(demoPairingStage == 0 ? "demoContinue" : "demoConfirm", language: loc.lang)) {
+                    withAnimation {
+                        if demoPairingStage == 1 { demoPaired = true }
+                        demoPairingStage += 1
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                Button(Loc.t("common.cancel")) { demoPairingOpen = false }
+                    .buttonStyle(.plain).foregroundColor(palette.secondaryColor)
+            }
+        }
+        .padding(24).frame(width: 360)
+        .background(palette.windowColor)
     }
 
     func peerRoutes(for peer: ApiClient.PeerSnapshot) -> [PeerRoute] {

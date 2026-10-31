@@ -453,6 +453,193 @@ async fn download_hooks_and_real_archive_frames_complete_one_history_then_reopen
 }
 
 #[tokio::test]
+async fn first_event_freezes_downloaded_images_preserves_native_source_and_accepts_only_later_missing_images(
+) {
+    use tailsync_core::composite::display_document::DocumentPartialCode;
+    use tailsync_core::protocol::native_archive::NativeArchive;
+    use tailsync_core::protocol::native_clipboard::{
+        FormatState, NativeFormat, NativeSnapshot, SnapshotState,
+    };
+    use tailsync_runtime::content_analysis::{
+        analyze_document_cancellable, UnsupportedNativeAnalyzer,
+    };
+    let _fixture = PIPELINE_FIXTURE.lock().await;
+    for complete in [true, false] {
+        let sender_root = root();
+        let receiver_root = root();
+        let database = Arc::new(Mutex::new(
+            HistoryDB::open_isolated_for_test_composite(&sender_root).unwrap(),
+        ));
+        let source_html = "<p>Alpha<img src='https://fixture.example/0'>Beta<img src='https://fixture.example/1'>Gamma<img src='https://fixture.example/2'>Delta<img src='https://fixture.example/0'>Omega</p>";
+        let archive = NativeArchive {
+            platform: 1,
+            enumeration_complete: true,
+            original: NativeSnapshot {
+                before: 17,
+                after: 17,
+                items: 1,
+                state: SnapshotState::Stable,
+                formats: vec![NativeFormat {
+                    item: 0,
+                    name: "public.html".into(),
+                    state: FormatState::Captured,
+                    bytes: source_html.as_bytes().to_vec(),
+                }],
+            },
+            derived: vec![],
+        };
+        let source = tailsync_core::composite::from_archive(&archive).unwrap();
+        let transport = transport();
+        transport.available.store(complete, Ordering::SeqCst);
+        let queue = AutomaticImageArchive::new(
+            database.clone(),
+            true,
+            transport.clone(),
+            Arc::new(|| panic!("preparation must not emit a background update")),
+        );
+        let memory = Arc::new(
+            Arc::new(BudgetLedger::default())
+                .reserve_pipeline(240 * 1024 * 1024)
+                .unwrap(),
+        );
+        let outcome = queue
+            .prepare_capture(
+                queue.capture_ticket(),
+                Origin::External,
+                &source,
+                source_html.len() * 2,
+                Cancellation::default(),
+                memory,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.images_complete(), complete);
+        assert_eq!(outcome.archived, if complete { 4 } else { 3 });
+        let id = database
+            .lock()
+            .await
+            .add_native_archive_with_images(&archive, &outcome, "self")
+            .unwrap();
+        let frozen = outcome.bundle;
+        let commit = ArchiveCommit {
+            id,
+            guard: ArchiveEntryGuard::capture(&*database.lock().await, id).unwrap(),
+        };
+        let payload: Arc<[u8]> = frozen.encode().unwrap().into();
+        let event = SharedEvent::encode_shared(Command::CompositePayload, payload.clone()).unwrap();
+        bind_local_event(database.clone(), commit, &event, payload)
+            .await
+            .unwrap()
+            .unwrap();
+        {
+            let db = database.lock().await;
+            assert_eq!(db.get_composite(id).unwrap(), frozen);
+            assert_eq!(db.get_composite_archive(id).unwrap().unwrap(), archive);
+            let identity = db.composite_identity(id).unwrap().unwrap();
+            assert!(db
+                .export_composite_archive_update(id, &identity)
+                .unwrap()
+                .is_none());
+        }
+        let preview = analyze_document_cancellable(
+            database.clone(),
+            id,
+            Arc::new(UnsupportedNativeAnalyzer),
+            Cancellation::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview.images.len(), 4);
+        assert!(!preview
+            .document()
+            .unwrap()
+            .partial
+            .iter()
+            .any(|p| p.code == DocumentPartialCode::UnverifiedProvenance));
+        drop(preview);
+        let receiver = Arc::new(Mutex::new(
+            HistoryDB::open_isolated_for_test_composite(&receiver_root).unwrap(),
+        ));
+        let notices = Arc::new(AtomicUsize::new(0));
+        let remote_id = deliver(&event, receiver.clone(), notices.clone()).await;
+        assert_eq!(
+            receiver.lock().await.get_composite(remote_id).unwrap(),
+            frozen
+        );
+        if !complete {
+            transport.available.store(true, Ordering::SeqCst);
+            let report = HistoryOperations::archive_entry_images(
+                database.clone(),
+                id,
+                transport.clone(),
+                Cancellation::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(report.archived, 1);
+            let update = {
+                let db = database.lock().await;
+                let identity = db.composite_identity(id).unwrap().unwrap();
+                db.export_composite_archive_update(id, &identity)
+                    .unwrap()
+                    .unwrap()
+            };
+            assert_eq!(update.base_digest, frozen.digest().unwrap());
+            assert_eq!(update.images.len(), 1);
+            assert_eq!(
+                update.images[0].image_index, 1,
+                "first-event images must never be sent as supplements"
+            );
+            let update =
+                SharedEvent::encode(Command::ArchiveUpdatePayload, update.encode().unwrap())
+                    .unwrap();
+            assert_eq!(
+                deliver(&update, receiver.clone(), notices.clone()).await,
+                remote_id
+            );
+            assert_eq!(
+                receiver.lock().await.get_composite(remote_id).unwrap(),
+                frozen
+            );
+        }
+        drop(receiver);
+        let mut receiver = HistoryDB::open_with_policy_for_probe(
+            &receiver_root,
+            tailsync_core::db::MigrationPolicy::CompositeAllowed,
+        )
+        .unwrap();
+        let restored = HistoryOperations::new(&mut receiver)
+            .restore_payload(remote_id)
+            .unwrap();
+        let restored = PortableBundle::decode(restored.data.as_deref().unwrap()).unwrap();
+        assert_eq!(restored.completeness, Completeness::Complete);
+        assert_eq!(restored.bindings.len(), 4);
+        let html =
+            String::from_utf8(tailsync_core::composite::html::materialize(&restored, 0).unwrap())
+                .unwrap();
+        let mut tail = html.as_str();
+        for text in ["Alpha", "Beta", "Gamma", "Delta", "Omega"] {
+            let offset = tail.find(text).unwrap();
+            if text != "Alpha" {
+                assert_eq!(tail[..offset].matches("data:image/png;base64,").count(), 1);
+            }
+            tail = &tail[offset + text.len()..];
+        }
+        assert_eq!(html.matches("data:image/png;base64,").count(), 4);
+        assert_eq!(
+            transport.calls.load(Ordering::SeqCst),
+            if complete { 4 } else { 5 }
+        );
+        assert!(source.resources.is_empty());
+        drop(receiver);
+        drop(queue);
+        drop(database);
+        std::fs::remove_dir_all(sender_root).unwrap();
+        std::fs::remove_dir_all(receiver_root).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn queue_is_bounded_coalesces_and_rejects_deleted_or_replaced_authority() {
     let _fixture = PIPELINE_FIXTURE.lock().await;
     let directory = root();

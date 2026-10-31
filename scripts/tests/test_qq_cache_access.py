@@ -33,11 +33,36 @@ if CommandLine.arguments.count == 3 {
 }
 try FileManager.default.createDirectory(atPath: (image as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
 try Data("copied image".utf8).write(to: URL(fileURLWithPath: image))
-require(reader.read(image) == Data("copied image".utf8), "unprotected fixture remains readable without a bookmark")
+require(reader.read(image) == nil, "disabled access must not read even an unprotected image")
 require(reader.status() == "not_authorized", "missing bookmark never claims access")
+require(reader.suggestedDirectory() == nil, "no Documents-folder fallback when the QQ account is unknown")
+let suggestion = try PropertyListSerialization.data(fromPropertyList: [
+    ["TencentElementType": 1, "TencentElementValue": image],
+    ["TencentElementType": 11, "TencentElementValue": "copied message"]
+], format: .binary, options: 0)
+require(reader.rememberSuggestion(from: suggestion), "copied QQ message identifies its exact Pic folder")
+require(reader.suggestedDirectory()?.path == root, "folder hint survives a later non-QQ clipboard copy")
+require(reader.status() == "not_authorized" && reader.read(image) == nil, "a folder hint never grants image access")
+let suggestionMode = try FileManager.default.attributesOfItem(atPath: bookmark.appendingPathExtension("suggestion").path)[.posixPermissions] as! NSNumber
+require(suggestionMode.intValue == 0o600, "folder hint is private")
+let invalidSuggestion = try PropertyListSerialization.data(fromPropertyList: [
+    ["TencentElementType": 1, "TencentElementValue": home + "/other.png"]
+], format: .binary, options: 0)
+require(!reader.rememberSuggestion(from: invalidSuggestion), "folder hint cannot authorize an arbitrary directory")
+require(!reader.rememberSuggestion(from: Data("bad plist".utf8)), "malformed hints are rejected")
+let mixedAccounts = try PropertyListSerialization.data(fromPropertyList: [
+    ["TencentElementType": 1, "TencentElementValue": image],
+    ["TencentElementType": 1, "TencentElementValue": image.replacingOccurrences(of: "nt_qq_123abc", with: "nt_qq_456def")]
+], format: .binary, options: 0)
+require(!reader.rememberSuggestion(from: mixedAccounts), "ambiguous account hints are rejected")
 try reader.remember(directory)
 require(reader.status() == "authorized", "directory bookmark resolves")
 require(reader.read(image) == Data("copied image".utf8), "resolved bookmark reads the exact referenced image")
+try reader.revoke()
+require(reader.status() == "not_authorized" && reader.read(image) == nil, "turning off revokes access even on readable fixture paths")
+try reader.revoke()
+require(reader.suggestedDirectory()?.path == root, "re-enabling can locate the same folder without browsing")
+try reader.remember(directory)
 let permissions = try FileManager.default.attributesOfItem(atPath: bookmark.path)[.posixPermissions] as! NSNumber
 require(permissions.intValue == 0o600, "bookmark is private")
 for suffix in ["/../2026-10/Ori/" + String(repeating: "a", count: 32) + ".png", "/2026-10/Ori/other.png", "/2026-10/Ori/" + String(repeating: "a", count: 32) + ".png\n", "/2026-10/Ori/" + String(repeating: "a", count: 32) + ".png\0"] {
