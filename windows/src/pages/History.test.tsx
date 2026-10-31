@@ -48,7 +48,7 @@ vi.mock("../hooks/useTheme", () => ({
   useTheme: () => ({ theme: "light", colorTheme: "tailsync", resolvedColorTheme: "tailsync" }),
 }));
 vi.mock("../hooks/useI18n", () => ({
-  useI18n: () => ({ t: (key: string) => key === "history.syncExpired" ? key + ":{peer}"
+  useI18n: () => ({ locale: "en", t: (key: string) => key === "history.syncExpired" ? key + ":{peer}"
     : key === "history.restore.availableContent" ? "Copied saved content; {count} images not saved" : key }),
 }));
 
@@ -1698,7 +1698,7 @@ describe("History item actions", () => {
     expect(screen.queryByRole("button", { name: "history.copyAll" })).toBeNull();
     expect(screen.getByRole("button", { name: "history.showMore (1)" })).toBeInTheDocument();
   });
-  it("preselects first entry; first Down hands off without skipping and repeated arrows navigate", async () => {
+  it("starts in the list; F enters search and first search Down hands off without skipping", async () => {
     const base = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
       ? Promise.resolve({ entries: [entry, { ...entry, id: 8, description: "second" }], total: 2, has_more: false })
@@ -1707,6 +1707,10 @@ describe("History item actions", () => {
     const first = (await screen.findByText(entry.description)).closest(".history-item")!;
     await waitFor(() => expect(first).toHaveAttribute("aria-selected", "true"));
     const search = screen.getByPlaceholderText("history.searchPlaceholder") as HTMLInputElement;
+    expect(document.querySelector(".history-list")).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    expect(screen.getByText("second").closest(".history-item")).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(document.activeElement!, { key: "f" });
     expect(search).toHaveFocus();
     fireEvent.keyDown(search, { key: "ArrowDown" });
     expect(document.querySelector(".history-list")).toHaveFocus();
@@ -1723,11 +1727,174 @@ describe("History item actions", () => {
     expect(search.selectionEnd).toBe(5);
   });
 
+  it("numbers only six rows and restores the sixth stable ID once through the normal close path", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    const ids = [92, 14, 200, 3, 81, 13, 400];
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: ids.map(id => ({ ...entry, id, description: `number-${id}` })), total: 7, has_more: false })
+      : base(command, args));
+    render(<History />);
+    await screen.findByText("number-400");
+    expect([...document.querySelectorAll(".history-shortcut")].map(node => node.textContent)).toEqual(["1", "2", "3", "4", "5", "6"]);
+    const list = document.activeElement!;
+    act(() => {
+      fireEvent.keyDown(list, { key: "6", code: "Numpad6" });
+      fireEvent.keyDown(list, { key: "1" });
+      fireEvent.keyDown(list, { key: "Enter" });
+    });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: 13 }));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "restore_entry")).toHaveLength(1);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("close_history_window"));
+  });
+
+  it("keeps digits and left/right in search and toolbar controls, rejecting modifiers and held keys", async () => {
+    render(<History />);
+    await screen.findByText(entry.description);
+    const list = document.activeElement!;
+    for (const event of [
+      { key: "1", ctrlKey: true }, { key: "1", shiftKey: true },
+      { key: "1", altKey: true }, { key: "1", repeat: true },
+      { key: "1", isComposing: true }, { key: "1", keyCode: 229 },
+      { key: "ArrowRight", repeat: true }, { key: "6" }, { key: "１" },
+    ]) fireEvent.keyDown(list, event);
+    fireEvent.keyDown(list, { key: "f" });
+    const search = screen.getByPlaceholderText("history.searchPlaceholder");
+    expect(search).toHaveFocus();
+    for (const key of ["f", "1", "6", "ArrowLeft", "ArrowRight"]) {
+      expect(fireEvent.keyDown(search, { key })).toBe(true);
+    }
+    fireEvent.change(search, { target: { value: "f123" } });
+    expect(search).toHaveValue("f123");
+    const toolbar = screen.getByRole("button", { name: "history.close" });
+    act(() => toolbar.focus());
+    for (const key of ["1", "ArrowRight", "f"]) fireEvent.keyDown(toolbar, { key });
+    expect(toolbar).toHaveFocus();
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_entry")).toBe(false);
+  });
+
+  it("numbers collapsed and expanded file rows in their actual rendered order", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    const files = Array.from({ length: 4 }, (_, index) => ({
+      ...entry, id: 40 + index, description: `shortcut-file-${index}`, type: "file",
+      batch_id: "shortcuts", batch_index: index, batch_total: 4, batch_count: 4,
+    }));
+    const rows = [entry, ...files, { ...entry, id: 80, description: "after-batch" }, { ...entry, id: 81, description: "after-six" }];
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? Promise.resolve({ entries: rows, total: rows.length, has_more: false }) : base(command, args));
+    render(<History />);
+    const after = (await screen.findByText("after-batch")).closest(".history-item")!;
+    expect(after.querySelector("kbd")).toHaveTextContent("4");
+    expect(screen.queryByText("shortcut-file-2")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "history.showMore (2)" }));
+    expect(after.querySelector("kbd")).toHaveTextContent("6");
+    expect(screen.getByText("after-six").closest(".history-item")!.querySelector("kbd")).toBeNull();
+    fireEvent.click(after);
+    fireEvent.keyDown(document.activeElement!, { key: "6" });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: 80 }));
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_file_batch")).toBe(false);
+  });
+
+  it("locks page turns synchronously, commits new numbering and selects the first row in both directions", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    let finish!: (result: unknown) => void;
+    invokeMock.mockImplementation((command: string, args: { offset?: number }) => {
+      if (command === "get_history_page") {
+        if (args.offset) return new Promise(resolve => { finish = resolve; });
+        return Promise.resolve({ entries: [entry, { ...entry, id: 8, description: "first-page-last" }], total: 61, has_more: true });
+      }
+      return base(command, args);
+    });
+    render(<History />);
+    await screen.findByText(entry.description);
+    const list = document.activeElement!;
+    act(() => {
+      fireEvent.keyDown(list, { key: "ArrowRight" });
+      fireEvent.keyDown(list, { key: "1" });
+      fireEvent.keyDown(list, { key: "ArrowRight" });
+    });
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_entry")).toBe(false);
+    expect(document.querySelector(".history-shortcut.is-active")).toBeNull();
+    expect(invokeMock.mock.calls.filter(([command, args]) => command === "get_history_page" && (args as { offset?: number }).offset)).toHaveLength(1);
+    await act(async () => finish({ entries: [{ ...entry, id: 90, description: "right-first" }], total: 61, has_more: true }));
+    expect(screen.getByText("right-first").closest(".history-item")).toHaveAttribute("aria-selected", "true");
+    expect(document.querySelector("kbd")).toHaveTextContent("1");
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" });
+    const first = (await screen.findByText(entry.description)).closest(".history-item")!;
+    await waitFor(() => expect(first).toHaveAttribute("aria-selected", "true"));
+    expect(document.querySelector(".history-list")).toHaveFocus();
+  });
+
+  it("restores the committed page after a failed turn without an automatic retry loop", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, args: { offset?: number }) => command === "get_history_page"
+      ? args.offset ? Promise.reject(new Error("page unavailable"))
+        : Promise.resolve({ entries: [entry], total: 31, has_more: true })
+      : base(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    const initialLoads = invokeMock.mock.calls.filter(([command]) => command === "get_history_page").length;
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    await screen.findByText("history.loadError");
+    await waitFor(() => expect(screen.getByRole("button", { name: "history.next" })).toBeEnabled());
+    expect(document.querySelector(".page-info")).toHaveTextContent("1 / 2");
+    expect(invokeMock.mock.calls.filter(([command]) => command === "get_history_page")).toHaveLength(initialLoads + 1);
+    fireEvent.keyDown(document.activeElement!, { key: "1" });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: entry.id }));
+  });
+
+  it("F cancels an outstanding page and a late response cannot steal search or replace rows", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    let finish!: (result: unknown) => void;
+    invokeMock.mockImplementation((command: string, args: { offset?: number }) => command === "get_history_page"
+      ? args.offset ? new Promise(resolve => { finish = resolve; })
+        : Promise.resolve({ entries: [entry], total: 31, has_more: true })
+      : base(command, args));
+    render(<History />);
+    await screen.findByText(entry.description);
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
+    fireEvent.keyDown(document.activeElement!, { key: "f" });
+    const search = screen.getByPlaceholderText("history.searchPlaceholder");
+    expect(search).toHaveFocus();
+    await act(async () => finish({ entries: [{ ...entry, id: 90, description: "cancelled-page" }], total: 31, has_more: false }));
+    expect(screen.queryByText("cancelled-page")).toBeNull();
+    expect(search).toHaveFocus();
+    expect(document.querySelector(".page-info")).toHaveTextContent("1 / 2");
+  });
+
+  it("keeps an early search focus when the initial rows finally arrive", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    let finish!: (result: unknown) => void;
+    invokeMock.mockImplementation((command: string, args: unknown) => command === "get_history_page"
+      ? new Promise(resolve => { finish = resolve; }) : base(command, args));
+    render(<History />);
+    expect(document.querySelector(".history-list")).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "f" });
+    const search = screen.getByPlaceholderText("history.searchPlaceholder");
+    expect(search).toHaveFocus();
+    await act(async () => finish({ entries: [entry], total: 1, has_more: false }));
+    expect(search).toHaveFocus();
+    expect(document.querySelector(".history-shortcut.is-active")).toBeNull();
+  });
+
+  it("keeps the favorites search focus and excludes number/page shortcuts", async () => {
+    render(<Favorites />);
+    await screen.findByText(entry.description);
+    expect(screen.getByPlaceholderText("history.searchPlaceholder")).toHaveFocus();
+    expect(document.querySelector("kbd")).toBeNull();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement!, { key: "1" });
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_entry")).toBe(false);
+  });
+
   it("keeps IME composing, keyCode229 and compositionend grace out of navigation/restore/close", async () => {
     render(<History />);
     await screen.findByText(entry.description);
     const search = screen.getByPlaceholderText("history.searchPlaceholder");
     const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+    act(() => search.focus());
     fireEvent.compositionStart(search);
     for (const key of ["ArrowDown", "Enter", "Escape", " "]) fireEvent.keyDown(search, { key });
     expect(search).toHaveFocus();
@@ -1940,7 +2107,7 @@ describe("History item actions", () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_preview_window", { request: { entryId: 7, batchId: null, owner: "history", takeFocus: false } }));
   });
 
-  it("late preview completion does not reopen after Escape, and reopening history resets search focus", async () => {
+  it("late preview completion does not reopen after Escape, and reopening history resets list focus", async () => {
     const base = invokeMock.getMockImplementation()!;
     let finish!: () => void;
     invokeMock.mockImplementation((command: string, args: unknown) => command === "open_preview_window"
@@ -1957,7 +2124,7 @@ describe("History item actions", () => {
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("close_history_window"));
     await act(async () => historyListeners.get("tailsync://history-open")?.({ payload: {} }));
-    expect(search).toHaveFocus();
+    expect(document.querySelector(".history-list")).toHaveFocus();
     fireEvent.keyDown(search, { key: "ArrowDown" });
     expect(document.querySelector(".history-list")).toHaveFocus();
   });
@@ -1966,6 +2133,7 @@ describe("History item actions", () => {
     render(<History />);
     await screen.findByText(entry.description);
     const search = screen.getByPlaceholderText("history.searchPlaceholder");
+    act(() => search.focus());
     await waitFor(() => expect(document.querySelector(".app")).toHaveAttribute("data-focused-entry-id", String(entry.id)));
     await act(async () => historyListeners.get("tailsync://restore-state")?.({ payload: { active: true, epoch: 1 } }));
     fireEvent.keyDown(search, { key: "Enter" });
@@ -1976,6 +2144,41 @@ describe("History item actions", () => {
     await act(async () => historyListeners.get("tailsync://restore-state")?.({ payload: { active: false, epoch: 1 } }));
     fireEvent.keyDown(search, { key: "Enter", ctrlKey: true });
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("restore_entry", { id: entry.id }));
+  });
+
+  it("replaces demo rows on cross-window completion without sending virtual IDs to restore", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+    const key = "tailsync-guided-tour-v2";
+    localStorage.setItem(key, JSON.stringify({ active: true, index: 4 }));
+    render(<History />);
+    const demo = await screen.findByText("演示 · 欢迎使用 TailSync / Welcome");
+    // Settle capability reads before simulating a later event from Settings.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    await act(async () => {
+      localStorage.setItem(key, JSON.stringify({ active: false, index: 14 }));
+      window.dispatchEvent(new StorageEvent("storage", { key }));
+    });
+    await screen.findByText(entry.description);
+    expect(screen.queryByText("演示 · 欢迎使用 TailSync / Welcome")).toBeNull();
+    fireEvent.doubleClick(demo.closest(".history-item")!);
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "restore_entry" && (args as {id: number}).id >= 8_000_000_000)).toBe(false);
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "get_image_data" && (args as {id: number}).id >= 8_000_000_000)).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("blocks stale demo row actions even before the cross-window notification arrives", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+    const key = "tailsync-guided-tour-v2";
+    localStorage.setItem(key, JSON.stringify({ active: true, index: 4 }));
+    render(<History />);
+    await screen.findByText("演示 · 欢迎使用 TailSync / Welcome");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    const row = screen.getByText("演示 · 欢迎使用 TailSync / Welcome").closest(".history-item")!;
+    localStorage.setItem(key, JSON.stringify({ active: false, index: 14 }));
+    fireEvent.doubleClick(row);
+    fireEvent.contextMenu(row);
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_entry" || command === "delete_entry")).toBe(false);
+    vi.unstubAllGlobals();
   });
 
 });

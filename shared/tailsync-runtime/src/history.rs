@@ -1245,7 +1245,7 @@ impl HistoryOperations<'_> {
         on_commit: H,
     ) -> Result<ArchiveEntryImagesReport, String> {
         use tailsync_core::composite::resource_archive::{
-            archive_external_images, ArchiveLimits, ArchiveOutcome,
+            archive_external_images_with_originals, ArchiveLimits, ArchiveOutcome,
         };
         let _admission = tokio::select! {
             biased;
@@ -1253,7 +1253,7 @@ impl HistoryOperations<'_> {
             permit = ARCHIVE_ADMISSION.acquire() => permit.map_err(|_| "archive_transport".to_string())?,
         };
         let cancellation_for_read = cancellation.clone();
-        let (identity, authority, base) = crate::execution::run_db_named_cancellable(
+        let (identity, authority, base, originals) = crate::execution::run_db_named_cancellable(
             "history.archive_entry_images.read",
             database.clone(),
             cancellation.clone(),
@@ -1282,13 +1282,17 @@ impl HistoryOperations<'_> {
                     .map(Ok)
                     .unwrap_or_else(|| database.get_composite(id))
                     .map_err(|_| "storage_unavailable".to_string())?;
-                Ok((identity, authority, base))
+                let originals = database
+                    .get_composite_network_originals(id)
+                    .map_err(|_| "storage_unavailable".to_string())?;
+                Ok((identity, authority, base, originals))
             },
         )
         .await
         .map_err(|error: DbExecutionError<String>| error.to_string())?;
-        let outcome: ArchiveOutcome = archive_external_images(
+        let outcome: ArchiveOutcome = archive_external_images_with_originals(
             &base,
+            &originals,
             transport.as_ref(),
             &ArchiveLimits::default(),
             &cancellation,

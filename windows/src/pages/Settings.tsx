@@ -41,7 +41,7 @@ import {
 import { useUpdater } from "../hooks/useUpdater";
 import { useLaunchAtLogin } from "../hooks/useLaunchAtLogin";
 import { X, ArrowUpRight } from "lucide-react";
-import { readTourSuppressed, startTour, TOUR_SUPPRESSED_EVENT } from "../onboarding/tourState";
+import { readTourSuppressed, startTour, TOUR_SUPPRESSED_EVENT, TOUR_SUPPRESSED_KEY } from "../onboarding/tourState";
 import onboardingGuide from "../../../shared/onboarding/guide.json";
 import "../onboarding/onboarding.css";
 import { ThemeLogo } from "../ThemeLogo";
@@ -76,8 +76,10 @@ export function Settings() {
   useEffect(() => {
     const sync = () => { void readTourSuppressed().then(value => setTourSuppressed(value === true)).catch(() => setTourSuppressed(false)); };
     sync();
+    const storage = (event: StorageEvent) => { if (event.key === null || event.key === TOUR_SUPPRESSED_KEY) sync(); };
     window.addEventListener(TOUR_SUPPRESSED_EVENT, sync);
-    return () => window.removeEventListener(TOUR_SUPPRESSED_EVENT, sync);
+    window.addEventListener("storage", storage);
+    return () => { window.removeEventListener(TOUR_SUPPRESSED_EVENT, sync); window.removeEventListener("storage", storage); };
   }, []);
   const launchAtLogin = useLaunchAtLogin();
   const {

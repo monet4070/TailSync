@@ -241,8 +241,10 @@ fn partial(reason: &'static str, detail: impl Into<String>) -> PartialReason {
 }
 
 fn select_representation(bundle: &PortableBundle) -> Result<Option<usize>, AnalysisError> {
-    if let Some(png) = super::available_restore::image_only_png_alternative(bundle)
-        .map_err(|_| AnalysisError::Invalid)?
+    // A wrapper's inline copy is whatever rendition the source page used; the
+    // standalone flavor is the picture at its own resolution, so show that.
+    if let Some(png) =
+        super::available_restore::wrapped_picture_png(bundle).map_err(|_| AnalysisError::Invalid)?
     {
         return Ok(Some(png));
     }

@@ -198,8 +198,9 @@ impl ArchiveUpdate {
         }
         let external = resource_archive::external_images(base)?;
         let mut replacements: Vec<ResourceReplacement> = Vec::with_capacity(self.images.len());
-        let mut remaining_pixels = ARCHIVE_TOTAL_PIXELS;
-        let mut remaining_derived = ARCHIVE_TOTAL_DERIVED_BYTES;
+        let (used_pixels, used_derived) = resource_archive::bundle_archive_usage(base)?;
+        let mut remaining_pixels = ARCHIVE_TOTAL_PIXELS.saturating_sub(used_pixels);
+        let mut remaining_derived = ARCHIVE_TOTAL_DERIVED_BYTES.saturating_sub(used_derived);
         for image in &self.images {
             let source = external
                 .iter()

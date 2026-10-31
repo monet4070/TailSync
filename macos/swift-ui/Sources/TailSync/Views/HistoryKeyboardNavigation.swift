@@ -5,12 +5,29 @@ import SwiftUI
 enum HistoryKeyboardCommand: Equatable {
     case down, up, search, escape, preview, deepPreview, delete
     case restore(keepOpen: Bool)
+    case number(Int), page(Int), quickSearch
+
+    var isListShortcut: Bool {
+        switch self {
+        case .number, .page, .quickSearch: return true
+        default: return false
+        }
+    }
 
     static func event(_ event: NSEvent) -> Self? {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if modifiers == [.command], event.keyCode == 3 { return .search }
         if modifiers == [.command], event.keyCode == 51, !event.isARepeat { return .delete }
         if modifiers.isEmpty {
+            if !event.isARepeat {
+                if event.keyCode == 123 { return .page(-1) }
+                if event.keyCode == 124 { return .page(1) }
+                let text = event.charactersIgnoringModifiers ?? ""
+                if text.lowercased() == "f" { return .quickSearch }
+                if text.count == 1, "123456".contains(text), let number = Int(text) {
+                    return .number(number)
+                }
+            }
             switch event.keyCode {
             case 125: return .down
             case 126: return .up
@@ -33,6 +50,8 @@ final class HistoryKeyboardSession: ObservableObject {
     enum Focus { case search, list }
     @Published var focus: Focus = .search
     @Published var selectedID: Int64?
+    @Published var listHasFocus = false
+    var quickShortcutsEnabled = false
     weak var searchField: NSTextField?
     weak var listResponder: NSView?
     var onCommand: ((HistoryKeyboardCommand) -> Void)?
@@ -78,6 +97,16 @@ struct HistoryKeyboardListResponder: NSViewRepresentable {
 final class HistoryKeyboardListNSView: NSView {
     weak var session: HistoryKeyboardSession?
     override var acceptsFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { session?.listHasFocus = true }
+        return accepted
+    }
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { session?.listHasFocus = false }
+        return accepted
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard window != nil else { return }
@@ -88,7 +117,8 @@ final class HistoryKeyboardListNSView: NSView {
     }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func keyDown(with event: NSEvent) {
-        if let command = HistoryKeyboardCommand.event(event) {
+        if let command = HistoryKeyboardCommand.event(event),
+           !command.isListShortcut || session?.quickShortcutsEnabled == true {
             session?.onCommand?(command)
         } else { super.keyDown(with: event) }
     }

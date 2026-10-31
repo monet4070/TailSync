@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { demoHistoryPage, demoLogicalKey, demoPreviewPayload, isDemoEntry } from "./demo";
+import { demoHistoryPage, demoLogicalKey, demoPreviewPayload, demoDocumentFrame, isDemoDocument, isDemoEntry } from "./demo";
+import { previewRendererFor } from "../utils/historyPreview";
 
 const query = { keyword: null, category: null, startTime: null, endTime: null, limit: 100, offset: 0 };
 
 describe("onboarding demo data", () => {
+  it("supplies a PPTX document frame with request identity while retaining the DOCX renderer", () => {
+    const request = { entry_id: 8_000_000_012, owner: "history" as const, generation: 42, request_id: "demo-request" };
+    const frame = demoDocumentFrame(request)!;
+    expect(isDemoDocument(request.entry_id)).toBe(true);
+    expect(frame.metadata).toMatchObject({ ...request, name: "Demo.pptx", kind: "document" });
+    expect(frame.document.blocks.length).toBeGreaterThan(0);
+    expect(frame.assets.byteLength).toBe(0);
+    expect(isDemoDocument(8_000_000_011)).toBe(false);
+    expect(previewRendererFor(demoPreviewPayload(8_000_000_011)!)).toBe("docx");
+    expect(demoDocumentFrame({ ...request, entry_id: 7 })).toBeNull();
+  });
   it("covers every history category without touching persisted state", () => {
     const page = demoHistoryPage(query);
     expect(page.entries).toHaveLength(17);

@@ -8,6 +8,14 @@ filters, pagination, restore, and delete are never covered by preview content.
 
 ## Interaction
 
+- history opens with list focus and the first displayed record selected. In list
+  focus only, `1–6` restores the numbered single record, Left/Right turns pages,
+  and `F` focuses search. Search retains ordinary digits and cursor navigation;
+  Down returns to the first result. The first six rendered rows on each 30-item
+  page are numbered, excluding headers and collapsed files. These commands do
+  not control a focused preview, menu, or text editor. See the
+  [shortcut contract](history-number-shortcuts.md) and
+  [implementation/acceptance record](../acceptance/history-number-shortcuts-2026-10-30.md).
 - single click selects a history row;
 - Space opens the selected row in the single preview window;
 - selecting another row and pressing Space replaces the current preview;

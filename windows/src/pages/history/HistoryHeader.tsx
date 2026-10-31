@@ -91,7 +91,7 @@ export function HistoryHeader({
             placeholder={t("history.searchPlaceholder")}
             value={keywordDraft}
             onChange={(event) => setKeywordDraft(event.target.value)}
-            autoFocus
+            autoFocus={isFavoritesCollection}
           />
           {!isFavoritesCollection && (
             <button

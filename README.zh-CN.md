@@ -52,6 +52,7 @@ macOS 使用原生 SwiftUI，Windows 使用 React/Tauri；两端共享 `shared/r
 
 - 文本、图片、文件双向同步
 - 本地历史记录的搜索、收藏、恢复、受保护删除、数量限制，以及文本 / 图片 / 文件分类和日期筛选
+- 历史呼出后聚焦并选中首条：列表中 `1–6` 取用前六个显示条目、`← / →` 翻页、`F` 进入搜索；搜索框内数字和左右键正常编辑，`↓` 返回列表。原生桌面验收待完成，见[实施记录](docs/acceptance/history-number-shortcuts-2026-10-30.md)。
 - `auto`、`lan_only`、`iroh_only`、`tailscale_only` 四种连接策略
 - UDP、mDNS / DNS-SD 与 Tailscale 候选发现
 - LAN 与 Tailscale 独立健康检查及往返延迟显示

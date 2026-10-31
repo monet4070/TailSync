@@ -156,6 +156,12 @@ pub(super) struct PreparedCompositeMenu {
     size: usize,
     archived: bool,
 }
+#[derive(Default)]
+pub(super) struct ListingProjection {
+    pub(super) body: Option<String>,
+    /// The HTML flavor loaded cleanly and projected no visible text.
+    pub(super) textless_html: bool,
+}
 impl PreparedCompositeMenu {
     pub(super) fn declared_bytes(&self) -> usize {
         self.size
@@ -164,7 +170,7 @@ impl PreparedCompositeMenu {
         self,
         info: &mut CompositeInfo,
         cancellation: &crate::cancellation::Cancellation,
-    ) -> Option<String> {
+    ) -> ListingProjection {
         let html = self
             .html
             .read(
@@ -203,8 +209,14 @@ impl PreparedCompositeMenu {
             tracing::debug!(target: "tailsync.runtime.execution", operation = "history.restore_menu", outcome = "withheld", "HTML restore inventory is incomplete or unreadable");
             Self::withhold_html(info);
         }
-        html.map(|(bytes, _)| composite::html::history_text_summary(&bytes))
-            .filter(|text| !text.is_empty())
+        let listing = html.map(|(bytes, _)| html_body(&bytes));
+        ListingProjection {
+            textless_html: matches!(listing, Some(HtmlBody::Textless)),
+            body: listing.and_then(|body| match body {
+                HtmlBody::Text(text) => Some(text),
+                HtmlBody::Textless | HtmlBody::Unreadable => None,
+            }),
+        }
     }
     pub(super) fn withhold_html(info: &mut CompositeInfo) {
         if !info.native_only && info.formats.iter().any(|f| f == "html") {
@@ -221,15 +233,15 @@ impl PreparedCompositeMenu {
         prepared: Result<Option<Self>, String>,
         info: &mut CompositeInfo,
         cancellation: &crate::cancellation::Cancellation,
-    ) -> Option<String> {
+    ) -> ListingProjection {
         match prepared {
             Ok(Some(menu)) => menu.apply(info, cancellation),
             Err(_) => {
                 tracing::debug!(target: "tailsync.runtime.execution", operation = "history.restore_menu", outcome = "unavailable", "HTML restore inventory unavailable");
                 Self::withhold_html(info);
-                None
+                ListingProjection::default()
             }
-            Ok(None) => None,
+            Ok(None) => ListingProjection::default(),
         }
     }
 }
@@ -376,45 +388,89 @@ fn archive_digest(m: &Manifest) -> Result<String, Box<dyn std::error::Error>> {
     h.update(&serde_json::to_vec(&view)?);
     Ok(h.finalize().to_hex().to_string())
 }
+/// Older captures stored the generic label before the summary policy knew
+/// about an app's HTML flavor of a copied picture. `textless_html` says the
+/// caller read that flavor and found no visible body there, which is the only
+/// evidence that the row is a picture rather than a document.
+fn legacy_image_title(m: &Manifest, textless_html: bool) -> Option<String> {
+    if m.summary != "Rich clipboard content" || m.native_only {
+        return None;
+    }
+    // A missing format may have carried the real content, so an incomplete
+    // archive is not relabelled. Missing outward references concern links and
+    // styles, never the picture itself.
+    if m.native_items > 1 {
+        return None;
+    }
+    let completeness = m
+        .archived_info
+        .as_ref()
+        .map_or(m.completeness, |info| info.completeness);
+    if completeness == Completeness::MissingFormats as u8 {
+        return None;
+    }
+    // The archive layer is the fuller copy; a faithfully rendered document
+    // would carry its body here even if the frozen projection dropped it.
+    if m.archived_info
+        .as_ref()
+        .is_some_and(|info| info.formats.iter().any(|f| f != "png" && f != "html"))
+    {
+        return None;
+    }
+    let mut png = None;
+    let mut inline = Vec::new();
+    for part in m.parts.iter().filter(|p| p.role == "representation") {
+        if part.mime == Mime::Png as u8 && png.is_none() {
+            png = Some(part);
+        } else if part.mime == Mime::Html as u8 && textless_html {
+            inline = m
+                .parts
+                .iter()
+                .filter(|p| p.role == "resource")
+                .collect::<Vec<_>>();
+        } else {
+            return None;
+        }
+    }
+    let png = png?;
+    // The wrapper's inline image must be this picture. Compare its shape rather
+    // than its pixel count: a source page inlines its own rendition, which is a
+    // downscaled copy of the same picture, while a different picture is content.
+    if inline.len() > 1
+        || m.bindings.len() > inline.len()
+        || inline.iter().any(|part| {
+            let (Some(width), Some(height)) = (part.width, part.height) else {
+                return true;
+            };
+            let (Some(main_width), Some(main_height)) = (png.width, png.height) else {
+                return true;
+            };
+            !composite::available_restore::same_shape(main_width, main_height, width, height)
+        })
+    {
+        return None;
+    }
+    let (width, height) = (png.width?, png.height?);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(format!("image/png · {width}×{height} · 1 frame"))
+}
 pub(super) fn summary_bytes(decoded: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    summary_bytes_with(decoded, false)
+}
+/// `textless_html` is known only by a reader that already loaded the HTML
+/// flavor; without it the manifest alone cannot tell a picture from a document.
+pub(super) fn summary_bytes_with(
+    decoded: &[u8],
+    textless_html: bool,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let m: Manifest = serde_json::from_slice(decoded)?;
     if !matches!(m.version, 1..=5) {
         return Err("Invalid composite manifest".into());
     }
     validate_manifest(&m)?;
-    // Older portable/Windows and Qt image captures stored the generic label.
-    // A complete, single-item archive may also have a standalone PNG projection
-    // alongside app metadata. Show its saved dimensions without rewriting the
-    // archive identity or decoding full images on every history listing.
-    let summary = if m.summary == "Rich clipboard content"
-        && !m.native_only
-        && (m.archive_version.is_none()
-            || (m.native_items == 1
-                && m.completeness == Completeness::Complete as u8
-                && m.archived_info.is_none()))
-    {
-        let representations: Vec<_> = m
-            .parts
-            .iter()
-            .filter(|p| p.role == "representation")
-            .collect();
-        if representations.len() == 1
-            && representations[0].mime == Mime::Png as u8
-            && !m.parts.iter().any(|p| p.role == "resource")
-            && m.bindings.is_empty()
-        {
-            match (representations[0].width, representations[0].height) {
-                (Some(width), Some(height)) if width > 0 && height > 0 => {
-                    format!("image/png · {width}×{height} · 1 frame")
-                }
-                _ => m.summary,
-            }
-        } else {
-            m.summary
-        }
-    } else {
-        m.summary
-    };
+    let summary = legacy_image_title(&m, textless_html).unwrap_or(m.summary);
     Ok(summary.into_bytes())
 }
 pub(super) fn info_bytes(decoded: &[u8]) -> Result<CompositeInfo, Box<dyn std::error::Error>> {
@@ -608,15 +664,62 @@ fn image_summary(archive: &NativeArchive) -> Option<String> {
         }
     ))
 }
+#[derive(Clone, PartialEq, Eq)]
+enum HtmlBody {
+    /// Valid HTML whose visible body is empty.
+    Textless,
+    Text(String),
+    /// Oversized or not UTF-8, so nothing can be concluded from it.
+    Unreadable,
+}
+/// `history_text_summary` yields an empty string both for a textless wrapper
+/// and for input it refuses, so the listing must tell those apart.
+fn html_body(html: &[u8]) -> HtmlBody {
+    if html.len() > Mime::Html.limit() || std::str::from_utf8(html).is_err() {
+        return HtmlBody::Unreadable;
+    }
+    match composite::html::history_text_summary(html) {
+        text if text.is_empty() => HtmlBody::Textless,
+        text => HtmlBody::Text(text),
+    }
+}
+/// One picture plus, at most, HTML wrappers that project to no visible text.
+/// An app's HTML flavor of a copied image is the same picture with metadata,
+/// not a second piece of content, so it must not hide the image's dimensions.
+/// Images those wrappers reference are the picture's own pixels, not a
+/// second piece of content.
 fn portable_image_summary(bundle: &PortableBundle) -> Option<String> {
-    if bundle.representations.len() != 1
-        || !bundle.resources.is_empty()
-        || !bundle.bindings.is_empty()
+    let mut png = None;
+    let mut textless_html = false;
+    for representation in &bundle.representations {
+        match representation.mime {
+            Mime::Png if png.is_none() => png = Some(representation.bytes.as_slice()),
+            Mime::Png => return None,
+            Mime::Html if html_body(&representation.bytes) == HtmlBody::Textless => {
+                textless_html = true;
+            }
+            _ => return None,
+        }
+    }
+    let metadata = crate::protocol::image::metadata("public.png", png?)?;
+    // The wrapper's image is this picture's own placement, at whatever
+    // rendition the source page used. Compare its shape, not its pixel count:
+    // a downscaled copy keeps the aspect ratio, a different picture does not.
+    if bundle.resources.len() > usize::from(textless_html)
+        || bundle.bindings.len() > bundle.resources.len()
+        || bundle.resources.iter().any(|resource| {
+            crate::protocol::image::metadata("public.png", &resource.png).is_some_and(|inline| {
+                !composite::available_restore::same_shape(
+                    metadata.width,
+                    metadata.height,
+                    inline.width,
+                    inline.height,
+                )
+            })
+        })
     {
         return None;
     }
-    let png = bundle.representation(Mime::Png)?;
-    let metadata = crate::protocol::image::metadata("public.png", png)?;
     Some(format!(
         "{} · {}×{} · {} frame{}",
         metadata.mime,
@@ -1820,10 +1923,13 @@ impl HistoryDB {
             summary: archive
                 .and_then(image_summary)
                 .or_else(|| {
+                    // An archive may hold content the portable model dropped.
+                    // Only a missing format can hide the picture's real subject;
+                    // unsaved outward references never do.
                     (archive.is_none()
                         || (!native_only
                             && native.is_some_and(|s| s.items == 1)
-                            && bundle.completeness == Completeness::Complete))
+                            && bundle.completeness != Completeness::MissingFormats))
                         .then(|| portable_image_summary(bundle))
                         .flatten()
                 })
@@ -5509,6 +5615,247 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn picture_with_a_textless_html_flavor_keeps_its_image_title() {
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let wrapper = b"<meta charset='utf-8'><div></div>";
+        let bundle = PortableBundle {
+            representations: vec![
+                Representation {
+                    mime: Mime::Png,
+                    bytes: solid_png(0, 0, 255),
+                },
+                Representation {
+                    mime: Mime::Html,
+                    bytes: wrapper.to_vec(),
+                },
+            ],
+            resources: vec![],
+            bindings: vec![],
+            completeness: Completeness::ExternalReferences,
+        };
+        assert_eq!(
+            portable_image_summary(&bundle).as_deref(),
+            Some("image/png · 1×1 · 1 frame")
+        );
+        let id = db.add_composite(&bundle, None, "fixture").unwrap();
+        let stored: Vec<u8> = db
+            .conn
+            .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        let mut m = manifest(&stored).unwrap();
+        assert_eq!(m.summary, "image/png · 1×1 · 1 frame");
+
+        // A row saved before that policy still carries the generic label; a
+        // reader that loaded the wrapper's HTML reports it as textless.
+        m.summary = "Rich clipboard content".into();
+        m.identity.as_mut().unwrap().archive_digest = archive_digest(&m).unwrap();
+        let legacy = serde_json::to_vec(&m).unwrap();
+        assert_eq!(
+            String::from_utf8(summary_bytes_with(&legacy, true).unwrap()).unwrap(),
+            "image/png · 1×1 · 1 frame"
+        );
+        assert_eq!(
+            String::from_utf8(summary_bytes_with(&legacy, false).unwrap()).unwrap(),
+            "Rich clipboard content"
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_browser_wrapper_shows_its_own_downscaled_copy_as_the_same_picture() {
+        let png = composite::packed_to_png(140, 86, &vec![7u8; 140 * 86 * 4]).unwrap();
+        let html = b"<meta charset='utf-8'><img src=\"tailsync-resource:1\"/>".to_vec();
+        let bundle = |inline_png: Vec<u8>| PortableBundle {
+            representations: vec![
+                Representation {
+                    mime: Mime::Png,
+                    bytes: png.clone(),
+                },
+                Representation {
+                    mime: Mime::Html,
+                    bytes: html.clone(),
+                },
+            ],
+            resources: vec![Resource {
+                id: 1,
+                png: inline_png,
+            }],
+            bindings: vec![ResourceBinding {
+                representation: 1,
+                resource: 1,
+                offset: 27,
+                length: 19,
+            }],
+            completeness: Completeness::Complete,
+        };
+        // A browser inlines the rendition it rendered, here half size.
+        let downscaled = composite::packed_to_png(70, 43, &vec![7u8; 70 * 43 * 4]).unwrap();
+        assert_eq!(
+            portable_image_summary(&bundle(downscaled)).as_deref(),
+            Some("image/png · 140×86 · 1 frame")
+        );
+        // The same shape at a larger size is a different rendition, not a copy.
+        let enlarged = composite::packed_to_png(280, 172, &vec![7u8; 280 * 172 * 4]).unwrap();
+        assert_eq!(portable_image_summary(&bundle(enlarged)), None);
+        // So is a different picture at a different shape.
+        let other = composite::packed_to_png(70, 70, &vec![7u8; 70 * 70 * 4]).unwrap();
+        assert_eq!(portable_image_summary(&bundle(other)), None);
+    }
+
+    #[test]
+    fn picture_wrapped_with_an_inline_copy_of_itself_is_still_a_picture() {
+        let png = solid_png(9, 9, 9);
+        let html = b"<meta charset='utf-8'><img src='tailsync-resource:1'/>".to_vec();
+        let inline = |bytes: Vec<u8>| PortableBundle {
+            representations: vec![
+                Representation {
+                    mime: Mime::Png,
+                    bytes: png.clone(),
+                },
+                Representation {
+                    mime: Mime::Html,
+                    bytes: html.clone(),
+                },
+            ],
+            resources: vec![Resource { id: 1, png: bytes }],
+            bindings: vec![ResourceBinding {
+                representation: 1,
+                resource: 1,
+                offset: 27,
+                length: 19,
+            }],
+            completeness: Completeness::Complete,
+        };
+        assert_eq!(
+            portable_image_summary(&inline(solid_png(9, 9, 9))).as_deref(),
+            Some("image/png · 1×1 · 1 frame")
+        );
+        // A different picture inside the wrapper is content, not a flavor.
+        assert_eq!(
+            portable_image_summary(&inline(
+                composite::packed_to_png(2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]).unwrap()
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn listing_relabels_a_legacy_picture_with_a_textless_html_flavor() {
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let id = db
+            .add_composite(
+                &PortableBundle {
+                    representations: vec![
+                        Representation {
+                            mime: Mime::Png,
+                            bytes: solid_png(0, 0, 255),
+                        },
+                        Representation {
+                            mime: Mime::Html,
+                            bytes: b"<meta charset='utf-8'><div></div>".to_vec(),
+                        },
+                    ],
+                    resources: vec![],
+                    bindings: vec![],
+                    completeness: Completeness::ExternalReferences,
+                },
+                None,
+                "fixture",
+            )
+            .unwrap();
+        // Recreate the generic label an older capture saved.
+        let stored: Vec<u8> = db
+            .conn
+            .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        let mut m = manifest(&stored).unwrap();
+        m.summary = "Rich clipboard content".into();
+        let digest = archive_digest(&m).unwrap();
+        m.identity.as_mut().unwrap().archive_digest = digest.clone();
+        let legacy = crypto::encrypt(&serde_json::to_vec(&m).unwrap()).unwrap();
+        db.conn
+            .execute(
+                "UPDATE history SET data=?1 WHERE id=?2",
+                params![legacy, id],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE history_composite_identity SET archive_digest=?1 WHERE history_id=?2",
+                params![digest, id],
+            )
+            .unwrap();
+
+        let listed = db.get_all(None, None, 10, 0).unwrap();
+        assert_eq!(listed[0].description, "image/png · 1×1 · 1 frame");
+        let chunk = db
+            .prepare_read_chunk(
+                HistoryQuery {
+                    collection: HistoryCollection::All,
+                    keyword: None,
+                    category: None,
+                    start_time: None,
+                    end_time: None,
+                    limit: 10,
+                    offset: 0,
+                },
+                None,
+                &db.read_revision().unwrap(),
+                10,
+            )
+            .unwrap();
+        let entries = chunk
+            .matching_entries(None, &crate::cancellation::Cancellation::default())
+            .unwrap();
+        assert_eq!(entries[0].description, "image/png · 1×1 · 1 frame");
+        // Presentation only: the stored summary and identity stay as saved.
+        let after: Vec<u8> = db
+            .conn
+            .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, legacy);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_textless_html_without_a_picture_is_not_relabelled() {
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let id = db
+            .add_composite(
+                &PortableBundle {
+                    representations: vec![Representation {
+                        mime: Mime::Html,
+                        bytes: b"<meta charset='utf-8'><div></div>".to_vec(),
+                    }],
+                    resources: vec![],
+                    bindings: vec![],
+                    completeness: Completeness::Complete,
+                },
+                None,
+                "fixture",
+            )
+            .unwrap();
+        let stored: Vec<u8> = db
+            .conn
+            .query_row("SELECT data FROM history WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        let mut m = manifest(&stored).unwrap();
+        m.summary = "Rich clipboard content".into();
+        m.identity.as_mut().unwrap().archive_digest = archive_digest(&m).unwrap();
+        assert_eq!(
+            summary_bytes_with(&serde_json::to_vec(&m).unwrap(), true).unwrap(),
+            b"Rich clipboard content"
+        );
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn image_classified_composite_preview_reads_pixels_instead_of_summary() {
         let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
         let root = root();
@@ -5582,6 +5929,48 @@ mod lifecycle_tests {
             bindings,
             completeness: Completeness::Complete,
         }
+    }
+
+    #[test]
+    fn wrapped_picture_preview_shows_the_standalone_pixels_not_the_page_rendition() {
+        let _pipeline = crate::composite::budgets::pipeline_budget_test_lock();
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let full = composite::packed_to_png(120, 80, &vec![9u8; 120 * 80 * 4]).unwrap();
+        let rendition = composite::packed_to_png(60, 40, &vec![3u8; 60 * 40 * 4]).unwrap();
+        let html = "<meta charset='utf-8'><img src=\"tailsync-resource:1\"/>";
+        let bundle = PortableBundle {
+            representations: vec![
+                Representation {
+                    mime: Mime::Png,
+                    bytes: full.clone(),
+                },
+                Representation {
+                    mime: Mime::Html,
+                    bytes: html.as_bytes().to_vec(),
+                },
+            ],
+            resources: vec![Resource {
+                id: 1,
+                png: rendition.clone(),
+            }],
+            bindings: vec![ResourceBinding {
+                representation: 1,
+                resource: 1,
+                offset: html.find("tailsync-resource:1").unwrap() as u32,
+                length: "tailsync-resource:1".len() as u32,
+            }],
+            completeness: Completeness::Complete,
+        };
+        let id = db.add_composite(&bundle, None, "fixture").unwrap();
+        let (_, payload) = db
+            .prepare_composite_image(id)
+            .unwrap()
+            .read(&crate::cancellation::Cancellation::default())
+            .unwrap();
+        assert_eq!(payload.data, composite::png_to_packed(&full).unwrap());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

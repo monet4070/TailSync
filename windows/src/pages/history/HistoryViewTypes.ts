@@ -50,6 +50,8 @@ export interface HistoryHeaderProps {
 }
 
 export interface HistoryListProps {
+  shortcutNumbers: ReadonlyMap<number, number>;
+  shortcutsActive: boolean;
   t: Translate;
   entries: HistoryEntry[];
   calendarNow: Date;
@@ -76,6 +78,8 @@ export interface HistoryListProps {
 }
 
 export interface HistoryMainContentProps {
+  shortcutNumbers: ReadonlyMap<number, number>;
+  shortcutsActive: boolean;
   t: Translate;
   themeAssetSlots?: Record<string, boolean> | null;
   loading: boolean;
@@ -113,7 +117,8 @@ export interface HistoryFooterProps {
   page: number;
   totalEntries: number | null;
   totalPages: number;
-  setPage: Dispatch<SetStateAction<number>>;
+  turnPage: (direction: number) => void;
+  pageBusy: boolean;
   progressBarEnabled: boolean;
   fileProgress: FileProgress | null;
   handleCancelFileBatch: (batchId: string) => Promise<void>;

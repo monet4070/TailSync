@@ -205,19 +205,22 @@ impl HistoryReadChunk {
                     .and_then(|bytes| {
                         let bytes = if entry.entry_type == "composite" {
                             entry.composite = super::composite::info_bytes(&bytes).ok();
-                            let body = if let Some(info) = &mut entry.composite {
+                            let projection = if let Some(info) = &mut entry.composite {
                                 super::composite::PreparedCompositeMenu::apply_prepared(
                                     menu,
                                     info,
                                     cancellation,
                                 )
                             } else {
-                                None
+                                Default::default()
                             };
-                            body.map(String::into_bytes).map_or_else(
+                            projection.body.map(String::into_bytes).map_or_else(
                                 || {
-                                    super::composite::summary_bytes(&bytes)
-                                        .map_err(|e| e.to_string())
+                                    super::composite::summary_bytes_with(
+                                        &bytes,
+                                        projection.textless_html,
+                                    )
+                                    .map_err(|e| e.to_string())
                                 },
                                 Ok,
                             )?

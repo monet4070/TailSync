@@ -1,6 +1,8 @@
 import demo from "../../../shared/onboarding/demo.json";
 import type { HistoryCategory, HistoryEntry, HistoryPageQuery } from "../tailsyncClient";
 import type { PreviewPayload } from "../utils/historyPreview";
+import { decodeDisplayDocument, decodeDocumentFrameMetadata, type DocumentRequest } from "../types/localContracts.generated";
+import type { DecodedDocumentFrame } from "../utils/documentPreview";
 
 type DemoSource = {
   id: number;
@@ -12,6 +14,8 @@ type DemoSource = {
   batch_id?: string;
   batch_index?: number;
   batch_total?: number;
+  sha256: string;
+  document?: unknown;
 };
 
 const records = (demo as { entries: DemoSource[] }).entries;
@@ -21,6 +25,25 @@ export const DEMO_PEER_HOST = "DEMO-LAPTOP · 演示设备";
 
 export function isDemoEntry(id: number): boolean {
   return recordById.has(id);
+}
+
+export function isDemoDocument(id: number): boolean {
+  return recordById.get(id)?.document !== undefined;
+}
+
+export function demoDocumentFrame(request: DocumentRequest): DecodedDocumentFrame | null {
+  const record = recordById.get(request.entry_id);
+  if (!record?.document) return null;
+  const document = decodeDisplayDocument(record.document);
+  const modelBytes = new TextEncoder().encode(JSON.stringify(document)).length;
+  return {
+    metadata: decodeDocumentFrameMetadata({
+      ...request, kind: "document", name: record.name, stamp: `dc1:${record.sha256}`,
+      model_bytes: modelBytes, size_bytes: modelBytes, batch: null,
+    }),
+    document,
+    assets: new Uint8Array(),
+  };
 }
 
 export function demoHistoryPage(
@@ -54,7 +77,7 @@ export function demoHistoryPage(
       batch_status: "complete" as const,
       display: {
         cache_key: `demo-${record.id}`,
-        kind: record.category === "image" ? "image" : record.name.match(/\.(docx|pptx)$/i) ? "document" : record.category === "file" ? "file" : "text",
+        kind: record.document || record.name.match(/\.(docx|pptx)$/i) ? "document" : record.category === "image" ? "image" : record.category === "file" ? "file" : "text",
         thumbnail_eligible: record.category === "image",
         version: 1,
       },

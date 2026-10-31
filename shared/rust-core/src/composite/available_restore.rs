@@ -7,11 +7,32 @@ pub struct AvailableContent {
     pub missing_images: u16,
 }
 
-/// Select saved image bytes as an alternative; never bind them to an unrelated HTML node.
-/// The caller has already decoded/validated the portable bundle at its input boundary.
-pub(crate) fn image_only_png_alternative(
+/// Count the picture references in an HTML flavor that renders no visible text.
+/// An app's HTML copy of a picture is such a wrapper: its markup carries the
+/// picture's placement and metadata, never a document body. `None` means the
+/// HTML is not a wrapper at all.
+pub(crate) fn textless_wrapper_images(
     bundle: &PortableBundle,
 ) -> Result<Option<usize>, ProtocolError> {
+    let Some(html_index) = bundle
+        .representations
+        .iter()
+        .position(|r| r.mime == Mime::Html)
+    else {
+        return Ok(None);
+    };
+    let html = &bundle.representations[html_index].bytes;
+    let inventory = super::html::reference_inventory(html)?;
+    if inventory.unsupported_dependencies || !super::html::text_summary(html).trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(inventory.images.len()))
+}
+
+/// The standalone pixels of a picture an HTML flavor merely wraps. A browser
+/// inlines its own rendition of that picture at whatever size the page used, so
+/// the standalone flavor is the same picture at full resolution.
+pub(crate) fn wrapped_picture_png(bundle: &PortableBundle) -> Result<Option<usize>, ProtocolError> {
     if bundle.completeness == Completeness::MissingFormats {
         return Ok(None);
     }
@@ -26,24 +47,73 @@ pub(crate) fn image_only_png_alternative(
         || bundle
             .representation(Mime::Text)
             .is_some_and(|text| !text.iter().all(u8::is_ascii_whitespace))
+        || textless_wrapper_images(bundle)? != Some(1)
     {
         return Ok(None);
     }
-    let Some(html_index) = bundle
+    let html_index = bundle
         .representations
         .iter()
         .position(|r| r.mime == Mime::Html)
-    else {
+        .ok_or(ProtocolError::InvalidComposite)?;
+    let html = &bundle.representations[html_index].bytes;
+    let image = &super::html::reference_inventory(html)?.images[0];
+    let standalone = bundle.representations[png].bytes.as_slice();
+    let Some((width, height)) = dimensions(standalone) else {
         return Ok(None);
     };
+    // A saved wrapper image is the same picture only when it keeps that shape.
+    let bound = bundle.bindings.iter().find(|binding| {
+        binding.representation as usize == html_index && binding.offset as usize == image.start
+    });
+    if let Some(resource) = bound.and_then(|binding| {
+        bundle
+            .resources
+            .iter()
+            .find(|resource| resource.id == binding.resource)
+    }) {
+        let matches =
+            dimensions(&resource.png).is_some_and(|(w, h)| same_shape(width, height, w, h));
+        return Ok(matches.then_some(png));
+    }
+    Ok(Some(png))
+}
+
+/// A source page inlines its own rendition of a picture, so a copy inside a
+/// wrapper keeps that picture's shape and is never bigger than the standalone
+/// flavor. That keeps a downscaled copy a flavor and a different picture content.
+pub(crate) fn same_shape(width: u32, height: u32, other_width: u32, other_height: u32) -> bool {
+    if width == 0 || height == 0 || other_width == 0 || other_height == 0 {
+        return false;
+    }
+    if other_width > width || other_height > height {
+        return false;
+    }
+    let left = u64::from(width) * u64::from(other_height);
+    let right = u64::from(other_width) * u64::from(height);
+    left.abs_diff(right) <= u64::from(width.max(height))
+}
+
+fn dimensions(png: &[u8]) -> Option<(u32, u32)> {
+    let metadata = crate::protocol::image::metadata("public.png", png)?;
+    (metadata.width > 0 && metadata.height > 0).then_some((metadata.width, metadata.height))
+}
+
+/// Select saved image bytes as an alternative; never bind them to an unrelated HTML node.
+/// The caller has already decoded/validated the portable bundle at its input boundary.
+pub(crate) fn image_only_png_alternative(
+    bundle: &PortableBundle,
+) -> Result<Option<usize>, ProtocolError> {
+    let Some(png) = wrapped_picture_png(bundle)? else {
+        return Ok(None);
+    };
+    let html_index = bundle
+        .representations
+        .iter()
+        .position(|r| r.mime == Mime::Html)
+        .ok_or(ProtocolError::InvalidComposite)?;
     let html = &bundle.representations[html_index].bytes;
     let inventory = super::html::reference_inventory(html)?;
-    if inventory.images.len() != 1
-        || inventory.unsupported_dependencies
-        || !super::html::text_summary(html).trim().is_empty()
-    {
-        return Ok(None);
-    }
     let image = &inventory.images[0];
     let already_saved = bundle.bindings.iter().any(|binding| {
         binding.representation as usize == html_index && binding.offset as usize == image.start

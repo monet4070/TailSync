@@ -15,7 +15,7 @@ Windows/site 前端和发布恢复脚本。此后的纯文档改动另由版本�
 | [`../README.zh-CN.md`](../README.zh-CN.md) | 简体中文版：与英文版对应的项目说明 |
 | [`../CONTEXT.md`](../CONTEXT.md) | 领域词汇、模块边界、跨平台契约与开发门禁 |
 | [`USER_GUIDE.zh-CN.md`](USER_GUIDE.zh-CN.md) | 面向使用者的安装、配对、同步、历史、预览与排障说明 |
-| [`features/onboarding.md`](features/onboarding.md) | 双端八步新手引导、共享内容、入口与本机进度 |
+| [`features/onboarding.md`](features/onboarding.md) | 双端新手引导、共享内容、入口与本机进度 |
 | [`features/resumable-file-transfer.md`](features/resumable-file-transfer.md) | 文件批次跨重启续传、持久状态、提交边界与验收矩阵 |
 | [`features/remote-iroh-pairing.md`](features/remote-iroh-pairing.md) | 无自建服务器的 `tailsync://` Iroh 远程配对、链接安全边界与验收矩阵 |
 | [`features/favorites-long-press.md`](features/favorites-long-press.md) | 长按收藏动画、选中态和删除权限 |
@@ -29,6 +29,7 @@ Windows/site 前端和发布恢复脚本。此后的纯文档改动另由版本�
 
 ## 优化计划
 
+- [历史记录数字取用与左右翻页 · 2026-10-30](features/history-number-shortcuts.md)：已完成双端源码改动；呼出聚焦条目、`f` 进入搜索，仅条目焦点下启用每页前六条数字取用和左右翻页；自动检查与原生验收缺口见[实施记录](acceptance/history-number-shortcuts-2026-10-30.md)。
 - [网页图文同步本机验收 · 2026-10-29](acceptance/web-article-sync-2026-10-29.md)：WebKit 选区与 AppKit 原生消费验证、HTML／RTF 竞争修复、自动化回归及双设备缺口。
 - [首次发布前获取网页图片 · 2026-10-29](adr/ADR-008-first-publish-network-images.md)：沿用网络图片设置，在事件冻结前有界获取公开 PNG／JPEG／静态 WebP；原件保留，首发与后续补图使用固定摘要和正确节点绑定。
 - [网页图文同步优先级 · 2026-10-29](adr/ADR-007-web-article-sync.md)：用户确认正文、图片及图文位置为核心；共用可用副本选择，首次公开图片获取见 ADR-008，双设备验收仍待完成。

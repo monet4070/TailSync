@@ -7,6 +7,167 @@ import XCTest
 /// history/restore operations. No daemon requests or clipboard mutations.
 @MainActor
 final class HistoryKeyboardIntegrationTests: XCTestCase {
+    func testStartingTourReplacesLoadedRealRowsAndNeverRestoresOrDeletesThem() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tour = GuidedTourController(progress: OnboardingProgress(url: root.appendingPathComponent("tour.json")), navigate: { _ in })
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service, tour: tour)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        tour.start()
+        try await wait { fixture.session.selectedID.map(OnboardingDemo.isDemoEntry) == true }
+        fixture.session.focusList()
+        fixture.window.sendEvent(event(18, window: fixture.window))
+        fixture.window.sendEvent(event(51, window: fixture.window, modifiers: .command))
+        try await Task.sleep(for: .milliseconds(100))
+        let restored = await service.restoredIDs
+        let deleted = await service.deletedIDs
+        XCTAssertTrue(restored.isEmpty)
+        XCTAssertTrue(deleted.isEmpty)
+        tour.finish()
+        try await wait { fixture.session.selectedID == 1 }
+    }
+
+    func testTourDiscardsARealQueryThatCompletesAfterModeChanges() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tour = GuidedTourController(progress: OnboardingProgress(url: root.appendingPathComponent("tour.json")), navigate: { _ in })
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service, tour: tour)
+        defer { tour.finish(); fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        let editor = try fixture.searchEditor()
+        editor.insertText("stubborn", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await wait { await service.stubbornQueryCount == 1 }
+        tour.start()
+        try await wait { fixture.session.selectedID.map(OnboardingDemo.isDemoEntry) == true }
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertTrue(fixture.session.selectedID.map(OnboardingDemo.isDemoEntry) == true)
+    }
+
+    func testHistoryStartsInListAndFReturnsToSearchWithoutTakingDigits() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        XCTAssertTrue(fixture.window.firstResponder === fixture.session.listResponder)
+        fixture.window.sendEvent(event(125, window: fixture.window))
+        XCTAssertEqual(fixture.session.selectedID, 2)
+        HistoryWindowController.shared.onKeyboardActivation?()
+        XCTAssertEqual(fixture.session.selectedID, 1)
+        XCTAssertTrue(fixture.window.firstResponder === fixture.session.listResponder)
+        fixture.window.sendEvent(event(3, window: fixture.window))
+        XCTAssertEqual(fixture.session.focus, .search)
+        let editor = try XCTUnwrap(fixture.window.firstResponder as? NSTextView)
+        editor.interpretKeyEvents([event(18, window: fixture.window)])
+        XCTAssertEqual(editor.string, "1")
+        let restored = await service.restoredIDs
+        XCTAssertTrue(restored.isEmpty)
+    }
+
+    func testNumberRestoresCorrespondingStableIDAndSharesTheRestoreLock() async throws {
+        let service = HistoryKeyboardTestService(failRestore: true)
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        fixture.session.isComposing = true
+        fixture.window.sendEvent(event(18, window: fixture.window))
+        fixture.session.isComposing = false
+        fixture.window.sendEvent(event(22, window: fixture.window))
+        fixture.window.sendEvent(event(18, window: fixture.window))
+        fixture.window.sendEvent(event(36, window: fixture.window))
+        try await wait { await service.restoreCount == 1 }
+        XCTAssertEqual(fixture.session.selectedID, 6)
+        let ids = await service.restoredIDs
+        XCTAssertEqual(ids, [6])
+    }
+
+    func testLeftRightSelectPageFirstAndBlockNumbersUntilPageCommits() async throws {
+        let service = HistoryKeyboardTestService(holdPageTurns: true)
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        fixture.window.sendEvent(event(124, window: fixture.window))
+        fixture.window.sendEvent(event(18, window: fixture.window))
+        fixture.window.sendEvent(event(124, window: fixture.window))
+        try await wait { await service.pendingPageQueryCount == 1 }
+        let restores = await service.restoreCount
+        XCTAssertEqual(restores, 0)
+        await service.allowPageTurns()
+        // Cancel the held request with F, then explicitly retry the page.
+        fixture.window.sendEvent(event(3, window: fixture.window))
+        let editor = try XCTUnwrap(fixture.window.firstResponder as? NSTextView)
+        editor.interpretKeyEvents([event(125, window: fixture.window)])
+        fixture.window.sendEvent(event(124, window: fixture.window))
+        try await wait { fixture.session.selectedID == 31 }
+        fixture.window.sendEvent(event(123, window: fixture.window))
+        try await wait { fixture.session.selectedID == 1 }
+        XCTAssertTrue(fixture.window.firstResponder === fixture.session.listResponder)
+    }
+
+    func testFailedPageKeepsOldPageUsableAndNumberTargetsOldRows() async throws {
+        let service = HistoryKeyboardTestService(failRestore: true, failPages: true)
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        fixture.window.sendEvent(event(124, window: fixture.window))
+        try await wait { await service.failedQueryCount == 1 }
+        try await Task.sleep(for: .milliseconds(30))
+        fixture.window.sendEvent(event(22, window: fixture.window))
+        try await wait { await service.restoreCount == 1 }
+        let ids = await service.restoredIDs
+        XCTAssertEqual(ids, [6])
+    }
+
+    func testNumberingExcludesCollapsedBatchFilesAndRestartsOnNextPage() async throws {
+        let rows = try [1, 10, 11, 12, 13, 20].map { id in
+            let isFile = (10...13).contains(id)
+            let batch = isFile ? ",\"batch_id\":\"files\",\"batch_total\":4,\"batch_count\":4" : ""
+            return try JSONDecoder().decode(HistoryEntry.self, from: Data("""
+            {"id":\(id),"timestamp":"2026-10-03T00:00:00Z","type":"\(isFile ? "file" : "text")",
+             "description":"row \(id)","data_hash":"hash\(id)","size_bytes":4,"source_peer":"local"\(batch)}
+            """.utf8))
+        }
+        let service = HistoryKeyboardTestService(failRestore: true, rows: rows)
+        let fixture = Fixture(service: service)
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        fixture.window.sendEvent(event(22, window: fixture.window)) // No sixth displayed row.
+        fixture.window.sendEvent(event(21, window: fixture.window))
+        try await wait { await service.restoreCount == 1 }
+        let ids = await service.restoredIDs
+        XCTAssertEqual(ids, [20], "Hidden files must not consume numbers")
+
+        let pagedService = HistoryKeyboardTestService(failRestore: true)
+        let paged = Fixture(service: pagedService)
+        defer { paged.close() }
+        try await wait { paged.session.selectedID == 1 }
+        paged.window.sendEvent(event(124, window: paged.window))
+        try await wait { paged.session.selectedID == 31 }
+        paged.window.sendEvent(event(19, window: paged.window))
+        try await wait { await pagedService.restoreCount == 1 }
+        let pagedIDs = await pagedService.restoredIDs
+        XCTAssertEqual(pagedIDs, [32], "Page two must restart at number 1")
+    }
+
+    func testFavoritesKeepsSearchFocusAndDoesNotEnableNewShortcuts() async throws {
+        let service = HistoryKeyboardTestService()
+        let fixture = Fixture(service: service, collection: "favorites")
+        defer { fixture.close() }
+        try await wait { fixture.session.selectedID == 1 }
+        XCTAssertEqual(fixture.session.focus, .search)
+        XCTAssertFalse(fixture.session.quickShortcutsEnabled)
+        fixture.session.focusList()
+        fixture.window.sendEvent(event(18, window: fixture.window))
+        fixture.window.sendEvent(event(124, window: fixture.window))
+        try await Task.sleep(for: .milliseconds(30))
+        let ids = await service.restoredIDs
+        let offsets = await service.loadQueries.map(\.offset)
+        XCTAssertTrue(ids.isEmpty)
+        XCTAssertEqual(offsets, [0])
+    }
+
     func testCommandDeleteDeletesSelectedRowOnceAndKeepsAdjacentSelection() async throws {
         let service = HistoryKeyboardTestService()
         let fixture = Fixture(service: service)
@@ -471,6 +632,10 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
         case 49: characters = " "
         case 48: characters = "\t"
         case 3: characters = "f"
+        case 18: characters = "1"
+        case 19: characters = "2"
+        case 21: characters = "4"
+        case 22: characters = "6"
         case 51: characters = "\u{7F}"
         default: characters = ""
         }
@@ -484,7 +649,7 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
     private final class Fixture {
         let session = HistoryKeyboardSession()
         let window: NSWindow
-        init(service: HistoryKeyboardTestService, collection: String = "all", hostWindow: NSWindow? = nil) {
+        init(service: HistoryKeyboardTestService, collection: String = "all", hostWindow: NSWindow? = nil, tour: GuidedTourController = .shared) {
             _ = NSApplication.shared
             let dependencies = HistoryViewDependencies(
                 load: { try await service.load($0) },
@@ -492,7 +657,7 @@ final class HistoryKeyboardIntegrationTests: XCTestCase {
                 delete: { try await service.delete($0, collection: $1) },
                 usesRuntimeUpdates: false
             )
-            let view = HistoryView(collection: collection, dependencies: dependencies, keyboardSession: session)
+            let view = HistoryView(collection: collection, dependencies: dependencies, keyboardSession: session, tour: tour)
             let hosting = NSHostingView(rootView: view)
             window = hostWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 450, height: 600),
                 styleMask: [.titled], backing: .buffered, defer: false)
@@ -519,6 +684,7 @@ private final class HistoryOcclusionTestWindow: NSWindow {
 
 private actor HistoryKeyboardTestService {
     private(set) var restoreCount = 0
+    private(set) var restoredIDs: [Int64] = []
     private(set) var failedQueryCount = 0
     private(set) var slowQueryCount = 0
     private(set) var cancelledSlowQueryCount = 0
@@ -530,16 +696,20 @@ private actor HistoryKeyboardTestService {
     private var holdPageTurns: Bool
     let failRestore: Bool
     let pinned: Bool
+    let failPages: Bool
+    let rows: [HistoryEntry]?
     var failDelete: Bool
     private(set) var deletedIDs: [Int64] = []
     private(set) var deletedCollections: [String] = []
     private(set) var deleteFinishedCount = 0
     private var removedIDs: Set<Int64> = []
-    init(failRestore: Bool = false, pinned: Bool = false, failDelete: Bool = false, holdPageTurns: Bool = false) {
+    init(failRestore: Bool = false, pinned: Bool = false, failDelete: Bool = false, holdPageTurns: Bool = false, failPages: Bool = false, rows: [HistoryEntry]? = nil) {
         self.failRestore = failRestore
         self.pinned = pinned
         self.failDelete = failDelete
         self.holdPageTurns = holdPageTurns
+        self.failPages = failPages
+        self.rows = rows
     }
     func allowPageTurns() { holdPageTurns = false }
     func allowDelete() { failDelete = false }
@@ -553,6 +723,11 @@ private actor HistoryKeyboardTestService {
     }
     func load(_ query: HistoryQuery) async throws -> [HistoryEntry] {
         loadQueries.append(query)
+        if let rows { return Array(rows.dropFirst(query.offset).prefix(query.limit)) }
+        if failPages && query.offset > 0 {
+            failedQueryCount += 1
+            throw ApiError.serverError("test page failed")
+        }
         if query.keyword == nil && query.offset > 0 && holdPageTurns {
             pendingPageQueryCount += 1
             do { try await Task.sleep(for: .seconds(10)) }
@@ -599,6 +774,7 @@ private actor HistoryKeyboardTestService {
     }
     func restore(_ id: Int64) async throws {
         restoreCount += 1
+        restoredIDs.append(id)
         try await Task.sleep(for: .milliseconds(80))
         if failRestore { throw ApiError.serverError("test restore failed") }
     }

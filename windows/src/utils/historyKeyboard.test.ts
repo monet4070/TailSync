@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { HistoryImeGuard, visibleHistoryIds } from "./historyKeyboard";
+import { HistoryImeGuard, historyShortcutNumber, isHistoryListTarget, visibleHistoryIds } from "./historyKeyboard";
 import type { HistoryEntry } from "../tailsyncClient";
 
 describe("history keyboard helpers", () => {
+  it("accepts only digits 1–6 and actual row/list focus targets", () => {
+    for (let number = 1; number <= 6; number++) expect(historyShortcutNumber(String(number))).toBe(number);
+    for (const key of ["0", "7", "12", "１", "End", "f"]) expect(historyShortcutNumber(key)).toBeNull();
+    const row = document.createElement("article");
+    row.className = "history-item";
+    const button = document.createElement("button");
+    row.append(button);
+    expect(isHistoryListTarget(row)).toBe(true);
+    expect(isHistoryListTarget(button)).toBe(false);
+    expect(isHistoryListTarget(null)).toBe(false);
+  });
   it("protects composition, keyCode229, and exactly the post-composition grace window", () => {
     const ime = new HistoryImeGuard();
     const normal = { isComposing: false, keyCode: 13 };

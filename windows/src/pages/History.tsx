@@ -1,6 +1,6 @@
 import { GuidedTour } from "../onboarding/GuidedTour";
 import { demoHistoryPage, demoLogicalKey, isDemoEntry } from "../onboarding/demo";
-import { readTour, TOUR_EVENT } from "../onboarding/tourState";
+import { readTour, TOUR_EVENT, TOUR_KEY } from "../onboarding/tourState";
 import onboardingGuide from "../../../shared/onboarding/guide.json";
 import { useRestoreActivity } from "../hooks/useRestoreActivity";
 import { StableIpcError } from "../utils/stableIpcError";
@@ -38,7 +38,7 @@ import {
 } from "../tailsyncClient";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { HistoryImeGuard, visibleHistoryIds } from "../utils/historyKeyboard";
+import { HistoryImeGuard, historyShortcutNumber, isHistoryListTarget, visibleHistoryIds } from "../utils/historyKeyboard";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTheme } from "../hooks/useTheme";
 import { useI18n } from "../hooks/useI18n";
@@ -122,6 +122,11 @@ export function History({ collection = "all" }: HistoryProps) {
   const [calendarNow, setCalendarNow] = useState(() => new Date());
   const calendarContextKey = useRef(localCalendarContextKey(calendarNow));
   const [page, setPage] = useState(0);
+  const committedPage = useRef(0);
+  const pageTurn = useRef<{ scope: string } | null>(null);
+  const skipReloadQuery = useRef<string | null>(null);
+  const [listFocused, setListFocused] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const [pageAnimationRevision, setPageAnimationRevision] = useState(0);
   // `selectedId` is intentionally transient restore feedback.  Keep keyboard
   // focus independent so a row remains selected while the user navigates or
@@ -296,16 +301,43 @@ export function History({ collection = "all" }: HistoryProps) {
     }
   }, [customStartDate, customEndDate]);
 
+  const queryScopeKey = JSON.stringify([keywordDraft, selectedCategory, selectedDateFilter,
+    activeDateBounds, collection]);
   const desiredQueryKey = JSON.stringify([keywordDraft, selectedCategory, selectedDateFilter,
     activeDateBounds, page, collection]);
   const desiredQuery = useRef(desiredQueryKey);
   useLayoutEffect(() => { desiredQuery.current = desiredQueryKey; }, [desiredQueryKey]);
   const loadedQuery = useRef("");
   const [loadedQueryKey, setLoadedQueryKey] = useState("");
+  const focusList = useCallback(() => {
+    rootRef.current?.querySelector<HTMLElement>(".history-list")?.focus({ preventScroll: true });
+  }, []);
+  const cancelPageTurn = useCallback(() => {
+    if (!pageTurn.current) return;
+    historyRequests.current.invalidate();
+    pageTurn.current = null;
+    pendingPageEdge.current = null;
+    skipReloadQuery.current = desiredQuery.current === loadedQuery.current ? null : loadedQuery.current;
+    setPage(committedPage.current);
+    setLoading(false);
+  }, []);
   const focusSearch = useCallback(() => {
+    cancelPageTurn();
     searchRef.current?.focus({ preventScroll: true });
     searchRef.current?.select();
-  }, []);
+  }, [cancelPageTurn]);
+
+  useLayoutEffect(() => {
+    if (pageTurn.current && pageTurn.current.scope !== queryScopeKey) {
+      historyRequests.current.invalidate();
+      pageTurn.current = null;
+      pendingPageEdge.current = null;
+    }
+  }, [queryScopeKey]);
+
+  useLayoutEffect(() => {
+    if (!isFavoritesCollection) focusList();
+  }, [isFavoritesCollection, focusList]);
 
   /* ── Settings load ────────────────────────────────────────────── */
 
@@ -342,6 +374,12 @@ export function History({ collection = "all" }: HistoryProps) {
     const detectNewEntries = options?.detectNewEntries ?? true;
     const requestedQuery = desiredQueryKey;
     if (keyword !== keywordDraft) return;
+    // A failed/cancelled page turn restores the committed page without retrying
+    // that page automatically; explicit retry and later refreshes remain usable.
+    if (skipReloadQuery.current === requestedQuery) {
+      skipReloadQuery.current = null;
+      return;
+    }
     const requestGeneration = historyRequests.current.begin();
     if (!activeDateBounds.valid) {
       setEntries([]);
@@ -374,6 +412,10 @@ export function History({ collection = "all" }: HistoryProps) {
           return;
         }
       }
+      if (result.entries.length === 0 && page > 0) {
+        setPage(page - 1);
+        return;
+      }
 
       const queryChanged = lastQueryKey.current !== queryKey;
       const reconciledEntries = result.entries.map((entry) => {
@@ -383,6 +425,8 @@ export function History({ collection = "all" }: HistoryProps) {
           : { ...entry, pinned: pendingFavorite };
       });
       loadedQuery.current = requestedQuery;
+      committedPage.current = page;
+      pageTurn.current = null;
       setLoadedQueryKey(requestedQuery);
       setEntries(reconciledEntries);
       setTotalEntries(result.total);
@@ -413,7 +457,13 @@ export function History({ collection = "all" }: HistoryProps) {
       prevIds.current = new Set(result.entries.map((entry) => entry.id));
 
     } catch (e) {
-      if (historyRequests.current.isCurrent(requestGeneration)) {
+      if (historyRequests.current.isCurrent(requestGeneration) && desiredQuery.current === requestedQuery) {
+        if (pageTurn.current) {
+          pageTurn.current = null;
+          pendingPageEdge.current = null;
+          skipReloadQuery.current = loadedQuery.current;
+          setPage(committedPage.current);
+        }
         console.error("Failed to load history:", e);
         showHistoryNotice({
           key: "history-load",
@@ -445,12 +495,23 @@ export function History({ collection = "all" }: HistoryProps) {
       const active = readTour().active;
       if (active !== wasActive) {
         wasActive = active;
+        historyRequests.current.invalidate();
+        archiveRequestGeneration.current++;
+        demoHidden.current.clear();
+        demoFavorites.current.clear();
+        setEntries([]);
+        setFocusedId(null);
+        setFailedRestore(null);
+        clearThumbnails();
+        void closePreview().catch(console.error);
         void loadHistory({ detectNewEntries: false });
       }
     };
+    const storage = (event: StorageEvent) => { if (event.key === null || event.key === TOUR_KEY) sync(); };
     window.addEventListener(TOUR_EVENT, sync);
-    return () => window.removeEventListener(TOUR_EVENT, sync);
-  }, [loadHistory]);
+    window.addEventListener("storage", storage);
+    return () => { window.removeEventListener(TOUR_EVENT, sync); window.removeEventListener("storage", storage); };
+  }, [loadHistory, closePreview, clearThumbnails]);
 
   /* ── Polling ──────────────────────────────────────────────────── */
 
@@ -593,12 +654,25 @@ export function History({ collection = "all" }: HistoryProps) {
   const visibleIdsRef = useRef<number[]>([]);
   useLayoutEffect(() => { visibleIdsRef.current = visibleIds; }, [visibleIds]);
   const queryReady = keyword === keywordDraft && loadedQueryKey === desiredQueryKey;
+  const shortcutNumbers = useMemo(() => new Map(isFavoritesCollection ? [] :
+    visibleIds.slice(0, 6).map((id, index) => [id, index + 1])), [isFavoritesCollection, visibleIds]);
+  const turnPage = useCallback((direction: number, edge: "first" | "last" = "first") => {
+    if (!queryReady || loading || pageTurn.current || restoring.current || deleting.current || externalRestoring.current ||
+        (direction < 0 ? !hasPrev : !hasNext)) return;
+    // This ref closes the gap before React commits the new query/render.
+    pageTurn.current = { scope: queryScopeKey };
+    pendingPageEdge.current = edge;
+    setLoading(true);
+    setPage(page + direction);
+    focusList();
+  }, [queryReady, loading, hasPrev, hasNext, page, queryScopeKey, externalRestoring, focusList]);
 
   useEffect(() => {
     if (!queryReady) return;
+    const edge = pendingPageEdge.current;
+    pendingPageEdge.current = null;
+    if (edge === "first") rootRef.current?.querySelector<HTMLElement>(".history-list")?.scrollTo?.({ top: 0 });
     setFocusedId((current) => {
-      const edge = pendingPageEdge.current;
-      pendingPageEdge.current = null;
       if (edge) return (edge === "last" ? visibleIds.at(-1) : visibleIds[0]) ?? null;
       return current !== null && visibleIds.includes(current) ? current : visibleIds[0] ?? null;
     });
@@ -625,7 +699,11 @@ export function History({ collection = "all" }: HistoryProps) {
       sessionActive.current = true;
       archiveRequestGeneration.current++;
       setFocusedId(visibleIdsRef.current[0] ?? null);
-      focusSearch();
+      if (isFavoritesCollection) focusSearch();
+      else {
+        focusList();
+        rootRef.current?.querySelector<HTMLElement>(".history-list")?.scrollTo?.({ top: 0 });
+      }
     });
     subscribe("tailsync://preview-close", () => {
       previewOpen.current = false;
@@ -637,7 +715,7 @@ export function History({ collection = "all" }: HistoryProps) {
       }
     });
     return () => { disposed = true; archiveRequestGeneration.current++; stops.forEach((stop) => stop()); };
-  }, [focusSearch]);
+  }, [focusSearch, focusList, isFavoritesCollection]);
 
   const showPreview = useCallback((takeFocus: boolean) => {
     if (!sessionActive.current || !queryReady || focusedId === null || restoring.current || externalRestoring.current) return;
@@ -676,15 +754,18 @@ export function History({ collection = "all" }: HistoryProps) {
   }, [isPreviewOpen, focusedId, queryReady, closePreview, showPreview]);
 
   const restoreSelected = useCallback(async (id: number, keepOpen = true, format?: string, heldIdentity?: import("../types/localContracts.generated").HistoryIdentity | null, originalId?: number) => {
-    if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
+    if (deleting.current || restoring.current || externalRestoring.current || pageTurn.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
     const entry = entries.find((entry) => entry.id === id);
     if (!entry) return;
-    if (readTour().active && isDemoEntry(id)) {
+    if (isDemoEntry(id)) {
+      if (!readTour().active) return;
       flashSelectedId(id);
       showHistoryNotice({ key: "demo-restore", level: "success", message: onboardingGuide.ui.demoRestore[locale.startsWith("zh") ? "zh-CN" : "en"] });
       return;
     }
+    if (readTour().active) return;
     restoring.current = true;
+    setRestoreBusy(true);
     setFailedRestore(null);
     clearHistoryNotice();
     previewGeneration.current++;
@@ -712,10 +793,12 @@ export function History({ collection = "all" }: HistoryProps) {
       }
     } finally {
       restoring.current = false;
+      setRestoreBusy(false);
     }
   }, [entries, externalRestoring, queryReady, visibleIds, flashSelectedId, clearHistoryNotice, showHistoryNotice, t, locale, closeHistory, showActionError]);
 
   const handleArchiveImages = async (id: number) => {
+    if (readTour().active || isDemoEntry(id)) return;
     if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
     const entry = entries.find((candidate) => candidate.id === id);
     if (!entry) return;
@@ -750,6 +833,7 @@ export function History({ collection = "all" }: HistoryProps) {
   };
 
   const handleAuthorizeSource = async (id: number) => {
+    if (readTour().active || isDemoEntry(id)) return;
     if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
     restoring.current = true;
     const generation = archiveRequestGeneration.current;
@@ -793,6 +877,7 @@ export function History({ collection = "all" }: HistoryProps) {
   };
 
   const handleImportSourcePacket = async (id: number) => {
+    if (readTour().active || isDemoEntry(id)) return;
     if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady || !visibleIds.includes(id)) return;
     restoring.current = true;
     const generation = archiveRequestGeneration.current;
@@ -821,6 +906,7 @@ export function History({ collection = "all" }: HistoryProps) {
   };
 
   const handleRevokeSource = async () => {
+    if (readTour().active) return;
     const grantId = lastSourceGrantId;
     if (!grantId) return;
     const generation = archiveRequestGeneration.current;
@@ -867,7 +953,8 @@ export function History({ collection = "all" }: HistoryProps) {
     if (deleting.current || restoring.current || externalRestoring.current || !sessionActive.current || !queryReady) return;
     const entry = entries.find((candidate) => candidate.id === id);
     if (!entry || favoriteMutations.current.has(logicalHistoryItemKey(entry))) return;
-    if (readTour().active && isDemoEntry(id)) {
+    if (isDemoEntry(id)) {
+      if (!readTour().active) return;
       demoHidden.current.add(demoLogicalKey(entry));
       setEntries((current) => current.filter((candidate) => demoLogicalKey(candidate) !== demoLogicalKey(entry)));
       setTotalEntries((current) => Math.max(0, (current ?? 1) - 1));
@@ -875,6 +962,7 @@ export function History({ collection = "all" }: HistoryProps) {
       showHistoryNotice({ key: "demo-delete", level: "success", message: onboardingGuide.ui.demoDelete[locale.startsWith("zh") ? "zh-CN" : "en"] });
       return;
     }
+    if (readTour().active) return;
     if (entry.pinned && !isFavoritesCollection) {
       showHistoryNotice({ key: "favorite-protected", level: "error", message: t("history.favoriteProtected") });
       return;
@@ -918,13 +1006,30 @@ export function History({ collection = "all" }: HistoryProps) {
       // Preserve native activation of toolbar/filter buttons.
       if (event.target instanceof HTMLElement && event.target.closest("button, a, [role='button']")) return;
       if (event.ctrlKey && event.key !== "Enter") return;
+      const listShortcut = !isFavoritesCollection && !event.ctrlKey && !event.shiftKey &&
+        event.target === document.activeElement && isHistoryListTarget(event.target) && rootRef.current?.contains(event.target);
+      if (listShortcut && event.key.toLowerCase() === "f" && !event.repeat) {
+        event.preventDefault(); focusSearch(); return;
+      }
       if (event.key === "Escape" && !event.repeat) {
         event.preventDefault();
         if (previewOpen.current) void closePreview().catch(console.error);
         else if (!restoring.current) void closeHistory();
         return;
       }
-      if (!queryReady || restoring.current || loading) return;
+      if (!queryReady || restoring.current || loading || pageTurn.current) return;
+      if (listShortcut && !event.repeat) {
+        const number = historyShortcutNumber(event.key);
+        if (number !== null) {
+          event.preventDefault();
+          const id = visibleIds[number - 1];
+          if (id !== undefined) { setFocusedId(id); void restoreSelected(id, false); }
+          return;
+        }
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+          event.preventDefault(); turnPage(event.key === "ArrowLeft" ? -1 : 1); return;
+        }
+      }
       if (event.key === "Enter" && !event.shiftKey && !event.repeat && focusedId !== null) {
         event.preventDefault(); void restoreSelected(focusedId, event.ctrlKey); return;
       }
@@ -944,8 +1049,7 @@ export function History({ collection = "all" }: HistoryProps) {
         const next = index + (event.key === "ArrowDown" ? 1 : -1);
         if (next >= 0 && next < visibleIds.length) setFocusedId(visibleIds[next]);
         else if ((next >= visibleIds.length && hasNext) || (next < 0 && hasPrev)) {
-          pendingPageEdge.current = next < 0 ? "last" : "first";
-          setPage(page + (next < 0 ? -1 : 1));
+          turnPage(next < 0 ? -1 : 1, next < 0 ? "last" : "first");
         }
         return;
       }
@@ -962,7 +1066,7 @@ export function History({ collection = "all" }: HistoryProps) {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closeHistory, closePreview, focusSearch, focusedId, hasNext, hasPrev, loading, page,
-    externalRestoring, handleDelete, queryReady, restoreSelected, showClearConfirm, showPreview, visibleIds]);
+    externalRestoring, handleDelete, queryReady, restoreSelected, showClearConfirm, showPreview, visibleIds, isFavoritesCollection, turnPage]);
 
   /* ── Actions ──────────────────────────────────────────────────── */
 
@@ -1005,7 +1109,7 @@ export function History({ collection = "all" }: HistoryProps) {
   const handleRestoreBatch = async (batchId: string) => {
     if (restoring.current || externalRestoring.current || !queryReady || !sessionActive.current) return;
     restoring.current = true;
-    if (readTour().active && batchId === "tailsync-demo-batch") {
+    if (readTour().active || batchId === "tailsync-demo-batch") {
       restoring.current = false;
       showHistoryNotice({ key: "demo-restore", level: "success", message: onboardingGuide.ui.demoRestore[locale.startsWith("zh") ? "zh-CN" : "en"] });
       return;
@@ -1032,7 +1136,8 @@ export function History({ collection = "all" }: HistoryProps) {
     const mutationKey = logicalHistoryItemKey(entry);
     if (favoriteMutations.current.has(mutationKey)) return;
     const favorite = !entry.pinned;
-    if (readTour().active && isDemoEntry(entry.id)) {
+    if (isDemoEntry(entry.id)) {
+      if (!readTour().active) return;
       demoFavorites.current.set(demoLogicalKey(entry), favorite);
       setEntries((current) => current.map((item) =>
         demoLogicalKey(item) === mutationKey ? { ...item, pinned: favorite } : item
@@ -1040,6 +1145,7 @@ export function History({ collection = "all" }: HistoryProps) {
       showHistoryNotice({ key: favorite ? "demo-favorite" : "demo-unfavorite", level: "success", message: onboardingGuide.ui[favorite ? "demoFavorite" : "demoUnfavorite"][locale.startsWith("zh") ? "zh-CN" : "en"] });
       return;
     }
+    if (readTour().active) return;
     favoriteMutations.current.set(mutationKey, favorite);
     setEntries((current) => current.map((item) =>
       logicalHistoryItemKey(item) === mutationKey
@@ -1099,6 +1205,8 @@ export function History({ collection = "all" }: HistoryProps) {
   return (
     <div
       ref={rootRef}
+      onFocusCapture={(event) => setListFocused(isHistoryListTarget(event.target))}
+      onBlurCapture={(event) => setListFocused(isHistoryListTarget(event.relatedTarget))}
       onCompositionStart={() => ime.current.start()}
       onCompositionEnd={() => ime.current.end()}
       className={`app ${theme}`}
@@ -1135,6 +1243,8 @@ export function History({ collection = "all" }: HistoryProps) {
       />
 
       <HistoryMainContent
+        shortcutNumbers={shortcutNumbers}
+        shortcutsActive={listFocused && queryReady && !loading && !restoreBusy && !showClearConfirm}
         t={t}
         themeAssetSlots={themeAssetSlots}
         loading={loading}
@@ -1164,6 +1274,11 @@ export function History({ collection = "all" }: HistoryProps) {
         isFavoritesCollection={isFavoritesCollection}
       />
 
+      {!isFavoritesCollection && (
+        <div className="history-keyboard-hint">
+          {t(listFocused ? "history.keyboard.shortcuts" : "history.keyboard.searchHint")}
+        </div>
+      )}
       <HistoryFooter
         t={t}
         entriesLength={entries.length}
@@ -1172,7 +1287,8 @@ export function History({ collection = "all" }: HistoryProps) {
         page={page}
         totalEntries={totalEntries}
         totalPages={totalPages}
-        setPage={setPage}
+        turnPage={turnPage}
+        pageBusy={loading || !queryReady || restoreBusy}
         progressBarEnabled={progressBarEnabled}
         fileProgress={fileProgress}
         handleCancelFileBatch={handleCancelFileBatch}

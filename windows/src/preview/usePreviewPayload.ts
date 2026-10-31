@@ -109,10 +109,10 @@ export function usePreviewPayload(target: PreviewTarget | null) {
 
     let active = true;
     setState({ status: "loading", target });
-    const demo = readTour().active && isDemoEntry(target.entryId)
+    const demo = isDemoEntry(target.entryId)
       ? demoPreviewPayload(target.entryId, target.batchId)
       : null;
-    void (demo ? Promise.resolve(demo) : getPreview(target.entryId, target.batchId).then((response) => parsePreviewResponse(response)))
+    void (demo ? (readTour().active ? Promise.resolve(demo) : Promise.reject(new Error("Demo preview has ended"))) : getPreview(target.entryId, target.batchId).then((response) => parsePreviewResponse(response)))
       .then((payload) => {
         if (active) setState({ status: "ready", target, payload });
       })

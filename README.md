@@ -52,6 +52,7 @@ macOS uses native SwiftUI, while Windows uses React and Tauri. Both clients shar
 
 - Bidirectional synchronization of text, images, and files
 - Local history with search, favorites, restore, protected deletion, item limits, category filters, and date filters
+- History opens with the first row selected and list focus: `1–6` restores the first six displayed records, `← / →` turns pages, and `F` enters search. Search retains ordinary digit and cursor editing; `↓` returns to the list. Native desktop acceptance is pending; see the [implementation record](docs/acceptance/history-number-shortcuts-2026-10-30.md).
 - `auto`, `lan_only`, `iroh_only`, and `tailscale_only` connection policies
 - Peer discovery over UDP, mDNS / DNS-SD, and Tailscale
 - Independent LAN and Tailscale health checks with round-trip latency

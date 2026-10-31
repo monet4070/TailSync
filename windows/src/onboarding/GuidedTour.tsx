@@ -26,7 +26,7 @@ export function GuidedTour({ window: windowName, navigate = openTourWindow, dism
   const label = (key: keyof typeof guide.ui) => guide.ui[key][lang];
   useEffect(() => {
     const sync = () => setState(readTour());
-    const storage = (event: StorageEvent) => { if (event.key === TOUR_KEY) sync(); };
+    const storage = (event: StorageEvent) => { if (event.key === null || event.key === TOUR_KEY) sync(); };
     window.addEventListener(TOUR_EVENT, sync);
     window.addEventListener("storage", storage);
     // The native startup route carries this only when no pairing invite is pending.

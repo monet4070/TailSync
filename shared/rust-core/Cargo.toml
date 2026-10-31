@@ -22,7 +22,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "webp"
 iroh = "=1.1.0"
 log = "0.4"
 rand = "0.8"
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rusqlite = { version = "0.40", features = ["bundled"] }

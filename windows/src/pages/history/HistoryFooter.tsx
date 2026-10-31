@@ -16,7 +16,8 @@ export function HistoryFooter({
   page,
   totalEntries,
   totalPages,
-  setPage,
+  turnPage,
+  pageBusy,
   progressBarEnabled,
   fileProgress,
   handleCancelFileBatch,
@@ -36,11 +37,8 @@ export function HistoryFooter({
         <div className="pagination">
           <button
             className="page-btn"
-            disabled={!hasPrev}
-            onClick={() => {
-              setPage((current) => current - 1);
-              document.querySelector(".history-list")?.scrollTo({ top: 0 });
-            }}
+            disabled={!hasPrev || pageBusy}
+            onClick={() => turnPage(-1)}
           >
             <ArrowLeft size={14} strokeWidth={1.8} aria-hidden="true" />
             {t("history.prev")}
@@ -50,11 +48,8 @@ export function HistoryFooter({
           </span>
           <button
             className="page-btn"
-            disabled={!hasNext}
-            onClick={() => {
-              setPage((current) => current + 1);
-              document.querySelector(".history-list")?.scrollTo({ top: 0 });
-            }}
+            disabled={!hasNext || pageBusy}
+            onClick={() => turnPage(1)}
           >
             {t("history.next")}
             <ArrowRight size={14} strokeWidth={1.8} aria-hidden="true" />
