@@ -55,6 +55,7 @@ pub enum WriteEffect {
     /// The platform was provably not touched: the write never started, or the
     /// helper reported no effect before touching the pasteboard.
     NoEffect,
+    Superseded,
     /// The write may already have changed the platform. The claim must stay.
     MayHaveEffect,
 }
@@ -68,6 +69,17 @@ pub struct WriteFailure {
 }
 
 impl WriteFailure {
+    pub fn superseded(detail: impl Into<String>) -> Self {
+        Self {
+            effect: WriteEffect::Superseded,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn is_superseded(&self) -> bool {
+        self.effect == WriteEffect::Superseded
+    }
+
     /// The platform is provably untouched, so a caller may release the claim.
     pub fn no_effect(detail: impl Into<String>) -> Self {
         Self {
@@ -92,7 +104,7 @@ impl WriteFailure {
     /// Whether the platform was provably untouched. This is the only case in which
     /// an at-most-once claim may be released and the effect retried.
     pub fn is_proven_no_effect(&self) -> bool {
-        self.effect == WriteEffect::NoEffect
+        matches!(self.effect, WriteEffect::NoEffect | WriteEffect::Superseded)
     }
 
     pub fn detail(&self) -> &str {
@@ -105,7 +117,7 @@ impl WriteFailure {
     /// decision path reads it back.
     pub fn message(&self) -> String {
         match self.effect {
-            WriteEffect::NoEffect => {
+            WriteEffect::NoEffect | WriteEffect::Superseded => {
                 format!("{}{}", crate::protocol::NO_EFFECT_MARKER, self.detail)
             }
             WriteEffect::MayHaveEffect => self.detail.clone(),
@@ -182,10 +194,14 @@ pub trait ClipboardPort: Send + Sync {
     fn write_text_admitted<'a>(
         &'a self,
         text: String,
+        expected_revision: Option<i64>,
         admission: Vec<AdmissionHold>,
     ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let _admission = admission;
+            if expected_revision.is_some() {
+                return Err(WriteFailure::no_effect("Clipboard CAS is unavailable"));
+            }
             self.write_text(text).await
         })
     }
@@ -200,10 +216,14 @@ pub trait ClipboardPort: Send + Sync {
         width: u32,
         height: u32,
         rgba: Vec<u8>,
+        expected_revision: Option<i64>,
         admission: Vec<AdmissionHold>,
     ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let _admission = admission;
+            if expected_revision.is_some() {
+                return Err(WriteFailure::no_effect("Clipboard CAS is unavailable"));
+            }
             self.write_image(width, height, rgba).await
         })
     }
@@ -294,7 +314,7 @@ impl ClipboardPort for BlockingPlatformPort {
             let platform = self.platform.clone();
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _cancel = CancelOnDrop(flag.clone());
-            Self::offload(move || platform.write_text_cancellable_typed(&text, flag)).await
+            Self::offload(move || platform.write_text_cancellable_typed(&text, None, flag)).await
         })
     }
 
@@ -309,7 +329,7 @@ impl ClipboardPort for BlockingPlatformPort {
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _cancel = CancelOnDrop(flag.clone());
             Self::offload(move || {
-                platform.write_image_cancellable_typed(width, height, &rgba, flag)
+                platform.write_image_cancellable_typed(width, height, &rgba, None, flag)
             })
             .await
         })
@@ -318,6 +338,7 @@ impl ClipboardPort for BlockingPlatformPort {
     fn write_text_admitted<'a>(
         &'a self,
         text: String,
+        expected_revision: Option<i64>,
         admission: Vec<AdmissionHold>,
     ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
@@ -326,7 +347,7 @@ impl ClipboardPort for BlockingPlatformPort {
             let _cancel = CancelOnDrop(flag.clone());
             Self::offload(move || {
                 let _admission = admission;
-                platform.write_text_cancellable_typed(&text, flag)
+                platform.write_text_cancellable_typed(&text, expected_revision, flag)
             })
             .await
         })
@@ -336,6 +357,7 @@ impl ClipboardPort for BlockingPlatformPort {
         width: u32,
         height: u32,
         rgba: Vec<u8>,
+        expected_revision: Option<i64>,
         admission: Vec<AdmissionHold>,
     ) -> PortFuture<'a, WriteOutcome> {
         Box::pin(async move {
@@ -344,7 +366,13 @@ impl ClipboardPort for BlockingPlatformPort {
             let _cancel = CancelOnDrop(flag.clone());
             Self::offload(move || {
                 let _admission = admission;
-                platform.write_image_cancellable_typed(width, height, &rgba, flag)
+                platform.write_image_cancellable_typed(
+                    width,
+                    height,
+                    &rgba,
+                    expected_revision,
+                    flag,
+                )
             })
             .await
         })
@@ -610,6 +638,7 @@ mod tests {
         fn write_text_cancellable_typed(
             &self,
             text: &str,
+            _expected_revision: Option<i64>,
             cancelled: Arc<std::sync::atomic::AtomicBool>,
         ) -> Result<(), crate::sync::WriteFailure> {
             if cancelled.load(std::sync::atomic::Ordering::Acquire) {
@@ -725,7 +754,7 @@ mod tests {
         };
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let failure = platform
-            .write_text_cancellable_typed("text", cancelled)
+            .write_text_cancellable_typed("text", None, cancelled)
             .unwrap_err();
         assert!(failure.is_proven_no_effect());
         assert_eq!(failure.detail(), "cancelled before write");

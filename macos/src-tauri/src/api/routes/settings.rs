@@ -221,9 +221,9 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                     wait_timeout: std::time::Duration::from_secs(60),
                     has_active_transfers: &has_active_file_progress,
                     notify: None,
-                    persist_settings: &|settings: &crate::crypto::Settings| {
+                    persist_settings: std::sync::Arc::new(|settings: &crate::crypto::Settings| {
                         settings.save().map_err(|error| error.to_string())
-                    },
+                    }),
                 },
             )
             .await
@@ -252,17 +252,11 @@ pub(super) async fn handle(command: SettingsCommand, req: Request, state: &ApiSt
                             "Timed out waiting for active file transfers to finish".to_string()
                         }
                         db::StorageMigrationFailure::Migrate(error) => error,
-                        db::StorageMigrationFailure::SaveFailedAfterRollback { save_error } => {
+                        db::StorageMigrationFailure::SaveFailed { save_error } => {
                             format!(
-                                "Could not save the new storage location; TailSync returned to the old location: {save_error}"
+                                "Could not save the new storage location; TailSync kept the old location: {save_error}"
                             )
                         }
-                        db::StorageMigrationFailure::RollbackAlsoFailed {
-                            save_error,
-                            rollback_error,
-                        } => format!(
-                            "Could not save the new storage location ({save_error}); rollback also failed: {rollback_error}"
-                        ),
                     }.into()),
                 },
             }

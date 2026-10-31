@@ -294,9 +294,13 @@ pub trait SyncPlatform: Send + Sync {
     fn write_text_cancellable_typed(
         &self,
         text: &str,
+        expected_revision: Option<i64>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), crate::sync::WriteFailure> {
         run_cancellable_write(cancelled, |cancelled| {
+            if expected_revision.is_some() {
+                return Err(WriteFailure::no_effect("Clipboard CAS is unavailable"));
+            }
             self.write_text_cancellable(text, cancelled)
                 .map_err(crate::sync::WriteFailure::from)
         })
@@ -308,9 +312,13 @@ pub trait SyncPlatform: Send + Sync {
         width: u32,
         height: u32,
         rgba: &[u8],
+        expected_revision: Option<i64>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), crate::sync::WriteFailure> {
         run_cancellable_write(cancelled, |cancelled| {
+            if expected_revision.is_some() {
+                return Err(WriteFailure::no_effect("Clipboard CAS is unavailable"));
+            }
             self.write_image_cancellable(width, height, rgba, cancelled)
                 .map_err(crate::sync::WriteFailure::from)
         })
@@ -545,7 +553,7 @@ pub struct SyncEngine {
     peer_device_ids: HashMap<String, String>,
     receive_epochs: HashMap<String, u64>,
     clipboard_generation: u64,
-    legacy_arrivals: HashMap<(String, MessageId), u64>,
+    legacy_arrivals: HashMap<(String, MessageId), (u64, Option<i64>)>,
     /// Shadow-packet filter for text (echo suppression)
     shadow_filter: ShadowFilter,
     /// Shadow-packet filter for images

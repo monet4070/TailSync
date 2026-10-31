@@ -95,17 +95,18 @@ impl SyncPlatform for TauriSyncPlatform {
         text: &str,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), String> {
-        self.write_text_cancellable_typed(text, cancelled)
+        self.write_text_cancellable_typed(text, None, cancelled)
             .map_err(String::from)
     }
 
     fn write_text_cancellable_typed(
         &self,
         text: &str,
+        expected_revision: Option<i64>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), tailsync_core::sync::WriteFailure> {
         tailsync_core::sync::run_cancellable_write(cancelled, |cancelled| {
-            if !crate::clipboard_composite::capture_enabled() {
+            if expected_revision.is_none() && !crate::clipboard_composite::capture_enabled() {
                 return self.write_text_typed(text);
             }
             let bundle = tailsync_core::composite::PortableBundle {
@@ -119,7 +120,7 @@ impl SyncPlatform for TauriSyncPlatform {
             };
             require_composite_publish_typed(crate::clipboard_composite::write_cancellable(
                 &bundle,
-                None,
+                expected_revision,
                 Some(cancelled),
             )?)
         })
@@ -131,7 +132,7 @@ impl SyncPlatform for TauriSyncPlatform {
         rgba: &[u8],
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), String> {
-        self.write_image_cancellable_typed(width, height, rgba, cancelled)
+        self.write_image_cancellable_typed(width, height, rgba, None, cancelled)
             .map_err(String::from)
     }
 
@@ -140,10 +141,11 @@ impl SyncPlatform for TauriSyncPlatform {
         width: u32,
         height: u32,
         rgba: &[u8],
+        expected_revision: Option<i64>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), tailsync_core::sync::WriteFailure> {
         tailsync_core::sync::run_cancellable_write(cancelled, |cancelled| {
-            if !crate::clipboard_composite::capture_enabled() {
+            if expected_revision.is_none() && !crate::clipboard_composite::capture_enabled() {
                 return self.write_image_typed(width, height, rgba);
             }
             let png = tailsync_core::composite::packed_to_png(width, height, rgba)
@@ -159,7 +161,7 @@ impl SyncPlatform for TauriSyncPlatform {
             };
             require_composite_publish_typed(crate::clipboard_composite::write_cancellable(
                 &bundle,
-                None,
+                expected_revision,
                 Some(cancelled),
             )?)
         })
@@ -474,8 +476,8 @@ impl SyncPlatform for TauriSyncPlatform {
 
 /// Project the five native publish outcomes onto the typed write result the claim
 /// and receipt rules need (K2). `Published` succeeded; `NoEffect` is provable and
-/// may release an at-most-once claim; `Partial`, `Superseded` and `Unknown` all
-/// keep the claim, because the platform may already have been touched.
+/// may release an at-most-once claim; `Superseded` is a settled no-write;
+/// `Partial` and `Unknown` keep the claim because an effect is possible.
 fn require_composite_publish_typed(
     outcome: tailsync_core::composite::NativePublish,
 ) -> Result<(), tailsync_core::sync::WriteFailure> {
@@ -483,6 +485,9 @@ fn require_composite_publish_typed(
     use tailsync_core::sync::WriteFailure;
     match outcome {
         NativePublish::Published(_) => Ok(()),
+        NativePublish::Superseded(_) => {
+            Err(WriteFailure::superseded("Clipboard publication superseded"))
+        }
         NativePublish::NoEffect { detail } => Err(WriteFailure::no_effect(detail)),
         other => Err(WriteFailure::may_have_effect(other.as_write_error())),
     }
@@ -503,7 +508,7 @@ mod composite_publish_projection_tests {
 
     /// F2 — the five native outcomes keep their meaning across the projection onto
     /// the typed write result: only a provable no-effect may release an at-most-once
-    /// claim, and `Partial` / `Superseded` / `Unknown` all keep it.
+    /// claim, `Superseded` settles the arrival, and `Partial` / `Unknown` keep it.
     #[test]
     fn the_five_native_outcomes_keep_their_claim_semantics() {
         assert!(
@@ -519,15 +524,17 @@ mod composite_publish_projection_tests {
         })
         .unwrap_err();
         assert!(no_effect.is_proven_no_effect());
+        let superseded = super::require_composite_publish_typed(NativePublish::Superseded(
+            receipt(PublishState::Superseded),
+        ))
+        .unwrap_err();
+        assert!(superseded.is_superseded());
+        assert!(superseded.is_proven_no_effect());
 
         for (label, outcome) in [
             (
                 "partial",
                 NativePublish::Partial(receipt(PublishState::Partial)),
-            ),
-            (
-                "superseded",
-                NativePublish::Superseded(receipt(PublishState::Superseded)),
             ),
             (
                 "unknown",

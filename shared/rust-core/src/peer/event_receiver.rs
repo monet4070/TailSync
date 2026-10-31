@@ -208,17 +208,17 @@ async fn process_event_content(
             )))
         }
     };
+    let (arrival_generation, expected_revision) = sync_engine
+        .lock()
+        .await
+        .legacy_arrival(source, message_id)
+        .map_err(ReliableEventError::retryable)?;
     if !database.lock().await.is_storage_available() {
         crate::sync_warning::record_receive_not_saved(source);
         return Err(ReliableEventError::retryable(
             "History storage is unavailable; native effect was not attempted",
         ));
     }
-    let arrival_generation = sync_engine
-        .lock()
-        .await
-        .legacy_arrival_generation(source, message_id)
-        .map_err(ReliableEventError::retryable)?;
     let _operation = super::operation_lock::global()
         .acquire(receipt.operation_key())
         .await
@@ -284,7 +284,10 @@ async fn process_event_content(
         }
     };
     let publication: crate::sync::AdmissionHold = Arc::new(crate::sync::publication_permit().await);
-    if !claimed && sync_engine.lock().await.clipboard_generation() == arrival_generation {
+    if !claimed
+        && expected_revision.is_some()
+        && sync_engine.lock().await.clipboard_generation() == arrival_generation
+    {
         // Metadata commits and helper I/O never hold the engine mutex.
         let port = sync_engine.lock().await.clipboard_port();
         let error = if let Some(text) = text {
@@ -295,8 +298,12 @@ async fn process_event_content(
                 .map_err(ReliableEventError::retryable)?;
             let result = match port {
                 Some(port) => {
-                    port.write_text_admitted(text, vec![publication.clone(), protection.clone()])
-                        .await
+                    port.write_text_admitted(
+                        text,
+                        expected_revision,
+                        vec![publication.clone(), protection.clone()],
+                    )
+                    .await
                 }
                 None => Err(crate::sync::WriteFailure::no_effect(
                     "clipboard unavailable",
@@ -319,6 +326,7 @@ async fn process_event_content(
                         prepared.width,
                         prepared.height,
                         prepared.rgba.clone(),
+                        expected_revision,
                         vec![publication.clone(), protection.clone()],
                     )
                     .await
@@ -333,7 +341,7 @@ async fn process_event_content(
                 .finish_incoming_image(prepared, result)
                 .err()
         };
-        if let Some(failure) = error {
+        if let Some(failure) = error.filter(|failure| !failure.is_superseded()) {
             if failure.is_proven_no_effect() {
                 event_receipts::update(receipt.clone(), Operation::Remove)
                     .await
@@ -393,6 +401,8 @@ mod tests {
     struct TestPlatform {
         arrivals: std::sync::Mutex<Vec<crate::notifications::ClipboardArrival>>,
         writes: std::sync::Mutex<Vec<String>>,
+        revision: std::sync::atomic::AtomicI64,
+        supersede_next_write: std::sync::atomic::AtomicBool,
         /// The typed failure the next text write reports, if any.
         text_failure: std::sync::Mutex<Option<crate::sync::WriteFailure>>,
         /// The typed failure the next image write reports, if any.
@@ -404,6 +414,8 @@ mod tests {
             Self {
                 arrivals: std::sync::Mutex::new(Vec::new()),
                 writes: std::sync::Mutex::new(Vec::new()),
+                revision: std::sync::atomic::AtomicI64::new(1),
+                supersede_next_write: std::sync::atomic::AtomicBool::new(false),
                 text_failure: std::sync::Mutex::new(None),
                 image_failure: std::sync::Mutex::new(None),
             }
@@ -411,6 +423,16 @@ mod tests {
     }
 
     impl TestPlatform {
+        fn check_revision(&self, expected: Option<i64>) -> Result<(), crate::sync::WriteFailure> {
+            if self.supersede_next_write.swap(false, Ordering::AcqRel) {
+                self.classified_text_write("new local copy")?;
+            }
+            if expected.is_some_and(|revision| revision != self.revision.load(Ordering::Acquire)) {
+                return Err(crate::sync::WriteFailure::superseded("newer local copy"));
+            }
+            Ok(())
+        }
+
         fn fail_text_with(&self, failure: crate::sync::WriteFailure) {
             *self.text_failure.lock().unwrap() = Some(failure);
         }
@@ -434,6 +456,7 @@ mod tests {
                 return Err(failure);
             }
             self.writes.lock().unwrap().push(text.to_string());
+            self.revision.fetch_add(1, Ordering::AcqRel);
             Ok(())
         }
 
@@ -449,11 +472,17 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("image:{width}x{height}"));
+            self.revision.fetch_add(1, Ordering::AcqRel);
             Ok(())
         }
     }
 
     impl SyncPlatform for TestPlatform {
+        fn clipboard_revision(&self) -> Option<i64> {
+            let revision = self.revision.load(Ordering::Acquire);
+            (revision >= 0).then_some(revision)
+        }
+
         fn received_content(&self, arrival: crate::notifications::ClipboardArrival) {
             self.arrivals.lock().unwrap().push(arrival);
         }
@@ -468,6 +497,7 @@ mod tests {
         fn write_text_cancellable_typed(
             &self,
             text: &str,
+            expected_revision: Option<i64>,
             cancelled: Arc<std::sync::atomic::AtomicBool>,
         ) -> Result<(), crate::sync::WriteFailure> {
             if cancelled.load(Ordering::Acquire) {
@@ -475,6 +505,7 @@ mod tests {
                     "cancelled before write",
                 ));
             }
+            self.check_revision(expected_revision)?;
             self.classified_text_write(text)
         }
 
@@ -497,6 +528,7 @@ mod tests {
             width: u32,
             height: u32,
             _rgba: &[u8],
+            expected_revision: Option<i64>,
             cancelled: Arc<std::sync::atomic::AtomicBool>,
         ) -> Result<(), crate::sync::WriteFailure> {
             if cancelled.load(Ordering::Acquire) {
@@ -504,6 +536,7 @@ mod tests {
                     "cancelled before write",
                 ));
             }
+            self.check_revision(expected_revision)?;
             self.classified_image_write(width, height)
         }
 
@@ -575,6 +608,19 @@ mod tests {
     }
 
     impl SyncPlatform for SlowTextPlatform {
+        fn clipboard_revision(&self) -> Option<i64> {
+            Some(1)
+        }
+        fn write_text_cancellable_typed(
+            &self,
+            text: &str,
+            expected_revision: Option<i64>,
+            _cancelled: Arc<std::sync::atomic::AtomicBool>,
+        ) -> Result<(), crate::sync::WriteFailure> {
+            assert_eq!(expected_revision, Some(1));
+            self.write_text(text)
+                .map_err(crate::sync::WriteFailure::from)
+        }
         fn write_text(&self, _: &str) -> Result<(), String> {
             self.writes.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(self.delay);
@@ -671,6 +717,187 @@ mod tests {
 
     fn image_frame(sequence: u32, envelope: &EventEnvelope) -> Frame {
         Frame::try_new(Command::ImagePayload, 0, sequence, envelope.encode()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn legacy_text_and_image_cas_preserve_a_copy_made_before_the_native_write() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
+        for (command, content) in [
+            (Command::TextPayload, b"remote old copy".to_vec()),
+            (
+                Command::ImagePayload,
+                crate::protocol::pack_rgba_image(1, 1, &[9; 4]).unwrap(),
+            ),
+        ] {
+            let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+            let client_identity = DeviceIdentity::generate_for_test();
+            let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+            let db = Arc::new(Mutex::new(history_fixture()));
+            let (engine, platform) = test_engine().await;
+            platform.supersede_next_write.store(true, Ordering::Release);
+            let generation = engine.lock().await.clipboard_generation();
+            let envelope = EventEnvelope::new(content.clone());
+            let frame = Frame::try_new(command, 0, 1, envelope.encode()).unwrap();
+            let mut last_sequence = None;
+            let outcome = process_reliable_event(
+                &mut server,
+                &frame,
+                "client",
+                &engine,
+                &db,
+                &mut last_sequence,
+                || (),
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, ReliableEventOutcome::Applied);
+            assert_eq!(
+                client.read_frame().await.unwrap().command,
+                Command::EventAck
+            );
+            assert_eq!(*platform.writes.lock().unwrap(), vec!["new local copy"]);
+            assert_eq!(engine.lock().await.clipboard_generation(), generation);
+            let entries = db.lock().await.get_all(None, None, 10, 0).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(db.lock().await.get_data(entries[0].id).unwrap(), content);
+            let receipt = Receipt::new(
+                crate::secure::fingerprint(client_identity.public_key()),
+                command,
+                &envelope,
+            );
+            assert!(
+                event_receipts::update(receipt, Operation::Lookup)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .received
+            );
+            let duplicate = process_reliable_event(
+                &mut server,
+                &frame,
+                "client",
+                &engine,
+                &db,
+                &mut last_sequence,
+                || (),
+            )
+            .await
+            .unwrap();
+            assert_eq!(duplicate, ReliableEventOutcome::Duplicate);
+            assert_eq!(
+                client.read_frame().await.unwrap().command,
+                Command::EventAck
+            );
+            assert_eq!(*platform.writes.lock().unwrap(), vec!["new local copy"]);
+            assert!(crate::sync_warning::take().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_retry_keeps_its_original_revision_after_a_new_local_copy() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
+        for (command, content) in [
+            (Command::TextPayload, b"remote retry".to_vec()),
+            (
+                Command::ImagePayload,
+                crate::protocol::pack_rgba_image(1, 1, &[8; 4]).unwrap(),
+            ),
+        ] {
+            let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+            let client_identity = DeviceIdentity::generate_for_test();
+            let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+            let db = Arc::new(Mutex::new(history_fixture()));
+            let (engine, platform) = test_engine().await;
+            let failure = crate::sync::WriteFailure::no_effect("temporarily unavailable");
+            if command == Command::TextPayload {
+                platform.fail_text_with(failure);
+            } else {
+                platform.fail_image_with(failure);
+            }
+            let frame =
+                Frame::try_new(command, 0, 1, EventEnvelope::new(content).encode()).unwrap();
+            let mut last_sequence = None;
+            assert!(process_reliable_event(
+                &mut server,
+                &frame,
+                "client",
+                &engine,
+                &db,
+                &mut last_sequence,
+                || ()
+            )
+            .await
+            .unwrap_err()
+            .is_retryable());
+            platform.clear_text_failure();
+            platform.clear_image_failure();
+            platform.write_text("new local copy").unwrap();
+            assert_eq!(
+                process_reliable_event(
+                    &mut server,
+                    &frame,
+                    "client",
+                    &engine,
+                    &db,
+                    &mut last_sequence,
+                    || ()
+                )
+                .await
+                .unwrap(),
+                ReliableEventOutcome::Applied
+            );
+            assert_eq!(
+                client.read_frame().await.unwrap().command,
+                Command::EventAck
+            );
+            assert_eq!(*platform.writes.lock().unwrap(), vec!["new local copy"]);
+            assert_eq!(
+                db.lock()
+                    .await
+                    .count_all_filtered(None, None, None, None)
+                    .unwrap(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_receive_without_a_clipboard_revision_saves_history_without_publishing() {
+        let _warnings = crate::sync_warning::test_lock_async().await;
+        while crate::sync_warning::take().is_some() {}
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let (mut client, mut server) = establish_pair(&server_identity, &client_identity).await;
+        let db = Arc::new(Mutex::new(history_fixture()));
+        let (engine, platform) = test_engine().await;
+        platform.revision.store(-1, Ordering::Release);
+        let frame = text_frame(1, &EventEnvelope::new(b"remote history".to_vec()));
+        let mut last_sequence = None;
+        process_reliable_event(
+            &mut server,
+            &frame,
+            "client",
+            &engine,
+            &db,
+            &mut last_sequence,
+            || (),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            client.read_frame().await.unwrap().command,
+            Command::EventAck
+        );
+        assert!(platform.writes.lock().unwrap().is_empty());
+        assert_eq!(
+            db.lock()
+                .await
+                .count_all_filtered(None, None, None, None)
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]

@@ -59,14 +59,14 @@ pub struct PreparedText {
 }
 
 impl SyncEngine {
-    pub(crate) fn legacy_arrival_generation(
+    pub(crate) fn legacy_arrival(
         &mut self,
         source: &str,
         id: MessageId,
-    ) -> Result<u64, String> {
+    ) -> Result<(u64, Option<i64>), String> {
         let key = (source.to_string(), id);
-        if let Some(generation) = self.legacy_arrivals.get(&key) {
-            return Ok(*generation);
+        if let Some(arrival) = self.legacy_arrivals.get(&key) {
+            return Ok(*arrival);
         }
         if self.legacy_arrivals.len() >= 1024 {
             return Err(format!(
@@ -74,8 +74,9 @@ impl SyncEngine {
                 crate::protocol::TEMPORARY_PRESSURE_MARKER
             ));
         }
-        self.legacy_arrivals.insert(key, self.clipboard_generation);
-        Ok(self.clipboard_generation)
+        let arrival = (self.clipboard_generation, self.clipboard_revision());
+        self.legacy_arrivals.insert(key, arrival);
+        Ok(arrival)
     }
     pub(crate) fn settle_legacy_arrival(&mut self, source: &str, id: MessageId) {
         self.legacy_arrivals.remove(&(source.to_string(), id));
@@ -93,7 +94,7 @@ impl SyncEngine {
         };
         let result = port
             .ok_or("Clipboard unavailable")?
-            .write_text_admitted(text, vec![publication])
+            .write_text_admitted(text, None, vec![publication])
             .await;
         engine
             .lock()
@@ -126,6 +127,7 @@ impl SyncEngine {
                 prepared.width,
                 prepared.height,
                 prepared.rgba.clone(),
+                None,
                 vec![publication],
             )
             .await;
