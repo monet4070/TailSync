@@ -1,5 +1,6 @@
 //! Read-only TCP/Noise/heartbeat probe with an existing identity and pinned key.
-//! Set TAILSYNC_DATA_DIR to an isolated copy of config-v2.json and identity-v1.bin.
+//! Set TAILSYNC_DATA_DIR to an isolated copy of config-v2.json, identity-v1.bin,
+//! and its .dek encryption key file (protected for the same Windows account).
 //! Usage: peer_connectivity <peer-hostname> <ip:port>
 use std::time::{Duration, Instant};
 use tailsync_core::{

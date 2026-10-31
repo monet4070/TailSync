@@ -21,4 +21,28 @@
 - WPF：实际按钮事件与 IPC、模式保存、接收等待时设备列表可用、验证码与超时状态、自包含发布及 helper 自检。
 - 跨平台契约：共享网络 include 与双端编译接线保持同步。
 
-详细结果与隔离复现记录保存于 `F:/TailSync/wpf-network-align-qa-20261031`。构建和验证完成后补充交付版本的来源与结果。
+## 验证结果与交付
+
+产品源码提交：`7ca0f8d761fd6d6de8f46d51182ad80a1314fec4`。产品版本保持 2.3.2，邀请与传输协议版本保持兼容。
+
+| 检查 | 结果 |
+|---|---|
+| 完整 Core | 1013 通过、0 失败、3 项原有忽略 |
+| Windows 网络适配层 | 50 通过、0 失败、1 项原有忽略 |
+| 两个真实 Iroh 后台 | 26 项通过，包括双方分别忘记后重配及交换发起方 |
+| 实际 WPF 连接界面与 IPC | 26 项通过 |
+| 命名管道 API | 180 项通过 |
+| 后台父进程退出与启动校验 | 3 项通过 |
+| 原生展示与交互规则 | 27 项通过 |
+| Windows 前端构建、跨平台契约、格式检查 | 通过 |
+| Rust release、WPF 自包含发布、打包 helper 自检 | 通过 |
+| Windows 到实际 Mac 的 Tailscale 只读探测 | TCP 13 ms、Noise 认证完成 90 ms、认证心跳应答完成 171 ms |
+| 现有配对的实际 Mac / Windows Tailscale 会话 | 新后台同时存在向 Mac 19890 端口的认证发送连接，以及 Mac 主动连接 Windows 19890 的认证接收连接 |
+
+只读探测使用用户身份及配置的隔离副本，并携带同一账户可解密的 `.dek`，没有发送剪贴板内容。Core 的双向连接测试使用真实 QUIC/Noise 与持久化后的公钥；不把两个 Windows 后台的隔离验收写成 Mac 实机验收。
+
+当前运行目录 `F:/TailSync/wpf-clipboard-onboarding-20261031` 已替换为修复版并在后台启动。新后台的 TCP 19890 监听、到 Mac 的认证发送会话，以及 Mac 发起的认证接收会话均已确认。替换前后均为 66 条历史，已配对公钥集合、Noise 身份、Iroh 身份和 `auto` 设置保持一致。
+
+完整程序及数据回退副本：`F:/TailSync/wpf-backups/network-align-20261031-212409`。另留独立便携目录 `F:/TailSync/wpf-network-aligned-20261031`，内含 `BUILD-PROVENANCE.json` 与文件校验值。
+
+详细日志、隔离复现记录与替换核对报告保存在 `F:/TailSync/wpf-network-align-qa-20261031`。旧版的失败记录为 `baseline-repair-reproduction-2/network.json`，修复版通过记录为 `network-final/network.json`。用户已选择稍后进行 Mac 发起的 Iroh/Tailscale 实机配对；此项保留为待实测，不自动确认实际用户设备的验证码，也不删除已有配对记录。
