@@ -67,8 +67,15 @@ try {
         if (-not $Demo) { Copy-Item -LiteralPath $BackendExecutable -Destination (Join-Path $PublishDirectory 'TailSync.Backend.exe') -Force }
         if ($clipboardHelper -and (Test-Path -LiteralPath $clipboardHelper)) { Copy-Item -LiteralPath $clipboardHelper -Destination (Join-Path $PublishDirectory 'tailsync-clipboard-helper.exe') -Force }
         if (-not $Demo -and $canExecuteTarget) {
-            & (Join-Path $PublishDirectory 'TailSync.Backend.exe') --tailsync-clipboard-helper-check
+            # A Windows GUI-subsystem executable must join a pipeline so
+            # PowerShell waits for it and captures its actual probe result.
+            $packagedProbeText = & (Join-Path $PublishDirectory 'TailSync.Backend.exe') --tailsync-clipboard-helper-check | Out-String
             if ($LASTEXITCODE -ne 0) { throw 'Published WPF backend cannot resolve its matching clipboard helper' }
+            $packagedProbe = $packagedProbeText | ConvertFrom-Json -ErrorAction Stop
+            if (-not $packagedProbe.healthy -or -not $packagedProbe.composite_compiled -or -not $packagedProbe.analyze_capable -or $packagedProbe.expected_protocol -ne 2) { throw 'Published backend is missing required composite clipboard capabilities' }
+            $expectedHelperPath = [IO.Path]::GetFullPath((Join-Path $PublishDirectory 'tailsync-clipboard-helper.exe'))
+            if (-not [string]::Equals([IO.Path]::GetFullPath($packagedProbe.helper_path), $expectedHelperPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'Published backend resolved a helper outside its portable directory' }
+            Write-Output $packagedProbeText.Trim()
         }
         if (-not $canExecuteTarget) { Write-Output 'PE architecture checks passed; runtime helper checks require ARM64 Windows.' }
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'TailSync.Wpf/THIRD-PARTY-NOTICES.md') -Destination $PublishDirectory -Force
