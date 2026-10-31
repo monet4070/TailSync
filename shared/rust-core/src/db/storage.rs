@@ -28,7 +28,7 @@ pub struct StorageMigrationHooks<'a> {
     /// Called once transfers are idle, right before the migration starts.
     pub notify: Option<&'a (dyn Fn() + Send + Sync)>,
     /// Persists the settings after the new root has been assigned.
-    pub persist_settings: &'a (dyn Fn(&Settings) -> Result<(), String> + Send + Sync),
+    pub persist_settings: std::sync::Arc<dyn Fn(&Settings) -> Result<(), String> + Send + Sync>,
 }
 
 /// Reasons a storage-parent migration can fail once the platform surfaces
@@ -40,19 +40,12 @@ pub enum StorageMigrationFailure {
     TimedOutWaitingForTransfers,
     /// The migration itself failed.
     Migrate(String),
-    /// The new root could not be persisted; storage was rolled back to the
-    /// old root and the partially migrated data was removed.
-    SaveFailedAfterRollback { save_error: String },
-    /// Persisting the new root failed and the rollback also failed.
-    RollbackAlsoFailed {
-        save_error: String,
-        rollback_error: String,
-    },
+    /// The new root could not be persisted; the active store was not switched.
+    SaveFailed { save_error: String },
 }
 
 /// Wait for active transfers to finish, migrate the storage to a new parent
-/// directory, and persist the new root in settings — rolling back to the old
-/// root (and deleting the new one) if persistence fails.
+/// directory, and persist the new root before switching the active store.
 pub async fn migrate_storage_with_rollback(
     database: &std::sync::Arc<tokio::sync::Mutex<HistoryDB>>,
     settings: &std::sync::Arc<tokio::sync::Mutex<Settings>>,
@@ -69,52 +62,27 @@ pub async fn migrate_storage_with_rollback(
     if let Some(notify) = hooks.notify {
         notify();
     }
-    let previous_storage_root = settings.lock().await.storage_root.clone();
+    let mut settings_guard = settings.clone().lock_owned().await;
     let parent = parent.to_path_buf();
     let database_for_migration = database.clone();
-    let migrated = tokio::task::spawn_blocking(move || {
+    let persist_settings = hooks.persist_settings;
+    tokio::task::spawn_blocking(move || {
         let _maintenance_guard = STORAGE_MAINTENANCE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        database_for_migration
-            .blocking_lock()
-            .migrate_storage_parent(&parent)
-            .map_err(|error| error.to_string())
-    })
-    .await;
-    let result = match migrated {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) => return Err(StorageMigrationFailure::Migrate(error)),
-        Err(error) => return Err(StorageMigrationFailure::Migrate(error.to_string())),
-    };
-    let mut settings_guard = settings.lock().await;
-    settings_guard.storage_root = Some(result.new_root.clone());
-    if let Err(save_error) = (hooks.persist_settings)(&settings_guard) {
-        settings_guard.storage_root = previous_storage_root;
-        drop(settings_guard);
-        let old_root = std::path::PathBuf::from(&result.old_root);
-        let database_for_rollback = database.clone();
-        let rollback = tokio::task::spawn_blocking(move || {
-            database_for_rollback
-                .blocking_lock()
-                .reopen_storage_at(&old_root)
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())
-        .and_then(|result| result);
-        return match rollback {
-            Ok(()) => {
-                let _ = delete_old_storage(std::path::Path::new(&result.new_root));
-                Err(StorageMigrationFailure::SaveFailedAfterRollback { save_error })
+        let mut database_guard = database_for_migration.blocking_lock();
+        database_guard.migrate_storage_parent(&parent, |result| {
+            let previous_storage_root = settings_guard.storage_root.clone();
+            settings_guard.storage_root = Some(result.new_root.clone());
+            if let Err(error) = persist_settings(&settings_guard) {
+                settings_guard.storage_root = previous_storage_root;
+                return Err(error);
             }
-            Err(rollback_error) => Err(StorageMigrationFailure::RollbackAlsoFailed {
-                save_error,
-                rollback_error,
-            }),
-        };
-    }
-    Ok(result)
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|error| StorageMigrationFailure::Migrate(error.to_string()))?
 }
 
 #[derive(Serialize, Deserialize)]
@@ -269,27 +237,47 @@ impl HistoryDB {
     }
 
     /// Copy all bulk data into `<parent>/TailSync Data`, verify every file and
-    /// SQLite, then switch this open database to the new location. The old
-    /// location is intentionally retained for explicit user cleanup.
+    /// SQLite, persist the new root, then switch this open database to the new
+    /// location. The old location is retained for explicit user cleanup.
     pub fn migrate_storage_parent(
         &mut self,
         parent: &Path,
-    ) -> Result<StorageMigrationResult, Box<dyn std::error::Error>> {
+        persist_settings: impl FnOnce(&StorageMigrationResult) -> Result<(), String>,
+    ) -> Result<StorageMigrationResult, StorageMigrationFailure> {
+        let target = parent.join(STORAGE_DIRECTORY_NAME);
+        let (result, mut replacement) = self
+            .prepare_storage_parent(parent)
+            .map_err(|error| StorageMigrationFailure::Migrate(error.to_string()))?;
+        if let Err(save_error) = persist_settings(&result) {
+            drop(replacement);
+            let _ = fs::remove_dir_all(&target);
+            return Err(StorageMigrationFailure::SaveFailed { save_error });
+        }
+        replacement.max_history = self.max_history;
+        replacement.storage_quota_bytes = self.storage_quota_bytes;
+        paths::set_storage_dir(target);
+        *self = replacement;
+        Ok(result)
+    }
+
+    fn prepare_storage_parent(
+        &self,
+        parent: &Path,
+    ) -> Result<(StorageMigrationResult, Self), Box<dyn std::error::Error>> {
         // A disk-tree copy cannot carry RAM-only acknowledged history. Fail
         // before touching either root or settings; configured recovery adopts
         // those rows first, after which ordinary relocation is safe.
         if !self.storage_available {
             return Err("StorageUnavailableWithPendingHistory: restore access to the current storage location and wait for history recovery before moving TailSync data; keep TailSync running to preserve in-memory history".into());
         }
+        if !self.protected_history.is_empty() {
+            return Err("Pending clipboard history must settle before changing storage".into());
+        }
         validate_storage_dir(parent)?;
         let old_root = get_storage_dir();
         let target = parent.join(STORAGE_DIRECTORY_NAME);
-        if paths_equivalent(&old_root, &target) {
-            return Ok(StorageMigrationResult {
-                new_root: target.to_string_lossy().into_owned(),
-                old_root: old_root.to_string_lossy().into_owned(),
-                old_size_bytes: bulk_storage_size(&old_root).unwrap_or(0),
-            });
+        if paths_overlap(&old_root, &target)? {
+            return Err("The new TailSync storage must not overlap the active storage".into());
         }
 
         fs::create_dir_all(parent)?;
@@ -330,16 +318,22 @@ impl HistoryDB {
             return Err(error);
         }
 
-        if let Err(error) = self.reopen_storage_at(&target) {
-            let _ = fs::remove_dir_all(&target);
-            return Err(error);
-        }
+        let replacement = match Self::open_at_with_policy(&target, MigrationPolicy::LegacyOnly) {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&target);
+                return Err(error);
+            }
+        };
 
-        Ok(StorageMigrationResult {
-            new_root: target.to_string_lossy().into_owned(),
-            old_root: old_root.to_string_lossy().into_owned(),
-            old_size_bytes,
-        })
+        Ok((
+            StorageMigrationResult {
+                new_root: target.to_string_lossy().into_owned(),
+                old_root: old_root.to_string_lossy().into_owned(),
+                old_size_bytes,
+            },
+            replacement,
+        ))
     }
 
     pub fn reopen_storage_at(&mut self, root: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -473,7 +467,7 @@ fn required_free_space_for_batch(incoming_bytes: u64, encrypted_copy_bytes: u64)
 
 pub fn delete_old_storage(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let current = get_storage_dir();
-    if paths_equivalent(path, &current) {
+    if paths_overlap(path, &current)? {
         return Err("Cannot delete the active TailSync storage".into());
     }
     if paths_equivalent(path, &get_data_dir()) {
@@ -554,6 +548,37 @@ fn paths_equivalent(left: &Path, right: &Path) -> bool {
     } else {
         left == right
     }
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> std::io::Result<bool> {
+    fn resolve(path: &Path) -> std::io::Result<PathBuf> {
+        let mut resolved = PathBuf::new();
+        for component in std::path::absolute(path)?.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    resolved.pop();
+                }
+                std::path::Component::CurDir => {}
+                std::path::Component::Normal(name) => {
+                    resolved.push(name);
+                    match resolved.canonicalize() {
+                        Ok(canonical) => resolved = canonical,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                component => resolved.push(component.as_os_str()),
+            }
+        }
+        Ok(if cfg!(windows) {
+            PathBuf::from(resolved.to_string_lossy().to_lowercase())
+        } else {
+            resolved
+        })
+    }
+    let left = resolve(left)?;
+    let right = resolve(right)?;
+    Ok(left.starts_with(&right) || right.starts_with(&left))
 }
 
 fn copy_directory_verified(source: &Path, target: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -873,6 +898,128 @@ mod tests {
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
+    #[test]
+    fn storage_paths_overlap_through_missing_children_and_parent_components() {
+        let base = temp_migration_base("storage-overlap");
+        let root = base.join("store");
+        fs::create_dir_all(&root).unwrap();
+        for candidate in [
+            root.clone(),
+            base.clone(),
+            root.join("missing").join("child"),
+            base.join("missing").join("..").join("store"),
+        ] {
+            assert!(paths_overlap(&root, &candidate).unwrap(), "{candidate:?}");
+            assert!(paths_overlap(&candidate, &root).unwrap(), "{candidate:?}");
+        }
+        assert!(!paths_overlap(&root, &base.join("store-other")).unwrap());
+        #[cfg(windows)]
+        assert!(paths_overlap(
+            &root,
+            &PathBuf::from(root.to_string_lossy().to_uppercase()).join("missing")
+        )
+        .unwrap());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_paths_overlap_through_a_symlink_with_missing_children() {
+        let base = temp_migration_base("storage-overlap-symlink");
+        let root = base.join("store");
+        let alias = base.join("alias");
+        fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        assert!(paths_overlap(&root, &alias.join("missing").join("child")).unwrap());
+        assert!(paths_overlap(&alias, &root.join("missing")).unwrap());
+        assert!(paths_overlap(
+            &root,
+            &base.join("missing").join("..").join("alias").join("child")
+        )
+        .unwrap());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn storage_migration_rejects_equal_ancestor_and_descendant_targets() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("migration-overlap");
+        let old_root = base
+            .join(STORAGE_DIRECTORY_NAME)
+            .join("nested")
+            .join(STORAGE_DIRECTORY_NAME);
+        configure_storage_dir(Some(&old_root)).unwrap();
+        let database = test_database(&old_root);
+        let id = database
+            .lock()
+            .await
+            .prepare_legacy_text("keep history", "self")
+            .unwrap();
+        database.lock().await.release_history(id);
+        for parent in [
+            base.clone(),
+            old_root.parent().unwrap().to_path_buf(),
+            old_root.join("missing"),
+        ] {
+            let error = database
+                .lock()
+                .await
+                .migrate_storage_parent(&parent, |_| {
+                    panic!("overlapping storage must not save settings")
+                })
+                .unwrap_err();
+            assert!(
+                matches!(error, StorageMigrationFailure::Migrate(ref detail) if detail.contains("overlap"))
+            );
+            assert_eq!(get_storage_dir(), old_root);
+            assert_eq!(database.lock().await.get_data(id).unwrap(), b"keep history");
+        }
+        assert!(!old_root.join("missing").exists());
+        #[cfg(unix)]
+        {
+            let alias = base.join("alias");
+            std::os::unix::fs::symlink(&old_root, &alias).unwrap();
+            assert!(
+                matches!(database.lock().await.migrate_storage_parent(&alias.join("missing"), |_| panic!("aliased storage must not save settings")), Err(StorageMigrationFailure::Migrate(ref error)) if error.contains("overlap"))
+            );
+            assert!(!old_root.join("missing").exists());
+        }
+        drop(database);
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn old_storage_cleanup_rejects_the_active_tree_and_its_ancestors() {
+        let _guard = migration_global_lock().lock().await;
+        let original = get_storage_dir();
+        let base = temp_migration_base("cleanup-overlap");
+        let current = base.join("active");
+        let child = current.join("child");
+        configure_storage_dir(Some(&current)).unwrap();
+        fs::create_dir_all(&child).unwrap();
+        fs::write(child.join("keep.bin"), b"keep").unwrap();
+        for candidate in [&base, &current, &child] {
+            assert!(delete_old_storage(candidate)
+                .unwrap_err()
+                .to_string()
+                .contains("active TailSync storage"));
+            assert_eq!(fs::read(child.join("keep.bin")).unwrap(), b"keep");
+        }
+        #[cfg(unix)]
+        {
+            let alias = base.join("alias");
+            std::os::unix::fs::symlink(&current, &alias).unwrap();
+            assert!(delete_old_storage(&alias)
+                .unwrap_err()
+                .to_string()
+                .contains("active TailSync storage"));
+        }
+        configure_storage_dir(Some(&original)).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
     #[tokio::test]
     async fn batch_preflight_stops_when_only_inline_history_can_be_evicted() {
         let _guard = migration_global_lock().lock().await;
@@ -1149,7 +1296,7 @@ mod tests {
                 wait_timeout: std::time::Duration::from_millis(20),
                 has_active_transfers: &busy,
                 notify: None,
-                persist_settings: &persist,
+                persist_settings: std::sync::Arc::new(persist),
             },
         )
         .await
@@ -1180,7 +1327,18 @@ mod tests {
         let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
         let previous_root = settings.lock().await.storage_root.clone();
         let idle = || false;
-        let persist = |_settings: &Settings| -> Result<(), String> { Ok(()) };
+        let database_for_persist = database.clone();
+        let settings_for_persist = settings.clone();
+        let old_root_for_persist = old_root.clone();
+        let persist = move |settings: &Settings| -> Result<(), String> {
+            assert!(database_for_persist.try_lock().is_err());
+            assert!(settings_for_persist.try_lock().is_err());
+            assert!(STORAGE_MAINTENANCE_LOCK.try_lock().is_err());
+            assert_eq!(get_storage_dir(), old_root_for_persist);
+            let target = Path::new(settings.storage_root.as_ref().unwrap());
+            verify_sqlite(&target.join("history-v2.db")).unwrap();
+            Ok(())
+        };
 
         let result = migrate_storage_with_rollback(
             &database,
@@ -1190,7 +1348,7 @@ mod tests {
                 wait_timeout: std::time::Duration::from_secs(60),
                 has_active_transfers: &idle,
                 notify: None,
-                persist_settings: &persist,
+                persist_settings: std::sync::Arc::new(persist),
             },
         )
         .await
@@ -1221,7 +1379,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn storage_migration_rolls_back_when_persistence_fails() {
+    async fn storage_migration_keeps_the_old_connection_when_persistence_fails() {
         let _guard = migration_global_lock().lock().await;
         let original = get_storage_dir();
         let base = temp_migration_base("migration-rollback");
@@ -1237,7 +1395,28 @@ mod tests {
         let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
         let previous_root = settings.lock().await.storage_root.clone();
         let idle = || false;
-        let fail_persist = |_settings: &Settings| -> Result<(), String> {
+        let database_for_persist = database.clone();
+        let settings_for_persist = settings.clone();
+        let old_root_for_persist = old_root.clone();
+        let writer = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let writer_for_persist = writer.clone();
+        let fail_persist = move |_settings: &Settings| -> Result<(), String> {
+            assert!(database_for_persist.try_lock().is_err());
+            assert!(settings_for_persist.try_lock().is_err());
+            assert!(STORAGE_MAINTENANCE_LOCK.try_lock().is_err());
+            assert_eq!(get_storage_dir(), old_root_for_persist);
+            let database_for_writer = database_for_persist.clone();
+            let (started, waiting) = std::sync::mpsc::channel();
+            *writer_for_persist.lock().unwrap() = Some(std::thread::spawn(move || {
+                started.send(()).unwrap();
+                database_for_writer
+                    .blocking_lock()
+                    .add_text("concurrent write", "self")
+                    .unwrap();
+            }));
+            waiting
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
             Err("simulated save failure".to_string())
         };
 
@@ -1249,21 +1428,30 @@ mod tests {
                 wait_timeout: std::time::Duration::from_secs(60),
                 has_active_transfers: &idle,
                 notify: None,
-                persist_settings: &fail_persist,
+                persist_settings: std::sync::Arc::new(fail_persist),
             },
         )
         .await
         .unwrap_err();
         assert!(matches!(
             error,
-            StorageMigrationFailure::SaveFailedAfterRollback { ref save_error }
+            StorageMigrationFailure::SaveFailed { ref save_error }
                 if save_error == "simulated save failure"
         ));
         assert_eq!(settings.lock().await.storage_root, previous_root);
+        writer.lock().unwrap().take().unwrap().join().unwrap();
+        assert_eq!(
+            database
+                .lock()
+                .await
+                .count_all_filtered(None, None, None, None)
+                .unwrap(),
+            2
+        );
         assert_eq!(
             get_storage_dir(),
             old_root,
-            "storage must be back at the old root"
+            "storage must stay at the old root"
         );
         assert!(
             !parent.join(STORAGE_DIRECTORY_NAME).exists(),
@@ -1272,7 +1460,7 @@ mod tests {
         database
             .lock()
             .await
-            .add_text("still works after rollback", "self")
+            .add_text("still works after save failure", "self")
             .unwrap();
 
         drop(database);
@@ -1282,31 +1470,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn storage_migration_reports_when_rollback_also_fails() {
+    async fn storage_migration_rejects_pending_history_before_persisting() {
         let _guard = migration_global_lock().lock().await;
         let original = get_storage_dir();
-        let base = temp_migration_base("migration-rollback-failed");
+        let base = temp_migration_base("migration-pending-history");
         let old_root = base.join("old");
         let parent = base.join("parent");
         configure_storage_dir(Some(&old_root)).unwrap();
         let database = test_database(&old_root);
-        database
+        let pending_id = database
             .lock()
             .await
-            .add_text("before migration", "self")
+            .prepare_legacy_text("pending history", "self")
             .unwrap();
         let settings = std::sync::Arc::new(tokio::sync::Mutex::new(Settings::default()));
         let previous_root = settings.lock().await.storage_root.clone();
         let idle = || false;
-        let old_root_for_hook = old_root.clone();
-        let sabotage_persist = move |_settings: &Settings| -> Result<(), String> {
-            // Replace the old root's database with a directory so the
-            // rollback reopen cannot open it.
-            fs::remove_file(old_root_for_hook.join("history-v2.db")).unwrap();
-            fs::create_dir(old_root_for_hook.join("history-v2.db")).unwrap();
-            Err("simulated save failure".to_string())
-        };
-
         let error = migrate_storage_with_rollback(
             &database,
             &settings,
@@ -1315,22 +1494,26 @@ mod tests {
                 wait_timeout: std::time::Duration::from_secs(60),
                 has_active_transfers: &idle,
                 notify: None,
-                persist_settings: &sabotage_persist,
+                persist_settings: std::sync::Arc::new(|_| {
+                    panic!("pending history must block migration")
+                }),
             },
         )
         .await
         .unwrap_err();
         assert!(matches!(
             error,
-            StorageMigrationFailure::RollbackAlsoFailed { ref save_error, ref rollback_error }
-                if save_error == "simulated save failure" && !rollback_error.is_empty()
+            StorageMigrationFailure::Migrate(ref error)
+                if error.contains("Pending clipboard history")
         ));
         assert_eq!(settings.lock().await.storage_root, previous_root);
-        database
-            .lock()
-            .await
-            .add_text("still at the new root", "self")
-            .unwrap();
+        assert_eq!(get_storage_dir(), old_root);
+        assert!(!parent.exists());
+        assert_eq!(
+            database.lock().await.get_data(pending_id).unwrap(),
+            b"pending history"
+        );
+        database.lock().await.release_history(pending_id);
 
         drop(database);
         drop(settings);
@@ -1375,7 +1558,7 @@ mod tests {
                 wait_timeout: std::time::Duration::from_secs(60),
                 has_active_transfers: &busy_once,
                 notify: Some(&notify),
-                persist_settings: &persist,
+                persist_settings: std::sync::Arc::new(persist),
             },
         )
         .await
@@ -1427,7 +1610,9 @@ mod tests {
                     wait_timeout: std::time::Duration::from_secs(1),
                     has_active_transfers: &|| false,
                     notify: None,
-                    persist_settings: &|_| panic!("rejected migration must not save settings"),
+                    persist_settings: std::sync::Arc::new(|_| {
+                        panic!("rejected migration must not save settings")
+                    }),
                 },
             )
             .await;
@@ -1454,7 +1639,7 @@ mod tests {
             4
         );
         // Recovery persisted all payload/reference pairs. A failed Settings save
-        // now rolls the healthy store back without losing the adopted rows.
+        // now preserves the healthy store without losing the adopted rows.
         let error = migrate_storage_with_rollback(
             &database,
             &settings,
@@ -1463,15 +1648,12 @@ mod tests {
                 wait_timeout: std::time::Duration::from_secs(1),
                 has_active_transfers: &|| false,
                 notify: None,
-                persist_settings: &|_| Err("injected settings failure".into()),
+                persist_settings: std::sync::Arc::new(|_| Err("injected settings failure".into())),
             },
         )
         .await
         .unwrap_err();
-        assert!(matches!(
-            error,
-            StorageMigrationFailure::SaveFailedAfterRollback { .. }
-        ));
+        assert!(matches!(error, StorageMigrationFailure::SaveFailed { .. }));
         assert_eq!(get_storage_dir(), old_root);
         let result = migrate_storage_with_rollback(
             &database,
@@ -1481,7 +1663,7 @@ mod tests {
                 wait_timeout: std::time::Duration::from_secs(1),
                 has_active_transfers: &|| false,
                 notify: None,
-                persist_settings: &|_| Ok(()),
+                persist_settings: std::sync::Arc::new(|_| Ok(())),
             },
         )
         .await

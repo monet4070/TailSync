@@ -77,14 +77,17 @@ fn storage_state() -> &'static RwLock<PathBuf> {
 pub fn configure_storage_dir(path: Option<&Path>) -> Result<PathBuf, String> {
     let directory = path.map(Path::to_path_buf).unwrap_or_else(get_data_dir);
     validate_storage_dir(&directory)?;
-    let mut current = storage_state()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *current = directory.clone();
-    drop(current);
+    set_storage_dir(directory.clone());
     crate::private_fs::create_private_dir_all(&directory)
         .map_err(|error| format!("Could not create {}: {error}", directory.display()))?;
     Ok(directory)
+}
+
+pub(super) fn set_storage_dir(directory: PathBuf) {
+    let mut current = storage_state()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *current = directory;
 }
 
 pub fn configure_storage_parent(parent: &Path) -> Result<PathBuf, String> {

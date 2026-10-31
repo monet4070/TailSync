@@ -83,9 +83,9 @@ pub async fn change_storage_location(
             wait_timeout: std::time::Duration::from_secs(60),
             has_active_transfers: &crate::api::has_active_file_progress,
             notify,
-            persist_settings: &|settings: &crate::crypto::Settings| {
+            persist_settings: std::sync::Arc::new(|settings: &crate::crypto::Settings| {
                 settings.save().map_err(|error| error.to_string())
-            },
+            }),
         },
     )
     .await
@@ -94,8 +94,7 @@ pub async fn change_storage_location(
             CommandError::code(tailsync_runtime::contracts::StableErrorCode::TemporarilyBusy)
         }
         db::StorageMigrationFailure::Migrate(_)
-        | db::StorageMigrationFailure::SaveFailedAfterRollback { .. }
-        | db::StorageMigrationFailure::RollbackAlsoFailed { .. } => {
+        | db::StorageMigrationFailure::SaveFailed { .. } => {
             CommandError::code(tailsync_runtime::contracts::StableErrorCode::StorageUnavailable)
         }
     })?;
