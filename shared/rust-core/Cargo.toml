@@ -54,4 +54,4 @@ protocol-image-compressed-chunks = []
 
 [dev-dependencies]
 proptest = "1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
