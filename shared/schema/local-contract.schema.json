@@ -226,6 +226,13 @@
           "maximum": 65535,
           "minimum": 0
         },
+        "images_complete": {
+          "description": "Whether the HTML's primary images are saved locally, independently of\nother external document dependencies. Absent when not inventoried.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "native_item_count": {
           "type": "integer",
           "format": "uint16",

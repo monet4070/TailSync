@@ -125,12 +125,13 @@ struct ContractCompositeInfo: Codable, Sendable {
   let `formats`: [String]
   let `identity`: ContractHistoryIdentity?
   let `image_count`: UInt64
+  let `images_complete`: Bool?
   let `native_item_count`: UInt64
   let `native_only`: Bool
   let `representation_count`: UInt64
   let `restorable_formats`: [String]
   let `withheld_formats`: [ContractWithheldRestoreFormat]
-  private enum CodingKeys: String, CodingKey { case `completeness`, `formats`, `identity`, `image_count`, `native_item_count`, `native_only`, `representation_count`, `restorable_formats`, `withheld_formats` }
+  private enum CodingKeys: String, CodingKey { case `completeness`, `formats`, `identity`, `image_count`, `images_complete`, `native_item_count`, `native_only`, `representation_count`, `restorable_formats`, `withheld_formats` }
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     self.`completeness` = try container.decode(String.self, forKey: .`completeness`)
@@ -139,6 +140,7 @@ struct ContractCompositeInfo: Codable, Sendable {
     self.`identity` = try container.decodeIfPresent(ContractHistoryIdentity.self, forKey: .`identity`)
     self.`image_count` = try container.decode(UInt64.self, forKey: .`image_count`)
     guard self.`image_count` <= 65535 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Local contract constraint failed")) }
+    self.`images_complete` = try container.decodeIfPresent(Bool.self, forKey: .`images_complete`)
     self.`native_item_count` = try container.decode(UInt64.self, forKey: .`native_item_count`)
     guard self.`native_item_count` <= 65535 else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Local contract constraint failed")) }
     self.`native_only` = try container.decode(Bool.self, forKey: .`native_only`)

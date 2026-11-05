@@ -4,6 +4,30 @@ import XCTest
 @testable import TailSync
 
 final class ApiClientCancellationTests: XCTestCase {
+  func testPairingStartWaitsPastTheDefaultLocalTimeout() async throws {
+    for remoteInvite in [false, true] {
+      let server = try LocalTestSocket()
+      let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))
+      let sent = expectation(description: "delayed pairing status sent")
+      let closed = expectation(description: "delayed pairing socket closed")
+      let response = Data(#"{"ok":true,"data":{"pairing_enabled":true,"phase":"verification","remaining_seconds":100,"failed_attempts":0,"max_failures":5}}"#.utf8) + Data([10])
+      DispatchQueue.global().async {
+        Thread.sleep(forTimeInterval: 3.3)
+        server.respond(with: response, closeDelay: 0, responseSent: sent, connectionClosed: closed) { request in
+          XCTAssertEqual(request["cmd"] as? String, remoteInvite ? "start_remote_pairing" : "start_pairing")
+          XCTAssertNil(request["request_id"])
+        }
+      }
+      let status = if remoteInvite {
+        try await client.startRemotePairing(inviteLink: "tailsync://pair/v1/test-invite")
+      } else {
+        try await client.startPairing(address: "iroh:test-endpoint")
+      }
+      XCTAssertEqual(status.phase, "verification")
+      await fulfillment(of: [sent, closed], timeout: 2)
+    }
+  }
+
   func testThumbnailRetriesStableBusyEnvelopeWithoutDependingOnDisplayLanguage() async throws {
     let server = try LocalTestSocket()
     let client = ApiClient(socketPath: server.path, capabilityToken: String(repeating: "a", count: 64))

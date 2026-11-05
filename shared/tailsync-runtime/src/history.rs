@@ -2108,6 +2108,11 @@ mod archive_tests {
             .await
             .add_composite(&bundle, None, "self")
             .unwrap();
+        let before = database.lock().await.get_all(None, None, 10, 0).unwrap();
+        assert_eq!(
+            before[0].composite.as_ref().unwrap().images_complete,
+            Some(false)
+        );
         let report = HistoryOperations::archive_entry_images(
             database.clone(),
             id,
@@ -2125,6 +2130,14 @@ mod archive_tests {
         let guard = database.lock().await;
         let saved = guard.get_composite_archived(id).unwrap().unwrap();
         assert_eq!(saved.completeness, Completeness::ExternalReferences);
+        let entries = guard.get_all(None, None, 10, 0).unwrap();
+        let info = entries[0].composite.as_ref().unwrap();
+        assert_eq!(info.images_complete, Some(true));
+        assert_eq!(info.completeness, "external_references");
+        assert!(!info
+            .restorable_formats
+            .iter()
+            .any(|format| format == "html"));
         assert_eq!(guard.get_composite(id).unwrap().encode().unwrap(), original);
         let identity = guard.composite_identity(id).unwrap();
         drop(guard);
@@ -2145,6 +2158,11 @@ mod archive_tests {
         assert_eq!(
             database.lock().await.composite_identity(id).unwrap(),
             identity
+        );
+        let entries = database.lock().await.get_all(None, None, 10, 0).unwrap();
+        assert_eq!(
+            entries[0].composite.as_ref().unwrap().images_complete,
+            Some(true)
         );
     }
 
@@ -2173,6 +2191,11 @@ mod archive_tests {
         assert_eq!(report.failures.len(), 1);
         assert_eq!(report.failures[0].image_index, 1);
         assert_eq!(report.failures[0].code, "archive_resolve");
+        let entries = database.lock().await.get_all(None, None, 10, 0).unwrap();
+        assert_eq!(
+            entries[0].composite.as_ref().unwrap().images_complete,
+            Some(false)
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

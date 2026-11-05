@@ -202,6 +202,9 @@ impl PreparedCompositeMenu {
                 }
                 Some((b, self.bindings))
             });
+        info.images_complete = html.as_ref().map(|(bytes, bindings)| {
+            composite::html::image_reference_inventory_complete(bytes, bindings).unwrap_or(false)
+        });
         let complete = html.as_ref().and_then(|(bytes, bindings)| {
             composite::html::restore_reference_inventory_complete(bytes, bindings).ok()
         }) == Some(true);
@@ -580,6 +583,7 @@ pub(super) fn info_bytes(decoded: &[u8]) -> Result<CompositeInfo, Box<dyn std::e
                     })
                     .count() as u16
             }),
+        images_complete: None,
         completeness: match completeness {
             0 => "complete",
             1 => "external_references",
@@ -4027,6 +4031,69 @@ mod tests {
     }
 
     #[test]
+    fn saved_image_status_survives_reopen_and_owned_listing_with_external_decoration() {
+        use crate::composite::resource_archive::{apply_resource_bindings, ResourceReplacement};
+        let root = root();
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let mut base = bundle("saved forum image");
+        base.representations[1].bytes = br##"<p>saved forum image</p><img src="https://example.com/a.png" srcset="https://example.com/large.png 2x"><svg><use href="#decoration"></use></svg>"##.to_vec();
+        base.completeness = Completeness::ExternalReferences;
+        let span = composite::html::reference_inventory(&base.representations[1].bytes)
+            .unwrap()
+            .images[0];
+        let (saved, _) = apply_resource_bindings(
+            &base,
+            &[ResourceReplacement {
+                span,
+                png: composite::packed_to_png(1, 1, &[1, 2, 3, 255]).unwrap(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(saved.completeness, Completeness::ExternalReferences);
+        let id = db.add_composite(&saved, None, "self").unwrap();
+        let identity = db.composite_identity(id).unwrap();
+        drop(db);
+        let db = HistoryDB::open_at(&root).unwrap();
+        let verify = |rows: Vec<HistoryEntry>| {
+            assert_eq!(rows.len(), 1);
+            let info = rows[0].composite.as_ref().unwrap();
+            assert_eq!(info.images_complete, Some(true));
+            assert_eq!(info.completeness, "external_references");
+            assert!(!info
+                .restorable_formats
+                .iter()
+                .any(|format| format == "html"));
+        };
+        verify(db.get_all(None, None, 10, 0).unwrap());
+        verify(db.get_all(Some("forum"), None, 10, 0).unwrap());
+        let chunk = db
+            .prepare_read_chunk(
+                HistoryQuery {
+                    collection: HistoryCollection::All,
+                    keyword: None,
+                    category: None,
+                    start_time: None,
+                    end_time: None,
+                    limit: 10,
+                    offset: 0,
+                },
+                None,
+                &db.read_revision().unwrap(),
+                10,
+            )
+            .unwrap();
+        assert_eq!(db.composite_identity(id).unwrap(), identity);
+        assert_eq!(db.get_composite(id).unwrap(), saved);
+        drop(db);
+        verify(
+            chunk
+                .matching_entries(None, &crate::cancellation::Cancellation::default())
+                .unwrap(),
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn o06_sync_and_owned_listing_withhold_unbound_missing_or_corrupt_html() {
         for mode in ["unbound", "missing", "corrupt", "missing_src", "comment"] {
             let root = root();
@@ -4081,6 +4148,11 @@ mod tests {
                 let info = rows[0].composite.as_ref().unwrap();
                 assert!(info.formats.iter().any(|f| f == "html"));
                 let allowed = mode == "comment";
+                assert_eq!(
+                    info.images_complete,
+                    Some(allowed).filter(|_| !matches!(mode, "missing" | "corrupt")),
+                    "{mode}"
+                );
                 assert_eq!(
                     info.restorable_formats.iter().any(|f| f == "html"),
                     allowed,

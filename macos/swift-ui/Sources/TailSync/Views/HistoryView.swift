@@ -409,7 +409,6 @@ struct HistoryView: View {
                             isFocused: focusedEntryId == entry.id,
                             showsMultipleLabels: multipleLabelsSupported,
                             shortcutNumber: isFavoritesCollection ? nil : numberedIDs.firstIndex(of: entry.id).map { $0 + 1 },
-                            shortcutEnabled: quickShortcutsActive,
                             previewRequest: historyPreviewRequest(
                                 focusedId: entry.id,
                                 entries: entries,

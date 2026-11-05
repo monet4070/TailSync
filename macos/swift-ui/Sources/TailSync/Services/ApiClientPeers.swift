@@ -256,7 +256,7 @@ extension ApiClient {
   }
 
   func startPairing(address: String) async throws -> PairingStatus {
-    try await pairingRequest(["cmd": "start_pairing", "address": address])
+    try await pairingRequest(["cmd": "start_pairing", "address": address], timeoutSeconds: 15)
   }
 
   func confirmPairing() async throws -> PairingStatus {
@@ -267,8 +267,11 @@ extension ApiClient {
     try await pairingRequest(["cmd": "cancel_pairing"])
   }
 
-  private func pairingRequest(_ payload: [String: Any]) async throws -> PairingStatus {
-    let response = try await request(payload)
+  private func pairingRequest(
+    _ payload: [String: Any],
+    timeoutSeconds: Int = 3
+  ) async throws -> PairingStatus {
+    let response = try await request(payload, timeoutSeconds: timeoutSeconds)
     guard response["ok"] as? Bool == true,
       let value = response["data"] as? [String: Any]
     else {

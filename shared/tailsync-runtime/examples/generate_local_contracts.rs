@@ -204,6 +204,7 @@ fn fixtures() -> LocalContractExports {
                     }],
                     representation_count: 3,
                     image_count: 2,
+                    images_complete: Some(true),
                     completeness: "complete".into(),
                 }),
                 entry_type: "composite".into(),

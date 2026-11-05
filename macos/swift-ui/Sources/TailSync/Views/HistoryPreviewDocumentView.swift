@@ -5,12 +5,61 @@ struct HistoryPreviewDocumentView: View {
     let material: HistoryPreviewDocumentMaterial
 
     @Environment(\.tailSyncPalette) private var palette
+    @AppStorage(HistoryPreviewDocumentReadingOptions.fontSizeKey)
+    private var fontSize = HistoryPreviewDocumentReadingOptions.defaultFontSize
+    @AppStorage(HistoryPreviewDocumentReadingOptions.lineSpacingKey)
+    private var lineSpacing: HistoryPreviewDocumentReadingOptions.LineSpacing = .standard
+    @AppStorage(HistoryPreviewDocumentReadingOptions.comfortableWidthKey)
+    private var comfortableWidth = false
+    @State private var query = ""
+    @State private var searchRevision = 0
+    @State private var searchDirection = 1
+    @State private var searchSummary = HistoryPreviewDocumentSearchSummary()
 
     var body: some View {
         VStack(spacing: 0) {
+            HistoryPreviewDocumentToolbar(
+                query: $query,
+                fontSize: Binding(
+                    get: { HistoryPreviewPreferences.clampedTextFontSize(fontSize) },
+                    set: { fontSize = HistoryPreviewPreferences.clampedTextFontSize($0) }
+                ),
+                lineSpacing: $lineSpacing,
+                comfortableWidth: $comfortableWidth,
+                searchSummary: searchSummary,
+                find: { forward in
+                    searchDirection = forward ? 1 : -1
+                    searchRevision &+= 1
+                },
+                resetReading: {
+                    fontSize = HistoryPreviewDocumentReadingOptions.defaultFontSize
+                    lineSpacing = .standard
+                    comfortableWidth = false
+                },
+                copyText: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        HistoryPreviewDocumentReadingStyle.plainText(material.attributed),
+                        forType: .string
+                    )
+                }
+            )
             noticeSection
-            HistoryPreviewDocumentTextView(material: material)
+            HistoryPreviewDocumentTextView(
+                material: material,
+                readingOptions: HistoryPreviewDocumentReadingOptions(
+                    fontSize: fontSize, lineSpacing: lineSpacing, comfortableWidth: comfortableWidth
+                ),
+                searchQuery: query,
+                searchRevision: searchRevision,
+                searchDirection: searchDirection,
+                onSearchSummary: { searchSummary = $0 }
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .background(HistoryPreviewModifierScrollMonitor { delta in
+                    fontSize = HistoryPreviewPreferences.textFontSize(afterModifierScroll: delta, current: fontSize)
+                })
         }
         .background(palette.surfaceColor)
     }
@@ -90,6 +139,11 @@ struct HistoryPreviewDocumentView: View {
 
 struct HistoryPreviewDocumentTextView: NSViewRepresentable {
     let material: HistoryPreviewDocumentMaterial
+    var readingOptions = HistoryPreviewDocumentReadingOptions()
+    var searchQuery = ""
+    var searchRevision = 0
+    var searchDirection = 1
+    var onSearchSummary: ((HistoryPreviewDocumentSearchSummary) -> Void)?
     var opener: HistoryPreviewDocumentLinkOpening = SystemHistoryPreviewDocumentLinkOpener()
 
     func makeCoordinator() -> Coordinator { Coordinator(opener: opener) }
@@ -107,18 +161,30 @@ struct HistoryPreviewDocumentTextView: NSViewRepresentable {
         scrollView.documentView = textView
 
         context.coordinator.textView = textView
-        context.coordinator.install(material, in: textView, scrollView: scrollView)
+        configure(context.coordinator, textView: textView, scrollView: scrollView)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = context.coordinator.textView else { return }
-        context.coordinator.install(material, in: textView, scrollView: scrollView)
+        configure(context.coordinator, textView: textView, scrollView: scrollView)
+    }
+
+    private func configure(_ coordinator: Coordinator, textView: NSTextView, scrollView: NSScrollView) {
+        coordinator.onSearchSummary = onSearchSummary
+        coordinator.install(material, options: readingOptions, in: textView, scrollView: scrollView)
+        coordinator.updateSearch(searchQuery, revision: searchRevision, direction: searchDirection)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         weak var textView: NSTextView?
         private var installed: HistoryPreviewDocumentMaterial?
+        private var readingOptions: HistoryPreviewDocumentReadingOptions?
+        private var query: String?
+        private var searchRevision = 0
+        private var matches: [NSRange] = []
+        private var summary = HistoryPreviewDocumentSearchSummary()
+        var onSearchSummary: ((HistoryPreviewDocumentSearchSummary) -> Void)?
         let linkDelegate: HistoryPreviewDocumentLinkDelegate
 
         init(opener: HistoryPreviewDocumentLinkOpening) {
@@ -131,25 +197,86 @@ struct HistoryPreviewDocumentTextView: NSViewRepresentable {
 
         func install(
             _ material: HistoryPreviewDocumentMaterial,
+            options: HistoryPreviewDocumentReadingOptions = HistoryPreviewDocumentReadingOptions(),
             in textView: NSTextView,
             scrollView: NSScrollView
         ) {
-            guard installed !== material else { return }
+            let changed = installed !== material
+            guard changed || readingOptions != options else { return }
+            let selection = textView.selectedRange()
+            let anchor = textView.characterIndexForInsertion(at: NSPoint(
+                x: textView.textContainerInset.width + 5,
+                y: scrollView.contentView.bounds.minY + textView.textContainerInset.height
+            ))
             installed = material
+            readingOptions = options
             let viewport = scrollView.contentSize
             textView.minSize = NSSize(width: 0, height: viewport.height)
+            textView.setFrameSize(NSSize(width: max(1, viewport.width), height: max(viewport.height, textView.frame.height)))
+            (textView as? HistoryPreviewDocumentReadingTextView)?.usesComfortableWidth = options.comfortableWidth
             textView.textContainer?.containerSize = NSSize(
-                width: max(1, viewport.width),
+                width: max(1, viewport.width - textView.textContainerInset.width * 2),
                 height: CGFloat.greatestFiniteMagnitude
             )
-            textView.textStorage?.setAttributedString(material.attributed)
+            textView.textStorage?.setAttributedString(HistoryPreviewDocumentReadingStyle.attributed(material.attributed, options: options))
             textView.setAccessibilityLabel(Loc.t("history.preview.documentTitle"))
             textView.setAccessibilityHelp(
                 material.accessibilitySummary(
                     template: Loc.t("history.preview.documentAccessibilitySummary")
                 )
             )
-            textView.scroll(.zero)
+            if changed {
+                query = nil
+                textView.setSelectedRange(NSRange(location: 0, length: 0))
+                textView.scroll(.zero)
+            } else {
+                textView.setSelectedRange(selection)
+                textView.scrollRangeToVisible(NSRange(location: min(anchor, textView.string.utf16.count), length: 0))
+                highlightMatches()
+            }
+        }
+
+        func updateSearch(_ query: String, revision: Int, direction: Int) {
+            guard let textView else { return }
+            if self.query != query {
+                self.query = query
+                searchRevision = revision
+                let result = HistoryPreviewDocumentSearch.matches(in: textView.string, query: query)
+                matches = result.ranges
+                summary = HistoryPreviewDocumentSearchSummary(current: matches.isEmpty ? 0 : 1, count: matches.count, truncated: result.truncated)
+                highlightMatches()
+                selectCurrentMatch()
+                publishSummary()
+            } else if searchRevision != revision {
+                searchRevision = revision
+                guard !matches.isEmpty else { return }
+                summary.current = (summary.current - 1 + (direction > 0 ? 1 : -1) + matches.count) % matches.count + 1
+                selectCurrentMatch()
+                publishSummary()
+            }
+        }
+
+        private func highlightMatches() {
+            guard let textView, let layout = textView.layoutManager else { return }
+            layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: textView.string.utf16.count))
+            for range in matches {
+                layout.addTemporaryAttribute(.backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.35), forCharacterRange: range)
+            }
+        }
+
+        private func selectCurrentMatch() {
+            guard let textView, matches.indices.contains(summary.current - 1) else { return }
+            let range = matches[summary.current - 1]
+            textView.setSelectedRange(range)
+            textView.scrollRangeToVisible(range)
+        }
+
+        private func publishSummary() {
+            let updated = summary
+            DispatchQueue.main.async { [weak self] in
+                guard let self, summary == updated else { return }
+                onSearchSummary?(updated)
+            }
         }
     }
 }
@@ -181,7 +308,7 @@ final class HistoryPreviewDocumentLinkDelegate: NSObject, NSTextViewDelegate {
 
 enum HistoryPreviewDocumentTextFactory {
     static func makeTextView() -> NSTextView {
-        let textView = NSTextView(frame: .zero)
+        let textView = HistoryPreviewDocumentReadingTextView(frame: .zero)
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = true

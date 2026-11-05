@@ -234,18 +234,20 @@ pub(super) async fn handle_iroh_invite_connection(
         Ok(hello) => match invite_manager.claim(&hello) {
             Ok(claim) => claim,
             Err(error) => {
-                let _ = stream
-                    .write_all(&[tailsync_core::pairing::invite::INVITE_ACK_REJECTED])
-                    .await;
-                let _ = stream.flush().await;
+                let _ = timeout(
+                    INVITE_PREFACE_TIMEOUT,
+                    tailsync_core::pairing::invite::reject_invite(&mut stream),
+                )
+                .await;
                 return Err(error.to_string().into());
             }
         },
         Err(error) => {
-            let _ = stream
-                .write_all(&[tailsync_core::pairing::invite::INVITE_ACK_REJECTED])
-                .await;
-            let _ = stream.flush().await;
+            let _ = timeout(
+                INVITE_PREFACE_TIMEOUT,
+                tailsync_core::pairing::invite::reject_invite(&mut stream),
+            )
+            .await;
             return Err(error.to_string().into());
         }
     };

@@ -228,7 +228,7 @@ enum HistoryPreviewDocumentBuilder {
     static let maximumPlacementPixels = 16_000_000
     static let maximumRetainedBytes = 64 * 1024 * 1024
 
-    private static let bodyFontSize: CGFloat = 13
+    static let bodyFontSize: CGFloat = 13
     private static let maximumImageWidth: CGFloat = 620
     private static let maximumImageHeight: CGFloat = 460
 

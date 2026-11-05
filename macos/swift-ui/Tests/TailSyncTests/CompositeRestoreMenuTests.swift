@@ -29,9 +29,10 @@ final class CompositeRestoreMenuTests: XCTestCase {
         restorable: [String],
         completeness: String = "complete",
         images: Int = 0,
+        imagesComplete: Bool? = nil,
         withheld: [(String, String)] = []
     ) -> ContractCompositeInfo {
-        let json: [String: Any] = [
+        var json: [String: Any] = [
             "completeness": completeness,
             "formats": formats,
             "image_count": images,
@@ -41,6 +42,7 @@ final class CompositeRestoreMenuTests: XCTestCase {
             "restorable_formats": restorable,
             "withheld_formats": withheld.map { ["format": $0.0, "code": $0.1] },
         ]
+        if let imagesComplete { json["images_complete"] = imagesComplete }
         let data = try! JSONSerialization.data(withJSONObject: json)
         return try! JSONDecoder().decode(ContractCompositeInfo.self, from: data)
     }
@@ -141,7 +143,21 @@ final class CompositeRestoreMenuTests: XCTestCase {
     }
 
     func testDamagedOrTruncatedStatesAreNotMasked() {
-        let subject = info(formats: ["text", "html"], restorable: [], completeness: "missing_formats")
+        let subject = info(formats: ["text", "html"], restorable: [], completeness: "missing_formats", imagesComplete: true)
         XCTAssertEqual(HistoryRowStatusLabel.text(for: subject), Loc.t("history.composite.incomplete"))
+    }
+
+    func testSavedImagesDoNotShowMissingResourcesForOtherExternalDependencies() {
+        for saved in [true, false] {
+            let subject = info(
+                formats: ["text", "html", "png"], restorable: ["text", "png"],
+                completeness: "external_references", images: 1, imagesComplete: saved,
+                withheld: [("html", "resources_incomplete")]
+            )
+            XCTAssertEqual(HistoryRowStatusLabel.text(for: subject), saved ? nil : Loc.t("history.composite.resourcesMissing"))
+            XCTAssertEqual(subject.completeness, "external_references")
+            XCTAssertEqual(HistoryRowActionPolicy.explicitRestoreFormats(subject), ["text", "png"])
+            XCTAssertTrue(HistoryRowActionPolicy.showsMaintenanceActions(subject))
+        }
     }
 }
