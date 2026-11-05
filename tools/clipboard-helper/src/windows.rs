@@ -1,5 +1,10 @@
+use crate::format_model::{
+    enumeration_outcome, resolve_name, EnumOutcome, FormatDiagnostic, FormatMetadata,
+};
 use std::io::{Read, Write};
-use tailsync_protocol::{bitmap, native_clipboard::*, PackedImage};
+use tailsync_protocol::{
+    bitmap, native_archive::*, native_clipboard::*, native_policy, PackedImage,
+};
 use windows_sys::Win32::{
     Foundation::*,
     System::{DataExchange::*, Memory::*},
@@ -9,6 +14,7 @@ const TEXT: u32 = 13;
 const DIB: u32 = 8;
 const DIBV5: u32 = 17;
 const FILES: u32 = 15;
+const SOURCE_FORMAT: &str = "org.tailsync.clipboard-source";
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -163,6 +169,256 @@ fn packed_from_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
     tailsync_protocol::pack_rgba_image(info.width, info.height, &rgba).map_err(|e| e.to_string())
 }
+fn registered_name(id: u32) -> Option<String> {
+    let mut buffer = [0u16; 512];
+    let length = unsafe { GetClipboardFormatNameW(id, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if length <= 0 {
+        return None;
+    }
+    let length = (length as usize).min(buffer.len());
+    let name = String::from_utf16_lossy(&buffer[..length]);
+    if name.is_empty() || name.chars().any(|ch| (ch as u32) < 0x20 || ch == '\u{7f}') {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Presence or fixed DWORD only. Any read failure is reported as an invalid
+/// value, never as permission.
+fn control_payload(id: u32) -> Result<Option<Vec<u8>>, String> {
+    if unsafe { IsClipboardFormatAvailable(id) } == 0 {
+        return Ok(None);
+    }
+    match read_format(id) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(_) => Ok(Some(Vec::new())),
+    }
+}
+
+fn privacy_decision() -> Result<native_policy::WindowsPrivacy, String> {
+    let exclude = registered(native_policy::WINDOWS_EXCLUDE_MONITOR)?;
+    if unsafe { IsClipboardFormatAvailable(exclude) } != 0 {
+        return Ok(native_policy::WindowsPrivacy::Suppress);
+    }
+    let history = control_payload(registered(native_policy::WINDOWS_CAN_INCLUDE_HISTORY)?)?;
+    let cloud = control_payload(registered(native_policy::WINDOWS_CAN_UPLOAD_CLOUD)?)?;
+    Ok(native_policy::windows_privacy_decision(
+        false,
+        history.as_deref(),
+        cloud.as_deref(),
+    ))
+}
+
+fn metadata_only_archive(before: i64, after: i64, state: SnapshotState) -> NativeArchive {
+    NativeArchive {
+        platform: 2,
+        enumeration_complete: false,
+        original: NativeSnapshot {
+            before,
+            after,
+            items: 0,
+            state,
+            formats: vec![],
+        },
+        derived: vec![],
+    }
+}
+
+fn archive_from_parts(
+    before: i64,
+    after: i64,
+    formats: Vec<NativeFormat>,
+    mut derived: Vec<DerivedFormat>,
+) -> NativeArchive {
+    let state = if before == 0 || after == 0 {
+        SnapshotState::Failed
+    } else if before != after {
+        SnapshotState::Unstable
+    } else if formats.is_empty() {
+        SnapshotState::Empty
+    } else {
+        SnapshotState::Stable
+    };
+    if state != SnapshotState::Stable {
+        derived.clear();
+    }
+    NativeArchive {
+        platform: 2,
+        enumeration_complete: false,
+        original: NativeSnapshot {
+            before,
+            after,
+            items: if formats.is_empty() { 0 } else { 1 },
+            state,
+            formats,
+        },
+        derived,
+    }
+}
+
+/// CNA1 platform 2 read. Originals stay originals; the PNG produced from a DIB
+/// is an explicit converter-derived representation and is never placed in
+/// `original`.
+fn read_archive() -> Result<NativeArchive, String> {
+    let clipboard = match Clipboard::open() {
+        Ok(clipboard) => clipboard,
+        Err(_) => return Ok(metadata_only_archive(0, 0, SnapshotState::Busy)),
+    };
+    let before = unsafe { GetClipboardSequenceNumber() } as i64;
+    if before == 0 {
+        drop(clipboard);
+        return Ok(metadata_only_archive(0, 0, SnapshotState::Failed));
+    }
+    match native_policy::windows_read_plan(privacy_decision()?) {
+        native_policy::WindowsReadPlan::ReadBody => {}
+        native_policy::WindowsReadPlan::Suppress => {
+            let after = unsafe { GetClipboardSequenceNumber() } as i64;
+            drop(clipboard);
+            let state = if after == before {
+                SnapshotState::Suppressed
+            } else if after == 0 {
+                SnapshotState::Failed
+            } else {
+                SnapshotState::Unstable
+            };
+            return Ok(metadata_only_archive(before, after, state));
+        }
+        native_policy::WindowsReadPlan::Failed => {
+            let after = unsafe { GetClipboardSequenceNumber() } as i64;
+            drop(clipboard);
+            return Ok(metadata_only_archive(before, after, SnapshotState::Failed));
+        }
+    }
+
+    let known = [
+        (TEXT, "CF_UNICODETEXT"),
+        (registered("PNG")?, "PNG"),
+        (DIBV5, "CF_DIBV5"),
+        (DIB, "CF_DIB"),
+        (FILES, "CF_HDROP"),
+        (registered("HTML Format")?, "HTML Format"),
+        (registered("Rich Text Format")?, "Rich Text Format"),
+        (registered(SOURCE_FORMAT)?, SOURCE_FORMAT),
+    ];
+    let mut formats: Vec<NativeFormat> = vec![];
+    let mut used = 32usize;
+    for (id, name) in known {
+        if unsafe { IsClipboardFormatAvailable(id) } == 0 {
+            continue;
+        }
+        if name == "CF_DIB"
+            && formats.iter().any(|f| {
+                f.name == "CF_DIBV5"
+                    && f.state == FormatState::Captured
+                    && bitmap::decode_dib(&f.bytes).is_ok()
+            })
+        {
+            continue;
+        }
+        let (state, bytes) = match read_format(id) {
+            Ok(mut bytes) => {
+                if name == "CF_UNICODETEXT" {
+                    if let Some(n) = bytes.chunks_exact(2).position(|pair| pair == [0, 0]) {
+                        bytes.truncate((n + 1) * 2);
+                    }
+                } else if matches!(name, "HTML Format" | "Rich Text Format") {
+                    while bytes.last() == Some(&0) {
+                        bytes.pop();
+                    }
+                }
+                if used.saturating_add(bytes.len() + name.len() + 12) > NATIVE_LIMIT {
+                    (FormatState::TooLarge, vec![])
+                } else {
+                    used += bytes.len() + name.len() + 12;
+                    (FormatState::Captured, bytes)
+                }
+            }
+            Err(state) => (state, vec![]),
+        };
+        formats.push(NativeFormat {
+            item: 0,
+            name: name.into(),
+            state,
+            bytes,
+        });
+    }
+    let after = unsafe { GetClipboardSequenceNumber() } as i64;
+    drop(clipboard);
+
+    let mut derived = vec![];
+    if before == after && !formats.is_empty() && !formats.iter().any(|f| f.name == "PNG") {
+        if let Some(dib) = formats
+            .iter()
+            .find(|f| f.name == "CF_DIBV5" && f.state == FormatState::Captured)
+            .or_else(|| {
+                formats
+                    .iter()
+                    .find(|f| f.name == "CF_DIB" && f.state == FormatState::Captured)
+            })
+        {
+            let png = bitmap::decode_dib(&dib.bytes)
+                .map_err(|e| e.to_string())
+                .and_then(|packed| png_from_packed(&packed));
+            if let Ok(png) = png {
+                let overhead =
+                    12 + "PNG".len() + dib.name.len() + CONVERTER_WINDOWS_DIB_TO_PNG.len();
+                if used.saturating_add(overhead).saturating_add(png.len()) <= NATIVE_LIMIT {
+                    derived.push(DerivedFormat {
+                        item: 0,
+                        name: "PNG".into(),
+                        source_name: dib.name.clone(),
+                        converter: CONVERTER_WINDOWS_DIB_TO_PNG.into(),
+                        bytes: png,
+                    });
+                }
+            }
+        }
+    }
+    Ok(archive_from_parts(before, after, formats, derived))
+}
+
+/// Metadata-only diagnostic. It never calls GetClipboardData, GlobalSize or a
+/// payload probe, and it does not allocate storage proportional to body bytes.
+fn dump_formats() -> Result<Vec<u8>, String> {
+    let clipboard = match Clipboard::open() {
+        Ok(clipboard) => clipboard,
+        Err(_) => {
+            return Ok(FormatDiagnostic::collect(0, 0, false, Vec::new())
+                .render()
+                .into_bytes())
+        }
+    };
+    let before = unsafe { GetClipboardSequenceNumber() } as i64;
+    let mut ids = vec![];
+    let mut previous = 0u32;
+    let mut complete = true;
+    loop {
+        unsafe { windows_sys::Win32::Foundation::SetLastError(0) };
+        let id = unsafe { EnumClipboardFormats(previous) };
+        let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        if id == 0 {
+            if matches!(enumeration_outcome(id, error), EnumOutcome::Error) {
+                complete = false;
+            }
+            break;
+        }
+        ids.push(id);
+        previous = id;
+        if ids.len() > crate::format_model::FORMAT_DIAGNOSTIC_LIMIT {
+            break;
+        }
+    }
+    let after = unsafe { GetClipboardSequenceNumber() } as i64;
+    drop(clipboard);
+    let entries = ids.into_iter().map(|id| {
+        let (name, name_kind, capture_class) = resolve_name(id, registered_name);
+        FormatMetadata::observed(id, name, name_kind, capture_class)
+    });
+    Ok(FormatDiagnostic::collect(before, after, complete, entries)
+        .render()
+        .into_bytes())
+}
 fn snapshot() -> Result<NativeSnapshot, String> {
     let clipboard = match Clipboard::open() {
         Ok(c) => c,
@@ -179,21 +435,30 @@ fn snapshot() -> Result<NativeSnapshot, String> {
     let before = unsafe { GetClipboardSequenceNumber() } as i64;
     let known = [
         (TEXT, "CF_UNICODETEXT"),
+        (registered("PNG")?, "PNG"),
         (DIBV5, "CF_DIBV5"),
         (DIB, "CF_DIB"),
         (FILES, "CF_HDROP"),
         (registered("HTML Format")?, "HTML Format"),
         (registered("Rich Text Format")?, "Rich Text Format"),
-        (registered("PNG")?, "PNG"),
         (
             registered("org.tailsync.clipboard-source")?,
             "org.tailsync.clipboard-source",
         ),
     ];
-    let mut formats = vec![];
+    let mut formats: Vec<NativeFormat> = vec![];
     let mut used = 32usize;
     for (id, name) in known {
         if unsafe { IsClipboardFormatAvailable(id) } == 0 {
+            continue;
+        }
+        if name == "CF_DIB"
+            && formats.iter().any(|f| {
+                f.name == "CF_DIBV5"
+                    && f.state == FormatState::Captured
+                    && bitmap::decode_dib(&f.bytes).is_ok()
+            })
+        {
             continue;
         }
         let (state, bytes) = match read_format(id) {
@@ -388,7 +653,9 @@ pub fn run() -> Result<(), String> {
     let out = match args.as_slice() {
         // Startup probes must advertise the wire protocol without opening or
         // reading the clipboard.
-        [s] if s == "--self-check" => b"CWH1 protocol=2 analyze=1\n".to_vec(),
+        [s] if s == "--self-check" => b"CWH1 protocol=3 analyze=1\n".to_vec(),
+        [s] if s == "--dump-formats" => dump_formats()?,
+        [s] if s == "--read-archive" => read_archive()?.encode().map_err(|e| e.to_string())?,
         [s] if s == "--read-snapshot" => snapshot()?.encode().map_err(|e| e.to_string())?,
         [s] if s == "--write-snapshot" => {
             let mut input = vec![];

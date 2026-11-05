@@ -15,6 +15,6 @@ fn startup_probe_succeeds_without_clipboard_input() {
     let announcement = String::from_utf8(output.stdout).unwrap();
     let fields: Vec<_> = announcement.split_whitespace().collect();
     assert_eq!(fields.first(), Some(&"CWH1"));
-    assert!(fields.contains(&"protocol=2"));
+    assert!(fields.contains(&"protocol=3"));
     assert!(fields.contains(&"analyze=1"));
 }

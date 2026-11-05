@@ -193,15 +193,87 @@ pub async fn capture_fault(revision: i64, kind: &'static str) -> bool {
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn read_archive() -> Result<tailsync_core::protocol::native_archive::NativeArchive, String> {
     let bytes = run_helper("--read-archive", None)?;
     let archive = tailsync_core::protocol::native_archive::NativeArchive::decode(&bytes)
         .map_err(|e| e.to_string())?;
-    if archive.platform != 1 {
+    let expected = if cfg!(target_os = "macos") { 1 } else { 2 };
+    if archive.platform != expected {
         return Err("Clipboard archive source platform mismatch".into());
     }
     Ok(archive)
+}
+
+/// Windows-only preflight for paths that do not use the archive reader
+/// (legacy text/image/file fallback or composite disabled). It reads only the
+/// three control formats and never a payload representation.
+#[cfg(target_os = "windows")]
+pub fn privacy_gate() -> tailsync_core::protocol::native_policy::WindowsPrivacy {
+    use tailsync_core::protocol::native_policy::{
+        windows_privacy_decision, WindowsPrivacy, WINDOWS_CAN_INCLUDE_HISTORY,
+        WINDOWS_CAN_UPLOAD_CLOUD, WINDOWS_EXCLUDE_MONITOR,
+    };
+    use windows_sys::Win32::{
+        Foundation::*,
+        System::{DataExchange::*, Memory::*},
+    };
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(Some(0)).collect()
+    }
+    unsafe fn registered(value: &str) -> u32 {
+        RegisterClipboardFormatW(wide(value).as_ptr())
+    }
+    unsafe fn payload(id: u32) -> Result<Option<Vec<u8>>, ()> {
+        if IsClipboardFormatAvailable(id) == 0 {
+            return Ok(None);
+        }
+        let handle = GetClipboardData(id);
+        if handle.is_null() {
+            return Err(());
+        }
+        let length = GlobalSize(handle as HGLOBAL);
+        if length != 4 {
+            return Ok(Some(Vec::new()));
+        }
+        let pointer = GlobalLock(handle as HGLOBAL);
+        if pointer.is_null() {
+            return Err(());
+        }
+        let bytes = std::slice::from_raw_parts(pointer as *const u8, 4).to_vec();
+        GlobalUnlock(handle as HGLOBAL);
+        Ok(Some(bytes))
+    }
+    unsafe {
+        let mut opened = false;
+        for _ in 0..20 {
+            if OpenClipboard(std::ptr::null_mut()) != 0 {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if !opened {
+            return WindowsPrivacy::Invalid;
+        }
+        let decision = (|| {
+            let exclude = registered(WINDOWS_EXCLUDE_MONITOR);
+            if exclude != 0 && IsClipboardFormatAvailable(exclude) != 0 {
+                return WindowsPrivacy::Suppress;
+            }
+            let history = match payload(registered(WINDOWS_CAN_INCLUDE_HISTORY)) {
+                Ok(value) => value,
+                Err(()) => return WindowsPrivacy::Invalid,
+            };
+            let cloud = match payload(registered(WINDOWS_CAN_UPLOAD_CLOUD)) {
+                Ok(value) => value,
+                Err(()) => return WindowsPrivacy::Invalid,
+            };
+            windows_privacy_decision(false, history.as_deref(), cloud.as_deref())
+        })();
+        CloseClipboard();
+        decision
+    }
 }
 pub fn read() -> Result<NativeSnapshot, String> {
     #[cfg(target_os = "macos")]
@@ -768,7 +840,7 @@ fn settle(
 /// Protocol revision this build expects from the helper.
 /// Bumped whenever the helper's wire contract changes, so a stale bundled helper
 /// is reported as a version mismatch instead of being used and misparsed.
-pub const HELPER_PROTOCOL_VERSION: u32 = if cfg!(target_os = "macos") { 4 } else { 2 };
+pub const HELPER_PROTOCOL_VERSION: u32 = if cfg!(target_os = "macos") { 4 } else { 3 };
 
 /// Why the helper is or is not serviceable.
 /// Reported distinctly (plan §4 R1-04) so startup can say "helper missing" versus

@@ -167,6 +167,50 @@ fn external_attribute(attr: &Attribute, value: &str) -> bool {
         || (matches!(attr.name.as_str(), "href" | "xlink:href")
             && !matches!(attr.tag.as_str(), "a" | "base"))
 }
+
+/// A local filesystem reference no other device can resolve: a `file:` URL, an
+/// absolute drive path, or a UNC share.
+fn is_local_file_reference(value: &str) -> bool {
+    let value = value.trim();
+    if value
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
+    {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    (bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/'))
+        || value.starts_with("\\\\")
+}
+
+/// Whether every image in this document points at a machine-local file, with at
+/// least one such image present.
+///
+/// QQ image messages publish `<img src="file:///C:\...">` alongside the bitmap
+/// and a `CF_HDROP` backing file. The pixels are already in the clipboard, but
+/// the path is machine-local, so this document can never be a portable
+/// representation of the image.
+pub fn images_are_local_files(bytes: &[u8]) -> bool {
+    let Ok(html) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let Ok(inventory) = inventory(html) else {
+        return false;
+    };
+    let mut images = 0;
+    for attribute in &inventory.attributes {
+        if attribute.tag == "img" && attribute.name == "src" {
+            if !is_local_file_reference(&html[attribute.start..attribute.end]) {
+                return false;
+            }
+            images += 1;
+        }
+    }
+    images > 0
+}
 fn inventory(html: &str) -> Result<HtmlInventory, ProtocolError> {
     let bytes = html.as_bytes();
     let mut pos = 0;

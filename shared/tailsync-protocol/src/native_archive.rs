@@ -13,6 +13,9 @@ pub const CONVERTER_STATIC_COVER: &str = "tailsync.image-static-cover.v1";
 pub const CONVERTER_TIFF_TO_PNG: &str = "tailsync.tiff-to-png.v1";
 /// Existing RTFD projection.
 pub const CONVERTER_RTFD_TO_PORTABLE: &str = "tailsync.rtfd-to-portable.v1";
+/// Windows DIB/DIBV5 to static PNG compatibility representation. The DIB
+/// stays the original; this output is portable-only.
+pub const CONVERTER_WINDOWS_DIB_TO_PNG: &str = "tailsync.windows-dib-to-png.v1";
 
 /// QQ's ordered message elements are one semantic document even when its
 /// images advertise separate pasteboard items. Conversion preserves originals.

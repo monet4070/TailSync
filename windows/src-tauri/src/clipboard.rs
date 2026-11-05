@@ -302,6 +302,37 @@ async fn clipboard_loop(
         let clipboard_changed = change_detector.reports_native_change_events();
         let clipboard_event_at = Instant::now();
 
+        // Windows privacy controls apply to every reader, including the
+        // legacy text/image/file paths and the composite-disabled path. This
+        // preflight is revision-bound and reads only the fixed control formats.
+        #[cfg(target_os = "windows")]
+        let privacy_checked_revision = {
+            use tailsync_core::protocol::native_policy::WindowsReadPlan;
+            let revision = crate::clipboard_composite::revision();
+            let decision = crate::clipboard_composite::privacy_gate();
+            if revision.is_none() || crate::clipboard_composite::revision() != revision {
+                continue;
+            }
+            let revision = revision.unwrap();
+            match tailsync_core::protocol::native_policy::windows_read_plan(decision) {
+                WindowsReadPlan::ReadBody => {}
+                WindowsReadPlan::Suppress => {
+                    change_detector.acknowledge(revision);
+                    continue;
+                }
+                WindowsReadPlan::Failed => {
+                    let _ = crate::clipboard_composite::capture_fault(
+                        revision,
+                        "clipboard_unavailable",
+                    )
+                    .await;
+                    change_detector.acknowledge(revision);
+                    continue;
+                }
+            }
+            revision
+        };
+
         let clipboard =
             match handle.try_state::<tauri_plugin_clipboard_manager::Clipboard<tauri::Wry>>() {
                 Some(c) => c,
@@ -361,6 +392,12 @@ async fn clipboard_loop(
                                 info!("Ignored {managed_count} managed file(s) in a mixed clipboard event");
                             }
                             info!("Clipboard files: {} file(s)", outbound_paths.len());
+                            #[cfg(target_os = "windows")]
+                            if crate::clipboard_composite::revision()
+                                != Some(privacy_checked_revision)
+                            {
+                                continue;
+                            }
                             let generation = sync_engine.lock().await.supersede_file_clipboard();
                             crate::api::bump_clipboard_version();
                             let selection_id = if settings.lock().await.sync_enabled {
@@ -417,6 +454,10 @@ async fn clipboard_loop(
                         continue;
                     }
 
+                    #[cfg(target_os = "windows")]
+                    if crate::clipboard_composite::revision() != Some(privacy_checked_revision) {
+                        continue;
+                    }
                     sync_engine.lock().await.supersede_file_clipboard();
                     crate::api::bump_clipboard_version();
 
@@ -476,6 +517,10 @@ async fn clipboard_loop(
                     continue;
                 }
 
+                #[cfg(target_os = "windows")]
+                if crate::clipboard_composite::revision() != Some(privacy_checked_revision) {
+                    continue;
+                }
                 sync_engine.lock().await.supersede_file_clipboard();
                 crate::api::bump_clipboard_version();
 
@@ -732,7 +777,11 @@ mod composite_capture {
     #[allow(clippy::type_complexity)]
     pub(super) struct CaptureEnvironment {
         revision: Arc<dyn Fn() -> Option<i64> + Send + Sync>,
-        read: Arc<dyn Fn() -> Result<NativeSnapshot, String> + Send + Sync>,
+        read_archive: Arc<
+            dyn Fn() -> Result<tailsync_core::protocol::native_archive::NativeArchive, String>
+                + Send
+                + Sync,
+        >,
         classify: Arc<dyn Fn(&NativeSnapshot, &PortableBundle) -> Origin + Send + Sync>,
         classify_native: Arc<dyn Fn(&NativeSnapshot) -> Origin + Send + Sync>,
         clock: Arc<dyn Fn() -> std::time::Instant + Send + Sync>,
@@ -750,7 +799,7 @@ mod composite_capture {
         pub(super) fn platform() -> Self {
             Self {
                 revision: Arc::new(crate::clipboard_composite::revision),
-                read: Arc::new(crate::clipboard_composite::read),
+                read_archive: Arc::new(crate::clipboard_composite::read_archive),
                 classify: Arc::new(crate::clipboard_composite::classify),
                 classify_native: Arc::new(crate::clipboard_composite::classify_native),
                 clock: Arc::new(std::time::Instant::now),
@@ -766,8 +815,10 @@ mod composite_capture {
             (self.revision)()
         }
 
-        fn read(&self) -> Result<NativeSnapshot, String> {
-            (self.read)()
+        fn read_archive(
+            &self,
+        ) -> Result<tailsync_core::protocol::native_archive::NativeArchive, String> {
+            (self.read_archive)()
         }
 
         fn classify(&self, snapshot: &NativeSnapshot, bundle: &PortableBundle) -> Origin {
@@ -802,6 +853,17 @@ mod composite_capture {
         pub ack: &'a mut dyn CaptureAcknowledger,
         pub recovery_generation: u64,
         pub env: &'a CaptureEnvironment,
+    }
+
+    /// Why a capture that was read successfully never reached history. The
+    /// failure used to be dropped on the floor, so a lost capture left only a
+    /// fault counter with no cause.
+    fn storage_failure<T>(outcome: &Result<Result<T, String>, tokio::task::JoinError>) -> String {
+        match outcome {
+            Ok(Err(error)) => error.clone(),
+            Err(error) => error.to_string(),
+            Ok(Ok(_)) => "unexpected success".into(),
+        }
     }
 
     /// One observed composite capture. The monitor calls this from the real
@@ -841,14 +903,15 @@ mod composite_capture {
             {
                 *provider.pipeline_lease.lock().unwrap() = Some(Arc::downgrade(&memory));
             }
-            let snapshot = provider.read()?;
+            let archive = provider.read_archive()?;
+            let snapshot = archive.original.clone();
             if !tailsync_core::composite::capture_retry::CaptureRetry::matches_snapshot(
                 observed, &snapshot,
             ) {
                 return Err("Clipboard changed during capture".to_string());
             }
-            let captured = tailsync_core::composite::from_native_capture(&snapshot);
-            Ok::<_, String>((snapshot, captured, memory))
+            let captured = tailsync_core::composite::from_archive(&archive);
+            Ok::<_, String>((archive, captured, memory))
         })
         .await;
         if !snapshot_retry.is_current(observed, env.revision())
@@ -860,8 +923,9 @@ mod composite_capture {
             return CompositeCapture::Handled;
         }
         match captured {
-            Ok(Ok((snapshot, Ok(bundle), memory))) => {
+            Ok(Ok((archive, Ok(bundle), memory))) => {
                 use tailsync_core::composite::Completeness;
+                let snapshot = archive.original.clone();
                 let origin = env.classify(&snapshot, &bundle);
                 if origin == Origin::SelfWrite {
                     acknowledge_capture(snapshot_retry, ack, snapshot.after);
@@ -875,10 +939,12 @@ mod composite_capture {
                     return CompositeCapture::Handled;
                 }
 
-                let retained_bytes = snapshot
+                let retained_bytes = archive
+                    .original
                     .formats
                     .iter()
                     .map(|f| f.bytes.len())
+                    .chain(archive.derived.iter().map(|d| d.bytes.len()))
                     .fold(0usize, usize::saturating_add)
                     .saturating_mul(2);
                 let images = prepare_capture_images(
@@ -907,8 +973,7 @@ mod composite_capture {
                         representation.mime == tailsync_core::composite::Mime::Html
                     });
                 let db = database.clone();
-                let stored = bundle.clone();
-                let native = snapshot.clone();
+                let stored = archive.clone();
                 let held = memory.clone();
                 let saved = tokio::task::spawn_blocking(move || {
                     let _held = held;
@@ -917,14 +982,14 @@ mod composite_capture {
                         return Err("History storage unavailable".to_string());
                     }
                     let (id, enriched) = match images {
-                        Some(images) => match db.add_native_capture_with_images(&native, &images, "self") {
+                        Some(images) => match db.add_native_archive_with_images(&stored, &images, "self") {
                             Ok(id) => (id, Some(images.bundle)),
                             Err(error) => {
                                 warn!("Network image storage failed; preserving the source: {error}");
-                                (db.add_composite(&stored, Some(&native), "self").map_err(|e| e.to_string())?, None)
+                                (db.add_native_archive(&stored, "self").map_err(|e| e.to_string())?, None)
                             }
                         },
-                        None => (db.add_composite(&stored, Some(&native), "self").map_err(|e| e.to_string())?, None),
+                        None => (db.add_native_archive(&stored, "self").map_err(|e| e.to_string())?, None),
                     };
                     let guard = archive_candidate
                         .then(|| {
@@ -936,7 +1001,11 @@ mod composite_capture {
                 .await;
                 let (id, guard, enriched) = match saved {
                     Ok(Ok(saved)) => saved,
-                    _ => {
+                    outcome => {
+                        warn!(
+                            "Clipboard capture could not be stored: {}",
+                            storage_failure(&outcome)
+                        );
                         finish_failed_capture(
                             observed,
                             CaptureFailure::NotSaved,
@@ -977,13 +1046,14 @@ mod composite_capture {
                 CompositeCapture::Handled
             }
             Ok(Ok((
-                snapshot,
+                archive,
                 Err(
                     tailsync_core::composite::CaptureError::UnsupportedItems
                     | tailsync_core::composite::CaptureError::NativeOnly,
                 ),
                 memory,
             ))) => {
+                let snapshot = archive.original.clone();
                 let origin = env.classify_native(&snapshot);
                 if origin == Origin::SelfWrite {
                     acknowledge_capture(snapshot_retry, ack, snapshot.after);
@@ -991,7 +1061,7 @@ mod composite_capture {
                 }
                 sync_engine.lock().await.supersede_file_clipboard();
                 let db = database.clone();
-                let native = snapshot.clone();
+                let native = archive;
                 let held = memory.clone();
                 let saved = tokio::task::spawn_blocking(move || {
                     let _held = held;
@@ -999,11 +1069,11 @@ mod composite_capture {
                     if !db.is_storage_available() {
                         return Err("History storage unavailable".to_string());
                     }
-                    db.add_native_snapshot(&native, "self")
+                    db.add_native_archive(&native, "self")
                         .map_err(|e| e.to_string())
                 })
                 .await;
-                if matches!(saved, Ok(Ok(_))) {
+                if matches!(&saved, Ok(Ok(_))) {
                     acknowledge_capture(snapshot_retry, ack, snapshot.after);
                     tailsync_core::sync_warning::record_saved_capture(
                         &snapshot,
@@ -1013,6 +1083,10 @@ mod composite_capture {
                     );
                     crate::api::bump_clipboard_version();
                 } else {
+                    warn!(
+                        "Native-only clipboard capture could not be stored: {}",
+                        storage_failure(&saved)
+                    );
                     finish_failed_capture(
                         observed,
                         CaptureFailure::NotSaved,
@@ -1028,21 +1102,17 @@ mod composite_capture {
                 snapshot_retry.clear();
                 CompositeCapture::FilesFallback
             }
-            Ok(Ok((snapshot, Err(tailsync_core::composite::CaptureError::Empty), _memory))) => {
-                env.classify_native(&snapshot);
+            Ok(Ok((archive, Err(tailsync_core::composite::CaptureError::Empty), _memory))) => {
+                env.classify_native(&archive.original);
                 sync_engine.lock().await.supersede_file_clipboard();
-                acknowledge_capture(snapshot_retry, ack, snapshot.after);
+                acknowledge_capture(snapshot_retry, ack, archive.original.after);
                 CompositeCapture::Handled
             }
-            Ok(Ok((
-                snapshot,
-                Err(tailsync_core::composite::CaptureError::Suppressed),
-                _memory,
-            ))) => {
+            Ok(Ok((archive, Err(tailsync_core::composite::CaptureError::Suppressed), _memory))) => {
                 // Metadata suppression is a completed decision with no
                 // history, broadcast, fault body or fallback reader.
                 sync_engine.lock().await.supersede_file_clipboard();
-                acknowledge_capture(snapshot_retry, ack, snapshot.after);
+                acknowledge_capture(snapshot_retry, ack, archive.original.after);
                 CompositeCapture::Handled
             }
             _ => {
@@ -1213,6 +1283,17 @@ mod composite_capture {
                 .validate()
                 .expect("fixture must be a valid native snapshot");
             snapshot
+        }
+
+        fn archive_of(
+            snapshot: NativeSnapshot,
+        ) -> tailsync_core::protocol::native_archive::NativeArchive {
+            tailsync_core::protocol::native_archive::NativeArchive {
+                platform: 2,
+                enumeration_complete: false,
+                original: snapshot,
+                derived: vec![],
+            }
         }
 
         /// Blocks the provider thread until the test releases it, so a late result
@@ -1437,10 +1518,15 @@ mod composite_capture {
                         let value = rev.load(Ordering::SeqCst);
                         (value >= 0).then_some(value)
                     }),
-                    read: Arc::new(move || {
+                    read_archive: Arc::new(move || {
                         entered.notify_one();
                         gate.wait();
-                        Ok(snapshot_for_read.clone())
+                        Ok(tailsync_core::protocol::native_archive::NativeArchive {
+                            platform: 2,
+                            enumeration_complete: false,
+                            original: snapshot_for_read.clone(),
+                            derived: vec![],
+                        })
                     }),
                     classify: Arc::new(
                         move |snapshot: &NativeSnapshot, bundle: &PortableBundle| {
@@ -1858,15 +1944,138 @@ mod composite_capture {
                 native.formats[0].bytes, b"opaque original",
                 "the exact original bytes must survive the round trip"
             );
+            let archive = fx
+                .database
+                .lock()
+                .await
+                .get_composite_archive(id)
+                .unwrap()
+                .expect("the native-only capture is stored as a CNA1 archive");
+            assert_eq!(archive.platform, 2);
+            assert!(!archive.enumeration_complete);
+            assert_eq!(archive.original.formats[0].name, "CF_DIB");
+            assert_eq!(archive.original.formats[0].bytes, b"opaque original");
+        }
+
+        #[tokio::test]
+        async fn wcap_dib_derived_png_reaches_history_and_broadcast() {
+            let _serial = capture_serial().lock().await;
+            let mut fx = fixture(Shape::NativeOnly, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+            let snapshot = fx.fixture_snapshot.clone();
+            let png = tailsync_core::composite::packed_to_png(1, 1, &[255, 0, 0, 255]).unwrap();
+            fx.env.read_archive = Arc::new(move || {
+                Ok(tailsync_core::protocol::native_archive::NativeArchive {
+                    platform: 2,
+                    enumeration_complete: false,
+                    original: snapshot.clone(),
+                    derived: vec![tailsync_core::protocol::native_archive::DerivedFormat {
+                        item: 0,
+                        name: "PNG".into(),
+                        source_name: "CF_DIB".into(),
+                        converter:
+                            tailsync_core::protocol::native_archive::CONVERTER_WINDOWS_DIB_TO_PNG
+                                .into(),
+                        bytes: png.clone(),
+                    }],
+                })
+            });
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 1);
+            assert_eq!(fx.acks(), vec![100]);
+            let queued = queue
+                .priority
+                .try_recv()
+                .expect("the derived PNG gives the capture a portable projection");
+            assert_eq!(queued.command(), Command::CompositePayload);
+
+            let id = fx.history_id().await;
+            let archive = fx
+                .database
+                .lock()
+                .await
+                .get_composite_archive(id)
+                .unwrap()
+                .expect("the DIB and its derivative share one CNA1 archive");
+            assert_eq!(archive.original.formats[0].name, "CF_DIB");
             assert!(
-                fx.database
-                    .lock()
-                    .await
-                    .get_composite_archive(id)
-                    .unwrap()
-                    .is_none(),
-                "a CNS1 native capture has no portable archive"
+                !archive
+                    .original
+                    .formats
+                    .iter()
+                    .any(|format| format.name == "PNG"),
+                "the converted PNG must never be stored as an original"
             );
+            assert_eq!(archive.derived.len(), 1);
+            assert_eq!(archive.derived[0].source_name, "CF_DIB");
+            assert_eq!(
+                archive.derived[0].converter,
+                tailsync_core::protocol::native_archive::CONVERTER_WINDOWS_DIB_TO_PNG
+            );
+        }
+
+        #[tokio::test]
+        async fn wcap_qq_backing_file_image_reaches_history_and_broadcast() {
+            let _serial = capture_serial().lock().await;
+            let mut fx = fixture(Shape::NativeOnly, OriginMode::External, false, true).await;
+            let mut queue = install_capture_sender(&fx.pool).await;
+            let png = tailsync_core::composite::packed_to_png(1, 1, &[255, 0, 0, 255]).unwrap();
+            let cf_html = tailsync_core::composite::html::encode_cf_html(
+                r#"<html><body><!--StartFragment--><img src="file:///C:/Users/me/Tencent%20Files/nt_qq/pic.jpg"><!--EndFragment--></body></html>"#,
+            )
+            .unwrap();
+            let qq_original = NativeSnapshot {
+                before: 100,
+                after: 100,
+                items: 1,
+                state: SnapshotState::Stable,
+                formats: vec![
+                    NativeFormat {
+                        item: 0,
+                        name: "CF_DIBV5".into(),
+                        state: FormatState::Captured,
+                        bytes: vec![0x42; 256],
+                    },
+                    NativeFormat {
+                        item: 0,
+                        name: "CF_HDROP".into(),
+                        state: FormatState::Captured,
+                        bytes: vec![0u8; 40],
+                    },
+                    NativeFormat {
+                        item: 0,
+                        name: "HTML Format".into(),
+                        state: FormatState::Captured,
+                        bytes: cf_html,
+                    },
+                ],
+            };
+            fx.env.read_archive = Arc::new(move || {
+                Ok(tailsync_core::protocol::native_archive::NativeArchive {
+                    platform: 2,
+                    enumeration_complete: false,
+                    original: qq_original.clone(),
+                    derived: vec![tailsync_core::protocol::native_archive::DerivedFormat {
+                        item: 0,
+                        name: "PNG".into(),
+                        source_name: "CF_DIBV5".into(),
+                        converter:
+                            tailsync_core::protocol::native_archive::CONVERTER_WINDOWS_DIB_TO_PNG
+                                .into(),
+                        bytes: png.clone(),
+                    }],
+                })
+            });
+
+            assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
+            assert_eq!(fx.history_len().await, 1);
+            assert_eq!(fx.acks(), vec![100]);
+            let queued = queue
+                .priority
+                .try_recv()
+                .expect("QQ image with CF_HDROP and local HTML wrapper must broadcast to peers");
+            assert_eq!(queued.command(), Command::CompositePayload);
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1903,10 +2112,10 @@ mod composite_capture {
             let snapshot = fx.fixture_snapshot.clone();
             let gate = fx.gate.clone();
             let entered = fx.provider_entered.clone();
-            env.read = Arc::new(move || {
+            env.read_archive = Arc::new(move || {
                 entered.notify_one();
                 gate.wait();
-                Ok(snapshot.clone())
+                Ok(archive_of(snapshot.clone()))
             });
             fx.env = env;
 
@@ -1933,7 +2142,7 @@ mod composite_capture {
             let mismatched = fixture_snapshot(Shape::Portable, 101);
             let read = mismatched.clone();
             let mut env = fx.env.clone();
-            env.read = Arc::new(move || Ok(read.clone()));
+            env.read_archive = Arc::new(move || Ok(archive_of(read.clone())));
             fx.env = env;
             fx.set_revision(101);
 
@@ -1948,7 +2157,7 @@ mod composite_capture {
             fx.fixture_snapshot = fixture_snapshot(Shape::Portable, 101);
             let snapshot = fx.fixture_snapshot.clone();
             let mut env = fx.env.clone();
-            env.read = Arc::new(move || Ok(snapshot.clone()));
+            env.read_archive = Arc::new(move || Ok(archive_of(snapshot.clone())));
             fx.env = env;
             assert_eq!(fx.tick(101).await, CompositeCapture::Handled);
             assert_eq!(fx.history_len().await, 1);
@@ -2209,7 +2418,7 @@ mod composite_capture {
                     });
                 }
                 let read = snapshot.clone();
-                fx.env.read = Arc::new(move || Ok(read.clone()));
+                fx.env.read_archive = Arc::new(move || Ok(archive_of(read.clone())));
                 assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
                 assert_eq!(fx.acks(), vec![100]);
                 assert_eq!(fx.history_len().await, 0);
@@ -2285,13 +2494,13 @@ mod composite_capture {
                 fx.settings.lock().await.sync_enabled = false;
                 let gate = fx.gate.clone();
                 let entered = fx.provider_entered.clone();
-                fx.env.read = Arc::new(move || {
+                fx.env.read_archive = Arc::new(move || {
                     entered.notify_one();
                     gate.wait();
                     if read_error {
                         Err("injected native read failure".into())
                     } else {
-                        Ok(fixture_snapshot(Shape::Failed, 100))
+                        Ok(archive_of(fixture_snapshot(Shape::Failed, 100)))
                     }
                 });
                 fx.gate.close();
@@ -2311,7 +2520,8 @@ mod composite_capture {
                 assert!(fx.acks().is_empty());
                 assert!(fx.faults().is_empty());
                 assert!(!fx.retry.lock().unwrap().exhausted());
-                fx.env.read = Arc::new(move || Ok(fixture_snapshot(Shape::Portable, current)));
+                fx.env.read_archive =
+                    Arc::new(move || Ok(archive_of(fixture_snapshot(Shape::Portable, current))));
                 assert_eq!(fx.tick(current).await, CompositeCapture::Handled);
                 assert_eq!(fx.history_len().await, 1);
                 assert_eq!(fx.acks(), vec![current]);
@@ -2364,7 +2574,7 @@ mod composite_capture {
             });
             native.validate().unwrap();
             assert!(origin_fingerprint_from_native(&native).is_err());
-            fx.env.read = Arc::new(move || Ok(native.clone()));
+            fx.env.read_archive = Arc::new(move || Ok(archive_of(native.clone())));
             assert_eq!(fx.tick(100).await, CompositeCapture::Handled);
             assert_eq!(fx.history_len().await, 1);
             assert_eq!(fx.acks(), vec![100]);

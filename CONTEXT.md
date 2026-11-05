@@ -5,7 +5,7 @@
 TailSync 是端到端加密的跨平台剪贴板同步工具：macOS（SwiftUI 菜单栏外壳 + Rust 守护进程）与
 Windows（React + Tauri）之间同步文本、图片和文件，优先局域网，必要时经 Tailscale 或 Iroh。
 
-产品版本 2.3.2。复合剪贴板的版本分别管理：identity/base **4**；data frame **5**（认证连接可协商回退到 4）；main history **条件 v11/v12/v13**；effect journal **1**；local contract **2**；helper protocol **macOS 4 / Windows 2**；origin fingerprint **便携 2 / macOS 原件独立域 1**。v11→v12/v13 受构建开关、运行时开关和 helper 健康控制；已有 v12/v13 在关闭态可读取，迁移目的库保持至少来源版本。v13 增加历史身份及 Manifest 2；旧 CNS1/helper protocol 2 只提供 LegacyProjection；macOS CNA1/protocol 4 分开原件与派生表示，完整枚举且依赖已知闭合的原件才提供安全去重键。pre-v12 与 pre-v13 回退包分别保留。版本变更须有独立决策，不能把这些编号统称为“协议版本”。 详见 `README.md`。
+产品版本 2.3.2。复合剪贴板的版本分别管理：identity/base **4**；data frame **5**（认证连接可协商回退到 4）；main history **条件 v11/v12/v13**；effect journal **1**；local contract **2**；helper protocol **macOS 4 / Windows 3**；origin fingerprint **便携 2 / macOS 原件独立域 1**。v11→v12/v13 受构建开关、运行时开关和 helper 健康控制；已有 v12/v13 在关闭态可读取，迁移目的库保持至少来源版本。v13 增加历史身份及 Manifest 2；旧 CNS1/helper protocol 2 只提供 LegacyProjection；Windows CNA1/helper protocol 3（enumeration_complete=false）保留原件并仅把 DIB 写入派生 PNG，NativeOnly 也保留 CNA1 归档；macOS CNA1/protocol 4 分开原件与派生表示，完整枚举且依赖已知闭合的原件才提供安全去重键。pre-v12 与 pre-v13 回退包分别保留。版本变更须有独立决策，不能把这些编号统称为“协议版本”。 详见 `README.md`。
 
 ## 分层与契约面
 

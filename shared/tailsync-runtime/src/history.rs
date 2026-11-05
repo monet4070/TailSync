@@ -385,10 +385,16 @@ impl HistoryRestorePayload {
             .native_archive_platform
             .zip(target.archive_platform())
             .is_some_and(|(a, b)| a != b);
-        let native_supported = native_supported && !foreign;
+        // Windows first-round archives are deliberately `enumeration_complete =
+        // false`, so the exact original set is not certified. Their portable
+        // projection is still complete: restore that projection instead of
+        // refusing the entry. macOS keeps the stricter O01 behavior.
+        let windows_portable_fallback =
+            self.native_archive_complete == Some(false) && self.native_archive_platform == Some(2);
+        let native_supported = native_supported && !foreign && !windows_portable_fallback;
         if format.is_none() {
             match self.native_archive_complete {
-                Some(false) => {
+                Some(false) if !windows_portable_fallback => {
                     return Ok(PreparedRestore::Unsupported {
                         code: "originals_incomplete",
                     })
@@ -1796,6 +1802,53 @@ mod tests {
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn wcap_windows_incomplete_originals_restore_the_portable_projection() {
+        use tailsync_core::composite::{packed_to_png, Mime};
+        use tailsync_core::protocol::{native_archive::*, native_clipboard::*};
+        let root = std::env::temp_dir().join(format!(
+            "tailsync-wcap-windows-restore-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut db = HistoryDB::open_isolated_for_test_composite(&root).unwrap();
+        let png = packed_to_png(1, 1, &[255, 0, 0, 255]).unwrap();
+        let archive = NativeArchive {
+            platform: 2,
+            enumeration_complete: false,
+            original: NativeSnapshot {
+                before: 1,
+                after: 1,
+                items: 1,
+                state: SnapshotState::Stable,
+                formats: vec![NativeFormat {
+                    item: 0,
+                    name: "PNG".into(),
+                    state: FormatState::Captured,
+                    bytes: png.clone(),
+                }],
+            },
+            derived: vec![],
+        };
+        let id = db.add_native_archive(&archive, "self").unwrap();
+        let payload = HistoryOperations::new(&mut db).restore_payload(id).unwrap();
+        assert_eq!(payload.native_archive_complete, Some(false));
+        assert_eq!(payload.native_archive_platform, Some(2));
+        match payload.prepare_composite(true, None).unwrap() {
+            PreparedRestore::Portable(bundle) => {
+                assert_eq!(bundle.representation(Mime::Png), Some(png.as_slice()));
+            }
+            _ => panic!("expected portable restore"),
+        }
+        let capabilities = payload.restore_capabilities().unwrap();
+        assert!(capabilities.whole_group);
+        assert!(capabilities.withheld.is_empty());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn o11_daemon_validates_held_identity_under_the_payload_lock() {
         use tailsync_core::composite::{Completeness, Mime, PortableBundle, Representation};

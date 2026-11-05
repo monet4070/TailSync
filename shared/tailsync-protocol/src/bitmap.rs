@@ -34,6 +34,16 @@ pub fn decode_dib(b: &[u8]) -> Result<Vec<u8>, ProtocolError> {
         .and_then(|n| n.checked_mul(4))
         .filter(|n| *n <= 32 * 1024 * 1024 - 8)
         .ok_or_else(invalid)?;
+    let colors = u32_at(b, 32)? as usize;
+    if colors != 0 {
+        return Err(invalid());
+    }
+    let stride = (width as usize)
+        .checked_mul(bits as usize)
+        .and_then(|n| n.checked_add(31))
+        .map(|n| n / 32 * 4)
+        .ok_or_else(invalid)?;
+    let image_bytes = stride.checked_mul(height as usize).ok_or_else(invalid)?;
     let mut offset = header;
     let mut alpha = false;
     if compression == 3 {
@@ -41,6 +51,17 @@ pub fn decode_dib(b: &[u8]) -> Result<Vec<u8>, ProtocolError> {
             offset = offset.checked_add(12).ok_or_else(invalid)?;
             40
         } else {
+            if b.len()
+                >= header
+                    .checked_add(12)
+                    .and_then(|n| n.checked_add(image_bytes))
+                    .unwrap_or(usize::MAX)
+                && u32_at(b, header)? == 0x00ff0000
+                && u32_at(b, header + 4)? == 0x0000ff00
+                && u32_at(b, header + 8)? == 0x000000ff
+            {
+                offset = header + 12;
+            }
             40
         };
         if u32_at(b, masks)? != 0x00ff0000
@@ -56,18 +77,15 @@ pub fn decode_dib(b: &[u8]) -> Result<Vec<u8>, ProtocolError> {
             }
             alpha = a != 0;
         }
+    } else if bits == 32 && header >= 108 {
+        let a = u32_at(b, 52)?;
+        if !matches!(a, 0 | 0xff000000) {
+            return Err(invalid());
+        }
+        alpha = a != 0;
     }
-    let colors = u32_at(b, 32)? as usize;
-    if colors != 0 {
-        return Err(invalid());
-    }
-    let stride = (width as usize)
-        .checked_mul(bits as usize)
-        .and_then(|n| n.checked_add(31))
-        .map(|n| n / 32 * 4)
-        .ok_or_else(invalid)?;
     let end = offset
-        .checked_add(stride.checked_mul(height as usize).ok_or_else(invalid)?)
+        .checked_add(image_bytes)
         .filter(|n| *n <= b.len())
         .ok_or_else(invalid)?;
     let declared = u32_at(b, 20)? as usize;
@@ -103,10 +121,10 @@ pub fn encode_dib_v5(image: PackedImage<'_>) -> Result<Vec<u8>, ProtocolError> {
     let mut b = vec![0; 124];
     b[0..4].copy_from_slice(&124u32.to_le_bytes());
     b[4..8].copy_from_slice(&image.width.to_le_bytes());
-    b[8..12].copy_from_slice(&(-(image.height as i32)).to_le_bytes());
+    b[8..12].copy_from_slice(&(image.height as i32).to_le_bytes());
     b[12..14].copy_from_slice(&1u16.to_le_bytes());
     b[14..16].copy_from_slice(&32u16.to_le_bytes());
-    b[16..20].copy_from_slice(&3u32.to_le_bytes());
+    b[16..20].copy_from_slice(&0u32.to_le_bytes());
     b[20..24].copy_from_slice(&(image.rgba.len() as u32).to_le_bytes());
     for (offset, mask) in [
         (40, 0x00ff0000u32),
@@ -114,11 +132,15 @@ pub fn encode_dib_v5(image: PackedImage<'_>) -> Result<Vec<u8>, ProtocolError> {
         (48, 0x000000ff),
         (52, 0xff000000),
         (56, 0x73524742),
+        (108, 4),
     ] {
         b[offset..offset + 4].copy_from_slice(&mask.to_le_bytes());
     }
-    for p in packed[8..].chunks_exact(4) {
-        b.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
+    let row_bytes = image.width as usize * 4;
+    for row in packed[8..].chunks_exact(row_bytes).rev() {
+        for p in row.chunks_exact(4) {
+            b.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
+        }
     }
     Ok(b)
 }
@@ -127,9 +149,40 @@ mod tests {
     use super::*;
     #[test]
     fn alpha_top_down_round_trip() {
-        let bytes = pack_rgba_image(2, 1, &[255, 0, 0, 128, 0, 255, 0, 0]).unwrap();
+        let bytes = pack_rgba_image(
+            2,
+            2,
+            &[
+                255, 0, 0, 128, 0, 255, 0, 0, // top row
+                0, 0, 255, 255, 10, 20, 30, 40, // bottom row
+            ],
+        )
+        .unwrap();
         let dib = encode_dib_v5(PackedImage::try_from(bytes.as_slice()).unwrap()).unwrap();
+        assert_eq!(i32::from_le_bytes(dib[8..12].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(dib[16..20].try_into().unwrap()), 0);
         assert_eq!(decode_dib(&dib).unwrap(), bytes);
+    }
+    #[test]
+    fn dibv5_bitfields_with_trailing_color_table_skips_masks() {
+        let expected = pack_rgba_image(1, 1, &[0x11, 0x22, 0x33, 0xff]).unwrap();
+        let mut dib = vec![0u8; 124];
+        dib[0..4].copy_from_slice(&124u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&1u32.to_le_bytes());
+        dib[8..12].copy_from_slice(&1i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&32u16.to_le_bytes());
+        dib[16..20].copy_from_slice(&3u32.to_le_bytes());
+        dib[20..24].copy_from_slice(&4u32.to_le_bytes());
+        dib[40..44].copy_from_slice(&0x00ff0000u32.to_le_bytes());
+        dib[44..48].copy_from_slice(&0x0000ff00u32.to_le_bytes());
+        dib[48..52].copy_from_slice(&0x000000ffu32.to_le_bytes());
+        dib[56..60].copy_from_slice(&0x73524742u32.to_le_bytes());
+        for mask in [0x00ff0000u32, 0x0000ff00, 0x000000ff] {
+            dib.extend_from_slice(&mask.to_le_bytes());
+        }
+        dib.extend_from_slice(&[0x33, 0x22, 0x11, 0x00]);
+        assert_eq!(decode_dib(&dib).unwrap(), expected);
     }
     #[test]
     fn malformed_dimensions_stride_and_compression_fail() {

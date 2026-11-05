@@ -174,6 +174,27 @@ fn preserve_native_conversion(snapshot: &NativeSnapshot, error: CaptureError) ->
         other => other,
     }
 }
+/// Whether the Windows snapshot already carries captured raster image bytes.
+fn has_windows_raster_image(snapshot: &NativeSnapshot) -> bool {
+    snapshot.formats.iter().any(|f| {
+        f.state == FormatState::Captured && matches!(f.name.as_str(), "CF_DIB" | "CF_DIBV5" | "PNG")
+    })
+}
+
+/// Windows applications that place a raster image on the clipboard also expose
+/// a `CF_HDROP` entry for the temporary file backing it: QQ image messages,
+/// browsers and screenshot tools all do. That is an image event with an
+/// implementation detail attached, not a file selection. Routing it to the file
+/// pipeline or to native-only dropped a picture whose pixels were already in the
+/// clipboard, which is why such a copy never reached the peer.
+pub(crate) fn has_backing_file_image(snapshot: &NativeSnapshot) -> bool {
+    let has_file = snapshot
+        .formats
+        .iter()
+        .any(|f| matches!(f.name.as_str(), "public.file-url" | "CF_HDROP"));
+    has_file && has_windows_raster_image(snapshot)
+}
+
 /// Only a single native semantic item is portable. Genuine multiple items
 /// remain distinguishable; no implicit flattening or first-item truncation.
 pub fn from_native(snapshot: &NativeSnapshot) -> Result<PortableBundle, CaptureError> {
@@ -199,10 +220,12 @@ pub fn from_native(snapshot: &NativeSnapshot) -> Result<PortableBundle, CaptureE
         SnapshotState::FileSelection => return Err(CaptureError::Files),
         SnapshotState::Suppressed => return Err(CaptureError::Suppressed),
     }
-    if snapshot
-        .formats
-        .iter()
-        .any(|f| matches!(f.name.as_str(), "public.file-url" | "CF_HDROP"))
+    let image_with_backing_file = has_backing_file_image(snapshot);
+    if !image_with_backing_file
+        && snapshot
+            .formats
+            .iter()
+            .any(|f| matches!(f.name.as_str(), "public.file-url" | "CF_HDROP"))
     {
         let pure_files = snapshot.formats.iter().all(|f| {
             matches!(
@@ -263,9 +286,18 @@ pub fn from_native(snapshot: &NativeSnapshot) -> Result<PortableBundle, CaptureE
                 .map_err(|_| CaptureError::InvalidFormat)?
                 .into_bytes()
         } else if format.name == "HTML Format" {
-            html::decode_cf_html(&format.bytes)
-                .map_err(|_| CaptureError::InvalidFormat)?
-                .into_bytes()
+            let html =
+                html::decode_cf_html(&format.bytes).map_err(|_| CaptureError::InvalidFormat)?;
+            // The backing file's machine-local path must never become part of a
+            // synced payload: the peer can neither resolve it nor read it.
+            let local_image_wrapper = html::images_are_local_files(html.as_bytes())
+                && (image_with_backing_file
+                    || (has_windows_raster_image(snapshot)
+                        && html::text_summary(html.as_bytes()).trim().is_empty()));
+            if local_image_wrapper {
+                continue;
+            }
+            html.into_bytes()
         } else {
             let mut bytes = format.bytes.clone();
             if format.name == "Rich Text Format" {
@@ -316,6 +348,7 @@ pub fn from_archive(
     use crate::protocol::image;
     use crate::protocol::native_archive::{
         CONVERTER_RTFD_TO_PORTABLE, CONVERTER_STATIC_COVER, CONVERTER_TIFF_TO_PNG,
+        CONVERTER_WINDOWS_DIB_TO_PNG,
     };
     archive
         .validate()
@@ -359,16 +392,35 @@ pub fn from_archive(
             (source, CONVERTER_STATIC_COVER, "public.png") => {
                 image::is_image_format_name(source) && image::is_static_png(&d.bytes)
             }
+            // Windows: the DIB/DIBV5 bytes remain the original; this static PNG
+            // is a compatibility representation only. The converter name alone
+            // is not admission: platform, source and a genuine captured original
+            // must all agree.
+            ("CF_DIB" | "CF_DIBV5", CONVERTER_WINDOWS_DIB_TO_PNG, "PNG") => {
+                archive.platform == 2 && image::is_static_png(&d.bytes)
+            }
             _ => false,
         };
-        // Never replace an already captured static PNG with a derived cover.
-        let original_png = d.name == "public.png"
-            && projection.formats.iter().any(|f| {
-                f.item == d.item
-                    && f.name == d.name
-                    && f.state == FormatState::Captured
-                    && image::is_static_png(&f.bytes)
-            });
+        // Never replace an already advertised original PNG with a derived
+        // cover. A corrupt or animated original PNG keeps its failure status;
+        // the first round does not substitute a different image.
+        let original_png =
+            match d.name.as_str() {
+                // A genuine static PNG wins. An animated macOS PNG may still use a
+                // bounded static cover; that existing projection stays unchanged.
+                "public.png" => archive.original.formats.iter().any(|f| {
+                    f.item == d.item
+                        && f.name == d.name
+                        && f.state == FormatState::Captured
+                        && image::is_static_png(&f.bytes)
+                }),
+                // Windows does not substitute another image for an advertised PNG,
+                // even if that original is corrupt or animated.
+                "PNG" => archive.original.formats.iter().any(|f| {
+                    f.item == d.item && f.name == d.name && f.state == FormatState::Captured
+                }),
+                _ => false,
+            };
         if admitted && !original_png {
             projection
                 .formats
@@ -508,6 +560,9 @@ pub fn to_windows_snapshot(bundle: &PortableBundle) -> Result<NativeSnapshot, Pr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::native_archive::{
+        DerivedFormat, NativeArchive, CONVERTER_WINDOWS_DIB_TO_PNG,
+    };
     #[test]
     fn o10_conversion_limits_preserve_source_but_provider_failure_is_not_empty() {
         let mut snapshot = NativeSnapshot {
@@ -593,6 +648,329 @@ mod tests {
         assert_eq!(
             from_native(&s).unwrap().completeness,
             Completeness::MissingFormats
+        );
+    }
+
+    fn one_pixel_png() -> Vec<u8> {
+        packed_to_png(1, 1, &[255, 0, 0, 255]).unwrap()
+    }
+
+    /// The shape QQ puts on the Windows clipboard for one image message: the
+    /// bitmap, an HTML wrapper that points at the local original, and a
+    /// `CF_HDROP` backing entry.
+    fn qq_image_snapshot(html: &str) -> NativeSnapshot {
+        NativeSnapshot {
+            before: 7,
+            after: 7,
+            items: 1,
+            state: SnapshotState::Stable,
+            formats: vec![
+                NativeFormat {
+                    item: 0,
+                    name: "CF_DIBV5".into(),
+                    state: FormatState::Captured,
+                    bytes: vec![0x42; 64],
+                },
+                NativeFormat {
+                    item: 0,
+                    name: "CF_HDROP".into(),
+                    state: FormatState::Captured,
+                    bytes: vec![0u8; 20],
+                },
+                NativeFormat {
+                    item: 0,
+                    name: "HTML Format".into(),
+                    state: FormatState::Captured,
+                    bytes: html::encode_cf_html(html).unwrap(),
+                },
+                NativeFormat {
+                    item: 0,
+                    name: "PNG".into(),
+                    state: FormatState::Captured,
+                    bytes: one_pixel_png(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn image_with_backing_file_projects_the_bitmap_instead_of_native_only() {
+        let snapshot = qq_image_snapshot(
+            r#"<html><body><img src="file:///C:\Users\me\Documents\Tencent Files\pic.png"></body></html>"#,
+        );
+        let bundle = from_native(&snapshot).unwrap();
+        assert_eq!(bundle.completeness, Completeness::Complete);
+        assert!(bundle.representation(Mime::Png).is_some());
+        assert!(bundle.representation(Mime::Html).is_none());
+        assert!(!bundle.text().unwrap_or_default().contains("Tencent"));
+    }
+
+    #[test]
+    fn image_with_backing_file_keeps_portable_html() {
+        let snapshot = qq_image_snapshot(
+            r#"<html><body><img src="https://example.invalid/a.png"></body></html>"#,
+        );
+        let bundle = from_native(&snapshot).unwrap();
+        assert!(bundle.representation(Mime::Png).is_some());
+        assert!(bundle.representation(Mime::Html).is_some());
+        assert_eq!(bundle.completeness, Completeness::ExternalReferences);
+    }
+
+    #[test]
+    fn plain_file_selection_still_uses_the_file_pipeline() {
+        let snapshot = NativeSnapshot {
+            before: 3,
+            after: 3,
+            items: 1,
+            state: SnapshotState::Stable,
+            formats: vec![NativeFormat {
+                item: 0,
+                name: "CF_HDROP".into(),
+                state: FormatState::Captured,
+                bytes: vec![0u8; 20],
+            }],
+        };
+        assert_eq!(from_native(&snapshot), Err(CaptureError::Files));
+    }
+    fn windows_archive(formats: Vec<NativeFormat>, derived: Vec<DerivedFormat>) -> NativeArchive {
+        NativeArchive {
+            platform: 2,
+            enumeration_complete: false,
+            original: NativeSnapshot {
+                before: 11,
+                after: 11,
+                items: 1,
+                state: SnapshotState::Stable,
+                formats,
+            },
+            derived,
+        }
+    }
+
+    fn windows_dib_archive() -> NativeArchive {
+        windows_archive(
+            vec![NativeFormat {
+                item: 0,
+                name: "CF_DIBV5".into(),
+                state: FormatState::Captured,
+                bytes: b"retained DIBV5 original".to_vec(),
+            }],
+            vec![DerivedFormat {
+                item: 0,
+                name: "PNG".into(),
+                source_name: "CF_DIBV5".into(),
+                converter: CONVERTER_WINDOWS_DIB_TO_PNG.into(),
+                bytes: one_pixel_png(),
+            }],
+        )
+    }
+
+    #[test]
+    fn wcap_dib_only_archive_keeps_original_and_admits_only_derived_png() {
+        let archive = windows_dib_archive();
+        let bundle =
+            from_archive(&archive).expect("the explicit Windows DIB conversion is admitted");
+        assert_eq!(
+            bundle.representation(Mime::Png),
+            Some(one_pixel_png().as_slice())
+        );
+        assert_eq!(archive.original.formats.len(), 1);
+        assert_eq!(archive.original.formats[0].name, "CF_DIBV5");
+        assert_eq!(
+            archive.original.formats[0].bytes,
+            b"retained DIBV5 original"
+        );
+        assert!(archive.derived[0].source_name == "CF_DIBV5");
+    }
+
+    #[test]
+    fn wcap_dib_derived_rejects_forged_source_converter_platform_and_name() {
+        let mut platform = windows_dib_archive();
+        platform.platform = 1;
+        assert!(from_archive(&platform).is_err());
+
+        let mut converter = windows_dib_archive();
+        converter.derived[0].converter = "example.forged-converter.v1".into();
+        assert!(from_archive(&converter).is_err());
+
+        let mut name = windows_dib_archive();
+        name.derived[0].name = "public.png".into();
+        assert!(from_archive(&name).is_err());
+
+        let mut source = windows_dib_archive();
+        source.derived[0].source_name = "CF_DIB".into();
+        assert!(from_archive(&source).is_err());
+
+        let mut bytes = windows_dib_archive();
+        bytes.derived[0].bytes = b"not a PNG".to_vec();
+        assert!(from_archive(&bytes).is_err());
+    }
+
+    #[test]
+    fn wcap_archive_prefers_a_real_png_original_over_a_dib_derivative() {
+        let blue = packed_to_png(1, 1, &[0, 0, 255, 255]).unwrap();
+        let archive = windows_archive(
+            vec![
+                NativeFormat {
+                    item: 0,
+                    name: "CF_DIBV5".into(),
+                    state: FormatState::Captured,
+                    bytes: b"DIBV5 original".to_vec(),
+                },
+                NativeFormat {
+                    item: 0,
+                    name: "PNG".into(),
+                    state: FormatState::Captured,
+                    bytes: blue.clone(),
+                },
+            ],
+            vec![DerivedFormat {
+                item: 0,
+                name: "PNG".into(),
+                source_name: "CF_DIBV5".into(),
+                converter: CONVERTER_WINDOWS_DIB_TO_PNG.into(),
+                bytes: one_pixel_png(),
+            }],
+        );
+        let bundle = from_archive(&archive).unwrap();
+        assert_eq!(bundle.representation(Mime::Png), Some(blue.as_slice()));
+    }
+
+    #[test]
+    fn wcap_corrupt_png_original_is_not_replaced_by_a_derivative() {
+        let archive = windows_archive(
+            vec![
+                NativeFormat {
+                    item: 0,
+                    name: "PNG".into(),
+                    state: FormatState::Captured,
+                    bytes: b"broken original PNG".to_vec(),
+                },
+                NativeFormat {
+                    item: 0,
+                    name: "CF_DIBV5".into(),
+                    state: FormatState::Captured,
+                    bytes: b"DIBV5 original".to_vec(),
+                },
+            ],
+            vec![DerivedFormat {
+                item: 0,
+                name: "PNG".into(),
+                source_name: "CF_DIBV5".into(),
+                converter: CONVERTER_WINDOWS_DIB_TO_PNG.into(),
+                bytes: one_pixel_png(),
+            }],
+        );
+        assert_eq!(from_archive(&archive), Err(CaptureError::NativeOnly));
+    }
+
+    #[test]
+    fn wcap_dib_with_backing_file_is_an_image_not_a_file_selection() {
+        let archive = windows_archive(
+            vec![
+                NativeFormat {
+                    item: 0,
+                    name: "CF_DIBV5".into(),
+                    state: FormatState::Captured,
+                    bytes: b"DIBV5 original".to_vec(),
+                },
+                NativeFormat {
+                    item: 0,
+                    name: "CF_HDROP".into(),
+                    state: FormatState::Captured,
+                    bytes: vec![0u8; 20],
+                },
+                NativeFormat {
+                    item: 0,
+                    name: "HTML Format".into(),
+                    state: FormatState::Captured,
+                    bytes: html::encode_cf_html(
+                        r#"<html><body><!--StartFragment--><img src="file:///C:/Users/me/Tencent%20Files/nt_qq/pic.jpg"><!--EndFragment--></body></html>"#,
+                    )
+                    .unwrap(),
+                },
+            ],
+            vec![DerivedFormat {
+                item: 0,
+                name: "PNG".into(),
+                source_name: "CF_DIBV5".into(),
+                converter: CONVERTER_WINDOWS_DIB_TO_PNG.into(),
+                bytes: one_pixel_png(),
+            }],
+        );
+        let bundle = from_archive(&archive).expect("the bitmap remains an image event");
+        assert!(bundle.representation(Mime::Png).is_some());
+        assert!(bundle.representation(Mime::Html).is_none());
+        assert_eq!(bundle.completeness, Completeness::Complete);
+        assert_eq!(archive.original.formats[1].name, "CF_HDROP");
+        assert!(
+            !fingerprint::requires_original_domain(&archive.original),
+            "QQ backing-file image must classify in the portable domain so peer sync is not blocked"
+        );
+    }
+
+    #[test]
+    fn wcap_png_with_backing_file_is_an_image_not_a_file_selection() {
+        let archive = windows_archive(
+            vec![
+                NativeFormat {
+                    item: 0,
+                    name: "PNG".into(),
+                    state: FormatState::Captured,
+                    bytes: one_pixel_png(),
+                },
+                NativeFormat {
+                    item: 0,
+                    name: "CF_HDROP".into(),
+                    state: FormatState::Captured,
+                    bytes: vec![0u8; 20],
+                },
+            ],
+            vec![],
+        );
+        let bundle = from_archive(&archive).expect("the captured PNG is the image event");
+        assert_eq!(
+            bundle.representation(Mime::Png),
+            Some(one_pixel_png().as_slice())
+        );
+    }
+
+    #[test]
+    fn wcap_pure_hdrop_archive_still_uses_the_file_pipeline() {
+        let archive = windows_archive(
+            vec![NativeFormat {
+                item: 0,
+                name: "CF_HDROP".into(),
+                state: FormatState::Captured,
+                bytes: vec![0u8; 20],
+            }],
+            vec![],
+        );
+        assert_eq!(from_archive(&archive), Err(CaptureError::Files));
+    }
+
+    #[test]
+    fn wcap_dib_derived_write_does_not_echo_and_a_new_copy_is_external() {
+        use crate::composite::fingerprint::{origin_fingerprint, origin_fingerprint_from_native};
+        use crate::composite::origin::{Origin, OriginTracker};
+
+        let bundle = from_archive(&windows_dib_archive()).unwrap();
+        let digest = origin_fingerprint(&bundle).unwrap();
+        assert_eq!(
+            OriginTracker::default().classify(Some(11), digest, None),
+            Origin::External,
+            "a DIB-only external copy is not a local write"
+        );
+
+        let published = to_windows_snapshot(&bundle).unwrap();
+        let written = origin_fingerprint_from_native(&published).unwrap();
+        let mut tracker = OriginTracker::default();
+        tracker.record(12, written, [9; 16]);
+        assert_eq!(tracker.classify(Some(12), written, None), Origin::SelfWrite);
+        assert_eq!(
+            tracker.classify(Some(13), written, None),
+            Origin::External,
+            "a later user copy of the same pixels is still a new event"
         );
     }
 }

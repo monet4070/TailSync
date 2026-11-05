@@ -120,8 +120,10 @@ pub fn requires_original_fingerprint(name: &str) -> bool {
 /// a cover be mistaken for the original and turn the app's own animated write
 /// into an external event.
 pub fn requires_original_domain(snapshot: &NativeSnapshot) -> bool {
+    let image_with_backing_file = super::has_backing_file_image(snapshot);
     snapshot.formats.iter().any(|f| {
-        requires_original_fingerprint(&f.name)
+        (requires_original_fingerprint(&f.name)
+            && !(image_with_backing_file && f.name == "CF_HDROP"))
             || (f.state == crate::protocol::native_clipboard::FormatState::Captured
                 && crate::protocol::image::is_image_format_name(&f.name)
                 && !crate::protocol::image::probe(&f.bytes)

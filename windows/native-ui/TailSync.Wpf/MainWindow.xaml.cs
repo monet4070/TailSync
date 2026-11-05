@@ -113,7 +113,8 @@ public partial class MainWindow : MacWindow
         if (_favoriteFeedbackCount > 0 || _pressedEntry != null) { _historyRefreshPending = true; return; }
         _historyRefreshPending = false;
         CancelPress();
-        try {await ViewModel.RefreshAsync();RetryHistoryButton.Visibility=Visibility.Collapsed;UpdateEmpty();}catch(OperationCanceledException){}catch(Exception error){ShowLoadError(error);}
+        var restoreFocus = HistoryList.IsKeyboardFocusWithin && !SearchBox.IsKeyboardFocusWithin;
+        try {await ViewModel.RefreshAsync();RetryHistoryButton.Visibility=Visibility.Collapsed;UpdateEmpty();if(restoreFocus)FocusCurrentEntry();}catch(OperationCanceledException){}catch(Exception error){ShowLoadError(error);}
     }
     private void UpdateEmpty()
     {
@@ -178,7 +179,7 @@ public partial class MainWindow : MacWindow
     }
     private async void History_DoubleClick(object sender,MouseButtonEventArgs e)
     {
-        CancelPress();if(_suppressClick){_suppressClick=false;return;}if(e.OriginalSource is DependencyObject source && FindParent<ListBoxItem>(source)!=null && FindParent<Button>(source)==null)await Restore();
+        CancelPress();if(_suppressClick){_suppressClick=false;return;}if(e.OriginalSource is DependencyObject source && FindParent<ListBoxItem>(source)!=null && FindParent<Button>(source)==null)await Restore(true);
     }
     private static TElement? FindParent<TElement>(DependencyObject source) where TElement:DependencyObject
     {
@@ -218,11 +219,12 @@ public partial class MainWindow : MacWindow
             return;
         }
         if(e.IsRepeat)return;
-        if(e.Key==Key.Enter){e.Handled=true;await Restore();}else if(e.Key==Key.Space){e.Handled=true;ShowPreview();}else if(e.Key==Key.Escape){e.Handled=true;SearchBox.Focus();}else if(e.Key==Key.Delete&&ViewModel.SelectedEntry is {} entry){e.Handled=true;DeleteRow_Click(new FrameworkElement{DataContext=entry},e);}
+        if(e.Key==Key.Enter){e.Handled=true;await Restore(true);}else if(e.Key==Key.Space){e.Handled=true;ShowPreview();}else if(e.Key==Key.Escape){e.Handled=true;SearchBox.Focus();}else if(e.Key==Key.Delete&&ViewModel.SelectedEntry is {} entry){e.Handled=true;DeleteRow_Click(new FrameworkElement{DataContext=entry},e);}
     }
     private void FocusCurrentEntry()
     {
-        if(Page!="history"||!ViewModel.IsQueryCurrent||ViewModel.SelectedEntry==null)return;
+        if(Page!="history"||!ViewModel.IsQueryCurrent)return;
+        if(ViewModel.SelectedEntry==null){FocusEntry(false);return;}
         HistoryList.ScrollIntoView(ViewModel.SelectedEntry);HistoryList.UpdateLayout();
         (HistoryList.ItemContainerGenerator.ContainerFromItem(ViewModel.SelectedEntry) as ListBoxItem)?.Focus();
     }
@@ -233,12 +235,14 @@ public partial class MainWindow : MacWindow
         HistoryList.ScrollIntoView(HistoryList.SelectedItem);HistoryList.UpdateLayout();
         (HistoryList.ItemContainerGenerator.ContainerFromIndex(HistoryList.SelectedIndex) as ListBoxItem)?.Focus();
     }
-    private void Window_KeyDown(object sender,KeyEventArgs e)
+    private async void Window_KeyDown(object sender,KeyEventArgs e)
     {
         if(_composing||Environment.TickCount64-_compositionEnded<150||e.Key is Key.ImeProcessed or Key.DeadCharProcessed)return;
         if(Keyboard.Modifiers==ModifierKeys.Control&&e.Key==Key.OemComma){e.Handled=true;Open("settings");return;}
         if(Page is not ("history" or "favorites"))return;
         if(Keyboard.Modifiers==ModifierKeys.Control&&e.Key==Key.F){e.Handled=true;SearchBox.Focus();SearchBox.SelectAll();}
+        else if(e.Key==Key.Enter&&!e.IsRepeat&&Keyboard.Modifiers==ModifierKeys.None&&SearchBox.IsKeyboardFocusWithin&&ViewModel.IsQueryCurrent&&ViewModel.SelectedEntry!=null){e.Handled=true;await Restore(true);}
+        else if(e.Key==Key.Escape&&!e.IsRepeat&&Keyboard.Modifiers==ModifierKeys.None&&SearchBox.IsKeyboardFocusWithin){e.Handled=true;if(!string.IsNullOrEmpty(SearchBox.Text)){SearchBox.Clear();}else{Close();}}
         else if(e.Key==Key.Down&&!e.IsRepeat&&Keyboard.Modifiers==ModifierKeys.None&&SearchBox.IsKeyboardFocusWithin&&ViewModel.IsQueryCurrent&&HistoryList.Items.Count>0){e.Handled=true;HistoryList.SelectedIndex=0;HistoryList.ScrollIntoView(HistoryList.SelectedItem);HistoryList.UpdateLayout();(HistoryList.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem)?.Focus();}
     }
     private void ShowPreview()
@@ -248,7 +252,7 @@ public partial class MainWindow : MacWindow
         if(_preview is {} existing){existing.SetEntry(entry,batch);if(existing.WindowState==WindowState.Minimized)existing.WindowState=WindowState.Normal;existing.Activate();return;}
         var preview=new PreviewWindow(entry,async()=>{try{Notify((await AppSession.Client.RestoreAsync(entry.Id)).Message);}catch(Exception error){Notify(error.Message);}},batch){Owner=this};_preview=preview;preview.Closed+=(_,_)=>{if(_preview==preview)_preview=null;if(IsVisible)HistoryList.Focus();};preview.Show();
     }
-    private void RestoreChanged(object? sender,EventArgs e){HistoryList.IsEnabled=!RestoreActivity.IsBusy;Resources["HistoryRestoreAvailable"]=!RestoreActivity.IsBusy;UpdateKeyboardHint();}
+    private void RestoreChanged(object? sender,EventArgs e){var restoreFocus=!RestoreActivity.IsBusy&&IsVisible&&IsActive&&!SearchBox.IsKeyboardFocusWithin;HistoryList.IsEnabled=!RestoreActivity.IsBusy;Resources["HistoryRestoreAvailable"]=!RestoreActivity.IsBusy;if(restoreFocus)FocusCurrentEntry();UpdateKeyboardHint();}
     private void ShowLoadError(Exception error){RetryHistoryButton.Visibility=Visibility.Visible;Notify(error.Message);}
     private async void RetryHistory_Click(object sender,RoutedEventArgs e)=>await Refresh();
     private async void PreviousPage_Click(object sender,RoutedEventArgs e){if(!ViewModel.HasPrevious)return;await ChangePage(ViewModel.PageIndex-1);}

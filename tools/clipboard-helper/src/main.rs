@@ -1,5 +1,6 @@
 //! Short-lived Windows I/O process. The daemon imposes a killable deadline.
 mod analysis;
+mod format_model;
 #[cfg(windows)]
 mod windows;
 

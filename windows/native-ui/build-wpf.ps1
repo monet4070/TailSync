@@ -50,7 +50,7 @@ try {
         if ([BitConverter]::ToUInt16($helperBytes, $helperPeOffset + 4) -ne $expectedMachine) { throw 'Clipboard helper architecture does not match the selected WPF architecture' }
         if ($canExecuteTarget) {
             $probe = & $clipboardHelper --self-check
-            if ($LASTEXITCODE -ne 0 -or $probe -notmatch '^CWH1\s' -or $probe -notmatch '\bprotocol=2\b' -or $probe -notmatch '\banalyze=1\b') { throw 'Clipboard helper protocol/self-check failed' }
+            if ($LASTEXITCODE -ne 0 -or $probe -notmatch '^CWH1\s' -or $probe -notmatch '\bprotocol=3\b' -or $probe -notmatch '\banalyze=1\b') { throw 'Clipboard helper protocol/self-check failed' }
         }
         Copy-Item -LiteralPath $clipboardHelper -Destination (Join-Path (Split-Path $binary) 'tailsync-clipboard-helper.exe') -Force
     }
@@ -72,7 +72,7 @@ try {
             $packagedProbeText = & (Join-Path $PublishDirectory 'TailSync.Backend.exe') --tailsync-clipboard-helper-check | Out-String
             if ($LASTEXITCODE -ne 0) { throw 'Published WPF backend cannot resolve its matching clipboard helper' }
             $packagedProbe = $packagedProbeText | ConvertFrom-Json -ErrorAction Stop
-            if (-not $packagedProbe.healthy -or -not $packagedProbe.composite_compiled -or -not $packagedProbe.analyze_capable -or $packagedProbe.expected_protocol -ne 2) { throw 'Published backend is missing required composite clipboard capabilities' }
+            if (-not $packagedProbe.healthy -or -not $packagedProbe.composite_compiled -or -not $packagedProbe.analyze_capable -or $packagedProbe.expected_protocol -ne 3) { throw 'Published backend is missing required composite clipboard capabilities' }
             $expectedHelperPath = [IO.Path]::GetFullPath((Join-Path $PublishDirectory 'tailsync-clipboard-helper.exe'))
             if (-not [string]::Equals([IO.Path]::GetFullPath($packagedProbe.helper_path), $expectedHelperPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'Published backend resolved a helper outside its portable directory' }
             Write-Output $packagedProbeText.Trim()
