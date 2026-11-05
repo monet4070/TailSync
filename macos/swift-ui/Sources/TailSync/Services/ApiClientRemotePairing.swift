@@ -40,7 +40,7 @@ extension ApiClient {
     try await remotePairingRequest([
       "cmd": "start_remote_pairing",
       "invite_link": inviteLink,
-    ])
+    ], timeoutSeconds: 60)
   }
 
   func getRemotePairingInviteStatus() async throws -> RemoteInviteStatus {
@@ -51,8 +51,11 @@ extension ApiClient {
     try await remotePairingRequest(["cmd": "cancel_remote_pairing_invite"])
   }
 
-  private func remotePairingRequest<Value: Decodable>(_ payload: [String: Any]) async throws -> Value {
-    let response = try await request(payload)
+  private func remotePairingRequest<Value: Decodable>(
+    _ payload: [String: Any],
+    timeoutSeconds: Int = 3
+  ) async throws -> Value {
+    let response = try await request(payload, timeoutSeconds: timeoutSeconds)
     guard response["ok"] as? Bool == true,
           let value = response["data"] as? [String: Any]
     else {

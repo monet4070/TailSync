@@ -87,6 +87,10 @@ pub struct CompositeInfo {
     pub representation_count: u16,
     /// How many images the item carries: resources plus a PNG representation.
     pub image_count: u16,
+    /// Whether the HTML's primary images are saved locally, independently of
+    /// other external document dependencies. Absent when not inventoried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images_complete: Option<bool>,
     #[schemars(extend("enum" = ["complete","external_references","missing_formats"]))]
     pub completeness: String,
 }

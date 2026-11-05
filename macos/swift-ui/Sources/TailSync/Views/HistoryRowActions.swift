@@ -49,7 +49,9 @@ enum HistoryRowStatusLabel {
     static func text(for info: ContractCompositeInfo?) -> String? {
         guard let info else { return nil }
         if info.native_only { return Loc.t("history.composite.localOnly") }
-        if info.completeness == "external_references" { return Loc.t("history.composite.resourcesMissing") }
+        if info.completeness == "external_references" {
+            return info.images_complete == true ? nil : Loc.t("history.composite.resourcesMissing")
+        }
         if info.completeness != "complete" { return Loc.t("history.composite.incomplete") }
         return nil
     }

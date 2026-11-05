@@ -40,6 +40,16 @@ pub const INVITE_HELLO_LENGTH: usize = INVITE_HELLO_SIZE;
 pub const INVITE_ACK_ACCEPTED: u8 = 0;
 pub const INVITE_ACK_REJECTED: u8 = 1;
 
+pub async fn reject_invite<S>(stream: &mut S) -> std::io::Result<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    stream.write_all(&[INVITE_ACK_REJECTED]).await?;
+    stream.shutdown().await
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum InviteError {
     #[error("Invalid TailSync pairing invite")]

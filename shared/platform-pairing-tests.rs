@@ -248,7 +248,7 @@ async fn remote_pairing_entry_rejects_a_malformed_link_and_an_iroh_less_mode() {
 }
 
 #[tokio::test]
-async fn invite_preface_rejection_is_a_typed_invalid_argument() {
+async fn invite_preface_rejection_is_a_typed_closed_window() {
     let identity = pairing_identity();
     let settings = pairing_settings("auto");
     let mode = settings.lock().await.connection_mode.clone();
@@ -271,7 +271,7 @@ async fn invite_preface_rejection_is_a_typed_invalid_argument() {
 
     let failure =
         expect_invite_failure(complete_remote_invite(client_io, &invite, &identity, &mode).await);
-    assert_eq!(failure.kind(), PairingFailureKind::InvalidArgument);
+    assert_eq!(failure.kind(), PairingFailureKind::WindowClosed);
     assert_eq!(
         failure.message(),
         "The remote pairing invite was rejected or is no longer available"
@@ -413,6 +413,39 @@ async fn invite_acknowledgement_timeout_keeps_the_timed_out_kind() {
         "Remote Iroh invite acknowledgement timed out"
     );
     server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn accepted_invite_with_a_stalled_noise_handshake_has_a_bounded_timeout() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let identity = pairing_identity();
+    let invited = valid_endpoint_ids(1).remove(0);
+    let invite =
+        tailsync_core::pairing::RemotePairingInvite::parse(&invite_link(&invited)).unwrap();
+    let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+    let server = tokio::spawn(async move {
+        let mut stream = server_io;
+        let mut hello = [0_u8; INVITE_HELLO_LENGTH];
+        stream.read_exact(&mut hello).await.unwrap();
+        stream.write_all(&[INVITE_ACK_ACCEPTED]).await.unwrap();
+        stream.flush().await.unwrap();
+        let mut request = [0_u8; 4096];
+        stream.read(&mut request).await.unwrap();
+        let _held = stream;
+        std::future::pending::<()>().await;
+    });
+    let result = timeout(
+        super::HANDSHAKE_TIMEOUT + Duration::from_secs(1),
+        complete_remote_invite(client_io, &invite, &identity, "auto"),
+    )
+    .await;
+    server.abort();
+    let failure = expect_invite_failure(
+        result.expect("an accepted invite must not hang until the pairing window expires"),
+    );
+    assert_eq!(failure.kind(), PairingFailureKind::TimedOut);
+    assert_eq!(failure.message(), "Remote Iroh pairing handshake timed out");
 }
 
 /// The direct entry's real failure handling, driven through the injected TCP

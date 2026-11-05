@@ -1002,6 +1002,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invite_rejection_is_delivered_before_the_responder_stream_is_dropped() {
+        use crate::pairing::invite::{INVITE_ACK_REJECTED, INVITE_HELLO_LENGTH};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let server = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal)
+                .alpns(vec![INVITE_ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap(),
+        };
+        let client = IrohEndpoint {
+            endpoint: Endpoint::builder(presets::Minimal).bind().await.unwrap(),
+        };
+        let server_address = loopback_addr(&server);
+        let responder = {
+            let server = server.clone();
+            tokio::spawn(async move {
+                let accepted = server.accept().await.unwrap().unwrap();
+                let mut stream = accepted.accept_stream().await.unwrap();
+                let mut hello = [0_u8; INVITE_HELLO_LENGTH];
+                stream.read_exact(&mut hello).await.unwrap();
+                crate::pairing::invite::reject_invite(&mut stream)
+                    .await
+                    .unwrap();
+            })
+        };
+        let mut stream = client
+            .connect_addr_with_alpn(server_address, INVITE_ALPN)
+            .await
+            .unwrap();
+        stream.write_all(&[0; INVITE_HELLO_LENGTH]).await.unwrap();
+        stream.flush().await.unwrap();
+        responder.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let mut acknowledgement = [0_u8; 1];
+        let received = tokio::time::timeout(
+            Duration::from_secs(2),
+            stream.read_exact(&mut acknowledgement),
+        )
+        .await;
+        client.close().await;
+        server.close().await;
+        received
+            .expect("the responder must finish sending the rejection")
+            .expect("the peer must receive the rejection instead of a connection error");
+        assert_eq!(acknowledgement[0], INVITE_ACK_REJECTED);
+    }
+
+    #[tokio::test]
     async fn one_time_invite_completes_over_real_iroh_and_is_consumed() {
         tokio::time::timeout(Duration::from_secs(120), invite_roundtrip(true))
             .await

@@ -328,13 +328,22 @@ where
         .map_err(PairingFailure::from_io)?;
     if ack[0] != tailsync_core::pairing::invite::INVITE_ACK_ACCEPTED {
         return Err(PairingFailure::new(
-            PairingFailureKind::InvalidArgument,
+            PairingFailureKind::WindowClosed,
             "The remote pairing invite was rejected or is no longer available",
         ));
     }
-    let accepted = secure::connect_pairing(stream, identity, local_peer_identity(mode))
-        .await
-        .map_err(PairingFailure::from_boxed)?;
+    let accepted = timeout(
+        HANDSHAKE_TIMEOUT,
+        secure::connect_pairing(stream, identity, local_peer_identity(mode)),
+    )
+    .await
+    .map_err(|_| {
+        PairingFailure::new(
+            PairingFailureKind::TimedOut,
+            "Remote Iroh pairing handshake timed out",
+        )
+    })?
+    .map_err(PairingFailure::from_boxed)?;
     iroh_identity_binding(
         &accepted,
         &invite.endpoint_id_string(),
