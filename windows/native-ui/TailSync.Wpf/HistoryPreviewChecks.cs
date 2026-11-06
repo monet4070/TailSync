@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
@@ -73,6 +73,30 @@ internal static class HistoryPreviewChecks
         Check(illustrated.ThumbnailEligible && illustrated.DisplayCacheKey == "th1:current" && illustrated.DisplayKind == "document", "composite thumbnail eligibility and snapshot authority come from Core display metadata");
         var noImage = NativeHistoryClient.MapEntry(JsonSerializer.SerializeToElement(new { id = 9, type = "composite", categories = new[] { "image" }, display = new { version = 1, kind = "document", thumbnail_eligible = false, cache_key = "th1:none" } }));
         Check(!noImage.ThumbnailEligible, "an image category cannot override Core's explicit thumbnail ineligibility");
+
+        var compositeDto = JsonSerializer.SerializeToElement(new
+        {
+            id = 10,
+            type = "composite",
+            description = "Rich item",
+            composite = new
+            {
+                native_only = false,
+                native_item_count = 1,
+                formats = new[] { "text", "html", "png" },
+                restorable_formats = new[] { "text", "png" },
+                withheld_formats = new[] { new { format = "html", code = "originals_incomplete" } },
+                representation_count = 3,
+                image_count = 1,
+                completeness = "complete",
+                identity = new { content_id = "test:1", archive_revision = 1 }
+            }
+        });
+        var mappedComposite = NativeHistoryClient.MapEntry(compositeDto);
+        Check(mappedComposite.Composite != null && mappedComposite.Composite.Formats.SequenceEqual(new[] { "text", "html", "png" }), "composite diagnostics formats mapped");
+        Check(mappedComposite.Composite!.RestorableFormats.SequenceEqual(new[] { "text", "png" }), "composite restorable formats mapped");
+        Check(mappedComposite.Composite.WithheldFormats.Length == 1 && mappedComposite.Composite.WithheldFormats[0].Format == "html", "composite withheld formats mapped");
+        Check(mappedComposite.CompositeIdentity?.GetProperty("content_id").GetString() == "test:1", "composite identity cloned");
 
         var frame = Envelope(new { entry_id = 7, kind = "text", name = "note.txt", size_bytes = 5, width = (int?)null, height = (int?)null, batch = (object?)null }, "hello"u8.ToArray());
         var preview = PreviewEnvelope.Parse(frame);

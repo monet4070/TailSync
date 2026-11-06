@@ -41,11 +41,32 @@ internal sealed class NativeHistoryClient : IHistoryPageClient, ICheckedHistoryR
         var composite = value.Object("composite");
         var hasDisplay = display.Long("version") == 1;
         var timestamp = DateTimeOffset.TryParse(Text(value, "timestamp"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var date) ? date : DateTimeOffset.MinValue;
+        CompositeDiagnostic? compositeDiag = null;
+        if (composite.ValueKind == JsonValueKind.Object)
+        {
+            var formats = composite.TryGetProperty("formats", out var f) && f.ValueKind == JsonValueKind.Array
+                ? f.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToArray() : [];
+            var restorable = composite.TryGetProperty("restorable_formats", out var rf) && rf.ValueKind == JsonValueKind.Array
+                ? rf.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToArray() : [];
+            var withheld = composite.TryGetProperty("withheld_formats", out var wf) && wf.ValueKind == JsonValueKind.Array
+                ? wf.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object).Select(x => new WithheldFormat(Text(x, "format"), Text(x, "code"))).ToArray() : [];
+            compositeDiag = new CompositeDiagnostic(
+                composite.Bool("native_only"),
+                (int)composite.Long("native_item_count", 1),
+                formats,
+                restorable,
+                withheld,
+                (int)composite.Long("representation_count", formats.Length),
+                (int)composite.Long("image_count", 0),
+                composite.String("completeness", "complete")
+            );
+        }
         return new HistoryEntry
         {
             Id = entryId, Description = description, Title = description, Type = type, Categories = categories,
             IsComposite = type == "composite", LocalOnly = composite.Bool("native_only"),
             CompositeIdentity = composite.Object("identity").ValueKind == JsonValueKind.Object ? composite.Object("identity").Clone() : null,
+            Composite = compositeDiag,
             DisplayCacheKey = hasDisplay ? display.String("cache_key") : "",
             ThumbnailEligible = hasDisplay ? display.Bool("thumbnail_eligible") : type == "image" || composite.Long("image_count") > 0 || composite.Bool("native_only"),
             DisplayKind = hasDisplay ? display.String("kind") : null,
@@ -93,6 +114,17 @@ internal sealed class NativeHistoryClient : IHistoryPageClient, ICheckedHistoryR
     public Task<ActionResult> RestoreEntryAsync(HistoryEntry entry, CancellationToken cancellation = default) => RestoreActivity.RunAsync(async () =>
     {
         var report = await NativeBackend.InvokeAsync<JsonElement>("restore_entry", new { id = entry.Id, restoreOriginalId = entry.Id, restoreIdentity = entry.CompositeIdentity }, cancellation);
+        return RestoreReport(report);
+    });
+    public Task<ActionResult> RestoreFormatAsync(HistoryEntry entry, string format, CancellationToken cancellation = default) => RestoreActivity.RunAsync(async () =>
+    {
+        var report = await NativeBackend.InvokeAsync<JsonElement>("restore_entry", new
+        {
+            id = entry.Id,
+            restoreFormat = format,
+            restoreOriginalId = entry.Id,
+            restoreIdentity = entry.CompositeIdentity
+        }, cancellation);
         return RestoreReport(report);
     });
     internal static ActionResult RestoreReport(JsonElement report)

@@ -6,6 +6,18 @@ namespace TailSync.Native.Core;
 
 // Production wire fields retain their existing names. Title, Time, Icon and
 // Preview describe demo presentation and are not new local-contract fields.
+public sealed record WithheldFormat(string Format, string Code);
+
+public sealed record CompositeDiagnostic(
+    bool NativeOnly,
+    int NativeItemCount,
+    string[] Formats,
+    string[] RestorableFormats,
+    WithheldFormat[] WithheldFormats,
+    int RepresentationCount,
+    int ImageCount,
+    string Completeness);
+
 public sealed class HistoryEntry : INotifyPropertyChanged
 {
     public static Func<string,string>? Localize { get; set; }
@@ -14,6 +26,7 @@ public sealed class HistoryEntry : INotifyPropertyChanged
     public int ShortcutNumber { get => _shortcutNumber; set { _shortcutNumber = value; OnPropertyChanged(); OnPropertyChanged(nameof(HasShortcutNumber)); } }
     public bool HasShortcutNumber => ShortcutNumber > 0;
     [JsonIgnore] public System.Text.Json.JsonElement? CompositeIdentity { get; init; }
+    [JsonIgnore] public CompositeDiagnostic? Composite { get; init; }
     [JsonPropertyName("id")] public long Id { get; init; }
     [JsonPropertyName("composite")] public bool IsComposite { get; init; }
     [JsonPropertyName("local_only")] public bool LocalOnly { get; init; }

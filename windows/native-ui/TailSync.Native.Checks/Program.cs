@@ -1,4 +1,4 @@
-using TailSync.Native.Core;
+﻿using TailSync.Native.Core;
 
 var client = new DemoTailSyncClient();
 var viewModel = new ShellViewModel(client);
@@ -47,6 +47,10 @@ Check((await fresh.GetHistoryAsync(new(Date: "custom", Start: new(2026, 10, 25),
 Check((await fresh.GetHistoryAsync(new(Date: "custom", Start: new(2026, 10, 26), End: new(2026, 10, 25)))).Count == 0, "inverted range has no stale entries");
 var demo = await fresh.GetHistoryAsync(new());
 Check(demo.Single(x => x.Id == 1).IsComposite && !demo.Single(x => x.Id == 1).HasFormatMenu && demo.Single(x => x.Id == 2).HasFormatMenu, "native-only diagnostics do not expose format menu");
+var formatTextResult = await fresh.RestoreFormatAsync(demo.Single(x => x.Id == 2), "text");
+Check(formatTextResult.Success && formatTextResult.Message.Contains("text"), "checked restore text format succeeds");
+var formatPngResult = await fresh.RestoreFormatAsync(demo.Single(x => x.Id == 2), "png");
+Check(formatPngResult.Success && formatPngResult.Message.Contains("png"), "checked restore png format succeeds");
 await HistoryStateChecks.Run();
 Console.WriteLine("All native presentation checks passed.");
 

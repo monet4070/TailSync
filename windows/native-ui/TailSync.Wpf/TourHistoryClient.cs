@@ -86,6 +86,11 @@ internal sealed class TourHistoryClient(IHistoryPageClient production) : IHistor
         if (GuidedTour.Active || IsVirtual(entry.Id)) return RestoreAsync(entry.Id, cancellation);
         return production is ICheckedHistoryRestore checkedRestore ? checkedRestore.RestoreEntryAsync(entry, cancellation) : production.RestoreAsync(entry.Id, cancellation);
     }
+    public Task<ActionResult> RestoreFormatAsync(HistoryEntry entry, string format, CancellationToken cancellation = default)
+    {
+        if (GuidedTour.Active || IsVirtual(entry.Id)) return RestoreAsync(entry.Id, cancellation);
+        return production is ICheckedHistoryRestore checkedRestore ? checkedRestore.RestoreFormatAsync(entry, format, cancellation) : production.RestoreAsync(entry.Id, cancellation);
+    }
     public Task<ActionResult> SetFavoriteAsync(long id, bool favorite, CancellationToken cancellation = default)
     {
         if (!GuidedTour.Active) { if (IsVirtual(id)) throw new InvalidOperationException("Demonstration record expired"); return production.SetFavoriteAsync(id, favorite, cancellation); }

@@ -56,6 +56,7 @@ public sealed class ShellViewModel(ITailSyncClient client) : INotifyPropertyChan
         _queryCancellation = new();
         var cancellation = _queryCancellation.Token;
         var selectedId = SelectedEntry?.Id;
+        var selectedIndex = SelectedEntry != null ? VisibleEntries.IndexOf(SelectedEntry) : -1;
         var query = CurrentQuery;
         IsLoading = true;
         long? total;
@@ -87,7 +88,27 @@ public sealed class ShellViewModel(ITailSyncClient client) : INotifyPropertyChan
         Entries.Clear();
         foreach (var entry in entries) Entries.Add(entry);
         BuildVisibleEntries();
-        SelectedEntry = (selectFirst ? null : VisibleEntries.FirstOrDefault(x => x.Id == selectedId)) ?? VisibleEntries.FirstOrDefault();
+        if (selectFirst)
+        {
+            SelectedEntry = VisibleEntries.FirstOrDefault();
+        }
+        else
+        {
+            var matching = selectedId.HasValue ? VisibleEntries.FirstOrDefault(x => x.Id == selectedId.Value) : null;
+            if (matching != null)
+            {
+                SelectedEntry = matching;
+            }
+            else if (selectedIndex >= 0 && VisibleEntries.Count > 0)
+            {
+                var targetIndex = Math.Clamp(selectedIndex, 0, VisibleEntries.Count - 1);
+                SelectedEntry = VisibleEntries[targetIndex];
+            }
+            else
+            {
+                SelectedEntry = VisibleEntries.FirstOrDefault();
+            }
+        }
         _committedQuery = query; _queryInvalidated = false; IsLoading = false;
         OnPropertyChanged(nameof(CountLabel));
         OnPropertyChanged(nameof(PageLabel));OnPropertyChanged(nameof(HasNext));OnPropertyChanged(nameof(HasPrevious));
@@ -97,6 +118,64 @@ public sealed class ShellViewModel(ITailSyncClient client) : INotifyPropertyChan
     public Task GoToPageAsync(int page) => IsLoading || !IsQueryCurrent ? Task.CompletedTask : LoadPageAsync(Math.Max(0, page), true);
     public void CancelPendingQuery() { ++_generation; _queryCancellation?.Cancel(); _queryInvalidated = true; IsLoading = false; }
     public void ClearSnapshot() { CancelPendingQuery(); Entries.Clear(); VisibleEntries.Clear(); SelectedEntry = null; ResetPage(); }
+    public void RemoveOptimisticEntry(HistoryEntry entry)
+    {
+        var selectedIndex = SelectedEntry != null ? VisibleEntries.IndexOf(SelectedEntry) : -1;
+        var wasSelected = ReferenceEquals(SelectedEntry, entry) || SelectedEntry?.Id == entry.Id;
+        var removedItems = new List<HistoryEntry>();
+        if (entry.BatchId != null && !IsBatchExpanded(entry.BatchId))
+        {
+            var batchEntries = Entries.Where(x => x.BatchId == entry.BatchId).ToList();
+            foreach (var b in batchEntries)
+            {
+                if (Entries.Remove(b)) removedItems.Add(b);
+            }
+        }
+        else
+        {
+            var match = Entries.FirstOrDefault(x => x.Id == entry.Id) ?? entry;
+            if (Entries.Remove(match)) removedItems.Add(match);
+        }
+        if (removedItems.Count == 0) return;
+        if (Total.HasValue && Total.Value > 0) Total = Math.Max(0, Total.Value - removedItems.Count);
+        foreach (var item in removedItems)
+        {
+            VisibleEntries.Remove(item);
+        }
+        UpdateVisibleMetadata();
+        if (wasSelected)
+        {
+            if (selectedIndex >= 0 && VisibleEntries.Count > 0)
+                SelectedEntry = VisibleEntries[Math.Clamp(selectedIndex, 0, VisibleEntries.Count - 1)];
+            else
+                SelectedEntry = VisibleEntries.FirstOrDefault();
+        }
+        OnPropertyChanged(nameof(CountLabel));
+        OnPropertyChanged(nameof(PageLabel));
+        OnPropertyChanged(nameof(HasNext));
+        OnPropertyChanged(nameof(HasPrevious));
+    }
+
+    private void UpdateVisibleMetadata()
+    {
+        var now = DateTime.Today;
+        string? lastGroup = null, lastBatch = null;
+        for (var i = 0; i < VisibleEntries.Count; i++)
+        {
+            var entry = VisibleEntries[i];
+            var days = (now - entry.Timestamp.LocalDateTime.Date).TotalDays;
+            var groupKey = days == 0 ? "today" : days == 1 ? "yesterday" : days <= 7 ? "thisWeek" : days <= 30 ? "thisMonth" : "older";
+            var group = HistoryEntry.Localize?.Invoke("history.group." + groupKey) ?? (days == 0 ? "今天" : days == 1 ? "昨天" : days <= 7 ? "近一周" : days <= 30 ? "近一月" : "更早");
+            entry.DateGroup = group;
+            entry.ShowDateGroup = GroupDates && group != lastGroup;
+            entry.ShowBatchHeader = entry.HasBatch && (entry.BatchId != lastBatch || group != lastGroup);
+            entry.BatchToggleLabel = entry.BatchId is { } batch && _expandedBatches.Contains(batch) ? HistoryEntry.Localize?.Invoke("history.showLess") ?? "收起" : $"{HistoryEntry.Localize?.Invoke("history.showMore") ?? "展开"} ({Math.Max(0, (entry.BatchCount ?? entry.BatchTotal ?? 1) - 3)})";
+            entry.ShortcutNumber = Page == "history" && i < 6 ? i + 1 : 0;
+            entry.RefreshPresentation();
+            lastGroup = group;
+            lastBatch = entry.BatchId;
+        }
+    }
     public bool IsBatchExpanded(string batchId) => _expandedBatches.Contains(batchId);
     public void ToggleBatch(string batchId)
     {

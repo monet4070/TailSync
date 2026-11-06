@@ -36,6 +36,22 @@ internal static class HistoryStateChecks
         Check(model.VisibleEntries.Select(x => x.Id).SequenceEqual(new long[] { 1, 2, 3, 4, 7 }) && model.VisibleEntries[^1].ShortcutNumber == 5, "collapsed batch headers and hidden children consume no number");
         model.ToggleBatch("batch");
         Check(model.VisibleEntries[5].Id == 6 && model.VisibleEntries[5].ShortcutNumber == 6 && model.VisibleEntries[6].ShortcutNumber == 0, "expanding batches atomically updates the six numbered targets");
+
+        // Optimistic removal checks
+        var resetFired = false;
+        var removeCount = 0;
+        model.VisibleEntries.CollectionChanged += (_, e) =>
+        {
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset) resetFired = true;
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove) removeCount++;
+        };
+        var toDelete = model.VisibleEntries[2]; // Id == 3
+        model.SelectedEntry = toDelete;
+        model.RemoveOptimisticEntry(toDelete);
+        Check(!resetFired, "optimistic removal does not raise collection reset (preserves scroll offset)");
+        Check(removeCount == 1, "optimistic removal raises single item remove action");
+        Check(model.SelectedEntry?.Id == 4, "selection maintains index at deleted row position");
+        Check(model.VisibleEntries[2].Id == 4 && model.VisibleEntries[2].ShortcutNumber == 3, "remaining items shift up and maintain sequential numbering");
     }
     private sealed class ControlledClient : IHistoryPageClient
     {

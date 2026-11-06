@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace TailSync.Native.Core;
 
-public sealed class DemoTailSyncClient : ITailSyncClient
+public sealed class DemoTailSyncClient : ITailSyncClient, ICheckedHistoryRestore
 {
     private readonly List<HistoryEntry> _entries;
 
@@ -80,4 +80,10 @@ public sealed class DemoTailSyncClient : ITailSyncClient
             ? new ActionResult(false, "条目已不存在")
             : new ActionResult(true, $"已演示恢复「{entry.Title}」；未更改系统剪贴板"));
     }
+
+    public Task<ActionResult> RestoreEntryAsync(HistoryEntry entry, CancellationToken cancellation = default)
+        => Task.FromResult(new ActionResult(true, $"已演示恢复「{entry.Title}」；未更改系统剪贴板"));
+
+    public Task<ActionResult> RestoreFormatAsync(HistoryEntry entry, string format, CancellationToken cancellation = default)
+        => Task.FromResult(new ActionResult(true, $"已演示仅复制 {format}；未更改系统剪贴板"));
 }

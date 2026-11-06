@@ -10,6 +10,7 @@ public sealed record HistoryPage(IReadOnlyList<HistoryEntry> Entries, bool HasMo
 public interface ICheckedHistoryRestore
 {
     Task<ActionResult> RestoreEntryAsync(HistoryEntry entry, CancellationToken cancellation = default);
+    Task<ActionResult> RestoreFormatAsync(HistoryEntry entry, string format, CancellationToken cancellation = default);
 }
 
 // Production paging remains optional so existing platform/demo adapters retain

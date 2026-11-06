@@ -110,11 +110,26 @@ public partial class MainWindow : MacWindow
     private static readonly DependencyProperty ShapeFill=System.Windows.Shapes.Shape.FillProperty;
     private async Task Refresh()
     {
-        if (_favoriteFeedbackCount > 0 || _pressedEntry != null) { _historyRefreshPending = true; return; }
+        if (_favoriteFeedbackCount > 0 || _pressedEntry != null || _mutations.Count > 0) { _historyRefreshPending = true; return; }
         _historyRefreshPending = false;
         CancelPress();
         var restoreFocus = HistoryList.IsKeyboardFocusWithin && !SearchBox.IsKeyboardFocusWithin;
-        try {await ViewModel.RefreshAsync();RetryHistoryButton.Visibility=Visibility.Collapsed;UpdateEmpty();if(restoreFocus)FocusCurrentEntry();}catch(OperationCanceledException){}catch(Exception error){ShowLoadError(error);}
+        var viewer = SmoothScroll.FindViewer(HistoryList);
+        var previousOffset = viewer?.VerticalOffset ?? 0;
+        try
+        {
+            await ViewModel.RefreshAsync();
+            RetryHistoryButton.Visibility = Visibility.Collapsed;
+            UpdateEmpty();
+            if (viewer != null && previousOffset > 0)
+            {
+                HistoryList.UpdateLayout();
+                viewer.ScrollToVerticalOffset(Math.Min(previousOffset, viewer.ScrollableHeight));
+            }
+            if (restoreFocus) FocusCurrentEntry(scrollIntoView: false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { ShowLoadError(error); }
     }
     private void UpdateEmpty()
     {
@@ -157,29 +172,169 @@ public partial class MainWindow : MacWindow
         if(!Select(sender)||ViewModel.SelectedEntry is not { } entry)return;
         if(entry.Pinned&&Page!="favorites"){Notify(T("history.favoriteProtected"));return;}
         if(AppSession.IsDemo&&!DemoDialog.Confirm(this,T("history.deleteEntry"),entry.Title,T("history.deleteEntry")))return;
-        var key=entry.BatchId??entry.Id.ToString();if(!_mutations.Add(key))return;try{var result=await AppSession.Client.DeleteAsync(entry.Id,Page=="favorites");Notify(result.Message);if(result.Success)AppSession.RefreshHistory();}catch(Exception error){Notify(error.Message);}finally{_mutations.Remove(key);}
+        var key=entry.BatchId??entry.Id.ToString();if(!_mutations.Add(key))return;
+        ViewModel.RemoveOptimisticEntry(entry);
+        UpdateEmpty();
+        try{var result=await AppSession.Client.DeleteAsync(entry.Id,Page=="favorites");Notify(result.Message);}
+        catch(Exception error){Notify(error.Message);}
+        finally{
+            _mutations.Remove(key);
+            if(_mutations.Count==0&&_ready)
+            {
+                if(_historyRefreshPending)
+                {
+                    _historyRefreshPending=false;
+                    await Refresh();
+                }
+                else
+                {
+                    AppSession.RefreshHistory();
+                }
+            }
+        }
     }
     private async void Clear_Click(object sender,RoutedEventArgs e)
     {
         if(!ViewModel.IsQueryCurrent||RestoreActivity.IsBusy||Page!="history"||!DemoDialog.Confirm(this,T("history.clearConfirmTitle"),T("history.clearConfirmDescription"),T("history.clearAll")))return;
         ClearButton.IsEnabled=false;try{if(AppSession.Client is IHistoryPageClient paged)Notify((await paged.ClearHistoryAsync()).Message);else{foreach(var entry in await AppSession.Client.GetHistoryAsync(new()))if(!entry.Pinned)await AppSession.Client.DeleteAsync(entry.Id,false);Notify("已清空未收藏的示例内容");}_preview?.Close();ViewModel.ResetPage();_thumbnails.Clear();AppSession.RefreshHistory();}catch(Exception error){Notify(error.Message);}finally{ClearButton.IsEnabled=true;}
     }
-    private void Info_Click(object sender,RoutedEventArgs e)
+    private void Info_Click(object sender, RoutedEventArgs e)
     {
-        if(!AppSession.IsDemo||!Select(sender)||ViewModel.SelectedEntry is not { } entry||sender is not FrameworkElement anchor)return;
-        var body=new StackPanel();body.Children.Add(Ui.Text(T("history.composite.details"),13));
-        foreach(var (key,value) in new[]{("formats","text / html"),("representations","2"),("images",entry.Preview=="image"?"1":"0"),("nativeItems","1"),("nativeOnly",entry.LocalOnly?"是":"否"),("completeness","完整"),("restorable",entry.LocalOnly?"无":"text / html"),("withheld",entry.LocalOnly?"原生内容":"无")})body.Children.Add(SettingRow(T("history.composite.diag."+key),"",Ui.Text(value,11),3));
-        var popup=new Popup { PlacementTarget=anchor,Placement=PlacementMode.Top,StaysOpen=false,AllowsTransparency=true,Child=Ui.Surface(body,new(14)),IsOpen=true };
-        popup.Closed+=(_,_)=>anchor.Focus();
+        if (sender is not FrameworkElement anchor) return;
+        var entry = anchor.DataContext as HistoryEntry ?? ViewModel.SelectedEntry;
+        if (entry == null) return;
+        Select(sender);
+        var body = new StackPanel { MinWidth = 240, MaxWidth = 360 };
+        var title = Ui.Text(T("history.composite.details"), 13);
+        title.FontWeight = FontWeights.SemiBold;
+        title.Margin = new Thickness(16, 0, 16, 6);
+        body.Children.Add(title);
+
+        IEnumerable<(string key, string value)> rows;
+        if (entry.Composite is { } diag)
+        {
+            var compKey = "history.composite.completeness." + diag.Completeness;
+            var compVal = T(compKey);
+            var withheldVal = diag.WithheldFormats.Length > 0
+                ? string.Join(", ", diag.WithheldFormats.Select(w =>
+                {
+                    var reasonKey = "history.restore.code." + w.Code;
+                    var reason = T(reasonKey);
+                    return $"{w.Format}: {(reason == reasonKey ? T("history.composite.diag.unavailable") : reason)}";
+                }))
+                : (diag.NativeOnly ? Localizer.Choose("原生内容", "Native content") : T("history.composite.diag.none"));
+
+            rows = new[]
+            {
+                ("formats", diag.Formats.Length == 0 ? T("history.composite.diag.none") : string.Join(", ", diag.Formats)),
+                ("representations", diag.RepresentationCount.ToString()),
+                ("images", diag.ImageCount.ToString()),
+                ("nativeItems", diag.NativeItemCount.ToString()),
+                ("nativeOnly", diag.NativeOnly ? T("history.composite.diag.yes") : T("history.composite.diag.no")),
+                ("completeness", compVal == compKey ? T("history.composite.diag.unknown") : compVal),
+                ("restorable", diag.RestorableFormats.Length == 0 ? T("history.composite.diag.none") : string.Join(", ", diag.RestorableFormats)),
+                ("withheld", withheldVal)
+            };
+        }
+        else
+        {
+            rows = new[]
+            {
+                ("formats", "text / html"),
+                ("representations", "2"),
+                ("images", entry.Preview == "image" ? "1" : "0"),
+                ("nativeItems", "1"),
+                ("nativeOnly", entry.LocalOnly ? T("history.composite.diag.yes") : T("history.composite.diag.no")),
+                ("completeness", T("history.composite.completeness.complete")),
+                ("restorable", entry.LocalOnly ? T("history.composite.diag.none") : "text / html"),
+                ("withheld", entry.LocalOnly ? Localizer.Choose("原生内容", "Native content") : T("history.composite.diag.none"))
+            };
+        }
+
+        foreach (var (key, value) in rows)
+        {
+            body.Children.Add(SettingRow(T("history.composite.diag." + key), "", Ui.Text(value, 11), 3));
+        }
+
+        var popup = new Popup
+        {
+            PlacementTarget = anchor,
+            Placement = PlacementMode.Top,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = Ui.Surface(body, new Thickness(0, 10, 0, 10)),
+            IsOpen = true
+        };
+        popup.Closed += (_, _) => anchor.Focus();
     }
-    private void Format_Click(object sender,RoutedEventArgs e)
+
+    private void Format_Click(object sender, RoutedEventArgs e)
     {
-        if(!AppSession.IsDemo||!Select(sender)||ViewModel.SelectedEntry is not { } entry||sender is not Button button)return;
-        var menu=new ContextMenu();foreach(var key in new[]{"history.composite.copy.text","history.composite.copy.png"}){var item=new MenuItem { Header=T(key) };item.Click+=async(_,_)=>Notify((await AppSession.Client.RestoreAsync(entry.Id)).Message);menu.Items.Add(item);}menu.PlacementTarget=button;menu.IsOpen=true;
+        if (sender is not Button button) return;
+        var entry = button.DataContext as HistoryEntry ?? ViewModel.SelectedEntry;
+        if (entry == null) return;
+        Select(button);
+
+        IEnumerable<string> formats;
+        if (entry.Composite is { } diag)
+        {
+            var withheld = diag.WithheldFormats.Select(w => w.Format).ToHashSet();
+            var allowed = new[] { "text", "png" };
+            var list = diag.RestorableFormats.Where(f => allowed.Contains(f) && !withheld.Contains(f));
+            var hasRichContent = diag.ImageCount > 0 || diag.Formats.Any(f => f != "text");
+            if (!hasRichContent)
+            {
+                list = list.Where(f => f != "text");
+            }
+            formats = list.ToArray();
+        }
+        else
+        {
+            formats = new[] { "text", "png" };
+        }
+
+        var menu = new ContextMenu();
+        foreach (var format in formats)
+        {
+            var key = "history.composite.copy." + format;
+            var header = T(key);
+            if (header == key) header = (format == "text" ? "仅复制文字" : format == "png" ? "仅复制图片" : format);
+            var item = new MenuItem { Header = header };
+            ButtonDesign.SetIcon(item, format == "png" ? "image" : "text");
+            var targetFormat = format;
+            item.Click += async (_, _) =>
+            {
+                try
+                {
+                    ActionResult result;
+                    if (AppSession.Client is ICheckedHistoryRestore checkedClient)
+                    {
+                        result = await checkedClient.RestoreFormatAsync(entry, targetFormat);
+                    }
+                    else
+                    {
+                        result = await AppSession.Client.RestoreAsync(entry.Id);
+                    }
+                    Notify(result.Message);
+                }
+                catch (Exception error)
+                {
+                    Notify(error.Message);
+                }
+            };
+            menu.Items.Add(item);
+        }
+
+        if (menu.Items.Count == 0) return;
+        menu.PlacementTarget = button;
+        menu.IsOpen = true;
     }
     private async void History_DoubleClick(object sender,MouseButtonEventArgs e)
     {
-        CancelPress();if(_suppressClick){_suppressClick=false;return;}if(e.OriginalSource is DependencyObject source && FindParent<ListBoxItem>(source)!=null && FindParent<Button>(source)==null)await Restore(true);
+        CancelPress();
+        if(e.ChangedButton!=MouseButton.Left){e.Handled=true;return;}
+        if(_suppressClick){_suppressClick=false;return;}
+        if(e.OriginalSource is DependencyObject source && FindParent<ListBoxItem>(source)!=null && FindParent<Button>(source)==null)await Restore(true);
     }
     private static TElement? FindParent<TElement>(DependencyObject source) where TElement:DependencyObject
     {
@@ -221,11 +376,12 @@ public partial class MainWindow : MacWindow
         if(e.IsRepeat)return;
         if(e.Key==Key.Enter){e.Handled=true;await Restore(true);}else if(e.Key==Key.Space){e.Handled=true;ShowPreview();}else if(e.Key==Key.Escape){e.Handled=true;SearchBox.Focus();}else if(e.Key==Key.Delete&&ViewModel.SelectedEntry is {} entry){e.Handled=true;DeleteRow_Click(new FrameworkElement{DataContext=entry},e);}
     }
-    private void FocusCurrentEntry()
+    private void FocusCurrentEntry(bool scrollIntoView = true)
     {
         if(Page!="history"||!ViewModel.IsQueryCurrent)return;
         if(ViewModel.SelectedEntry==null){FocusEntry(false);return;}
-        HistoryList.ScrollIntoView(ViewModel.SelectedEntry);HistoryList.UpdateLayout();
+        if(scrollIntoView) HistoryList.ScrollIntoView(ViewModel.SelectedEntry);
+        HistoryList.UpdateLayout();
         (HistoryList.ItemContainerGenerator.ContainerFromItem(ViewModel.SelectedEntry) as ListBoxItem)?.Focus();
     }
     private void FocusEntry(bool last)
@@ -252,7 +408,7 @@ public partial class MainWindow : MacWindow
         if(_preview is {} existing){existing.SetEntry(entry,batch);if(existing.WindowState==WindowState.Minimized)existing.WindowState=WindowState.Normal;existing.Activate();return;}
         var preview=new PreviewWindow(entry,async()=>{try{Notify((await AppSession.Client.RestoreAsync(entry.Id)).Message);}catch(Exception error){Notify(error.Message);}},batch){Owner=this};_preview=preview;preview.Closed+=(_,_)=>{if(_preview==preview)_preview=null;if(IsVisible)HistoryList.Focus();};preview.Show();
     }
-    private void RestoreChanged(object? sender,EventArgs e){var restoreFocus=!RestoreActivity.IsBusy&&IsVisible&&IsActive&&!SearchBox.IsKeyboardFocusWithin;HistoryList.IsEnabled=!RestoreActivity.IsBusy;Resources["HistoryRestoreAvailable"]=!RestoreActivity.IsBusy;if(restoreFocus)FocusCurrentEntry();UpdateKeyboardHint();}
+    private void RestoreChanged(object? sender,EventArgs e){var restoreFocus=!RestoreActivity.IsBusy&&IsVisible&&IsActive&&!SearchBox.IsKeyboardFocusWithin;HistoryList.IsEnabled=!RestoreActivity.IsBusy;Resources["HistoryRestoreAvailable"]=!RestoreActivity.IsBusy;if(restoreFocus)FocusCurrentEntry(false);UpdateKeyboardHint();}
     private void ShowLoadError(Exception error){RetryHistoryButton.Visibility=Visibility.Visible;Notify(error.Message);}
     private async void RetryHistory_Click(object sender,RoutedEventArgs e)=>await Refresh();
     private async void PreviousPage_Click(object sender,RoutedEventArgs e){if(!ViewModel.HasPrevious)return;await ChangePage(ViewModel.PageIndex-1);}
@@ -326,6 +482,11 @@ public partial class MainWindow : MacWindow
         }
     }
     private void History_ContextMenuOpening(object sender,ContextMenuEventArgs e){if(!AppSession.IsDemo)e.Handled=true;}
+    private void History_RightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        CancelPress();
+        _suppressClick = false;
+    }
     private void History_RightClick(object sender,MouseButtonEventArgs e)
     {
         var completedHold = _suppressClick && Mouse.LeftButton == MouseButtonState.Pressed; CancelPress(); if(completedHold){e.Handled=true;return;}if(AppSession.IsDemo)return;e.Handled=true;

@@ -28,7 +28,30 @@ internal static class SmokeChecks
             var connections=new MainWindow("connections");connections.Show();await Dispatcher.Yield();Check(((StackPanel)connections.FindName("ConnectionsContent")).Children.Count==1,"connections retain one source grouping");
             ThemeService.Apply(appearance:"dark");await Dispatcher.Yield();Check(((SolidColorBrush)app.FindResource("CanvasBrush")).Color==Color.FromRgb(25,25,24),"dark palette reaches live resources");
             ThemeService.Apply(appearance:"light",id:"flux");Check(((SolidColorBrush)app.FindResource("AccentBrush")).Color==Color.FromRgb(20,121,112),"selected theme uses source palette");
-            var preview=new PreviewWindow(history.ViewModel.Entries[0],()=>{});preview.Show();await Dispatcher.Yield();Check(preview.Width==640,"independent preview constructs");preview.Close();
+            var preview=new PreviewWindow(history.ViewModel.Entries[0],()=>{});preview.Show();await Dispatcher.Yield();
+            Check(preview.Width==640,"independent preview constructs");
+            preview.UpdateLayout();
+            var combo = QualityChecks.Descendants(preview).OfType<ComboBox>().First();
+            var icon = QualityChecks.Descendants(combo).OfType<VectorIcon>().First(i => i.Kind == "down");
+            var iconPos = icon.TransformToAncestor(combo).Transform(new Point(0, 0));
+            Check(iconPos.X >= 80, $"dropdown arrow is right-aligned in toolbar mode combobox (x={iconPos.X})");
+            combo.SelectedIndex = 2;
+            await Dispatcher.Yield();
+            preview.UpdateLayout();
+            var viewer = QualityChecks.Descendants(preview).OfType<FlowDocumentScrollViewer>().First();
+            Check(TextOptions.GetTextFormattingMode(viewer) == TextFormattingMode.Display, "viewer uses Display text formatting");
+            Check(TextOptions.GetTextRenderingMode(viewer) == TextRenderingMode.ClearType, "viewer uses ClearType rendering");
+            Check(viewer.Zoom == 100, "viewer maintains 100% zoom scale");
+            var zoomLabel = QualityChecks.Descendants(preview).OfType<TextBlock>().First(t => t.Text.EndsWith("px"));
+            var initialSize = viewer.Document.FontSize;
+            Check(zoomLabel.Text == $"{initialSize:0}px", "toolbar px label matches markdown document font size");
+            var zoomInBtn = QualityChecks.Descendants(preview).OfType<Button>().First(b => ButtonDesign.GetIcon(b) == "add");
+            zoomInBtn.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            await Dispatcher.Yield();
+            preview.UpdateLayout();
+            Check(viewer.Document.FontSize == initialSize + 1, "markdown document font size increments");
+            Check(zoomLabel.Text == $"{initialSize + 1:0}px", "toolbar px label increments with font size");
+            preview.Close();
             foreach(var window in new Window[]{connections,settings,favorites,history})window.Close();
         }
         catch(Exception error){failure=error.ToString();}

@@ -165,7 +165,7 @@ public static class SmoothScroll
         }
     }
 
-    private static ScrollViewer? FindViewer(DependencyObject parent)
+    internal static ScrollViewer? FindViewer(DependencyObject parent)
     {
         for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
         {

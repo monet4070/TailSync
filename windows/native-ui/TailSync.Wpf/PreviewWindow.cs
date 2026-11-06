@@ -177,7 +177,7 @@ public sealed class PreviewWindow : MacWindow
         _image = null; _imageScroll = null; _document = null;
         _notice.Text = _source.Length > _limitedSource.Length ? Localizer.Text("history.preview.truncated") : "";
         _notice.Visibility = _notice.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (mode == "markdown") ShowDocument(PreviewRenderers.Markdown(_limitedSource));
+        if (mode == "markdown") ShowDocument(PreviewRenderers.Markdown(_limitedSource, _text.FontSize));
         else
         {
             _text.Text = _limitedSource; _text.ShowLineNumbers = mode == "code" && _limitedSource.Count(x => x == '\n') < 5000;
@@ -189,7 +189,12 @@ public sealed class PreviewWindow : MacWindow
     }
     private void ShowDocument(FlowDocument document)
     {
-        _document = new FlowDocumentScrollViewer { Document = document, IsToolBarVisible = false, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Zoom = _zoom * 100 };
+        _document = new FlowDocumentScrollViewer { Document = document, IsToolBarVisible = false, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Zoom = 100, UseLayoutRounding = true, SnapsToDevicePixels = true };
+        TextOptions.SetTextFormattingMode(_document, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(_document, TextRenderingMode.ClearType);
+        TextOptions.SetTextHintingMode(_document, TextHintingMode.Fixed);
+        RenderOptions.SetClearTypeHint(_document, ClearTypeHint.Enabled);
+        _document.SetResourceReference(Control.BackgroundProperty, "SurfaceBrush");
         _content.Content = _document;
     }
     private void ShowSvg()
@@ -322,7 +327,24 @@ public sealed class PreviewWindow : MacWindow
     }
     private void Zoom(int direction)
     {
-        if (_content.Content == _text) { _text.FontSize = Math.Clamp(_text.FontSize + direction, 12, 32); PreviewPreferences.FontSize = _text.FontSize; }
+        if (_payload != null && IsText(_payload) || _content.Content == _text)
+        {
+            var newSize = Math.Clamp(_text.FontSize + direction, 12, 32);
+            _text.FontSize = newSize;
+            PreviewPreferences.FontSize = newSize;
+            if (_document?.Document is { } doc)
+            {
+                doc.FontSize = newSize;
+                doc.LineHeight = Math.Round(newSize * 1.6);
+                foreach (var block in doc.Blocks)
+                {
+                    if (block is Paragraph heading && heading.Tag is int level)
+                        heading.FontSize = Math.Max(newSize + 2, Math.Round((30 - level * 2) * (newSize / 15d)));
+                    else if (block is Paragraph code && code.Tag as string == "code")
+                        code.FontSize = Math.Max(11, Math.Round(13 * (newSize / 15d)));
+                }
+            }
+        }
         else if (_document != null) { _zoom = Math.Clamp(_zoom + direction * .1, .5, 2.5); _document.Zoom = _zoom * 100; }
         else { _fitToWindow = false; _zoom = Math.Clamp(_zoom + direction * .1, .1, 4); UpdateImageLayout(); }
         UpdateToolbar();

@@ -108,31 +108,35 @@ internal static class PreviewRenderers
     private static bool UnsafeCss(string value) => Regex.Matches(value, @"url\s*\(\s*['"" ]?([^)'""\s]+)", RegexOptions.IgnoreCase).Any(match => !match.Groups[1].Value.StartsWith('#')) || value.Contains("@import", StringComparison.OrdinalIgnoreCase);
     private static bool SafeEmbeddedImage(string value) => value.Length <= 6 * 1024 * 1024 && (value.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase) || value.StartsWith("data:image/jpeg;base64,", StringComparison.OrdinalIgnoreCase));
 
-    internal static FlowDocument Markdown(string text)
+    internal static FlowDocument Markdown(string text, double fontSize = 15)
     {
         var document = Document();
+        document.FontSize = fontSize;
+        document.LineHeight = Math.Round(fontSize * 1.6);
         var parsed = Markdig.Markdown.Parse(text, new MarkdownPipelineBuilder().UseAdvancedExtensions().Build());
-        foreach (var block in parsed) AddMarkdown(document.Blocks, block);
+        foreach (var block in parsed) AddMarkdown(document.Blocks, block, fontSize);
         return document;
     }
-    private static void AddMarkdown(BlockCollection destination, Markdig.Syntax.Block block)
+    private static void AddMarkdown(BlockCollection destination, Markdig.Syntax.Block block, double fontSize = 15)
     {
         switch (block)
         {
             case HeadingBlock heading:
-                var title = new WpfParagraph { FontSize = Math.Max(16, 30 - heading.Level * 2), FontWeight = FontWeights.SemiBold, Margin = new(0, 14, 0, 7) };
+                var headingSize = Math.Max(fontSize + 2, Math.Round((30 - heading.Level * 2) * (fontSize / 15d)));
+                var title = new WpfParagraph { FontSize = headingSize, FontWeight = FontWeights.SemiBold, Margin = new(0, 14, 0, 7), Tag = heading.Level };
                 AddInline(title.Inlines, heading.Inline); destination.Add(title); break;
             case ParagraphBlock paragraph:
                 var body = new WpfParagraph { Margin = new(0, 0, 0, 10) }; AddInline(body.Inlines, paragraph.Inline); destination.Add(body); break;
             case CodeBlock code:
-                var pre = new WpfParagraph(new Run(code.Lines.ToString())) { FontFamily = new("Cascadia Code, Consolas"), FontSize = 13, Padding = new(12), Margin = new(0, 7, 0, 12) };
+                var codeSize = Math.Max(11, Math.Round(13 * (fontSize / 15d)));
+                var pre = new WpfParagraph(new Run(code.Lines.ToString())) { FontFamily = new("Cascadia Code, Consolas"), FontSize = codeSize, Padding = new(12), Margin = new(0, 7, 0, 12), Tag = "code" };
                 pre.SetResourceReference(TextElement.BackgroundProperty, "InputBrush"); destination.Add(pre); break;
             case QuoteBlock quote:
                 var section = new Section { BorderThickness = new(3, 0, 0, 0), Padding = new(12, 0, 0, 0), Margin = new(0, 5, 0, 10) };
-                section.SetResourceReference(System.Windows.Documents.Block.BorderBrushProperty, "AccentBrush"); foreach (var child in quote) AddMarkdown(section.Blocks, child); destination.Add(section); break;
+                section.SetResourceReference(System.Windows.Documents.Block.BorderBrushProperty, "AccentBrush"); foreach (var child in quote) AddMarkdown(section.Blocks, child, fontSize); destination.Add(section); break;
             case ListBlock list:
                 var items = new System.Windows.Documents.List { MarkerStyle = list.IsOrdered ? TextMarkerStyle.Decimal : TextMarkerStyle.Disc, Margin = new(0, 0, 0, 10) };
-                foreach (var item in list.OfType<ListItemBlock>()) { var entry = new ListItem(); foreach (var child in item) AddMarkdown(entry.Blocks, child); items.ListItems.Add(entry); }
+                foreach (var item in list.OfType<ListItemBlock>()) { var entry = new ListItem(); foreach (var child in item) AddMarkdown(entry.Blocks, child, fontSize); items.ListItems.Add(entry); }
                 destination.Add(items); break;
             case ThematicBreakBlock:
                 var line = new WpfParagraph { BorderThickness = new(0, 0, 0, 1), Margin = new(0, 8, 0, 10) }; line.SetResourceReference(System.Windows.Documents.Block.BorderBrushProperty, "BorderBrush"); destination.Add(line); break;
@@ -145,7 +149,7 @@ internal static class PreviewRenderers
                     {
                         var cell=new TableCell{Padding=new(8),BorderThickness=new(.5)};cell.SetResourceReference(TableCell.BorderBrushProperty,"BorderBrush");
                         if(markdownRow.IsHeader)cell.FontWeight=FontWeights.SemiBold;
-                        foreach(var child in markdownCell)AddMarkdown(cell.Blocks,child);row.Cells.Add(cell);
+                        foreach(var child in markdownCell)AddMarkdown(cell.Blocks,child,fontSize);row.Cells.Add(cell);
                     }
                 }
                 destination.Add(table);break;
@@ -153,7 +157,7 @@ internal static class PreviewRenderers
                 // Treat embedded HTML as text; there is no script/HTML host.
                 destination.Add(new WpfParagraph(new Run(html.Lines.ToString()))); break;
             case ContainerBlock container:
-                foreach (var child in container) AddMarkdown(destination, child); break;
+                foreach (var child in container) AddMarkdown(destination, child, fontSize); break;
             case LeafBlock leaf:
                 var fallback = new WpfParagraph(); AddInline(fallback.Inlines, leaf.Inline); destination.Add(fallback); break;
         }
@@ -295,6 +299,11 @@ internal static class PreviewRenderers
     private static FlowDocument Document()
     {
         var document = new FlowDocument { PagePadding = new(24), FontSize = 15, LineHeight = 24 };
+        TextOptions.SetTextFormattingMode(document, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(document, TextRenderingMode.ClearType);
+        TextOptions.SetTextHintingMode(document, TextHintingMode.Fixed);
+        RenderOptions.SetClearTypeHint(document, ClearTypeHint.Enabled);
+        document.SetResourceReference(FlowDocument.BackgroundProperty, "SurfaceBrush");
         document.SetResourceReference(TextElement.FontFamilyProperty, "ReadingFont"); document.SetResourceReference(TextElement.ForegroundProperty, "PrimaryBrush"); return document;
     }
     // Only the authenticated, checksum-verified bundled tour model enters here.

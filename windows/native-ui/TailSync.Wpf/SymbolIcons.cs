@@ -54,9 +54,11 @@ public sealed class VectorIcon : FrameworkElement
     {
         WidthProperty.OverrideMetadata(typeof(VectorIcon), new FrameworkPropertyMetadata(16d));
         HeightProperty.OverrideMetadata(typeof(VectorIcon), new FrameworkPropertyMetadata(16d));
+        HorizontalAlignmentProperty.OverrideMetadata(typeof(VectorIcon), new FrameworkPropertyMetadata(HorizontalAlignment.Center));
+        VerticalAlignmentProperty.OverrideMetadata(typeof(VectorIcon), new FrameworkPropertyMetadata(VerticalAlignment.Center));
         TextElement.ForegroundProperty.OverrideMetadata(typeof(VectorIcon), new FrameworkPropertyMetadata(Brushes.Gray, FrameworkPropertyMetadataOptions.Inherits | FrameworkPropertyMetadataOptions.AffectsRender));
     }
-    public VectorIcon() { VerticalAlignment = VerticalAlignment.Center; HorizontalAlignment = HorizontalAlignment.Center; IsHitTestVisible = false; UseLayoutRounding = true; SnapsToDevicePixels = true; }
+    public VectorIcon() { IsHitTestVisible = false; UseLayoutRounding = true; SnapsToDevicePixels = true; }
     protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi) { base.OnDpiChanged(oldDpi, newDpi); InvalidateVisual(); }
     protected override void OnRender(DrawingContext dc)
     {
