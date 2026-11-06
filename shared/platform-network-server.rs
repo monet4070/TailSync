@@ -2065,4 +2065,54 @@ mod acceptance_tests {
         drop(database);
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[cfg(feature = "protocol-composite-clipboard")]
+    #[tokio::test]
+    async fn review_new_event_after_idle_local_copy_should_apply() {
+        use crate::protocol::composite::{AckResult, CompositeAck};
+        use tailsync_core::composite::{Completeness, Mime, PortableBundle, Representation};
+        tailsync_core::secure::set_helper_health(true);
+        let root = std::env::temp_dir().join(format!("tailsync-review-idle-{:016x}", rand::random::<u64>()));
+        let database = Arc::new(Mutex::new(db::HistoryDB::open_isolated_for_test_composite(&root).unwrap()));
+        let server_identity = Arc::new(DeviceIdentity::generate_for_test());
+        let client_identity = DeviceIdentity::generate_for_test();
+        let mut trusted = crypto::Settings { connection_mode: "auto".into(), ..crypto::Settings::default() };
+        trusted.trusted_peer_keys.insert("client".into(), STANDARD.encode(client_identity.public_key()));
+        let platform = Arc::new(RecordingPlatform::default());
+        let mut engine = sync::SyncEngine::new();
+        engine.set_platform(platform.clone());
+        let engine = Arc::new(Mutex::new(engine));
+        let (client, server) = open_session(server_identity, &client_identity,
+            Arc::new(Mutex::new(trusted)), engine.clone(), database.clone()).await;
+        let mut client = client.unwrap();
+        assert!(client.negotiated_capabilities().composite_clipboard);
+        client.write_frame(&Frame::try_new(Command::Heartbeat, 0, 1, vec![]).unwrap()).await.unwrap();
+        assert_eq!(client.read_frame().await.unwrap().command, Command::HeartbeatAck);
+        // Let the real server loop enter its next blocking socket read.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        platform.native_revision.fetch_add(1, Ordering::SeqCst);
+        engine.lock().await.supersede_file_clipboard();
+        // This remote copy is created AFTER the receiving user's local copy.
+        let bundle = PortableBundle {
+            representations: vec![Representation { mime: Mime::Text, bytes: b"new remote copy after local copy".to_vec() }],
+            resources: vec![], bindings: vec![], completeness: Completeness::Complete,
+        };
+        let mut results = Vec::new();
+        for sequence in [2, 3] {
+            let event = crate::protocol::EventEnvelope::new(bundle.encode().unwrap());
+            client.write_frame(&Frame::try_new(Command::CompositePayload, 0, sequence, event.encode()).unwrap()).await.unwrap();
+            let response = client.read_frame().await.unwrap();
+            assert_eq!(response.command, Command::CompositeAck);
+            results.push(CompositeAck::decode(&response.payload).unwrap().result);
+        }
+        let writes = platform.composite_writes.load(Ordering::SeqCst);
+        drop(client);
+        timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        drop(engine);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(results, vec![AckResult::Applied, AckResult::Applied],
+            "first fresh copy was rejected after idle; next copy works; actual writes={writes}");
+    }
+
 }
